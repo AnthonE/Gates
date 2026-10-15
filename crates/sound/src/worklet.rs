@@ -152,11 +152,12 @@ impl Worklet {
         self.talk.push(lane, pcm);
     }
 
-    /// Every lane's ear gains at once, `[l0, r0, l1, r1, …]`; a short
-    /// slice sets the lanes it covers.
+    /// Every lane's ear gains and low-pass at once, `[l0, r0, lp0, l1, …]`;
+    /// a short slice sets the lanes it covers.
     pub fn talk_gains(&mut self, gains: &[f32]) {
-        for (lane, lr) in gains.chunks_exact(2).take(TALKERS).enumerate() {
-            self.talk.gain(lane, lr[0], lr[1]);
+        for (lane, g) in gains.chunks_exact(3).take(TALKERS).enumerate() {
+            self.talk.gain(lane, g[0], g[1]);
+            self.talk.filter(lane, g[2]);
         }
     }
 

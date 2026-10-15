@@ -125,6 +125,9 @@ pub struct Settings {
     pub vol_music: f32,
     /// Players' voices (proximity voice chat, `render/voice.rs`), 0..1.
     pub vol_voice: f32,
+    /// Walls, floors and shut doors muffle what is behind them
+    /// (`ui::occlusion`). On, as in the reference.
+    pub occlusion: bool,
     /// How hard the camera shakes and kicks (`render/shake.rs`), 0..1.
     /// Zero turns it off for players it makes queasy.
     pub shake: f32,
@@ -216,6 +219,7 @@ impl Default for Settings {
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
             vol_voice: 1.0,
+            occlusion: true,
             shake: 1.0,
             cat: 0,
             back: Screen::Menu,
@@ -254,6 +258,7 @@ pub enum Knob {
     VolAmbience,
     VolMusic,
     VolVoice,
+    Occlusion,
     Shake,
 }
 
@@ -329,6 +334,7 @@ impl Settings {
                     step_ladder(&quality::TREE_LOD_LADDER, self.gfx.tree_lod_swap_m, delta);
             }
             Knob::Vsync => self.vsync = !self.vsync,
+            Knob::Occlusion => self.occlusion = !self.occlusion,
             Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
             // **Turning presence off takes sharing with it**, and that is the
@@ -421,6 +427,7 @@ impl Settings {
             Knob::RenderScale => format!("{}%", self.gfx.render_scale),
             Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
             Knob::Vsync => on_off(self.vsync),
+            Knob::Occlusion => on_off(self.occlusion),
             Knob::MaxFps => {
                 if self.max_fps == 0 {
                     "UNCAPPED".to_string()
@@ -460,6 +467,7 @@ impl Settings {
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
             vol_voice: self.vol_voice,
+            occlusion: self.occlusion,
             shake: self.shake,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
@@ -523,6 +531,7 @@ impl Settings {
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
             vol_voice: step(p.vol_voice, VOL_STEP).clamp(0.0, 1.0),
+            occlusion: p.occlusion,
             shake: step(p.shake, VOL_STEP).clamp(0.0, 1.0),
             discord_presence: p.discord_presence,
             // **Sanitized, not just loaded.** A hand-edited file could carry
@@ -868,7 +877,7 @@ fn rows(cat: usize) -> Vec<Row> {
             // has two - it ships `audio.musicvolume` and
             // `audio.menumusicvolume` separately, and ours is one number for
             // both until somebody wants the menu louder than the world.
-            Row::Fact("SOUND OCCLUSION", "Off - walls do not muffle sound yet"),
+            Row::Toggle("SOUND OCCLUSION", Knob::Occlusion),
         ],
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),

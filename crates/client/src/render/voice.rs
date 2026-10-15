@@ -106,7 +106,14 @@ struct Lane {
     last: f64,
     /// Their last frame carried the end flag: the key came up.
     ended: bool,
+    /// Walls between them and the ears (`ui::occlusion`), and when that was
+    /// last walked: a quarter second, the reference's own re-check.
+    walls: u8,
+    walled_at: f64,
 }
+
+/// How often a talker's walls are walked again, seconds.
+const WALLS_EVERY_S: f64 = 0.25;
 
 /// The voice state that cannot be a `Resource`: a desktop microphone holds
 /// a `cpal::Stream`, a browser's a `JsValue`, and neither is `Send`.
@@ -221,6 +228,7 @@ pub fn hear(
     bodies: Query<(&Body, &Transform)>,
     time: Res<Time<Real>>,
     mut hud: ResMut<VoiceHud>,
+    world: Option<Res<super::WorldId>>,
 ) {
     let now = time.elapsed_secs_f64();
     let v = &mut *voice;
@@ -263,6 +271,8 @@ pub fn hear(
                     dec: ::voice::Decoder::new(out_rate),
                     last: now,
                     ended: false,
+                    walls: 0,
+                    walled_at: f64::MIN,
                 });
                 i
             }
@@ -283,12 +293,13 @@ pub fn hear(
         }
     });
 
-    // The gains: master and VOICE, the distance, and the pan.
+    // The gains: master and VOICE, the distance, the pan, and the walls.
+    let occlude = settings.as_ref().is_none_or(|s| s.occlusion);
     let level = settings.map(|s| s.vol_master * s.vol_voice).unwrap_or(1.0) * VOICE_GAIN;
     let (rx, rz) = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
     let mut talking: Vec<(u32, String)> = Vec::new();
     for (i, slot) in v.lanes.iter_mut().enumerate() {
-        let Some(l) = slot.as_ref() else {
+        let Some(l) = slot.as_mut() else {
             continue;
         };
         if now - l.last > LANE_IDLE_S || mutes.muted(l.id) {
@@ -306,10 +317,25 @@ pub fn hear(
             // in the middle, a little down.
             None => (0.7, 0.7),
         };
+        if let (Some(at), Some(w), true) = (at, world.as_deref(), occlude) {
+            if now - l.walled_at >= WALLS_EVERY_S {
+                l.walled_at = now;
+                let cols = net.session.core.pieces.cols();
+                let (ear, mouth) = ([eye.pos.x, eye.pos.y, eye.pos.z], [at.x, at.y, at.z]);
+                l.walls = crate::ui::occlusion::walls_between(w.seed, &w.haven, cols, ear, mouth);
+            }
+        } else {
+            l.walls = 0;
+        }
+        let (wall_gain, lp) = match crate::ui::occlusion::muffle(l.walls) {
+            Some((g, hz)) => (g, one_pole(hz, out_rate)),
+            None => (1.0, 1.0),
+        };
         engine.push_talk(TalkMsg::Gain {
             lane: i as u8,
-            l: gl * level,
-            r: gr * level,
+            l: gl * level * wall_gain,
+            r: gr * level * wall_gain,
+            lp,
         });
         if !l.ended && now - l.last < TALKING_S {
             talking.push((l.id, crate::ui::names::of(&net.session.core, l.id)));
@@ -319,6 +345,11 @@ pub fn hear(
         hud.talking = talking;
         hud.dirty = true;
     }
+}
+
+/// A one-pole low-pass coefficient for `hz` at `rate` (1.0 is open).
+fn one_pole(hz: f32, rate: u32) -> f32 {
+    1.0 - (-std::f32::consts::TAU * hz / rate.max(1) as f32).exp()
 }
 
 /// Ear gains for a voice at `to` (from the listener's eye), with the

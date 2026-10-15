@@ -29,10 +29,12 @@
 //!   silence between songs, the intensity read so a song never opens in the
 //!   middle of a fight. [`music`] is that director; the songs are whole
 //!   recorded tracks streamed beside the engine, not cues.
-//! - **Occlusion is a knob and it shipped OFF.** The reference gated its first
-//!   pass behind `audio.occlusion` for a week, and a later build was still
-//!   fixing excess DSP from it on surround setups. There is no occlusion in
-//!   this module, and that is the reference's own ordering, not a shortcut.
+//! - **Occlusion is a knob, and it is on now**, as the reference's has been
+//!   since late 2016. The walk is the client's (`ui::occlusion`: the shot
+//!   walk over the built pieces, from the ear to the source); what it costs
+//!   a sound is a gain and a low-pass, applied to a one-shot as it starts and
+//!   to a talker every quarter second (`talk`). This module only carries
+//!   the filter; the SOUND OCCLUSION row turns the walk off.
 //!
 //! Every number below is a knob with its documented default
 //! (`DECISIONS.md` §open, "audio v0"). None of them was measured against

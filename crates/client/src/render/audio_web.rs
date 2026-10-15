@@ -114,8 +114,9 @@ pub struct Web {
     music: Option<JsValue>,
     /// The level last sent to it, so a steady level sends nothing.
     music_sent: f32,
-    /// The talker lanes' ear gains last posted, so steady gains post nothing.
-    talk_gains: [f32; 2 * TALKERS],
+    /// The talker lanes' ear gains and low-pass last posted (`[l, r, lp]`
+    /// a lane), so steady gains post nothing.
+    talk_gains: [f32; 3 * TALKERS],
 }
 
 impl Web {
@@ -133,7 +134,7 @@ impl Web {
             out_rate: SAMPLE_RATE,
             music: None,
             music_sent: -1.0,
-            talk_gains: [0.0; 2 * TALKERS],
+            talk_gains: [0.0; 3 * TALKERS],
         }
     }
 
@@ -335,7 +336,7 @@ fn open_worklet(app: &mut App) -> Web {
         out_rate: rate,
         music: None,
         music_sent: -1.0,
-        talk_gains: [0.0; 2 * TALKERS],
+        talk_gains: [0.0; 3 * TALKERS],
     }
 }
 
@@ -390,9 +391,9 @@ pub fn flush(mut engine: ResMut<audio::Engine>, mut out: NonSendMut<Web>) {
                     let a = Float32Array::from(&pcm[..(len as usize).min(pcm.len())]);
                     out.talk_post("talk", lane as usize, Some(&a));
                 }
-                TalkMsg::Gain { lane, l, r } => {
-                    if let Some(g) = gains.get_mut(2 * lane as usize..2 * lane as usize + 2) {
-                        g.copy_from_slice(&[l, r]);
+                TalkMsg::Gain { lane, l, r, lp } => {
+                    if let Some(g) = gains.get_mut(3 * lane as usize..3 * lane as usize + 3) {
+                        g.copy_from_slice(&[l, r, lp]);
                     }
                 }
                 TalkMsg::Stop { lane } => {

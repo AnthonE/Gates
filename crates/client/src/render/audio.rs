@@ -2389,6 +2389,8 @@ pub fn pump(
     time: Res<Time>,
     settings: Res<super::Settings>,
     mut reported: Local<Reported>,
+    net: Option<NonSend<Net>>,
+    world: Option<Res<super::WorldId>>,
 ) {
     let mix = mix_of(&settings).under(&sound.snap);
     let dt = time.delta_secs();
@@ -2418,7 +2420,21 @@ pub fn pump(
             *slot = Some(*s);
         }
     }
-    for start in chosen.into_iter().flatten() {
+    // Walls between the ears and a source (`ui::occlusion`): the built
+    // pieces this client already collides against, walked from the ear.
+    let walls = match (settings.occlusion, net.as_deref(), world.as_deref()) {
+        (true, Some(n), Some(w)) => Some((w.seed, &w.haven, n.session.core.pieces.cols())),
+        _ => None,
+    };
+    for mut start in chosen.into_iter().flatten() {
+        let mut walled = 0;
+        if let (Some((seed, haven, cols)), Some(at)) = (walls, start.at) {
+            let n = crate::ui::occlusion::walls_between(seed, haven, cols, listener, at);
+            if let Some((gain, hz)) = crate::ui::occlusion::muffle(n) {
+                start.gain *= gain;
+                walled = engine::lp_hz(hz, out_rate);
+            }
+        }
         // The rate is the mixer's speed resampled to the renderer's rate —
         // `engine::rate` is the one resampler in the chain (`audio_out.rs`).
         // The take is the bank's to count and never the last one played.
@@ -2427,7 +2443,8 @@ pub fn pump(
         engine.push(
             engine::start_cmd(&start, listener, right, out_rate)
                 .with_take(take, takes)
-                .muffled(under),
+                .muffled(under)
+                .muffled(walled),
         );
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence

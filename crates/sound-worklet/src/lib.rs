@@ -61,7 +61,7 @@ impl Worklet {
         self.inner.talk(lane, pcm);
     }
 
-    /// Every talker lane's ear gains, `[l0, r0, l1, r1, …]`.
+    /// Every talker lane's ear gains and low-pass, `[l0, r0, lp0, l1, …]`.
     pub fn talk_gains(&mut self, gains: &[f32]) {
         self.inner.talk_gains(gains);
     }

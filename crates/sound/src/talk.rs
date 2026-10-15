@@ -39,8 +39,11 @@ pub enum TalkMsg {
         len: u16,
         pcm: [f32; TALK_CHUNK],
     },
-    /// Ear gains for a lane, ramped toward over a few milliseconds.
-    Gain { lane: u8, l: f32, r: f32 },
+    /// Ear gains for a lane, ramped toward over a few milliseconds, and the
+    /// one-pole low-pass it is heard through: `lp` is the filter's
+    /// coefficient, 1.0 for a clear line, lower behind a wall
+    /// (`client::ui::occlusion`).
+    Gain { lane: u8, l: f32, r: f32, lp: f32 },
     /// The lane's talker is gone: drop what is buffered.
     Stop { lane: u8 },
 }
@@ -52,6 +55,9 @@ struct Lane {
     playing: bool,
     gain: [f32; 2],
     target: [f32; 2],
+    /// The low-pass coefficient (1.0 open) and its state.
+    lp: f32,
+    y: f32,
 }
 
 impl Lane {
@@ -63,6 +69,8 @@ impl Lane {
             playing: false,
             gain: [0.0; 2],
             target: [0.0; 2],
+            lp: 1.0,
+            y: 0.0,
         }
     }
 }
@@ -97,7 +105,10 @@ impl Talk {
             TalkMsg::Pcm { lane, len, ref pcm } => {
                 self.push(lane as usize, &pcm[..(len as usize).min(TALK_CHUNK)])
             }
-            TalkMsg::Gain { lane, l, r } => self.gain(lane as usize, l, r),
+            TalkMsg::Gain { lane, l, r, lp } => {
+                self.gain(lane as usize, l, r);
+                self.filter(lane as usize, lp);
+            }
             TalkMsg::Stop { lane } => self.stop(lane as usize),
         }
     }
@@ -135,6 +146,17 @@ impl Talk {
         }
     }
 
+    /// Set `lane`'s low-pass coefficient: 1.0 open, toward 0 darker.
+    pub fn filter(&mut self, lane: usize, lp: f32) {
+        if let Some(l) = self.lanes.get_mut(lane) {
+            l.lp = if lp.is_finite() {
+                lp.clamp(0.01, 1.0)
+            } else {
+                1.0
+            };
+        }
+    }
+
     /// Drop everything `lane` has buffered.
     pub fn stop(&mut self, lane: usize) {
         if let Some(l) = self.lanes.get_mut(lane) {
@@ -164,7 +186,8 @@ impl Talk {
                     l.playing = false;
                     break;
                 }
-                let s = l.ring[l.head];
+                l.y += l.lp * (l.ring[l.head] - l.y);
+                let s = l.y;
                 l.head = (l.head + 1) % cap;
                 l.len -= 1;
                 for ((out, g), t) in frame.iter_mut().zip(&mut l.gain).zip(l.target) {
@@ -208,6 +231,30 @@ mod tests {
         lr.fill(0.0);
         t.mix(&mut lr);
         assert!(!t.playing(0));
+    }
+
+    #[test]
+    fn a_talker_behind_a_wall_is_heard_darker() {
+        // A tone at a fifth of the rate: the open lane passes it whole, the
+        // filtered one takes most of it out.
+        let tone: Vec<f32> = (0..4_800)
+            .map(|i| if i % 4 < 2 { 0.5 } else { -0.5 })
+            .collect();
+        let level = |lp: f32| {
+            let mut t = Talk::new(48_000);
+            t.gain(0, 1.0, 1.0);
+            t.filter(0, lp);
+            t.push(0, &tone);
+            let mut lr = [0.0f32; 2 * 128];
+            let mut e = 0.0;
+            for _ in 0..30 {
+                lr.fill(0.0);
+                t.mix(&mut lr);
+                e += lr.iter().map(|s| s * s).sum::<f32>();
+            }
+            e
+        };
+        assert!(level(0.1) < level(1.0) * 0.2);
     }
 
     #[test]
