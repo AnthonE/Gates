@@ -7386,6 +7386,18 @@ mod surge {
         assert!(!w.step(&arc(B, true), true), "an event with no rise");
     }
 
+    /// An event long past does not arm a later climb.
+    #[test]
+    fn an_old_event_does_not_arm_a_later_climb() {
+        let mut w = SurgeWatch::default();
+        assert!(!w.step(&arc(A, true), false));
+        assert!(!w.step(&arc(A, true), true));
+        for _ in 0..client::ui::arc::SURGE_ARM_FRAMES {
+            assert!(!w.step(&arc(A, true), false));
+        }
+        assert!(!w.step(&arc(B, true), false), "the arm had run out");
+    }
+
     #[test]
     fn a_rejoin_takes_a_fresh_baseline() {
         let mut w = SurgeWatch::default();

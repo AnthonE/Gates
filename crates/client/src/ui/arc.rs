@@ -153,8 +153,13 @@ pub const SURGE_LINE: &str = "THE VERDIGRIS SURGES";
 #[derive(Default)]
 pub struct SurgeWatch {
     tier: Option<u8>,
-    armed: bool,
+    /// Frames left in which a climb counts as this event's.
+    armed: u8,
 }
+
+/// Frames a work event keeps [`SurgeWatch`] armed: the event and the state
+/// that climbs the tier ride one lane, but may land a frame or two apart.
+pub const SURGE_ARM_FRAMES: u8 = 30;
 
 impl SurgeWatch {
     /// One frame: whether the surge is news. `work_event` is whether a work
@@ -169,14 +174,18 @@ impl SurgeWatch {
         let t = arc.fel_tier();
         let Some(prev) = self.tier else {
             self.tier = Some(t);
-            self.armed = false;
+            self.armed = 0;
             return false;
         };
-        self.armed |= work_event;
-        let rose = t > prev && self.armed;
-        if t > prev {
-            self.armed = false;
+        if work_event {
+            self.armed = SURGE_ARM_FRAMES;
         }
+        let rose = t > prev && self.armed > 0;
+        self.armed = if t > prev {
+            0
+        } else {
+            self.armed.saturating_sub(1)
+        };
         self.tier = Some(t);
         rose
     }

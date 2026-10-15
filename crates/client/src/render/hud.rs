@@ -2663,6 +2663,17 @@ pub fn gate_watch(
 /// A ring is drained to EMPTY each frame rather than one entry per frame:
 /// they are small (`TOAST_RING`) and a backlog drip-fed at frame rate would
 /// still be showing the first refusal after the tenth.
+/// The surge toast's watch (`ui::arc::SurgeWatch`): a resource rather than a
+/// `Local`, so every session starts it over ([`forget_surge`]) and a rejoin
+/// whose arc is synced before the HUD's first frame is not heard as a surge.
+#[derive(Resource, Default)]
+pub struct Surge(pub crate::ui::arc::SurgeWatch);
+
+/// A new session: no baseline, nothing armed.
+pub fn forget_surge(mut surge: ResMut<Surge>) {
+    surge.0 = Default::default();
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn feedback(
     net: NonSend<Net>,
@@ -2673,7 +2684,7 @@ pub fn feedback(
     ghost: Option<Res<super::ghost::Ghost>>,
     mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
-    mut surge: Local<crate::ui::arc::SurgeWatch>,
+    mut surge: ResMut<Surge>,
 ) {
     let core = &net.session.core;
     // The sim refuses ground the world keeps for itself with the occupied
@@ -2775,7 +2786,7 @@ pub fn feedback(
     }
     // The fel tier climbed on a live work (`ui::arc::SurgeWatch`): the
     // Verdigris jumps outward. After the work's own line, so it sits on top.
-    if surge.step(&core.arc, !feed.work_events().is_empty()) {
+    if surge.0.step(&core.arc, !feed.work_events().is_empty()) {
         toast.warn(crate::ui::arc::SURGE_LINE);
     }
     // A lock opened somewhere (`ARC.md` F7): heard across the island.

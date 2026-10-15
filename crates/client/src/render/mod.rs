@@ -649,6 +649,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
             .init_resource::<blight::Blight>()
+            .init_resource::<hud::Surge>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
@@ -1226,6 +1227,11 @@ impl Plugin for GatesRenderPlugin {
         // streamers to have somewhere to put chunks, and the 3D pass has to
         // be running for the pipelines to specialize before the player is
         // looking at the result.
+        // The surge toast and the blight's moment start every session over.
+        app.add_systems(
+            OnEnter(Screen::Loading),
+            (hud::forget_surge, blight::forget),
+        );
         app.add_systems(
             OnEnter(Screen::Loading),
             // The sea replaced `terrain_mesh::setup_water` here: it builds one

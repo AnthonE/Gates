@@ -61,6 +61,17 @@ impl Blight {
     }
 }
 
+/// A new session: the moment read again from its own clock, so a rejoin to
+/// a world restored to an earlier tick is not held at the last session's.
+/// `gen` keeps moving, so no cache matches the old moment.
+pub fn forget(mut b: ResMut<Blight>) {
+    let gen = b.gen.wrapping_add(1);
+    *b = Blight {
+        gen,
+        ..Blight::default()
+    };
+}
+
 /// Read the spread for this step, and hand it to the ground.
 pub fn update(
     world: Option<Res<WorldId>>,
