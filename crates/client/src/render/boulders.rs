@@ -196,7 +196,7 @@ pub fn stream(
                 // spires is a parent the spires inherit their visibility from.
                 let mut cell =
                     commands.spawn((WorldEntity, Transform::IDENTITY, Visibility::default()));
-                if let Some(mesh) = formation_mesh(world.seed, &f) {
+                if let Some(mesh) = formation_mesh(world.seed, &world.haven, &f) {
                     cell.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
                 }
                 for b in f.iter().filter(|b| b.kind == BLOCK_SPIRE) {
@@ -359,7 +359,7 @@ impl RockSoup {
     /// zones: a rock in the Verdigris goes to obsidian with lit cracks the way
     /// the ground under it does (`ATTRIBUTE_ZONE`; the desert does not tint
     /// rock, so its share stays 0).
-    pub fn mesh(self, seed: u64) -> Mesh {
+    pub fn mesh(self, seed: u64, haven: &terrain::Haven) -> Mesh {
         let n = self.pos.len();
         // The heart's edge noise, as the ground carries it: the shader
         // rebuilds the live spread from it, so the rock in the green and the
@@ -373,7 +373,8 @@ impl RockSoup {
             .pos
             .iter()
             .map(|p| {
-                let rise = (p[1] - terrain::height_memo(&mut lat, seed, p[0], p[2])).max(0.0);
+                let ground = terrain::ground_memo(&mut lat, seed, haven, p[0], p[2]);
+                let rise = (p[1] - ground).max(0.0);
                 [-rise, terrain::fel_wander_memo(&mut lat, seed, p[0], p[2])]
             })
             .collect();
@@ -727,7 +728,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
 
 /// Every block of a formation, and the loose stones round it, as one mesh:
 /// `None` when the formation is all spires, which are models of their own.
-pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Option<Mesh> {
+pub fn formation_mesh(seed: u64, haven: &terrain::Haven, f: &boulder::Formation) -> Option<Mesh> {
     let mut soup = RockSoup::default();
     for b in f.iter().filter(|b| b.kind != BLOCK_SPIRE) {
         // Moss where the ground around is green: not on a beach, not above
@@ -747,5 +748,5 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Option<Mesh> {
             rock_block(&mut soup, &r);
         }
     }
-    (!soup.is_empty()).then(|| soup.mesh(seed))
+    (!soup.is_empty()).then(|| soup.mesh(seed, haven))
 }

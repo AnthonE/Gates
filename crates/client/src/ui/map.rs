@@ -911,7 +911,9 @@ pub struct BlightCache {
 }
 
 impl BlightCache {
-    pub fn new(seed: u64, size: usize) -> Self {
+    /// The cache for `seed`, at the carved ground the sim reads the spread
+    /// at (`terrain::ground`), not the raw surface the base map shades.
+    pub fn new(seed: u64, haven: &Haven, size: usize) -> Self {
         let step = ISLAND_SIZE / size as f32;
         let half = step * 0.5;
         let mut lat = terrain::Lattice::new();
@@ -922,7 +924,7 @@ impl BlightCache {
             for i in 0..size {
                 let x = half + i as f32 * step;
                 let k = j * size + i;
-                h[k] = terrain::height_memo(&mut lat, seed, x, z);
+                h[k] = terrain::ground_memo(&mut lat, seed, haven, x, z);
                 if h[k] > SEA_LEVEL {
                     n[k] = terrain::fel_wander_memo(&mut lat, seed, x, z);
                 }
@@ -2023,7 +2025,7 @@ mod tests {
     #[test]
     fn the_blight_overlay_is_clear_on_wipe_day() {
         let haven = terrain::haven(BLIGHT_SEED);
-        let cache = BlightCache::new(BLIGHT_SEED, 64);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, 64);
         let now = blight::now(&Plan::new(BLIGHT_SEED, 9, &haven), &haven, 0, 0);
         assert_eq!(opaque(&overlay(&cache, &now)), 0);
     }
@@ -2032,7 +2034,7 @@ mod tests {
     #[test]
     fn the_overlay_grows_with_the_wipe_and_never_paints_the_sea() {
         let haven = terrain::haven(BLIGHT_SEED);
-        let cache = BlightCache::new(BLIGHT_SEED, 64);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, 64);
         let plan = Plan::new(BLIGHT_SEED, 9, &haven);
         let early = overlay(&cache, &blight::now(&plan, &haven, 0, 0));
         let late = overlay(
@@ -2062,7 +2064,7 @@ mod tests {
     fn the_blight_overlay_lands_where_world_to_map_says() {
         let haven = terrain::haven(BLIGHT_SEED);
         let size = 64;
-        let cache = BlightCache::new(BLIGHT_SEED, size);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, size);
         let step = ISLAND_SIZE / size as f32;
         // The highest texel well clear of the heart, and of both centre
         // lines, so its mirror and its flip are other ground.

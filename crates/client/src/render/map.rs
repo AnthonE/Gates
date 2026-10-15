@@ -294,9 +294,9 @@ impl Island {
 
     /// The overlay's terrain cache for this seed: ~65 k height taps, so
     /// built by [`prepaint`] and only ever reused after.
-    pub fn blight_cache(&mut self, seed: u64) {
+    pub fn blight_cache(&mut self, seed: u64, haven: &sim_core::terrain::Haven) {
         if self.cache.as_ref().map(|c| c.seed()) != Some(seed) {
-            self.cache = Some(map::BlightCache::new(seed, map::BLIGHT_PX));
+            self.cache = Some(map::BlightCache::new(seed, haven, map::BLIGHT_PX));
             self.blight = None;
             self.blight_key = None;
         }
@@ -315,7 +315,7 @@ impl Island {
         tick: u64,
     ) -> Handle<Image> {
         use sim_core::blight;
-        self.blight_cache(world.seed);
+        self.blight_cache(world.seed, &world.haven);
         let hour = tick / blight::TICKS_PER_HOUR;
         let key = BlightKey {
             plan: *plan,
@@ -390,7 +390,7 @@ pub fn prepaint(
         island.texture(&mut images, world.seed, &world.haven);
         // And the blight overlay's terrain, ~30 ms more: its paint waits for
         // the map, when the tier and the moment are this island's.
-        island.blight_cache(world.seed);
+        island.blight_cache(world.seed, &world.haven);
     }
 }
 
