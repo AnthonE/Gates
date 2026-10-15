@@ -513,8 +513,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
             signature: wallet_sign(&sk, &proof.message(address)),
         };
         assert!(
-            server::auth::verify_any(cfg.siwe_accepts(), &cfg.domain, &nonce, issued_at, &auth)
-                .is_ok(),
+            server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_ok(),
             "the public shard refuses what {who} signs (`{domain}`)"
         );
     }
@@ -531,8 +530,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
         signature: wallet_sign(&sk, &sibling.message(address)),
     };
     assert!(
-        server::auth::verify_any(cfg.siwe_accepts(), &cfg.domain, &nonce, issued_at, &auth)
-            .is_err(),
+        server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_err(),
         "the public shard accepted a page's proof collected for another shard"
     );
 }

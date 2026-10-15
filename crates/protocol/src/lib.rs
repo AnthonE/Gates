@@ -1165,7 +1165,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
 /// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
 /// carries six rows, down from eight.
-pub const PROTO_VER: u16 = 110;
+///
+/// v111 — a page's SIWE proof names the shard it dialled in its `URI:` line
+/// (`siwe_message_for`); the domain line stays the page's. No layout moved,
+/// but the signed text did, and a shard that cannot rebuild it refuses every
+/// browser sign-in — so the page and the shard turn together.
+pub const PROTO_VER: u16 = 111;
 
 /// This game's slug in the elo catalog.
 ///

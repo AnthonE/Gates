@@ -155,11 +155,14 @@ const _: () = assert!(NET_SAMPLE_EVERY > 0);
 /// sign-in holds its place for `SIGN_WAIT`, so without this one address
 /// opening a handful of sessions a second kept every other joiner out.
 ///
-/// Taken once the QUIC handshake has completed, never at the door: by then
-/// the source has proved it receives at the address it claims, so a spoofed
-/// flood cannot spend a real player's allowance. Loopback is exempt — the
-/// load bots and every wire suite dial from it, and a local attacker is
-/// already on the box. Eight covers a household or a café joining at once.
+/// Taken only from an address that has proved it receives where it claims,
+/// so a spoofed flood cannot spend a real player's allowance: at the door
+/// when QUIC has already validated it (under load, the Retry above makes
+/// every newcomer validate first), otherwise once its QUIC handshake has
+/// completed. The shard's own host is exempt — loopback, which the load bots
+/// and every wire suite dial from, and the address it is bound to, which its
+/// population dials (`population::dial_addr`). Eight covers a household or a
+/// café joining at once.
 const ADMIT_PER_SOURCE: u16 = 8;
 /// Buckets in the per-source table. Sources hash in with a key drawn at boot,
 /// so nobody can aim at somebody else's bucket; a collision only makes two
@@ -172,6 +175,8 @@ const _: () = assert!(SOURCE_BUCKETS.is_power_of_two());
 struct SourceGate {
     held: Box<[std::sync::atomic::AtomicU16]>,
     key: std::collections::hash_map::RandomState,
+    /// The shard's own bound address, when it is a specific one.
+    own: Option<std::net::IpAddr>,
 }
 
 /// One source's place in [`SourceGate`], given back on drop — however the
@@ -190,12 +195,15 @@ impl Drop for SourcePermit {
 }
 
 impl SourceGate {
-    fn new() -> Self {
+    fn new(bound: Option<std::net::IpAddr>) -> Self {
         Self {
             held: (0..SOURCE_BUCKETS)
                 .map(|_| std::sync::atomic::AtomicU16::new(0))
                 .collect(),
             key: std::collections::hash_map::RandomState::new(),
+            own: bound
+                .map(|ip| ip.to_canonical())
+                .filter(|ip| !ip.is_unspecified()),
         }
     }
 
@@ -211,9 +219,11 @@ impl SourceGate {
     }
 
     /// A place for one more handshake from `ip`, or `None` if it already
-    /// holds `ADMIT_PER_SOURCE`. Loopback always gets one, uncounted.
+    /// holds `ADMIT_PER_SOURCE`. The shard's own host always gets one,
+    /// uncounted.
     fn take(gate: &Arc<Self>, ip: std::net::IpAddr) -> Option<SourcePermit> {
-        let bucket = if ip.to_canonical().is_loopback() {
+        let ip = ip.to_canonical();
+        let bucket = if ip.is_loopback() || gate.own == Some(ip) {
             None
         } else {
             let b = gate.bucket(ip);
@@ -883,7 +893,6 @@ pub async fn spawn_shard(
             dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some(),
             require_auth: cfg.require_auth,
             siwe_domains: cfg.siwe_accepts().into(),
-            siwe_shard: cfg.domain.as_str().into(),
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
             faces: cfg.faces.clone(),
@@ -935,9 +944,6 @@ struct ShardFacts {
     /// (`ShardConfig::siwe_accepts`). Shared, because every handshake task
     /// gets a handle and none of them needs its own copy.
     siwe_domains: Arc<[String]>,
-    /// This shard's own name (`ShardConfig::domain`): the `URI:` every proof
-    /// it accepts must name (`auth::verify_any`).
-    siwe_shard: Arc<str>,
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
@@ -1178,7 +1184,7 @@ async fn accept_loop(
     // clock and a window, and what actually protects the shard is "how much
     // unfinished crypto am I holding right now".
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sources = Arc::new(SourceGate::new());
+    let sources = Arc::new(SourceGate::new(endpoint.local_addr().ok().map(|a| a.ip())));
     let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
     let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
     let mut sweep_in_flight = false;
@@ -1273,6 +1279,18 @@ async fn accept_loop(
                     incoming.retry();
                     continue;
                 }
+                // An address QUIC has validated is charged against its
+                // source here, before any crypto (`ADMIT_PER_SOURCE`).
+                let permit = if incoming.remote_address_validated() {
+                    let Some(p) = SourceGate::take(&sources, incoming.remote_address().ip()) else {
+                        ShardStats::bump(&stats.refused_per_source);
+                        incoming.refuse();
+                        continue;
+                    };
+                    Some(p)
+                } else {
+                    None
+                };
                 in_flight.fetch_add(1, Ordering::Relaxed);
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
@@ -1284,12 +1302,12 @@ async fn accept_loop(
                     stats,
                     facts.require_auth,
                     facts.siwe_domains.clone(),
-                    facts.siwe_shard.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
                     in_flight,
                     sources,
+                    permit,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -1861,12 +1879,12 @@ async fn handshake_task(
     stats: Arc<ShardStats>,
     require_auth: bool,
     siwe_domains: Arc<[String]>,
-    siwe_shard: Arc<str>,
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     sources: Arc<SourceGate>,
+    permit: Option<SourcePermit>,
 ) {
     // Decremented however this task leaves — the timeout arm, any of the
     // refusal arms, or success. A guard rather than a line at the end,
@@ -1884,11 +1902,18 @@ async fn handshake_task(
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
         // The QUIC handshake is done, so the address is proven: count it
-        // against its source (`ADMIT_PER_SOURCE`) for the rest of this task.
-        let Some(permit) = SourceGate::take(&sources, request.remote_address().ip()) else {
-            ShardStats::bump(&stats.refused_per_source);
-            request.too_many_requests().await;
-            return Err(());
+        // against its source (`ADMIT_PER_SOURCE`) for the rest of this task,
+        // unless the door already did.
+        let permit = match permit {
+            Some(p) => p,
+            None => {
+                let Some(p) = SourceGate::take(&sources, request.remote_address().ip()) else {
+                    ShardStats::bump(&stats.refused_per_source);
+                    request.too_many_requests().await;
+                    return Err(());
+                };
+                p
+            }
         };
         let connection = request.accept().await.map_err(|_| ())?;
         let (send, mut recv) = connection.accept_bi().await.map_err(|_| ())?;
@@ -2023,7 +2048,7 @@ async fn handshake_task(
     let key = if auth.address.is_guest() {
         None
     } else {
-        match crate::auth::verify_any(&siwe_domains, &siwe_shard, &nonce, issued_at, &auth) {
+        match crate::auth::verify_any(&siwe_domains, &nonce, issued_at, &auth) {
             Ok(key) => Some(key),
             Err(_) => {
                 // Counted, never explained to the caller: which of the four
@@ -4039,7 +4064,7 @@ mod tests {
     /// never counted (the bots and the wire suites dial from it).
     #[test]
     fn a_source_holds_at_most_its_allowance_of_handshakes() {
-        let gate = Arc::new(SourceGate::new());
+        let gate = Arc::new(SourceGate::new(Some("192.0.2.1".parse().unwrap())));
         let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
         let mut held: Vec<_> = (0..ADMIT_PER_SOURCE)
             .map(|_| SourceGate::take(&gate, ip).expect("within the allowance"))
@@ -4069,6 +4094,13 @@ mod tests {
             .map(|_| SourceGate::take(&gate, lo).expect("loopback is never refused"))
             .collect();
         assert!(many.iter().all(|p| p.bucket.is_none()));
+        let own: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let mine: Vec<_> = (0..4 * ADMIT_PER_SOURCE)
+            .map(|_| {
+                SourceGate::take(&gate, own).expect("the shard's own address is never refused")
+            })
+            .collect();
+        assert!(mine.iter().all(|p| p.bucket.is_none()));
     }
 
     /// **The human feed's delay line holds every message for exactly its

@@ -417,7 +417,8 @@ pub fn server_host(server: &str) -> Option<&str> {
         let label_ok = |l: &str| {
             !l.is_empty()
                 && l.len() <= 63
-                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         };
         // One trailing dot is a fully qualified name, and dials as one.
         let name = host.strip_suffix('.').unwrap_or(host);
@@ -789,6 +790,7 @@ mod tests {
             ("[::1]:4433", "[::1]"),
             ("[2001:db8::1]", "[2001:db8::1]"),
             ("a-b.example:1", "a-b.example"),
+            ("my_shard:4433", "my_shard"),
             ("game.elopros.com.:1", "game.elopros.com."),
         ] {
             assert_eq!(server_host(server), Some(host), "{server}");

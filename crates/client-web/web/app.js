@@ -170,7 +170,7 @@ let picked = null;
    `client::net::handshake::server_host` holds the dial to. A link's
    `?server=evil.example/.elopros.com:1` dials evil.example; it must not
    reach the list, let alone wear the official mark. */
-const ADDR = /^(?:[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const ADDR = /^(?:[A-Za-z0-9_-]{1,63}(?:\.[A-Za-z0-9_-]{1,63})*\.?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
 const addrOk = (a) => ADDR.test(String(a || ""));
 
 function baseRows() {
@@ -1342,7 +1342,10 @@ async function join(kind, audio, identity) {
   const line = kind === "watch" ? watchStatus : status;
   const row = current();
   const server = (row ? row.addr : serverInput.value).trim();
-  const hash = $("hash").value.trim() || undefined;
+  /* A pinned certificate replaces the browser's own check, so a link's
+     `?hash=` is never let pin one for our own host: an official shard has a
+     real certificate, and a pin there is only ever somebody else's. */
+  const hash = official({ addr: server }) ? undefined : $("hash").value.trim() || undefined;
   const { Gates } = glue;
   let g;
   /* A wallet asked to sign means the shard answered: whatever fails after
