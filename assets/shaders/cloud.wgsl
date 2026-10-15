@@ -102,6 +102,8 @@ const HUE_MAX: f32 = 3.0;
 // The longest run a ray makes through the slab, m: the far deck is a
 // band a few pixels tall, and past this it is the horizon fade's anyway.
 const MAX_RUN_M: f32 = 14000.0;
+// How far a column wanders from its base by the slab's ceiling, m.
+const WARP_M: f32 = 90.0;
 // The light march's first step, m; each after it twice the last.
 const LIGHT_FIRST_M: f32 = 40.0;
 
@@ -160,7 +162,12 @@ fn density(p: vec3<f32>, lod: f32, dlod: f32, detail: i32) -> f32 {
     if h <= 0.0 || h >= 1.0 {
         return 0.0;
     }
-    let c = (field_at(p.xz, lod) - cl.top.w) / cl.base.w;
+    // The field is 2D and a column read straight up it is an extrusion: its
+    // fine grain runs up a cloud's side as stripes. So the column wanders as
+    // it rises — not at all at the base, whose outline the flat deck, the
+    // stars and the sun's cover read, and by up to `WARP_M` at the top.
+    let warp = vec2(sin(h * 7.0 + p.z * 0.0031), sin(h * 6.0 + p.x * 0.0027)) * (WARP_M * h);
+    let c = (field_at(p.xz + warp, lod + 0.5) - cl.top.w) / cl.base.w;
     if c <= 0.0 {
         return 0.0;
     }
