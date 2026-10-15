@@ -102,6 +102,9 @@ fn the_town_and_the_beaches_stay_clean() {
                     if near_town {
                         assert_eq!(d.hot, 0.0, "a hot spot inside the town's ward");
                     }
+                    if beach {
+                        assert_eq!(d.hot, 0.0, "a hot spot burning the beach sand");
+                    }
                 }
             }
         }

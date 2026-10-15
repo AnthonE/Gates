@@ -699,6 +699,7 @@ pub fn steps(
     mut sound: ResMut<Sound>,
     time: Res<Time>,
     fx: Option<ResMut<super::fx::Fx>>,
+    blight: Option<Res<super::blight::Blight>>,
     mut air: Local<Air>,
 ) {
     let mut fx = fx;
@@ -742,7 +743,8 @@ pub fn steps(
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
     let core = &net.session.core;
-    if let Some(depth) = in_leaves(&world, pos, |key| plant_size(core, key)) {
+    let now = blight.as_deref().and_then(|b| b.now.as_ref());
+    if let Some(depth) = in_leaves_at(&world, pos, |key| plant_size(core, key), now) {
         sound.play(Request::own(Cue::Brush).with_gain(step.gain * brush_gain(depth)));
     }
     if let Some(mut fx) = fx {
@@ -766,6 +768,17 @@ fn brush_gain(depth: f32) -> f32 {
 /// `pos`, since a plant near a cell's edge reaches into its neighbour.
 /// `size` is a plant's drawn size by cell key: 0 picked, 1 grown.
 pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -> Option<f32> {
+    in_leaves_at(w, pos, size, None)
+}
+
+/// [`in_leaves`] in the spread as it stands (`render::blight`): a shrub the
+/// green has killed is dead scrub, drawn and heard alike.
+pub fn in_leaves_at(
+    w: &super::WorldId,
+    pos: [f32; 3],
+    size: impl Fn(u32) -> f32,
+    now: Option<&sim_core::blight::Now>,
+) -> Option<f32> {
     use sim_core::terrain::{scatter, CELLS_PER_SIDE, CELL_SIZE};
     let cell = |v: f32| (v / CELL_SIZE).floor() as i32;
     let (cx, cz) = (cell(pos[0]), cell(pos[2]));
@@ -780,7 +793,17 @@ pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -
             if !slot.occupant.is_plant() {
                 continue;
             }
-            let scenery = super::plants::scenery(w.seed, &slot, key);
+            let fel = match now {
+                Some(n) if !sim_core::blight::within_reach(n, slot.x, slot.z) => 0.0,
+                _ => super::blight::live_fel(
+                    now,
+                    slot.x,
+                    slot.z,
+                    slot.y,
+                    sim_core::terrain::fel_wander(w.seed, slot.x, slot.z),
+                ),
+            };
+            let scenery = super::plants::scenery_with(w.seed, &slot, key, fel);
             let Some(r) = super::plants::leaf_reach(slot.occupant, key, scenery) else {
                 continue;
             };
@@ -944,8 +967,10 @@ pub fn remote_steps(
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
     mut fx: Option<ResMut<super::fx::Fx>>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     let dt = time.delta_secs();
+    let now = blight.as_deref().and_then(|b| b.now.as_ref());
     for (t, mut steps, anim) in bodies.iter_mut() {
         let pos = [t.translation.x, t.translation.y, t.translation.z];
         // Spaced as the drawn feet are spaced (`Rig::step_m`), so a remote's
@@ -970,7 +995,7 @@ pub fn remote_steps(
                 net.as_deref()
                     .map_or(1.0, |n| plant_size(&n.session.core, key))
             };
-            if let Some(depth) = in_leaves(&world, pos, size) {
+            if let Some(depth) = in_leaves_at(&world, pos, size, now) {
                 let gain = step.gain * brush_gain(depth);
                 sound.play(Request::at(Cue::RemoteBrush, pos).with_gain(gain));
             }

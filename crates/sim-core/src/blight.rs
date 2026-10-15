@@ -224,7 +224,8 @@ pub struct Disc {
     /// How deep its core is now.
     pub depth: f32,
     /// A hot spot (the loot burning) rather than an outbreak: it fills the
-    /// meter at its own rate and is not faded at the coast.
+    /// meter at its own rate. Faded at the coast like the rest, so a pad by
+    /// the sea burns its ground and not the sand the meter never reads.
     pub hot: bool,
 }
 
@@ -395,7 +396,7 @@ pub fn depth_n(now: &Now, x: f32, z: f32, h: f32, n: f32) -> Depth {
         let w = band * d.r;
         let v = d.depth * (1.0 - fade(((edge - d.r + w) / w).clamp(0.0, 1.0)));
         if d.hot {
-            hot = hot.max(v);
+            hot = hot.max(v * coast);
         } else {
             fel = fel.max(v * coast);
         }

@@ -5007,4 +5007,8 @@ fn the_ash_mask_and_suit_reach_the_ward_cap_and_the_tonic_draws() {
     let tonic = sc.consumable[c.item_index("item.charcoal_tonic").expect("tonic") as usize];
     assert!(tonic.fel < 0, "the tonic draws the green out");
     assert!(tonic.health > 0 || tonic.water > 0, "the eat verb takes it");
+    assert_eq!(
+        tonic.health, 0,
+        "a heal would slow a medkit drunk beside it"
+    );
 }

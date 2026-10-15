@@ -593,7 +593,7 @@ fn blight_at(wp: vec3<f32>, n: f32) -> Blight {
         let w = band * d.z;
         let v = depth * (1.0 - quintic(clamp((edge - d.z + w) / w, 0.0, 1.0)));
         if hot {
-            out.hot = max(out.hot, v);
+            out.hot = max(out.hot, v * coast);
         } else {
             out.fel = max(out.fel, v * coast);
         }
