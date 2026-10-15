@@ -39,14 +39,15 @@ def main() -> None:
                 px[x % SIDE, y] = col
 
     def cross(cx, cy):
-        # Chest height (v about 0.24 of the image), a square cross on cloth
-        # that is wider around than it is tall per texel.
-        arm_w, arm_h = 26, 34
-        long_u, long_v = 72, 96
+        # Below the hood's hem (v about 0.36 of the image: a hood covers the
+        # chest above it), a square cross on cloth that is wider around than
+        # it is tall per texel.
+        arm_w, arm_h = 24, 28
+        long_u, long_v = 64, 80
         rect(cx - long_u // 2, cy - arm_h // 2, cx + long_u // 2, cy + arm_h // 2, RED)
         rect(cx - arm_w // 2, cy - long_v // 2, cx + arm_w // 2, cy + long_v // 2, RED)
 
-    cy = int(0.24 * SIDE)
+    cy = int(0.36 * SIDE)
     cross(0, cy)            # the chest: wraps the left and right edges
     cross(SIDE // 2, cy)    # the back
     # The belt at the waist (the halves meet at v 0.5), a buckle at the chest.

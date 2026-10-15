@@ -12,4 +12,4 @@ another game's art. A row is required: a PNG with no row does not ship.
 
 | file | item | maker | licence | sha256 |
 |---|---|---|---|---|
-| `field_medic_tunic.png` | Burlap Tunic | drawn by `draw_field_medic.py` (Claude, for the house) | CC0 | `07071a958a3e81818571e2b088bca08b6d865053dcbe346e4c89a9396109bf99` |
+| `field_medic_tunic.png` | Burlap Tunic | drawn by `draw_field_medic.py` (Claude, for the house) | CC0 | `a3e59a08d11ce4f21077c189df6d489e813f1b44ec14f25fa1ba74e84c980b58` |

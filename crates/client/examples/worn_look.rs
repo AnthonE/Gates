@@ -5,8 +5,11 @@
 //! cargo build --release -p client --features render,native --example worn_look
 //! Xvfb :99 -screen 0 1280x720x24 &
 //! VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json DISPLAY=:99 WGPU_BACKEND=vulkan \
-//!   target/release/examples/worn_look /tmp/shots
+//!   target/release/examples/worn_look /tmp/shots [--paint skin.png]
 //! ```
+//!
+//! `--paint` dresses the second body's tunic in a painted skin (wire v110,
+//! `render::paint`): the picture `skinkit` checked, on the game's own mesh.
 
 use std::path::PathBuf;
 
@@ -30,6 +33,14 @@ const SETTLE_FRAMES: u32 = 40;
 #[derive(Resource)]
 struct Out(PathBuf);
 
+/// The painted tunic, when asked for: (side, RGBA8 level 0) until it is an
+/// image, then its handle.
+#[derive(Resource, Default)]
+struct Paint {
+    pixels: Option<(u32, Vec<u8>)>,
+    image: Option<Handle<Image>>,
+}
+
 #[derive(Resource, Default)]
 struct Shots {
     frame: u32,
@@ -46,6 +57,24 @@ fn main() -> AppExit {
         return AppExit::from_code(2);
     };
     let dir = PathBuf::from(dir);
+    let mut paint = Paint::default();
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--paint") {
+        let Some(path) = args.get(i + 1) else {
+            eprintln!("worn_look: --paint needs a PNG");
+            return AppExit::from_code(2);
+        };
+        match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| client::render::paint::pixels(&b))
+        {
+            Ok(px) => paint.pixels = Some(px),
+            Err(e) => {
+                eprintln!("worn_look: {path}: {e}");
+                return AppExit::from_code(2);
+            }
+        }
+    }
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("worn_look: {e}");
         return AppExit::from_code(2);
@@ -69,6 +98,7 @@ fn main() -> AppExit {
     );
     app.insert_resource(ClearColor(Color::srgb(0.62, 0.68, 0.74)));
     app.insert_resource(Out(dir));
+    app.insert_resource(paint);
     app.insert_resource(Shots::default());
     app.add_systems(Startup, (client::render::worn::load, stage));
     app.add_systems(Update, (client::render::worn::bind, dress, shoot).chain());
@@ -80,7 +110,12 @@ fn stage(
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut paint: ResMut<Paint>,
 ) {
+    if let Some((side, px)) = paint.pixels.take() {
+        paint.image = Some(images.add(client::render::paint::image(side, px)));
+    }
     commands.spawn((
         Camera3d::default(),
         Eye,
@@ -121,6 +156,8 @@ fn dress(
     skins: Query<&SkinnedMesh>,
     mut bodies: Query<(&Body, &mut WornRig)>,
     mut shots: ResMut<Shots>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    paint: Res<Paint>,
 ) {
     let Some(kit) = kit else { return };
     let mut all = !bodies.is_empty();
@@ -143,7 +180,18 @@ fn dress(
             ibm,
             &mut rig,
             OUTFITS[(body.0 as usize - 1) % OUTFITS.len()],
-            |_, plain| plain.clone(),
+            |slot, plain| {
+                // The second body's tunic (slot 1 of hood, tunic), painted.
+                match (&paint.image, body.0 == 2 && slot == 1) {
+                    (Some(img), true) => match materials.get(plain).cloned() {
+                        Some(base) => {
+                            materials.add(client::render::paint::painted(&base, img.clone()))
+                        }
+                        None => plain.clone(),
+                    },
+                    _ => plain.clone(),
+                }
+            },
         );
     }
     if all && bodies.iter().count() == OUTFITS.len() {

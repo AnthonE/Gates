@@ -114,7 +114,9 @@ impl Paints {
     }
 }
 
-fn image(side: u32, level0: Vec<u8>) -> Image {
+/// A painted skin's level 0 as the image the game draws: its mip chain,
+/// sRGB, wrapped around in U. Public for the benches (`examples/worn_look`).
+pub fn image(side: u32, level0: Vec<u8>) -> Image {
     let data = mipmap::chain(&level0, side, side, mipmap::Filter::Srgb);
     let mut img = Image::new(
         Extent3d {
