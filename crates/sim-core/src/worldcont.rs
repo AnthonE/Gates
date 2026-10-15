@@ -98,6 +98,16 @@ pub struct WorldContRec {
     /// Quantized stand position (`POS_XZ_Q`), for the reach check.
     pub qx: i32,
     pub qz: i32,
+    /// Quantized rest height (`POS_Y_Q`) of the floor it stands on —
+    /// `terrain::scatter`'s `y`, which for a ziggurat crate is its room's
+    /// floor. The storey rule and the sight line measure to it
+    /// (`reach::Target::world_cont`).
+    ///
+    /// **Derived: never saved, never hashed.** A pure function of
+    /// `(seed, cx, cz)`: `open` writes it at the mint and
+    /// `worldsave::decode_into` re-derives it at load, so the world save
+    /// format did not move (a bump strands every live world file).
+    pub qy: i32,
     /// Which `LOOT_*` table this cell rolls. Derived from the occupant, so
     /// a crate cannot be made to pay a cache's table by anything on the
     /// wire.
@@ -141,6 +151,17 @@ pub fn table_of(o: Occupant) -> Option<usize> {
         Occupant::FoodCrate => Some(crate::loot::LOOT_FOOD),
         _ => None,
     }
+}
+
+/// The quantized stand position of a container at scatter position
+/// `(x, y, z)` metres: what `open` mints into a record and what the loader
+/// re-derives `qy` from. One function, so the two cannot disagree.
+pub fn stand_q(x: f32, y: f32, z: f32) -> (i32, i32, i32) {
+    (
+        (x * (1.0 / POS_XZ_Q)) as i32,
+        crate::movement::quant_y(y),
+        (z * (1.0 / POS_XZ_Q)) as i32,
+    )
 }
 
 /// Dense, insertion-ordered, fixed capacity — `Backpacks`' shape.
@@ -207,9 +228,10 @@ impl WorldConts {
             .position(|c| cell_key(c.cx, c.cz) == handle)
     }
 
-    /// Is index `i` within arm's reach of `p`? Asked at the moment a move
-    /// resolves and again on every tick a panel is open — never trusted
-    /// from the open, the same contract a bag carries.
+    /// The planar half of reach for index `i`. The move verb and the
+    /// server's view ask `World::world_cont_reachable`, which adds the same
+    /// storey and a clear line (`reach.rs`) — never trusted from the open,
+    /// the same contract a bag carries.
     pub fn in_reach(&self, i: usize, p: &Player) -> bool {
         if i >= self.len {
             return false;
@@ -286,7 +308,9 @@ impl WorldConts {
     /// 1. **The cell is not a container.** The occupant is re-derived
     ///    through `terrain::scatter`, so the client's handle is checked
     ///    against the world rather than believed.
-    /// 2. **Out of reach**, by the same arm every other container uses.
+    /// 2. **Out of reach**: the planar arm, then the same storey and nothing
+    ///    in the way (`reach::clear`), the test the move verb and the view
+    ///    repeat every tick.
     /// 3. **The store is full.** Refuse rather than evict: an empty record
     ///    carries a refill timer, so evicting one and re-minting it would
     ///    re-roll the loot immediately, which turns the cap into a dupe.
@@ -299,6 +323,7 @@ impl WorldConts {
         seed: u64,
         scatter: &terrain::ScatterTable,
         haven: &terrain::Haven,
+        cols: &crate::collide::ColIndex,
         lc: &LootContent,
         gc: &GatherContent,
         tick: u64,
@@ -313,17 +338,19 @@ impl WorldConts {
         let slot = terrain::scatter(seed, scatter, haven, cx as i32, cz as i32);
         let table = table_of(slot.occupant)?;
 
-        let qx = (slot.x * (1.0 / POS_XZ_Q)) as i32;
-        let qz = (slot.z * (1.0 / POS_XZ_Q)) as i32;
+        let (qx, qy, qz) = stand_q(slot.x, slot.y, slot.z);
         let dx = qx as f32 * POS_XZ_Q - p.body.qx as f32 * POS_XZ_Q;
         let dz = qz as f32 * POS_XZ_Q - p.body.qz as f32 * POS_XZ_Q;
         if dx * dx + dz * dz > LOOT_REACH_M * LOOT_REACH_M {
             return None;
         }
-        // And level with it: the ziggurat stacks rooms, and a crate is not
-        // opened through the floor above it.
-        let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
-        if crate::fmath::fabs(feet - slot.y) > LOOT_REACH_DY_M {
+        // And level with it, with nothing in the way: the ziggurat stacks
+        // rooms, and a crate is not opened through the floor above it or the
+        // wall beside it. The same `Target` the move verb and the view ask
+        // every tick (`World::world_cont_reachable`), so the open can never
+        // admit a hand the next tick's drip refuses.
+        let at = crate::reach::Target::world_cont((qx, qy, qz), slot.occupant);
+        if !crate::reach::clear(seed, haven, cols, p, at) {
             return None;
         }
 
@@ -338,6 +365,7 @@ impl WorldConts {
                     cx,
                     cz,
                     qx,
+                    qy,
                     qz,
                     table: table as u8,
                     // Rolled below, on the same path a refill takes, so

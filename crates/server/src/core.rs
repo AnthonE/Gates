@@ -6548,14 +6548,16 @@ impl ShardCore {
                     // it again here would be ~60 `noise2` evaluations per
                     // open panel per tick — the cold-scatter spike
                     // `occupy.rs` exists to refuse, in the one loop that
-                    // runs for every connected client. An unopened cell
+                    // runs for every connected client. It kept the floor
+                    // the crate stands on (`qy`), so the storey and the
+                    // line are asked here without paying it again. An unopened cell
                     // resolves to nothing, which is correct: there is no
                     // container there yet.
                     CONT_WORLD => self
                         .world
                         .world_conts
                         .index_of(handle)
-                        .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                        .filter(|&i| self.world.world_cont_reachable(i, c.own_wslot)),
                     // A sleeper's pack: the move verb's own resolution, so
                     // a sleeper that woke, died or was evicted shuts it.
                     CONT_BODY => self.world.body_loot_index(handle, c.own_wslot),

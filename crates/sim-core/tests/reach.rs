@@ -234,3 +234,101 @@ fn the_nearest_clear_candidate_wins_and_the_walks_are_capped() {
     );
     assert_eq!(walks, sim_core::limits::HAND_SIGHT_TESTS_MAX);
 }
+
+/// The ziggurat's stone stops a hand though nothing is built there: the
+/// sanctum's elite crate from the ledge outside its west wall, against the
+/// same reach from inside the room.
+#[test]
+fn the_ziggurat_stone_blocks_a_hand() {
+    let seed = 20_260_731;
+    let z = hv(seed).ziggurat;
+    assert!(z.live);
+    let at = |lx: f32, dy: f32, lz: f32| {
+        let (x, wz) = sim_core::kit::to_world(&z.placed(), lx, lz);
+        (x, z.floor_y + dy, wz)
+    };
+    let crate_mid = at(-12.0, 15.4, -4.0);
+    let open = ColIndex::new();
+    assert!(
+        !reach::sight(seed, hv(seed), &open, at(-14.6, 16.6, -4.0), crate_mid),
+        "a hand reached through the sanctum wall"
+    );
+    assert!(reach::sight(
+        seed,
+        hv(seed),
+        &open,
+        at(-10.0, 16.6, -4.0),
+        crate_mid
+    ));
+}
+
+/// Every authored crate the stone could now hide — the ziggurat's eight
+/// and every landmark's — still has a place to stand within arm's reach,
+/// on its own floor, clear of the stone, with a clear line to it.
+#[test]
+fn every_authored_crate_can_still_be_reached() {
+    use sim_core::terrain::{scatter, ScatterTable, CELL_SIZE};
+    use sim_core::worldcont::{stand_q, table_of};
+    let offsets: [(f32, f32); 12] = [
+        (1.2, 0.0),
+        (-1.2, 0.0),
+        (0.0, 1.2),
+        (0.0, -1.2),
+        (2.0, 0.0),
+        (-2.0, 0.0),
+        (0.0, 2.0),
+        (0.0, -2.0),
+        (1.4, 1.4),
+        (-1.4, 1.4),
+        (1.4, -1.4),
+        (-1.4, -1.4),
+    ];
+    let table = ScatterTable::alpha_default();
+    let mut checked = 0;
+    for seed in [20_260_731u64, SEED, 42] {
+        let h = hv(seed);
+        let mut sites: Vec<(f32, f32)> = Vec::new();
+        if h.ziggurat.live {
+            for k in 0..sim_core::monument::CRATES.len() {
+                let (x, _, wz, _, _) = sim_core::monument::crate_world(&h.ziggurat, k).unwrap();
+                sites.push((x, wz));
+            }
+        }
+        for m in h.marks.iter().filter(|m| m.live) {
+            let mut k = 0;
+            while let Some((x, wz, _, _)) = sim_core::landmark::anchor(m, k) {
+                sites.push((x, wz));
+                k += 1;
+            }
+        }
+        let open = ColIndex::new();
+        for (x, wz) in sites {
+            let s = scatter(
+                seed,
+                &table,
+                h,
+                (x / CELL_SIZE) as i32,
+                (wz / CELL_SIZE) as i32,
+            );
+            if table_of(s.occupant).is_none() {
+                continue;
+            }
+            let t = Target::world_cont(stand_q(s.x, s.y, s.z), s.occupant);
+            let reached = offsets.iter().any(|&(dx, dz)| {
+                let (px, pz) = (s.x + dx, s.z + dz);
+                let r = sim_core::collide::CAPSULE_RADIUS_M;
+                let tall = sim_core::collide::CAPSULE_HEIGHT_M;
+                let walled = sim_core::monument::blocks(&h.ziggurat, 0, px, pz, s.y, r, tall)
+                    || sim_core::landmark::blocks(&h.marks, px, pz, s.y, r, tall);
+                !walled && reach::clear_from(seed, h, &open, (px, s.y + 1.6, pz), s.y, t)
+            });
+            assert!(
+                reached,
+                "seed {seed}: the {:?} at ({:.1}, {:.1}, {:.1}) cannot be reached",
+                s.occupant, s.x, s.y, s.z
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 8, "the ziggurat's crates at least ({checked})");
+}

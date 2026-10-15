@@ -2812,6 +2812,21 @@ impl World {
             && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at)
     }
 
+    /// [`Self::box_reachable`] for world container `i` — the pad's crate, a
+    /// waystation's cache, a ziggurat room's crate: the planar arm
+    /// (`WorldConts::in_reach`), then the same storey and nothing in the
+    /// way, measured to the floor `open` read off `terrain::scatter`. The
+    /// move verb and the server's container view ask exactly this.
+    pub fn world_cont_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(c)) = (self.players.get(slot), self.world_conts.entries().get(i)) else {
+            return false;
+        };
+        let o = crate::worldcont::occupant_of(c.table as usize);
+        let at = crate::reach::Target::world_cont((c.qx, c.qy, c.qz), o);
+        self.world_conts.in_reach(i, p)
+            && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at)
+    }
+
     /// The move verb's one mutating body. Everything it decides is decided
     /// by `inventory.rs`, which cannot write; everything it writes is
     /// below the last `return`, and there are exactly two writes.
@@ -2955,7 +2970,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.world_conts.in_reach(i, &self.players[slot]) {
+                if !self.world_cont_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -5736,6 +5751,7 @@ impl World {
                         self.seed,
                         &self.scatter,
                         &self.haven,
+                        self.pieces.cols(),
                         &self.loot,
                         &self.gather,
                         self.tick,
@@ -8003,8 +8019,9 @@ impl World {
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
         }
-        // World containers (`worldcont.rs`). Every field is hashed
-        // including `refill_at`: two shards whose crates were emptied on
+        // World containers (`worldcont.rs`). Every saved field is hashed
+        // (`qy` is derived from the cell and re-derived at load, never read
+        // from a file) including `refill_at`: two shards whose crates were emptied on
         // different ticks agree about the contents (both empty) and
         // disagree about *when they pay again*, which is a divergence that
         // would otherwise stay silent until the first refill.
@@ -8201,6 +8218,7 @@ mod tests {
                 cx: 20,
                 cz: 20,
                 qx: 5_000,
+                qy: 0,
                 qz: 5_000,
                 table: crate::loot::LOOT_CRATE as u8,
                 refill_at: 0,

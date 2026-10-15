@@ -2032,8 +2032,8 @@ fn openable(o: Occupant) -> bool {
 /// exactly that.
 ///
 /// ⚠ **It is narrower than the verb it prompts for, and it always was.**
-/// `worldcont::open` asks for planar proximity inside `LOOT_REACH_M` and
-/// nothing else — no aim at any distance — so the prompt has been the
+/// `worldcont::open` asks for planar proximity inside `LOOT_REACH_M`, the
+/// same storey and a clear line (`reach.rs`) — no aim at any distance — so the prompt has been the
 /// stricter of the two since it was a 30° cone, and a ray is stricter again:
 /// a crate is 0.68 m across and 0.8 m tall, so from a 1.6 m eye it wants the
 /// look dropped 44° at 1.5 m and 13° at 4 m. Whether stooping to open a

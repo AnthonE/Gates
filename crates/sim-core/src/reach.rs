@@ -11,7 +11,8 @@
 //! module is the other two halves, asked after it:
 //!
 //! - **a clear line**: nothing built between the eye and the thing, the shot
-//!   walk ([`collide::shot_blocked`]) stepped the way a shot steps it;
+//!   walk ([`collide::shot_blocked`]) stepped the way a shot steps it, and
+//!   none of the ziggurat's or a landmark's stone;
 //! - **the same storey**, for a thing standing on a floor (a box, an oven, a
 //!   research table): within [`LOOT_REACH_DY_M`] of the player's feet, the
 //!   world crate's rule (`worldcont.rs`). A thing lying where it fell — a
@@ -25,7 +26,7 @@ use crate::collide::{self, ColIndex};
 use crate::deploy::{DeployContent, Deploys};
 use crate::grounditem::GroundItemRec;
 use crate::limits::{ARROW_STEP_MM, HAND_SIGHT_TESTS_MAX};
-use crate::movement::{POS_XZ_Q, POS_Y_Q};
+use crate::movement::{POS_XZ_Q, POS_Y_Q, STEP_UP};
 use crate::ranged::{ARROW_R_M, MM_PER_M};
 use crate::terrain::Haven;
 use crate::world::Player;
@@ -55,8 +56,9 @@ pub fn eye(p: &Player) -> (f32, f32, f32) {
 }
 
 /// Nothing built between `from` and `to` (metres): walls, shut doors, window
-/// and frame rims, floors and roofs. Pieces only — the thing reached for,
-/// other furniture, terrain and bodies never block a hand.
+/// and frame rims, floors and roofs, and the ziggurat's and landmarks' stone.
+/// The thing reached for, other furniture, terrain and bodies never block a
+/// hand.
 pub fn sight(
     seed: u64,
     haven: &Haven,
@@ -67,11 +69,27 @@ pub fn sight(
     let (dx, dy, dz) = (to.0 - from.0, to.1 - from.1, to.2 - from.2);
     let len_mm = (dx * dx + dy * dy + dz * dz).sqrt() * MM_PER_M;
     let n = ((len_mm / ARROW_STEP_MM as f32) as usize + 1).min(HAND_SAMPLES);
+    // Once per walk, not per sample: a landmark no sample can come near is
+    // one no sample has to ask (the walk is under 6 m from `from`).
+    let marks =
+        crate::landmark::covers(&haven.marks, from.0, from.2, len_mm / MM_PER_M + ARROW_R_M);
     let mut prev = (from.0, from.2);
     for k in 1..=n {
         let t = k as f32 / n as f32;
         let (x, y, z) = (from.0 + dx * t, from.1 + dy * t, from.2 + dz * t);
         if collide::shot_blocked(seed, haven, cols, prev.0, prev.1, x, z, y, ARROW_R_M) {
+            return false;
+        }
+        // The island's own stone, which the shot walk does not see: it
+        // walks built pieces, and nothing may be built at the ziggurat or a
+        // landmark, so near them that walk is empty — a sanctum crate opened
+        // from the ledge outside its wall. A point test (feet a step below
+        // it, a step tall), so a floor slab blocks as surely as a wall. Card
+        // doors read shut: a hand does not reach through a card doorway.
+        let feet = y - STEP_UP;
+        if crate::monument::blocks(&haven.ziggurat, 0, x, z, feet, ARROW_R_M, STEP_UP)
+            || (marks && crate::landmark::blocks(&haven.marks, x, z, feet, ARROW_R_M, STEP_UP))
+        {
             return false;
         }
         prev = (x, z);
@@ -175,6 +193,20 @@ impl Target {
             z,
             base_y: crate::deploy::body_base_y(seed, haven, cols, rec, arch),
             mid: crate::deploy::solid_vol(arch).map_or(LIFT_M, |(_, h, _)| h * 0.5),
+            storey: true,
+        }
+    }
+
+    /// A world container (`worldcont.rs`) at the quantized stand position
+    /// its record carries, `(qx, qy, qz)` — `qy` the floor it stands on —
+    /// aimed at the middle of its body. The storey rule applies: it stands
+    /// on a floor, and the ziggurat stacks rooms.
+    pub fn world_cont(q: (i32, i32, i32), o: crate::terrain::Occupant) -> Self {
+        Self {
+            x: q.0 as f32 * POS_XZ_Q,
+            z: q.2 as f32 * POS_XZ_Q,
+            base_y: q.1 as f32 * POS_Y_Q,
+            mid: crate::terrain::occupant_volume(o).1 * 0.5,
             storey: true,
         }
     }
