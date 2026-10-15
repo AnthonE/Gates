@@ -211,7 +211,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0xCF82_807F_F94B_6E72` at the tree size classes** (2026-10-15,
 /// `terrain::slot_scale`): a tree's scale byte now draws a small [0.6, 0.78]
 /// or large [0.95, 1.1] tree; nothing moved but trees' scales.
-const GOLDEN_TERRAIN_HASH: u64 = 0xCF82_807F_F94B_6E72;
+/// **Moved → `0x22CE_F629_3692_1DF3` at the Verdigris** (2026-10-15,
+/// `terrain::fel`): no height moved, but its row carries ore, so
+/// `Haven::ore_pm` rescales.
+const GOLDEN_TERRAIN_HASH: u64 = 0x22CE_F629_3692_1DF3;
 
 #[test]
 fn test_terrain_golden() {

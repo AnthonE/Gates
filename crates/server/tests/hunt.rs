@@ -80,13 +80,23 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
     // m.alive)` this line used to be now hands back the animal that hunts
     // instead of the one that runs — a test about catching prey, quietly
     // measuring a predator that was coming anyway.
+    //
+    // **And one on open ground.** The claim is a chase over open ground (the
+    // limit's own note); which pig hatches first moves with the roster's
+    // count, and the Verdigris moved it into a stand of 33 m trees, where a
+    // sprinting body stops on trunks the pig runs between.
+    let open = |m: &sim_core::mob::Mob| {
+        let (x, z) = (m.body.qx as f32 * POS_XZ_Q, m.body.qz as f32 * POS_XZ_Q);
+        let h = sim_core::terrain::height(20260731, x, z);
+        sim_core::terrain::biome_at(20260731, h, x, z) == sim_core::terrain::Biome::Meadow
+    };
     let slot = core
         .world
         .mobs
         .m
         .iter()
-        .position(|m| m.alive && m.kind == MOB_PIG)
-        .expect("the roster hatched a pig");
+        .position(|m| m.alive && m.kind == MOB_PIG && open(m))
+        .expect("the roster hatched a pig on open ground");
     let (mx, mz) = (
         core.world.mobs.m[slot].body.qx as f32 * POS_XZ_Q,
         core.world.mobs.m[slot].body.qz as f32 * POS_XZ_Q,

@@ -130,7 +130,36 @@ pub struct Block {
     pub shape: u8,
     /// The block this one rests on, or [`ON_GROUND`].
     pub on: u8,
+    /// What it is: [`BLOCK_ROCK`], or a Verdigris [`BLOCK_SPIRE`]. The sim
+    /// collides both as the box they are; the client draws them apart.
+    pub kind: u8,
 }
+
+/// A rock: every block a formation has, and every stray outside the
+/// Verdigris.
+pub const BLOCK_ROCK: u8 = 0;
+/// A spire of black glass: a stray standing in the Verdigris, drawn up tall
+/// and narrow (`strays`).
+pub const BLOCK_SPIRE: u8 = 1;
+
+/// How corrupted a stray's ground must be before it can stand as a spire.
+/// **(knob)**
+pub const FEL_SPIRE_AT: f32 = 0.35;
+/// The share of the strays' roll that comes up a spire, times the
+/// corruption there: at the heart about 0.35 of `STRAY_DENSITY_MAX`'s 0.5.
+/// **(knob)**
+const FEL_SPIRE_DENSITY: f32 = 0.35;
+/// A spire's footprint as a share of the boulder it was planned as: narrow.
+const FEL_SPIRE_SHRINK: f32 = 0.55;
+/// A spire's height over its longer half-extent, from the stray's own
+/// `shape` byte: 4 to 14 m. **(knob)**
+const FEL_SPIRE_H: (f32, f32) = (3.5, 6.0);
+
+const _: () = {
+    // A spire is still a block the floor keeps.
+    assert!(STRAY_HALF.0 * 0.65 * FEL_SPIRE_SHRINK > BLOCK_HALF_FLOOR);
+    assert!(FEL_SPIRE_DENSITY < STRAY_DENSITY_MAX);
+};
 
 impl Block {
     /// (`x`, `z`) in the block's own frame.
@@ -185,6 +214,7 @@ impl Formation {
             yaw: 0,
             shape: 0,
             on: ON_GROUND,
+            kind: BLOCK_ROCK,
         }; BLOCKS_PER_CELL],
     };
 
@@ -273,6 +303,7 @@ fn planned(x: f32, z: f32, hx: f32, hz: f32, hgt: f32, yaw: u16, d: &mut Draw, o
         yaw,
         shape: d.byte(),
         on,
+        kind: BLOCK_ROCK,
     }
 }
 
@@ -584,10 +615,28 @@ fn strays(
         let h = terrain::height_memo(lat, seed, b.x, b.z);
         let moist = terrain::moisture_memo(lat, seed, b.x, b.z);
         let slope = terrain::slope_memo(lat, seed, b.x, b.z);
-        if *roll >= stray_density(h, moist, slope) {
+        // Kept clear at the PLANNED footprint, which `covers`' cheap reject
+        // reads: a spire only ever stands inside it.
+        let r = b.radius();
+        let fel = terrain::fel_memo(lat, seed, b.x, b.z);
+        if fel >= FEL_SPIRE_AT
+            && *roll < FEL_SPIRE_DENSITY * fel
+            && h >= terrain::BEACH_MAX_H
+            && slope <= terrain::CLIFF_SLOPE_RATIO * 1.2
+        {
+            // The Verdigris draws its strays up into spires: narrower, and
+            // three and a half to six times as tall as they are wide, from
+            // the stray's own `shape` byte so nothing reshuffles.
+            b.hx *= FEL_SPIRE_SHRINK;
+            b.hz *= FEL_SPIRE_SHRINK;
+            let t = b.shape as f32 * (1.0 / 255.0);
+            b.y1 = b.hx.max(b.hz) * (FEL_SPIRE_H.0 + (FEL_SPIRE_H.1 - FEL_SPIRE_H.0) * t);
+            b.tx = 0.0;
+            b.tz = 0.0;
+            b.kind = BLOCK_SPIRE;
+        } else if *roll >= stray_density(h, moist, slope) {
             continue;
         }
-        let r = b.radius();
         let apart = out.iter().all(|o| {
             let (dx, dz) = (b.x - o.x, b.z - o.z);
             let gap = r + o.radius();

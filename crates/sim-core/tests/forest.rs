@@ -126,7 +126,7 @@ fn census(seed: u64) -> Census {
             if h < LAND_MIN_H {
                 continue;
             }
-            let b = terrain::biome(h, terrain::moisture(seed, x, z)) as usize;
+            let b = terrain::biome_at(seed, h, x, z) as usize;
             c.cells[b] += 1;
             match terrain::scatter(seed, &table, &haven, cx, cz).occupant {
                 Occupant::Tree => c.tree[b] += 1,
@@ -272,7 +272,7 @@ fn understory(seed: u64) -> Understory {
             let z = tz as f32 * CLUTTER_TILE_M + CLUTTER_TILE_M * 0.5;
             let h = terrain::height(seed, x, z);
             if h >= LAND_MIN_H {
-                let b = terrain::biome(h, terrain::moisture(seed, x, z)) as usize;
+                let b = terrain::biome_at(seed, h, x, z) as usize;
                 u.tiles[b] += 1;
                 let n = terrain::clutter_fill(seed, &haven, tx, tz, &mut buf);
                 for e in buf.iter().take(n) {
@@ -641,8 +641,7 @@ fn a_species_region_is_dominated_and_not_pure() {
                 );
                 // A palm is the desert's, not the painted field's: every
                 // desert tree is one and no other tree is.
-                let desert = terrain::biome(s.y, terrain::moisture(seed, s.x, s.z))
-                    == terrain::Biome::Desert;
+                let desert = terrain::biome_at(seed, s.y, s.x, s.z) == terrain::Biome::Desert;
                 assert_eq!(
                     s.species == terrain::PALM_SPECIES,
                     desert,
@@ -747,7 +746,7 @@ fn the_forest_is_woods_rather_than_one_continent() {
                 if h < LAND_MIN_H {
                     continue;
                 }
-                if terrain::biome(h, terrain::moisture(seed, x, z)) == Biome::Forest {
+                if terrain::biome_at(seed, h, x, z) == Biome::Forest {
                     is_forest[(cz * CELLS_PER_SIDE + cx) as usize] = true;
                     total += 1;
                 }

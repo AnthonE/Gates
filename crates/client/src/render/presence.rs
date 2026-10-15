@@ -114,8 +114,9 @@ fn place_for(state: State, eye: &Eye, world: Option<&WorldId>) -> Option<Place> 
     // — so a raw read would have presence naming the terrain that used to be
     // under the pad, at exactly the place players spend their time.
     let h = terrain::ground(world.seed, &world.haven, eye.pos.x, eye.pos.z);
-    let moist = terrain::moisture(world.seed, eye.pos.x, eye.pos.z);
-    Some(Place::of(terrain::biome(h, moist)))
+    Some(Place::of(terrain::biome_at(
+        world.seed, h, eye.pos.x, eye.pos.z,
+    )))
 }
 
 /// The shard's published name, when this address is one we can name.

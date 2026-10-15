@@ -138,8 +138,7 @@ fn build(seed: u64) -> Field {
             let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
             let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
             let h = terrain::height(seed, x, z);
-            f.forest[i] = h >= LAND_MIN_H
-                && terrain::biome(h, terrain::moisture(seed, x, z)) == Biome::Forest;
+            f.forest[i] = h >= LAND_MIN_H && terrain::biome_at(seed, h, x, z) == Biome::Forest;
         }
     }
     f
@@ -486,6 +485,7 @@ fn test_no_biome_row_saturates() {
                         h,
                         terrain::moisture(seed, x, z),
                         terrain::ground_slope(seed, &haven, x, z),
+                        terrain::fel(seed, x, z),
                         terrain::clump(seed, x, z),
                     ),
                     &haven,
@@ -686,14 +686,14 @@ const MIX_HI: f32 = 0.15;
 const MIX_STEPS: i32 = 200;
 
 fn mix_at(table: &ScatterTable, moist: f32) -> [u16; terrain::OCCUPANT_KINDS] {
-    terrain::scatter_row(table, MIX_H, moist, MIX_SLOPE)
+    terrain::scatter_row(table, MIX_H, moist, MIX_SLOPE, 0.0)
 }
 
 /// The hard classifier, re-derived here rather than remembered — this is the
 /// control the ramp is measured against, and it is the code that shipped
 /// before this change.
 fn hard_row_at(table: &ScatterTable, moist: f32) -> [u16; terrain::OCCUPANT_KINDS] {
-    table.weights[terrain::biome(MIX_H, moist) as usize]
+    table.weights[terrain::biome(MIX_H, moist, 0.0) as usize]
 }
 
 /// Where the splat is one-hot the blend must be the identity, or this is not
@@ -836,7 +836,13 @@ fn test_scatter_mix_is_convex_and_the_island_uses_it() {
                 land += 1;
                 let sl = terrain::slope(seed, x, z);
                 let w = terrain::splat_from(h, terrain::moisture(seed, x, z), sl);
-                let row = terrain::scatter_row(&table, h, terrain::moisture(seed, x, z), sl);
+                let row = terrain::scatter_row(
+                    &table,
+                    h,
+                    terrain::moisture(seed, x, z),
+                    sl,
+                    terrain::fel(seed, x, z),
+                );
                 // Every entry the treeline does not touch is still strictly
                 // convex, and so is the PAIR it moves weight between — which
                 // is the claim that actually protects the saturation bound,

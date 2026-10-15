@@ -340,9 +340,6 @@ fn main() {
         "  island centre: ground {:.2} m, slope {:.3}, biome {:?}",
         terrain::ground(seed, &haven, c, c),
         terrain::ground_slope(seed, &haven, c, c),
-        terrain::biome(
-            terrain::ground(seed, &haven, c, c),
-            terrain::moisture(seed, c, c)
-        )
+        terrain::biome_at(seed, terrain::ground(seed, &haven, c, c), c, c)
     );
 }

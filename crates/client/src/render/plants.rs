@@ -135,6 +135,9 @@ pub const SCENERY_SHARES: [[[u16; 5]; 2]; terrain::BIOMES] = [
     [[0, 550, 250, 0, 0], [50, 300, 350, 0, 0]],
     // Desert: cactus stands and dry scrub, nothing leafy.
     [[0, 50, 500, 50, 400], [0, 30, 620, 0, 350]],
+    // The Verdigris: dead scrub and nothing else — every share spoken for,
+    // so not one leafy shrub grows in the ash.
+    [[0, 0, 1000, 0, 0], [0, 0, 1000, 0, 0]],
 ];
 
 const _: () = {
@@ -179,7 +182,7 @@ pub fn scenery(seed: u64, slot: &Slot, key: u32) -> Scenery {
     if slot.occupant != Occupant::Shrub {
         return Scenery::Shrub;
     }
-    let b = terrain::biome(slot.y, terrain::moisture(seed, slot.x, slot.z));
+    let b = terrain::biome_at(seed, slot.y, slot.x, slot.z);
     scenery_of(b, slot.species, key)
 }
 

@@ -542,7 +542,9 @@ const TICKS: u64 = 900;
 /// **Moved → `0x850E_539D_B9B6_9F94` at the tree size classes and ages**
 /// (2026-10-15): trees come small and large, and a young wild tree stands
 /// at its age, so what the bots chop and walk past moved.
-const GOLDEN_FINAL_HASH: u64 = 0x850E_539D_B9B6_9F94;
+/// **Moved → `0x49CF_78A3_FA86_FAFF` at the Verdigris** (2026-10-15): its ore
+/// rescales the island's, its spires stand, and no one spawns inside it.
+const GOLDEN_FINAL_HASH: u64 = 0x49CF_78A3_FA86_FAFF;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -651,7 +653,8 @@ const GOLDEN_FINAL_HASH: u64 = 0x850E_539D_B9B6_9F94;
 /// **Moved → `0x0350_B049_21D5_185E` at the denser dressing**, with the final hash.
 /// **Moved → `0x1DD9_CD7E_7537_564C` at the tree size classes and ages**
 /// (2026-10-15), with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x1DD9_CD7E_7537_564C;
+/// **Moved → `0xA04E_9426_2556_114B` at the Verdigris** (2026-10-15), with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0xA04E_9426_2556_114B;
 
 /// Fold a stamped trace into one number.
 ///

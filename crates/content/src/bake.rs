@@ -2555,7 +2555,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
                 // Thousandths per km², and per mille per biome in
                 // `terrain::Biome` order (beach, meadow, forest, highland,
-                // desert).
+                // desert, the Verdigris).
                 // Validate bounded every value, so the casts cannot wrap.
                 per_km2_milli: (m.per_km2 * 1000.0).round() as u32,
                 night_extra_pct: (m.night_extra * 100.0).round() as u16,
@@ -2565,6 +2565,7 @@ impl Content {
                     (m.habitat.forest * 1000.0).round() as u16,
                     (m.habitat.highland * 1000.0).round() as u16,
                     (m.habitat.desert * 1000.0).round() as u16,
+                    (m.habitat.fel * 1000.0).round() as u16,
                 ],
                 // Centimetres straight through: the hit volume a swing's ray
                 // is tested against (`melee::mob_cast`). Validate bounded

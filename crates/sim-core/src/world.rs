@@ -2465,6 +2465,11 @@ impl World {
             if hy >= terrain::BEACH_MAX_H || terrain::slope(self.seed, x, z) >= SPAWN_MAX_SLOPE {
                 continue;
             }
+            // Nobody wakes up in the Verdigris: where it reaches the sea,
+            // that stretch of beach is not a spawn.
+            if terrain::fel(self.seed, x, z) > 0.0 {
+                continue;
+            }
             if relaxed.is_none() {
                 relaxed = Some((x, z));
             }
@@ -8160,9 +8165,8 @@ mod tests {
             for id in 1..=64u32 {
                 let (x, z) = w.spawn_pos(id);
                 let h = terrain::height(seed, x, z);
-                let m = terrain::moisture(seed, x, z);
                 assert_eq!(
-                    terrain::biome(h, m),
+                    terrain::biome_at(seed, h, x, z),
                     terrain::Biome::Beach,
                     "seed {seed} id {id}: spawn ({x},{z}) height {h} is not beach"
                 );

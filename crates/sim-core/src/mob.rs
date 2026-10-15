@@ -713,7 +713,7 @@ impl MobContent {
             // The shipped rows' density and habitat (`content/mobs.toml`).
             per_km2_milli: 5_000,
             night_extra_pct: 0,
-            habitat_pm: [0, 1_000, 1_000, 300, 150],
+            habitat_pm: [0, 1_000, 1_000, 300, 150, 100],
             // The client draws a pig 0.78 m high and 1.5 m long
             // (`render/mobs.rs` PIG_H_M / PIG_LEN_M); a cylinder of this
             // radius covers the body's width and most of its length, and
@@ -759,7 +759,7 @@ impl MobContent {
             respawn_ticks: 9_000,
             per_km2_milli: 2_000,
             night_extra_pct: 0,
-            habitat_pm: [0, 400, 1_000, 1_000, 200],
+            habitat_pm: [0, 400, 1_000, 1_000, 200, 800],
             body_r_cm: 60,
             body_h_cm: 85,
             sight_dot_pm: -500,
@@ -977,7 +977,7 @@ pub fn survey(seed: u64) -> Survey {
             if h <= terrain::BEACH_MAX_H {
                 continue;
             }
-            land_m2[terrain::biome(h, terrain::moisture(seed, x, z)) as usize] += cell;
+            land_m2[terrain::biome_at(seed, h, x, z) as usize] += cell;
         }
     }
     Survey {
@@ -1687,7 +1687,7 @@ fn home_of(seed: u64, haven: &Haven, slot: usize, tick: u64, def: &MobDef) -> Op
         }
         // The habitat, before the costlier checks: a draw in ground the
         // species avoids is refused at its weight.
-        let biome = terrain::biome(ht, terrain::moisture(seed, x, z));
+        let biome = terrain::biome_at(seed, ht, x, z);
         if ((h >> 32) % 1000) as u16 >= def.habitat_pm[biome as usize] {
             continue;
         }

@@ -109,7 +109,7 @@ fn scan(seed: u64, at: Option<Disc>) -> Island {
                 if s > max_slope {
                     max_slope = s;
                 }
-                biomes[terrain::biome(h, terrain::moisture(seed, x, z)) as usize] += 1;
+                biomes[terrain::biome_at(seed, h, x, z) as usize] += 1;
                 if terrain::splat(seed, x, z)[ROCK] >= ROCK_LEGIBLE {
                     rock += 1;
                 }
@@ -147,6 +147,7 @@ fn scan(seed: u64, at: Option<Disc>) -> Island {
             per_mille(biomes[Biome::Forest as usize]),
             per_mille(biomes[Biome::Highland as usize]),
             per_mille(biomes[Biome::Desert as usize]),
+            per_mille(biomes[Biome::Fel as usize]),
         ],
         sites_live: terrain::sites_live(&haven),
         sites_complete: terrain::sites_complete(&haven),
@@ -201,12 +202,24 @@ fn main() {
     set.sort_by_key(|i| i.rock_permille);
 
     println!(
-        "{:>22}  {:>5}  {:>7}  {:>7}  {:>6}  {:>5}   {:>4} {:>4} {:>4} {:>4}  {:>5}",
-        "seed", "land‰", "max h", "p50 h", "slope", "rock‰", "bch", "mdw", "for", "hgh", "sites"
+        "{:>22}  {:>5}  {:>7}  {:>7}  {:>6}  {:>5}   {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}  {:>5}",
+        "seed",
+        "land‰",
+        "max h",
+        "p50 h",
+        "slope",
+        "rock‰",
+        "bch",
+        "mdw",
+        "for",
+        "hgh",
+        "dst",
+        "vrd",
+        "sites"
     );
     for i in &set {
         println!(
-            "{:>22}  {:>5}  {:>7.2}  {:>7.2}  {:>6.3}  {:>5}   {:>4} {:>4} {:>4} {:>4}  {:>5}",
+            "{:>22}  {:>5}  {:>7.2}  {:>7.2}  {:>6.3}  {:>5}   {:>4} {:>4} {:>4} {:>4} {:>4} {:>4}  {:>5}",
             i.seed,
             i.land_permille,
             i.max_h,
@@ -217,6 +230,8 @@ fn main() {
             i.biome_permille[1],
             i.biome_permille[2],
             i.biome_permille[3],
+            i.biome_permille[4],
+            i.biome_permille[5],
             if i.sites_complete {
                 format!("{}/3", i.sites_live)
             } else {

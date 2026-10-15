@@ -890,6 +890,9 @@ pub struct Habitat {
     /// The arid north. Optional: a row that does not say lives nowhere there.
     #[serde(default)]
     pub desert: f32,
+    /// The Verdigris. Optional, the desert's way.
+    #[serde(default)]
+    pub fel: f32,
 }
 
 /// THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost
