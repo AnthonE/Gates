@@ -430,6 +430,19 @@ pub fn action_arc() -> (u8, u8, u8) {
     (sim_core::works::OP_DEPOSIT, 2, sim_core::works::ARG_ALL)
 }
 
+/// The exposure event: soaked, freezing past hurt, half comfort by a fire,
+/// a hard frost.
+pub fn exposure() -> sim_core::exposure::Readout {
+    sim_core::exposure::Readout {
+        wet_pct: 64,
+        cold_pct: 100,
+        heat_pct: 0,
+        hurting: true,
+        comfort_pct: 50,
+        air_c: -7,
+    }
+}
+
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
 pub fn event_env() -> sim_core::weather::Env {
     sim_core::weather::Env {

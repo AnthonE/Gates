@@ -391,7 +391,7 @@ pub const APPLIED2_LODGED: u32 = 1 << 11;
 pub const APPLIED2_ENV: u32 = 1 << 7;
 
 /// The owner's wet/cold readout changed (`EventMsg::Exposure`, weather
-/// v0) — re-read `wet_pct`, `cold_pct` and `cold_hurting`.
+/// v0) — re-read `wet_pct`, `cold_pct`, `cold_hurting` and `comfort_pct`.
 pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
 
 /// A structure hit landed that was THIS player's blow (wire v77): the
@@ -723,6 +723,19 @@ impl Harvested for HarvestedSet {
         match self.growth(key) {
             Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
             None => 1000,
+        }
+    }
+
+    /// A tree nobody felled grows with the wild stand (tree ages v0), off
+    /// the seed, as the server's `SlotLives::tree_pm` does.
+    fn tree_pm(&self, seed: u64, cx: u16, cz: u16) -> u16 {
+        let key = cell_key(cx, cz);
+        if self.contains(key) {
+            return 0;
+        }
+        match self.growth(key) {
+            Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
+            None => sim_core::gather::wild_pm(seed, cx, cz, self.now as u64),
         }
     }
 
@@ -1252,9 +1265,9 @@ impl ClientCore {
     /// deployable burns (a running recycler is lit and warms nothing) and
     /// the reach the defs drip carries, through the one rule both sides
     /// call (`exposure::fire_reaches`). A fire whose record or row has not
-    /// arrived yet, or that was lit before this client joined and has not
-    /// toggled since (`EV_OVEN` is the only carrier of the bit, and its
-    /// flame is not drawn either), warms nothing here: the shy answer.
+    /// arrived yet, or whose lit bit has not (`EV_OVEN`, sent on a toggle
+    /// and after the deploy walk's batch), warms nothing here: the shy
+    /// answer.
     pub fn fire_warms(&self, x: f32, z: f32, feet: f32) -> bool {
         let r = self.heat_radius_cm;
         if r == 0 {
@@ -1946,6 +1959,12 @@ pub struct ClientCore {
     pub wet_pct: u8,
     pub cold_pct: u8,
     pub cold_hurting: bool,
+    /// Own comfort, per cent (Rust's; a lit fire gives 50).
+    pub comfort_pct: u8,
+    /// The heat the owner is in, per cent, and the air they stand in, whole
+    /// °C (climate v0) — what the server's exposure step last read.
+    pub heat_pct: u8,
+    pub air_c: i8,
     /// Until when you are hostile, the low 32 bits of the server tick
     /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
     pub hostile_until: u32,
@@ -2311,6 +2330,9 @@ impl ClientCore {
             wet_pct: 0,
             cold_pct: 0,
             cold_hurting: false,
+            comfort_pct: 0,
+            heat_pct: 0,
+            air_c: 0,
             hostile_until: 0,
             gate_spawn_at: 0,
             wounded_fact: None,
@@ -3108,8 +3130,8 @@ impl ClientCore {
                     // rebuilt from the server's, and the walk carries no
                     // burn state, so keeping a lit address across it
                     // would be keeping a fire that may no longer stand.
-                    // The next toggle or self-snuff re-lights it, which
-                    // is at most one fuel unit away.
+                    // The walk re-lights what burns: the server sends an
+                    // `EV_OVEN` after each batch for its lit fires.
                     self.ovens.clear();
                     self.pieces
                         .rebuild_cols(&self.piece_defs, self.piece_defs_have);
@@ -3715,11 +3737,17 @@ impl ClientCore {
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
+                comfort_pct,
+                air_c,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
                 self.cold_hurting = hurting;
+                self.comfort_pct = comfort_pct;
+                self.heat_pct = heat_pct;
+                self.air_c = air_c;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
             EventMsg::Recovered { chance_pm, hp } => {

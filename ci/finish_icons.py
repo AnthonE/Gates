@@ -107,7 +107,7 @@ PAINT = {
     "hunting_bow": dict(c=WOOD),
     "wooden_arrow": dict(c=WOOD),
     "bandage": dict(c=("#f7f2e8", "#c8bca4")),
-    "fire_pit": dict(c=FLAME),
+    "camp_fire": dict(c=FLAME),
     "waterskin": dict(mat="leather", c=("#b88a5c", "#6e4a2a")),
     "full_waterskin": dict(mat="leather", c=("#6fb4e0", "#2f6a96")),
     "wooden_barricade": dict(c=WOOD),

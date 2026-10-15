@@ -1903,3 +1903,92 @@ fn a_far_resync_keeps_your_own_hearth_and_not_a_strangers() {
     );
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }
+
+/// A fire lit before a client joined burns on that client's screen too.
+/// The lit bit is broadcast only when it changes (`EV_OVEN`), so the deploy
+/// walk sends it after the batch carrying the fire; before it did, a late
+/// joiner saw a cold, dark fire that the sim was warming them by.
+#[test]
+fn a_late_joiner_sees_a_fire_burning() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.cook = sim_core::oven::CookContent::probe_fixture();
+    let (cx, cz) = buildable_block(SEED, CX, CZ, 1, 1);
+    let m = sim_core::build::BUILD_CELL_M;
+    core.world.dev_spawn = Some(((cx as f32 + 0.5) * m, (cz as f32 + 0.5) * m));
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    // `DeployContent::probe_fixture` row 4 is the fire, placed with item 6;
+    // `CookContent::probe_fixture` burns item 0.
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 6,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    act(
+        &mut core,
+        0,
+        ActionMsg::Deploy {
+            row: 4,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: sim_core::footprint::Pose::CENTRE,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(core.world.deploys.len(), 1, "the fire was not placed");
+    let d = core.world.deploys.entries()[0];
+    let i = core
+        .world
+        .deploys
+        .box_index(sim_core::deploy::box_key(d.cx, d.cz, d.level, d.loc))
+        .expect("a fire is a container");
+    core.world.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 0,
+            count: 40,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    act(
+        &mut core,
+        0,
+        ActionMsg::Use {
+            cx: d.cx,
+            cz: d.cz,
+            level: d.level,
+            loc: d.loc,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert!(
+        core.world.deploys.oven_states()[i].lit,
+        "the fire did not light"
+    );
+    assert!(clients[0].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc));
+
+    assert!(core.connect(1, id_of(1)));
+    clients.push((1usize, ClientCore::new(SEED, id_of(1), 0)));
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(clients[1].1.deploys.len(), 1, "late joiner missed the fire");
+    assert!(
+        clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
+        "late joiner sees the burning fire cold"
+    );
+}

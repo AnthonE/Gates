@@ -15,6 +15,7 @@ pub mod charge;
 pub mod circulation;
 pub mod claim;
 pub mod cliff;
+pub mod climate;
 pub mod collide;
 pub mod combat;
 pub mod craft;

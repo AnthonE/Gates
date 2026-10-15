@@ -1026,8 +1026,11 @@ pub const DEATH_BY_COLD: u8 = 7;
 /// The fall (wire v97, `World::fall`): landed harder than a body takes.
 /// The first cause past three bits; the field is four now.
 pub const DEATH_BY_FALL: u8 = 8;
+/// The heat took them (climate v0, `exposure.rs`): the desert's noon in
+/// warm clothes, dry, with no shade.
+pub const DEATH_BY_HEAT: u8 = 9;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_FALL;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_HEAT;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1350,6 +1353,13 @@ pub struct Player {
     pub wet: u16,
     pub chill: u16,
     pub cold_acc: u32,
+    /// The heat the body is in, per mille, and the air it stands in,
+    /// deci-degrees (climate v0). **Derived, not state**: the exposure step
+    /// writes both each second from the air before it reads them, so like
+    /// `hostile` they are neither hashed nor saved; a restart only blanks
+    /// the HUD's reading for that second.
+    pub heat: u16,
+    pub air_dc: i16,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1368,6 +1378,17 @@ pub struct Player {
     /// Carried through a death (Rust's rule); neither hashed nor saved — a
     /// restart forgives.
     pub hostile: u16,
+    /// Comfort, per mille (`exposure.rs`, Rust's): what a lit fire and
+    /// company at it give, followed at `comfort_per_s`. Raises how far and
+    /// how fast the body mends on its own.
+    pub comfort: u16,
+    /// Seconds since this body last lost hp (`combat::debit` zeroes it);
+    /// regen waits on `regen_calm_s` of it, Rust's `SecondsSinceAttacked`.
+    ///
+    /// Neither is hashed nor saved, for `hostile`'s reason: both are clocks
+    /// over the body that rebuild in seconds, and the hp they move is
+    /// hashed already.
+    pub calm: u16,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1453,9 +1474,13 @@ impl Default for Player {
             wet: 0,
             chill: 0,
             cold_acc: 0,
+            heat: 0,
+            air_dc: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
+            comfort: 0,
+            calm: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
         }
@@ -4410,6 +4435,8 @@ impl World {
                     wet: 0,
                     chill: 0,
                     cold_acc: 0,
+                    heat: 0,
+                    air_dc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -4429,6 +4456,8 @@ impl World {
                     skins: crate::skin::SkinSet::EMPTY,
                     safe: false,
                     hostile: 0,
+                    comfort: 0,
+                    calm: 0,
                     gate_spawn: false,
                     gate_spawn_at: 0,
                 };
@@ -5836,7 +5865,8 @@ impl World {
         {
             return false;
         }
-        let inp = self.exposure_inputs(i, wx, night);
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let inp = self.exposure_inputs(i, wx, night, day_tick);
         let step = crate::exposure::step(
             &self.survival.exposure,
             &inp,
@@ -5844,8 +5874,15 @@ impl World {
             &mut self.events,
         );
         if step == survival::Step::Died {
-            let id = self.players[i].id;
-            self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            let p = &self.players[i];
+            let ec = &self.survival.exposure;
+            let cause = if p.chill <= ec.hurt_at && p.heat > ec.heat_hurt_at {
+                DEATH_BY_HEAT
+            } else {
+                DEATH_BY_COLD
+            };
+            let id = p.id;
+            self.die(i, id, cause, NO_ITEM, 0);
             return true;
         }
         crate::exposure::burn(
@@ -5884,12 +5921,13 @@ impl World {
     }
 
     /// What the world is doing to slot `i`'s body this second: the weather,
-    /// the hour, a roof, the sea at its feet, a fire, a torch.
+    /// the hour and the air, a roof, the sea at its feet, a fire, a torch.
     pub fn exposure_inputs(
         &self,
         i: usize,
         wx: &crate::weather::Wx,
         night: bool,
+        day_tick: u64,
     ) -> crate::exposure::Inputs {
         let p = &self.players[i];
         let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
@@ -5902,46 +5940,87 @@ impl World {
         } else {
             0
         };
+        let ec = &self.survival.exposure;
+        let fire = self.near_fire(x, z, feet);
+        let comfort = match fire {
+            Some(at) if ec.fire_comfort > 0 => {
+                let (awake, asleep) = self.company_at(i, at);
+                crate::exposure::comfort_target(ec, true, awake, asleep)
+            }
+            _ => 0,
+        };
         crate::exposure::Inputs {
             rain: wx.rain,
             wind: wx.wind,
             night,
             roofed,
             depth_cm,
-            fire: self.near_fire(x, z, feet),
+            fire: fire.is_some(),
             torch: crate::light::is_lit(p, &self.gather),
-            fed: p.food as u32 * 2 >= self.survival.max_food as u32
-                && p.water as u32 * 2 >= self.survival.max_water as u32,
+            comfort,
+            max_food: self.survival.max_food,
+            max_water: self.survival.max_water,
+            air_dc: crate::climate::air_dc(
+                &self.survival.exposure.air,
+                self.seed,
+                x,
+                z,
+                feet - sea,
+                day_tick,
+                wx,
+            ),
         }
     }
 
-    /// Is a lit fire (a campfire, a furnace) near enough to warm a body
-    /// standing here? Planar reach from the content, and within a storey
-    /// (`exposure::fire_reaches`, which the client's HUD asks too).
-    fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
+    /// The first lit fire (a campfire, a furnace) near enough to warm a
+    /// body standing here, as its `(cx, cz, level, pose)`. Planar reach
+    /// from the content, and within a storey (`exposure::fire_reaches`,
+    /// which the client's HUD asks too).
+    fn near_fire(
+        &self,
+        x: f32,
+        z: f32,
+        feet: f32,
+    ) -> Option<(u16, u16, u8, crate::footprint::Pose)> {
         let r = self.survival.exposure.heat_radius_cm;
         if r == 0 {
-            return false;
+            return None;
         }
         let cols = self.pieces.cols();
         self.deploys
             .boxes()
             .iter()
             .zip(self.deploys.oven_states())
-            .any(|(b, st)| {
-                st.lit
-                    && st.burns()
-                    && crate::exposure::fire_reaches(
-                        self.seed,
-                        &self.haven,
-                        cols,
-                        r,
-                        (b.cx, b.cz, b.level, b.pose),
-                        x,
-                        z,
-                        feet,
-                    )
+            .filter(|(_, st)| st.lit && st.burns())
+            .map(|(b, _)| (b.cx, b.cz, b.level, b.pose))
+            .find(|&at| {
+                crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet)
             })
+    }
+
+    /// The other bodies in the same fire's warmth as slot `i`: `(awake,
+    /// asleep)`. Rust's campfire comfort rises with company — a quarter a
+    /// body, an eighth a sleeper. The dead are not company.
+    fn company_at(&self, i: usize, at: (u16, u16, u8, crate::footprint::Pose)) -> (u32, u32) {
+        let r = self.survival.exposure.heat_radius_cm;
+        let cols = self.pieces.cols();
+        let (mut awake, mut asleep) = (0u32, 0u32);
+        for (j, q) in self.players.iter().enumerate() {
+            if j == i || !q.active || q.dead {
+                continue;
+            }
+            let qx = q.body.qx as f32 * crate::movement::POS_XZ_Q;
+            let qz = q.body.qz as f32 * crate::movement::POS_XZ_Q;
+            let qf = q.body.qy as f32 * crate::movement::POS_Y_Q;
+            if crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, qx, qz, qf) {
+                if q.sleeping {
+                    asleep += 1;
+                } else {
+                    awake += 1;
+                }
+            }
+        }
+        (awake, asleep)
     }
 
     /// Stand the town's public stations (`town::STATIONS`) as owner-0
@@ -7114,8 +7193,9 @@ impl World {
                     && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
                     && cols.get(bx as u16, bz as u16).has_piece()
             };
+            let wild_until = |cx: u16, cz: u16| crate::gather::wild_grown_at(seed, cx, cz);
             self.slot_lives
-                .respawn_due_unless(tick, &mut self.events, &built_over);
+                .respawn_due_unless(tick, &mut self.events, &built_over, &wild_until);
         }
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
@@ -7146,13 +7226,25 @@ impl World {
         // question a body asks of the rain, asked at the planter's feet.
         // The same rain waters it.
         let night = is_night(tick);
-        let rain_pm = crate::weather::now(self.seed, tick, &self.env).rain;
+        let wx = crate::weather::now(self.seed, tick, &self.env);
+        let rain_pm = wx.rain;
+        let day_tick = crate::weather::day_tick(tick, &self.env);
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let air = &self.survival.exposure.air;
+        let planter_feet = |b: &crate::deploy::BoxRec| {
+            crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
+                + crate::build::level_y(b.level)
+        };
         let open_sky = |b: &crate::deploy::BoxRec| {
             let (x, z) = b.xz();
-            let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
-                + crate::build::level_y(b.level);
-            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, feet)
+            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, planter_feet(b))
+        };
+        // The air at the planter sets its pace (climate v0).
+        let crop_pm = |b: &crate::deploy::BoxRec| {
+            let (x, z) = b.xz();
+            let alt = planter_feet(b) - crate::terrain::SEA_LEVEL;
+            let t = crate::climate::air_dc(air, seed, x, z, alt, day_tick, &wx);
+            crate::climate::crop_pm(air, t)
         };
         crate::oven::sweep(
             &self.cook,
@@ -7165,6 +7257,7 @@ impl World {
                 crate::works::KNOB_SMELT_PCT,
             ),
             &open_sky,
+            &crop_pm,
             night,
             rain_pm,
             &mut self.events,

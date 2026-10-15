@@ -1165,12 +1165,15 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
 /// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
 /// carries six rows, down from eight.
-///
-/// v111 — a page's SIWE proof names the shard it dialled in its `URI:` line
+/// v111 — comfort (Rust's metabolism): `SUB_EXPOSURE` carries the owner's
+/// comfort, per cent, after the hurting bit.
+/// v112 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
+/// whole °C after the comfort, and the death cause admits 9 (`DEATH_BY_HEAT`).
+/// v113 — a page's SIWE proof names the shard it dialled in its `URI:` line
 /// (`siwe_message_for`); the domain line stays the page's. No layout moved,
 /// but the signed text did, and a shard that cannot rebuild it refuses every
 /// browser sign-in — so the page and the shard turn together.
-pub const PROTO_VER: u16 = 111;
+pub const PROTO_VER: u16 = 113;
 
 /// This game's slug in the elo catalog.
 ///
