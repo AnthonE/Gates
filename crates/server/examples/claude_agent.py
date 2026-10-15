@@ -37,6 +37,12 @@ once every SHARE_EVERY_S seconds.
 GATES_JOURNAL names a file each decision is appended to as one JSON line
 (the time, the goal, the reason, what it said and heard, a few observation
 fields): what `ops/buddy/clips.py` reads to find a buddy's moments.
+
+GATES_SPEND names a file each API call's cost is appended to (dollars at
+Anthropic's posted prices, from the usage the call reports). With
+GATES_CREDIT_FILE too (one number, dollars, rewritten by whoever sells the
+credit), it asks nothing more once the file's spend reaches it: what a
+rented buddy (`ops/buddy/rent.py`) is billed by.
 """
 import base64
 import collections
@@ -72,6 +78,18 @@ JOURNAL_OBS = ("hp", "hp_max", "food", "water", "threats", "last_fight", "last",
                "current", "players", "deaths")
 # Models that take the server-side refusal fallback (API route only).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
+# Anthropic's posted list prices, dollars per million tokens: input, output,
+# cache read, 5-minute cache write (Haiku's rate is for prompts up to 100K,
+# which a turn always is). A model not listed is billed at the dearest row,
+# so a rented buddy is never billed under what its calls cost.
+PRICES = {
+    "claude-fable-5-1": (10.00, 50.00, 0.25, 12.50),
+    "claude-opus-5-5": (4.00, 20.00, 0.20, 5.00),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+}
+SPEND = os.environ.get("GATES_SPEND", "")
+CREDIT_FILE = os.environ.get("GATES_CREDIT_FILE", "")
 
 SYSTEM = """You are a survivor in Gates, a multiplayer survival game in the \
 tradition of Rust. Humans and other agents share the island, and everyone you \
@@ -236,7 +254,60 @@ def turn_content(request, recent, frame, notes, chat_log):
     return blocks
 
 
-def ask_api(client, system, blocks, out_schema):
+def call_usd(model, usage):
+    """What one call cost, in dollars, from the usage it reports."""
+    p_in, p_out, p_read, p_write = PRICES.get(model) or max(PRICES.values())
+    n = lambda k: getattr(usage, k, 0) or 0
+    return (n("input_tokens") * p_in + n("output_tokens") * p_out
+            + n("cache_read_input_tokens") * p_read
+            + n("cache_creation_input_tokens") * p_write) / 1e6
+
+
+class Spend:
+    """The running cost of this mind's calls (GATES_SPEND), and the credit it
+    may not pass (GATES_CREDIT_FILE). Neither set: it counts and never stops."""
+
+    def __init__(self):
+        self.usd = 0.0
+        try:
+            with open(SPEND) as f:
+                for line in f:
+                    try:
+                        self.usd += float(json.loads(line).get("usd", 0))
+                    except (ValueError, AttributeError, TypeError):
+                        pass
+        except OSError:
+            pass
+
+    def out(self):
+        """True once the spend has reached the credit. An unreadable credit
+        file is no credit: it spends nothing rather than guess."""
+        if not CREDIT_FILE:
+            return False
+        try:
+            with open(CREDIT_FILE) as f:
+                return self.usd >= float(f.read().strip())
+        except (OSError, ValueError):
+            return True
+
+    def bill(self, model, usage):
+        cost = call_usd(model, usage)
+        self.usd += cost
+        if not SPEND:
+            return
+        n = lambda k: getattr(usage, k, 0) or 0
+        row = {"t": round(time.time(), 2), "model": model, "usd": round(cost, 8),
+               "in": n("input_tokens"), "out": n("output_tokens"),
+               "cache_read": n("cache_read_input_tokens"),
+               "cache_write": n("cache_creation_input_tokens")}
+        try:
+            with open(SPEND, "a") as f:
+                f.write(json.dumps(row) + "\n")
+        except OSError as e:
+            print(f"spend: {e}", file=sys.stderr)
+
+
+def ask_api(client, system, blocks, out_schema, spend):
     extra = {}
     if MODEL in FALLBACK_MODELS:
         extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
@@ -251,6 +322,8 @@ def ask_api(client, system, blocks, out_schema):
         },
         **extra,
     )
+    # Billed before it is judged: a refused or cut-off answer still cost.
+    spend.bill(response.model or MODEL, response.usage)
     if response.stop_reason in ("refusal", "max_tokens"):
         raise RuntimeError(f"model stopped: {response.stop_reason}")
     text = next(b.text for b in response.content if b.type == "text")
@@ -354,12 +427,13 @@ def main():
         else:
             sys.exit(usage)
     persona = " ".join(persona.split())[:600]
+    spend = Spend()
     if via == "api":
         import anthropic
         # No retries: a retry would outlive the bot's deadline for this request.
         client = anthropic.Anthropic(timeout=TIMEOUT_S, max_retries=0)
         errors = (anthropic.APIError,)
-        ask = lambda system, blocks, out: ask_api(client, system, blocks, out)
+        ask = lambda system, blocks, out: ask_api(client, system, blocks, out, spend)
     else:
         errors = (subprocess.TimeoutExpired, OSError)
         ask = ask_claude_code
@@ -379,6 +453,9 @@ def main():
                 print(f"heard {h['from']}: {h['text']}", file=sys.stderr)
                 if h.get("channel") == "team":
                     team_numbers.update(re.findall(r"(?<!\d)\d{1,4}(?!\d)", h["text"]))
+        if spend.out():
+            print(json.dumps({"id": request["id"], "error": "out of credit"}), flush=True)
+            continue
         frame = fetch_frame()
         can_share = bool(frame and WEBHOOK_URL) and (
             shared_at is None or time.monotonic() - shared_at >= SHARE_EVERY_S)
