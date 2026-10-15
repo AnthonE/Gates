@@ -937,8 +937,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if e.fire_comfort > 0 && e.comfort_per_s == 0 {
             return Err("[exposure]: comfort that never moves would never rise".into());
         }
+        // A zero meter is `[survival]`'s to refuse, with its own words.
         let sv = &c.balance.survival;
-        if e.regen_food_min > sv.max_food || e.regen_water_min > sv.max_water {
+        if sv.max_food > 0
+            && sv.max_water > 0
+            && (e.regen_food_min > sv.max_food || e.regen_water_min > sv.max_water)
+        {
             return Err("[exposure]: regen asks for more food or water than a meter holds".into());
         }
         if e.regen_calm_s > u16::MAX as u32 {
