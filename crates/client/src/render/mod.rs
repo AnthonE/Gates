@@ -37,6 +37,9 @@ pub mod music_out;
 #[cfg(target_arch = "wasm32")]
 pub mod audio_web;
 pub mod bodies;
+// The Verdigris as drawn: this wipe's outbreaks and the spread at the arc's
+// tick, read once a frame for the ground, the weather and the map.
+pub mod blight;
 // Rebindable keys: the action table, the defaults, and the settings file's
 // `bind.*` lines.
 pub mod binds;
@@ -645,6 +648,7 @@ impl Plugin for GatesRenderPlugin {
             .insert_resource(weather_pin)
             .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
+            .init_resource::<blight::Blight>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
@@ -1914,6 +1918,17 @@ impl Plugin for GatesRenderPlugin {
                 moon::drive.after(sky::compose),
                 deck::drive.after(rig::day_night),
             )
+                .run_if(world_running),
+        )
+        // The blight's moment (`render/blight.rs`): after the drain, for the
+        // tick it reads, and before the weather and the streamers, which read
+        // the depth.
+        .add_systems(
+            Update,
+            blight::update
+                .after(feed::drain)
+                .before(weather::update)
+                .before(Stream)
                 .run_if(world_running),
         )
         // The weather (weather v0): read after the drain and before the rig

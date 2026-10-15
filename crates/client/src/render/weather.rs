@@ -72,7 +72,7 @@ pub struct WeatherNow {
     pub sheltered: bool,
     /// The eye is under the sea.
     pub underwater: bool,
-    /// How deep the eye stands in the Verdigris, `0..=1` (`terrain::fel`),
+    /// How deep the eye stands in the Verdigris, `0..=1` (`render::blight`),
     /// eased over [`FEL_EASE_S`]: what greens the fog, the light, the deck
     /// and the grade, and arms its lightning and embers.
     pub fel: f32,
@@ -178,6 +178,7 @@ pub fn update(
     net: Option<NonSend<Net>>,
     time: Res<Time>,
     composer: Option<Res<super::sky::SkyComposer>>,
+    blight: Option<Res<super::blight::Blight>>,
     mut now_res: ResMut<WeatherNow>,
 ) {
     let now = &mut *now_res;
@@ -211,7 +212,12 @@ pub fn update(
     let dt = time.delta_secs();
     // Where the eye stands in the Verdigris: eased in play, exact for a
     // probe, which holds its sky still.
-    let fel_here = sim_core::terrain::fel(world.seed, eye.pos.x, eye.pos.z);
+    // The live spread, hot spots and all (`render/blight.rs`); the static
+    // heart where no moment has been read.
+    let fel_here = match &blight {
+        Some(b) => b.at(&world, eye.pos.x, eye.pos.z).any(),
+        None => sim_core::terrain::fel(world.seed, eye.pos.x, eye.pos.z).max(0.0),
+    };
     now.fel = if pinned {
         fel_here
     } else {

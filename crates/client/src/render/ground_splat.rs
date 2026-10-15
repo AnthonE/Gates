@@ -140,6 +140,7 @@ use super::terrain_mesh::{
     ALBEDO_LUMA_FLOOR, GROUND_ALBEDO, GROUND_TILE_M, WET_SATURATION, WET_VALUE,
 };
 use super::textures::GroundArrays;
+use sim_core::terrain;
 
 /// The shader, resolved against the asset root `bin/gates.rs` sets.
 pub const SHADER: &str = "shaders/ground_splat.wgsl";
@@ -153,12 +154,13 @@ pub const ATTRIBUTE_MARKINGS: MeshVertexAttribute =
 pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadCoverage", 0x726f6164, VertexFormat::Float32x2);
 
-/// The two zones the ground under a vertex is in, 0..1 each: x how arid
-/// (`terrain::aridity`), y how corrupted (`terrain::fel`, the Verdigris). The
-/// desert's warm sand and the Verdigris' ash and obsidian are tints on the
-/// four identities, not identities of their own, so the splat stays four —
-/// and one `vec2` at one location keeps WebGL2's attribute count where the
-/// desert left it.
+/// The two zones the ground under a vertex is in: x how arid, 0..1
+/// (`terrain::aridity`); y the Verdigris' edge noise, within ±1
+/// (`terrain::fel_wander`), from which the shader rebuilds the heart and the
+/// live spread (`blight_at`, `sim_core::blight`). The desert's warm sand and
+/// the Verdigris' ash and obsidian are tints on the four identities, not
+/// identities of their own, so the splat stays four — and one `vec2` at one
+/// location keeps WebGL2's attribute count where the desert left it.
 pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
     MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x2);
 
@@ -209,6 +211,59 @@ pub const FEL_GLOW_DAY: [f32; 3] = [0.10, 0.55, 0.07];
 pub const FEL_GLOW_NIGHT: [f32; 3] = [0.45, 2.60, 0.32];
 /// The fissures' slow breath, cycles a second. **(knob)**
 pub const FEL_PULSE_HZ: f32 = 0.35;
+
+/// The spread's advancing edge, drawn brighter so the creep reads as moving:
+/// the window of the creep's own fade coordinate it lights (rising over the
+/// first two, falling over the last two), how much it adds to the fissures'
+/// glow, and how far the front must have walked from wipe day's (units of
+/// `CONTINENT_RADIUS`) before it shows at all, so wipe day is the heart
+/// alone. **(knob)**
+pub const FRONT_RIM_T: [f32; 4] = [0.30, 0.45, 0.65, 0.85];
+pub const FRONT_RIM_GAIN: f32 = 1.5;
+pub const FRONT_RIM_ONSET: f32 = 0.01;
+
+/// The discs the ground can draw at once: outbreaks and hot spots
+/// (`sim_core::blight::MAX_DISCS`, with room).
+pub const BLIGHT_DISCS: usize = 12;
+const _: () = assert!(sim_core::blight::MAX_DISCS <= BLIGHT_DISCS);
+
+/// The live half of the spread's uniform, packed from a moment
+/// (`sim_core::blight::Now`): the front, the disc count and the rim's gain;
+/// the ward's centre; and each disc as (x, z, radius, depth), a hot spot's
+/// depth negative.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlightLive {
+    pub now: Vec4,
+    pub ward: Vec4,
+    pub discs: [Vec4; BLIGHT_DISCS],
+}
+
+impl BlightLive {
+    pub fn of(n: &sim_core::blight::Now) -> Self {
+        let rim =
+            FRONT_RIM_GAIN * ((n.front - sim_core::blight::F0) / FRONT_RIM_ONSET).clamp(0.0, 1.0);
+        let mut discs = [Vec4::ZERO; BLIGHT_DISCS];
+        for (out, d) in discs.iter_mut().zip(n.discs.iter().take(n.n as usize)) {
+            *out = Vec4::new(d.x, d.z, d.r, if d.hot { -d.depth } else { d.depth });
+        }
+        Self {
+            now: Vec4::new(n.front, n.n as f32, rim, 0.0),
+            ward: Vec4::new(n.ward.0, n.ward.1, 0.0, 0.0),
+            discs,
+        }
+    }
+
+    /// Whether `p` already carries this moment.
+    pub fn matches(&self, p: &GroundSplatParams) -> bool {
+        p.blight_now == self.now && p.blight_ward == self.ward && p.blight_discs == self.discs
+    }
+
+    pub fn write(&self, p: &mut GroundSplatParams) {
+        p.blight_now = self.now;
+        p.blight_ward = self.ward;
+        p.blight_discs = self.discs;
+    }
+}
 
 /// Proposed material defaults, DECISIONS.md §open, road surface v1.
 /// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
@@ -482,6 +537,26 @@ pub struct GroundSplatParams {
     /// x = [`FEL_CRACK_W`], y = [`FEL_RIM_W`], z = [`FEL_POOL_AT`], w =
     /// [`FEL_POOL_M`].
     pub fel_shape: Vec4,
+    /// The heart: xy where it stands, z 1 / `CONTINENT_RADIUS`, w its wander.
+    pub blight_heart: Vec4,
+    /// x, y the heart's whole and outer edge; z the beach's top; w the coast's
+    /// fade, metres.
+    pub blight_fel: Vec4,
+    /// The creep: x its band, y its depth, z the ridges' hold, w the ward's.
+    pub blight_creep: Vec4,
+    /// x, y the ridges' ramp, metres; z, w the ward's inner and outer radius.
+    pub blight_ridge: Vec4,
+    /// The discs' edges: an outbreak's wander and band, a hot spot's.
+    pub blight_disc: Vec4,
+    /// The front rim's window in the creep's fade coordinate.
+    pub blight_rim: Vec4,
+    /// Live: x the front, y how many discs, z the rim's gain now.
+    pub blight_now: Vec4,
+    /// Live: xy the ward's centre.
+    pub blight_ward: Vec4,
+    /// Live: each disc, (x, z, radius, depth), a hot spot's depth negative.
+    /// Last, so the array closes the struct on both sides.
+    pub blight_discs: [Vec4; BLIGHT_DISCS],
 }
 
 impl GroundSplatParams {
@@ -603,6 +678,42 @@ impl GroundSplatParams {
                 FEL_PULSE_HZ,
             ),
             fel_shape: Vec4::new(FEL_CRACK_W, FEL_RIM_W, FEL_POOL_AT, FEL_POOL_M),
+            blight_heart: Vec4::new(
+                terrain::FEL_HEART.0,
+                terrain::FEL_HEART.1,
+                1.0 / terrain::CONTINENT_RADIUS,
+                terrain::FEL_WANDER,
+            ),
+            blight_fel: Vec4::new(
+                terrain::FEL_R.0,
+                terrain::FEL_R.1,
+                terrain::BEACH_MAX_H,
+                sim_core::blight::COAST_M,
+            ),
+            blight_creep: Vec4::new(
+                sim_core::blight::BAND,
+                sim_core::blight::CREEP_DEPTH,
+                sim_core::blight::RIDGE,
+                sim_core::blight::WARD,
+            ),
+            blight_ridge: Vec4::new(
+                sim_core::blight::RIDGE_LO_M,
+                sim_core::blight::RIDGE_HI_M,
+                sim_core::blight::WARD_IN_M,
+                sim_core::blight::WARD_OUT_M,
+            ),
+            blight_disc: Vec4::new(
+                sim_core::blight::OUTBREAK_WANDER,
+                sim_core::blight::OUTBREAK_BAND,
+                sim_core::blight::HOT_WANDER,
+                sim_core::blight::HOT_BAND,
+            ),
+            blight_rim: Vec4::from_array(FRONT_RIM_T),
+            // Wipe day's front until a moment is written, so an unwritten
+            // material draws the heart alone.
+            blight_now: Vec4::new(sim_core::blight::F0, 0.0, 0.0, 0.0),
+            blight_ward: Vec4::ZERO,
+            blight_discs: [Vec4::ZERO; BLIGHT_DISCS],
         }
     }
 }

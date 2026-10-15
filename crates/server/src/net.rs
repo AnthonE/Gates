@@ -820,6 +820,7 @@ pub async fn spawn_shard(
         let seed = cfg.seed;
         let dev_spawn = cfg.dev_spawn;
         let dev_env = cfg.dev_env;
+        let dev_arc_hour = cfg.dev_arc_hour;
         let admins = cfg.admins.clone();
         let team_max = cfg.team_max;
         let standings_base = cfg
@@ -839,6 +840,7 @@ pub async fn spawn_shard(
                     seed,
                     dev_spawn,
                     dev_env,
+                    dev_arc_hour,
                     tables,
                     world_blob,
                     world_idents,
@@ -911,7 +913,7 @@ pub async fn spawn_shard(
             // in every welcome — that bit is the client's only dev gate.
             // A shard with a fake network is a dev shard as surely as one
             // with a pinned spawn — the client's dev affordances key on this.
-            dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some(),
+            dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some() || cfg.dev_arc_hour.is_some(),
             require_auth: cfg.require_auth,
             siwe_domains: cfg.siwe_accepts().into(),
             entitle: cfg.entitle.clone(),
@@ -3949,6 +3951,7 @@ fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
     dev_env: Option<(u8, u16)>,
+    dev_arc_hour: Option<u32>,
     tables: SimTables,
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
@@ -4077,6 +4080,12 @@ fn sim_thread(
     // if they did not take. It is still handled rather than unwrapped,
     // because "cannot happen" and "panics the sim thread if it does" is a
     // trade nothing in this file makes.
+    // `dev_arc_hour`: a fresh world's arc clock starts late, before the
+    // first tick, so the first works sweep opens and lights what that hour
+    // would have — the real path — and the blight reads the same hour.
+    if let (true, Some(h)) = (world_blob.is_empty(), dev_arc_hour) {
+        core.world.tick = u64::from(h) * sim_core::blight::TICKS_PER_HOUR;
+    }
     if !world_blob.is_empty() {
         match core.world.load(&world_blob) {
             Ok(()) => {

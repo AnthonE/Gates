@@ -71,7 +71,7 @@ pub const COAST_M: f32 = 4.0;
 pub const WARD_IN_M: f32 = 300.0;
 pub const WARD_OUT_M: f32 = 420.0;
 /// The ward's potential: far past any front, so it is a wall, not a slope.
-const WARD: f32 = 2.0;
+pub const WARD: f32 = 2.0;
 
 // --- Outbreaks: this wipe's eruptions -------------------------------------
 
@@ -108,10 +108,10 @@ pub const HOT_HAVEN: (f32, [f32; 3]) = (65.0, [0.0, 0.45, 0.75]);
 pub const HOT_ZIGGURAT: (f32, [f32; 3]) = (90.0, [0.0, 0.35, 0.60]);
 pub const HOT_MINOR: (f32, [f32; 3]) = (45.0, [0.0, 0.27, 0.45]);
 /// A hot spot's edge: its fade and its wander, shares of its radius.
-const HOT_BAND: f32 = 0.4;
-const HOT_WANDER: f32 = 0.15;
+pub const HOT_BAND: f32 = 0.4;
+pub const HOT_WANDER: f32 = 0.15;
 /// A disc's soft edge, a share of its radius.
-const OUTBREAK_BAND: f32 = 0.3;
+pub const OUTBREAK_BAND: f32 = 0.3;
 
 /// Every disc a moment can hold: the outbreaks, then the hot spots.
 pub const MAX_DISCS: usize = OUTBREAKS + 2 + MINOR_SITES;

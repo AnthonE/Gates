@@ -27,6 +27,9 @@ pub struct WorkView {
     pub got: [u32; MAX_WORK_INPUTS],
     /// This player's share, basis points of a quota.
     pub mine: u32,
+    /// The row's first state has arrived. A join drips every row first and
+    /// every state after, so until then `state` is a placeholder SEALED.
+    pub synced: bool,
 }
 
 impl WorkView {
@@ -98,6 +101,26 @@ impl ArcView {
             .max()
             .unwrap_or(1)
             .max(1)
+    }
+
+    /// Every row named has arrived and had its first state: what the arc
+    /// reads now is the island's, not a join's partial drip. False on a
+    /// shard with no works, so a reader holding its last reading holds 0.
+    pub fn synced(&self) -> bool {
+        let mut any = false;
+        for (_, w) in self.known() {
+            if !w.synced {
+                return false;
+            }
+            any = true;
+        }
+        any && self.known().count() == self.count as usize
+    }
+
+    /// The island's fel tier from the rows (`sim_core::works::fel_tier_of`):
+    /// what hardens the animals and surges the blight.
+    pub fn fel_tier(&self) -> u8 {
+        sim_core::works::fel_tier_of(self.known().map(|(_, w)| (w.def.act, w.state)))
     }
 
     /// Whether unlock code `u` is held (`sim_core::works::holds`).

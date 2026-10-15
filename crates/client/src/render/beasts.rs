@@ -102,7 +102,7 @@ pub fn fel_species_of_kind(kind: u8) -> Option<usize> {
 /// The island's corruption tier, off the arc as the client knows it — the
 /// sim's own function over the same `(act, state)` pairs.
 pub fn tier_of(arc: &ArcView) -> usize {
-    sim_core::works::fel_tier_of(arc.known().map(|(_, w)| (w.def.act, w.state))) as usize
+    arc.fel_tier() as usize
 }
 
 /// The clips `ci/rig_beast.py` authors, resolved by NAME (`anim.rs` says why

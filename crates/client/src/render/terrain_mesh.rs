@@ -34,7 +34,8 @@ use sim_core::terrain::{self, SEA_LEVEL};
 use std::sync::Arc;
 
 use super::ground_splat::{
-    road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD, ATTRIBUTE_ZONE,
+    road_coverage, BlightLive, GroundMaterial, GroundSplat, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD,
+    ATTRIBUTE_ZONE,
 };
 use super::road_markings::RoadChart;
 #[cfg(target_arch = "wasm32")]
@@ -772,6 +773,23 @@ impl Ring {
     /// Soak the island's ground to `wet` (`0..1`, weather v0): the near and
     /// far ground materials' `identity[0].w`. Writes only when the value
     /// moved, since a write re-uploads the material.
+    /// Hand the ground this moment of the Verdigris' spread (`render::blight`):
+    /// the near and far materials, written only when it moved, as
+    /// [`Ring::set_fel_glow`] is. The rocks, cliffs and landmark rocks wear the
+    /// near material and follow.
+    pub fn set_blight(&self, materials: &mut Assets<GroundMaterial>, live: &BlightLive) {
+        for h in [&self.ground, &self.far_ground].into_iter().flatten() {
+            let stale = materials
+                .get(h)
+                .is_some_and(|m| !live.matches(&m.extension.params));
+            if stale {
+                if let Some(m) = materials.get_mut(h) {
+                    live.write(&mut m.extension.params);
+                }
+            }
+        }
+    }
+
     pub fn set_rain_wet(&self, materials: &mut Assets<GroundMaterial>, wet: f32) {
         for h in [&self.ground, &self.far_ground].into_iter().flatten() {
             let changed = materials
@@ -1429,7 +1447,10 @@ pub fn heightfield(
             colors.push(vertex_splat(w));
             zone.push([
                 terrain::aridity_memo(&mut lat, seed, x, z),
-                terrain::fel_memo(&mut lat, seed, x, z),
+                // The heart's edge noise, not its depth: the shader rebuilds
+                // the heart and the live spread from it (`blight_at`), so the
+                // mesh never bakes a moment of the wipe.
+                terrain::fel_wander_memo(&mut lat, seed, x, z),
             ]);
             mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * UV_PER_M, z * UV_PER_M]);

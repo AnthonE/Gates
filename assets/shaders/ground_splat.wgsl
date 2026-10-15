@@ -144,6 +144,23 @@ struct GroundSplat {
     // x = a fissure's half-width (cells), y = its dark rim (cells), z = the
     // pool field's threshold, w = the pool field's wavelength (m).
     fel_shape: vec4<f32>,
+    // The Verdigris' spread (`sim_core::blight`), every number from its
+    // consts: the heart (xy, 1/CONTINENT_RADIUS, wander); the heart's edges,
+    // the beach's top and the coast's fade; the creep's band, depth, ridge
+    // hold and ward; the ridge ramp and the ward's radii; the discs' wander
+    // and bands; the front rim's window.
+    blight_heart: vec4<f32>,
+    blight_fel: vec4<f32>,
+    blight_creep: vec4<f32>,
+    blight_ridge: vec4<f32>,
+    blight_disc: vec4<f32>,
+    blight_rim: vec4<f32>,
+    // Live (`render::blight`): the front, the disc count, the rim's gain;
+    // the ward's centre; each disc (x, z, radius, depth; a hot spot's
+    // negative). The array closes the struct, as on the Rust side.
+    blight_now: vec4<f32>,
+    blight_ward: vec4<f32>,
+    blight_discs: array<vec4<f32>, 12>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -496,6 +513,94 @@ fn fel_cell(p: vec2<f32>) -> FelCell {
     return out;
 }
 
+// --- The Verdigris spreads (`sim_core::blight`) -----------------------------
+//
+// The heart and the live spread, rebuilt per pixel from the heart's edge
+// noise the vertex carries (`zone.y`, `terrain::fel_wander`) and the moment
+// the client last read (`render::blight`, the `blight_*` slots). Every number
+// arrives through the uniform from sim-core's own consts, so the ash drawn is
+// the meter's depth: the same quintic fade, the same ward, ridge and coast.
+// Pure arithmetic — no derivative, no texture tap — so it may sit under any
+// branch.
+
+/// `fmath::fade`, the quintic the sim fades by. Not `smoothstep`, which is
+/// cubic and would draw an edge the meter does not read.
+fn quintic(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+struct Blight {
+    // The heart, the creep and the outbreaks.
+    fel: f32,
+    // The hot spots.
+    hot: f32,
+    // How near the creep's advancing edge this point is, 0..1: the rim.
+    front: f32,
+}
+
+fn blight_at(wp: vec3<f32>, n: f32) -> Blight {
+    var out: Blight;
+    out.fel = 0.0;
+    out.hot = 0.0;
+    out.front = 0.0;
+    let heart = splat.blight_heart;
+    let fr = splat.blight_fel;
+    let creep = splat.blight_creep;
+    let ridge = splat.blight_ridge;
+    let now = splat.blight_now;
+    let rel = (wp.xz - heart.xy) * heart.z;
+    let d2 = dot(rel, rel);
+    let dh = sqrt(d2);
+    let s = dh + n * heart.w;
+    // The heart, `terrain::fel_of`.
+    let reach = fr.y + heart.w;
+    if d2 < reach * reach {
+        out.fel = max(1.0 - quintic(clamp((s - fr.x) / (fr.y - fr.x), 0.0, 1.0)), 0.0);
+    }
+    let coast = clamp((wp.y - fr.z) / fr.w, 0.0, 1.0);
+    // The creep: inside the front's reach only (`blight::within_reach`).
+    if coast > 0.0 && dh < now.x + heart.w {
+        let r = creep.z * clamp((wp.y - ridge.x) / (ridge.y - ridge.x), 0.0, 1.0);
+        let wd = distance(wp.xz, splat.blight_ward.xy);
+        let ward = creep.w * (1.0 - quintic(clamp((wd - ridge.z) / (ridge.w - ridge.z), 0.0, 1.0)));
+        let p = s + r + ward;
+        let t = clamp((p - (now.x - creep.x)) / creep.x, 0.0, 1.0);
+        out.fel = max(out.fel, creep.y * (1.0 - quintic(t)) * coast);
+        let rim = splat.blight_rim;
+        out.front = smoothstep(rim.x, rim.y, t) * (1.0 - smoothstep(rim.z, rim.w, t)) * coast;
+    }
+    // The discs: outbreaks (positive depth) and hot spots (negative).
+    let count = u32(now.y);
+    let disc = splat.blight_disc;
+    for (var i = 0u; i < 12u; i = i + 1u) {
+        if i >= count {
+            break;
+        }
+        let d = splat.blight_discs[i];
+        let hot = d.w < 0.0;
+        let depth = abs(d.w);
+        var wander = disc.x;
+        var band = disc.y;
+        if hot {
+            wander = disc.z;
+            band = disc.w;
+        }
+        let dd = distance(wp.xz, d.xy);
+        if d.z <= 0.0 || dd >= d.z * (1.0 + wander) {
+            continue;
+        }
+        let edge = dd + n * wander * d.z;
+        let w = band * d.z;
+        let v = depth * (1.0 - quintic(clamp((edge - d.z + w) / w, 0.0, 1.0)));
+        if hot {
+            out.hot = max(out.hot, v);
+        } else {
+            out.fel = max(out.fel, v * coast);
+        }
+    }
+    return out;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) zone: vec2<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Keep the standard view vector, flags and material coverage. The splat
@@ -791,10 +896,14 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
 
     // The authored colour, per pixel rather than per vertex — with the sand
     // warmed and the grass dried toward the desert, and every identity gone
-    // to ash, dead turf and obsidian in the Verdigris (the two never meet:
-    // `terrain::fel`'s const block keeps it clear of the desert).
+    // to ash, dead turf and obsidian in the Verdigris. The heart never meets
+    // the desert (`terrain::fel`'s const block); an outbreak may, and the
+    // ash goes over the sand there.
     let dry = clamp(zone.x, 0.0, 1.0);
-    let fel = clamp(zone.y, 0.0, 1.0);
+    // `zone.y` is the heart's edge noise, signed: the depth is rebuilt from
+    // it and the moment the client last read (`blight_at`).
+    let green = blight_at(wp, clamp(zone.y, -1.0, 1.0));
+    let fel = max(green.fel, green.hot);
     var ident = array<vec3<f32>, 4>(
         mix(mix(splat.identity[0].xyz, splat.desert.xyz, dry), splat.fel_ash.xyz, fel),
         mix(mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w), splat.fel_dead.xyz, fel),
@@ -846,6 +955,10 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     var pool = 0.0;
     if fel > 0.02 {
         let heart = smoothstep(0.25, 0.85, fel);
+        // The spread's advancing edge burns brighter, so the creep reads as
+        // moving; nothing on wipe day (`FRONT_RIM_ONSET`).
+        let edge_k = green.front * splat.blight_now.z;
+        let lit_k = max(heart, min(edge_k, 1.0));
         let cell_m = splat.fel_dead.w;
         // The plates lie on the ground: a fissure is cut into what faces the
         // sky, and a steep face is the rock's, whose own cracks light below.
@@ -861,7 +974,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         // that crawls: the plates resolve near and become a glow far.
         let width_px = 2.0 * splat.fel_shape.x / max(fp_m / cell_m, 1e-5);
         let resolved = smoothstep(0.5, 1.5, width_px);
-        let share = splat.fel_ash.w * heart;
+        let share = splat.fel_ash.w * lit_k;
         // About 3.7 × the half-width of a unit-area cellular field lies within
         // that half-width of an edge; `share` of those edges glow, in runs.
         var k = 3.7 * splat.fel_shape.x * share * 0.45;
@@ -889,11 +1002,11 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         // The deep breathes on the slow field, so a pool is not one flat
         // sheet of light, and the shore burns over it.
         let deep = 0.2 + 0.3 * value3(q / 5.0 + vec3<f32>(0.0, 29.0, 0.0));
-        emit = splat.fel_glow.rgb * (k * heart * ground * flat_k * (1.0 - pool) + pool * deep + shore * 1.1);
+        emit = splat.fel_glow.rgb * (k * lit_k * (1.0 + edge_k) * ground * flat_k * (1.0 - pool) + pool * deep + shore * 1.1);
         // The rock's own cracks, where the rock is.
         emit = emit + splat.fel_glow.rgb * rock_crack * terrain_bw.w * ground * heart * 0.8;
         // Scorched dark along the fissures, and the liquid black-green.
-        base = base * (1.0 - 0.65 * rim * heart * ground * flat_k);
+        base = base * (1.0 - 0.65 * rim * lit_k * ground * flat_k);
         base = mix(base, vec3<f32>(0.010, 0.040, 0.012), pool);
     }
 

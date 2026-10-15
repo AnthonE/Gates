@@ -361,10 +361,14 @@ impl RockSoup {
     /// rock, so its share stays 0).
     pub fn mesh(self, seed: u64) -> Mesh {
         let n = self.pos.len();
+        // The heart's edge noise, as the ground carries it: the shader
+        // rebuilds the live spread from it, so the rock in the green and the
+        // ground under it are the same green.
+        let mut lat = terrain::Lattice::new();
         let zone: Vec<[f32; 2]> = self
             .pos
             .iter()
-            .map(|p| [0.0, terrain::fel(seed, p[0], p[2])])
+            .map(|p| [0.0, terrain::fel_wander_memo(&mut lat, seed, p[0], p[2])])
             .collect();
         let uv: Vec<[f32; 2]> = self
             .pos

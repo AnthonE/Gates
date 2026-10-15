@@ -188,6 +188,12 @@ async fn main() {
             d.fallback_at = 0;
         }
     }
+    if let Some(h) = cfg.dev_arc_hour {
+        println!(
+            "⚠ dev_arc_hour = {h}: a fresh world starts {h} hours into its wipe (a saved \
+             world keeps its own clock) — a DEV shard, never a public one"
+        );
+    }
     // What this shard IS, before what it loaded. Three numbers and they are
     // three different questions (`protocol::version`): the build is what to
     // quote in a bug report, `proto` is the exact wire gate, and the floor is

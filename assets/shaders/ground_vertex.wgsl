@@ -22,7 +22,8 @@ struct GroundVertexOutput {
 #endif
     @location(8) road: vec2<f32>,
     @location(9) markings: vec4<f32>,
-    // x = aridity (`terrain::aridity`), y = the Verdigris (`terrain::fel`).
+    // x = aridity (`terrain::aridity`), y = the Verdigris' edge noise
+    // (`terrain::fel_wander`, ±1), which the fragment rebuilds the spread from.
     @location(10) zone: vec2<f32>,
 }
 

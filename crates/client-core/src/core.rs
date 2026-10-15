@@ -2812,6 +2812,7 @@ impl ClientCore {
                     w.fuel = fuel;
                     w.got = got;
                     w.mine = mine;
+                    w.synced = true;
                 }
                 self.arc.unlocks = unlocks;
                 self.arc.gen = self.arc.gen.wrapping_add(1);
