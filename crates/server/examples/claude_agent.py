@@ -144,6 +144,9 @@ lit one burns fuel. `feed_work` takes what your pack holds of what the \
 nearest one needs and puts it all in: it helps everyone and earns your \
 team standing, so give what you have plenty of.
 
+`give:<item>` hands a stack of that item to the teammate nearest you: offered \
+while one is near. Give what they asked for, or what they need.
+
 `places.stones` are the ancients' writing. `read_stone` walks to the \
 nearest one you have not read and reads it; each teaches some of their \
 glyphs, and you read only the glyphs you know (`glyphs_i_read`). A stone \

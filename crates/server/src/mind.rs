@@ -30,6 +30,8 @@ pub const GOAL_HISTORY: usize = 8;
 /// Pack entries and craftable names a summary carries.
 pub const SUMMARY_ITEMS: usize = 16;
 pub const SUMMARY_CRAFTS: usize = 8;
+/// The most kinds a request offers to give (`Goal::Give`), belt first.
+pub const SUMMARY_GIVES: usize = 6;
 /// Materials the next part of the base is short of, as a summary carries them.
 pub const SUMMARY_NEEDS: usize = crate::agent::build::NEED_ROWS;
 /// What its box holds, as a summary carries it.
@@ -211,6 +213,11 @@ pub enum Goal {
     Buy(Name),
     /// Sell the named item for junk at THE GATE's SALVAGE stall.
     Sell(Name),
+    /// Hand the named item to its nearest teammate, as a player does with
+    /// `B`: onto the belt if it is in the pack, held, and given to the
+    /// teammate it faces in hand reach (`Command::Give`, `TRUST_GIVE`).
+    /// Offered while an awake teammate is near.
+    Give(Name),
     /// Take what the nearest open work takes to it and put it in, or fuel
     /// a lit one (`ARC.md`).
     FeedWork,
@@ -327,6 +334,7 @@ impl Goal {
             Goal::SupplyHemp => "supply_hemp",
             Goal::Buy(_) => "buy",
             Goal::Sell(_) => "sell",
+            Goal::Give(_) => "give",
             Goal::FeedWork => "feed_work",
             Goal::ReadStone => "read_stone",
             Goal::SolveLock => "solve_lock",
@@ -343,7 +351,7 @@ impl Goal {
             len += n;
         };
         put(self.key().as_bytes());
-        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) = self {
+        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) | Goal::Give(name) = self {
             put(b":");
             put(name.as_bytes());
         }
@@ -411,6 +419,10 @@ impl Goal {
             Goal::SupplyHemp => "Pick hemp, then put it in the team's box.".into(),
             Goal::Buy(name) => format!("Buy {} with junk at the gate.", name.as_str()),
             Goal::Sell(name) => format!("Sell {} for junk at the gate.", name.as_str()),
+            Goal::Give(name) => format!(
+                "Hand a stack of {} to the teammate nearest you.",
+                name.as_str()
+            ),
             Goal::FeedWork => "Give the nearest open work what it needs, or fuel a lit one.".into(),
             Goal::ReadStone => "Read the nearest unread stone: learn its glyphs; some give a lock's answer.".into(),
             Goal::SolveLock => "Turn a lock's dials to the answer a stone gave; the last turn pays.".into(),
@@ -1144,7 +1156,8 @@ pub const SCRIPTED_DELIVER_FREE: u8 = 4;
 pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 
 /// The most goals one request can offer: the fixed set and every craft.
-pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS;
+pub const MAX_OPTIONS: usize =
+    Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS + SUMMARY_GIVES;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no

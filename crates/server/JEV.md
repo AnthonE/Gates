@@ -68,7 +68,8 @@ The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`,
 `join_team`, `invite`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
 `supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
-`sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`.
+`sell:<item name>`, `give:<item name>`, `read_stone`, `solve_lock`,
+`swipe_card`.
 Only goals that can work now are offered — a gather goal needs a belt tool
 for the kind and room for what it pays, eat needs something worth eating, and
 drink needs known water-giving food or the sea plus the health to pay for it —
@@ -105,6 +106,11 @@ and a reply naming anything else is refused.
   3 minutes (node after node), then deliver. One decision is a whole run.
   A full pack or nothing left in sight turns it for home early.
 - **buy:X / sell:X** — a trade at THE GATE (below).
+- **give:X** — offered for up to six kinds it carries while an awake
+  teammate is within 12 m. One stack goes onto the belt if it is in the
+  pack, then it walks within 2 m, faces them with it in hand and gives it
+  (the human client's **B**). Done when it has left the pack; a pack with
+  no room on their side is `refused`. 30 s at most.
 - **feed_work** — the nearest open work that takes something the pack
   holds, everything of it put in; or a lit one's tank topped up.
 - **read_stone / solve_lock / swipe_card** — the ancients' stones, their

@@ -51,7 +51,7 @@ use crate::botclient::BotDriver;
 use crate::mind::{
     Arms, BodyState, Choice, Distance, Goal, Heard, HeardLine, History, HomeSense, HomeState, Mind,
     Name, Outcome, Place, Range, Report, Say, Sighting, SourceKind, Summary, Threat, Trigger, Why,
-    SUMMARY_CRAFTS, SUMMARY_ITEMS, SUMMARY_THREATS,
+    SUMMARY_CRAFTS, SUMMARY_GIVES, SUMMARY_ITEMS, SUMMARY_THREATS,
 };
 use crate::pace::Pace;
 use client_core::core::{
@@ -67,7 +67,7 @@ use sim_core::deploy::{box_key, cell_center, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_PRIMARY};
-use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD, REFUSE_M_GIVE};
 use sim_core::limits::{
     BOX_SLOTS, CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
 };
@@ -131,6 +131,14 @@ pub const JOIN_GOAL_SECS: u32 = 5;
 /// How near a person must stand for `invite`: the human client's reach
 /// for N (`ASSIST_REACH_M`), inside the shard's own 7 m.
 pub const INVITE_REACH_M: f32 = 3.0;
+/// A give (`Goal::Give`) is offered while an awake teammate is this near,
+/// walks to within [`GIVE_NEAR_M`] of them (inside the sim's hand reach,
+/// `ASSIST_REACH_M`), and gives up after [`GIVE_GOAL_SECS`].
+pub const GIVE_OFFER_M: f32 = FOLLOW_RUN_M;
+pub const GIVE_NEAR_M: f32 = 2.0;
+pub const GIVE_GOAL_SECS: u32 = 30;
+/// A belt move or a hand-over with no answer in this long is tried again.
+pub const GIVE_ANSWER_TICKS: u32 = 2 * TICK_HZ;
 /// A meet (`--friend`): the walk to THE GATE and the wait there, at most
 /// this long before it asks again, standing this near the stall.
 pub const MEET_GOAL_SECS: u32 = 180;
@@ -469,6 +477,9 @@ pub struct Senses {
     pub team_home: Sighting,
     /// A person it could invite to its team stands within reach.
     pub invitee: bool,
+    /// A teammate awake within [`GIVE_OFFER_M`], by the team view or its
+    /// eyes: someone to give to.
+    pub mate_near: bool,
     /// Its friend (`--friend`), and where its eyes have them.
     pub friend: crate::mind::FriendSense,
     pub friend_at: Option<[f32; 2]>,
@@ -594,6 +605,8 @@ pub struct SurvivorStats {
     pub hurts: u64,
     pub landed: u64,
     pub goals_done: u64,
+    /// Stacks handed to a teammate (`Goal::Give`).
+    pub gives: u64,
     pub goals_failed: u64,
     pub goals_interrupted: u64,
     /// Goals a short fight paused and that then carried on.
@@ -720,6 +733,17 @@ enum CraftStep {
     Sent { ticks: u32, recipe: u16 },
     Equip,
     Equipped,
+}
+
+/// A give under way (`Goal::Give`). `started` is the goal's own start, so a
+/// new give begins clean; `moved` is when the stack was sent to the belt;
+/// `sent` is the hand-over: when, what the pack held of the item then, and
+/// the move counter then (a refusal moves it).
+#[derive(Clone, Copy, Debug, Default)]
+struct GiveJob {
+    started: u32,
+    moved: Option<u32>,
+    sent: Option<(u32, u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -920,6 +944,7 @@ pub struct Survivor {
     /// Who `invite` would invite: a person up and within
     /// [`INVITE_REACH_M`], not an agent, not on its team.
     invitee: Option<u32>,
+    give_job: GiveJob,
     /// Since when it has led a team of one, if it does.
     alone_since: Option<u32>,
     /// Its friend (`--friend`): their wallet, the player id the shard gave
@@ -1056,6 +1081,7 @@ impl Survivor {
             wedge: Wedge::default(),
             backoff: None,
             invitee: None,
+            give_job: GiveJob::default(),
             alone_since: None,
             friend: opts.friend,
             friend_id: 0,
@@ -2240,6 +2266,11 @@ impl Survivor {
             }
             Goal::Buy(name) => self.trade(core, body, name, false, tick),
             Goal::Sell(name) => self.trade(core, body, name, true, tick),
+            Goal::Give(_) if elapsed >= GIVE_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Give(name) => self.give(core, body, name, active.started, tick),
             Goal::FeedWork => self.feed_work(core, body, tick),
             Goal::ReadStone | Goal::SolveLock | Goal::SwipeCard
                 if elapsed >= VISIT_GOAL_SECS * TICK_HZ =>
@@ -2314,6 +2345,155 @@ impl Survivor {
             reachable: id != 0 && self.invitee == Some(id),
             invited_me: id != 0 && team.invite == id && team.count == 0,
         }
+    }
+
+    /// The nearest awake teammate: its id, where it stands (its track when
+    /// the eyes have it this second, else the team view, as `follow` reads
+    /// it), and whether the eyes have it.
+    fn nearest_mate(&self, core: &ClientCore, tick: u32) -> Option<(u32, [f32; 2], bool)> {
+        let own = self.tracks.own()?;
+        let team = *core.team();
+        let mut best: Option<(f32, u32, [f32; 2], bool)> = None;
+        for m in team.members() {
+            if m.id == core.player_id || m.state != protocol::TEAM_AWAKE {
+                continue;
+            }
+            let track = self
+                .tracks
+                .get(m.id)
+                .filter(|t| t.visible && !t.dead && tick.wrapping_sub(t.last_seen) < TICK_HZ);
+            let at = track.map_or([f32::from(m.x_m) + 0.5, f32::from(m.z_m) + 0.5], |t| {
+                [t.pos[0], t.pos[2]]
+            });
+            let d = (at[0] - own.pos[0]).hypot(at[1] - own.pos[2]);
+            if best.is_none_or(|b| d < b.0) {
+                best = Some((d, m.id, at, track.is_some()));
+            }
+        }
+        best.map(|(_, id, at, seen)| (id, at, seen))
+    }
+
+    /// Hand a stack of `name` to the nearest awake teammate, the way a
+    /// player does: the stack onto the belt if it is in the pack, then held,
+    /// walked up to them, aimed at, and given (`B`). Done when the pack
+    /// holds less of it; a full pack on their side is `Refused`.
+    fn give(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        name: Name,
+        started: u32,
+        tick: u32,
+    ) -> Intent {
+        if self.give_job.started != started {
+            self.give_job = GiveJob {
+                started,
+                ..GiveJob::default()
+            };
+        }
+        let Some(item) = crate::agent::build::item_named(core, name.as_str()) else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        let have = count_item(core, item);
+        // The hand-over went out: the pack says whether it landed.
+        if let Some((at, before, seq)) = self.give_job.sent {
+            if have < before {
+                self.stats.gives += 1;
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
+            if core.move_seq != seq && u32::from(core.last_move_refused) == REFUSE_M_GIVE {
+                self.end_goal(tick, Outcome::Failed(Why::Refused));
+                return Intent::IDLE;
+            }
+            if tick.wrapping_sub(at) < GIVE_ANSWER_TICKS {
+                return Intent::IDLE;
+            }
+            self.give_job.sent = None;
+        }
+        if have == 0 {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        }
+        // Onto the belt first: a player gives what is in their hand.
+        let held = |s: &sim_core::gather::ItemStack| s.count > 0 && s.item == item;
+        let Some(belt) = (0..HOTBAR_SLOTS).find(|&i| held(&core.inv[i])) else {
+            if self
+                .give_job
+                .moved
+                .is_some_and(|at| tick.wrapping_sub(at) < GIVE_ANSWER_TICKS)
+            {
+                return Intent::IDLE;
+            }
+            let Some(from) = (HOTBAR_SLOTS..INV_SLOTS).find(|&i| held(&core.inv[i])) else {
+                self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                return Intent::IDLE;
+            };
+            // An empty belt slot, else the last one (the stacks swap).
+            let to = (0..HOTBAR_SLOTS)
+                .find(|&i| core.inv[i].count == 0)
+                .unwrap_or(HOTBAR_SLOTS - 1);
+            let count = core.inv[from].count;
+            if self.queue(|buf| {
+                protocol::encode_action_move(
+                    0, CONT_SELF, from as u8, CONT_SELF, to as u8, count, buf,
+                )
+            }) {
+                self.give_job.moved = Some(tick);
+            }
+            return Intent::IDLE;
+        };
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let Some((id, at, seen)) = self.nearest_mate(core, tick) else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        let d = (at[0] - x).hypot(at[1] - z);
+        self.stats.phase = Phase::Following;
+        if d > GIVE_NEAR_M {
+            return match self
+                .route
+                .to_at(core, body, at, None, GIVE_NEAR_M - 0.5, false, tick)
+            {
+                step @ Step::Walk { yaw, .. } => {
+                    self.heading = Some(yaw);
+                    step.walk().unwrap_or(Intent::walk(yaw))
+                }
+                Step::Arrived | Step::Wait => Intent::IDLE,
+                Step::Blocked => {
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    Intent::IDLE
+                }
+            };
+        }
+        // Face them with it in hand, and hand it over once the aim is on.
+        // Not yet in sight (behind it): turn to where the team view has them.
+        let look = if seen {
+            Look::Body {
+                id,
+                part: sim_core::collide::Part::Chest.bits(),
+            }
+        } else {
+            Look::Point([
+                at[0],
+                body.qy as f32 * POS_Y_Q + tracks::eye_m(false),
+                at[1],
+            ])
+        };
+        let aim = Intent {
+            look,
+            sel: Some(belt as u8),
+            ..Intent::IDLE
+        };
+        if seen && self.hands.settled() {
+            let count = core.inv[belt].count;
+            let seq = core.move_seq;
+            if self.queue(|buf| protocol::encode_action_give(belt as u8, count, id, buf)) {
+                self.give_job.sent = Some((tick, have, seq));
+            }
+        }
+        aim
     }
 
     /// Follow: stay within reach of the nearest awake teammate (the leader
@@ -5180,6 +5360,10 @@ impl Survivor {
         }
         self.invitee = invitee.map(|(_, id)| id);
         self.senses.invitee = self.invitee.is_some();
+        self.senses.mate_near = own_pos.is_some_and(|o| {
+            self.nearest_mate(core, tick)
+                .is_some_and(|(_, at, _)| (at[0] - o[0]).hypot(at[1] - o[1]) <= GIVE_OFFER_M)
+        });
         self.senses.friend_at = friend_at;
         self.senses.friend = self.friend_sense(core, &team, tick);
         if team.count == 1 && team.leader == core.player_id {
@@ -6751,6 +6935,23 @@ pub fn observe(
     }
     if s.team.awake.count > 0 {
         s.offer(Goal::Follow);
+    }
+    // A teammate awake and near: each kind it carries, belt first, to hand
+    // over (`B`). At most `SUMMARY_GIVES` kinds.
+    if senses.mate_near {
+        let mut kinds = 0;
+        for i in 0..INV_SLOTS {
+            let st = core.inv[i];
+            if st.count == 0 || kinds >= SUMMARY_GIVES {
+                continue;
+            }
+            if let Some(name) = Name::new(core.catalog.name(usize::from(st.item))) {
+                if !s.offers(Goal::Give(name)) {
+                    s.offer(Goal::Give(name));
+                    kinds += 1;
+                }
+            }
+        }
     }
     // Its friend on the island, not on its team and not yet in reach: the
     // walk to THE GATE, where they know to find it.

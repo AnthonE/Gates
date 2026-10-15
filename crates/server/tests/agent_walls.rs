@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 25] = [
+const EXPECTED_VERBS: [&str; 26] = [
     "craft",
     "consume",
     "drink",
@@ -98,6 +98,7 @@ const EXPECTED_VERBS: [&str; 25] = [
     "vend",
     "arc",
     "swipe",
+    "give",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and
@@ -2544,6 +2545,115 @@ fn a_teammate_follows_through_a_shut_door() {
     assert!(near(&h), "never got in to its teammate: {}", h.explain());
     assert!(shut(&h), "the door was left open");
     assert!(h.verbs.contains("use"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The give test's decision source: yes to a team, then hand over the
+/// wood once a give of it is offered.
+struct GiveWoodWhenOffered;
+
+impl server::mind::DecisionSource for GiveWoodWhenOffered {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let give = s
+            .options()
+            .iter()
+            .copied()
+            .find(|g| matches!(g, Goal::Give(n) if n.as_str() == "Wood"));
+        let goal = if s.offers(Goal::JoinTeam) {
+            Goal::JoinTeam
+        } else {
+            give.unwrap_or(Goal::Wait)
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+            say: server::mind::Say::Quiet,
+            code: None,
+        })
+    }
+}
+
+/// Asked to give its wood to a teammate standing a few metres off, the
+/// agent moves the stack from its pack onto its belt, walks up, faces them
+/// with it in hand and hands it over: the human client's `B`, the whole
+/// stack, into their pack.
+#[test]
+fn a_teammate_hands_over_its_wood() {
+    let at = common::clearing(3);
+    let mind = Mind::inline(GiveWoodWhenOffered, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    h.with_puppet();
+    h.step();
+    let wood = common::stack(&content, "item.wood");
+    let stack = sim_core::gather::ItemStack { count: 120, ..wood };
+    // Its only wood, in the pack past the belt.
+    h.stage(move |p| {
+        for s in p.inv.iter_mut().filter(|s| s.item == wood.item) {
+            *s = sim_core::gather::ItemStack::default();
+        }
+        p.inv[HOTBAR_SLOTS + 3] = stack;
+    });
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    let haven = h.shard.world.haven;
+    let (x, z) = (body.qx as f32 * 0.03, body.qz as f32 * 0.03);
+    let off = sim_core::movement::Body::at(SEED, &haven, x + 6.0, z);
+    h.stage_puppet(move |p| p.body = off);
+    let wood_of = |p: &sim_core::world::Player| -> u32 {
+        p.inv
+            .iter()
+            .filter(|s| s.count > 0 && s.item == wood.item)
+            .map(|s| u32::from(s.count))
+            .sum()
+    };
+    let puppet_wood = |h: &Harness| {
+        h.shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == PUPPET)
+            .map_or(0, wood_of)
+    };
+    for _ in 0..30 * TICK_HZ {
+        if puppet_wood(&h) >= 120 {
+            break;
+        }
+        h.step();
+    }
+    assert_eq!(
+        puppet_wood(&h),
+        120,
+        "the wood never arrived: {}",
+        h.explain()
+    );
+    assert_eq!(wood_of(h.me()), 0, "the agent kept some of it");
+    assert!(
+        h.verbs.contains("move"),
+        "onto the belt first: {:?}",
+        h.verbs
+    );
+    assert!(h.verbs.contains("give"), "{:?}", h.verbs);
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
