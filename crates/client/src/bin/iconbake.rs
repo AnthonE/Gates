@@ -122,6 +122,19 @@ const fn kit(stem: &'static str, turn: [f32; 3]) -> Subject {
     }
 }
 
+/// A model laid side on and turned `roll` on screen: a gun's framing. A
+/// generated gun is authored muzzle to -X, the kit's to +X, so it is turned
+/// round first and every gun in the bag points the same way.
+const fn side(stem: &'static str, glb: &'static str, roll: f32) -> Subject {
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn: [180.0, 0.0, 0.0],
+        roll,
+        girth: 1.0,
+    }
+}
+
 /// A long prop from the kit, on the diagonal.
 const fn kit_long(stem: &'static str, roll: f32) -> Subject {
     Subject {
@@ -163,6 +176,21 @@ const SUBJECTS: &[Subject] = &[
     ),
     s("junk", "models/held/junk.glb", [0.0, 0.0, 0.0]),
     s("leather", "models/held/leather.glb", [0.0, 0.0, 0.0]),
+    s("sulfur", "models/held/sulfur.glb", [0.0, 0.0, 0.0]),
+    s("gunpowder", "models/held/gunpowder.glb", [0.0, 0.0, 0.0]),
+    s("animal_fat", "models/held/animal_fat.glb", [0.0, 0.0, 0.0]),
+    s(
+        "bone_fragments",
+        "models/held/bone_fragments.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("tarp", "models/held/tarp.glb", [0.0, 0.0, 0.0]),
+    s("waterskin", "models/held/waterskin.glb", [0.0, 0.0, 0.0]),
+    s(
+        "full_waterskin",
+        "models/held/full_waterskin.glb",
+        [0.0, 0.0, 0.0],
+    ),
     // The small box shares this model; the finisher draws it smaller.
     s("large_box", "models/deploy/box.glb", [0.0, 0.0, 0.0]),
     s("sleeping_bag", "models/deploy/bag.glb", [-20.0, 0.0, 0.0]),
@@ -291,16 +319,15 @@ const SUBJECTS: &[Subject] = &[
     kit_long("metal_spring", -30.0),
     // …guns and plates side on, nudged up at the muzzle…
     kit_long("revolver", 18.0),
-    kit_long("semi_automatic_body", 18.0),
-    kit_long("smg_body", 18.0),
-    kit_long("rifle_body", 18.0),
+    side(
+        "semi_automatic_body",
+        "models/held/semi_automatic_body.glb",
+        18.0,
+    ),
+    side("smg_body", "models/held/smg_body.glb", 18.0),
+    side("rifle_body", "models/held/rifle_body.glb", 18.0),
     kit_long("blueprint", 20.0),
     // …and the rest as they would sit on a table.
-    kit("tarp", [0.0, 0.0, 0.0]),
-    kit("animal_fat", [0.0, 0.0, 0.0]),
-    kit("sulfur", [0.0, 0.0, 0.0]),
-    kit("gunpowder", [0.0, 0.0, 0.0]),
-    kit("bone_fragments", [0.0, 0.0, 0.0]),
     kit("gears", [30.0, 0.0, 0.0]),
     kit("rope", [0.0, 0.0, 0.0]),
     kit("empty_propane_tank", [0.0, 0.0, 0.0]),
@@ -310,8 +337,6 @@ const SUBJECTS: &[Subject] = &[
     kit("tech_trash", [30.0, 30.0, 0.0]),
     kit("key_lock", [30.0, 0.0, 0.0]),
     kit("code_lock", [30.0, 0.0, 0.0]),
-    kit("waterskin", [30.0, 0.0, 0.0]),
-    kit("full_waterskin", [30.0, 0.0, 0.0]),
     kit("pistol_round", [30.0, 0.0, 0.0]),
     kit("corn_seed", [0.0, 0.0, 0.0]),
     kit("hemp_seed", [0.0, 0.0, 0.0]),

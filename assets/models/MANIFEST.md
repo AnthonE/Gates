@@ -828,6 +828,77 @@ Prompts, in full, for the IP rail:
 >
 > **leather** — "A single rolled-up tanned animal hide on a plain white background, three-quarter view. A cylinder of rough brown leather 34 centimetres long and about 13 centimetres thick, tied around with two thin leather cords, the loose edge of the hide lying along the roll, the paler suede underside showing at both ends of the roll. Worn, creased, uneven natural edges. Real, photographed in soft daylight. Exactly one roll. No fur, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Rough tanned brown leather with creases and natural grain, paler suede underside at the ends, thin leather cords, worn, matte, no fur, no print"
 
+## `held/` — the prop kit's version 2, batch 2 (Meshy, 2026-10-15)
+
+Ten more, the same pipeline and terms as batch 1 above: the powders, the
+fat, the bones, the tarp, both waterskins and the three gun bodies. Piles and
+folded things are `borne` rows, the skins and bodies `upright`, each keeping
+its kit row's grip and scale (`iconbake --hand`, judged against batch 1's
+stone and wood); the powders went from 0.50 to 0.60, the files being lower
+mounds than the kit's cones.
+
+| file | item | image task | mesh task | credits | size (m) | note |
+|---|---|---|---|---|---|---|
+| `held/sulfur.glb` | Sulfur | `01a13e37-c4b7` | `01a13e38-43f9` | 24 | 0.34 × 0.09 × 0.34 | as delivered (chart contrast 0.019 already) |
+| `held/gunpowder.glb` | Gunpowder | `01a13e39-0593` | `01a13e39-8504` | 24 | 0.34 × 0.10 × 0.34 | as delivered (0.028) |
+| `held/animal_fat.glb` | Animal Fat | `01a13e3a-708d` | `01a13e48-d49f` | 24 | 0.26 × 0.18 × 0.19 | as delivered (0.051); the mesh failed once, see below |
+| `held/bone_fragments.glb` | Bone Fragments | `01a13e3b-f8c2` | `01a13e3c-78f0` | 24 | 0.23 × 0.11 × 0.27 | charts flattened |
+| `held/tarp.glb` | Tarp | `01a13e3d-dd49` | `01a13e3e-32ce` | 24 | 0.36 × 0.15 × 0.29 | as delivered (0.039) |
+| `held/waterskin.glb` | Waterskin | `01a13e3f-1fe5` | `01a13e3f-a695` | 24 | 0.18 × 0.31 × 0.08 | charts flattened |
+| `held/full_waterskin.glb` | Full Waterskin | `01a13e40-691c` | `01a13e40-bf45` | 24 | 0.20 × 0.32 × 0.15 | charts flattened |
+| `held/semi_automatic_body.glb` | Semi Automatic Body | `01a13e41-d335` | `01a13e42-54aa` | 24 | 0.38 × 0.21 × 0.05 | charts flattened |
+| `held/smg_body.glb` | SMG Body | `01a13e4e-2c45` | `01a13e4e-ac50` | 48 | 0.32 × 0.16 × 0.07 | second roll, charts flattened; see below |
+| `held/rifle_body.glb` | Rifle Body | `01a13e44-4cbd` | `01a13e44-cc0d` | 24 | 0.46 × 0.16 × 0.16 | charts flattened |
+
+**264 credits for the batch** (balance 2,849 → 2,585, measured): eleven
+rolls at 24, the ten items and the SMG body's second. The fat's failed first
+mesh cost nothing; its 24 is the image and the mesh built again from it (15).
+
+What was learned, measured:
+
+- **A gun part asked for as "a receiver" can come back as a gun.** The SMG
+  body's first roll (`01a13e43-0aee` / `01a13e43-89d4`, kept in
+  `To Examine/kit_v2/smg_body_roll1_*`) was a chunky pistol with a round
+  breech. The second prompt names the shape instead of the part — "a long
+  straight rectangular tube of stamped sheet steel", the magazine well under
+  its front half, the grip under its back half — and lists what is not there
+  (barrel, stock, magazine, sights, muzzle); it reads as a receiver.
+- **A failed mesh keeps its image.** The fat's first image-to-3d came back
+  `server_error` ("Failed to generate preview images"); the image task was
+  fine, so `meshy_gen.py --resume-image 01a13e3a-708d-74c9-810a-f694116d92ed`
+  built the mesh from it for 15 credits instead of a fresh 24.
+- **The generated guns are authored muzzle to -X**, the kit's revolver to
+  +X. `iconbake`'s `side()` turns a file round so every gun in the bag points
+  the same way; in the hand they are parts and point where they were made.
+- **`measure_glb.py`'s depth band rejects every gun body** (a receiver is a
+  fifth as deep as it is long) and its aspect gate the sulfur heap (a mound
+  is wide and low). Both are what they should be; the gates are a rock's.
+
+Prompts, in full, for the IP rail:
+
+> **sulfur** — "A single small heap of yellow sulfur powder on a plain white background, three-quarter view. Fine crumbly powder in a low rounded mound with a few small broken lumps on top, 34 centimetres wide, 34 centimetres deep and 17 centimetres tall, as deep as it is wide. Warm golden-yellow mustard sulfur, dusty, matte. Real, photographed in soft daylight. Never green, never lime. Exactly one heap. No container, no bag, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Warm golden-yellow mustard sulfur powder, fine and crumbly, dusty, matte, a few small lumps, never green, never lime"
+>
+> **gunpowder** — "A single small heap of black gunpowder on a plain white background, three-quarter view. Fine dark grey-black granular powder in a low rounded mound, a few tiny grains scattered at its foot, 34 centimetres wide, 34 centimetres deep and 16 centimetres tall, as deep as it is wide. Matte charcoal grey with a faint graphite sheen on the grains, not pure black. Real, photographed in soft daylight. Exactly one heap. No container, no bag, no fuse, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Fine dark grey-black granular gunpowder, matte charcoal grey with a faint graphite sheen on the grains, not pure black, no glow"
+>
+> **animal_fat** — "A single slab of raw animal fat on a plain white background, three-quarter view. A thick irregular chunk of white suet with a waxy surface, faintly yellow and creamy, uneven torn edges and a few thin pink streaks, 26 centimetres long, 20 centimetres deep and 17 centimetres tall. Real, photographed in soft daylight. Exactly one piece. No plate, no board, no knife, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Raw white animal fat, waxy creamy suet, faintly yellow, thin pink streaks, slightly glossy, no plate, no blood pool"
+>
+> **bone_fragments** — "A single small pile of broken animal bones on a plain white background, three-quarter view. Two snapped leg bones with knobbed joint ends and a few sharp splinters lying together, weathered off-white and pale ivory with faint brown staining in the cracks, the pile 27 centimetres long, 23 centimetres wide and 9 centimetres tall. Real, photographed in soft daylight. Exactly one pile. No skull, no meat, no blood, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Weathered off-white and pale ivory animal bone, porous ends, faint brown staining in the cracks, dry, matte, no blood"
+>
+> **tarp** — "A single folded canvas tarpaulin on a plain white background, three-quarter view. Heavy olive-drab waterproof canvas folded into a flat rectangular bundle, two brass grommets at one corner, creased, dusty and stained, 36 centimetres wide, 26 centimetres deep and 10 centimetres tall. Real, photographed in soft daylight. Exactly one bundle. No rope, no ground, no people, no hands, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Heavy olive-drab waterproof canvas, visible weave, creases, dust and stains, brass grommets, matte, no text, no logos"
+>
+> **waterskin** — "A single empty leather waterskin on a plain white background, three-quarter view. A flat teardrop-shaped bag of dark tanned leather, slack and creased because it is empty, stitched along its edges, a short leather neck with a wooden stopper and a cord tied around the neck, standing upright, 31 centimetres tall, 18 centimetres wide and 9 centimetres deep. Real, worn, photographed in soft daylight. Exactly one waterskin. No water, no cup, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Dark tanned leather, creased and slack, stitched seams, worn edges, wooden stopper, cord tie, matte, no print"
+>
+> **full_waterskin** — "A single full leather waterskin on a plain white background, three-quarter view. A plump teardrop-shaped bag of dark tanned leather, full and taut with water, darker and slightly glossy where it is damp, stitched along its edges, a short leather neck with a wooden stopper and a cord tied around the neck, standing upright, 32 centimetres tall, 20 centimetres wide and 15 centimetres deep. Real, worn, photographed in soft daylight. Exactly one waterskin. No cup, no puddle, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Dark tanned leather, full and taut, darker and slightly glossy where damp, stitched seams, wooden stopper, cord tie, no print"
+>
+> **semi_automatic_body** — "A single bare semi-automatic rifle receiver on a plain white background, three-quarter side view. Only the central metal body of the gun: the receiver with its trigger guard, trigger and a pistol grip, an ejection port and a short stub where the barrel would mount. No stock, no barrel, no magazine, no scope. Worn black and gunmetal-grey finish with scratches and bare steel on the edges, 38 centimetres long, 14 centimetres tall and 8 centimetres wide. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."  ·  texture: "Worn black and gunmetal-grey steel, scratches, bare metal on the edges, oil grime, matte, no text, no logos"
+>
+> **smg_body** — "A single bare submachine gun receiver on a plain white background, seen from the side, slightly from above. A long straight rectangular tube of stamped sheet steel lying horizontally, 32 centimetres long, about 5 centimetres tall and 5 centimetres wide, with a narrow magazine well hanging under its front half, a pistol grip and a trigger guard under its back half, a slot for the cocking handle and rivets along its side. Only the receiver: no barrel, no stock, no magazine, no sights, no muzzle. Worn black paint over steel, scratched to bare metal on the edges. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."  ·  texture: "Worn black paint over stamped steel, scratched to bare metal on the edges, rivets, oil grime, matte, no text, no logos"
+>
+>
+> **smg_body**, first roll (not shipped) — "A single bare submachine gun receiver on a plain white background, three-quarter side view. Only the compact boxy stamped-steel body of the gun with a magazine well underneath, a pistol grip, a trigger and trigger guard and a cocking handle on the side. No stock, no barrel, no magazine, no sights. Worn black finish with scratches and bare steel on the edges, 32 centimetres long, 17 centimetres tall and 6 centimetres wide. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."
+>
+> **rifle_body** — "A single bare bolt-action rifle action on a plain white background, three-quarter side view. Only the long round steel receiver with its bolt and bent bolt handle, a trigger and trigger guard beneath it. No wooden stock, no barrel, no scope, no magazine. Blued steel worn to bare metal on the edges, light rust spots, 46 centimetres long, 14 centimetres tall and 6 centimetres wide. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."  ·  texture: "Blued steel worn to bare metal on the edges, scratches, light rust spots, oil grime, matte, no text, no logos"
+
 ## `held/skins/` — skins with a model of their own
 
 A skin row in `ui::hold::SKIN_MODELS` draws this file instead of its row's

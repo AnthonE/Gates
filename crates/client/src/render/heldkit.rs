@@ -103,17 +103,12 @@ const CLOTH: Mat = m(0xd8c8a0, 0.95, 0.0, Tex::Weave);
 const BURLAP: Mat = m(0xbca070, 0.95, 0.0, Tex::Weave);
 const CHARRED_CLOTH: Mat = m(0x5a4636, 0.95, 0.0, Tex::Weave);
 const ROPE: Mat = m(0xccaa70, 0.95, 0.0, Tex::Weave);
-const TARP: Mat = m(0x667f48, 0.9, 0.0, Tex::Weave);
 const LEATHER: Mat = m(0x94603a, 0.6, 0.0, Tex::Speckle);
-const LEATHER_WET: Mat = m(0x6a4228, 0.4, 0.0, Tex::Speckle);
 const HIDE: Mat = m(0xa8784c, 0.75, 0.0, Tex::Speckle);
 const BONE: Mat = m(0xece2c8, 0.55, 0.0, Tex::Speckle);
 const STONE: Mat = m(0x8f8a84, 0.85, 0.0, Tex::Speckle);
 const FLINT: Mat = m(0x6e6c72, 0.38, 0.0, Tex::Speckle);
 const CHARCOAL: Mat = m(0x2c2c30, 0.55, 0.15, Tex::Speckle);
-const SULFUR: Mat = m(0xe6cc3c, 0.75, 0.0, Tex::Speckle);
-const POWDER: Mat = m(0x4a4b52, 0.92, 0.0, Tex::Speckle);
-const FAT: Mat = m(0xf0e4c6, 0.3, 0.0, Tex::Speckle);
 const RED_PAINT: Mat = m(0xb8362a, 0.45, 0.25, Tex::Speckle);
 const YELLOW_PAINT: Mat = m(0xdcb82e, 0.45, 0.25, Tex::Speckle);
 const WHITE_PAINT: Mat = m(0xdcdfe0, 0.4, 0.3, Tex::Speckle);
@@ -755,11 +750,6 @@ pub const NAMES: &[&str] = &[
     "revolver",
     "crossbow",
     "hunting_bow",
-    "tarp",
-    "animal_fat",
-    "sulfur",
-    "gunpowder",
-    "bone_fragments",
     "gears",
     "rope",
     "metal_blade",
@@ -769,16 +759,11 @@ pub const NAMES: &[&str] = &[
     "sheet_metal",
     "metal_pipe",
     "road_signs",
-    "semi_automatic_body",
-    "smg_body",
-    "rifle_body",
     "tech_trash",
     "electric_fuse",
     "blueprint",
     "key_lock",
     "code_lock",
-    "waterskin",
-    "full_waterskin",
     "pistol_round",
     "medical_syringe",
     "corn_seed",
@@ -810,11 +795,6 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "revolver" => revolver(),
         "crossbow" => crossbow(),
         "hunting_bow" => bow(),
-        "tarp" => folded(TARP, 2, 0.36, 0.26),
-        "animal_fat" => fat(),
-        "sulfur" => powder_pile(SULFUR, 12),
-        "gunpowder" => powder_pile(POWDER, 13),
-        "bone_fragments" => bones(),
         "gears" => gears(),
         "rope" => rope(),
         "metal_blade" => blade(),
@@ -824,16 +804,11 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "sheet_metal" => sheets(),
         "metal_pipe" => metal_pipe(),
         "road_signs" => road_signs(),
-        "semi_automatic_body" => gun_body(0.26, false, true),
-        "smg_body" => gun_body(0.2, true, false),
-        "rifle_body" => gun_body(0.34, false, false),
         "tech_trash" => tech_trash(),
         "electric_fuse" => fuse(),
         "blueprint" => blueprint(),
         "key_lock" => padlock(),
         "code_lock" => code_lock(),
-        "waterskin" => waterskin(false),
-        "full_waterskin" => waterskin(true),
         "pistol_round" => rounds(),
         "medical_syringe" => syringe(),
         "corn_seed" => seeds(KERNEL, 0.012, 21),
@@ -1114,61 +1089,6 @@ fn bow() -> Vec<Part> {
     ]
 }
 
-/// A stack of folded cloth: `n` pillowy sheets, each turned a little.
-fn folded(mat: Mat, n: usize, w: f32, d: f32) -> Vec<Part> {
-    let mut out = Vec::new();
-    let rect = rounded_rect(w, d, 0.03);
-    for i in 0..n {
-        let a = jit(i as u32, 5) * 8.0;
-        out.push(p(
-            slab(&rect, 0.03, 0.014),
-            mat,
-            xf(
-                [jit(i as u32, 6) * 0.01, i as f32 * 0.04, 0.0],
-                [-90.0, a, 0.0],
-            ),
-        ));
-    }
-    out
-}
-
-fn rounded_rect(w: f32, h: f32, r: f32) -> Vec<Vec2> {
-    let mut v = Vec::new();
-    let (hx, hy) = (w * 0.5 - r, h * 0.5 - r);
-    for (cx, cy, a0) in [
-        (hx, hy, 0.0),
-        (-hx, hy, 90.0),
-        (-hx, -hy, 180.0),
-        (hx, -hy, 270.0),
-    ] {
-        for k in 0..=4 {
-            let a = (a0 + k as f32 * 22.5f32).to_radians();
-            v.push(Vec2::new(cx + r * a.cos(), cy + r * a.sin()));
-        }
-    }
-    v
-}
-
-fn fat() -> Vec<Part> {
-    vec![
-        p(
-            blob(41, 0.3),
-            FAT,
-            xfs([0.0, 0.06, 0.0], [0.0; 3], [0.12, 0.07, 0.1]),
-        ),
-        p(
-            blob(42, 0.35),
-            FAT,
-            xfs([0.07, 0.11, 0.02], [0.0, 30.0, 0.0], [0.07, 0.05, 0.06]),
-        ),
-        p(
-            blob(43, 0.3),
-            FAT,
-            xfs([-0.06, 0.1, 0.04], [0.0, 60.0, 0.0], [0.06, 0.045, 0.05]),
-        ),
-    ]
-}
-
 /// A heap of `n` faceted lumps of `mat`, about `r` each.
 fn heap(mat: Mat, n: u32, r: f32, seed: u32) -> Vec<Part> {
     (0..n)
@@ -1190,39 +1110,6 @@ fn heap(mat: Mat, n: u32, r: f32, seed: u32) -> Vec<Part> {
         .collect()
 }
 
-fn powder_pile(mat: Mat, seed: u32) -> Vec<Part> {
-    let mut out = vec![p(
-        lathe(
-            &[
-                (0.17, 0.0),
-                (0.15, 0.03),
-                (0.11, 0.08),
-                (0.06, 0.13),
-                (0.0, 0.155),
-            ],
-            36,
-        ),
-        mat,
-        Transform::IDENTITY,
-    )];
-    out.extend(heap(mat, 6, 0.03, seed).into_iter().map(|mut part| {
-        part.at.translation += Vec3::new(0.09, 0.0, 0.1);
-        part
-    }));
-    out
-}
-
-/// One bone: a shaft and a knuckle of two knobs at each end.
-fn bone(len: f32, r: f32) -> Vec<Part> {
-    let mut out = vec![p(cyl(r, len), BONE, Transform::IDENTITY)];
-    for y in [-len * 0.5, len * 0.5] {
-        for x in [-r * 0.9, r * 0.9] {
-            out.push(p(sphere(r * 1.5), BONE, xf([x, y, 0.0], [0.0; 3])));
-        }
-    }
-    out
-}
-
 /// A garment authored laid back 20° for the icon's camera, stood up straight
 /// so a hand carries it by the shoulders; `iconbake` tips it back again.
 fn stood(parts: Vec<Part>) -> Vec<Part> {
@@ -1234,24 +1121,6 @@ fn place(parts: Vec<Part>, at: Transform) -> impl Iterator<Item = Part> {
         part.at = at * part.at;
         part
     })
-}
-
-fn bones() -> Vec<Part> {
-    let mut out = Vec::new();
-    out.extend(place(
-        bone(0.24, 0.016),
-        xf([0.0, 0.03, 0.0], [90.0, 0.0, 30.0]),
-    ));
-    out.extend(place(
-        bone(0.18, 0.014),
-        xf([0.02, 0.07, 0.03], [90.0, 0.0, -40.0]),
-    ));
-    out.push(p(
-        lump(91, 0.5),
-        BONE,
-        xfs([0.09, 0.02, 0.08], [0.0; 3], [0.04, 0.02, 0.025]),
-    ));
-    out
 }
 
 /// A gear in XY: a disc, `teeth` teeth, a hub and its bore.
@@ -1439,72 +1308,6 @@ fn road_signs() -> Vec<Part> {
     ]
 }
 
-/// A receiver along +X: the body, the barrel's stub, the grip, and a
-/// magazine (`mag`) or a bolt handle (`bolt`).
-fn gun_body(len: f32, mag: bool, bolt: bool) -> Vec<Part> {
-    let mut out = vec![
-        p(
-            cuboid(len, 0.06, 0.035),
-            GUNMETAL,
-            xf([0.0, 0.0, 0.0], [0.0; 3]),
-        ),
-        p(
-            cuboid(len * 0.8, 0.012, 0.022),
-            DARK_STEEL,
-            xf([0.0, 0.036, 0.0], [0.0; 3]),
-        ),
-        p(
-            cyl(0.012, 0.06),
-            DARK_STEEL,
-            xf([len * 0.5 + 0.03, 0.01, 0.0], [0.0, 0.0, 90.0]),
-        ),
-        p(
-            cuboid(0.035, 0.08, 0.03),
-            GUNMETAL,
-            xf([-len * 0.3, -0.06, 0.0], [0.0, 0.0, 15.0]),
-        ),
-        p(
-            tube(
-                &arc(Vec3::new(-len * 0.15, -0.03, 0.0), 0.022, PI, TAU, 12),
-                |_| 0.004,
-                8,
-            ),
-            DARK_STEEL,
-            Transform::IDENTITY,
-        ),
-    ];
-    out.push(p(
-        cuboid(len * 0.25, 0.02, 0.004),
-        HOLE,
-        xf([len * 0.1, 0.012, 0.018], [0.0; 3]),
-    ));
-    out.push(p(
-        cuboid(0.06, 0.05, 0.03),
-        WOOD_DARK,
-        xf([-len * 0.5 - 0.03, -0.005, 0.0], [0.0; 3]),
-    ));
-    if mag {
-        out.push(p(
-            cuboid(0.03, 0.1, 0.024),
-            DARK_STEEL,
-            xf([len * 0.1, -0.08, 0.0], [0.0; 3]),
-        ));
-    }
-    if bolt {
-        out.push(p(
-            cyl(0.006, 0.04),
-            STEEL,
-            xf([len * 0.15, 0.02, 0.035], [90.0, 0.0, 0.0]),
-        ));
-        out.push(p(
-            sphere(0.01),
-            STEEL,
-            xf([len * 0.15, 0.02, 0.055], [0.0; 3]),
-        ));
-    }
-    out
-}
-
 fn tech_trash() -> Vec<Part> {
     let mut out = vec![p(cuboid(0.24, 0.012, 0.16), PCB, Transform::IDENTITY)];
     for (x, z, w, d) in [
@@ -1623,24 +1426,6 @@ fn code_lock() -> Vec<Part> {
         }
     }
     out
-}
-
-fn waterskin(full: bool) -> Vec<Part> {
-    let (s, mat, tie) = if full {
-        ([0.1, 0.13, 0.075], LEATHER_WET, BLUE_PAINT)
-    } else {
-        ([0.09, 0.12, 0.045], LEATHER, ROPE)
-    };
-    vec![
-        p(blob(51, 0.15), mat, xfs([0.0, 0.12, 0.0], [0.0; 3], s)),
-        p(
-            frustum(0.022, 0.035, 0.05),
-            mat,
-            xf([0.0, 0.26, 0.0], [0.0; 3]),
-        ),
-        p(cyl(0.02, 0.03), WOOD_DARK, xf([0.0, 0.295, 0.0], [0.0; 3])),
-        p(torus(0.007, 0.03), tie, xf([0.0, 0.25, 0.0], [0.0; 3])),
-    ]
 }
 
 fn rounds() -> Vec<Part> {

@@ -423,7 +423,7 @@ thing on screen; do it last.
 ## 12 · The prop kit, version 2 — 55 items
 
 Since 2026-10-15 every item has a held model. The 55 below had one only
-because `render/heldkit.rs` builds it out of code primitives (ten have
+because `render/heldkit.rs` builds it out of code primitives (twenty have
 since landed as files, marked below): correct size,
 correct colours, edges chamfered and crevices shaded, and still **cartoon**,
 because it has flat colours where the world has photographs, perfect
@@ -471,22 +471,22 @@ row. The kit entry can stay as the fallback, or go.
 | 12.4 | Sulfur Ore | 0.23×0.14×0.23 | grey rock lumps crusted with pale yellow sulfur crystals | **landed 2026-10-15**, `held/sulfur_ore.glb` |
 | 12.5 | Charcoal | 0.27×0.15×0.25 | a small heap of lump charcoal, matte black, cracked wood grain still visible | **landed 2026-10-15**, `held/charcoal.glb` |
 | 12.6 | Metal Fragments | 0.21×0.10×0.25 | a handful of torn scrap steel shards, bent, rusty with bright fresh cuts | **landed 2026-10-15**, `held/metal_fragments.glb` |
-| 12.7 | Sulfur | 0.34×0.17×0.34 | a low heap of yellow sulfur powder with a few crumbly lumps | |
-| 12.8 | Gunpowder | 0.34×0.16×0.34 | a low heap of grey-black gunpowder, fine grain | not glossy; it is a powder |
-| 12.9 | Animal Fat | 0.26×0.17×0.20 | a slab of raw white animal fat, waxy, faintly yellow, irregular | |
-| 12.10 | Bone Fragments | 0.23×0.09×0.27 | two broken animal leg bones and a few splinters, weathered off-white | |
+| 12.7 | Sulfur | 0.34×0.17×0.34 | a low heap of yellow sulfur powder with a few crumbly lumps | **landed 2026-10-15**, `held/sulfur.glb` |
+| 12.8 | Gunpowder | 0.34×0.16×0.34 | a low heap of grey-black gunpowder, fine grain | not glossy; it is a powder. **Landed 2026-10-15**, `held/gunpowder.glb` |
+| 12.9 | Animal Fat | 0.26×0.17×0.20 | a slab of raw white animal fat, waxy, faintly yellow, irregular | **landed 2026-10-15**, `held/animal_fat.glb` |
+| 12.10 | Bone Fragments | 0.23×0.09×0.27 | two broken animal leg bones and a few splinters, weathered off-white | **landed 2026-10-15**, `held/bone_fragments.glb` |
 | 12.11 | Leather | 0.34×0.13×0.15 | a rolled tanned hide tied with two cords, rough brown leather | **landed 2026-10-15**, `held/leather.glb` |
 | 12.12 | Cloth | 0.30×0.14×0.22 | a folded stack of rough undyed cloth, frayed edges | **landed 2026-10-15**, `held/cloth.glb` |
-| 12.13 | Tarp | 0.36×0.10×0.26 | a folded olive canvas tarpaulin with brass grommets, dirty | |
+| 12.13 | Tarp | 0.36×0.10×0.26 | a folded olive canvas tarpaulin with brass grommets, dirty | **landed 2026-10-15**, `held/tarp.glb` |
 | 12.14 | Junk | 0.34×0.21×0.27 | a small heap of rusty scrap: a big hex nut, a bolt, a broken cog | **landed 2026-10-15**, `held/junk.glb` |
 | 12.15 | Tech Trash | 0.24×0.04×0.16 | a broken circuit board, chips and capacitors, a scorched corner, bent pins | thin: may need `--multiview` |
 | 12.16 | Low Grade Fuel | 0.22×0.33×0.10 | a dented steel jerry can, red paint chipped to bare metal, rust at the seams | **landed 2026-10-15**, `held/low_grade_fuel.glb` |
 | 12.17 | Empty Propane Tank | 0.20×0.37×0.20 | a small dented propane cylinder, faded white paint, brass valve, rust streaks | |
-| 12.18 | Waterskin | 0.18×0.31×0.09 | an empty leather waterskin, slack and creased, wooden stopper, cord tie | |
-| 12.19 | Full Waterskin | 0.20×0.32×0.15 | the same skin full and taut, darker where it is wet | same prompt plus "full", so they pair |
-| 12.20 | Semi Automatic Body | 0.38×0.14×0.08 | a bare rifle receiver with a pistol grip, no stock, no barrel, no magazine, worn black finish | gun parts must look like parts, not guns |
-| 12.21 | SMG Body | 0.32×0.17×0.04 | a bare compact submachine-gun receiver with a magazine well and pistol grip, no stock, no barrel | |
-| 12.22 | Rifle Body | 0.46×0.14×0.04 | a long bolt-action receiver with its bolt handle, no stock, no barrel | |
+| 12.18 | Waterskin | 0.18×0.31×0.09 | an empty leather waterskin, slack and creased, wooden stopper, cord tie | **landed 2026-10-15**, `held/waterskin.glb` |
+| 12.19 | Full Waterskin | 0.20×0.32×0.15 | the same skin full and taut, darker where it is wet | same prompt plus "full", so they pair. **Landed 2026-10-15**, `held/full_waterskin.glb` |
+| 12.20 | Semi Automatic Body | 0.38×0.14×0.08 | a bare rifle receiver with a pistol grip, no stock, no barrel, no magazine, worn black finish | gun parts must look like parts, not guns. **Landed 2026-10-15**, `held/semi_automatic_body.glb` |
+| 12.21 | SMG Body | 0.32×0.17×0.04 | a bare compact submachine-gun receiver with a magazine well and pistol grip, no stock, no barrel | **landed 2026-10-15**, `held/smg_body.glb` (second roll: name the shape, not the part) |
+| 12.22 | Rifle Body | 0.46×0.14×0.04 | a long bolt-action receiver with its bolt handle, no stock, no barrel | **landed 2026-10-15**, `held/rifle_body.glb` |
 | 12.23 | Auto Turret | 0.26×0.27×0.41 | a small improvised sentry gun on a tripod base, sheet-metal housing, one barrel | the world draws it as boxes too (`sentry.rs`, `DEPLOY` 18): one model could replace both, a bigger job |
 | 12.24 | Fire Pit | 0.52×0.19×0.53 | — | **Reuse first**: `deploy/fire.glb` with its emissive stripped is the cold campfire for free; Meshy only if that reads wrong |
 
