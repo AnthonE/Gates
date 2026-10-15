@@ -39,7 +39,8 @@ struct Cloud {
     halo: vec4<f32>,
     // xyz the moonlit scatter at the moon; w unused.
     scatter: vec4<f32>,
-    // xyz the moon's disk (`sky::MOON_RGB` by the night); w unused.
+    // xyz the moon's disk (`sky::MOON_RGB` by the night and its lit
+    // fraction); w unused.
     disk_rgb: vec4<f32>,
     // x the disk's inner cosine, y its outer; zw unused.
     disk: vec4<f32>,

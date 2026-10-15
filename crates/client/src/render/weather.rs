@@ -83,6 +83,13 @@ pub struct WeatherNow {
     pub thunder_n: usize,
     /// The last second whose bolt was queued, so a bolt is heard once.
     last_bolt: u64,
+    /// How far through its month the moon is, `0..1`: 0 new, ½ full
+    /// (`sim_core::world::moon_phase`).
+    pub moon_phase: f32,
+    /// What the moon gives the night, `0..=1`: its lit fraction while it
+    /// is up (`moon::shine`). A day moon has it too, so readers scale it by
+    /// `night` as they scale the moon.
+    pub moonlight: f32,
 }
 
 impl WeatherNow {
@@ -188,16 +195,16 @@ pub fn update(
     now.wind_dir = wind_vec(wx.wind_dir);
 
     // The hour, for the deck's lit side, its stars and its moon.
-    let frac = sim_core::world::day_frac(pin.day_tick(tick_est, &feed.env));
+    let day_tick = pin.day_tick(tick_est, &feed.env);
+    let frac = sim_core::world::day_frac(day_tick);
     let elev = rig::sun_elevation(frac);
     now.sun = rig::to_sun(frac);
     now.sun_lux = rig::sun_lux(frac);
     now.night = (-elev / 0.15).clamp(0.0, 1.0);
-    // The moon rides opposite the sun and higher as the night deepens.
-    now.moon = rig::to_sun_at(
-        (0.25 - elev).min(1.1),
-        rig::sun_azimuth(frac) + std::f32::consts::PI,
-    );
+    // The moon keeps its calendar, on the sun's path behind it (`moon::toward`).
+    now.moon_phase = sim_core::world::moon_phase(day_tick);
+    now.moon = super::moon::toward(frac, now.moon_phase);
+    now.moonlight = super::moon::shine(frac, now.moon_phase);
 
     let dt = time.delta_secs();
     if pinned {

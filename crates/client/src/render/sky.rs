@@ -427,8 +427,10 @@ pub const HALO_RGB: [f32; 3] = [0.02, 0.024, 0.032];
 const MOON_SCATTER: f32 = 0.06;
 /// How far round the moon that reaches, as a cosine (~20°).
 pub const MOON_SCATTER_COS: f32 = 0.94;
-/// How brightly the moon lights the deck's underside at deep night, as a
-/// share of the sun: dark shapes against the stars rather than nothing.
+/// How brightly a full moon lights the deck's underside at deep night, as a
+/// share of the sun: dark shapes against the stars rather than nothing. A
+/// thinner moon lights it less, down to the night's floor
+/// (`rig::night_light`).
 const NIGHT_CLOUD_LIGHT: f32 = 0.012;
 /// Moonlight's colour on the deck, over the sun's: a little cool.
 const MOONLIT: [f32; 3] = [0.8, 0.88, 1.0];
@@ -684,6 +686,10 @@ pub struct ComposeParams {
     pub fog: SkyFog,
     /// Compose a clear sky behind the cloud (a browser).
     pub backdrop: bool,
+    /// How much of the moon's disk is lit, `0..=1` (`moon::lit_fraction`).
+    pub moon_lit: f32,
+    /// What the moon gives the night, `0..=1` (`WeatherNow::moonlight`).
+    pub moonlight: f32,
 }
 
 impl ComposeParams {
@@ -700,6 +706,8 @@ impl ComposeParams {
             moon: Vec3::Y,
             fog: SkyFog::CLEAR,
             backdrop,
+            moon_lit: 1.0,
+            moonlight: 1.0,
         }
     }
 
@@ -715,6 +723,8 @@ impl ComposeParams {
             moon: w.moon,
             fog: SkyFog::new(w.fog_part(), w.rain_part()),
             backdrop: BAKE_BACKDROP,
+            moon_lit: super::moon::lit_fraction(w.moon_phase),
+            moonlight: w.moonlight,
         }
     }
 }
@@ -929,7 +939,9 @@ impl DeckLight {
             0.0
         };
         let warm = [1.0, 1.0 - 0.35 * dusk, 1.0 - 0.6 * dusk];
-        let cloud_light = p.light.max(NIGHT_CLOUD_LIGHT * p.night);
+        let cloud_light = p
+            .light
+            .max(NIGHT_CLOUD_LIGHT * p.night * super::rig::night_light(p.moonlight));
         // The moon takes over from the sun as the night deepens.
         let tint: [f32; 3] = core::array::from_fn(|c| warm[c] + (MOONLIT[c] - warm[c]) * p.night);
         Self {
@@ -943,7 +955,7 @@ impl DeckLight {
                 CLOUD_BASE[c] * (1.0 - 0.7 * p.dark) * tint[c] * cloud_light
             }),
             scatter: core::array::from_fn(|c| {
-                MOON_SCATTER * MOONLIT[c] * p.night * (1.0 - 0.7 * p.dark)
+                MOON_SCATTER * MOONLIT[c] * p.night * p.moonlight * (1.0 - 0.7 * p.dark)
             }),
             gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
             fog_rgb: fog_rgb(p.light, p.dark, fog_grey(p.fog.sigma())),
@@ -1000,8 +1012,11 @@ pub fn compose_range(
             if cm > HALO_COS {
                 let h = (cm - HALO_COS) / (1.0 - HALO_COS);
                 let disk = ((cm - MOON_COS_OUT) / (MOON_COS_IN - MOON_COS_OUT)).clamp(0.0, 1.0);
+                // The sea reflects a crescent as a dimmer blob, not as a
+                // crescent: a reflection through waves wants nothing sharper.
                 for c in 0..3 {
-                    sky[c] += (MOON_RGB[c] * disk + HALO_RGB[c] * h * h) * p.night;
+                    sky[c] += (MOON_RGB[c] * disk * p.moon_lit + HALO_RGB[c] * h * h * p.moonlight)
+                        * p.night;
                 }
             }
         }
