@@ -674,6 +674,9 @@ pub struct ComposeParams {
     pub moon: Vec3,
     /// The fog band at the horizon, `0..=1`.
     pub fog: f32,
+    /// How deep in the Verdigris the eye is, in sixteenths (`WeatherNow::fel`)
+    /// — so walking in recomposes the deck at most sixteen times.
+    pub fel: f32,
     /// Compose a clear sky behind the cloud (a browser).
     pub backdrop: bool,
 }
@@ -691,24 +694,59 @@ impl ComposeParams {
             night: 0.0,
             moon: Vec3::Y,
             fog: 0.0,
+            fel: 0.0,
             backdrop,
         }
     }
 
     /// This frame's deck, off the weather.
     pub fn from_weather(w: &super::weather::WeatherNow) -> Self {
+        let fel = (w.fel * 16.0).round() / 16.0;
         Self {
-            cover: deck_cover(w.cloud),
-            dark: w.dark,
+            // Over the Verdigris the deck closes in, heavy and low.
+            cover: cover_for(w.cloud, fel),
+            dark: w.dark.max(FEL_DECK_DARK * fel),
             drift: w.drift / CLOUD_SCALE_M,
             sun: w.sun,
             light: w.sun_lux,
             night: w.night,
             moon: w.moon,
-            fog: (w.fog_sigma() * 100.0).clamp(0.0, 1.0),
+            fog: ((w.fog_sigma() + FEL_FOG_SIGMA * fel) * 100.0).clamp(0.0, 1.0),
+            fel,
             backdrop: BAKE_BACKDROP,
         }
     }
+}
+
+/// How much of the sky the Verdigris' own deck covers at its heart: a storm
+/// that does not clear, so the blue above it is mostly gone. **(knob)**
+pub const FEL_DECK_COVER: f32 = 0.88;
+/// How heavy that deck is at its heart (`ComposeParams::dark`). **(knob)**
+pub const FEL_DECK_DARK: f32 = 0.55;
+/// What the Verdigris adds to the fog's extinction at its heart, per metre:
+/// a green haze that takes half the light in ~170 m. **(knob)**
+pub const FEL_FOG_SIGMA: f32 = 0.004;
+/// The Verdigris' cloud tops and bases, as multipliers on the deck's own:
+/// lit from below by green fire, dark green in their bellies. **(knob)**
+pub const FEL_CLOUD_TOP: [f32; 3] = [0.40, 0.80, 0.32];
+pub const FEL_CLOUD_BASE: [f32; 3] = [0.16, 0.32, 0.12];
+/// Its fog by day, as a share of the horizon's luminance, and its floor by
+/// night, linear. **(knob)**
+pub const FEL_FOG: [f32; 3] = [0.10, 0.22, 0.08];
+pub const FEL_FOG_NIGHT: [f32; 3] = [0.004, 0.014, 0.004];
+
+/// The deck's coverage for the weather's cloud over ground `fel` deep in the
+/// Verdigris: the weather's own ([`deck_cover`]), or the Verdigris' storm,
+/// whichever is heavier.
+pub fn cover_for(cloud: f32, fel: f32) -> f32 {
+    deck_cover(cloud).max(FEL_DECK_COVER * fel)
+}
+
+/// The Verdigris' fog colour under `light` (`rig::sun_lux`), linear: green by
+/// day at the horizon's own brightness, a faint green floor by night.
+pub fn fel_fog_rgb(light: f32) -> [f32; 3] {
+    let lum = super::fill::luminance(backdrop_at(Vec3::X));
+    core::array::from_fn(|c| FEL_FOG[c] * lum * light + FEL_FOG_NIGHT[c] * (1.0 - light))
 }
 
 /// The atmosphere's hue on the cube, undone, at `y` above the horizon.
@@ -846,21 +884,26 @@ impl DeckLight {
         let cloud_light = p.light.max(NIGHT_CLOUD_LIGHT * p.night);
         // The moon takes over from the sun as the night deepens.
         let tint: [f32; 3] = core::array::from_fn(|c| warm[c] + (MOONLIT[c] - warm[c]) * p.night);
+        // The Verdigris greens the deck: lit tops, dark bellies.
+        let top_k: [f32; 3] = core::array::from_fn(|c| 1.0 + (FEL_CLOUD_TOP[c] - 1.0) * p.fel);
+        let base_k: [f32; 3] = core::array::from_fn(|c| 1.0 + (FEL_CLOUD_BASE[c] - 1.0) * p.fel);
+        let fog = fog_rgb(p.light, p.dark, 1.0);
+        let fel_fog = fel_fog_rgb(p.light);
         Self {
             sun_h,
             toward: sun_h * LIT_STEP,
             glow: dusk * ((p.sun.y + 0.1) / 0.1).clamp(0.0, 1.0),
             top: core::array::from_fn(|c| {
-                CLOUD_TOP[c] * (1.0 - 0.6 * p.dark) * tint[c] * cloud_light
+                CLOUD_TOP[c] * (1.0 - 0.6 * p.dark) * tint[c] * cloud_light * top_k[c]
             }),
             base: core::array::from_fn(|c| {
-                CLOUD_BASE[c] * (1.0 - 0.7 * p.dark) * tint[c] * cloud_light
+                CLOUD_BASE[c] * (1.0 - 0.7 * p.dark) * tint[c] * cloud_light * base_k[c]
             }),
             scatter: core::array::from_fn(|c| {
                 MOON_SCATTER * MOONLIT[c] * p.night * (1.0 - 0.7 * p.dark)
             }),
             gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
-            fog_rgb: fog_rgb(p.light, p.dark, 1.0),
+            fog_rgb: core::array::from_fn(|c| fog[c] + (fel_fog[c] - fog[c]) * p.fel),
             thresh: 1.0 - p.cover,
         }
     }

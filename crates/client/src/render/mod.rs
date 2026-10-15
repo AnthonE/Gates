@@ -178,6 +178,7 @@ pub mod mipmap;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
+pub mod embers;
 pub mod panels;
 pub mod pause;
 pub mod prewarm;
@@ -1473,6 +1474,7 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The rain follows the camera too (weather v0).
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
+        .add_systems(OnEnter(Screen::Loading), embers::setup.after(rain::setup))
         // After the deck: the stars hide behind its field.
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
         .add_systems(
@@ -1861,6 +1863,7 @@ impl Plugin for GatesRenderPlugin {
                 weather::update.after(feed::drain).before(rig::day_night),
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
+                embers::drive.after(weather::update),
                 stars::drive.after(sky::compose),
                 underwater::drive.after(rig::day_night),
                 hud::exposure,

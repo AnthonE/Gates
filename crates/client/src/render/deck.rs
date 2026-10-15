@@ -83,9 +83,14 @@ impl DeckParams {
         };
         let v3 = Vec3::from_array;
         let night = p.night;
+        // The Verdigris' sky behind the deck: the backdrop gone green and dim.
+        let fel = |g: Vec3| -> Vec3 {
+            let k = Vec3::from_array(sky::FEL_FOG) * 1.4;
+            g.lerp(Vec3::splat(super::fill::luminance(g.to_array())) * k, p.fel)
+        };
         Self {
-            zenith: grade(sky::backdrop_at(Vec3::Y)).extend(sky::AIR_FLOOR),
-            horizon: grade(sky::backdrop_at(Vec3::X)).extend(nits),
+            zenith: fel(grade(sky::backdrop_at(Vec3::Y))).extend(sky::AIR_FLOOR),
+            horizon: fel(grade(sky::backdrop_at(Vec3::X))).extend(nits),
             night: (v3(sky::NIGHT_SKY) * night).extend(night),
             glow: (v3(sky::DUSK_GLOW) * l.glow * (1.0 - 0.7 * p.dark)).extend(0.0),
             sun: Vec4::new(l.sun_h.x, l.sun_h.y, l.toward.x, l.toward.y),

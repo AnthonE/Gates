@@ -315,7 +315,11 @@ pub fn setup(
             // term ever was, because it is nonzero in every direction and warm
             // where the ground is.
             AmbientLight {
-                color: Color::srgb(0.80, 0.85, 0.95),
+                color: Color::srgb(
+                    NIGHT_AMBIENT_SRGB[0],
+                    NIGHT_AMBIENT_SRGB[1],
+                    NIGHT_AMBIENT_SRGB[2],
+                ),
                 brightness: 0.0,
                 affects_lightmapped_meshes: false,
             },
@@ -865,7 +869,26 @@ type CamLight = (
     Option<&'static mut Skybox>,
     Option<&'static mut DistanceFog>,
     Option<&'static mut Exposure>,
+    Option<&'static mut ColorGrading>,
 );
+
+/// The Verdigris' sun, as a multiplier at its heart: green-yellow through the
+/// green deck, and a third dimmer. **(knob)**
+pub const FEL_SUN: [f32; 3] = [0.80, 1.0, 0.62];
+pub const FEL_SUN_DIM: f32 = 0.35;
+/// The night floor's colour, sRGB: a cool moonlit grey.
+pub const NIGHT_AMBIENT_SRGB: [f32; 3] = [0.80, 0.85, 0.95];
+/// The Verdigris' night floor, sRGB: what the ambient colour goes to at its
+/// heart. **(knob)**
+pub const FEL_AMBIENT: [f32; 3] = [0.55, 1.0, 0.50];
+/// Its lightning, sRGB: green fire. The weather's is a cold white.
+pub const FEL_BOLT_RGB: [f32; 3] = [0.55, 1.0, 0.45];
+const BOLT_RGB: [f32; 3] = [0.82, 0.86, 1.0];
+/// The grade at its heart: stops of exposure and post-tonemap saturation.
+/// Only these two fields, which no pipeline specialises on — a tint or a hue
+/// would switch the tonemapping shader's variant on the way in. **(knob)**
+pub const FEL_GRADE_EV: f32 = -0.35;
+pub const FEL_GRADE_SAT: f32 = 1.10;
 
 /// Drive the rig from the server's clock and the weather. Runs every
 /// frame; the queries are empty until `setup` has spawned the rig, which
@@ -883,6 +906,7 @@ pub fn day_night(
     pin: Res<DayPin>,
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
+    film: Option<Res<super::film::Film>>,
     mut gain: ResMut<FlameGain>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
@@ -902,7 +926,14 @@ pub fn day_night(
         t.rotation = sun_rotation_render(frac);
         // The twilight tail lights the sky after sunset; cloud takes the
         // direct sun away and leaves a tenth of it through a full overcast.
-        d.illuminance = lux::DIRECT_SUNLIGHT * lux_share * (1.0 - 0.9 * occ);
+        d.illuminance =
+            lux::DIRECT_SUNLIGHT * lux_share * (1.0 - 0.9 * occ) * (1.0 - FEL_SUN_DIM * w.fel);
+        // Green-yellow through the Verdigris' deck.
+        let sun = Vec3::ONE.lerp(Vec3::from_array(FEL_SUN), w.fel);
+        let want = Color::linear_rgb(sun.x, sun.y, sun.z);
+        if d.color != want {
+            d.color = want;
+        }
         // A light at zero illuminance still schedules its cascades;
         // shadows off at night saves the passes and no shadow is cast by
         // a sun that is under the ground anyway — nor by one behind a
@@ -935,12 +966,17 @@ pub fn day_night(
         if d.illuminance != want {
             d.illuminance = want;
         }
+        let rgb = if w.fel_flash { FEL_BOLT_RGB } else { BOLT_RGB };
+        let want = Color::srgb(rgb[0], rgb[1], rgb[2]);
+        if d.color != want {
+            d.color = want;
+        }
         if flash > 0.0 {
             let toward = Vec3::new(w.flash_dir.x, 0.35, w.flash_dir.y).normalize_or(Vec3::Y);
             *t = Transform::default().looking_to(-toward, Vec3::Y);
         }
     }
-    if let Ok((mut amb, mut env, sky, fog, exposure)) = cam.single_mut() {
+    if let Ok((mut amb, mut env, sky, fog, exposure, grading)) = cam.single_mut() {
         if let Some(mut ex) = exposure {
             let want = exposure_ev100(frac);
             if ex.ev100 != want {
@@ -961,7 +997,13 @@ pub fn day_night(
         let flash = w.flash * if w.sheltered { SHELTERED_FLASH } else { 1.0 };
         amb.brightness =
             NIGHT_AMBIENT_LUX * (1.0 - light) * (1.0 - 0.3 * w.dark) + FLASH_LUX * flash;
-        env.intensity = super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark);
+        let tint = Vec3::from_array(NIGHT_AMBIENT_SRGB).lerp(Vec3::from_array(FEL_AMBIENT), w.fel);
+        let want = Color::srgb(tint.x, tint.y, tint.z);
+        if amb.color != want {
+            amb.color = want;
+        }
+        env.intensity =
+            super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark) * (1.0 - 0.25 * w.fel);
         // Weather fog on both targets: nothing in clear weather on the
         // desktop, the island's own air in a browser, and the weather's
         // fog and rain on top of either.
@@ -972,9 +1014,26 @@ pub fn day_night(
                 fog.color = color;
                 fog.falloff = falloff;
             } else {
-                let sigma = w.fog_sigma();
-                fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
+                // The Verdigris' haze on top of the weather's, green.
+                let sigma = w.fog_sigma() + super::sky::FEL_FOG_SIGMA * w.fel;
+                let base = super::sky::fog_color(lux_share, w.dark, sigma).to_linear();
+                let fel = super::sky::fel_fog_rgb(lux_share);
+                fog.color = Color::linear_rgb(
+                    base.red + (fel[0] - base.red) * w.fel,
+                    base.green + (fel[1] - base.green) * w.fel,
+                    base.blue + (fel[2] - base.blue) * w.fel,
+                );
                 fog.falloff = super::sky::fog_falloff(sigma);
+            }
+        }
+        // The Verdigris' grade, a little darker and greener-lit. A film owns
+        // the grade while it rolls (`film::lens`).
+        if let (Some(mut g), None) = (grading, film) {
+            let ev = FEL_GRADE_EV * w.fel;
+            let sat = 1.0 + (FEL_GRADE_SAT - 1.0) * w.fel;
+            if g.global.exposure != ev || g.global.post_saturation != sat {
+                g.global.exposure = ev;
+                g.global.post_saturation = sat;
             }
         }
         if let Some(mut sky) = sky {

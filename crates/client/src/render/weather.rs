@@ -38,6 +38,17 @@ impl WeatherPin {
 /// How many thunderclaps can be waiting for their sound at once.
 pub const THUNDER_QUEUE: usize = 4;
 
+/// The Verdigris' own lightning: `weather::bolt`'s thunder, per mille, at its
+/// heart, whatever the weather — a green bolt every ten seconds or so,
+/// anywhere within 4 km, fewer toward its edge. **(knob)**
+pub const FEL_THUNDER_PM: f32 = 1000.0;
+/// What the Verdigris' bolts' seed is salted with, so they are not the
+/// weather's own (and every client draws the same ones).
+const FEL_BOLT_SALT: u64 = 0x4645_4c42_4f4c_5421;
+/// How long the sky takes to follow the eye into or out of the Verdigris,
+/// seconds: walking its edge must not flicker the fog.
+const FEL_EASE_S: f32 = 2.5;
+
 /// This frame's weather, `0..=1` per field. `Default` is a still, clear,
 /// dry sky with nothing occluding the sun — what every reader falls back
 /// to when the resource is absent (the headless fixtures).
@@ -61,6 +72,12 @@ pub struct WeatherNow {
     pub sheltered: bool,
     /// The eye is under the sea.
     pub underwater: bool,
+    /// How deep the eye stands in the Verdigris, `0..=1` (`terrain::fel`),
+    /// eased over [`FEL_EASE_S`]: what greens the fog, the light, the deck
+    /// and the grade, and arms its lightning and embers.
+    pub fel: f32,
+    /// This frame's flash is the Verdigris' green lightning.
+    pub fel_flash: bool,
     /// How wet the ground looks: the rain, arriving over a minute and
     /// drying over several.
     pub ground_wet: f32,
@@ -83,6 +100,8 @@ pub struct WeatherNow {
     pub thunder_n: usize,
     /// The last second whose bolt was queued, so a bolt is heard once.
     last_bolt: u64,
+    /// The same for the Verdigris' bolts.
+    last_fel_bolt: u64,
 }
 
 impl WeatherNow {
@@ -190,6 +209,15 @@ pub fn update(
     );
 
     let dt = time.delta_secs();
+    // Where the eye stands in the Verdigris: eased in play, exact for a
+    // probe, which holds its sky still.
+    let fel_here = sim_core::terrain::fel(world.seed, eye.pos.x, eye.pos.z);
+    now.fel = if pinned {
+        fel_here
+    } else {
+        now.fel + (fel_here - now.fel) * (dt / FEL_EASE_S).min(1.0)
+    };
+    now.fel_flash = false;
     if pinned {
         // A probe's sky holds still and dry-or-soaked as asked.
         now.drift = Vec2::ZERO;
@@ -235,13 +263,42 @@ pub fn update(
                 now.queue_thunder(struck + delay, gain);
             }
         }
+        // The Verdigris' storm: green bolts off a salted seed, as often as
+        // its corruption says, clear sky or not.
+        let fel_thunder = (now.fel * FEL_THUNDER_PM) as u16;
+        if fel_thunder > 0 {
+            for s in [sec.saturating_sub(1), sec] {
+                let Some(b) = weather::bolt(world.seed ^ FEL_BOLT_SALT, s, fel_thunder) else {
+                    continue;
+                };
+                let struck = s as f64 + b.at_ms as f64 / 1000.0;
+                let since = now_s - struck;
+                let near = (1.0 - b.dist_m as f32 / 5000.0).clamp(0.2, 1.0);
+                let f = flash_at(since) * near;
+                if f > flash {
+                    flash = f;
+                    now.flash_dir = wind_vec(b.bearing);
+                    now.fel_flash = true;
+                }
+                if since >= 0.0 && s > now.last_fel_bolt {
+                    now.last_fel_bolt = s;
+                    let delay = b.dist_m as f64 / 343.0;
+                    let gain = (1.2 - b.dist_m as f32 / 4000.0).clamp(0.15, 1.0);
+                    now.queue_thunder(struck + delay, gain);
+                }
+            }
+        }
         now.flash = flash;
     }
 
     // How much of the sun's disk the deck covers: the rig puts the disk
     // out behind cloud and takes the direct light with it.
     now.sun_cover = composer.map_or(0.0, |c| {
-        c.cover_at(now.sun, super::sky::deck_cover(now.cloud), now.drift)
+        c.cover_at(
+            now.sun,
+            super::sky::cover_for(now.cloud, now.fel),
+            now.drift,
+        )
     });
 
     // Under a roof, or under the sea: what the rain and its sound ask.
