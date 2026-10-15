@@ -101,6 +101,8 @@ pub struct Manifest {
     pub store: Section,
     #[serde(default)]
     pub workshop: Section,
+    #[serde(default)]
+    pub buddies: Section,
 }
 
 /// Parse a fetched manifest.

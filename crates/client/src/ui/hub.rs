@@ -45,12 +45,20 @@ pub enum Section {
     News,
     Store,
     Workshop,
+    /// A Claude-minded buddy that plays beside you, run by the platform
+    /// (scry-forge `meter/buddy.py`, `ops/buddy/runner.py`).
+    Buddies,
 }
 
 impl Section {
     /// In the reference's own order, which is also the order of how often a
     /// player wants them.
-    pub const ALL: [Section; 3] = [Section::News, Section::Store, Section::Workshop];
+    pub const ALL: [Section; 4] = [
+        Section::News,
+        Section::Store,
+        Section::Workshop,
+        Section::Buddies,
+    ];
 
     /// The nav label. Overridable by the manifest ([`Section::label`]) so the
     /// platform can rename a section without a client release.
@@ -59,6 +67,7 @@ impl Section {
             Section::News => "NEWS",
             Section::Store => "ITEM STORE",
             Section::Workshop => "WORKSHOP",
+            Section::Buddies => "BUDDIES",
         }
     }
 
@@ -90,6 +99,11 @@ impl Section {
                  players use it."
             }
             Section::Workshop => "Community-made items, made by players.",
+            Section::Buddies => {
+                "A Claude buddy with its own body, name and face. It meets you at \
+                 THE GATE, teams up and plays beside you, and only thinks while \
+                 you're on."
+            }
         }
     }
 
@@ -109,6 +123,10 @@ impl Section {
             Section::Workshop => {
                 "opens in the launcher, which holds the key a submission is signed with"
             }
+            Section::Buddies => {
+                "opens in the launcher: a buddy is set up and paid for there, and a \
+                 game must never take a payment in its own window"
+            }
         }
     }
 
@@ -118,6 +136,7 @@ impl Section {
             Section::News => &m.news,
             Section::Store => &m.store,
             Section::Workshop => &m.workshop,
+            Section::Buddies => &m.buddies,
         }
     }
 
