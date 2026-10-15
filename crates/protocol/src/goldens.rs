@@ -19,8 +19,9 @@
 use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
-    SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
+    SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, WireToss, BAG_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS,
+    PLATE_BITS, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
@@ -2050,6 +2051,21 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
                 256 + rng.next_bounded(60_000) as u16
             } else {
                 0
+            },
+            // Every third from the second is still flying (v111): never a
+            // stuck one, every offset drawn across its sign so a lost sign
+            // or two transposed axes redden; record 7 also wears a skin.
+            toss: if i % 3 == 1 {
+                Some(WireToss {
+                    born_lo: rng.next_bounded(256) as u8,
+                    from: [
+                        (rng.next_bounded(1_023) as i32 - 511) as i16,
+                        (rng.next_bounded(4_095) as i32 - 2_047) as i16,
+                        (rng.next_bounded(1_023) as i32 - 511) as i16,
+                    ],
+                })
+            } else {
+                None
             },
         };
     }

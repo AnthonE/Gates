@@ -73,11 +73,11 @@ pub use event::{
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_BODY,
-    BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
+    RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
@@ -1165,7 +1165,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
 /// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
 /// carries six rows, down from eight.
-pub const PROTO_VER: u16 = 110;
+/// v111 — a dropped stack is thrown: a loose-stack record still in the air
+/// carries its throw (`WireToss`: a tick byte and the hand's offset), one
+/// bit when it is not, and a sync message carries thirteen, down from
+/// fourteen.
+pub const PROTO_VER: u16 = 111;
 
 /// This game's slug in the elo catalog.
 ///

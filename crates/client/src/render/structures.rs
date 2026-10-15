@@ -790,6 +790,9 @@ struct LootLive {
     /// The skin `model` is drawn in (v102), zero for plain — and for a
     /// skin the catalog does not know yet, so its landing reads as a change.
     skin: u16,
+    /// The throw it came in on (v111), so a redraw mid-flight carries on
+    /// flying rather than starting again or dropping into place.
+    flight: Option<super::loot::Flight>,
 }
 
 #[derive(Resource, Default)]
@@ -2972,6 +2975,7 @@ pub fn stream(
             kit,
             gen,
             core.ground_items(),
+            core.clock.server_est,
             (&core.catalog, &core.skins),
             &models,
             &mut skin_mats,
@@ -2986,7 +2990,9 @@ pub fn stream(
 ///
 /// A skinned stack (v102) draws its model in the skin's tint — the held
 /// item's rule, `bodies::update_hand`: if `skins` knows the skin, else
-/// plain. A pouch or an arrow stand-in is never tinted.
+/// plain. A pouch or an arrow stand-in is never tinted. A stack first seen
+/// flying out of a hand (v111) is drawn flying ([`super::loot::Tossed`]),
+/// on the server tick estimate `now`.
 #[allow(clippy::too_many_arguments)]
 fn sync_loot(
     commands: &mut Commands,
@@ -2994,6 +3000,7 @@ fn sync_loot(
     kit: &Kit,
     generation: u64,
     items: &[protocol::WireGItem],
+    now: f64,
     (catalog, skins): (&protocol::ItemCatalog, &protocol::SkinCatalog),
     models: &super::viewmodel::Models,
     skin_mats: &mut super::viewmodel::SkinMats,
@@ -3054,6 +3061,10 @@ fn sync_loot(
             });
             pending |= !failed;
         }
+        let flight = match live.get(&g.id) {
+            Some(old) => old.flight,
+            None => super::loot::Flight::of(g, now),
+        };
         if let Some(old) = live.get_mut(&g.id) {
             old.seen = generation;
             old.name = name;
@@ -3137,14 +3148,26 @@ fn sync_loot(
             // Drawn tinted for now: not the skin's look, so it is redone.
             drawn = 0;
         }
-        let entity = commands
-            .spawn((
-                super::WorldEntity,
-                Mesh3d(mesh),
-                MeshMaterial3d(mat),
-                transform,
-            ))
-            .id();
+        let tossed = flight
+            .filter(|f| !f.over(now))
+            .zip(meshes.get(&mesh))
+            .map(|(f, m)| super::loot::Tossed::new(f, transform, m, g.id));
+        let (shown, visibility) = match tossed.map(|t| t.pose(now)) {
+            Some(super::loot::Pose::Flying(pose)) => (pose, Visibility::Inherited),
+            Some(super::loot::Pose::Waiting) => (transform, Visibility::Hidden),
+            _ => (transform, Visibility::Inherited),
+        };
+        let mut spawned = commands.spawn((
+            super::WorldEntity,
+            Mesh3d(mesh),
+            MeshMaterial3d(mat),
+            shown,
+            visibility,
+        ));
+        if let Some(t) = tossed {
+            spawned.insert(t);
+        }
+        let entity = spawned.id();
         live.insert(
             g.id,
             LootLive {
@@ -3155,6 +3178,7 @@ fn sync_loot(
                 wanted: want,
                 model: ready,
                 skin: drawn,
+                flight,
             },
         );
     }

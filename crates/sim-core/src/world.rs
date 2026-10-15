@@ -1953,8 +1953,11 @@ pub enum Command {
         slot: u8,
     },
     /// Drop `count` of inventory slot `slot` on the ground (Rust's drop).
-    /// It lands in a bag at your feet, merged into your own bag there if one
-    /// is in reach (`backpack::spill_at`). An empty slot does nothing.
+    /// It is thrown out of the hand along the look and lands as a loose
+    /// stack (`grounditem::throw_spot`, `GroundItems::toss`), its own model
+    /// on every screen. Where there is nowhere to land it (the sea), or
+    /// content has loose stacks off, it goes into a bag at your feet as it
+    /// always did (`backpack::spill_at`). An empty slot does nothing.
     Drop {
         id: u32,
         slot: u8,
@@ -5504,8 +5507,7 @@ impl World {
                     let p = &mut self.players[slot];
                     let n = count.min(p.inv[i].count);
                     if n > 0 {
-                        let mut spill = [ItemStack::default(); INV_SLOTS];
-                        spill[0] = ItemStack {
+                        let thrown = ItemStack {
                             count: n,
                             ..p.inv[i]
                         };
@@ -5513,7 +5515,46 @@ impl World {
                         if p.inv[i].count == 0 {
                             p.inv[i] = ItemStack::default();
                         }
-                        self.drain_spill(slot, &mut spill);
+                        // Thrown out of the hand to where the sim says it
+                        // lands; the flight is a closed form every client
+                        // draws alike (`grounditem.rs`'s header).
+                        let (body, crouched, yaw, pitch) = {
+                            let p = &self.players[slot];
+                            (p.body, p.crouched(), p.frame.yaw, p.frame.pitch)
+                        };
+                        let seed = self.seed;
+                        let tick = self.tick;
+                        let eye_m = ranged::eye_mm(crouched) as f32 / ranged::MM_PER_M;
+                        let haven = &self.haven;
+                        let cols = self.pieces.cols();
+                        let mut occ = crate::occupy::Occupants {
+                            doors: self.card_door_bits,
+                            table: &self.scatter,
+                            haven,
+                            harvested: &self.slot_lives,
+                            cache: &mut self.slot_cache,
+                        };
+                        let throw = crate::grounditem::throw_spot(
+                            seed,
+                            haven,
+                            cols,
+                            &mut occ,
+                            (body.qx, body.qy, body.qz),
+                            eye_m,
+                            yaw,
+                            pitch,
+                        );
+                        // Nowhere to land (the sea), or loose stacks
+                        // disarmed by content: the bag at the feet.
+                        let laid = throw.map_or(0, |(from, rest)| {
+                            self.ground_items
+                                .toss(&self.backpack, rest, thrown, tick, from)
+                        });
+                        if laid == 0 {
+                            let mut spill = [ItemStack::default(); INV_SLOTS];
+                            spill[0] = thrown;
+                            self.drain_spill(slot, &mut spill);
+                        }
                     }
                 }
             }

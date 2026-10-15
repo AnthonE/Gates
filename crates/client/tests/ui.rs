@@ -6845,6 +6845,7 @@ mod take {
             dir: [0; 3],
             cond: 0,
             skin: 0,
+            toss: None,
         }
     }
 
@@ -6987,6 +6988,7 @@ mod take {
             dir: [0; 3],
             cond: 0,
             skin: 0,
+            toss: None,
         };
         let p = resolve_take(100.0, 100.0, &[one_q]);
         assert_eq!(p.verb, Verb::Take);

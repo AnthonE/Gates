@@ -1873,6 +1873,9 @@ impl Plugin for GatesRenderPlugin {
                 viewmodel::torch_watch.after(feed::drain),
                 // A deployable's damage band, drawn on its material.
                 structures::deploy_hurt.after(structures::stream),
+                // A dropped stack flying out of a hand (v111), on the
+                // clock the drain just read, spawned by `stream`.
+                loot::fly.after(structures::stream).after(feed::drain),
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a
                 // respawned trunk up — before it, a sapling would stand one

@@ -509,3 +509,93 @@ fn a_take_announces_its_item_and_keeps_its_skin() {
         "the skin fell off"
     );
 }
+
+// ------------------------------------------------------------- the throw
+
+/// A drop is **thrown** (`Command::Drop`, `grounditem::throw_spot`): the
+/// stack leaves the bag and lands as a loose stack out along the look
+/// rather than in a bag at the feet, and the throw is remembered exactly as
+/// long as it flies — a flight whose two ends are the hand and the record.
+#[test]
+fn a_drop_is_thrown_along_the_look_and_lands_where_its_flight_ends() {
+    use sim_core::grounditem::{toss_at, TOSS_NEAR_M, TOSS_REACH_M};
+    use sim_core::movement::POS_Y_Q;
+    // `f32::abs` is outside this crate's float set, tests included.
+    let abs = |v: f32| v.max(-v);
+    let mut w = world();
+    w.players[0].inv[0] = stack(3, 9);
+    let yaw = 0x5A00;
+    w.players[0].frame.yaw = yaw;
+    w.players[0].frame.pitch = 128; // level
+    let body = w.players[0].body;
+    w.tick(&[Command::Drop {
+        id: PLAYER,
+        slot: 0,
+        count: 9,
+    }]);
+    let born = w.tick - 1;
+
+    assert_eq!(w.players[0].inv[0].count, 0, "the stack stayed in the bag");
+    assert!(w.backpacks.entries().is_empty(), "it went into a bag");
+    assert_eq!(w.ground_items.len(), 1);
+    let g = w.ground_items.entries()[0];
+    assert_eq!((g.stack.item, g.stack.count), (3, 9));
+
+    // Out along the look, no further than a level throw reaches, and on
+    // the ground rather than at the hand's height.
+    let (fx, fz) = sim_core::yaw_dir(yaw);
+    let (dx, dz) = (
+        (g.qx - body.qx) as f32 * POS_XZ_Q,
+        (g.qz - body.qz) as f32 * POS_XZ_Q,
+    );
+    let along = dx * fx + dz * fz;
+    assert!(
+        along > TOSS_NEAR_M * 0.5 && along < TOSS_REACH_M + 0.1,
+        "landed {along} m along the look"
+    );
+    assert!(abs(dx * fz - dz * fx) < 0.1, "landed off the look");
+    let ground = terrain::ground(SEED, hv(), g.qx as f32 * POS_XZ_Q, g.qz as f32 * POS_XZ_Q);
+    assert!(
+        abs(g.qy as f32 * POS_Y_Q - ground) < 0.3,
+        "rests at {} over ground at {ground}",
+        g.qy as f32 * POS_Y_Q
+    );
+
+    // It flies from above the landing, and the flight ends on the record.
+    let t = w
+        .ground_items
+        .toss_of(g.id, w.tick)
+        .expect("a fresh throw is in the air");
+    assert_eq!((t.id, t.born), (g.id, born));
+    assert!(t.from[1] > 0, "the hand was not above the landing");
+    let m = |q: (i32, i32, i32)| {
+        (
+            q.0 as f32 * POS_XZ_Q,
+            q.1 as f32 * POS_Y_Q,
+            q.2 as f32 * POS_XZ_Q,
+        )
+    };
+    let rest = m((g.qx, g.qy, g.qz));
+    let hand = m((
+        g.qx + t.from[0] as i32,
+        g.qy + t.from[1] as i32,
+        g.qz + t.from[2] as i32,
+    ));
+    let ticks = t.ticks();
+    assert!(
+        (2..=3 * sim_core::limits::TICK_HZ).contains(&ticks),
+        "{ticks} ticks"
+    );
+    assert_eq!(toss_at(hand, rest, ticks, 0.0), hand);
+    let end = toss_at(hand, rest, ticks, ticks as f32);
+    assert!(abs(end.1 - rest.1) < 1e-3 && abs(end.0 - rest.0) < 1e-3);
+    let apex = toss_at(hand, rest, ticks, ticks as f32 * 0.25);
+    assert!(apex.1 > hand.1, "a toss goes up out of the hand first");
+
+    // Remembered while it flies, forgotten once it lands.
+    for _ in 0..ticks {
+        w.tick(&[]);
+    }
+    assert_eq!(w.ground_items.toss_of(g.id, w.tick), None);
+    assert_eq!(w.ground_items.len(), 1, "landing moved or lost the stack");
+}

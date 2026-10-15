@@ -36,6 +36,7 @@ fn reconcile(
         ring.kit.as_ref().unwrap(),
         ring.gen,
         mirror.0.ground_items(),
+        mirror.0.clock.server_est,
         (&mirror.0.catalog, &mirror.0.skins),
         &models,
         &mut skin_mats,
@@ -86,6 +87,7 @@ fn item(id: u32) -> protocol::WireGItem {
         dir: [0; 3],
         cond: 0,
         skin: 0,
+        toss: None,
     }
 }
 
@@ -356,4 +358,101 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
         (plain.red, 0.0, plain.alpha),
         "{plain:?} → {tinted:?}"
     );
+}
+
+/// A stack first seen flying out of a hand (v111) is drawn on its way: out
+/// of the hand, above where it rests mid-flight, and at the end lying
+/// exactly as it would have without the throw. Before it leaves the hand on
+/// this clock it is hidden.
+#[test]
+fn a_thrown_stack_flies_out_of_the_hand_and_lies_where_it_rests() {
+    use super::super::loot::{toss_born, Pose, Tossed, SETTLE_TICKS};
+    use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
+    let mut app = app();
+    app.add_systems(Update, super::super::loot::fly.after(reconcile));
+    let born = 1000.0;
+    let clock = |app: &mut App, at: f64| {
+        app.world_mut()
+            .resource_mut::<super::super::feed::Feed>()
+            .server_tick_est = at;
+        app.world_mut().resource_mut::<Mirror>().0.clock.server_est = at;
+    };
+    // A metre back in x and 1.2 m up: the hand that let go.
+    let from = [(-1.0 / POS_XZ_Q) as i16, (1.2 / POS_Y_Q) as i16, 0];
+    let thrown = protocol::WireGItem {
+        toss: Some(protocol::WireToss {
+            born_lo: born as u64 as u8,
+            from,
+        }),
+        ..item(1)
+    };
+    clock(&mut app, born - 2.0);
+    sync(&mut app, &[thrown]);
+    let e = app.world().resource::<StructRing>().gitems[&1].entity;
+    let toss = *app.world().get::<Tossed>(e).expect("a thrown stack flies");
+    assert_eq!(
+        app.world().get::<Visibility>(e),
+        Some(&Visibility::Hidden),
+        "out of the hand before it was thrown"
+    );
+    // No jump anywhere along it — out of the hand, at the touchdown, the
+    // hop, the roll, and into the pose it rests in — sampled finer than
+    // any frame rate draws it.
+    let end = born + 60.0 + SETTLE_TICKS as f64;
+    let mut last: Option<Transform> = None;
+    for k in 0..=((end - born) * 4.0) as u32 {
+        let t = born + k as f64 * 0.25;
+        let at = match toss.pose(t) {
+            Pose::Flying(p) => p,
+            Pose::Rested => toss.rest(),
+            Pose::Waiting => panic!("hidden after it was thrown, at {t}"),
+        };
+        if let Some(prev) = last {
+            let moved = prev.translation.distance(at.translation);
+            let turned = prev.rotation.angle_between(at.rotation);
+            assert!(
+                moved < 0.1 && turned < 0.2,
+                "a jump {} ticks in: {moved} m, {turned} rad",
+                t - born
+            );
+        }
+        last = Some(at);
+    }
+
+    clock(&mut app, born);
+    app.update();
+    let tf = *app.world().get::<Transform>(e).unwrap();
+    let rest = toss.rest();
+    let hand = Vec3::new(1000.0 * POS_XZ_Q - 1.0, 1.2, 1000.0 * POS_XZ_Q);
+    assert_eq!(
+        app.world().get::<Visibility>(e),
+        Some(&Visibility::Inherited)
+    );
+    assert!(
+        tf.translation.distance(hand) < 0.3,
+        "left the hand at {} not {hand}",
+        tf.translation
+    );
+
+    clock(&mut app, born + 8.0);
+    app.update();
+    let mid = *app.world().get::<Transform>(e).unwrap();
+    assert!(
+        mid.translation.y > rest.translation.y + 0.3,
+        "not in the air"
+    );
+    assert!(mid.translation.x > hand.x && mid.translation.x < rest.translation.x + 0.1);
+
+    clock(&mut app, born + 60.0 + SETTLE_TICKS as f64);
+    app.update();
+    assert!(app.world().get::<Tossed>(e).is_none(), "still flying");
+    assert_eq!(*app.world().get::<Transform>(e).unwrap(), rest);
+
+    // A redraw of a stack that already landed does not throw it again.
+    assert_eq!(app.world().resource::<StructRing>().gitems[&1].entity, e);
+
+    // The tick's low byte comes back beside the clock, either side of it.
+    assert_eq!(toss_born(0x10, 0x210 as f64 + 3.4), 0x210 as f64);
+    assert_eq!(toss_born(0xFF, 258.0), 255.0);
+    assert_eq!(toss_born(5, 250.0), 261.0);
 }

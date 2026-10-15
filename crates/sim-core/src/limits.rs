@@ -720,6 +720,14 @@ pub const MAX_BACKPACKS: usize = 256;
 /// one with the barrels.
 pub const MAX_GROUND_ITEMS: usize = 512;
 
+/// Stacks in the air at once (`grounditem::Tosses`): a `Command::Drop` throws
+/// its stack out of the hand, and the throw is remembered only while it
+/// flies (two thirds of a second off a standing hand on level ground).
+/// **Overflow forgets the oldest throw**, and that stack simply lies where
+/// it landed on every screen that had not seen it fly — the record is the
+/// truth either way, the throw is only its picture.
+pub const MAX_TOSSES: usize = 32;
+
 /// Deployed storage boxes standing at once (`deploy.rs`, `ARCH_BOX`).
 /// Held in its own dense list beside the hearths, for the same reason:
 /// `DeployRec` is the struct the wire mirrors, so contents may not ride

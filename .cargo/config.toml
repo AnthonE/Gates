@@ -1,6 +1,7 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 93 kB — fixed-capacity by design (wall 4), and
+# `World` is 94 kB — fixed-capacity by design (wall 4), and
+# (93 kB until a dropped stack's throw put its ring on the world;
 # (92 kB until Rust's components took the loot tables to 24 rows;
 # (92 kB until the desert gave every per-biome table a fifth row;
 # 91 kB until the player auto turrets put their table on the world;
