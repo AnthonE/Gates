@@ -147,6 +147,8 @@ pub mod hud;
 // terminals in the world.
 pub mod arc_hud;
 pub mod hurt_flash;
+// Frost at the frame's edges while the cold bites.
+pub mod frost;
 // Speakers, stones and dials (`ARC.md` F5–F7).
 pub mod impact;
 pub mod input;
@@ -637,6 +639,8 @@ impl Plugin for GatesRenderPlugin {
         // The rainbow over the sky, under its fog (`rainbow.rs`).
         app.add_plugins(MaterialPlugin::<rainbow::RainbowMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
+        // The cold's frost on the frame (`frost.rs`).
+        app.add_plugins(UiMaterialPlugin::<frost::FrostMaterial>::default());
         // The portrait's layer reaches every node its scene spawns, before
         // visibility is worked out (`portrait.rs`).
         app.add_plugins(bevy::app::HierarchyPropagatePlugin::<
@@ -1891,6 +1895,15 @@ impl Plugin for GatesRenderPlugin {
                 .after(feed::drain)
                 .run_if(world_running)
                 .run_if(move || !filming),
+        )
+        // The cold's frost on the frame (`frost.rs`). HUD, so not on a plate
+        // run or a film.
+        .add_systems(
+            Update,
+            frost::drive
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !plate && !filming),
         )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
