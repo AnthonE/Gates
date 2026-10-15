@@ -1188,7 +1188,11 @@ pub use voice::{
 /// carries its throw (`WireToss`: a tick byte and the hand's offset), one
 /// bit when it is not, and a sync message carries thirteen, down from
 /// fourteen.
-pub const PROTO_VER: u16 = 114;
+/// v115 — the death screen: `SUB_DEATH` carries `alive_s`, the victim's
+/// seconds since its body stood up, after the range ("alive for"); and a
+/// `SUB_BAGS` entry that is not ready carries its seconds to go after the
+/// ready bit (`BagAnchor::wait_s`), the cooling bag's timer.
+pub const PROTO_VER: u16 = 115;
 
 /// This game's slug in the elo catalog.
 ///

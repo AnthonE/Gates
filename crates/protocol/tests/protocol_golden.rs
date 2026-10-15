@@ -1750,7 +1750,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_health(hp, max, &mut buf).unwrap()
         }
         "event_death.bin" => {
-            let (victim, killer, cause, item, range_cm) = event_death();
+            let (victim, killer, cause, item, range_cm, alive_s) = event_death();
             assert_eq!(
                 decode_event(fixture).unwrap(),
                 EventMsg::Death {
@@ -1759,10 +1759,11 @@ fn golden_event(fixture: &[u8], name: &str) {
                     cause,
                     item,
                     range_cm,
+                    alive_s,
                 },
                 "{name}: decode mismatch"
             );
-            encode_event_death(victim, killer, cause, item, range_cm, &mut buf).unwrap()
+            encode_event_death(victim, killer, cause, item, range_cm, alive_s, &mut buf).unwrap()
         }
         "event_respawn.bin" => {
             let on_bag = event_respawn();

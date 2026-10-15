@@ -1020,10 +1020,20 @@ impl Plugin for GatesRenderPlugin {
         // while the Esc menu is up raises the screen on resume, which is the
         // right order — two full-screen states cannot both be entered.
         app.add_systems(OnEnter(Screen::Dead), (death::enter, death::setup).chain())
-            .add_systems(OnExit(Screen::Dead), ui::despawn_all::<death::DeathRoot>)
+            .add_systems(
+                OnExit(Screen::Dead),
+                (ui::despawn_all::<death::DeathRoot>, death::leave),
+            )
             .add_systems(
                 Update,
-                (death::click, death::keys, death::act, death::awaken)
+                (
+                    death::fit,
+                    death::click,
+                    death::keys,
+                    death::act,
+                    death::refresh,
+                    death::awaken,
+                )
                     .chain()
                     .run_if(in_state(Screen::Dead)),
             )
@@ -1716,7 +1726,8 @@ impl Plugin for GatesRenderPlugin {
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
-                    hud::prompt,
+                    // The compass's words, then its death marker.
+                    (hud::prompt, hud::death_mark),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.

@@ -1126,6 +1126,7 @@ mod tests {
             cz: 100,
             level: 0,
             ready,
+            wait_s: if ready { 0 } else { 60 },
         };
         let (near, far) = (bag(100, true), bag(140, true));
         assert!(home.wake_on(&[near], 10, [hx, hz]), "home is safe");

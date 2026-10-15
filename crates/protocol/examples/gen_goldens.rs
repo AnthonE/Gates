@@ -400,8 +400,8 @@ fn main() {
     let len = encode_event_health(hp, max, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[42], &buf[..len]);
 
-    let (victim, killer, cause, item, range_cm) = goldens::event_death();
-    let len = encode_event_death(victim, killer, cause, item, range_cm, &mut buf).unwrap();
+    let (victim, killer, cause, item, range_cm, alive_s) = goldens::event_death();
+    let len = encode_event_death(victim, killer, cause, item, range_cm, alive_s, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[43], &buf[..len]);
 
     let len = encode_action_loot(&mut buf).unwrap();

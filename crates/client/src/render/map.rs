@@ -54,7 +54,7 @@ const DRAG_PX: f32 = 4.0;
 /// The sea around the island, and the letterbox either side of it at full
 /// zoom-out: the paint's own deep water, so the edge of the picture is not a
 /// line on screen.
-fn sea() -> Color {
+pub(super) fn sea() -> Color {
     let [r, g, b] = map::SEA_DEEP;
     Color::srgb(r / 255.0, g / 255.0, b / 255.0)
 }
@@ -74,12 +74,12 @@ fn sea() -> Color {
 /// The ranking survives in the shape rather than the size: the player is the
 /// only SOLID, SATURATED mark on the screen and the only one that points
 /// somewhere (`PLAYER_PX`). `DECISIONS.md` §open, map markers v2.
-const MAP_MARK_PX: f32 = 18.0;
+pub(super) const MAP_MARK_PX: f32 = 18.0;
 
 /// How much of a badge the picture inside it takes. The rest is the ring and
 /// the dark disc that makes a white silhouette readable over a lit island —
 /// an icon drawn edge to edge has nothing separating it from the terrain.
-const MARK_ICON_FRAC: f32 = 0.62;
+pub(super) const MARK_ICON_FRAC: f32 = 0.62;
 
 /// The haven's badge. Larger than an anchor — it is the island's one authored
 /// destination, and the two tiers are separated by size alone
@@ -99,8 +99,8 @@ const PLAYER_PX: f32 = 22.0;
 /// The row is fixed-width so both tiers' names share one axis: a text node
 /// sized to its own string hangs off the right of the badge, and `HAVEN` and
 /// `WAYSTATION` would then be centred on two different things.
-const SITE_LABEL_PX: f32 = 10.0;
-const SITE_LABEL_W: f32 = 84.0;
+pub(super) const SITE_LABEL_PX: f32 = 10.0;
+pub(super) const SITE_LABEL_W: f32 = 84.0;
 
 /// The disc behind a solid badge's picture, and behind a hollow one's.
 ///
@@ -109,15 +109,15 @@ const SITE_LABEL_W: f32 = 84.0;
 /// that works for a shape rather than a glyph. The hollow badge's is fainter
 /// because a ring already reads as an outline and filling it solid would say
 /// "solid", which is the channel a spent bed is using to say the opposite.
-const BADGE_SOLID: Color = Color::srgba(0.05, 0.05, 0.06, 0.72);
-const BADGE_HOLLOW: Color = Color::srgba(0.05, 0.05, 0.06, 0.42);
+pub(super) const BADGE_SOLID: Color = Color::srgba(0.05, 0.05, 0.06, 0.72);
+pub(super) const BADGE_HOLLOW: Color = Color::srgba(0.05, 0.05, 0.06, 0.42);
 
 /// The player's ink. The only saturated, solid mark on the screen.
 const PLAYER_INK: Color = Color::srgb(0.98, 0.30, 0.24);
 
 /// The grid labels' ink. Warm off-white at low alpha — an index rather than a
 /// feature, and 256 of them, so anything louder becomes the picture.
-const GRID_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.45);
+pub(super) const GRID_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.45);
 
 /// The grid label in each cell, screen px.
 ///
@@ -132,7 +132,7 @@ const GRID_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.45);
 /// a number in the middle of a square sits on top of the terrain it is
 /// describing. The reference's own devblog calls its first version "a little
 /// bit ugly"; the corner is where a printed chart puts it.
-const GRID_LABEL_PX: f32 = 11.0;
+pub(super) const GRID_LABEL_PX: f32 = 11.0;
 
 /// Everything this screen owns.
 #[derive(Component)]
@@ -582,6 +582,21 @@ pub fn setup(
                 );
                 for (i, m) in marks.a[..marks.count].iter().enumerate().rev() {
                     spawn_mark_named(frame, m, icons, named[i]);
+                }
+                // Your last death: the death screen's skull pin, kept on the
+                // map after the respawn until the next death moves it
+                // (Rust's "the last place you died", `ClientCore::
+                // death_marker`). Over the places, under your own marks and
+                // the arrow.
+                if let Some((x, z)) = core.death_marker {
+                    let (fx, fy) = map::world_to_map(x, z, 1);
+                    super::death::spawn_skull(
+                        frame,
+                        fx,
+                        fy,
+                        icons.and_then(|i| i.glyph("map_death")),
+                        false,
+                    );
                 }
 
                 // The player. `world_to_map` with size 1 gives a fraction, so

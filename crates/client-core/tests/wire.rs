@@ -556,18 +556,20 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     assert!(!c.dead, "the screen starts closed");
+    assert_eq!(c.death_marker, None, "no death, no marker");
 
     // A stranger's, with four values all distinct from ours.
-    let len = encode_event_death(0x2A, 0x3B, DEATH_BY_HAND, 4, 250, &mut buf).unwrap();
+    let len = encode_event_death(0x2A, 0x3B, DEATH_BY_HAND, 4, 250, 30, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_DEATH, APPLIED_DEATH);
     assert!(!c.dead, "a stranger's death opened our screen");
+    assert_eq!(c.death_marker, None, "a stranger's death is not our marker");
     assert_eq!(c.pop_death(), Some(0x2A), "the feed lost the stranger");
     assert_eq!(c.last_death_killer, 0x3B, "the feed lost the killer");
     assert_eq!(c.pop_death(), None, "the death ring must drain");
 
     // Ours, by an arrow — the cause that has to decode rather than error,
     // and the range and weapon the screen says.
-    let len = encode_event_death(ME, 0x4C, DEATH_BY_ARROW, 6, 1_337, &mut buf).unwrap();
+    let len = encode_event_death(ME, 0x4C, DEATH_BY_ARROW, 6, 1_337, 4_321, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert!(c.dead, "our own death must raise the screen");
     assert_eq!(c.own_death_killer, 0x4C, "the screen lost who shot us");
@@ -577,15 +579,18 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     );
     assert_eq!(c.own_death_item, 6, "the screen lost the weapon");
     assert_eq!(c.own_death_range_cm, 1_337, "the screen lost the range");
+    assert_eq!(c.own_death_alive_s, 4_321, "the screen lost the life");
+    let fell = c.death_marker.expect("our own death leaves a marker");
 
     // A stranger's death while we are down must not rewrite our screen.
-    let len = encode_event_death(0x5D, 0x6E, DEATH_BY_HAND, 1, 100, &mut buf).unwrap();
+    let len = encode_event_death(0x5D, 0x6E, DEATH_BY_HAND, 1, 100, 9, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert!(c.dead, "a stranger's death closed our screen");
     assert_eq!(
         c.own_death_killer, 0x4C,
         "a stranger's death rewrote our death screen"
     );
+    assert_eq!(c.own_death_alive_s, 4_321, "a stranger's life rewrote ours");
 
     // The wake answers it. A beach wake leaves `woke_on_bag` false, and
     // that outlives the screen on purpose — it is the only moment the
@@ -594,6 +599,12 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     feed(&mut c, &buf[..len]);
     assert!(!c.dead, "the wake must close the screen");
     assert!(!c.woke_on_bag, "a beach wake is not a bag wake");
+    // The marker outlives the wake (Rust's: until the next death).
+    assert_eq!(
+        c.death_marker,
+        Some(fell),
+        "the respawn took the death marker"
+    );
 }
 
 /// The bag set: dropped, repeated, replaced by a sync walk, removed, and
