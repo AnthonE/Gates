@@ -1519,12 +1519,15 @@ pub const ROADSIDE_GLB: [(Occupant, &str); 5] = [
 /// scaled up from hand size to a pile on the ground. `(occupant, model,
 /// scale)`. The models stand on their own base, so a pickup's lift is 0
 /// where its lump's was the lump's half-height ([`archetype_lift`]).
+///
+/// Sized to stand out of meadow grass, which hides most of a 0.3 m pile at
+/// ten metres (looked at in a capture, 2026-10-15): each is 0.35-0.52 m tall.
 pub const PICKUP_GLB: [(Occupant, &str, f32); 5] = [
-    (Occupant::StonePile, "models/held/stone.glb", 2.2),
-    (Occupant::MetalPile, "models/held/metal_ore.glb", 2.4),
-    (Occupant::SulfurPile, "models/held/sulfur_ore.glb", 2.4),
+    (Occupant::StonePile, "models/held/stone.glb", 2.4),
+    (Occupant::MetalPile, "models/held/metal_ore.glb", 3.0),
+    (Occupant::SulfurPile, "models/held/sulfur_ore.glb", 2.8),
     (Occupant::WoodPile, "models/held/wood.glb", 1.8),
-    (Occupant::MushroomPatch, "models/held/mushrooms.glb", 1.8),
+    (Occupant::MushroomPatch, "models/held/mushrooms.glb", 3.0),
 ];
 
 fn load_model(
