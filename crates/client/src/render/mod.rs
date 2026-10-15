@@ -206,6 +206,8 @@ pub mod plants;
 pub mod props;
 pub mod rig;
 pub mod settings;
+// Light shafts through the weather's fog (`rig::day_night` drives them).
+pub mod shafts;
 pub mod shake;
 pub mod sheet;
 // Where a blow meets the drawn mesh rather than the sim's cylinder.
@@ -649,6 +651,7 @@ impl Plugin for GatesRenderPlugin {
             .insert_resource(weather_pin)
             .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
+            .init_resource::<shafts::Shafts>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()

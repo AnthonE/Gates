@@ -142,12 +142,25 @@ impl WeatherNow {
         self.sun_cover.max(self.occlusion_floor())
     }
 
+    /// [`Self::occlusion`] without the fog: what the cloud alone takes. A
+    /// ground fog dims the sun without scattering away its direction, so
+    /// where its shafts are drawn (`shafts.rs`) the sun keeps casting
+    /// through it and only cloud puts the shadows out.
+    pub fn cloud_occlusion(&self) -> f32 {
+        self.sun_cover.max(self.heavy())
+    }
+
+    /// How much a heavy sky takes from the sun everywhere at once, `0..=1`:
+    /// nothing at half cover, all of it under a full one.
+    pub fn heavy(&self) -> f32 {
+        ((self.cloud - 0.5) / 0.5).clamp(0.0, 1.0)
+    }
+
     /// [`Self::occlusion`] whatever the deck over the sun's disk: a heavy
     /// sky and the fog. Where the ground draws the deck's own shadows
     /// (`cloud_shadow.rs`), this alone puts the sun's shadows out.
     pub fn occlusion_floor(&self) -> f32 {
-        let heavy = ((self.cloud - 0.5) / 0.5).clamp(0.0, 1.0);
-        heavy.max(self.fog)
+        self.heavy().max(self.fog)
     }
 
     /// Per-metre extinction of the weather's fog, rain and dust on

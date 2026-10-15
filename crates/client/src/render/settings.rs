@@ -1078,7 +1078,11 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Toggle("TEMPORAL AA (REPLACES SMAA)", Knob::Taa),
             Row::Toggle("BLOOM", Knob::Bloom),
             Row::Number("FAR TREES", Knob::TreeLod, "metres to the hull"),
-            Row::Number("CLOUDS", Knob::Clouds, "flat, or volumetric"),
+            Row::Number(
+                "CLOUDS",
+                Knob::Clouds,
+                "flat or volumetric; HIGH adds sun shafts",
+            ),
             Row::Number(
                 "RENDER SCALE",
                 Knob::RenderScale,

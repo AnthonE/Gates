@@ -665,6 +665,7 @@ pub fn drive(
     mut decks: ResMut<Assets<DeckMaterial>>,
     mut clouds: ResMut<Assets<CloudMaterial>>,
     mut fogs: ResMut<Assets<SkyFogMaterial>>,
+    shafts: Option<Res<super::shafts::Shafts>>,
 ) {
     let live = ComposeParams::from_weather(&weather);
     let nits = sky::deck_nits(weather.flash);
@@ -702,7 +703,13 @@ pub fn drive(
         }
     }
     if let Some(handle) = fog {
-        let want = SkyFogParams::new(&live, weather.underwater);
+        let mut want = SkyFogParams::new(&live, weather.underwater);
+        // The fog's sunlit share is the shafts' volume while it is drawn, and
+        // that volume lies over the sky too: the layer keeps what the ground's
+        // flat fog keeps, in the same colour, so the horizon seam holds.
+        if let Some(s) = shafts.filter(|s| s.volume > 0.0 && !weather.underwater) {
+            want.air = sky::SkyFog::new(s.flat, weather.rain_part()).lanes();
+        }
         let stale = fogs.get(&handle.0).is_some_and(|m| m.params != want);
         if stale {
             if let Some(m) = fogs.get_mut(&handle.0) {
