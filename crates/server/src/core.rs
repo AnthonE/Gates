@@ -14,13 +14,14 @@ use protocol::{
     encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
     encode_event_catalog, encode_event_charge_placed, encode_event_chat,
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_fire,
-    encode_event_gather, encode_event_gather_refused, encode_event_gitem_sync, encode_event_health,
-    encode_event_heard, encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_lodged_sync, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_dead,
+    encode_event_death, encode_event_death_mark, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_fire, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
+    encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_lodged_sync, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
     encode_event_research, encode_event_research_refused, encode_event_research_rows,
@@ -3931,25 +3932,44 @@ impl ShardCore {
                         }
                     }
                     // The life's length rides the same read: the corpse
-                    // keeps `born` (`World::die`), so "alive for" is the
-                    // sim's clock and not a guess the client could make.
-                    let now = self.world.tick;
-                    let (cause, item, range_cm, alive_s) = self
+                    // keeps `born` and `died` (`World::die`), so "alive for"
+                    // is the sim's clock and not a guess the client could
+                    // make.
+                    let corpse = self
                         .world
                         .players
                         .iter()
                         .find(|p| p.active && p.id == ev.a)
+                        .copied();
+                    let (cause, item, range_cm, alive_s) = corpse
                         .map(|p| {
-                            let ticks = now.saturating_sub(p.born);
-                            let secs = ticks / sim_core::limits::TICK_HZ as u64;
                             (
                                 p.death_cause,
                                 p.death_item,
                                 p.death_range_cm,
-                                secs.min(u32::MAX as u64) as u32,
+                                p.alive_s().unwrap_or(0),
                             )
                         })
                         .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0, 0));
+                    // **Where it fell goes to the victim alone, ahead of the
+                    // broadcast** (v116): the death screen centres its map
+                    // on it the frame `Death` raises the screen, for the
+                    // bags' reason above. The kill feed never carries it.
+                    // Seats watching the victim hear it from the drip.
+                    if let (Some(slot), Some(p)) = (self.client_slot_of(ev.a), corpse) {
+                        match encode_event_death_mark(p.death_at, &mut self.ev_buf) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    self.clients[slot].last_death_mark = Some(p.death_at);
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
                     match encode_event_death(
                         ev.a,
                         ev.b,
@@ -5473,6 +5493,52 @@ impl ShardCore {
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
             self.clients[slot].bags_owed = false;
+        }
+
+        // The death screen on the server (v116), after the bags it is built
+        // around. The marker whenever it is not what this client last heard
+        // (a join, a resync; a death sends it itself, ahead of the
+        // broadcast). The screen itself once per join or resync, and only
+        // for a body that is already dead — logged off on it, or killed
+        // asleep (`World::take_over`); a death while connected is the
+        // broadcast's. A join still queued has no body yet and owes on.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let p = self.world.players[wslot];
+            if self.clients[slot].last_death_mark != Some(p.death_at) {
+                match encode_event_death_mark(p.death_at, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_death_mark = Some(p.death_at);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+            if self.clients[slot].dead_owed {
+                if p.dead {
+                    match encode_event_dead(
+                        p.death_by,
+                        p.death_cause,
+                        p.death_item,
+                        p.death_range_cm,
+                        p.alive_s(),
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                self.clients[slot].dead_owed = false;
+            }
         }
 
         // The crew HUD vital (NOW §0up 3): a body standing in a claim it is

@@ -36,8 +36,10 @@ pub struct Death {
     pub range_cm: u16,
     /// This client's own id, so "you did it to yourself" is answerable.
     pub own_id: u32,
-    /// How long the body had been standing, in seconds (wire v115).
-    pub alive_s: u32,
+    /// How long the body had been standing, in seconds (wire v115). `None`
+    /// when the server did not time that life (a corpse restored from disk),
+    /// and then the strip has no ALIVE FOR.
+    pub alive_s: Option<u32>,
 }
 
 impl Death {
@@ -282,20 +284,21 @@ pub fn facts(
     meters: Meters,
     square: &str,
 ) -> Vec<Fact> {
-    let mut out = vec![
-        Fact {
+    let mut out = Vec::new();
+    if let Some(secs) = d.alive_s {
+        out.push(Fact {
             kind: FactKind::Alive,
             caption: "ALIVE FOR",
-            value: alive_for(d.alive_s),
+            value: alive_for(secs),
             tone: Tone::Life,
-        },
-        Fact {
-            kind: FactKind::Killer,
-            caption: "KILLED BY",
-            value: killed_by(d, killer, meters),
-            tone: Tone::Foe,
-        },
-    ];
+        });
+    }
+    out.push(Fact {
+        kind: FactKind::Killer,
+        caption: "KILLED BY",
+        value: killed_by(d, killer, meters),
+        tone: Tone::Foe,
+    });
     if let Some(w) = weapon(d, catalog) {
         out.push(Fact {
             kind: FactKind::Weapon,
@@ -548,7 +551,7 @@ mod tests {
             item: 4,
             range_cm: 250,
             own_id: 7,
-            alive_s: 0,
+            alive_s: Some(0),
         };
         assert_eq!(
             sentence(&d, &cat, "#12"),
@@ -568,7 +571,7 @@ mod tests {
             item: 4,
             range_cm: 100,
             own_id: 7,
-            alive_s: 0,
+            alive_s: Some(0),
         };
         assert_eq!(sentence(&d, &cat, "#12"), "#12 killed you from 1.0 m");
         assert_eq!(weapon(&d, &cat), None);
@@ -649,7 +652,7 @@ mod tests {
             own_id: 3,
             item: 1,
             range_cm: 4130,
-            alive_s: 0,
+            alive_s: Some(0),
         };
         assert_eq!(sentence(&d, &cat, "#7"), "#7 shot you with BOW from 41.3 m");
     }
@@ -677,7 +680,7 @@ mod tests {
             item: 9,
             range_cm: 35_600,
             own_id: 3,
-            alive_s: 3 * 86_400 + 600,
+            alive_s: Some(3 * 86_400 + 600),
         };
         let f = facts(&d, &cat, "Garry", Meters::default(), "X3");
         let got: Vec<_> = f.iter().map(|f| (f.caption, f.value.as_str())).collect();
@@ -707,13 +710,29 @@ mod tests {
             item: 1,
             range_cm: 500,
             own_id: 3,
-            alive_s: 90,
+            alive_s: Some(90),
         };
         let f = facts(&d, &cat, "#3", Meters::default(), "");
         let kinds: Vec<_> = f.iter().map(|f| f.kind).collect();
         assert_eq!(kinds, [FactKind::Alive, FactKind::Killer]);
         assert_eq!(f[1].value, "Cold");
         assert!(!by_another_player(&d));
+    }
+
+    /// A corpse restored from disk comes back without its life's length
+    /// (wire v116): the strip leaves ALIVE FOR out rather than say "0".
+    #[test]
+    fn an_untimed_life_has_no_alive_for() {
+        let d = Death {
+            cause: DEATH_BY_COLD,
+            killer: 3,
+            own_id: 3,
+            alive_s: None,
+            ..Death::default()
+        };
+        let f = facts(&d, &ItemCatalog::default(), "#3", Meters::default(), "");
+        let kinds: Vec<_> = f.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, [FactKind::Killer]);
     }
 
     #[test]
@@ -746,7 +765,7 @@ mod tests {
             item: 9,
             range_cm: 1_240,
             own_id: 3,
-            alive_s: 0,
+            alive_s: Some(0),
         };
         let t = report_title(&d, &cat, "Garry", "H7");
         assert_eq!(

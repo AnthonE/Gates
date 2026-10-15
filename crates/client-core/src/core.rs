@@ -1925,7 +1925,8 @@ pub struct ClientCore {
     /// caller a whole line (the `removed_key`/`removed_info` pattern).
     pub last_death_killer: u32,
     /// The death screen, own-body only. `dead` is set by the `Death` whose
-    /// victim is `player_id` and cleared by the `Respawn` that answers it;
+    /// victim is `player_id` (or by `Dead`, v116, when the body was already
+    /// dead at the join) and cleared by the `Respawn` that answers it;
     /// the four beside it are the sentence the screen says (ALPHA.md §1:
     /// "who/what killed you — range and weapon, no map position"), held
     /// rather than ringed because there is only ever one of them and the
@@ -1941,14 +1942,14 @@ pub struct ClientCore {
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
     /// How long the body that fell had been standing, in seconds (v115) —
-    /// the death screen's "alive for".
-    pub own_death_alive_s: u32,
+    /// the death screen's "alive for". `None` when the server did not time
+    /// that life (`EventMsg::Dead` about a corpse restored from disk).
+    pub own_death_alive_s: Option<u32>,
     /// Where this body last fell, world XZ: Rust's death marker, which the
     /// death screen pins and the compass and the map keep showing after the
-    /// respawn, until the next death moves it. Session memory, like the
-    /// map's own marks. Taken off the predicted body when the `Death` lands,
-    /// which is the death position — a corpse neither moves nor predicts
-    /// (`own_bag`'s note).
+    /// respawn, until the next death moves it. The server's, not this
+    /// client's memory (`EventMsg::DeathMark`, v116): stated at every join
+    /// and ahead of each death, so a reconnect or a reload keeps it.
     pub death_marker: Option<(f32, f32)>,
     pub woke_on_bag: bool,
     /// **Down, not dead** (wounded v0, wire v63): set by the `Wounded`
@@ -2346,7 +2347,7 @@ impl ClientCore {
             own_death_cause: 0,
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
-            own_death_alive_s: 0,
+            own_death_alive_s: None,
             death_marker: None,
             woke_on_bag: false,
             wounded: false,
@@ -3744,11 +3745,35 @@ impl ClientCore {
                     self.own_death_cause = cause;
                     self.own_death_item = item;
                     self.own_death_range_cm = range_cm;
-                    self.own_death_alive_s = alive_s;
-                    let [x, _, z] = self.predict.position();
-                    self.death_marker = Some((x, z));
+                    self.own_death_alive_s = Some(alive_s);
                     flags |= APPLIED_RESPAWN;
                 }
+            }
+            EventMsg::Dead {
+                killer,
+                cause,
+                item,
+                range_cm,
+                alive_s,
+            } => {
+                // The death screen said again (v116): this body was already
+                // dead when this connection reached it. No feed line and no
+                // bag arm — the kill and its backpack happened while nobody
+                // here was looking.
+                self.dead = true;
+                self.wounded = false;
+                self.assist = (0, 0, 0);
+                self.predict.crawl = false;
+                self.own_death_killer = killer;
+                self.own_death_cause = cause;
+                self.own_death_item = item;
+                self.own_death_range_cm = range_cm;
+                self.own_death_alive_s = alive_s;
+                flags |= APPLIED_RESPAWN;
+            }
+            EventMsg::DeathMark { at } => {
+                let q = sim_core::movement::POS_XZ_Q;
+                self.death_marker = at.map(|(qx, qz)| (qx as f32 * q, qz as f32 * q));
             }
             EventMsg::Respawn { on_bag } => {
                 self.dead = false;

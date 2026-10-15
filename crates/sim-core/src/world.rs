@@ -1402,6 +1402,20 @@ pub struct Player {
     /// the life lasted (Rust's "alive for"). Not saved: a restored body
     /// starts its clock at the restore.
     pub born: u64,
+    /// The tick this body fell, 0 while it stands. With `born` it is the
+    /// "alive for" the server says again to an owner who comes back to the
+    /// corpse later (logged off on the death screen, or killed asleep).
+    /// Also 0 on a corpse restored from disk: neither clock is saved, so
+    /// that life's length is not this world's to say. Not saved and not
+    /// hashed, for `born`'s reasons.
+    pub died: u64,
+    /// Where this player last fell, in body quanta: Rust's death marker. The
+    /// death screen's skull, then the compass's and the map's after the
+    /// respawn, until the next death moves it. The server tells the owner at
+    /// every join (`SUB_DEATH_MARK`), so it lives here and not in a client's
+    /// memory. Not saved and not hashed: a restart forgets it, except on a
+    /// body restored dead, whose corpse marks itself.
+    pub death_at: Option<(i32, i32)>,
 }
 
 impl Player {
@@ -1417,6 +1431,15 @@ impl Player {
             && !self.dead
             && !self.sleeping
             && !self.wounded
+    }
+
+    /// How long the life that ended at `died` lasted, in whole seconds: the
+    /// death screen's "alive for". `None` when this world did not time it.
+    pub fn alive_s(&self) -> Option<u32> {
+        (self.died != 0).then(|| {
+            let secs = self.died.saturating_sub(self.born) / crate::limits::TICK_HZ as u64;
+            secs.min(u32::MAX as u64) as u32
+        })
     }
 }
 
@@ -1489,6 +1512,8 @@ impl Default for Player {
             gate_spawn: false,
             gate_spawn_at: 0,
             born: 0,
+            died: 0,
+            death_at: None,
         }
     }
 }
@@ -4077,9 +4102,14 @@ impl World {
             // THE GATE's respawn point and its cooldown are the person's.
             gate_spawn: body.gate_spawn,
             gate_spawn_at: body.gate_spawn_at,
-            // The corpse keeps the life's start, so the server can say how
-            // long it lasted when it encodes the death.
+            // The corpse keeps the life's start and its end, so the server
+            // can say how long it lasted, at the death and to an owner who
+            // comes back to it later. `max(1)`: 0 means untimed.
             born: body.born,
+            died: self.tick.max(1),
+            // Rust's death marker: where the feet were, which is where the
+            // backpack lies. `wake` carries it into the next life.
+            death_at: Some((body.body.qx, body.body.qz)),
             ..Player::default()
         };
         // **What it was wearing goes into the bag with what it was
@@ -4293,6 +4323,9 @@ impl World {
             },
             // A new body, a new life.
             born: self.tick,
+            // The marker outlives the corpse: the compass still points at
+            // the backpack after the respawn.
+            death_at: body.death_at,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -4318,20 +4351,16 @@ impl World {
         //
         // ⚠ **`Command::Respawn` is not the only caller, and a comment
         // here said it was until 2026-08-15.** `grep -n '\.wake(' ` on this
-        // file returns three: the respawn command, `seat`'s restore arm
-        // when the save is `dead` (logged off on the death screen), and the
-        // sleeper takeover when the body it takes over is dead. All three
-        // rebuild the body from `..Player::default()`, so all three are new
-        // bodies and all three are paid — and since 2026-08-17 all three
-        // are gated: `tests/bag_respawn.rs` and `server/tests/spawn_kit.rs`
-        // drive `Command::Respawn`;
+        // file returns two: the respawn command and `seat`'s restore arm
+        // when the save is `dead` (a record from the store, which keeps no
+        // corpse). Both rebuild the body from `..Player::default()`, so both
+        // are new bodies and both are paid: `tests/bag_respawn.rs` and
+        // `server/tests/spawn_kit.rs` drive `Command::Respawn`;
         // `persist.rs::a_dead_save_wakes_holding_the_spawn_kit` drives the
-        // dead restore; `sleepers.rs::
-        // a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit` drives the
-        // takeover. Each of the latter two is proven red both under an
-        // early return at its own door and under deleting this `grant_kit`
-        // call alone — the mutation the doors' older position/hp gates
-        // cannot see.
+        // dead restore. A takeover of a dead sleeper no longer wakes: the
+        // owner gets the death screen and answers it with a respawn, which
+        // `sleepers.rs` gates in
+        // `a_takeover_of_a_dead_body_respawns_holding_the_spawn_kit`.
         //
         // A returning login whose save is ALIVE is the different door and
         // still grants nothing, because a saved character keeps what it
@@ -4532,6 +4561,10 @@ impl World {
                     gate_spawn_at: 0,
                     // The save does not carry it: the clock starts here.
                     born: self.tick,
+                    died: 0,
+                    // Not even for a dead save: a wipe's survivor is one
+                    // (`server::wipe::survivor`), and its body is nowhere.
+                    death_at: None,
                 };
                 craft::rearm(
                     &self.craft,
@@ -4541,12 +4574,14 @@ impl World {
                     &mut self.players[slot],
                 );
                 if s.dead {
-                    // Logged off on the death screen. Declining the choice
-                    // is choosing the beach — `wake` re-derives the whole
+                    // A dead record from the store: the corpse is gone (its
+                    // sleeper was evicted, or a wipe made this survivor), so
+                    // there is no death screen left to come back to — a body
+                    // still in the world comes back to its own through
+                    // `take_over`. The beach: `wake` re-derives the whole
                     // body from the spawn ring at `deaths` and announces
                     // everything this function would have, so it is the
-                    // exit and not a step (`PlayerSave::dead` says why the
-                    // corpse itself is not restorable).
+                    // exit and not a step (`PlayerSave::dead`).
                     self.wake(slot, false, false, None);
                     return;
                 }
@@ -4612,13 +4647,14 @@ impl World {
     /// recorded — restoring the record here is precisely the hole that
     /// would make offline raiding pay nothing.
     ///
-    /// A dead sleeper wakes on a beach rather than on the death screen,
-    /// which is the rule `PlayerSave::dead` already reasoned out for the
-    /// other door and this one inherits: the screen is drawn from
-    /// `EV_DEATH`, `EV_DEATH` is the shard-wide kill feed, and re-emitting
-    /// it at a join would announce a fresh killing of somebody who had just
-    /// logged in. Declining the choice is choosing the beach, and being
-    /// killed in your sleep is declining it.
+    /// **A dead sleeper stays dead** (Rust's rule): logged off on the death
+    /// screen, or killed asleep, the owner comes back to the death screen
+    /// and chooses — a bag, THE GATE or the beach — with the corpse's facts
+    /// still on the record. The server says them to this connection alone
+    /// (`SUB_DEAD`), never as `EV_DEATH`: that is the shard-wide kill feed,
+    /// and re-emitting it at a join would announce a fresh killing of
+    /// somebody who had just logged in. Until 2026-10-15 this woke the body
+    /// on a beach instead, which spent the choice for the player.
     fn take_over(&mut self, id: u32, sleeper: u32) {
         let Some(slot) = self.sleeper_slot(sleeper) else {
             return;
@@ -4644,6 +4680,12 @@ impl World {
         p.id = id;
         p.sleeping = false;
         p.slept_at = 0;
+        // A death of the body's own doing (the clock, a fall, a charge you
+        // planted) names the body, and the body has a new name now: the
+        // death screen says "Yourself" by comparing the two.
+        if p.death_by == sleeper {
+            p.death_by = id;
+        }
         // The frame is the new connection's to fill. Unlike a respawn —
         // which keeps it, because the same client is still holding the same
         // mouse — a takeover is a different session whose input seq starts
@@ -4656,7 +4698,8 @@ impl World {
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
-            self.wake(slot, false, false, None);
+            // Nothing to announce: a corpse has no vitals, and the respawn
+            // that answers the screen announces the new body's.
             return;
         }
         // The craft queue survived the sleep; its completion tick did not
@@ -7614,6 +7657,8 @@ impl World {
             // `born` is not hashed and not saved either: nothing in the sim
             // reads it, it is the death screen's "alive for", and a load
             // restarts it, so hashing it would split a save/load round trip.
+            // `died` and `death_at` are the same kind of thing for the same
+            // screen, and skipped for the same reason.
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
             // shards that disagree about whether a body is standing

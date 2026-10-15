@@ -170,6 +170,10 @@ pub struct Answer {
     /// gone.
     built: Vec<(u16, u16, u8)>,
     built_gate: bool,
+    /// The death marker the map was drawn with. The server's can land after
+    /// the screen opened (a seat hears it from the drip), and the skull
+    /// moves with it.
+    built_mark: Option<(f32, f32)>,
     /// The killer's picture, while it is still on its way.
     face: Option<(protocol::Address, u32)>,
 }
@@ -360,8 +364,10 @@ pub fn setup(
         alive_s: core.own_death_alive_s,
     };
     let killer = crate::ui::names::of(core, d.killer);
-    // Where the body fell, as the core took it when the death landed — the
-    // spot the compass and the held map keep showing after the respawn.
+    // Where the body fell, as the server states it (`DeathMark`, v116) — the
+    // spot the compass and the held map keep showing after the respawn. The
+    // predicted body until it lands.
+    answer.built_mark = core.death_marker;
     let (dx, dz) = core.death_marker.unwrap_or_else(|| {
         let [x, _, z] = core.predict.position();
         (x, z)
@@ -1303,7 +1309,10 @@ pub fn refresh(
                 .iter()
                 .zip(&answer.built)
                 .any(|(b, k)| (b.cx, b.cz, b.level) != *k);
-        if moved || core.gate_spawn_left().is_some() != answer.built_gate {
+        if moved
+            || core.gate_spawn_left().is_some() != answer.built_gate
+            || core.death_marker != answer.built_mark
+        {
             // OnExit then OnEnter again: `set` runs the transition even for
             // the state already current (`set_if_neq` is the one that
             // does not).

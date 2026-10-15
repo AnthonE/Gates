@@ -770,7 +770,11 @@ mod carried_through_death {
     /// `hostile` is Rust's rule — hostility "persists across death in an
     /// attempt to prevent griefing", so dying is no way back into THE GATE —
     /// and THE GATE's respawn point and its cooldown belong to the person.
-    pub const CARRIED: [&str; 10] = [
+    ///
+    /// `death_at` is Rust's death marker: the death writes it and the wake
+    /// keeps it, so the compass still points at the backpack after the
+    /// respawn.
+    pub const CARRIED: [&str; 11] = [
         "id",
         "active",
         "frame",
@@ -783,18 +787,21 @@ mod carried_through_death {
         "hostile",
         "gate_spawn",
         "gate_spawn_at",
+        "death_at",
     ];
 
     /// Re-derived, dropped, or owned by the death itself. Anything here is
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 44] = [
+    pub const RE_DERIVED: [&str; 45] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // The life clock: the corpse keeps it for the death screen's
         // "alive for", and `wake` starts a new one.
         "born",
+        // Its other end: the death writes it and a new life is not dead.
+        "died",
         // Comfort and the calm clock rebuild in seconds (`exposure.rs`).
         "comfort",
         "calm",

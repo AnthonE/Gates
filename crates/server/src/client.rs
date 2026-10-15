@@ -463,6 +463,13 @@ pub struct ClientNetState {
     /// THE GATE's respawn point as last sent (`EventMsg::GateSpawn`).
     /// `None` owes the client the reading.
     pub last_gate_spawn: Option<u32>,
+    /// Where the body last fell, as last sent (`EventMsg::DeathMark`, v116).
+    /// `None` owes the client the marker.
+    pub last_death_mark: Option<Option<(i32, i32)>>,
+    /// The death screen is owed if the body is already dead (`EventMsg::Dead`,
+    /// v116): a fresh join and a resync start owing it, and the drip clears
+    /// it once the body is in the world, dead or not.
+    pub dead_owed: bool,
     /// The team as last sent (`EventMsg::Team`, v108), and the tick it was
     /// sent at: a change of who or how is sent at once, a member's move no
     /// oftener than `team::MOVE_TICKS`. `None` owes the client the view.
@@ -576,6 +583,8 @@ impl ClientNetState {
             last_expo: None,
             last_hostile: None,
             last_gate_spawn: None,
+            last_death_mark: None,
+            dead_owed: true,
             last_team: None,
             team_sent_at: 0,
             pending_team: None,
@@ -651,6 +660,8 @@ impl ClientNetState {
         self.last_expo = None;
         self.last_hostile = None;
         self.last_gate_spawn = None;
+        self.last_death_mark = None;
+        self.dead_owed = true;
         self.last_team = None;
     }
 

@@ -516,3 +516,115 @@ fn a_bag_placed_or_taken_is_told_to_its_living_owner_and_nobody_else() {
         "the owner's map still tags a bed that is gone"
     );
 }
+
+/// **The death screen lives on the server** (wire v116), not in the client's
+/// memory. The victim alone is told where it fell, ahead of the `Death`. A
+/// player who closes the game on the screen and comes back gets it again —
+/// its facts and its marker, to them alone and with no line in anybody's
+/// kill feed — and the respawn that answers it keeps the marker.
+#[test]
+fn the_death_screen_and_its_marker_survive_a_reconnect() {
+    use server::core::Admitted;
+    use server::store::PlayerKey;
+    use sim_core::world::DEATH_BY_CLOCK;
+
+    let me = PlayerKey::new(b"comes-back-dead").expect("fits");
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.survival = SurvivalContent::probe_fixture();
+    core.world.combat = CombatContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut Vec::new());
+    }
+
+    let seen = die(&mut core, &stats, &mut clients);
+    let w = world_slot(&core, id_of(0));
+    let body = core.world.players[w].body;
+    let at = Some((body.qx, body.qz));
+    let first = |slot: usize, pred: fn(&EventMsg) -> bool| {
+        seen.iter().position(|(s, m)| *s == slot && pred(m))
+    };
+    let mark = first(0, |m| matches!(m, EventMsg::DeathMark { .. }))
+        .expect("the victim was never told where it fell");
+    let death = first(0, |m| matches!(m, EventMsg::Death { .. })).expect("no Death");
+    assert!(mark < death, "the marker came after the screen it pins");
+    assert_eq!(seen[mark].1, EventMsg::DeathMark { at });
+    assert!(
+        first(1, |m| matches!(m, EventMsg::DeathMark { .. })).is_none(),
+        "the bystander was told where the victim fell"
+    );
+    let q = sim_core::movement::POS_XZ_Q;
+    let fell = (body.qx as f32 * q, body.qz as f32 * q);
+    assert_eq!(clients[0].1.death_marker, Some(fell));
+
+    // Closed the game on the death screen: the corpse sleeps where it fell.
+    assert!(core.disconnect(0).is_some());
+    clients.retain(|(s, _)| *s != 0);
+    pump(&mut core, &stats, &mut clients, &mut Vec::new());
+    assert!(core.world.players[w].dead && core.world.players[w].sleeping);
+
+    // And comes back to it.
+    let (how, _) = core
+        .connect_as(0, id2_of(0), Some(me), None)
+        .expect("admitted");
+    assert_eq!(how, Admitted::TookOver);
+    clients.push((0, ClientCore::new(SEED, id2_of(0), 0)));
+    let mut back = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut back);
+    }
+    assert!(core.world.players[w].dead, "the takeover woke the corpse");
+    let owner = &clients.iter().find(|(s, _)| *s == 0).unwrap().1;
+    assert!(owner.dead, "the death screen did not come back");
+    assert_eq!(owner.own_death_cause, DEATH_BY_CLOCK);
+    assert_eq!(
+        owner.own_death_killer,
+        id2_of(0),
+        "a death of your own doing must name you by your new id"
+    );
+    assert!(
+        owner.own_death_alive_s.is_some(),
+        "this shard timed that life"
+    );
+    assert_eq!(owner.death_marker, Some(fell), "the marker was lost");
+    assert!(
+        !back
+            .iter()
+            .any(|(_, m)| matches!(m, EventMsg::Death { .. })),
+        "a reconnect announced a killing in the kill feed"
+    );
+    assert!(
+        !back.iter().any(
+            |(s, m)| *s == 1 && matches!(m, EventMsg::Dead { .. } | EventMsg::DeathMark { .. })
+        ),
+        "the bystander heard somebody else's death screen"
+    );
+
+    // The answer stands the body up somewhere else; the marker stays.
+    assert!(core.wants_action(0), "hand should be open");
+    core.push_action(0, ActionMsg::Respawn { on_bag: false });
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut Vec::new());
+    }
+    let owner = &clients.iter().find(|(s, _)| *s == 0).unwrap().1;
+    assert!(!owner.dead, "the respawn did not close the screen");
+    assert_eq!(
+        owner.death_marker,
+        Some(fell),
+        "the respawn took the marker"
+    );
+}
+
+/// The id the slot table mints for `slot`'s second tenant: a reconnect.
+fn id2_of(slot: usize) -> u32 {
+    (2 << 8) | slot as u32
+}

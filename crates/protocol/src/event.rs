@@ -565,7 +565,13 @@ const SUB_TEAM: u32 = 97;
 /// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
 /// shot rides `EV_SHOT` on its body and the blast its impact.
 const SUB_REPORT: u32 = 98;
-const SUB_MAX: u32 = SUB_REPORT;
+/// You are dead, and were before this connection reached the body (wire
+/// v116): the death screen again, for its owner only. See `EventMsg::Dead`.
+const SUB_DEAD: u32 = 99;
+/// Where your body last fell (wire v116): Rust's death marker. Own-fact. See
+/// `EventMsg::DeathMark`.
+const SUB_DEATH_MARK: u32 = 100;
+const SUB_MAX: u32 = SUB_DEATH_MARK;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -2192,11 +2198,10 @@ pub enum EventMsg {
     /// Widened in v16 to carry what the death screen is made of:
     /// `cause` is a `sim_core::world::DEATH_BY_*` code, `item` the weapon
     /// in the killer's hand (`NO_ITEM` when the world did it), `range_cm`
-    /// how far the blow landed from. **Still no position** — that is not an
-    /// omission but the rule ALPHA.md §1 states outright ("no map
-    /// position"): a death that told you where you fell would hand every
-    /// raider a map pin to the base they just cleared, and hand the corpse
-    /// one back. Who, with what, from how far. Never where.
+    /// how far the blow landed from. **Still no position**: a death that
+    /// told everyone where it happened would hand every raider a map pin to
+    /// the base they just cleared. Who, with what, from how far. The victim
+    /// alone is told where, by `DeathMark` (v116), ahead of this.
     ///
     /// Broadcast rather than own-fact for the same reason it always was —
     /// a kill feed reports kills nobody saw — and the extra three fields
@@ -2215,6 +2220,27 @@ pub enum EventMsg {
         range_cm: u16,
         alive_s: u32,
     },
+    /// You are dead, and were before this connection reached the body (v116):
+    /// you logged off on the death screen, or were killed asleep. `Death`'s
+    /// facts for the death screen, said again to its owner alone at a join
+    /// and after a resync, never to the kill feed: re-announcing `Death`
+    /// would tell the whole shard about a killing that happened while its
+    /// victim was away. `alive_s` is `None` when the server did not time
+    /// that life (a corpse restored from disk keeps neither clock).
+    Dead {
+        killer: u32,
+        cause: u8,
+        item: u16,
+        range_cm: u16,
+        alive_s: Option<u32>,
+    },
+    /// Where your body last fell (v116), in body quanta (`SUB_FIRE`'s
+    /// absolute x and z): Rust's death marker, which the death screen pins
+    /// and the compass and the map keep showing after the respawn, until the
+    /// next death moves it. Own-fact: sent ahead of your `Death`, at a join
+    /// and after a resync. `None` when the server has no death of yours on
+    /// record.
+    DeathMark { at: Option<(i32, i32)> },
     /// You woke up: `on_bag` is true if one of your own sleeping bags
     /// answered, false if the beach ring did. Own-fact, and the one message
     /// that closes the death screen.
@@ -5053,6 +5079,49 @@ pub fn encode_event_death(
     Ok(w.finish())
 }
 
+/// The death screen said again to its owner, own-fact — see
+/// `EventMsg::Dead`. `Death`'s fields and range check, without the victim
+/// (it is the receiver) and with the life's length behind a bit.
+pub fn encode_event_dead(
+    killer: u32,
+    cause: u8,
+    item: u16,
+    range_cm: u16,
+    alive_s: Option<u32>,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cause > DEATH_CAUSE_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DEAD)?;
+    w.write(killer, 32)?;
+    w.write(cause as u32, DEATH_CAUSE_BITS)?;
+    w.write(item as u32, 16)?;
+    w.write(range_cm as u32, 16)?;
+    w.write_bit(alive_s.is_some())?;
+    if let Some(s) = alive_s {
+        w.write(s, 32)?;
+    }
+    Ok(w.finish())
+}
+
+/// Where the receiver last fell, own-fact — see `EventMsg::DeathMark`. A
+/// position off the entity lane's window is refused, `SUB_IMPACT`'s check.
+pub fn encode_event_death_mark(at: Option<(i32, i32)>, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_DEATH_MARK)?;
+    w.write_bit(at.is_some())?;
+    if let Some((qx, qz)) = at {
+        if !(0..(1i64 << POS_XZ_BITS)).contains(&(qx as i64))
+            || !(0..(1i64 << POS_XZ_BITS)).contains(&(qz as i64))
+        {
+            return Err(WireError::Range);
+        }
+        w.write(qx as u32, POS_XZ_BITS)?;
+        w.write(qz as u32, POS_XZ_BITS)?;
+    }
+    Ok(w.finish())
+}
+
 /// A body woke up, own-fact — see `EventMsg::Respawn`.
 pub fn encode_event_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_RESPAWN)?;
@@ -6809,6 +6878,37 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 range_cm: r.read(16)? as u16,
                 alive_s: r.read(32)?,
             }
+        }
+        SUB_DEAD => {
+            let killer = r.read(32)?;
+            let cause = r.read(DEATH_CAUSE_BITS)? as u8;
+            if cause > DEATH_CAUSE_MAX {
+                return Err(WireError::Malformed);
+            }
+            let item = r.read(16)? as u16;
+            let range_cm = r.read(16)? as u16;
+            let alive_s = if r.read_bit()? {
+                Some(r.read(32)?)
+            } else {
+                None
+            };
+            EventMsg::Dead {
+                killer,
+                cause,
+                item,
+                range_cm,
+                alive_s,
+            }
+        }
+        SUB_DEATH_MARK => {
+            let at = if r.read_bit()? {
+                let qx = r.read(POS_XZ_BITS)? as i32;
+                let qz = r.read(POS_XZ_BITS)? as i32;
+                Some((qx, qz))
+            } else {
+                None
+            };
+            EventMsg::DeathMark { at }
         }
         SUB_MOVED => {
             let from_kind = r.read(CONT_KIND_BITS)? as u8;
