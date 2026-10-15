@@ -24,9 +24,11 @@
 //!   texture: a mask image written after the material was prepared never
 //!   reached the bind group, so every island card stood on top of the real
 //!   tree in front of it, and on the stump of every tree felled.
-//! - **Lit, fogged and hazed like everything else.** The fragment stage is
-//!   `StandardMaterial`'s own; the vertex stage hands it a rounded normal so a
-//!   card is lit like a crown rather than a sheet.
+//! - **Lit, fogged and hazed like everything else.** `tree_card.wgsl` and
+//!   `tree_card_prepass.wgsl` each carry both stages: the fragment is
+//!   `StandardMaterial`'s with the atlas read through `alpha_cut.wgsl`, and
+//!   the vertex stage hands it a rounded normal so a card is lit like a crown
+//!   rather than a sheet.
 //!
 //! Felled trees keep their island card until a rebuild; at this range they
 //! are a few pixels, and the rings own everything close enough to chop.
@@ -54,9 +56,10 @@ use super::{Eye, WorldEntity, WorldId};
 /// The card material: `StandardMaterial` with the turning vertex stage.
 pub type TreeCardMaterial = ExtendedMaterial<StandardMaterial, TreeCard>;
 
-/// The vertex shader, resolved against the asset root.
+/// The card's vertex and fragment stages (`StandardMaterial`'s fragment with
+/// the `alpha_cut` read), resolved against the asset root.
 pub const SHADER: &str = "shaders/tree_card.wgsl";
-/// Its depth-prepass twin.
+/// Its depth-prepass twin, both stages likewise.
 pub const PREPASS_SHADER: &str = "shaders/tree_card_prepass.wgsl";
 
 /// Edge of one tile of cards, metres — four prop chunks a side.
@@ -126,6 +129,16 @@ impl MaterialExtension for TreeCard {
     // prepass wrote none anywhere — the sky pass fogged it at the depth of
     // the terrain behind it, a see-through ghost of a tree (2026-09-28).
     fn prepass_vertex_shader() -> ShaderRef {
+        PREPASS_SHADER.into()
+    }
+    // Both fragment stages are `StandardMaterial`'s with the atlas read
+    // through `alpha_cut.wgsl`, so the prepass and the main pass cut the same
+    // pixels: Bevy's two reads did not always agree, and a card one kept and
+    // the other cut left depth with no colour on it — a hole in the fog.
+    fn fragment_shader() -> ShaderRef {
+        SHADER.into()
+    }
+    fn prepass_fragment_shader() -> ShaderRef {
         PREPASS_SHADER.into()
     }
     // A card turned to the camera casts a card's shadow toward the sun, which
