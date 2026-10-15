@@ -48,12 +48,13 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use bevy::prelude::*;
-use js_sys::{Int16Array, Object, Reflect, Uint8Array};
+use js_sys::{Float32Array, Int16Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, MessagePort};
 
 use crate::sound::engine::{Stats, CMD_BYTES};
+use crate::sound::talk::{TalkMsg, TALKERS};
 use crate::sound::worklet::{encode, encode_cap, Report, REPORT_BYTES};
 use crate::sound::{Cue, SAMPLE_RATE};
 
@@ -113,6 +114,8 @@ pub struct Web {
     music: Option<JsValue>,
     /// The level last sent to it, so a steady level sends nothing.
     music_sent: f32,
+    /// The talker lanes' ear gains last posted, so steady gains post nothing.
+    talk_gains: [f32; 2 * TALKERS],
 }
 
 impl Web {
@@ -130,6 +133,7 @@ impl Web {
             out_rate: SAMPLE_RATE,
             music: None,
             music_sent: -1.0,
+            talk_gains: [0.0; 2 * TALKERS],
         }
     }
 
@@ -185,6 +189,24 @@ impl Web {
         }
         let transfer = js_sys::Array::of1(&bytes.buffer());
         port.post_message_with_transferable(&msg, &transfer).is_ok()
+    }
+
+    /// Post one message with a `kind`, a `lane` and an optional float array,
+    /// transferring the array's buffer.
+    fn talk_post(&self, kind: &str, lane: usize, data: Option<&Float32Array>) -> bool {
+        let Some(port) = self.port.as_ref() else {
+            return false;
+        };
+        let msg = Object::new();
+        let mut ok = Reflect::set(&msg, &"kind".into(), &kind.into()).is_ok()
+            && Reflect::set(&msg, &"lane".into(), &(lane as u32).into()).is_ok();
+        let transfer = js_sys::Array::new();
+        if let Some(a) = data {
+            let key = if kind == "talkgains" { "gains" } else { "pcm" };
+            ok = ok && Reflect::set(&msg, &key.into(), a).is_ok();
+            transfer.push(&a.buffer());
+        }
+        ok && port.post_message_with_transferable(&msg, &transfer).is_ok()
     }
 
     /// Is a processor rendering? False until it has answered `ready`.
@@ -313,6 +335,7 @@ fn open_worklet(app: &mut App) -> Web {
         out_rate: rate,
         music: None,
         music_sent: -1.0,
+        talk_gains: [0.0; 2 * TALKERS],
     }
 }
 
@@ -357,9 +380,34 @@ pub fn flush(mut engine: ResMut<audio::Engine>, mut out: NonSendMut<Web>) {
         if !out.send(n) {
             out.unrouted = out.unrouted.saturating_add((n / CMD_BYTES) as u32);
         }
+        // Players' voices (`sound::talk`): samples as they come, the gains
+        // as one array when any moved.
+        let mut gains = out.talk_gains;
+        let pending: Vec<TalkMsg> = engine.take_talk().collect();
+        for msg in pending {
+            match msg {
+                TalkMsg::Pcm { lane, len, pcm } => {
+                    let a = Float32Array::from(&pcm[..(len as usize).min(pcm.len())]);
+                    out.talk_post("talk", lane as usize, Some(&a));
+                }
+                TalkMsg::Gain { lane, l, r } => {
+                    if let Some(g) = gains.get_mut(2 * lane as usize..2 * lane as usize + 2) {
+                        g.copy_from_slice(&[l, r]);
+                    }
+                }
+                TalkMsg::Stop { lane } => {
+                    out.talk_post("talkstop", lane as usize, None);
+                }
+            }
+        }
+        if gains != out.talk_gains {
+            out.talk_gains = gains;
+            out.talk_post("talkgains", 0, Some(&Float32Array::from(&gains[..])));
+        }
     } else {
         let n = engine.take_installs().count() + engine.take().count();
         out.unrouted = out.unrouted.saturating_add(n as u32);
+        engine.take_talk().for_each(drop);
     }
 
     let score = engine.score;

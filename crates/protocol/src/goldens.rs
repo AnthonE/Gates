@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 166] = [
+pub const FIXTURES: [&str; 168] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -300,6 +300,9 @@ pub const FIXTURES: [&str; 166] = [
     "action_team.bin",
     // The receiver's team, three members and an invite (v108).
     "event_team.bin",
+    // Proximity voice (v111): the talker's frame, and its relay.
+    "voice_up.bin",
+    "voice.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1886,6 +1889,25 @@ pub fn chat() -> (ChatText, crate::Channel) {
 /// the channel code with its high bit set.
 pub fn event_chat() -> (u32, crate::Channel, ChatText) {
     (7, crate::Channel::Team, chat_line())
+}
+
+/// The talker's last frame of a push (v111): the end flag set and a
+/// payload of bytes no Opus packet would make, so the golden pins that the
+/// wire carries the payload untouched.
+pub fn voice_up() -> crate::VoiceFrame {
+    crate::VoiceFrame::new(
+        40_961,
+        crate::VOICE_END,
+        &[0xf8, 0xff, 0xfe, 0x00, 0x01, 0x80],
+    )
+    .expect("a frame")
+}
+
+/// That frame relayed from player 0x0102_0307 (generation 0x10203, slot 7).
+pub fn voice() -> crate::VoiceFrame {
+    let mut f = voice_up();
+    f.from = 0x0102_0307;
+    f
 }
 
 /// A landed shot: 25 on another player, on the **head** (v58).

@@ -42,6 +42,7 @@ use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS};
 use crate::sound::mixer::{Mixer, Request, Start, Takes};
 use crate::sound::music::{self, Director, Track};
 use crate::sound::steps::Steps;
+use crate::sound::talk::TalkMsg;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
 use crate::sound::{Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP};
@@ -315,7 +316,16 @@ pub struct Engine {
     /// score is whole tracks streamed beside it (`sound::music`). [`music`]
     /// fills it and each target's flush carries it out.
     pub score: Score,
+    /// Players' voices this frame (`render/voice.rs`): decoded samples and
+    /// ear gains for the audio thread's `sound::talk`. Bounded at
+    /// [`TALK_FRAME_CAP`], drop-newest and counted in `talk_dropped`.
+    talk: Vec<TalkMsg>,
+    pub talk_dropped: u32,
 }
+
+/// Voice messages one frame may carry across: ~8 talkers, a frame or two
+/// each, and their gains.
+pub const TALK_FRAME_CAP: usize = 48;
 
 /// What the score asks of the music output: the native stream
 /// (`audio_out::Music`) or the page's `<audio>` element (`audio_web`).
@@ -347,11 +357,27 @@ impl Default for Engine {
             diag: Diag::default(),
             out_rate: SAMPLE_RATE,
             score: Score::default(),
+            talk: Vec::with_capacity(TALK_FRAME_CAP),
+            talk_dropped: 0,
         }
     }
 }
 
 impl Engine {
+    /// Queue a voice message for this frame's flush.
+    pub fn push_talk(&mut self, msg: TalkMsg) {
+        if self.talk.len() >= TALK_FRAME_CAP {
+            self.talk_dropped = self.talk_dropped.saturating_add(1);
+            return;
+        }
+        self.talk.push(msg);
+    }
+
+    /// The frame's voice messages, in order; empty afterwards.
+    pub fn take_talk(&mut self) -> impl Iterator<Item = TalkMsg> + '_ {
+        self.talk.drain(..)
+    }
+
     /// Queue a command for this frame's flush.
     pub fn push(&mut self, cmd: Cmd) {
         if self.n >= CMD_FRAME_CAP {

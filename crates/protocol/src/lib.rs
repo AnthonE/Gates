@@ -41,6 +41,7 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 pub mod version;
+pub mod voice;
 
 pub use auth::{
     siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
@@ -104,6 +105,10 @@ pub use event::{
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
+pub use voice::{
+    decode_voice, decode_voice_up, encode_voice, encode_voice_up, VoiceFrame, VOICE_DATAGRAM_MAX,
+    VOICE_END, VOICE_MAX_BYTES,
+};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
@@ -1165,7 +1170,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
 /// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
 /// carries six rows, down from eight.
-pub const PROTO_VER: u16 = 110;
+/// v111 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
+/// frame each (`voice.rs`); the server relays a talker's frame only to
+/// players inside `VOICE_RADIUS_CM`.
+pub const PROTO_VER: u16 = 111;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1225,6 +1233,10 @@ pub const KIND_AUTH: u32 = 9;
 /// is watching ([`Watch`]). Its own kind rather than a welcome field so that a
 /// player's welcome — the message every other path reads — did not move.
 pub const KIND_WATCH: u32 = 10;
+/// Proximity voice, a datagram both ways (v111, `voice.rs`): C→S the
+/// talker's own Opus frame, S→C the server's relay of it with the talker's
+/// id in front.
+pub const KIND_VOICE: u32 = 11;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.

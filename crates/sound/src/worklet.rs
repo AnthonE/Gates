@@ -29,6 +29,7 @@
 //! install ring.
 
 use crate::engine::{self, Cmd, Renderer, Stats, BLOCK, CMD_BYTES};
+use crate::talk::{Talk, TALKERS};
 use crate::{Cue, CUE_COUNT};
 
 /// A report record: the renderer's [`Stats`] plus the two counters that are
@@ -124,6 +125,8 @@ pub struct Worklet {
     /// because a wasm-bindgen `&mut [f32]` argument is a copy in AND out,
     /// and the copy in is of a buffer we are about to overwrite entirely.
     planar: [f32; 2 * BLOCK],
+    /// Players talking, mixed after the renderer (`talk.rs`).
+    talk: Talk,
     bad_records: u32,
     bad_installs: u32,
 }
@@ -138,9 +141,28 @@ impl Worklet {
             r: Box::new(Renderer::new(out_rate)),
             lr: [0.0; 2 * BLOCK],
             planar: [0.0; 2 * BLOCK],
+            talk: Talk::new(out_rate),
             bad_records: 0,
             bad_installs: 0,
         }
+    }
+
+    /// A talker's decoded samples for `lane`, at the context's rate.
+    pub fn talk(&mut self, lane: usize, pcm: &[f32]) {
+        self.talk.push(lane, pcm);
+    }
+
+    /// Every lane's ear gains at once, `[l0, r0, l1, r1, …]`; a short
+    /// slice sets the lanes it covers.
+    pub fn talk_gains(&mut self, gains: &[f32]) {
+        for (lane, lr) in gains.chunks_exact(2).take(TALKERS).enumerate() {
+            self.talk.gain(lane, lr[0], lr[1]);
+        }
+    }
+
+    /// Drop what `lane` has buffered: its talker is gone.
+    pub fn talk_stop(&mut self, lane: usize) {
+        self.talk.stop(lane);
     }
 
     /// The rate the renderer was built for.
@@ -196,6 +218,7 @@ impl Worklet {
     /// result.
     pub fn render(&mut self) {
         self.r.render(&mut self.lr);
+        self.talk.mix(&mut self.lr);
         for i in 0..BLOCK {
             self.planar[i] = self.lr[2 * i];
             self.planar[BLOCK + i] = self.lr[2 * i + 1];

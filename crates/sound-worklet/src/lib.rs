@@ -55,6 +55,22 @@ impl Worklet {
         self.inner.push_bytes(bytes)
     }
 
+    /// A talker's decoded samples for `lane` (proximity voice), at the
+    /// context's rate.
+    pub fn talk(&mut self, lane: usize, pcm: &[f32]) {
+        self.inner.talk(lane, pcm);
+    }
+
+    /// Every talker lane's ear gains, `[l0, r0, l1, r1, …]`.
+    pub fn talk_gains(&mut self, gains: &[f32]) {
+        self.inner.talk_gains(gains);
+    }
+
+    /// Drop what a talker lane has buffered.
+    pub fn talk_stop(&mut self, lane: usize) {
+        self.inner.talk_stop(lane);
+    }
+
     /// Render one quantum into the output buffer.
     pub fn render(&mut self) {
         self.inner.render();

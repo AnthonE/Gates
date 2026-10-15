@@ -456,6 +456,32 @@ pub const CHAT_RING_CAP: usize = 4;
 /// see.
 pub const CHAT_LOCAL_CM: i64 = 2_000;
 
+/// Proximity voice's radius, centimetres, 3D (wire v111). The server relays
+/// a talker's frames to nobody farther (`reference/VOICE.md` §9.1: the cull
+/// is the server's or it is a wallhack). Rust's relation, not its number
+/// (§9.4): well past local chat, well short of a rifle, and inside the AOI
+/// enter radius, so whoever hears you is already an entity you can see.
+pub const VOICE_RADIUS_CM: i64 = 5_000;
+
+/// Per-connection inbound ring of a talker's voice frames. Overflow policy:
+/// **drop newest**, counted — the reader rate-limits ahead of it, and a
+/// late frame is worth less than the next one.
+pub const VOICE_RING_CAP: usize = 16;
+
+/// Voice frames the sim relays per talker per tick: 50 frames a second at
+/// 30 Hz is under two, so four takes a burst. The rest wait a tick.
+pub const VOICE_PER_TICK: usize = 4;
+
+/// Per-connection outbound ring of relayed voice datagrams: a crowd of
+/// talkers, a few ticks deep. Overflow policy: **drop newest**, counted —
+/// a listener whose writer is behind loses a frame, never the snapshot.
+pub const VOICE_OUT_RING_CAP: usize = 64;
+
+/// The voice token bucket, per connection: frames a second at a steady
+/// state (one per 20 ms), and the burst a jittery uplink may bunch.
+pub const VOICE_FPS: u32 = 50;
+pub const VOICE_BURST: u32 = 10;
+
 /// How far another body's deed is heard, centimetres (wire v93,
 /// `SUB_HEARD`): a reload, a meal, a drink, a keypad, a lid. The server
 /// sends it to nobody farther, so the fact goes no further than its sound —

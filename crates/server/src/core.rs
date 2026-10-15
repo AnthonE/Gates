@@ -2676,6 +2676,50 @@ impl ShardCore {
         (p.active && p.id == c.id).then_some(w)
     }
 
+    /// Who hears `from_slot` talk (proximity voice, v111): every other
+    /// connected player whose body is within `VOICE_RADIUS_CM` of the
+    /// talker's, and every seat watching an agent among them (an agent's
+    /// feed is live, so its watchers hear what it hears; a human's feed is
+    /// delayed, and a live voice beside it would give away where they are).
+    /// `None` when the talker has no living body to speak from (dead,
+    /// asleep, not in yet); otherwise the talker's player id.
+    ///
+    /// Voice is relayed, never simulated: this reads positions and writes
+    /// nothing, and no frame reaches the world or the WAL.
+    pub fn voice_reach(&self, from_slot: usize, hears: &mut [bool; MAX_CONNS]) -> Option<u32> {
+        hears.fill(false);
+        let from_w = self.live_wslot(from_slot)?;
+        let talker = &self.world.players[from_w];
+        if talker.dead || talker.sleeping {
+            return None;
+        }
+        let own = talker.body;
+        let r2 = sim_core::limits::VOICE_RADIUS_CM * sim_core::limits::VOICE_RADIUS_CM;
+        for (to, hears) in hears.iter_mut().enumerate().take(MAX_PLAYERS) {
+            if to == from_slot || !self.clients[to].connected {
+                continue;
+            }
+            let Some(to_w) = self.live_wslot(to) else {
+                continue;
+            };
+            let p = self.world.players[to_w].body;
+            let dx = (p.qx - own.qx) as i64 * 3;
+            let dy = (p.qy - own.qy) as i64;
+            let dz = (p.qz - own.qz) as i64 * 3;
+            *hears = dx * dx + dy * dy + dz * dz <= r2;
+        }
+        for (i, seat) in self.watching.iter().enumerate() {
+            let Some(seat) = seat else {
+                continue;
+            };
+            let t = seat.target;
+            if self.standings_agent[t] && (t == from_slot || hears[t]) {
+                hears[MAX_PLAYERS + i] = true;
+            }
+        }
+        Some(self.clients[from_slot].id)
+    }
+
     /// Install the admin allowlist. Boot-only, beside the content tables,
     /// for the same reason: it is construction input, and a list that
     /// could change mid-run is a privilege that could change mid-run.

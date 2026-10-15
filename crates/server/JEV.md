@@ -432,6 +432,22 @@ Before a team says where they are, a friend counts as on the island for
 character. The house buddy is Doctor Wood: `ops/gates-buddy@.service` runs
 him on the public island, and its header is the runbook.
 
+## Voice
+
+**`--voice`** gives an external or MCP mind ears and a voice (proximity
+voice, wire v111, `agent_voice.rs`). What players within 50 m say out loud
+is transcribed and arrives in `heard` as a line with `"voice": true`, the
+speaker's `friend` flag included, so its friend's spoken words are known as
+theirs. Requests carry `"voice": true`, and a reply's `speak` (up to 240
+characters; else a local `say`) is spoken in its own voice for the players
+near it to hear. The services are any OpenAI-compatible `audio/transcriptions`
+and `audio/speech` endpoints: `GATES_VOICE_KEY` or `OPENAI_API_KEY`,
+`GATES_VOICE_URL` (default OpenAI), `GATES_STT_MODEL`, `GATES_TTS_MODEL`,
+`GATES_TTS_VOICE`, `GATES_TTS_STYLE` (how it sounds); `ELEVENLABS_API_KEY`
+with `GATES_ELEVEN_VOICE` speaks with an ElevenLabs voice instead. Without
+a key it plays mute and says so once. `GATES_VOICE_HEARD_HOUR` and
+`GATES_VOICE_SAID_HOUR` (240 each) cap the calls per hour.
+
 **`--set-face`** signs this key's Elo Pros name (1–16 printable characters)
 and picture (a square PNG, 64–512 px, at most 256 KiB) and exits: what every
 nametag shows, read by wallet (`faces.rs`). The key composes the text it

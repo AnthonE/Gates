@@ -31,6 +31,8 @@ pub mod admin;
 /// The agent player's skills, hands and knowledge under the mind.
 pub mod agent;
 pub mod agent_demo;
+// An agent's ears and voice: proximity voice to text and back.
+pub mod agent_voice;
 /// The append-only anomaly log — the evidence an alpha produces.
 pub mod anomaly;
 pub mod auth;

@@ -59,6 +59,9 @@ pub mod mixer;
 pub mod music;
 pub mod steps;
 pub mod synth;
+// Players talking (proximity voice): each talker's decoded speech, mixed into
+// the block at the gains the game thread computes from where they stand.
+pub mod talk;
 // What water sounds like from where you are standing. `reference/WATER.md` §7
 // is the research; this is the model, and `render/audio.rs` plays it.
 pub mod water;
@@ -85,10 +88,10 @@ pub const SAMPLE_RATE: u32 = 44_100;
 /// Which group a cue is balanced in. The reference's mixer groups, at the
 /// size ours can be honest about.
 ///
-/// **There is still no `Voice` bus**, because there is no voice chat — and a
-/// bus with nothing on it is the greyed-out settings row
-/// `render/settings.rs` refuses to draw, one layer down. [`Bus::Music`]
-/// stopped being one of those when `music::Director` landed.
+/// **Players' voices are not a bus here**: they never pass the cue mixer.
+/// [`talk`] mixes them after the renderer, at gains the client computes with
+/// its own VOICE slider. [`Bus::Music`] stopped being a greyed-out row when
+/// `music::Director` landed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bus {
     /// Everything the player or the world did: steps, swings, impacts, the

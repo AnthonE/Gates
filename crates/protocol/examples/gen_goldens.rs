@@ -227,6 +227,11 @@ fn main() {
     // The receiver's team (v108).
     let len = protocol::encode_event_team(&goldens::event_team(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[165], &buf[..len]);
+    // Proximity voice (v111): the talker's frame and its relay.
+    let len = protocol::encode_voice_up(&goldens::voice_up(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[166], &buf[..len]);
+    let len = protocol::encode_voice(&goldens::voice(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[167], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

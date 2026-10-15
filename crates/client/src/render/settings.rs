@@ -123,6 +123,8 @@ pub struct Settings {
     /// The reference's `audio.musicvolume`, which is the one bus that does
     /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
     pub vol_music: f32,
+    /// Players' voices (proximity voice chat, `render/voice.rs`), 0..1.
+    pub vol_voice: f32,
     /// How hard the camera shakes and kicks (`render/shake.rs`), 0..1.
     /// Zero turns it off for players it makes queasy.
     pub shake: f32,
@@ -213,6 +215,7 @@ impl Default for Settings {
             // master and game ship at 1. A score at parity with footsteps
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
+            vol_voice: 1.0,
             shake: 1.0,
             cat: 0,
             back: Screen::Menu,
@@ -250,6 +253,7 @@ pub enum Knob {
     VolGame,
     VolAmbience,
     VolMusic,
+    VolVoice,
     Shake,
 }
 
@@ -364,6 +368,7 @@ impl Settings {
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
             Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
+            Knob::VolVoice => self.vol_voice = step_vol(self.vol_voice, delta),
             Knob::Shake => self.shake = step_vol(self.shake, delta),
         }
         self.dirty = true;
@@ -433,6 +438,7 @@ impl Settings {
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
             Knob::VolMusic => pct(self.vol_music),
+            Knob::VolVoice => pct(self.vol_voice),
             Knob::Shake => pct(self.shake),
         }
     }
@@ -453,6 +459,7 @@ impl Settings {
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
+            vol_voice: self.vol_voice,
             shake: self.shake,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
@@ -515,6 +522,7 @@ impl Settings {
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            vol_voice: step(p.vol_voice, VOL_STEP).clamp(0.0, 1.0),
             shake: step(p.shake, VOL_STEP).clamp(0.0, 1.0),
             discord_presence: p.discord_presence,
             // **Sanitized, not just loaded.** A hand-edited file could carry
@@ -855,10 +863,8 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
             Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
             Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
-            // A fact rather than a dead slider, which is the rule this
-            // screen already obeys: a category with nothing behind it says
-            // so. There is no voice chat, so there is no voice slider.
-            // **There is also only ONE music slider** where the reference
+            Row::Number("VOICE VOLUME", Knob::VolVoice, "players talking nearby"),
+            // **There is only ONE music slider** where the reference
             // has two - it ships `audio.musicvolume` and
             // `audio.menumusicvolume` separately, and ours is one number for
             // both until somebody wants the menu louder than the world.
@@ -975,7 +981,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is a stance** (v83): slower, lower, quieter, smaller to hit, and
 /// the sneak the animal brain listens for (`sim-core/src/brain.rs`). `Z` is
 /// named beside Ctrl because the browser closes a tab on Ctrl+W.
-pub const BINDS: [(&str, &str); 33] = [
+pub const BINDS: [(&str, &str); 34] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -1015,6 +1021,10 @@ pub const BINDS: [(&str, &str); 33] = [
         "N looking at a player: invite · Y: join an invite · M: your team (leave, promote, kick)",
     ),
     ("CHAT", "T or Enter"),
+    (
+        "TALK",
+        "Hold ` (under Esc) or a mouse side button: players near you hear you · /mute NAME in chat",
+    ),
     (
         "EAT / DRINK",
         "Food's hotbar key (1 - 6) eats one and keeps your hand; or Left Mouse / J with it in hand · H drinks",
