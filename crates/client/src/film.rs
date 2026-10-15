@@ -10,10 +10,18 @@
 //!
 //! A recording is only good for the build that made it: the entries are wire
 //! bytes, so the header carries `PROTO_VER` and [`read`] refuses any other.
+//!
+//! A spectator's tape (`record --spectate`) also carries the watch the shard
+//! sent after its welcome, so its replay is a spectator core too: the welcome's
+//! `player_id` is then the watched body, which a film can follow.
 
 use std::io::{self, Read, Write};
 
 pub const MAGIC: &[u8; 8] = b"GATESREC";
+/// A spectator's tape: [`MAGIC`]'s header, then the encoded watch.
+pub const MAGIC_WATCH: &[u8; 8] = b"GATESRCW";
+/// Room for an encoded watch: an address and a 16-byte name.
+const WATCH_BYTES: usize = 64;
 
 /// Which lane an entry arrived on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +39,8 @@ pub struct Entry {
 
 pub struct Recording {
     pub welcome: protocol::Welcome,
+    /// Who the recorder watched, on a spectator's tape.
+    pub watch: Option<protocol::Watch>,
     pub entries: Vec<Entry>,
 }
 
@@ -41,13 +51,25 @@ impl Recording {
     }
 }
 
-pub fn write_header(w: &mut impl Write, welcome: &protocol::Welcome) -> io::Result<()> {
-    w.write_all(MAGIC)?;
+pub fn write_header(
+    w: &mut impl Write,
+    welcome: &protocol::Welcome,
+    watch: Option<&protocol::Watch>,
+) -> io::Result<()> {
+    w.write_all(if watch.is_some() { MAGIC_WATCH } else { MAGIC })?;
     w.write_all(&u32::from(protocol::PROTO_VER).to_le_bytes())?;
     w.write_all(&welcome.player_id.to_le_bytes())?;
     w.write_all(&welcome.seed.to_le_bytes())?;
     w.write_all(&welcome.tick.to_le_bytes())?;
-    w.write_all(&[welcome.dev as u8])
+    w.write_all(&[welcome.dev as u8])?;
+    if let Some(watch) = watch {
+        let mut buf = [0u8; WATCH_BYTES];
+        let n = protocol::encode_watch(watch, &mut buf)
+            .map_err(|e| bad(format!("encode watch: {e:?}")))?;
+        w.write_all(&(n as u32).to_le_bytes())?;
+        w.write_all(&buf[..n])?;
+    }
+    Ok(())
 }
 
 pub fn write_entry(w: &mut impl Write, t_ms: f64, lane: Lane, bytes: &[u8]) -> io::Result<()> {
@@ -93,9 +115,11 @@ pub fn read(r: &mut impl Read) -> io::Result<Recording> {
     let mut all = Vec::new();
     r.read_to_end(&mut all)?;
     let mut c = Cursor { all: &all, at: 0 };
-    if c.take(8)? != MAGIC {
-        return Err(bad("not a gates recording".into()));
-    }
+    let watched = match c.take(8)? {
+        m if m == MAGIC => false,
+        m if m == MAGIC_WATCH => true,
+        _ => return Err(bad("not a gates recording".into())),
+    };
     let ver = c.u32()?;
     if ver != u32::from(protocol::PROTO_VER) {
         return Err(bad(format!(
@@ -113,6 +137,13 @@ pub fn read(r: &mut impl Read) -> io::Result<Recording> {
         tick,
         dev,
     };
+    let watch = if watched {
+        let len = c.u32()? as usize;
+        let bytes = c.take(len)?;
+        Some(protocol::decode_watch(bytes).map_err(|e| bad(format!("watch: {e:?}")))?)
+    } else {
+        None
+    };
     let mut entries = Vec::new();
     while c.at < all.len() {
         let t_ms = f64::from_bits(c.u64()?);
@@ -125,7 +156,11 @@ pub fn read(r: &mut impl Read) -> io::Result<Recording> {
         let bytes = c.take(len)?.to_vec();
         entries.push(Entry { t_ms, lane, bytes });
     }
-    Ok(Recording { welcome, entries })
+    Ok(Recording {
+        welcome,
+        watch,
+        entries,
+    })
 }
 
 /// Events the replay may queue ahead of a pump. Far above what one frame
@@ -144,18 +179,26 @@ impl crate::Session {
     pub fn replay(rec: Recording) -> (Self, Replay) {
         use sim_core::limits::{CLIENT_DG_RING, DATAGRAM_BUDGET_BYTES};
         let welcome = rec.welcome;
+        let watching = rec.watch;
         let datagrams = crate::net::datagram_lane();
         let (ev_tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(REPLAY_EVENTS);
         // No writer task holds the receiver, so an action is refused as
         // `Closed` — nothing a replay could send has anywhere to go.
         let (actions, _) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
         let replay = Replay::new(rec, datagrams.clone(), ev_tx);
+        // A spectator's tape replays as a spectator: the core interpolates
+        // the watched body, which is the one a film follows.
+        let core = if watching.is_some() {
+            client_core::core::ClientCore::spectator(welcome.seed, welcome.player_id, welcome.tick)
+        } else {
+            client_core::core::ClientCore::new(welcome.seed, welcome.player_id, welcome.tick)
+        };
         let session = Self {
-            core: client_core::core::ClientCore::new(welcome.seed, welcome.player_id, welcome.tick),
+            core,
             applied: 0,
             applied2: 0,
             welcome,
-            watching: None,
+            watching,
             wire: crate::net::native::NativeWire::detached(),
             actions,
             events,
@@ -269,7 +312,7 @@ mod tests {
             dev: true,
         };
         let mut buf = Vec::new();
-        write_header(&mut buf, &welcome).unwrap();
+        write_header(&mut buf, &welcome, None).unwrap();
         write_entry(&mut buf, 0.0, Lane::Event, &[1, 2, 3]).unwrap();
         write_entry(&mut buf, 33.5, Lane::Datagram, &[]).unwrap();
         write_entry(&mut buf, 66.25, Lane::Datagram, &[9; 300]).unwrap();
@@ -284,5 +327,28 @@ mod tests {
         // A torn tail is an error, never a shorter recording.
         buf.truncate(buf.len() - 1);
         assert!(read(&mut buf.as_slice()).is_err());
+    }
+
+    #[test]
+    fn a_spectators_tape_reads_back_its_watch() {
+        let welcome = protocol::Welcome {
+            player_id: 0x0207,
+            seed: 11,
+            tick: 3,
+            dev: false,
+        };
+        let watch = protocol::Watch {
+            address: protocol::Address([0x5a; 20]),
+            agent: true,
+            name: protocol::Name::new("Doctor Wood").unwrap(),
+        };
+        let mut buf = Vec::new();
+        write_header(&mut buf, &welcome, Some(&watch)).unwrap();
+        write_entry(&mut buf, 12.5, Lane::Datagram, &[4; 40]).unwrap();
+        let rec = read(&mut buf.as_slice()).unwrap();
+        assert_eq!(rec.welcome, welcome);
+        assert_eq!(rec.watch, Some(watch));
+        assert_eq!(rec.entries.len(), 1);
+        assert_eq!(rec.entries[0].t_ms, 12.5);
     }
 }

@@ -2,6 +2,8 @@
 # Trailer footage and ads, on a box with no GPU.
 #
 #   ci/film.sh record TAPE.rec [SECONDS] [options]   # tape a populated shard
+#   ci/film.sh watch TAPE.rec SECONDS 0xWALLET [HOST:PORT]  # tape one agent,
+#                                                    # wherever it goes
 #   ci/film.sh scan TAPE.rec [EVERY_S]               # who is where, charges, blasts
 #   ci/film.sh shoot SHOTS.json [MORE.json ...]      # draw shot lists (lavapipe)
 #   ci/film.sh cut CUT.json [MORE.json ...]          # edit ads (ci/film_cut.py)
@@ -88,6 +90,20 @@ TOML
   "$BIN/record" "${ARGS[@]}"
   ;;
 
+watch)
+  # A spectator seat on a live shard (the public one unless named): the tape
+  # follows the agent, and a shot's `follow` with no `near` follows it too
+  # (`ops/buddy/clips.py`).
+  TAPE="${1:?watch needs a tape path}"
+  SECONDS_="${2:?watch needs seconds}"
+  TARGET="${3:?watch needs the agent wallet}"
+  SERVER="${4:-game.elopros.com:61234}"
+  cargo build --profile "$PROFILE" -p client --bin record >/dev/null 2>&1 \
+    || fail "the recorder did not build"
+  mkdir -p "$(dirname "$TAPE")"
+  "$BIN/record" "$SERVER" "$TAPE" "$SECONDS_" --spectate "$TARGET"
+  ;;
+
 scan)
   cargo build --profile "$PROFILE" -p client --bin record >/dev/null 2>&1 \
     || fail "the recorder did not build"
@@ -132,5 +148,5 @@ sfx)
   python3 ci/film_sfx.py "${1:?sfx needs a directory}"
   ;;
 
-*) fail "unknown command $cmd (record, scan, shoot, cut, bank, sfx)" ;;
+*) fail "unknown command $cmd (record, watch, scan, shoot, cut, bank, sfx)" ;;
 esac
