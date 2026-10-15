@@ -449,7 +449,7 @@ pub struct ShardStats {
     /// walk to restart, so unlike every other event this does not force
     /// an `ev_resync` — the line is simply lost, and counted.
     pub chat_undelivered: AtomicU64,
-    /// C→S voice frames decoded and ringed (v111).
+    /// C→S voice frames decoded and ringed (v113).
     pub voice_ok: AtomicU64,
     /// C→S voice datagrams the decoder refused.
     pub voice_bad: AtomicU64,

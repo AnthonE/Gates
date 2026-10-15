@@ -300,10 +300,10 @@ pub const FIXTURES: [&str; 169] = [
     "action_team.bin",
     // The receiver's team, three members and an invite (v108).
     "event_team.bin",
-    // Proximity voice (v111): the talker's frame, and its relay.
+    // Proximity voice (v113): the talker's frame, and its relay.
     "voice_up.bin",
     "voice.bin",
-    // A far report (v112): a blast, below sea level and far from the origin.
+    // A far report (v113): a blast, below sea level and far from the origin.
     "event_report.bin",
 ];
 
@@ -433,6 +433,19 @@ pub fn event_alphabet() -> &'static [u8] {
 /// Deposit everything work 2 takes.
 pub fn action_arc() -> (u8, u8, u8) {
     (sim_core::works::OP_DEPOSIT, 2, sim_core::works::ARG_ALL)
+}
+
+/// The exposure event: soaked, freezing past hurt, half comfort by a fire,
+/// a hard frost.
+pub fn exposure() -> sim_core::exposure::Readout {
+    sim_core::exposure::Readout {
+        wet_pct: 64,
+        cold_pct: 100,
+        heat_pct: 0,
+        hurting: true,
+        comfort_pct: 50,
+        air_c: -7,
+    }
 }
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1893,7 +1906,7 @@ pub fn event_chat() -> (u32, crate::Channel, ChatText) {
     (7, crate::Channel::Team, chat_line())
 }
 
-/// The talker's last frame of a push (v111): the end flag set and a
+/// The talker's last frame of a push (v113): the end flag set and a
 /// payload of bytes no Opus packet would make, so the golden pins that the
 /// wire carries the payload untouched.
 pub fn voice_up() -> crate::VoiceFrame {
@@ -1912,7 +1925,7 @@ pub fn voice() -> crate::VoiceFrame {
     f
 }
 
-/// A blast heard from far off (v112): the kind that is not zero, an x near
+/// A blast heard from far off (v113): the kind that is not zero, an x near
 /// the top of its field, a y under the bias's zero, so a narrowed field or a
 /// dropped bias moves a byte.
 pub fn event_report() -> (u8, u16, i16, u16) {

@@ -791,7 +791,7 @@ pub trait BotDriver: Send {
         None
     }
     /// A voice frame the shard relayed from a player near this body
-    /// (wire v111). Kept, never waited on (`agent_voice.rs`).
+    /// (wire v113). Kept, never waited on (`agent_voice.rs`).
     fn voice_in(&mut self, _frame: &protocol::VoiceFrame) {}
     /// This body's own voice frames due this tick, written to `out`; how
     /// many. Asked every tick, beside chat.
@@ -1610,7 +1610,7 @@ async fn run_bot_inner(
                 report.dg_in_count += 1;
                 report.dg_in_bytes += dg.len() as u64;
                 if peek_kind(&dg) == Ok(protocol::KIND_VOICE) {
-                    // A player near it talking (v111): an agent with ears
+                    // A player near it talking (v113): an agent with ears
                     // hears it; anyone else lets it go by.
                     match protocol::decode_voice(&dg) {
                         Ok(f) => {

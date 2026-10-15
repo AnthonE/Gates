@@ -1,4 +1,4 @@
-//! Proximity voice end to end (wire v111): one body talks into a real shard
+//! Proximity voice end to end (wire v113): one body talks into a real shard
 //! over WebTransport and another body standing beside it hears the talker —
 //! every frame from the talker's id, in order, with the end flag, decoding
 //! to the tone that was said. The relay, the radius, both datagram lanes

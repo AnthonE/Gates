@@ -2677,7 +2677,7 @@ impl ShardCore {
         (p.active && p.id == c.id).then_some(w)
     }
 
-    /// Who hears `from_slot` talk (proximity voice, v111): every other
+    /// Who hears `from_slot` talk (proximity voice, v113): every other
     /// connected player whose body is within `VOICE_RADIUS_CM` of the
     /// talker's, and every seat watching an agent among them (an agent's
     /// feed is live, so its watchers hear what it hears; a human's feed is
@@ -4204,13 +4204,10 @@ impl ShardCore {
                 EV_OVEN => {
                     // A lit fire is a world fact and is visible from
                     // outside the base it is in, so it broadcasts exactly
-                    // as a door's state does — with the same consequence
-                    // when a client misses one, except that no sync
-                    // record carries the bit yet: the deploy walk mirrors
-                    // `DeployRec`, and the burn state deliberately does
-                    // not ride on it (`oven.rs`). A client that missed
-                    // this hears the next toggle, or the snuff when the
-                    // fuel runs out, which is at most one fuel unit away.
+                    // as a door's state does. The burn state does not ride
+                    // on `DeployRec` (`oven.rs`), so the deploy walk sends
+                    // an `EV_OVEN` after each batch for every fire in it
+                    // that burns: a joiner or a resync sees it lit.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
                     let loc = (ev.b >> 8) as u8;
@@ -4293,7 +4290,7 @@ impl ShardCore {
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
                     let sh = Self::world_slot_of(&self.world, ev.a);
-                    // A gun is heard past the interest set (v112): out to
+                    // A gun is heard past the interest set (v113): out to
                     // `GUN_REPORT_CM` a client that holds no body for the
                     // shooter is told a gun went off, and where.
                     let report = match sh {
@@ -4478,7 +4475,7 @@ impl ShardCore {
                     // the band takes a slot from a mark at the player's
                     // feet.
                     let at = interest::body_cm(qx, qz);
-                    // A blast is heard far past the interest set (v112),
+                    // A blast is heard far past the interest set (v113),
                     // the reference's map-wide explosion at this island's
                     // scale: out to `BLAST_REPORT_CM`.
                     let report = (kind == sim_core::ranged::IMPACT_BLAST)
@@ -5268,7 +5265,7 @@ impl ShardCore {
                 &self.world.players[wslot],
             );
             if self.world.survival.exposure.armed() && Some(expo) != self.clients[slot].last_expo {
-                match protocol::encode_event_exposure(expo.0, expo.1, expo.2, &mut self.ev_buf) {
+                match protocol::encode_event_exposure(&expo, &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].last_expo = Some(expo);
@@ -6198,6 +6195,11 @@ impl ShardCore {
             let window = PIECE_SCAN_BATCH.min(owed);
             // The band, filled at the boundary — `PieceRec::dmg`'s note.
             let mut wire = [DeployRec::default(); DEPLOY_SYNC_BATCH];
+            // Which of them burn right now. The lit bit is broadcast only
+            // when it changes (`EV_OVEN`), so a fire lit before this client
+            // joined (or resynced) would stay dark and cold on its screen
+            // until someone toggled it. Sent after the batch it rides with.
+            let mut lit = [false; DEPLOY_SYNC_BATCH];
             let mut n = 0usize;
             let mut scanned = 0usize;
             for src in deploys[owed - window..owed].iter().rev() {
@@ -6208,22 +6210,25 @@ impl ShardCore {
                 let dst = &mut wire[n];
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
-                // A planter's beds (crops v1), off the oven row's mirror.
-                dst.grow = self
+                let oven = self
                     .world
                     .deploys
                     .oven_index(sim_core::deploy::box_key(
                         src.cx, src.cz, src.level, src.loc,
                     ))
-                    .map(|i| self.world.deploys.oven_states()[i])
+                    .map(|i| self.world.deploys.oven_states()[i]);
+                // A planter's beds (crops v1), off the oven row's mirror.
+                dst.grow = oven
                     .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
                     .map_or(0, |o| o.bank as u8);
+                lit[n] = oven.is_some_and(|o| o.is_converter() && o.lit);
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
                     break;
                 }
             }
             wire[..n].reverse();
+            lit[..n].reverse();
             let rest = owed - scanned;
             let done = |c: &mut ClientNetState| {
                 c.deploy_sync_reset = false;
@@ -6244,6 +6249,21 @@ impl ShardCore {
                         }
                     }
                     Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+                for (d, _) in wire[..n].iter().zip(&lit[..n]).filter(|(_, &l)| l) {
+                    let Ok(len) =
+                        encode_event_oven(d.cx, d.cz, d.level, d.loc, true, 0, &mut self.ev_buf)
+                    else {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    };
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        self.clients[slot].ev_resync();
+                        ShardStats::bump(&stats.ev_resyncs);
+                        return;
+                    }
                 }
             } else {
                 done(&mut self.clients[slot]);
@@ -6917,7 +6937,7 @@ impl ShardCore {
     /// the player's feet for one that is sub-pixel**. That eviction is the
     /// thing this removes; the visible cost is a 0.22 m quad past 208 m,
     /// which is under a pixel at any sane field of view.
-    /// A far report (v112) of `kind` at body quanta `(qx, qy, qz)`: where
+    /// A far report (v113) of `kind` at body quanta `(qx, qy, qz)`: where
     /// it was in planar centimetres, and the encoded event. `None` for a
     /// place the report's whole-metre fields cannot carry.
     fn report(kind: u8, qx: i32, qy: i32, qz: i32) -> Option<((i64, i64), [u8; 16], usize)> {
@@ -7543,7 +7563,7 @@ mod tests {
         out
     }
 
-    /// Far reports (v112): a gunshot and a blast past the interest set
+    /// Far reports (v113): a gunshot and a blast past the interest set
     /// reach a listener as a report out to their reach, and no further; a
     /// listener inside the set gets the shot and the impact instead.
     #[test]

@@ -408,11 +408,27 @@ pub enum Cue {
     /// echo, kept short so a burst still reads round by round
     /// (`render/audio.rs` picks it past `HELI_SHOT_FAR_M`).
     ShotHeliFar,
+    /// The pointer arriving on a button: the faintest tick, so a menu
+    /// answers the hand before it clicks. Appended, the enum's append-order
+    /// rule, like the six after it.
+    UiHover,
+    /// Your inventory, crafting or loot page opening: the pack's cloth.
+    InvOpen,
+    /// …and closing.
+    InvClose,
+    /// An item set down in a slot (a move, a split, a quick-move).
+    ItemMove,
+    /// An item thrown out of the inventory onto the ground.
+    ItemDrop,
+    /// The CRAFT button: the kit coming out.
+    CraftStart,
+    /// A mark put on, or taken off, the map.
+    MapPin,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 94;
+pub const CUE_COUNT: usize = 101;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -515,6 +531,13 @@ impl Cue {
         Cue::ShotHeli,
         Cue::BedRotorFar,
         Cue::ShotHeliFar,
+        Cue::UiHover,
+        Cue::InvOpen,
+        Cue::InvClose,
+        Cue::ItemMove,
+        Cue::ItemDrop,
+        Cue::CraftStart,
+        Cue::MapPin,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -645,6 +668,9 @@ impl Cue {
             | Cue::OreCrumble
             | Cue::OreBreak
             | Cue::Tung => 0.07,
+            // Your own hands in your own pack: a nudge, like the equip, so a
+            // row of moves is not one sound stamped out.
+            Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
             // The bonus answering you: nearly a symbol, but struck on rock,
             // and two in a row in unison would ring.
             Cue::OreGlint => 0.03,
@@ -705,6 +731,8 @@ impl Cue {
             | Cue::HitLimb
             | Cue::Death
             | Cue::UiClick
+            | Cue::UiHover
+            | Cue::MapPin
             | Cue::BedWind
             | Cue::BedSurf
             | Cue::BedUnder
@@ -1042,6 +1070,16 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // meets the near round's at the switch (`render/audio.rs`, 60 m):
     // 0.80·(1 − 60/200)² = 0.48·(1 − 60/600)².
     row(GAME, 600.0, 0.48,  60, 6, true),  // heli gun, far
+    // The interface's small sounds, under the click: a hover is the quietest
+    // thing in the bank and its cooldown is what keeps a sweep across a row
+    // of buttons from becoming a rattle.
+    row(GAME,  0.0, 0.18,  45, 1, false),  // ui hover
+    row(GAME,  0.0, 0.50, 150, 3, false),  // inventory open
+    row(GAME,  0.0, 0.42, 150, 3, false),  // inventory close
+    row(GAME,  0.0, 0.48,  60, 3, false),  // item moved
+    row(GAME,  0.0, 0.52, 120, 3, false),  // item dropped
+    row(GAME,  0.0, 0.50, 120, 3, false),  // craft started
+    row(GAME,  0.0, 0.45,  80, 2, false),  // map pin
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1130,7 +1168,7 @@ const RSTEP: CueDef = CueDef {
 ///
 /// **Set by [`Cue::Blast`]**, at 1500 m: a blast and a far gunshot reach a
 /// client past the shard's 208 m interest radius as a report
-/// (`EventMsg::Report`, v112), and the heli is subscribed past it too
+/// (`EventMsg::Report`, v113), and the heli is subscribed past it too
 /// (`heli::HELI_AOI_SCALE`). It is a derived number and not a taste one —
 /// it is the maximum of the table, and the test that asserts so is what
 /// makes raising a radius force this line rather than silently invert a

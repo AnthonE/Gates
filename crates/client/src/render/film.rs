@@ -446,6 +446,16 @@ impl Shot {
                 "shot `{n}`: give exactly one of keys (two or more), orbit or follow"
             ));
         }
+        let watched_animal = |near: Option<[f32; 2]>, animal: bool| near.is_none() && animal;
+        if self
+            .follow
+            .is_some_and(|f| watched_animal(f.near, f.animal))
+            || self.track.is_some_and(|t| watched_animal(t.near, t.animal))
+        {
+            return Err(format!(
+                "shot `{n}`: the watched body is a player; an animal needs `near`"
+            ));
+        }
         if self.track.is_some() && self.follow.is_some() {
             return Err(format!(
                 "shot `{n}`: track aims a camera keys or an orbit move"
@@ -519,8 +529,10 @@ pub struct Orbit {
 #[derive(Deserialize, Clone, Copy, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Follow {
-    /// `[x, z]`.
-    pub near: [f32; 2],
+    /// `[x, z]`. Unset is the body a spectator's tape watched
+    /// (`record --spectate`), wherever it is.
+    #[serde(default)]
+    pub near: Option<[f32; 2]>,
     /// Metres behind, above and to the right of the body.
     #[serde(default = "Follow::default_back")]
     pub back: f32,
@@ -554,8 +566,9 @@ impl Follow {
 #[derive(Deserialize, Clone, Copy, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Track {
-    /// `[x, z]`.
-    pub near: [f32; 2],
+    /// `[x, z]`. Unset is the watched body, as for [`Follow`].
+    #[serde(default)]
+    pub near: Option<[f32; 2]>,
     /// Metres above the feet to aim at.
     #[serde(default = "Track::default_up")]
     pub up: f32,
@@ -779,8 +792,8 @@ pub fn feed(
             .map(|k| (k.t, above(&world, k.pos), above(&world, k.look)))
             .collect();
         film.subject = match (shot.follow, shot.track) {
-            (Some(f), _) => nearest(&net, f.near, f.animal),
-            (_, Some(t)) => nearest(&net, t.near, t.animal),
+            (Some(f), _) => subject(&net, f.near, f.animal),
+            (_, Some(t)) => subject(&net, t.near, t.animal),
             _ => None,
         };
         film.chase = None;
@@ -815,6 +828,21 @@ fn ground(world: &WorldId, x: f32, z: f32) -> f32 {
 }
 
 /// The body nearest `near`, within AOI.
+/// A follow or track shot's subject: whoever is nearest `near`, or with no
+/// `near` the body a spectator's tape watched.
+fn subject(net: &Net, near: Option<[f32; 2]>, animal: bool) -> Option<u32> {
+    let Some(near) = near else {
+        let core = &net.session.core;
+        if !core.spectating() {
+            warn!("film: no `near`, and this tape watched nobody (`record --spectate`)");
+            return None;
+        }
+        info!("film: subject {}, the watched body", core.player_id);
+        return Some(core.player_id);
+    };
+    nearest(net, near, animal)
+}
+
 fn nearest(net: &Net, near: [f32; 2], animal: bool) -> Option<u32> {
     let core = &net.session.core;
     let at = core.render_tick();

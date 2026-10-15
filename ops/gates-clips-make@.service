@@ -1,0 +1,25 @@
+# Cut drafts from a buddy's new tapes (`ops/buddy/clips.py make`); run hourly
+# by gates-clips-make@.timer. Setup is in gates-clips@.service's header.
+#
+# Lavapipe draws a frame in about a second on every core, so this runs at the
+# bottom of the box's CPU and IO: the shard always comes first.
+
+[Unit]
+Description=Cut short videos of Gates buddy %i
+Documentation=https://github.com/AnthonE/Gates/blob/main/ops/buddy/clips.py
+
+[Service]
+Type=oneshot
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-clips/Gates
+EnvironmentFile=/etc/gates-clips/%i.env
+Environment=CLIPS_DIR=/home/master/gates-clips
+Environment=PATH=/home/master/gates-clips/venv/bin:/home/master/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=-/usr/bin/git pull --ff-only --quiet
+ExecStart=/home/master/gates-clips/venv/bin/python ops/buddy/clips.py make
+TimeoutStartSec=6h
+Nice=19
+CPUWeight=10
+IOSchedulingClass=idle
+StandardOutput=journal

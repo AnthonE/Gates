@@ -456,7 +456,7 @@ pub const CHAT_RING_CAP: usize = 4;
 /// see.
 pub const CHAT_LOCAL_CM: i64 = 2_000;
 
-/// Proximity voice's radius, centimetres, 3D (wire v111). The server relays
+/// Proximity voice's radius, centimetres, 3D (wire v113). The server relays
 /// a talker's frames to nobody farther (`reference/VOICE.md` §9.1: the cull
 /// is the server's or it is a wallhack). **The reference's own number**: its
 /// server sends a voice packet to every connection within 100 m of the
@@ -467,14 +467,14 @@ pub const CHAT_LOCAL_CM: i64 = 2_000;
 pub const VOICE_RADIUS_CM: i64 = 10_000;
 
 /// How far a gunshot is reported past the interest set, centimetres
-/// (`EventMsg::Report`, v112). Inside it the shot rides `EV_SHOT` and its
+/// (`EventMsg::Report`, v113). Inside it the shot rides `EV_SHOT` and its
 /// body; past it, out to here, the client is told only that a gun went off
 /// and where. The reference's pistol class carries 400 m (rifles 500,
 /// heavy guns 600; its Sept 2025 maintenance devblog), and the revolver is
 /// the only gun on the island.
 pub const GUN_REPORT_CM: i64 = 40_000;
 
-/// How far a blast is reported past the interest set, centimetres (v112).
+/// How far a blast is reported past the interest set, centimetres (v113).
 /// The reference sends every explosion to every client; 1500 m on a 4 km
 /// island is a raid heard from most of it.
 pub const BLAST_REPORT_CM: i64 = 150_000;

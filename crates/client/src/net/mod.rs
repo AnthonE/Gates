@@ -322,7 +322,7 @@ pub(crate) struct DgRing {
     /// copy). `None` for a loss with no reason: a dead route, a timeout.
     /// Written by the desktop reader; the browser's is owed (`NOW.md` §5sp).
     pub(crate) close_code: Option<u64>,
-    /// Relayed voice frames (v111), split off at arrival so a crowd of
+    /// Relayed voice frames (v113), split off at arrival so a crowd of
     /// talkers can never push a snapshot out of the ring above. Its own
     /// bound, drop-oldest, counted in `voice_dropped`.
     voice: [protocol::VoiceFrame; VOICE_DG_RING],

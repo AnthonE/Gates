@@ -1,4 +1,4 @@
-//! Proximity voice (v111): one Opus frame per datagram, both directions,
+//! Proximity voice (v113): one Opus frame per datagram, both directions,
 //! on [`KIND_VOICE`].
 //!
 //! C→S `encode_voice_up` carries the talker's own frame: a sequence number

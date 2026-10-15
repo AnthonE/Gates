@@ -20,7 +20,8 @@ PIL in the game's own face (Roboto Condensed), since ads mostly play muted.
       "music": [{"src": "music_safe_zone.ogg", "at": 0, "in": 100, "gain": 0.9}],
       "sfx": [{"src": "45_Blast_0.wav", "at": 12.3, "gain": 1.0}],
       "card": {"len": 4, "shot": "beach", "at": 2.0,
-               "title": "GATES", "lines": ["...", "..."]}
+               "title": "GATES", "lines": ["...", "..."],
+               "pic": "ops/buddy/doctor-wood.png"}   # optional, over the title
     }
 
 More, all optional:
@@ -160,7 +161,14 @@ def card_text(W, H, card):
         colour = (255, 255, 255, 255) if i == 0 else (255, 196, 120, 255)
         lines.append((line, face, s, y, colour, s * 0.1))
         y += int(s * 1.55)
-    return text_layer(W, H, lines)
+    layer = text_layer(W, H, lines)
+    if card.get("pic"):
+        # A portrait over the title, kept sharp: the house art is pixel art.
+        pic = Image.open(os.path.abspath(card["pic"])).convert("RGBA")
+        side = int(unit * 0.34)
+        pic = pic.resize((side, side), Image.NEAREST)
+        layer.alpha_composite(pic, ((W - side) // 2, max(0, ty - int(title * 0.55) - side)))
+    return layer
 
 
 def card_png(path, W, H, card, bg_frame):

@@ -35,9 +35,9 @@ byproduct_pct = 75
 # table shipping before its first row working as intended, and it is worth
 # leaving on the record rather than tidying away.
 #
-# 20 seconds on a fire, which is a real wait beside the fuel's 3 s a unit —
-# long enough that you sit down, short enough that it is not a chore, and
-# the first thing on this island that makes standing still worth anything.
+# 15 seconds on a fire, Rust's (wiki.facepunch.com/rust/Item/campfire: every
+# raw meat cooks in 15 s on a camp fire) — a real wait beside the fuel's 3 s
+# a unit, and by the fire is where comfort mends you while you wait.
 # A furnace deliberately does not cook meat: separating the two stations is
 # the only job the `station` column has, and smelting is what a furnace is
 # for.
@@ -45,7 +45,7 @@ byproduct_pct = 75
 input = "item.raw_meat"
 output = "item.cooked_meat"
 station = "fire"
-seconds = 20
+seconds = 15
 
 # The burnt state, exactly as the oven's header predicted it: a cook row
 # whose input is the cooked item, so overcooking is content and not a
@@ -53,12 +53,12 @@ seconds = 20
 # `sim-core/oven.rs`) only the grill cooks: a meal comes off into the output
 # and stays cooked, and it burns only if it is put back on the grill, where
 # another cook's worth of time leaves it barely food (`consumables.toml`).
-# Same 20 s as the cook above.
+# Same 15 s as the cook above.
 [[cook]]
 input = "item.cooked_meat"
 output = "item.burnt_meat"
 station = "fire"
-seconds = 20
+seconds = 15
 
 # --- the furnace ----------------------------------------------------------
 #

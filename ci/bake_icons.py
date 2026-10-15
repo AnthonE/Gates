@@ -128,7 +128,8 @@ VERBS = {
 
 # Every item in `content/items.toml`, by its id minus the `item.` prefix.
 ITEMS = {
-    "wood": "delapouite/log",
+    # A pile of logs, Rust's own picture of wood, not one log (2026-10).
+    "wood": "delapouite/wood-pile",
     "stone": "delapouite/stone-pile",
     "metal_ore": "delapouite/gold-nuggets",
     "sulfur_ore": "lorc/crystal-cluster",
@@ -160,7 +161,7 @@ ITEMS = {
     "bandage": "lorc/bandage-roll",
     "sleeping_bag": "delapouite/sleeping-bag",
     "box_small": "delapouite/wooden-crate",
-    "fire_pit": "lorc/campfire",
+    "camp_fire": "lorc/campfire",
     "waterskin": "delapouite/water-flask",
     "waterskin_full": "delapouite/water-flask",
     "barricade_wood": "delapouite/palisade",

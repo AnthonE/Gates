@@ -1,4 +1,4 @@
-//! Players talking (proximity voice, wire v111): decoded speech mixed into
+//! Players talking (proximity voice, wire v113): decoded speech mixed into
 //! the stereo block, one ring per talker.
 //!
 //! The game thread decodes each talker's Opus frames (`crates/voice`) at the

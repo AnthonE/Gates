@@ -1,4 +1,4 @@
-//! Proximity voice (wire v111): hold the talk key and the players near you
+//! Proximity voice (wire v113): hold the talk key and the players near you
 //! hear you; the players near you who talk come out of where they stand.
 //!
 //! - **Talk**: hold `` ` `` (the key under Esc) or a side mouse button. The

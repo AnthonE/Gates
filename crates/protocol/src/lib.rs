@@ -1171,13 +1171,16 @@ pub use voice::{
 /// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
 /// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
 /// carries six rows, down from eight.
-/// v111 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
+/// v111 — comfort (Rust's metabolism): `SUB_EXPOSURE` carries the owner's
+/// comfort, per cent, after the hurting bit.
+/// v112 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
+/// whole °C after the comfort, and the death cause admits 9 (`DEATH_BY_HEAT`).
+/// v113 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
 /// frame each (`voice.rs`); the server relays a talker's frame only to
-/// players inside `VOICE_RADIUS_CM`.
-/// v112 — far reports: `SUB_REPORT` (98) tells a client a gunshot or a blast
-/// went off past its interest set, and where, to the metre
-/// (`GUN_REPORT_CM`, `BLAST_REPORT_CM`).
-pub const PROTO_VER: u16 = 112;
+/// players inside `VOICE_RADIUS_CM`. And far reports: `SUB_REPORT` tells a
+/// client a gunshot or a blast went off past its interest set, and where,
+/// to the metre (`GUN_REPORT_CM`, `BLAST_REPORT_CM`).
+pub const PROTO_VER: u16 = 113;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1237,7 +1240,7 @@ pub const KIND_AUTH: u32 = 9;
 /// is watching ([`Watch`]). Its own kind rather than a welcome field so that a
 /// player's welcome — the message every other path reads — did not move.
 pub const KIND_WATCH: u32 = 10;
-/// Proximity voice, a datagram both ways (v111, `voice.rs`): C→S the
+/// Proximity voice, a datagram both ways (v113, `voice.rs`): C→S the
 /// talker's own Opus frame, S→C the server's relay of it with the talker's
 /// id in front.
 pub const KIND_VOICE: u32 = 11;

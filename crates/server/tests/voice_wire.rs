@@ -1,4 +1,4 @@
-//! Proximity voice's routing gate (v111, `reference/VOICE.md` §9.1): the
+//! Proximity voice's routing gate (v113, `reference/VOICE.md` §9.1): the
 //! server decides who hears a talker, and a listener one quantum past the
 //! radius gets nothing at all — not a quieter frame. A dead talker is
 //! heard by nobody, and voice never touches the world.

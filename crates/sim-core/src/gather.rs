@@ -235,6 +235,53 @@ pub fn grow_pm_over(grown_at: u64, now: u64, span: u64) -> u16 {
     SAPLING_PM + ((1000 - SAPLING_PM) as u64 * stage / GROW_STAGES) as u16
 }
 
+/// Young wild trees (tree ages v0): a fresh wipe's forest is not all one
+/// age. This share of its trees, per mille, are young when the world is
+/// made, and each grows to its adult size by a tick of its own, spread
+/// evenly over [`WILD_GROW_TICKS`] — so at the wipe they stand at every
+/// size from a sapling's up, and a day of uptime later the stand is grown.
+/// The reference's trees never grow (devblog 58: *"kind of a binary
+/// process"*); ours do, and a stand that grows up over the wipe's first day
+/// is the same curve as a felled tree's regrowth, slower.
+///
+/// **A pure function of `(seed, cell, tick)`**, as the scatter is: no
+/// store entry, no wire, no save. The life store answers instead only for a
+/// tree it has felled (`SlotLives::tree_pm`).
+pub const WILD_YOUNG_PM: u64 = 400;
+/// How long the wild stand takes to grow up: a day of uptime at 30 Hz.
+pub const WILD_GROW_TICKS: u64 = 2_592_000;
+const CH_AGE: u32 = 108;
+
+/// The tick the wild tree at this cell is grown by, or 0 for one that was
+/// already grown when the world was made.
+pub fn wild_grown_at(seed: u64, cx: u16, cz: u16) -> u64 {
+    let v = cell_hash(seed, cx as i32, cz as i32, CH_AGE) % 1000;
+    if v >= WILD_YOUNG_PM {
+        0
+    } else {
+        (v + 1) * WILD_GROW_TICKS / WILD_YOUNG_PM
+    }
+}
+
+/// How big a tree nobody has felled is at `now`, per mille of its adult
+/// size, in [`GROW_STAGES`] steps.
+#[inline]
+pub fn wild_pm(seed: u64, cx: u16, cz: u16, now: u64) -> u16 {
+    grow_pm_over(wild_grown_at(seed, cx, cz), now, WILD_GROW_TICKS)
+}
+
+/// A grown tree's wood, per mille of the content's `hits`, by its size
+/// class (tree size classes v0): its scale's share of the mean
+/// (`terrain::TREE_SCALE_MEAN`), so a large tree pays up to ~19 % more than
+/// the row and a small one ~35 % less, and the island's wood is unchanged.
+/// The pay per hit stays flat — devblog 162 flattened it, *"the remaining
+/// smaller trees now yield the same resources per hit as the big trees"*;
+/// what a small tree lacks is hits.
+#[inline]
+pub fn tree_wood_pm(scale: f32) -> u32 {
+    (scale * (1000.0 / crate::terrain::TREE_SCALE_MEAN)).clamp(1.0, 2000.0) as u32
+}
+
 /// Noise channel for respawn jitter (worldgen channels live in terrain.rs;
 /// this one is sim-side and collides with nothing below 96).
 const CH_RESPAWN: u32 = 97;
@@ -895,6 +942,26 @@ impl SlotLives {
         self.now = tick;
     }
 
+    /// How much of a TREE slot stands, per mille of its adult size, at
+    /// `now` (tree ages v0): 0 felled, a regrowing sapling's share, and for
+    /// a tree the store has not felled — untouched, or only struck — the
+    /// wild stand's own age ([`wild_pm`]).
+    pub fn tree_pm_at(&self, seed: u64, cx: u16, cz: u16, now: u64) -> u16 {
+        match self.find(cx, cz) {
+            Some(e) if e.respawn_at != 0 => 0,
+            Some(e) if e.grown_at != 0 => {
+                grow_pm_over(e.grown_at, now, grow_span(e.occ).unwrap_or(TREE_GROW_TICKS))
+            }
+            _ => wild_pm(seed, cx, cz, now),
+        }
+    }
+
+    /// [`SlotLives::tree_pm_at`] at the stamped tick.
+    #[inline]
+    pub fn tree_pm(&self, seed: u64, cx: u16, cz: u16) -> u16 {
+        self.tree_pm_at(seed, cx, cz, self.now)
+    }
+
     /// How much of the slot stands, per mille: 0 harvested, a sapling's
     /// share while it regrows, 1000 otherwise.
     pub fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
@@ -1011,18 +1078,24 @@ impl SlotLives {
     /// The event says which: `b` the grown-by tick's low 32 bits and `c` 1
     /// for a sapling, both 0 for anything else.
     pub fn respawn_due(&mut self, tick: u64, events: &mut EventQueue) {
-        self.respawn_due_unless(tick, events, &|_, _| false);
+        self.respawn_due_unless(tick, events, &|_, _| false, &|_, _| 0);
     }
 
     /// [`SlotLives::respawn_due`], holding back any slot `built_over` says a
     /// base now stands on: it stays harvested and asks again after
     /// [`RESPAWN_RETRY_TICKS`]. A tree felled inside a base grew back up
     /// through the floor, and a node could come back inside a wall.
+    ///
+    /// `wild_until` is the tick the wild stand at a cell is grown by
+    /// ([`wild_grown_at`]): a felled young tree's sapling is grown no sooner
+    /// (tree ages v0), so it never finishes ahead of the stand and then
+    /// shrinks back to the stand's size when its entry is retired.
     pub fn respawn_due_unless(
         &mut self,
         tick: u64,
         events: &mut EventQueue,
         built_over: &dyn Fn(u16, u16) -> bool,
+        wild_until: &dyn Fn(u16, u16) -> u64,
     ) {
         let mut i = 0;
         while i < self.len {
@@ -1034,7 +1107,11 @@ impl SlotLives {
                     continue;
                 }
                 if let Some(span) = grow_span(e.occ) {
-                    let grown_at = tick + span;
+                    let grown_at = if e.occ == Occupant::Tree as u8 {
+                        (tick + span).max(wild_until(e.cx, e.cz))
+                    } else {
+                        tick + span
+                    };
                     self.entries[i] = SlotLife {
                         hits: 0,
                         respawn_at: 0,
@@ -1256,12 +1333,15 @@ pub fn land(
     // `NodeDef::weak_pct` has the reasoning. The last swing takes
     // whatever is left rather than overdrawing, which is what keeps the
     // total exact instead of approximately right.
-    // A regrowing tree is worth its size (tree growth v0): fewer hits, the
-    // same pay per hit, never less than one.
-    let size = if stump {
+    // A tree is worth the size it was struck at (tree growth v0, tree ages
+    // v0, tree size classes v0): `melee::occupant_cast` hands over the slot
+    // grown to its share — a sapling's, a young wild tree's — so its scale
+    // is the size class and the age at once. Fewer hits, the same pay per
+    // hit, never less than one. The stump has a budget of its own.
+    let size = if stump || ni != 0 {
         1000
     } else {
-        grow_pm(life.grown_at, tick) as u32
+        tree_wood_pm(slot.scale)
     };
     let hits_eff = (def.hits as u32 * size).div_ceil(1000).max(1);
     let budget = hits_eff * HIT_UNIT;
@@ -1796,12 +1876,12 @@ mod tests {
         let mut lives = SlotLives::new();
         lives.find_or_insert(5, 6).unwrap().respawn_at = 100;
         let mut ev = EventQueue::default();
-        lives.respawn_due_unless(150, &mut ev, &|cx, cz| (cx, cz) == (5, 6));
+        lives.respawn_due_unless(150, &mut ev, &|cx, cz| (cx, cz) == (5, 6), &|_, _| 0);
         assert_eq!(ev.len(), 0, "it grew back under the floor");
         let e = lives.find(5, 6).expect("still harvested");
         assert_eq!(e.respawn_at, 150 + RESPAWN_RETRY_TICKS);
         // Cleared: it comes back on the retry.
-        lives.respawn_due_unless(150 + RESPAWN_RETRY_TICKS, &mut ev, &|_, _| false);
+        lives.respawn_due_unless(150 + RESPAWN_RETRY_TICKS, &mut ev, &|_, _| false, &|_, _| 0);
         assert_eq!(ev.len(), 1);
         assert!(lives.find(5, 6).is_none());
     }

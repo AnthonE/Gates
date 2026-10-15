@@ -46,14 +46,14 @@ use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 use sim_core::terrain::Haven;
 
 /// The deployables the work is done at, by catalog name.
-pub const FIRE_ITEM: &str = "Fire Pit";
+pub const FIRE_ITEM: &str = "Camp Fire";
 pub const RECYCLER_ITEM: &str = "Recycler";
 pub const TABLE_ITEM: &str = "Research Table";
 /// Pieces of meat laid on the grill at once. A camp fire's grill is one slot
 /// (`sim_core::oven::FIRE_LAYOUT`, Rust's), so they cook one after another.
 pub const COOK_LOAD: u16 = 8;
 /// Fuel laid in at a time, and the least it is topped up from: a unit burns
-/// a few seconds, a piece of meat cooks in twenty.
+/// a few seconds, a piece of meat cooks in fifteen.
 pub const FUEL_LOAD: u16 = 20;
 const FUEL_LOW: u32 = 4;
 /// Fuel a cook wants in the pack before it is worth going.

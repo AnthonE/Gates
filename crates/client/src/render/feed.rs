@@ -310,7 +310,7 @@ pub struct Feed {
     /// (body id, `protocol::DEED_*`, item). A sound and nothing else.
     heard: [(u32, u8, u16); FEED_CAP],
     n_heard: usize,
-    /// Far gunshots and blasts this frame (`EventMsg::Report`, wire v112):
+    /// Far gunshots and blasts this frame (`EventMsg::Report`, wire v113):
     /// (`protocol::REPORT_*`, x, y, z) metres. A sound and nothing else.
     reports: [(u8, u16, i16, u16); FEED_CAP],
     n_reports: usize,

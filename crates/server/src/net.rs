@@ -2547,7 +2547,7 @@ fn accept_input(
     }
 }
 
-/// A talker's voice frames on their way in (v111): decoded, rate-limited
+/// A talker's voice frames on their way in (v113): decoded, rate-limited
 /// by a token bucket of [`VOICE_FPS`] a second and [`VOICE_BURST`] deep,
 /// and ringed for the sim thread's range check. Every refusal is counted
 /// and none is a disconnect: voice is the datagram lane's, and a lost
@@ -2904,7 +2904,7 @@ async fn writer_task(
                 .store(p.current_mtu as u64, Ordering::Relaxed);
         }
         // Voice goes out whole and in order: unlike a snapshot, a frame
-        // is not superseded by the next one (v111). `send_datagram` drops
+        // is not superseded by the next one (v113). `send_datagram` drops
         // the oldest itself when the path is congested.
         while let Ok(v) = voice_rx.pop() {
             match connection.send_datagram(v.bytes()) {
@@ -3661,7 +3661,7 @@ fn sim_thread(
                 }
             }
         }
-        // Proximity voice (v111): each talker's frames go to whoever is in
+        // Proximity voice (v113): each talker's frames go to whoever is in
         // range now, measured here because positions live on this thread.
         // Relayed, never simulated — nothing below touches the world.
         for slot in 0..MAX_PLAYERS {
@@ -4212,7 +4212,7 @@ mod tests {
         VoiceIn::new(RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP).0)
     }
 
-    /// Voice is its own datagram on the input lane (v111): decoded, ringed,
+    /// Voice is its own datagram on the input lane (v113): decoded, ringed,
     /// rate-limited past the burst, and none of it reaches the input ring.
     #[test]
     fn voice_datagrams_ring_apart_from_input_and_are_rate_limited() {

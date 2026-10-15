@@ -1048,14 +1048,14 @@ impl Session {
     }
 
     /// Hand every relayed voice frame that arrived since the last call to
-    /// `each`, oldest first (v111). One reader: `render::voice`.
+    /// `each`, oldest first (v113). One reader: `render::voice`.
     pub fn drain_voice(&self, each: impl FnMut(&protocol::VoiceFrame)) {
         if let Ok(mut r) = self.datagrams.lock() {
             r.drain_voice(each);
         }
     }
 
-    /// Send one of this player's own voice frames (v111). A datagram like
+    /// Send one of this player's own voice frames (v113). A datagram like
     /// the input: dropped rather than queued when the path is full, and
     /// never sent by a watcher, who has no voice.
     pub fn send_voice(&mut self, frame: &protocol::VoiceFrame) {

@@ -372,6 +372,7 @@ fn recipe_cell(
         .spawn((
             Button,
             RecipeCell(row.recipe),
+            super::super::audio::NoHover,
             super::Tip(tip),
             Node {
                 width: Val::Px(CELL_PX),
@@ -787,6 +788,8 @@ fn detail_body(
         row.spawn((
             Button,
             CraftGo,
+            // Its press is `Cue::CraftStart`, not the generic click.
+            super::super::audio::Quiet,
             Node {
                 width: Val::Px(150.0),
                 padding: UiRect::axes(Val::Px(10.0), Val::Px(7.0)),
@@ -1754,7 +1757,10 @@ pub fn clicks(
         if let Some((encoded, said)) = encoded {
             match encoded {
                 Ok(len) => match net.session.send_action(&buf[..len]) {
-                    Ok(()) => ui.say(said),
+                    Ok(()) => {
+                        ui.say(said);
+                        ui.sound = Some(crate::sound::Cue::CraftStart);
+                    }
                     Err(e) => ui.say(e.to_string()),
                 },
                 Err(e) => ui.say(format!("that would not encode ({e:?})")),
@@ -1829,7 +1835,10 @@ pub fn clicks(
                 // The queue redraws when the sim answers with `CraftQ`. It
                 // is not drawn here, because a queue the client wrote is a
                 // queue that can disagree with the one being worked.
-                Ok(()) => ui.say(format!("queued {count}")),
+                Ok(()) => {
+                    ui.say(format!("queued {count}"));
+                    ui.sound = Some(crate::sound::Cue::CraftStart);
+                }
                 Err(e) => ui.say(e.to_string()),
             },
             Err(e) => ui.say(format!("that craft would not encode ({e:?})")),

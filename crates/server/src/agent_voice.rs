@@ -1,4 +1,4 @@
-//! An agent's ears and voice (proximity voice, wire v111): what the players
+//! An agent's ears and voice (proximity voice, wire v113): what the players
 //! near it say out loud becomes text it hears, and what it says becomes
 //! speech they hear.
 //!

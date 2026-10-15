@@ -1149,7 +1149,7 @@ pub fn remote_heard(
     }
 }
 
-/// Gunshots and blasts from past the interest set (wire v112, `SUB_REPORT`):
+/// Gunshots and blasts from past the interest set (wire v113, `SUB_REPORT`):
 /// the shard sends no body for them, only what went off and where, out to
 /// `GUN_REPORT_CM` and `BLAST_REPORT_CM`. A gun is its far layer at the
 /// place, a blast is a blast; the falloff and the distance low-pass make
@@ -1316,7 +1316,12 @@ pub fn shots(
         let at = if shooter == core.player_id {
             let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
             cue = projectile_cue(&core.catalog, cue, (s.count > 0).then_some(s.item));
-            let p = core.predict.position();
+            // A spectator predicts nothing: the watched body is where it is.
+            let p = if core.spectating() {
+                core.eye_position()
+            } else {
+                core.predict.position()
+            };
             [p[0], p[1], p[2]]
         } else if let Some(t) = bodies
             .iter()
@@ -1699,12 +1704,93 @@ pub fn map_paper(sound: Option<ResMut<Sound>>) {
 /// each screen's handler: a screen added later clicks without knowing this
 /// exists. Runs where the mixer does (`world_running`), so the in-world
 /// panels and the Esc menu click; the desktop's title menu does not yet.
-pub fn ui_click(
-    buttons: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
-    mut sound: ResMut<Sound>,
-) {
+pub fn ui_click(buttons: Query<&Interaction, Clickable>, mut sound: ResMut<Sound>) {
     if buttons.iter().any(|i| *i == Interaction::Pressed) {
         sound.play(Request::own(Cue::UiClick));
+    }
+}
+
+/// The buttons [`ui_click`] hears: any, but a [`Quiet`] one.
+type Clickable = (Changed<Interaction>, With<Button>, Without<Quiet>);
+/// The buttons [`ui_hover`] hears: any, but a [`NoHover`] one.
+type Hoverable = (Changed<Interaction>, With<Button>, Without<NoHover>);
+
+/// A button whose press has a cue of its own (the CRAFT button's
+/// [`Cue::CraftStart`]), so [`ui_click`] leaves it alone rather than
+/// stacking a click under it.
+#[derive(Component)]
+pub struct Quiet;
+
+/// A button the pointer sweeps across without a tick: the inventory's slots
+/// and the recipe grid, where a tick per cell would be a rattle. Rust's
+/// slots are silent under the pointer too; its buttons are not.
+#[derive(Component)]
+pub struct NoHover;
+
+/// The pointer arriving on a button (`Cue::UiHover`): the faintest tick.
+///
+/// **Only a pointer that MOVED this frame.** Every panel is rebuilt when
+/// what it draws changes (`panels::rebuild`), and a rebuild respawns the
+/// button under a still pointer, which then turns `Hovered` without anybody
+/// having moved — a tick there would sound like a hover the player never
+/// made. And not the button just pressed: letting go turns it back to
+/// `Hovered`, which is the end of a click, not the start of a hover.
+pub fn ui_hover(
+    buttons: Query<(Entity, &Interaction), Hoverable>,
+    mut moved: MessageReader<bevy::window::CursorMoved>,
+    mut pressed: Local<Option<Entity>>,
+    mut sound: ResMut<Sound>,
+) {
+    let moved = moved.read().count() > 0;
+    let mut hover = false;
+    for (e, i) in &buttons {
+        match i {
+            Interaction::Pressed => *pressed = Some(e),
+            Interaction::Hovered if *pressed == Some(e) => *pressed = None,
+            Interaction::Hovered => hover = true,
+            Interaction::None => {}
+        }
+    }
+    if hover && moved {
+        sound.play(Request::own(Cue::UiHover));
+    }
+}
+
+/// The panels' own sounds: the pack opening and closing as the inventory
+/// pages come and go, and whatever a panel asked for on its last press
+/// (`panels::Ui::sound` — an item set down, an item dropped, the craft
+/// started). One slot rather than a queue: a panel does one thing a press.
+///
+/// A box opening is the box's sound ([`feed`]'s `ContainerOpen`), so the
+/// pack's rustle stays out from under it.
+pub fn panel_sounds(
+    net: NonSend<Net>,
+    ui: Option<ResMut<super::panels::Ui>>,
+    mut last: Local<super::panels::Panel>,
+    mut sound: ResMut<Sound>,
+) {
+    use super::panels::Panel;
+    let Some(mut ui) = ui else {
+        return;
+    };
+    let pack = |p: Panel| {
+        matches!(
+            p,
+            Panel::Inventory | Panel::Craft | Panel::Vendor | Panel::Tech
+        )
+    };
+    let now = ui.panel;
+    if now != *last {
+        let boxed = net.session.core.cont_kind != sim_core::inventory::CONT_SELF;
+        if pack(now) && !pack(*last) && !boxed {
+            sound.play(Request::own(Cue::InvOpen));
+        } else if now == Panel::None && pack(*last) {
+            sound.play(Request::own(Cue::InvClose));
+        }
+        *last = now;
+    }
+    if let Some(cue) = ui.sound.take() {
+        sound.play(Request::own(cue));
     }
 }
 

@@ -113,7 +113,7 @@ fn a_bow_discloses_you_over_a_smaller_circle_than_a_gun() {
     );
 }
 
-/// The blast is what sets `MAX_AUDIBLE_M` now (v112: it is reported past the
+/// The blast is what sets `MAX_AUDIBLE_M` now (v113: it is reported past the
 /// interest set out to `BLAST_REPORT_CM`), and the two must not drift.
 ///
 /// `tests/sound.rs` already refuses a cue that carries *past* the ceiling.

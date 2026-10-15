@@ -559,7 +559,7 @@ const SUB_AGENT: u32 = 96;
 /// it, as its members move.
 const SUB_TEAM: u32 = 97;
 /// A gunshot or a blast heard from past the receiver's interest set (wire
-/// v112): what it was and where, to the metre, and nothing about who. The
+/// v113): what it was and where, to the metre, and nothing about who. The
 /// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
 /// shot rides `EV_SHOT` on its body and the blast its impact.
 const SUB_REPORT: u32 = 98;
@@ -1506,12 +1506,17 @@ pub enum EventMsg {
     /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
-    /// The owner's wet and cold, per cent, and whether the cold is hurting
-    /// them (`SUB_EXPOSURE`).
+    /// The owner's wet, cold and heat, per cent, whether either is hurting
+    /// them, their comfort, per cent, and the air they stand in, whole °C
+    /// (`SUB_EXPOSURE`; comfort wire v111, the heat and the air v112,
+    /// climate v0).
     Exposure {
         wet_pct: u8,
         cold_pct: u8,
+        heat_pct: u8,
         hurting: bool,
+        comfort_pct: u8,
+        air_c: i8,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -1951,7 +1956,7 @@ pub enum EventMsg {
     /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
     /// for a meal the item. A sound and nothing else.
     Heard { body: u32, deed: u8, item: u16 },
-    /// A gunshot or a blast from far off (wire v112): `REPORT_*`, and where
+    /// A gunshot or a blast from far off (wire v113): `REPORT_*`, and where
     /// in whole metres. A sound and nothing else.
     Report { kind: u8, x: u16, y: i16, z: u16 },
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
@@ -4994,20 +4999,21 @@ pub fn encode_event_env(env: &sim_core::weather::Env, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
-/// The owner's wet and cold — see `EventMsg::Exposure`.
+/// The owner's wet, cold, heat and air — see `EventMsg::Exposure`.
 pub fn encode_event_exposure(
-    wet_pct: u8,
-    cold_pct: u8,
-    hurting: bool,
+    x: &sim_core::exposure::Readout,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if wet_pct > 100 || cold_pct > 100 {
+    if x.wet_pct > 100 || x.cold_pct > 100 || x.comfort_pct > 100 || x.heat_pct > 100 {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_EXPOSURE)?;
-    w.write(wet_pct as u32, EXPOSURE_PCT_BITS)?;
-    w.write(cold_pct as u32, EXPOSURE_PCT_BITS)?;
-    w.write_bit(hurting)?;
+    w.write(x.wet_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.cold_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(x.hurting)?;
+    w.write(x.comfort_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.heat_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.air_c as u8 as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -6737,13 +6743,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let wet_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let cold_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let hurting = r.read_bit()?;
-            if wet_pct > 100 || cold_pct > 100 {
+            let comfort_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let heat_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let air_c = r.read(8)? as u8 as i8;
+            if wet_pct > 100 || cold_pct > 100 || comfort_pct > 100 || heat_pct > 100 {
                 return Err(WireError::Malformed);
             }
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
+                comfort_pct,
+                air_c,
             }
         }
         SUB_ENV => {
@@ -8961,6 +8973,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/claim.rs"),
         },
         Module {
+            file: "climate.rs",
+            src: include_str!("../../sim-core/src/climate.rs"),
+        },
+        Module {
             file: "circulation.rs",
             src: include_str!("../../sim-core/src/circulation.rs"),
         },
@@ -9167,8 +9183,8 @@ mod wire_domains {
             // this one through only because arrow recovery v1 spent the
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
-            // the widening to four.
-            live_max: 8,
+            // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
+            live_max: 9,
         },
         Domain {
             what: "move refusal",
@@ -9845,7 +9861,7 @@ mod wire_domains {
             "TEAM_COUNT_BITS",
             "TEAM_STATE_BITS",
             "TEAM_POS_BITS",
-            // A far report (v112): the wire's own two kinds, refused past
+            // A far report (v113): the wire's own two kinds, refused past
             // `REPORT_MAX` at both ends (const-asserted beside the width);
             // and a whole-metre place, the island's side const-asserted
             // inside the x/z width, y refused outside its biased range.

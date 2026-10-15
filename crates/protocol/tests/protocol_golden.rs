@@ -511,10 +511,10 @@ fn test_protocol_golden() {
     // A team verb and the receiver's team (v108).
     g!(seen, golden_action, 164);
     g!(seen, golden_event, 165);
-    // Proximity voice (v111).
+    // Proximity voice (v113).
     g!(seen, golden_voice_up, 166);
     g!(seen, golden_voice, 167);
-    // A far report (v112).
+    // A far report (v113).
     g!(seen, golden_event, 168);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
     assert_eq!(GOLDEN.len(), 169, "a new fixture must be dispatched above");
@@ -554,7 +554,7 @@ fn golden_auth(fixture: &[u8], name: &str) {
     assert_eq!(decode_auth(fixture).unwrap(), want, "{name}: decode");
 }
 
-/// The talker's voice frame (v111): its own kind, byte-stable, decode-exact.
+/// The talker's voice frame (v113): its own kind, byte-stable, decode-exact.
 fn golden_voice_up(fixture: &[u8], name: &str) {
     let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
     assert_eq!(peek_kind(fixture).unwrap(), protocol::KIND_VOICE, "{name}");
@@ -564,7 +564,7 @@ fn golden_voice_up(fixture: &[u8], name: &str) {
     assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
 }
 
-/// The relayed voice frame (v111), the talker's id in front.
+/// The relayed voice frame (v113), the talker's id in front.
 fn golden_voice(fixture: &[u8], name: &str) {
     let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
     assert_eq!(peek_kind(fixture).unwrap(), protocol::KIND_VOICE, "{name}");
@@ -1834,10 +1834,13 @@ fn golden_event(fixture: &[u8], name: &str) {
                 EventMsg::Exposure {
                     wet_pct: 64,
                     cold_pct: 100,
-                    hurting: true
+                    heat_pct: 0,
+                    hurting: true,
+                    comfort_pct: 50,
+                    air_c: -7,
                 }
             );
-            protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap()
+            protocol::encode_event_exposure(&protocol::goldens::exposure(), &mut buf).unwrap()
         }
         "event_env.bin" => {
             let env = protocol::goldens::event_env();
