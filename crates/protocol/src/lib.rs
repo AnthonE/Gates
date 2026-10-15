@@ -1159,7 +1159,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// one channel bit becomes two (`chat::Channel`: local, global, team).
 /// v109 — `ACT_PICKUP` carries a 32-bit stack id, the one the crosshair is
 /// on (0 for none): the sim takes it while it is in reach, else the nearest.
-pub const PROTO_VER: u16 = 109;
+/// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
+/// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
+/// carries six rows, down from eight.
+pub const PROTO_VER: u16 = 110;
 
 /// This game's slug in the elo catalog.
 ///

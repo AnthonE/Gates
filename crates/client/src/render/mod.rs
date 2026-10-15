@@ -84,6 +84,8 @@ pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
 pub mod faces;
+/// Painted skins (wire v110): fetched by hash, drawn on their canvas.
+pub mod paint;
 pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
@@ -117,6 +119,8 @@ pub mod ziggurat;
 // model is `crate::ui::hub`.
 // Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
 // rows and the viewmodel's two-primitive stand-in tool.
+/// Painted skins: the items a skin can be a picture on, and their meshes.
+pub mod canvas;
 pub mod heldgen;
 // The right hand's finger bones, closed on what it holds.
 pub mod fingers;
@@ -1967,6 +1971,7 @@ impl Plugin for GatesRenderPlugin {
             panels::register(app);
             chat::register(app);
             faces::register(app);
+            paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------
             // **Not on a capture run either**, and for the same reason one

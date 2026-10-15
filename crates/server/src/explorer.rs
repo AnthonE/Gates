@@ -131,6 +131,14 @@ pub const JOIN_GOAL_SECS: u32 = 5;
 /// How near a person must stand for `invite`: the human client's reach
 /// for N (`ASSIST_REACH_M`), inside the shard's own 7 m.
 pub const INVITE_REACH_M: f32 = 3.0;
+/// A meet (`--friend`): the walk to THE GATE and the wait there, at most
+/// this long before it asks again, standing this near the stall.
+pub const MEET_GOAL_SECS: u32 = 180;
+pub const MEET_STOP_M: f32 = 6.0;
+/// Before a team says where its friend is, a friend who joined or was seen
+/// this recently counts as on the island. A shard keeps a tag after its
+/// player leaves, so an older one says nothing.
+pub const FRIEND_AWAY_SECS: u32 = 30 * 60;
 /// An invite makes its sender the leader of a team of one (as in Rust).
 /// Alone on its team this long, past the invite's own minute, it leaves,
 /// so the next person's N finds it free.
@@ -461,6 +469,9 @@ pub struct Senses {
     pub team_home: Sighting,
     /// A person it could invite to its team stands within reach.
     pub invitee: bool,
+    /// Its friend (`--friend`), and where its eyes have them.
+    pub friend: crate::mind::FriendSense,
+    pub friend_at: Option<[f32; 2]>,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -632,6 +643,9 @@ pub struct SurvivorOpts {
     /// Where the code on its locks comes from; `None` makes one up for
     /// this process alone.
     pub lock: Option<LockSecret>,
+    /// The one wallet it plays with (`--friend`): invited first, never
+    /// fought, met at THE GATE (`Goal::Meet`).
+    pub friend: Option<protocol::Address>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -908,6 +922,12 @@ pub struct Survivor {
     invitee: Option<u32>,
     /// Since when it has led a team of one, if it does.
     alone_since: Option<u32>,
+    /// Its friend (`--friend`): their wallet, the player id the shard gave
+    /// them, since when that id was known, and when its eyes last had them.
+    friend: Option<protocol::Address>,
+    friend_id: u32,
+    friend_since: u32,
+    friend_seen: u32,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1037,6 +1057,10 @@ impl Survivor {
             backoff: None,
             invitee: None,
             alone_since: None,
+            friend: opts.friend,
+            friend_id: 0,
+            friend_since: 0,
+            friend_seen: 0,
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -1993,6 +2017,7 @@ impl Survivor {
             | Goal::Recycle
             | Goal::Raid
             | Goal::Follow
+            | Goal::Meet
             | Goal::Deliver
             | Goal::SupplyWood
             | Goal::SupplyStone
@@ -2194,6 +2219,11 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Follow => self.follow(core, body, tick),
+            Goal::Meet if elapsed >= MEET_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Goal::Meet => self.meet(core, body, tick),
             Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
                 self.deliver_over(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
@@ -2224,6 +2254,65 @@ impl Survivor {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
             },
+        }
+    }
+
+    /// Meet (`--friend`): to THE GATE, and wait there until its friend is
+    /// in reach of an invite or on its team; then it is done, and the next
+    /// decision can invite them. Gone from the island, the meet is over.
+    fn meet(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let f = self.senses.friend;
+        if !f.online || f.on_team || f.reachable || f.invited_me {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        }
+        match crate::agent::gate::approach(core, body, &mut self.route, MEET_STOP_M, tick) {
+            Some(Ok(intent)) => {
+                self.stats.phase = Phase::Approaching;
+                intent
+            }
+            Some(Err(why)) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            None => {
+                self.stats.phase = Phase::Waiting;
+                Intent::IDLE
+            }
+        }
+    }
+
+    /// What it knows of its friend now (`--friend`), for the summary and
+    /// the meet. Allocation-free: this runs on the frame path.
+    fn friend_sense(
+        &self,
+        core: &ClientCore,
+        team: &protocol::TeamView,
+        tick: u32,
+    ) -> crate::mind::FriendSense {
+        let Some(address) = self.friend else {
+            return crate::mind::FriendSense::NONE;
+        };
+        let id = self.friend_id;
+        let tag = (id != 0).then(|| core.tag(id)).flatten();
+        let member = team.members().iter().find(|m| id != 0 && m.id == id);
+        let recent =
+            tick.wrapping_sub(self.friend_since.max(self.friend_seen)) < FRIEND_AWAY_SECS * TICK_HZ;
+        crate::mind::FriendSense {
+            set: true,
+            who: crate::mind::Who {
+                id,
+                name: tag.map_or(protocol::Name::EMPTY, |t| t.name),
+                address,
+            },
+            online: match member {
+                Some(m) => m.state == protocol::TEAM_AWAKE,
+                None => id != 0 && recent,
+            },
+            on_team: member.is_some(),
+            in_sight: crate::mind::Sighting::NONE,
+            reachable: id != 0 && self.invitee == Some(id),
+            invited_me: id != 0 && team.invite == id && team.count == 0,
         }
     }
 
@@ -5044,6 +5133,16 @@ impl Survivor {
         // with room. The nearest, as a player's N would pick.
         let room = team.count == 0
             || (team.leader == core.player_id && usize::from(team.count) < protocol::TEAM_MAX);
+        // Its friend (`--friend`): who the shard says has that wallet now.
+        // A new id (they came back) starts their clock again.
+        if let Some(address) = self.friend {
+            let id = core.tag_of_address(&address).map_or(0, |t| t.id);
+            if id != self.friend_id {
+                self.friend_id = id;
+                self.friend_since = tick;
+            }
+            self.tracks.spare(id);
+        }
         let mut invitee: Option<(f32, u32)> = None;
         if let (true, Some(own)) = (room, self.tracks.own()) {
             for t in self.tracks.recent(tick, TICK_HZ) {
@@ -5061,8 +5160,28 @@ impl Survivor {
                 }
             }
         }
+        // The friend first, in reach: not the nearest stranger beside them.
+        let own_pos = self.tracks.own().map(|o| [o.pos[0], o.pos[2]]);
+        let mut friend_at = None;
+        if self.friend_id != 0 {
+            if let Some(t) = self
+                .tracks
+                .recent(tick, TICK_HZ)
+                .find(|t| t.id == self.friend_id && t.visible)
+            {
+                self.friend_seen = tick;
+                friend_at = Some([t.pos[0], t.pos[2]]);
+                let in_reach = own_pos
+                    .is_some_and(|o| (t.pos[0] - o[0]).hypot(t.pos[2] - o[1]) <= INVITE_REACH_M);
+                if room && in_reach && !t.wounded && !team.has(t.id) {
+                    invitee = Some((0.0, t.id));
+                }
+            }
+        }
         self.invitee = invitee.map(|(_, id)| id);
         self.senses.invitee = self.invitee.is_some();
+        self.senses.friend_at = friend_at;
+        self.senses.friend = self.friend_sense(core, &team, tick);
         if team.count == 1 && team.leader == core.player_id {
             let since = *self.alone_since.get_or_insert(tick);
             if tick.wrapping_sub(since) >= ALONE_TEAM_SECS * TICK_HZ
@@ -6376,6 +6495,11 @@ pub fn observe(
             _ => {}
         }
     }
+    s.friend = senses.friend;
+    if let (Some(b), Some([fx, fz])) = (body, senses.friend_at) {
+        let (d, bearing) = relative(b, fx, fz);
+        s.friend.in_sight.add(d, bearing);
+    }
     s.team.mate_attacked = senses.mate_attacked;
     s.team.home = senses.team_home;
     s.team.home_boxes = memory.home_boxes;
@@ -6627,6 +6751,18 @@ pub fn observe(
     }
     if s.team.awake.count > 0 {
         s.offer(Goal::Follow);
+    }
+    // Its friend on the island, not on its team and not yet in reach: the
+    // walk to THE GATE, where they know to find it.
+    let f = &s.friend;
+    if f.online
+        && !f.on_team
+        && !f.reachable
+        && !f.invited_me
+        && s.gate.is_some()
+        && !senses.hostile
+    {
+        s.offer(Goal::Meet);
     }
     // The team's base, seen with a teammate at one of its boxes: a trip
     // there to stock it and take what the pack lacks, or a supply run for

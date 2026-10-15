@@ -701,6 +701,18 @@ impl Tracks {
         }
     }
 
+    /// Spare `id` as a teammate is spared, team or not: its friend
+    /// (`--friend`) is never a quarry. A team of eight leaves its own slot
+    /// free, so there is always room for one more.
+    pub fn spare(&mut self, id: u32) {
+        if id == 0 || id == self.me || self.friend(id) {
+            return;
+        }
+        if let Some(slot) = self.friends.iter_mut().find(|s| **s == 0) {
+            *slot = id;
+        }
+    }
+
     /// Is `id` on its team?
     pub fn friend(&self, id: u32) -> bool {
         id != 0 && self.friends.contains(&id)

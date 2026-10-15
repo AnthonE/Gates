@@ -2002,6 +2002,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sim-core",
  "sound",
  "tokio",
@@ -5287,6 +5288,7 @@ name = "server"
 version = "0.8.0"
 dependencies = [
  "agentkey",
+ "base64",
  "bevy",
  "client",
  "client-core",
@@ -5297,6 +5299,7 @@ dependencies = [
  "protocol",
  "rtrb",
  "serde_json",
+ "sha2 0.10.9",
  "sim-core",
  "socket2",
  "tiny-keccak",

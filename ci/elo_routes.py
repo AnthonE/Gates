@@ -165,7 +165,8 @@ def load_content(skins_text: str, items_text: str) -> tuple[dict[int, dict], lis
         if cid in want:
             bad.append(f"content: catalog {cid} is in content/skins.toml twice")
         tint = s.get("tint") or [0, 0, 0]
-        want[cid] = {"name": s.get("name"), "covers": covers, "tint": "#%02x%02x%02x" % tuple(tint)}
+        want[cid] = {"name": s.get("name"), "covers": covers, "tint": "#%02x%02x%02x" % tuple(tint),
+                     "texture": s.get("texture")}
     return want, bad
 
 
@@ -194,6 +195,11 @@ def parity(store, want: dict[int, dict], icons: set[str]) -> list[str]:
                 h = h.lower()
             if h != w:
                 bad.append(f"parity: catalog {cid} {field}: the store says {h!r}, content says {w!r}")
+        # A painted skin: the store serves the same picture the game names.
+        tex = want[cid].get("texture")
+        url = have[cid].get("texture_url")
+        if tex and not (isinstance(url, str) and url.endswith(f"/{tex[:16]}.png")):
+            bad.append(f"parity: catalog {cid} is painted ({tex[:16]}…), the store's texture_url is {url!r}")
     for cid, w in sorted(want.items()):
         if w["covers"] and f"{snake(w['covers'])}.png" not in icons:
             bad.append(f"parity: catalog {cid}: the browser store draws assets/icons/{snake(w['covers'])}.png, "

@@ -32,7 +32,7 @@ use crate::agent::lock::LockCode;
 use crate::mind::{Choice, DecisionSource, Goal, Reason, Say, SourceKind, Summary};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The longest reply line accepted. Proposed default.
@@ -50,7 +50,9 @@ enum Line {
 
 pub struct External {
     child: Option<Child>,
-    stdin: Option<ChildStdin>,
+    /// Where observations go: the child's stdin, or an in-process pipe
+    /// (`mcp.rs`, where the agent is a harness on jev-bot's own stdio).
+    stdin: Option<Box<dyn Write + Send>>,
     lines: Option<rtrb::Consumer<Line>>,
     reader: Option<std::thread::JoinHandle<()>>,
     timeout: Duration,
@@ -88,12 +90,26 @@ impl External {
             .map_err(|e| format!("external agent {program}: {e}"))?;
         let stdout = child.stdout.take().ok_or("external agent has no stdout")?;
         let stdin = child.stdin.take().ok_or("external agent has no stdin")?;
-        Self::over(Some(child), stdin, stdout, timeout)
+        Self::over(Some(child), Box::new(stdin), stdout, timeout)
+    }
+
+    /// The same door over any pair of pipes: observations written to
+    /// `input`, replies read from `output`. No child: `mcp.rs` answers on
+    /// the far ends from a harness.
+    pub fn over_pipes(
+        input: impl Write + Send + 'static,
+        output: impl Read + Send + 'static,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        if timeout.is_zero() {
+            return Err("the external agent needs a positive timeout".into());
+        }
+        Self::over(None, Box::new(input), output, timeout)
     }
 
     fn over(
         child: Option<Child>,
-        stdin: ChildStdin,
+        stdin: Box<dyn Write + Send>,
         stdout: impl Read + Send + 'static,
         timeout: Duration,
     ) -> Result<Self, String> {
@@ -158,6 +174,7 @@ impl External {
             "options": summary.options().iter().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
             "heard": summary.heard_json(),
             "team": summary.team_json(),
+            "friend": summary.friend_json(),
             "places": summary.places_json(),
         })
     }

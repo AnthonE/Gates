@@ -322,10 +322,16 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
                     tint: [255, 64, 0],
                     coin: protocol::COIN_NONE,
                     price: 0,
+                    texture: [0; 8],
                 },
             )
             .unwrap();
     }
+    // What `paint::paint` learns of a tint row each frame (v110): a skin is
+    // drawn once its look is known.
+    app.world_mut()
+        .resource_mut::<super::super::viewmodel::SkinMats>()
+        .learn(SKIN, super::super::viewmodel::Look::Tint);
     let mut feed = app.world_mut().resource_mut::<super::super::feed::Feed>();
     feed.applied = 0;
     feed.applied2 = client_core::core::APPLIED2_SKINS;
