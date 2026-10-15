@@ -1,0 +1,31 @@
+# File each wiped world for study (`ops/cycles.py`): the shard's archive of
+# the wipe beside each agent's journal for that week, one folder a wipe in
+# /home/master/gates-data/cycles. Run daily by gates-cycles.timer; a wipe is
+# filed once and never touched again, so a run with nothing new does nothing.
+#
+#   sudo cp ops/gates-cycles.service ops/gates-cycles.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-cycles.timer
+#   sudo systemctl start gates-cycles.service   # file what is there now
+#
+# `ci/deploy_shard.sh` stages cycles.py beside the shard. Add a --journal
+# for every model-minded agent that keeps one (gates-buddy@.service's
+# GATES_JOURNAL); a scripted teammate makes no decisions worth journaling.
+
+[Unit]
+Description=File each wiped Gates world with its agents' journals
+Documentation=https://github.com/AnthonE/Gates/blob/main/ops/cycles.py
+
+[Service]
+Type=oneshot
+User=master
+Group=master
+ExecStart=/usr/bin/python3 /home/master/gates-deploy/cycles.py --world /home/master/gates-data/island.world --out /home/master/gates-data/cycles --journal doctor-wood=/var/lib/gates-buddy/doctor-wood/journal.jsonl
+Nice=19
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/home/master/gates-data
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gates-cycles

@@ -35,8 +35,14 @@ post a moment worth sharing (a frame and a caption) to that channel, at most
 once every SHARE_EVERY_S seconds.
 
 GATES_JOURNAL names a file each decision is appended to as one JSON line
-(the time, the goal, the reason, what it said and heard, a few observation
-fields): what `ops/buddy/clips.py` reads to find a buddy's moments.
+(the time, the goal, the reason, what it said and heard, its `wish`, a few
+observation fields): what `ops/buddy/clips.py` reads to find a buddy's
+moments.
+
+GATES_MEMORY names a file the agent keeps across runs, deaths and wipes: its
+notes, a notebook of lessons it writes itself, and how its last few lives
+ended. Leave it unset and every run starts from nothing, which is the
+no-memory arm when you want to compare the two.
 """
 import base64
 import collections
@@ -67,9 +73,14 @@ WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SHARE_EVERY_S = float(os.environ.get("SHARE_EVERY_S", "300"))
 JOURNAL = os.environ.get("GATES_JOURNAL", "")
 # The observation fields a journal line keeps: enough to tell a fight, a
-# death or a haul from a walk, and small enough to write every turn.
-JOURNAL_OBS = ("hp", "hp_max", "food", "water", "threats", "last_fight", "last",
-               "current", "players", "deaths")
+# death or a haul from a walk, and small enough to write every turn. They
+# are the observation's own keys (`Summary::to_json`).
+JOURNAL_OBS = ("body", "health", "food", "water", "threats", "last_fight", "last_goal",
+               "current_goal", "deaths", "respawns")
+MEMORY = os.environ.get("GATES_MEMORY", "")
+LESSONS_CHARS = 1500
+DEATHS_KEPT = 8
+WISH_CHARS = 120
 # Models that take the server-side refusal fallback (API route only).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 
@@ -145,7 +156,21 @@ room's crates, which hold the next card up.
 
 `notes` is your own memory: what your teammates asked for, the plan, what \
 matters. You see it again next turn; keep it short and current. `chat_log` \
-is the last lines you heard, oldest first."""
+is the last lines you heard, oldest first.
+
+`wish`: if you wanted to do something this turn that no offered goal lets \
+you do, say what in a few words. Otherwise leave it empty. Nobody answers it \
+in play; it tells the people building the game what to add."""
+
+MEMORY_RULE = """
+
+`memory` is what you carried here from earlier lives: `lessons`, your own \
+notebook, and `deaths`, how your last few lives ended. Islands are wiped \
+and rebuilt from nothing every so often; your notebook is the one thing \
+that survives. Write `lessons` only when you learn something worth keeping \
+for every later life (what kills you, what works, who keeps their word), \
+as the whole new notebook, at most 1500 characters. Leave it empty to keep \
+it as it is."""
 
 FRIEND_RULE = """
 
@@ -168,7 +193,7 @@ worth showing: a base finished, a fight, a find, a view. Otherwise leave \
 `share` empty."""
 
 
-def schema(options, share):
+def schema(options, share, memory=False):
     props = {
         "goal": {"type": "string", "enum": options},
         "reason": {"type": "string"},
@@ -176,7 +201,10 @@ def schema(options, share):
         "to": {"type": "string", "enum": ["local", "team"]},
         "code": {"type": "string"},
         "notes": {"type": "string"},
+        "wish": {"type": "string"},
     }
+    if memory:
+        props["lessons"] = {"type": "string"}
     if share:
         props["share"] = {"type": "string"}
     return {
@@ -211,7 +239,7 @@ def fetch_frame():
         return None
 
 
-def turn_content(request, recent, frame, notes, chat_log):
+def turn_content(request, recent, frame, notes, chat_log, memory=None):
     turn = {
         "observation": request["observation"],
         "options": request["options"],
@@ -223,6 +251,9 @@ def turn_content(request, recent, frame, notes, chat_log):
         "notes": notes,
         "chat_log": list(chat_log),
     }
+    if memory is not None:
+        turn["memory"] = {"lessons": memory.get("lessons", ""),
+                          "deaths": memory.get("deaths", [])}
     blocks = []
     if frame:
         jpeg, age_ms = frame
@@ -317,7 +348,44 @@ def post_share(caption, jpeg):
         return r.status
 
 
-def journal(request, goal, reason, say, to):
+def load_memory(path):
+    """What earlier runs of this agent left. Missing or unreadable is a first
+    life, never an error."""
+    try:
+        with open(path) as f:
+            memory = json.load(f)
+        if isinstance(memory, dict):
+            return memory
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def save_memory(path, memory):
+    """Written whole and swapped in, so a kill mid-write keeps the last good
+    copy. A memory that cannot be written costs a log line, never a decision."""
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(memory, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"memory: {e}", file=sys.stderr)
+
+
+def note_death(memory, obs, doing):
+    """One line on how a life ended: what it was doing and why, and how the
+    last fight went. Only the last DEATHS_KEPT are kept."""
+    memory["deaths"] = (memory.get("deaths", []) + [{
+        "t": round(time.time()),
+        "doing": doing.get("goal"),
+        "why": doing.get("reason"),
+        "last_fight": obs.get("last_fight"),
+        "threats": (obs.get("threats") or [])[:2],
+    }])[-DEATHS_KEPT:]
+
+
+def journal(request, goal, reason, say, to, wish="", lessons=""):
     """One line in GATES_JOURNAL. A journal that cannot be written costs a log
     line, never a decision."""
     obs = request.get("observation") or {}
@@ -327,12 +395,17 @@ def journal(request, goal, reason, say, to):
         "reason": reason,
         "say": say,
         "to": to,
+        "wish": wish,
         "heard": [{"from": h["from"], "friend": h.get("friend", False),
                    "channel": h.get("channel", "local"), "text": h["text"]}
                   for h in request.get("heard", []) if not h.get("me")],
         "friend": request.get("friend"),
         "obs": {k: obs[k] for k in JOURNAL_OBS if k in obs},
     }
+    if lessons:
+        # The notebook's history lives here; the memory file holds only its
+        # latest page.
+        row["lessons"] = lessons
     try:
         with open(JOURNAL, "a") as f:
             f.write(json.dumps(row) + "\n")
@@ -365,13 +438,31 @@ def main():
         ask = ask_claude_code
     recent = collections.deque(maxlen=10)
     chat_log = collections.deque(maxlen=CHAT_LOG_LINES)
-    notes = ""
+    memory = None
+    if MEMORY:
+        memory = load_memory(MEMORY)
+        memory["runs"] = memory.get("runs", 0) + 1
+        print(f"memory: run {memory['runs']}, {len(memory.get('deaths', []))} deaths kept, "
+              f"{len(memory.get('lessons', ''))} chars of lessons", file=sys.stderr)
+        save_memory(MEMORY, memory)
+    notes = (memory or {}).get("notes", "")
+    # The body's death count as of the last request; a rise is a life ended.
+    deaths_seen = None
+    doing = {}
     # Numbers a teammate typed on team chat: the only codes passed on.
     team_numbers = set()
     code_sent = None
     shared_at = None
     for line in sys.stdin:
         request = json.loads(line)
+        if memory is not None:
+            obs = request.get("observation") or {}
+            deaths = obs.get("deaths")
+            if isinstance(deaths, int):
+                if deaths_seen is not None and deaths > deaths_seen:
+                    note_death(memory, obs, doing)
+                    save_memory(MEMORY, memory)
+                deaths_seen = deaths
         for h in request.get("heard", []):
             chat_log.append({"from": h["from"], "me": h.get("me", False),
                              "channel": h.get("channel", "local"), "text": h["text"]})
@@ -386,9 +477,10 @@ def main():
         if persona:
             system += "\n\nWho you are (your character; the rules above still hold): " + persona
         system += SHARE_RULE if can_share else ""
+        system += MEMORY_RULE if memory is not None else ""
         try:
-            answer = ask(system, turn_content(request, recent, frame, notes, chat_log),
-                         schema(request["options"], can_share))
+            answer = ask(system, turn_content(request, recent, frame, notes, chat_log, memory),
+                         schema(request["options"], can_share, memory is not None))
             goal = answer["goal"]
             if goal not in request["options"]:
                 raise RuntimeError(f"model chose {goal!r}, not on offer")
@@ -397,6 +489,8 @@ def main():
             to = "team" if answer.get("to") == "team" else "local"
             code = str(answer.get("code") or "").strip()
             notes = " ".join(str(answer.get("notes") or "").split())[:NOTES_CHARS]
+            wish = " ".join(str(answer.get("wish") or "").split())[:WISH_CHARS]
+            lessons = str(answer.get("lessons") or "").strip()[:LESSONS_CHARS]
         except errors + (RuntimeError, ValueError, KeyError, TypeError, StopIteration) as e:
             # No goal in the reply: the bot counts a failure and backs off.
             # Never a substituted decision (JEV.md).
@@ -404,9 +498,17 @@ def main():
             print(json.dumps({"id": request["id"], "error": str(e)[:200]}), flush=True)
             continue
         recent.append({"goal": goal, "said": say, "to": to})
+        doing = {"goal": goal, "reason": reason}
+        if memory is not None:
+            memory["notes"] = notes
+            if lessons:
+                memory["lessons"] = lessons
+                print(f"lessons rewritten ({len(lessons)} chars)", file=sys.stderr)
+            save_memory(MEMORY, memory)
         if JOURNAL:
-            journal(request, goal, reason, say, to)
-        print(f"{goal}: {reason}" + (f' / says to {to} "{say}"' if say else ""), file=sys.stderr)
+            journal(request, goal, reason, say, to, wish, lessons)
+        print(f"{goal}: {reason}" + (f' / says to {to} "{say}"' if say else "")
+              + (f" / wishes: {wish}" if wish else ""), file=sys.stderr)
         reply = {"id": request["id"], "goal": goal, "reason": reason}
         if say:
             reply["say"] = say

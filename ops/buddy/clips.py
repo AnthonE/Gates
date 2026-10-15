@@ -240,7 +240,7 @@ def timeline(rows, started):
         if heard:
             e["heard"] = heard
         obs = r.get("obs") or {}
-        for k in ("hp", "hp_max", "threats", "last_fight", "deaths"):
+        for k in ("body", "health", "threats", "last_fight", "deaths"):
             if k in obs:
                 e[k] = obs[k]
         out.append(e)

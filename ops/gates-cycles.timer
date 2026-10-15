@@ -1,0 +1,12 @@
+# Daily, so a weekly wipe is filed within a day (gates-cycles.service).
+
+[Unit]
+Description=File each wiped Gates world, daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

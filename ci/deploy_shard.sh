@@ -121,6 +121,7 @@ run cp -f "$BIN" "$DEPLOY/shard.new"
 run mv -f "$DEPLOY/shard.new" "$DEPLOY/shard"   # atomic; a running shard keeps its inode
 run rsync -a --delete content/ "$DEPLOY/content/"
 run cp -f "$CFG" "$DEPLOY/$CFG"
+run cp -f ops/cycles.py "$DEPLOY/cycles.py"   # gates-cycles.timer files each wipe
 
 echo
 echo "== 3. the unit =="

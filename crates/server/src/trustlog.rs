@@ -57,6 +57,15 @@
 //! offline raid on an evicted player's base is exactly the row the ledger
 //! exists for. A body with no key is written `guest`. An id that names no
 //! body and nothing remembered is written `unresolved`, never guessed.
+//!
+//! ## Agents
+//!
+//! A party also says whether it joined as a declared agent (`HELLO_AGENT`):
+//! `"agent":true`, `"agent":false` for one that joined and declared nothing,
+//! and no field when this shard cannot tell (a sleeper it never saw join,
+//! with no standings row this wipe). Declared, never inferred, and three
+//! answers rather than two, so a study can split rows by who acted without
+//! guessing ([`ShardCore::declared_agent`]).
 
 use crate::core::ShardCore;
 use crate::stats::ShardStats;
@@ -129,7 +138,10 @@ pub const TRUST_GONE_MEMORY: usize = 1024;
 
 /// The on-disk format's version, in every header. Bump it with any change to
 /// a line's shape, the wall-6 discipline applied to a file.
-pub const TRUST_LOG_FORMAT: u32 = 1;
+///
+/// 2: a party carries `agent` (2026-10-15). The reader still takes 1, whose
+/// parties read as `agent` unknown.
+pub const TRUST_LOG_FORMAT: u32 = 2;
 
 /// The `format` field every header carries.
 pub const TRUST_LOG_NAME: &str = "gates-trust-log";
@@ -152,11 +164,32 @@ pub enum Who {
     Unresolved,
 }
 
+/// Whether a party joined as a declared agent (`HELLO_AGENT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Declared {
+    Agent,
+    /// Joined and declared nothing.
+    Person,
+    /// Not known: never written as either.
+    Unknown,
+}
+
+impl Declared {
+    pub fn from_flag(flag: Option<bool>) -> Self {
+        match flag {
+            Some(true) => Declared::Agent,
+            Some(false) => Declared::Person,
+            None => Declared::Unknown,
+        }
+    }
+}
+
 /// One side of a trust row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Party {
     pub id: u32,
     pub who: Who,
+    pub declared: Declared,
 }
 
 /// One trust row, resolved. `tick` is the tick the verb was applied in.
@@ -403,7 +436,12 @@ impl Live {
         } else {
             Who::Unresolved
         };
-        Party { id, who }
+        let wallet = match &who {
+            Who::Wallet(k) => Some(k),
+            _ => None,
+        };
+        let declared = Declared::from_flag(core.declared_agent(id, wallet));
+        Party { id, who, declared }
     }
 }
 
@@ -826,6 +864,11 @@ fn push_party(out: &mut String, p: &Party) {
         Who::Guest => out.push_str(",\"guest\":true"),
         Who::Unresolved => out.push_str(",\"unresolved\":true"),
     }
+    match p.declared {
+        Declared::Agent => out.push_str(",\"agent\":true"),
+        Declared::Person => out.push_str(",\"agent\":false"),
+        Declared::Unknown => {}
+    }
     out.push('}');
 }
 
@@ -913,7 +956,10 @@ pub fn format_header(
         }
         let _ = write!(out, "\"{p}\":\"{}\"", presence_name(p).unwrap_or("unnamed"));
     }
-    out.push_str("}}\n");
+    out.push_str(
+        "},\"agent\":\"true: joined as a declared agent; false: joined and declared \
+         nothing; absent: not known\"}\n",
+    );
 }
 
 /// A config string as JSON: quotes, backslashes and control characters
@@ -944,6 +990,9 @@ pub struct LogParty {
     pub id: u32,
     pub wallet: Option<String>,
     pub guest: bool,
+    /// Declared agent, declared nothing, or `None` when not known (and for
+    /// every party in a version-1 segment).
+    pub agent: Option<bool>,
 }
 
 /// One `trust` line, read back, with the segment and boot it came from.
@@ -1036,9 +1085,9 @@ pub fn read_segment(seq: u64, bytes: &[u8], log: &mut Log) -> Result<(), String>
                 return Err("the first line is not a trust log header".into());
             }
             let ver = v["version"].as_u64().unwrap_or(0);
-            if ver != TRUST_LOG_FORMAT as u64 {
+            if ver == 0 || ver > TRUST_LOG_FORMAT as u64 {
                 return Err(format!(
-                    "format version {ver}, and this reader knows version {TRUST_LOG_FORMAT}"
+                    "format version {ver}, and this reader knows versions 1 to {TRUST_LOG_FORMAT}"
                 ));
             }
             info.boot = v["boot"].as_str().unwrap_or("").to_string();
@@ -1051,6 +1100,7 @@ pub fn read_segment(seq: u64, bytes: &[u8], log: &mut Log) -> Result<(), String>
                     id: p["id"].as_u64().unwrap_or(0) as u32,
                     wallet: p["wallet"].as_str().map(str::to_string),
                     guest: p["guest"].as_bool().unwrap_or(false),
+                    agent: p["agent"].as_bool(),
                 };
                 log.rows.push(LogRow {
                     segment: seq,
@@ -1193,10 +1243,12 @@ mod tests {
                 actor: Party {
                     id: 259,
                     who: Who::Wallet(key("0x00112233445566778899aabbccddeeff00112233")),
+                    declared: Declared::Agent,
                 },
                 counterparty: Party {
                     id: 514,
                     who: Who::Guest,
+                    declared: Declared::Unknown,
                 },
             }),
             &mut out,
@@ -1204,8 +1256,8 @@ mod tests {
         assert_eq!(
             out,
             "{\"kind\":\"trust\",\"tick\":123456,\"verb\":\"door\",\"presence\":\"asleep\",\
-             \"actor\":{\"id\":259,\"wallet\":\"0x00112233445566778899aabbccddeeff00112233\"},\
-             \"counterparty\":{\"id\":514,\"guest\":true}}\n"
+             \"actor\":{\"id\":259,\"wallet\":\"0x00112233445566778899aabbccddeeff00112233\",\
+             \"agent\":true},\"counterparty\":{\"id\":514,\"guest\":true}}\n"
         );
         out.clear();
         format_msg(
@@ -1284,6 +1336,7 @@ mod tests {
         assert_eq!(v["shard"]["proto"], 72);
         assert_eq!(v["verbs"][TRUST_DOOR.to_string()], "door");
         assert_eq!(v["presences"][PRESENCE_GONE.to_string()], "gone");
+        assert!(v["agent"].as_str().is_some_and(|d| d.starts_with("true: ")));
         assert_eq!(v["sync_ms"], TRUST_SYNC_MS);
     }
 

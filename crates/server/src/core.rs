@@ -1460,6 +1460,21 @@ impl ShardCore {
             .count()
     }
 
+    /// Whether body `id` joined as a declared agent, for the trust log
+    /// (`trustlog.rs` §Agents). A connected body answers from its
+    /// connection; anyone else from the standings, which keep whether the
+    /// wallet joined as an agent this wipe. `None` when neither can say,
+    /// never a guess. Allocates nothing: it runs in the trust drain.
+    pub fn declared_agent(&self, id: u32, wallet: Option<&PlayerKey>) -> Option<bool> {
+        if let Some(slot) =
+            (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
+        {
+            return Some(self.standings_agent[slot]);
+        }
+        let key = core::str::from_utf8(wallet?.as_bytes()).ok()?;
+        self.standings.declared_agent(key)
+    }
+
     /// Occupied spectator seats — the `spectators` gauge (`stats.rs`).
     pub fn spectators(&self) -> usize {
         self.watching.iter().filter(|w| w.is_some()).count()

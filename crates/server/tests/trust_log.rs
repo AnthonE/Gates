@@ -11,8 +11,8 @@ use server::core::ShardCore;
 use server::stats::ShardStats;
 use server::store::PlayerKey;
 use server::trustlog::{
-    self, read_dir, summarize, Filter, Gap, Limits, Msg, Party, Role, Row, ShardIdent, Tap,
-    TrustLog, Who, WriterStats, TRUST_LOG_FORMAT, TRUST_TAP_RING_CAP,
+    self, read_dir, summarize, Declared, Filter, Gap, Limits, Msg, Party, Role, Row, ShardIdent,
+    Tap, TrustLog, Who, WriterStats, TRUST_LOG_FORMAT, TRUST_TAP_RING_CAP,
 };
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE};
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
@@ -102,7 +102,11 @@ type Seen<'a> = (
 );
 
 fn party(id: u32, who: Who) -> Party {
-    Party { id, who }
+    Party {
+        id,
+        who,
+        declared: Declared::Unknown,
+    }
 }
 
 fn row(tick: u64, actor: u32, counterparty: u32) -> Msg {
@@ -325,6 +329,8 @@ fn a_shard_tick_logs_trust_rows_with_their_wallets() {
         .connect_as(0, owner, Some(key(OWNER_WALLET)), None)
         .is_some());
     assert!(core.connect_as(2, guest, None, None).is_some());
+    // The guest is a declared agent (`HELLO_AGENT`); the others said nothing.
+    core.note_agent(2, true);
     tick(&mut core, &stats);
     let cont = stand_a_box(&mut core, &stats, &haven, 0, owner, at);
     stand(&mut core, &haven, guest, at);
@@ -411,6 +417,23 @@ fn a_shard_tick_logs_trust_rows_with_their_wallets() {
         ],
         "the log must hold every trust row the shard's ticks minted, in order, \
          with each party's wallet or guest mark"
+    );
+    // Who said they were an agent: the guest did, the outsider and the owner
+    // joined and said nothing, and the owner asleep in the last row is a body
+    // no connection vouches for, with no standings row yet: not known.
+    let declared: Vec<(Option<bool>, Option<bool>)> = l
+        .rows
+        .iter()
+        .map(|r| (r.actor.agent, r.counterparty.agent))
+        .collect();
+    assert_eq!(
+        declared,
+        vec![
+            (Some(false), Some(false)),
+            (Some(true), Some(false)),
+            (Some(false), None)
+        ],
+        "each party is a declared agent, declared nothing, or not known, never guessed"
     );
     assert_eq!(ShardStats::get(&stats.trust_rows), 3);
     assert_eq!(ShardStats::get(&stats.trust_ring_drops), 0);

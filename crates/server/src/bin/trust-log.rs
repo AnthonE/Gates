@@ -138,10 +138,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn who(p: &LogParty) -> String {
-    match (&p.wallet, p.guest) {
+    let base = match (&p.wallet, p.guest) {
         (Some(w), _) => format!("{} {w}", p.id),
         (None, true) => format!("{} guest", p.id),
         (None, false) => format!("{} unresolved", p.id),
+    };
+    if p.agent == Some(true) {
+        base + " (agent)"
+    } else {
+        base
     }
 }
 
@@ -157,8 +162,7 @@ fn row_line(r: &LogRow) -> String {
 }
 
 fn row_json(r: &LogRow) -> String {
-    let party =
-        |p: &LogParty| serde_json::json!({ "id": p.id, "wallet": p.wallet, "guest": p.guest });
+    let party = |p: &LogParty| serde_json::json!({ "id": p.id, "wallet": p.wallet, "guest": p.guest, "agent": p.agent });
     serde_json::json!({
         "segment": r.segment,
         "boot": r.boot,

@@ -34,7 +34,9 @@
 # --max-requests-hour/-day (a ceiling, not a target). --think-ms spaces them.
 #
 # Every decision is a line in /var/lib/gates-buddy/%i/journal.jsonl, which is
-# what `ops/gates-clips@.service` cuts his short videos from.
+# what `ops/gates-clips@.service` cuts his short videos from. What he carries
+# across runs and wipes (notes, his lessons, how he died) is memory.json
+# beside it; `ops/gates-cycles.service` files both by wipe.
 
 [Unit]
 Description=Gates buddy %i on game.elopros.com:61234
@@ -52,6 +54,7 @@ WorkingDirectory=/home/master/gates-jev
 EnvironmentFile=/etc/gates-buddy/%i.env
 StateDirectory=gates-buddy/%i
 Environment="GATES_JOURNAL=/var/lib/gates-buddy/%i/journal.jsonl"
+Environment="GATES_MEMORY=/var/lib/gates-buddy/%i/memory.json"
 Environment="GATES_PERSONA=You are Doctor Wood: a cheerful doctor carved out of oak, head mirror on, a little sprout growing from your crown. You patch your friend up, keep them fed and fight beside them. Warm, loyal, a bit punny about wood and trees, brave, never mean. Short lines."
 # A run is at most a day (`--seconds`); systemd starts the next.
 ExecStart=/home/master/gates-jev/jev-bot --server game.elopros.com:61234 --agent-key /home/master/gates-jev/%i.key --agent-name "Doctor Wood" --friend ${FRIEND} --seconds 86400 --think-ms 4000 --timeout-ms 20000 --max-requests-hour 400 --max-requests-day 3000 --external /home/master/gates-jev/venv/bin/python /home/master/gates-jev/claude_agent.py

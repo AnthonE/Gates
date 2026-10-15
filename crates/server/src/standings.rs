@@ -1041,6 +1041,12 @@ impl Standings {
     /// eligible for a purse moves the boards, and so does the first minute
     /// as a declared agent: it changes who may be paid and what
     /// `/standings.json` says of the row.
+    /// Whether `key` joined as a declared agent this wipe; `None` with no
+    /// row yet. The trust log's answer for a body that is not connected.
+    pub fn declared_agent(&self, key: &str) -> Option<bool> {
+        self.rows.get(key).map(|r| r.agent)
+    }
+
     pub fn minute(&mut self, key: &str, label: &str, agent: bool) {
         let min = self.prizes.min_minutes;
         let armed = self.prizes.armed();
