@@ -49,6 +49,8 @@ pub mod external;
 /// `jev-bot --set-face`: an agent signs its own name and picture.
 pub mod face_set;
 pub mod faces;
+/// Skins the shard gave away (the alpha's Founder set), and who took them.
+pub mod gifts;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
 pub mod jev;
@@ -57,6 +59,7 @@ pub mod mcp;
 /// The agent's goals, observation summary and decision worker (`JEV.md`).
 pub mod mind;
 pub mod net;
+pub mod online;
 /// Per-connection pace on the action lane: no one acts faster than a person.
 pub mod pace;
 pub mod population;

@@ -3335,6 +3335,9 @@ fn sim_thread(
         wipe.number(),
     );
     core.standings.exits = exits;
+    // The skins this shard gave away, beside the hall: the wipe keeps both.
+    core.gifts = crate::gifts::Gifts::open(standings_base.as_deref());
+    core.online = crate::online::Online::open(standings_base.as_deref());
     core.motd = motd.iter().filter_map(|l| crate::wipe::chat(l)).collect();
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
@@ -3614,6 +3617,7 @@ fn sim_thread(
             core.standings_minute();
             core.standings_recount();
             core.standings.rebuild();
+            core.publish_online();
         }
         // Tick + publish. `Ops` is the tick's side channels (admin v0) —
         // the anomaly log, the kick ring and its answers, `/save`'s flag.

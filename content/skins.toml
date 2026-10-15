@@ -71,3 +71,25 @@ name = "Moss Tunic"
 covers = "item.armor_burlap_body"
 tint = [124, 152, 92]
 season = "launch"
+
+# ── The alpha's gift ─────────────────────────────────────────────────────────
+# Never sold: no coin or price, so they stay off the store. THE OUTFITTER at
+# THE GATE hands every row of season "founder" to a signed-in wallet that asks
+# (`content/arc.toml`'s gift topic); the shard keeps who took them in its
+# `.gifts` file (`server/src/gifts.rs`), which a wipe leaves alone.
+
+[[skin]]
+id = "skin.bat_founder"
+catalog = 7
+name = "Founder's Bat"
+covers = "item.bat"
+tint = [92, 112, 196]
+season = "founder"
+
+[[skin]]
+id = "skin.hatchet_stone_founder"
+catalog = 8
+name = "Founder's Hatchet"
+covers = "item.hatchet_stone"
+tint = [84, 104, 204]
+season = "founder"

@@ -416,6 +416,9 @@ pub struct ClientNetState {
     /// A set the platform reported for this connection that has not yet
     /// found room in the command queue (`ShardCore::skins_owned`).
     pub skins_pending: Option<sim_core::skin::SkinSet>,
+    /// The platform's last answer for this connection, kept so a gift
+    /// handed out later is added to it rather than replacing it.
+    pub skins_platform: sim_core::skin::SkinSet,
     /// The wet/cold readout as last sent, `(wet %, cold %, hurting)`.
     /// `None` owes the client the reading.
     pub last_expo: Option<(u8, u8, bool)>,
@@ -528,6 +531,7 @@ impl ClientNetState {
             agents_owed: TAGS_ALL,
             worn_owed: TAGS_ALL,
             skins_pending: None,
+            skins_platform: sim_core::skin::SkinSet::EMPTY,
             last_expo: None,
             last_hostile: None,
             last_gate_spawn: None,

@@ -24,7 +24,7 @@
 
 use bevy::mesh::VertexAttributeValues;
 use client::render::heldgen;
-use client::ui::hold::{HeldSrc, HELD_MODELS};
+use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 use client::ui::icons::stem;
 
 fn asset_path(rel: &str) -> std::path::PathBuf {
@@ -39,11 +39,16 @@ fn glb_json(path: &std::path::Path) -> serde_json::Value {
 }
 
 /// The `.glb` rows, which are the ones with a file to hold to.
+/// Every `.glb` a hand can hold: the rows' own, and the skins that bring
+/// a model of their own (`hold::SKIN_MODELS`).
 fn glb_rows() -> impl Iterator<Item = (&'static str, &'static str)> {
-    HELD_MODELS.iter().filter_map(|m| match m.src {
-        HeldSrc::Glb(path) => Some((m.key, path)),
-        HeldSrc::Gen(_) => None,
-    })
+    HELD_MODELS
+        .iter()
+        .filter_map(|m| match m.src {
+            HeldSrc::Glb(path) => Some((m.key, path)),
+            HeldSrc::Gen(_) => None,
+        })
+        .chain(SKIN_MODELS.iter().map(|s| (s.key, s.path)))
 }
 
 #[test]
@@ -52,7 +57,7 @@ fn every_held_model_ships() {
         assert!(
             asset_path(rel).exists(),
             "{key} declares {rel} and it is not in the tree — the item would \
-             draw the generic stand-in tool forever"
+             draw an empty hand forever"
         );
     }
 }
@@ -527,8 +532,19 @@ fn the_fist_closes_on_the_model_and_not_on_air() {
 fn the_bows_baked_string_comes_out() {
     let row = client::render::bow::bow_row().expect("the hunting bow has a row");
     let def = &HELD_MODELS[row];
-    let (pos, idx) = row_tris(def);
-    let (keep, lo, hi) = client::render::bow::strip_string(&pos, &idx)
+    // The plain bow, and every bow skin with a model of its own: each one's
+    // first-person copy draws a live string (`bow::FpBow`).
+    let skins = SKIN_MODELS
+        .iter()
+        .filter(|s| s.key == def.key)
+        .map(|s| glb_tris(&asset_path(s.path)));
+    for (pos, idx) in std::iter::once(row_tris(def)).chain(skins) {
+        bow_string_comes_out(def, &pos, &idx);
+    }
+}
+
+fn bow_string_comes_out(def: &client::ui::hold::HeldModelDef, pos: &[[f32; 3]], idx: &[u32]) {
+    let (keep, lo, hi) = client::render::bow::strip_string(pos, idx)
         .expect("found no string in the bow: the first-person bow would draw two");
     let taken = (idx.len() - keep.len()) / 3;
     assert!(
@@ -549,4 +565,73 @@ fn the_bows_baked_string_comes_out() {
         y0 < 0.01 * h && y1 > 0.99 * h,
         "the bow without its string spans {y0}..{y1} of {h} m: a tip went with it"
     );
+}
+
+/// A skin with its own model is held in its row's pose, so it must be its
+/// row's height with the grip on the model, and it must be the skin
+/// `content/skins.toml` says covers that row's item.
+#[test]
+fn every_skin_model_fits_its_row() {
+    let toml = std::fs::read_to_string("../../content/skins.toml").expect("content/skins.toml");
+    let items = std::fs::read_to_string("../../content/items.toml").expect("content/items.toml");
+    // `catalog = N` and `covers = "item.x"` per `[[skin]]`, by hand for
+    // `every_model_answers_to_an_item_that_exists`'s reason.
+    let field = |block: &str, key: &str| -> Option<String> {
+        block
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key)?.trim().strip_prefix('='))
+            .map(|v| v.trim().trim_matches('"').to_string())
+    };
+    let rows: Vec<(u16, String)> = toml
+        .split("[[skin]]")
+        .skip(1)
+        .filter_map(|b| Some((field(b, "catalog")?.parse().ok()?, field(b, "covers")?)))
+        .collect();
+    let name_of = |id: &str| -> Option<String> {
+        items
+            .split("[[item]]")
+            .find(|b| field(b, "id").as_deref() == Some(id))
+            .and_then(|b| field(b, "name"))
+            .map(|n| stem(&n))
+    };
+    for s in &SKIN_MODELS {
+        let covers = rows
+            .iter()
+            .find(|(c, _)| *c == s.catalog)
+            .map(|(_, covers)| covers.clone())
+            .unwrap_or_else(|| panic!("{}: no skin has catalog {}", s.path, s.catalog));
+        assert_eq!(
+            name_of(&covers).as_deref(),
+            Some(s.key),
+            "{}: skin {} covers {covers}, which is not the {} row",
+            s.path,
+            s.catalog,
+            s.key
+        );
+        let m = HELD_MODELS
+            .iter()
+            .find(|m| m.key == s.key)
+            .unwrap_or_else(|| panic!("{}: no row {}", s.path, s.key));
+        let (pos, idx) = glb_tris(&asset_path(s.path));
+        let (lo, hi) = pos
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
+        let err = (hi - lo - m.height_m).abs() / m.height_m;
+        assert!(
+            err < 0.02 && lo.abs() < 0.01,
+            "{} stands {lo:.3}..{hi:.3} and its row is {:.3} tall from 0",
+            s.path,
+            m.height_m
+        );
+        let grip = m.height_m * m.grip_frac;
+        let band = FIST_HALF_M / m.scale;
+        let (xlo, xhi, zlo, zhi) = slab_extent(&pos, &idx, grip - band, grip + band)
+            .unwrap_or_else(|| panic!("{}: nothing at the grip height", s.path));
+        assert!(
+            xlo <= 0.0 && xhi >= 0.0 && zlo <= 0.0 && zhi >= 0.0,
+            "{} is off the fist at the grip: x [{xlo:+.3}, {xhi:+.3}] z [{zlo:+.3}, {zhi:+.3}]. \
+             `ci/stand_grip.py` it.",
+            s.path
+        );
+    }
 }

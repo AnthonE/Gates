@@ -30,7 +30,7 @@ use crate::net::PathMeter;
 /// is not a gate").
 pub const TOAST_SECS: f32 = 3.0;
 
-/// How many announce lines are on screen at once, newest at the top.
+/// How many announce lines are on screen at once, newest at the bottom.
 ///
 /// **The cap is the point, not the count.** One frame can produce a refusal,
 /// a kill, two gathers and two spills; the sink used to be one `String` and
@@ -43,41 +43,43 @@ pub const TOAST_SECS: f32 = 3.0;
 /// would be a queue that hides the thing that just happened. [`Toast::push`]
 /// is where the rule lives.
 ///
-/// Four because four rows fit between the prompt and the readout at the
-/// pitch below without reaching the crosshair — a sentence that was prose
-/// until 2026-08-14 and is now three assertions in
-/// `the_stack_hangs_between_the_prompt_and_the_hotbar`. Knob:
-/// `DECISIONS.md` §open, client cosmetics (declared there, so
-/// `ci/knob_registry.mjs` pins it).
+/// Four rows stack up from just above the hotbar and stay well under the
+/// prompt (`the_stack_sits_on_the_hotbar_under_the_prompt`).
 ///
 /// **It multiplies with [`TOAST_ROW_DIM`]**, which is why raising it is not
 /// free: at 8 the deepest row draws at alpha zero and the cap would hold a
 /// line nothing can show (`every_row_the_cap_holds_can_be_seen`).
 pub const TOAST_LINES: usize = 4;
 
-/// Where the newest announce line sits, percent of screen height, and the
-/// gap to the next one. Row 0 keeps the single toast's own position, so
-/// nothing moved for the one-line case that was all this could ever show.
-/// Cosmetic (`DECISIONS.md` §open, client cosmetics).
-const TOAST_TOP_PCT: f32 = 58.0;
-const TOAST_PITCH_PCT: f32 = 2.8;
+/// Where the newest announce line sits, px off the bottom, and the step up
+/// to the next one. Bottom centre over the hotbar, where Rust puts its game
+/// tips: the stack used to hang just under the crosshair (58% down), right
+/// in the middle of the view. Px off the BOTTOM like the hotbar it sits on,
+/// so the two keep their gap at any window size. Clears the ammo count
+/// (`HOTBAR_BOTTOM_PX + HOTBAR_CELL_PX + 8` plus its 22 px line).
+const TOAST_BOTTOM_PX: f32 = HOTBAR_BOTTOM_PX + HOTBAR_CELL_PX + 38.0;
+const TOAST_PITCH_PX: f32 = 20.0;
 
-/// How much dimmer each row is than the one above it. The stack has to read
+/// Where the stack's top ends, readout included, px off the bottom: what
+/// a centred line that must not sit on the toasts stands above.
+pub const ANNOUNCE_TOP_PX: f32 = TOAST_BOTTOM_PX + (TOAST_LINES as f32 + 1.0) * TOAST_PITCH_PX;
+
+/// Where the keypad and the hearth panel stand, px off the bottom: on the
+/// hotbar, which is where the announce stack lives, so the stack climbs
+/// over them while one is open ([`lift_announce`]).
+const OVERLAY_BOTTOM_PX: f32 = 76.0;
+
+/// How much dimmer each row is than the newer one below it. The stack has to read
 /// as a stack — without it four equal lines are a paragraph, and the eye has
 /// no reason to start at the new one. Cosmetic (as above).
 const TOAST_ROW_DIM: f32 = 0.16;
 
-/// The announce stack's own type size, px. Named rather than typed at the
-/// spawn because [`toast_min_window_height_px`] divides by its line box, and
-/// a font size that lived only at the spawn site would be a number the
-/// geometry could not see.
+/// The announce stack's own type size, px. Named because the geometry tests
+/// measure its line box.
 const TOAST_FONT_PX: f32 = 14.0;
 
-/// The centre prompt: where it sits and how big it is. The announce stack
-/// hangs below it, so it is one of the two ends of the "four rows fit
-/// between the prompt and the readout" claim in [`TOAST_LINES`]' doc — and
-/// that claim was prose until [`the_stack_hangs_between_the_prompt_and_the_
-/// hotbar`] made it arithmetic.
+/// The centre prompt: where it sits and how big it is. The announce stack's
+/// top must stay under it.
 const PROMPT_TOP_PCT: f32 = 54.0;
 const PROMPT_FONT_PX: f32 = 15.0;
 
@@ -99,10 +101,7 @@ const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
 /// readout has to clear them, and a clearance is arithmetic between two
 /// things that must both be visible to it.
 ///
-/// **They are px off the BOTTOM and the stack is percent off the TOP**, which
-/// is the whole reason [`toast_min_window_height_px`] exists: the gap between
-/// the two shrinks as the window does, and nothing in this file could see
-/// that until both ends had names.
+/// They are px off the BOTTOM, and so is the announce stack that sits on them.
 const HOTBAR_BOTTOM_PX: f32 = 18.0;
 const HOTBAR_CELL_PX: f32 = 46.0;
 /// A hotbar slot at rest, and its edge.
@@ -313,43 +312,50 @@ pub fn hurt_arc(
 }
 
 // ---- the announce stack's geometry --------------------------------------
-//
-// **Four knobs that are coupled, and nothing checked the coupling.**
-// `TOAST_LINES`, `TOAST_TOP_PCT`, `TOAST_PITCH_PCT` and `TOAST_ROW_DIM` were
-// each defensible alone and were only ever read at the two spawn sites, which
-// computed the same expression twice and agreed by luck. Three passes landed
-// announce work on top of that and `NOW.md` §0tq ended every one of them on
-// the same sentence: *row pitch, the per-row dim and the readout's new home
-// are all unlooked-at arithmetic.*
-//
-// This block is the looking. It is arithmetic about a frame — the shape
-// `CLAUDE.md` explicitly allows ("what may be gated about a frame is
-// arithmetic … in Rust, the shape of `crates/client/tests/tree.rs`") and not
-// a pixel statistic, which that same list forbids for the reason a beige
-// smear once scored 36 of 36.
 
-/// Where announce row `row` sits, percent of screen height. Row 0 is the
-/// newest and keeps the single toast's own position.
-///
-/// A function rather than the expression it replaces, because [`setup`]
-/// computed it in two places — once per row and once for the readout — and
-/// two copies of one rule is one rule and one bug waiting.
-fn toast_row_top_pct(row: usize) -> f32 {
-    TOAST_TOP_PCT + row as f32 * TOAST_PITCH_PCT
+/// Where announce row `row` sits, px off the bottom. Row 0 is the newest and
+/// sits lowest; older rows climb.
+fn toast_row_bottom_px(row: usize) -> f32 {
+    TOAST_BOTTOM_PX + row as f32 * TOAST_PITCH_PX
 }
 
-/// Where the pinned readout sits: one pitch below the last row the stack can
-/// hold, whether or not that row is live.
-///
-/// **Derived from [`TOAST_LINES`], never typed.** The readout is the thing a
-/// deeper stack would land on top of, so a cap that grew and a readout that
-/// did not is the exact drift this expression exists to make impossible.
-fn readout_top_pct() -> f32 {
-    toast_row_top_pct(TOAST_LINES)
+/// Where the pinned readout sits: one pitch above the highest row the stack
+/// can hold, whether or not that row is live, so a line arriving never
+/// moves the number being watched.
+fn readout_bottom_px() -> f32 {
+    toast_row_bottom_px(TOAST_LINES)
+}
+
+/// Lift the announce stack over the keypad or the hearth panel while one is
+/// open, so a "wrong code" or a stock line is not drawn behind the panel it
+/// is about. Layout lands a frame late, so the lift does too.
+#[allow(clippy::type_complexity)]
+pub fn lift_announce(
+    over: Query<&ComputedNode, Or<(With<PadRoot>, With<HearthRoot>)>>,
+    mut rows: Query<(&ToastLine, &mut Node), Without<ReadoutLine>>,
+    mut readout: Query<&mut Node, (With<ReadoutLine>, Without<ToastLine>)>,
+) {
+    let top = over
+        .iter()
+        .map(|c| OVERLAY_BOTTOM_PX + c.size().y * c.inverse_scale_factor() + 8.0)
+        .fold(0.0, f32::max);
+    let lift = (top - toast_row_bottom_px(0)).max(0.0);
+    for (row, mut node) in &mut rows {
+        let want = Val::Px(toast_row_bottom_px(row.0) + lift);
+        if node.bottom != want {
+            node.bottom = want;
+        }
+    }
+    for mut node in &mut readout {
+        let want = Val::Px(readout_bottom_px() + lift);
+        if node.bottom != want {
+            node.bottom = want;
+        }
+    }
 }
 
 /// What row `row`'s alpha is scaled by — 1.0 at the newest, one
-/// [`TOAST_ROW_DIM`] step per row down. Clamped at zero, which is also the
+/// [`TOAST_ROW_DIM`] step per row up. Clamped at zero, which is also the
 /// value [`every_row_the_cap_holds_can_be_seen`] refuses to reach.
 fn toast_row_dim(row: usize) -> f32 {
     (1.0 - TOAST_ROW_DIM * row as f32).max(0.0)
@@ -374,23 +380,6 @@ fn line_box_px(font_size: f32) -> f32 {
         bevy::text::LineHeight::Px(px) => px,
         bevy::text::LineHeight::RelativeToFont(scale) => scale * font_size,
     }
-}
-
-/// The shortest window in which the announce stack does not overlap itself.
-///
-/// **The mixed-unit seam, and the one number in this file nobody had.** The
-/// pitch is a percent of window height and the type size is px, so the gap
-/// between two rows shrinks with the window while the text in them does not.
-/// Above this height the rows are separated; below it row 1's box climbs into
-/// row 0's and four lines become a smear — the same failure the single-slot
-/// sink had, arriving from the other direction.
-///
-/// At the shipped knobs this is 600 px, against the 720 the client opens at,
-/// so the margin is real but it is not large: a `TOAST_PITCH_PCT` trimmed to
-/// 2.3 would put the threshold above the default window.
-#[cfg(test)]
-fn toast_min_window_height_px() -> f32 {
-    line_box_px(TOAST_FONT_PX) / (TOAST_PITCH_PCT / 100.0)
 }
 
 /// A vitals bar, px. The reference's are ~112 × 19 in a 1200-wide frame;
@@ -703,7 +692,7 @@ impl Toast {
     /// alarm by making it the oldest survivor, so the bottom row is exactly
     /// where a rescued refusal ends up. A suffix hides nothing, needs no
     /// fifth row (there is none — the readout sits at
-    /// `TOAST_TOP_PCT + TOAST_LINES * TOAST_PITCH_PCT`), and does not move
+    /// [`readout_bottom_px`]), and does not move
     /// anything the eye is already on.
     pub fn row_parts(&self, row: usize) -> Option<(&Say, &str)> {
         let say = self.row(row)?;
@@ -1994,9 +1983,9 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             }
         });
 
-    // The centre prompt and the toast beneath it. Both sit BELOW the
-    // crosshair rather than on it: text over the aim point is text in the way
-    // of the thing it is describing.
+    // The centre prompt sits just BELOW the crosshair rather than on it: text
+    // over the aim point is text in the way of the thing it is describing.
+    // The toasts go further down, over the hotbar.
     commands.spawn((
         super::WorldEntity,
         PromptLine,
@@ -2024,7 +2013,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             ToastLine(row),
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Percent(toast_row_top_pct(row)),
+                bottom: Val::Px(toast_row_bottom_px(row)),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -2038,8 +2027,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         ));
     }
 
-    // The pinned readout, under the whole stack (cosmetics as the toast's:
-    // same family, one step down the screen). Bold where the toast is not,
+    // The pinned readout, over the whole stack (cosmetics as the toast's:
+    // same family, one step up the screen). Bold where the toast is not,
     // because it is a number being watched rather than a sentence being
     // noticed.
     commands.spawn((
@@ -2047,7 +2036,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         ReadoutLine,
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Percent(readout_top_pct()),
+            bottom: Val::Px(readout_bottom_px()),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -3321,7 +3310,7 @@ pub fn pad_overlay(
             PadRoot,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(76.0),
+                bottom: Val::Px(OVERLAY_BOTTOM_PX),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -3437,7 +3426,7 @@ pub fn hearth_overlay(
             HearthRoot,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(76.0),
+                bottom: Val::Px(OVERLAY_BOTTOM_PX),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -5228,7 +5217,7 @@ mod tests {
     //
     // What these gate is the part of "looking" that a person is BAD at and a
     // machine is good at: whether four boxes of a known size, placed at known
-    // percentages of a window of a known height, land on top of each other or
+    // offsets in a window of a known height, land on top of each other or
     // on top of something else. What they deliberately do not gate is whether
     // the result reads well, which is a person's job and which `CLAUDE.md`
     // forbids automating for a reason it paid for once already.
@@ -5255,22 +5244,16 @@ mod tests {
             .fold(f32::MIN, f32::max)
     }
 
-    /// **[`TOAST_LINES`]' doc claim, made arithmetic.** It says four rows fit
-    /// *between the prompt and the readout* *without reaching the crosshair*,
-    /// and until now that was three assertions in prose with nothing behind
-    /// them. Every box below is `top` + its line box, in px, at the window
-    /// the client opens at.
-    ///
-    /// Red if any knob is nudged into its neighbour: `TOAST_TOP_PCT` down to
-    /// 55 puts row 0 inside the prompt, `PROMPT_TOP_PCT` up to 51 puts the
-    /// prompt on the crosshair.
+    /// The stack sits on the hotbar and stays under the prompt. Every box
+    /// is measured in px off the bottom at the window the client opens at.
     #[test]
-    fn the_stack_hangs_between_the_prompt_and_the_hotbar() {
+    fn the_stack_sits_on_the_hotbar_under_the_prompt() {
         let h = opening_height_px();
         let pct = |p: f32| p / 100.0 * h;
+        let toast_box = line_box_px(TOAST_FONT_PX);
 
-        // The crosshair is the top end, and text over the aim point is text
-        // in the way of the thing it describes.
+        // The prompt stays off the crosshair: text over the aim point is
+        // text in the way of the thing it describes.
         let crosshair_bottom = pct(CROSSHAIR_CENTRE_PCT) + crosshair_reach_px();
         let prompt_top = pct(PROMPT_TOP_PCT);
         assert!(
@@ -5278,73 +5261,42 @@ mod tests {
             "the prompt sits on the crosshair: prompt {prompt_top} vs tick {crosshair_bottom}"
         );
 
-        // The prompt is the stack's own ceiling.
-        let prompt_bottom = prompt_top + line_box_px(PROMPT_FONT_PX);
-        let row0_top = pct(toast_row_top_pct(0));
+        // The newest row clears the hotbar and the ammo count beside it.
+        let ammo_top = HOTBAR_BOTTOM_PX + HOTBAR_CELL_PX + 8.0 + line_box_px(22.0);
         assert!(
-            row0_top >= prompt_bottom,
-            "row 0 overlaps the prompt: row {row0_top} vs prompt bottom {prompt_bottom}"
+            toast_row_bottom_px(0) >= ammo_top,
+            "row 0 sits on the hotbar's ammo count: {} vs {ammo_top}",
+            toast_row_bottom_px(0)
         );
 
-        // The readout is the floor, and it must clear the last row the cap
-        // can hold rather than the last row that happens to be live.
-        let last_row_bottom = pct(toast_row_top_pct(TOAST_LINES - 1)) + line_box_px(TOAST_FONT_PX);
-        let readout_top = pct(readout_top_pct());
+        // Rows climb, one whole line box at a time.
         assert!(
-            readout_top >= last_row_bottom,
-            "the readout overlaps the deepest row: {readout_top} vs {last_row_bottom}"
+            TOAST_PITCH_PX >= toast_box,
+            "a row's box ({toast_box} px) is taller than the step to the next ({TOAST_PITCH_PX} px)"
         );
-
-        // And the whole thing clears the hotbar, which is the one neighbour
-        // measured from the OTHER edge of the screen.
-        let readout_bottom = readout_top + line_box_px(TOAST_FONT_PX);
-        let hotbar_top = h - HOTBAR_BOTTOM_PX - HOTBAR_CELL_PX;
-        assert!(
-            readout_bottom < hotbar_top,
-            "the readout is behind the hotbar: {readout_bottom} vs {hotbar_top}"
-        );
-    }
-
-    /// **The mixed-unit seam: pitch is a percent, type is px.** So the gap
-    /// between two rows shrinks with the window and the text in them does
-    /// not, and below some height four lines are a smear — the single-slot
-    /// defect arriving from the other direction.
-    ///
-    /// Nobody had computed that height. It is 600 px against the 720 the
-    /// client opens at, so the shipped margin is 120 px and this test is what
-    /// notices when a knob spends it.
-    ///
-    /// Red at `TOAST_PITCH_PCT = 2.3`, which is a plausible tightening and
-    /// would put the threshold at 730 — above the window the probe photographs
-    /// in.
-    #[test]
-    fn the_rows_do_not_overlap_at_the_window_the_client_opens_at() {
-        let min = toast_min_window_height_px();
-        assert!(
-            min <= opening_height_px(),
-            "the announce rows overlap at the window the client opens at: \
-             needs {min} px, opens at {} px",
-            opening_height_px()
-        );
-        // The threshold is the pitch's own definition, so state it both ways
-        // — a pitch that no longer separates the boxes is the same bug as a
-        // window that is too short.
-        let pitch_px = TOAST_PITCH_PCT / 100.0 * opening_height_px();
-        assert!(
-            pitch_px >= line_box_px(TOAST_FONT_PX),
-            "a row's box is taller than the step to the next one: \
-             box {} px, pitch {pitch_px} px",
-            line_box_px(TOAST_FONT_PX)
-        );
-        // Rows march one way. A negative pitch would satisfy the two checks
-        // above on absolute value alone.
         for row in 1..TOAST_LINES {
             assert!(
-                toast_row_top_pct(row) > toast_row_top_pct(row - 1),
-                "row {row} is not below row {}",
+                toast_row_bottom_px(row) > toast_row_bottom_px(row - 1),
+                "row {row} is not above row {}",
                 row - 1
             );
         }
+
+        // The readout clears the highest row the cap can hold.
+        let last_row_top = toast_row_bottom_px(TOAST_LINES - 1) + toast_box;
+        assert!(
+            readout_bottom_px() >= last_row_top,
+            "the readout overlaps the highest row: {} vs {last_row_top}",
+            readout_bottom_px()
+        );
+
+        // And the whole stack stays under the prompt.
+        let stack_top = h - (readout_bottom_px() + toast_box);
+        let prompt_bottom = prompt_top + line_box_px(PROMPT_FONT_PX);
+        assert!(
+            stack_top > prompt_bottom,
+            "the stack climbs into the prompt: stack top {stack_top} vs prompt bottom {prompt_bottom}"
+        );
     }
 
     /// **Every row the cap holds must be a row something can be seen in.**
@@ -5373,47 +5325,28 @@ mod tests {
         for row in 1..TOAST_LINES {
             assert!(
                 toast_row_dim(row) < toast_row_dim(row - 1),
-                "row {row} is not dimmer than the one above it"
+                "row {row} is not dimmer than the newer row before it"
             );
         }
     }
 
-    /// **One rule, one place — asserted on the spawn, not on the function.**
-    /// The two geometry calls used to be the same expression typed twice, and
-    /// a test that calls `toast_row_top_pct` cannot tell whether [`setup`]
-    /// still does. This is a grep, in the shape `tests/ui.rs` §F and
-    /// `tests/sound.rs` already use for the same reason: the defect is a call
-    /// site rather than a value, so the value cannot detect it.
-    ///
-    /// Red the moment either spawn goes back to computing its own top.
+    /// The spawns read the geometry rather than computing their own spot.
     #[test]
     fn the_spawn_reads_the_geometry_rather_than_recomputing_it() {
         let src = include_str!("hud.rs");
-        // A spawn writes a percent `Val`; the geometry functions return a
-        // bare `f32` and never mention `Val`. So the two appearing on one
-        // line is exactly the shape being forbidden — a placement computing
-        // its own answer — and it cannot match the functions themselves.
-        //
-        // Both needles are assembled at runtime so this test does not match
-        // its OWN source, which is the first thing it did.
-        let placed = ["Val::", "Percent("].concat();
-        let raw_top = ["TOAST_", "TOP_PCT"].concat();
+        // Needles assembled at runtime so this test does not match itself.
+        let placed = ["Val::", "Px("].concat();
+        let raw = ["TOAST_", "BOTTOM_PX"].concat();
         for (n, line) in src.lines().enumerate() {
             assert!(
-                !(line.contains(&placed) && line.contains(&raw_top)),
-                "hud.rs:{} is computing its own row top again — call \
-                 toast_row_top_pct/readout_top_pct instead:\n  {}",
+                !(line.contains(&placed) && line.contains(&raw)),
+                "hud.rs:{} computes its own row spot — call \
+                 toast_row_bottom_px/readout_bottom_px instead:\n  {}",
                 n + 1,
                 line.trim()
             );
         }
-        assert!(
-            src.contains("Val::Percent(toast_row_top_pct(row))"),
-            "the announce rows no longer take their top from the geometry"
-        );
-        assert!(
-            src.contains("Val::Percent(readout_top_pct())"),
-            "the readout no longer takes its top from the geometry"
-        );
+        assert!(src.contains(&["Val::Px(toast_row_", "bottom_px(row))"].concat()));
+        assert!(src.contains(&["Val::Px(readout_", "bottom_px())"].concat()));
     }
 }
