@@ -473,8 +473,8 @@ fn dry_wind(wind: f32, toward: bevy::math::Vec2) -> client::render::weather::Wea
 }
 
 /// Dust is the sand's and the wind's: a windy dry day over the desert
-/// carries it, and a calm one, a wet one, a rainy one and the temperate
-/// south carry none.
+/// carries it, and a calm one, a rainy one, one just after the rain and
+/// the temperate south carry none.
 #[test]
 fn dust_rides_a_dry_wind_over_the_sand_and_nowhere_else() {
     use bevy::math::Vec2;
@@ -484,34 +484,74 @@ fn dust_rides_a_dry_wind_over_the_sand_and_nowhere_else() {
     let (mx, mz) = MEADOW;
     assert_eq!(aridity(SEED, dx, dz), 1.0, "the desert point is not desert");
     assert_eq!(aridity(SEED, mx, mz), 0.0, "the meadow point is arid");
-    let south = Vec2::new(0.0, -1.0);
+    // Blowing north: off the desert's interior, not in off the sea.
+    let north = Vec2::new(0.0, 1.0);
     // Overcast's wind over the sand: a beige wall a few hundred metres off.
-    let w = dry_wind(0.35, south);
+    let w = dry_wind(0.35, north);
     let d = dust_at(SEED, dx, dz, &w);
     assert!(d > 0.6, "a windy dry desert carries {d}");
     // Clear weather's breeze: a haze, not a wall.
-    let light = dust_at(SEED, dx, dz, &dry_wind(0.2, south));
+    let light = dust_at(SEED, dx, dz, &dry_wind(0.2, north));
     assert!(light > 0.0 && light < 0.4 * d, "a breeze carries {light}");
     // Calm.
     for wind in [0.0, 0.1] {
         assert_eq!(
-            dust_at(SEED, dx, dz, &dry_wind(wind, south)),
+            dust_at(SEED, dx, dz, &dry_wind(wind, north)),
             0.0,
             "calm at {wind}"
         );
     }
-    // Rain lays it, and so does ground the rain left wet.
-    let mut rain = dry_wind(0.4, south);
+    // Rain lays it on its own, the moment it starts.
+    let mut rain = dry_wind(0.4, north);
     rain.rain = 0.35;
-    rain.ground_wet = 0.35;
     assert_eq!(dust_at(SEED, dx, dz, &rain), 0.0, "dust in the rain");
-    let mut wet = dry_wind(0.35, south);
-    wet.ground_wet = 0.3;
-    assert_eq!(dust_at(SEED, dx, dz, &wet), 0.0, "dust off wet sand");
+    // A drizzle thins it.
+    let mut drizzle = dry_wind(0.35, north);
+    drizzle.rain = 0.05;
+    let damp = dust_at(SEED, dx, dz, &drizzle);
+    assert!(damp > 0.0 && damp < 0.8 * d, "a drizzle carries {damp}");
+    // The schedule's rain of the last few minutes keeps the sand down.
+    let mut lately = dry_wind(0.35, north);
+    lately.rain_lately = 0.3;
+    assert_eq!(dust_at(SEED, dx, dz, &lately), 0.0, "dust off wet sand");
+    // This client's own wet ground does not: one who stood through the
+    // shower and one who just joined see one haze.
+    let mut echo = dry_wind(0.35, north);
+    echo.ground_wet = 0.35;
+    assert_eq!(dust_at(SEED, dx, dz, &echo), d, "the local wet moved it");
     // The temperate south, in any wind.
-    for toward in [south, -south, Vec2::X, -Vec2::X] {
+    for toward in [north, -north, Vec2::X, -Vec2::X] {
         assert_eq!(dust_at(SEED, mx, mz, &dry_wind(0.35, toward)), 0.0);
     }
+}
+
+/// The sea lifts no sand, though the desert's band of latitude runs on out
+/// over it: on the north beach a wind in off the water is far cleaner than
+/// one off the dunes, and out at sea a sea wind carries none.
+#[test]
+fn a_sea_wind_carries_no_sand() {
+    use bevy::math::Vec2;
+    use client::render::weather::dust_at;
+    use sim_core::terrain::{aridity, height};
+    let x = DESERT.0;
+    let coast = (3000..4096)
+        .step_by(10)
+        .rev()
+        .map(|z| z as f32)
+        .find(|&z| height(SEED, x, z) > 2.0)
+        .expect("no north coast");
+    let beach = coast - 50.0;
+    assert_eq!(aridity(SEED, x, coast + 600.0), 1.0, "the sea is not arid");
+    let (from_north, from_south) = (Vec2::new(0.0, -1.0), Vec2::new(0.0, 1.0));
+    let off_sea = dust_at(SEED, x, beach, &dry_wind(0.35, from_north));
+    let off_sand = dust_at(SEED, x, beach, &dry_wind(0.35, from_south));
+    assert!(off_sand > 0.6, "a wind off the dunes carries {off_sand}");
+    assert!(
+        off_sea < 0.25 * off_sand,
+        "a sea wind carries {off_sea} against the dunes' {off_sand}"
+    );
+    let at_sea = dust_at(SEED, x, coast + 600.0, &dry_wind(0.35, from_north));
+    assert_eq!(at_sea, 0.0, "dust over the open sea");
 }
 
 /// The air at the eye came from upwind: just short of the desert's edge,
@@ -544,7 +584,7 @@ fn the_dust_is_the_ground_fogs_and_the_skys_alike() {
     use client::render::deck::SkyFogParams;
     use client::render::rig::FAR_M;
     use client::render::sky::{fog_color, fog_color_dust, fog_grey, fog_rgb, ComposeParams};
-    let mut w = dry_wind(0.35, Vec2::new(0.0, -1.0));
+    let mut w = dry_wind(0.35, Vec2::new(0.0, 1.0));
     w.dust = client::render::weather::dust_at(SEED, DESERT.0, DESERT.1, &w);
     assert!(w.dust_part() > 0.0);
     assert_eq!(w.fog_sigma(), w.dust_part(), "dust is not the fog's");

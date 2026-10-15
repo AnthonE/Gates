@@ -802,8 +802,9 @@ impl SkyFog {
         1.0 - (-tau).exp()
     }
 
-    /// The whole extinction per metre — what the ground's fog is greyed by
-    /// ([`fog_color`]), so the sky's band is the same colour.
+    /// The whole extinction per metre — what the ground's fog is greyed and
+    /// tinted by ([`fog_rgb_dust`], `rig::day_night`'s [`fog_color_dust`]),
+    /// so the sky's band is the same colour.
     pub fn sigma(&self) -> f32 {
         (self.far_fog + self.far_rain + self.far_dust) / super::rig::FAR_M
     }

@@ -84,8 +84,12 @@ pub struct WeatherNow {
     /// The last second whose bolt was queued, so a bolt is heard once.
     last_bolt: u64,
     /// How much sand the air carries round the eye, `0..=1` ([`dust_at`]):
-    /// local like the drift, the same for everyone standing there.
+    /// a reading of where the eye stands, the same for everyone there.
     pub dust: f32,
+    /// The most rain of the last [`DUST_DRY_TICKS`], off the shared
+    /// schedule — what the sand dries by. Not [`Self::ground_wet`], which
+    /// is this client's own echo and starts dry on a reload.
+    pub rain_lately: f32,
 }
 
 impl WeatherNow {
@@ -169,43 +173,65 @@ const DUST_SIGMA: f32 = 3.0 / 450.0;
 /// smoothstepped: clear weather's 200‰ is a haze on the far dunes (~20 km
 /// of sight), overcast's 350‰ a beige wall at ~750 m.
 const DUST_WIND: (f32, f32) = (0.12, 0.45);
-/// The aridity where open sand starts to show and where it is all sand
-/// (`terrain::DESERT_MOIST` falls between them on most of the band).
+/// The aridity where open sand starts to show and where it is all sand.
+/// The desert biome (`terrain::DESERT_MOIST`) begins near aridity 0.56 on
+/// ground of average moisture, 0.2 to 0.95 across the moisture field.
 const DUST_ARID: (f32, f32) = (0.25, 0.75);
-/// Rain, or ground still this wet from it, lays the dust: past this there
-/// is none, and it comes back as the sand dries (`ground_wet`'s minutes).
+/// Rain, or rain this heavy within the last [`DUST_DRY_TICKS`], lays the
+/// dust: past this there is none.
 const DUST_DAMP: f32 = 0.15;
+/// How long the sand stays damp after the rain, ticks: 5 min. Read off the
+/// schedule (`WeatherNow::rain_lately`), so a player who just joined sees
+/// the sand as wet as one who stood through the shower.
+pub const DUST_DRY_TICKS: u64 = 5 * 60 * TICK_HZ as u64;
 /// How far upwind the sand is read, metres. The air at the eye came from
 /// there, so the haze spills off the desert's edge downwind and thins
 /// where clean air blows in.
 const DUST_FETCH_M: [f32; 2] = [250.0, 500.0];
+/// Height above the sea over which the shore turns from water, which lifts
+/// no sand, to dry ground, metres.
+const DUST_SHORE_M: f32 = 2.0;
 
 fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
+/// How much of the ground at `(x, z)` is sand a wind can lift, `0..=1`:
+/// its aridity on dry land, none over the sea or a lake (aridity is a band
+/// of latitude and runs on out over the water).
+fn sand_at(seed: u64, x: f32, z: f32) -> f32 {
+    let arid = sim_core::terrain::aridity(seed, x, z);
+    if arid <= 0.0 {
+        // Most of the island: one compare, no height read.
+        return 0.0;
+    }
+    let lo = sim_core::terrain::SEA_LEVEL;
+    arid * smooth(lo, lo + DUST_SHORE_M, sim_core::terrain::height(seed, x, z))
+}
+
 /// How much sand the air at `(x, z)` carries in weather `w`, `0..=1`:
-/// arid ground under and upwind, times a wind to lift it, times dry — none
-/// in rain or on ground still wet from it. Per mille, as the weather is, so
-/// the sky's materials re-upload when the haze moves and not every frame
-/// the eye does.
+/// arid land under and upwind, times a wind to lift it, times dry — none in
+/// rain or for a while after it. Reads only the seed and the weather every
+/// client shares, so two players on one dune see one haze. Per mille, as
+/// the weather is, so the sky's materials re-upload when the haze moves and
+/// not every frame the eye does.
 pub fn dust_at(seed: u64, x: f32, z: f32, w: &WeatherNow) -> f32 {
-    let damp = w.rain.max(w.ground_wet);
+    let damp = w.rain.max(w.rain_lately);
     let dry = (1.0 - damp / DUST_DAMP).max(0.0);
     let windy = smooth(DUST_WIND.0, DUST_WIND.1, w.wind);
     if dry * windy <= 0.0 {
         return 0.0;
     }
     let up = -w.wind_dir;
-    let mut arid = sim_core::terrain::aridity(seed, x, z);
+    let mut sand = sand_at(seed, x, z);
     for f in DUST_FETCH_M {
-        arid += sim_core::terrain::aridity(seed, x + up.x * f, z + up.y * f);
+        sand += sand_at(seed, x + up.x * f, z + up.y * f);
     }
     let sand = smooth(
         DUST_ARID.0,
         DUST_ARID.1,
-        arid / (1 + DUST_FETCH_M.len()) as f32,
+        sand / (1 + DUST_FETCH_M.len()) as f32,
     );
     (sand * windy * dry * 1000.0).round() / 1000.0
 }
@@ -326,7 +352,16 @@ pub fn update(
         c.cover_at(now.sun, super::sky::deck_cover(now.cloud), now.drift)
     });
 
-    // The sand in the air, off the wind and the wet just worked out.
+    // The sand in the air, off the wind and the schedule's recent rain. A
+    // rain fades over minutes and holds for longer, so the window's two
+    // ends bound the rain inside it.
+    now.rain_lately = match wpin.0 {
+        Some(_) => now.rain,
+        None => {
+            let then = weather::now(world.seed, tick.saturating_sub(DUST_DRY_TICKS), &feed.env);
+            now.rain.max(pm(then.rain))
+        }
+    };
     now.dust = dust_at(world.seed, eye.pos.x, eye.pos.z, now);
 
     // Under a roof, or under the sea: what the rain and its sound ask.
