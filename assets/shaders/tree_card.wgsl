@@ -1,16 +1,25 @@
 // The far treeline's card (`render/far_trees.rs`): every tree past the prop
 // rings as one quad, turned to the camera about the vertical here and lit by
-// `StandardMaterial`'s own fragment stage.
+// `StandardMaterial`'s own fragment stage, the atlas read through
+// `alpha_cut` as the prepass reads it.
 //
 // The mesh stores each corner at the tree's base line, lifted by its share of
 // the height; `uv_b.x` is the corner's sideways offset in metres and `uv_b.y`
 // its sideways position in -1..1, which the normal is rounded by.
 #import bevy_pbr::{
     mesh_functions,
-    forward_io::{Vertex, VertexOutput},
+    forward_io::{Vertex, VertexOutput, FragmentOutput},
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
+    pbr_fragment::pbr_input_from_standard_material,
+    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_types::{STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
+    pbr_bindings,
 }
+#ifdef VISIBILITY_RANGE_DITHER
+#import bevy_pbr::pbr_functions::visibility_range_dither
+#endif
+#import "shaders/alpha_cut.wgsl"::{cut_read, cut_uv}
 
 // `far_trees::CardParams`. params: x = prop chunk edge (m), y = 1 on a ring
 // card (its entity is the ring's own tree, so it ignores the mask). window:
@@ -113,5 +122,44 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.visibility_range_dither = mesh_functions::get_visibility_range_dither_level(
         in.instance_index, world_from_local[3]);
 #endif
+    return out;
+}
+
+// `bevy_pbr`'s forward `pbr.wgsl` fragment, but the atlas is read through
+// `alpha_cut` with gradients taken first thing, and the ring card's LOD
+// crossfade cuts after it rather than before: a card whose alpha test
+// disagrees with its prepass's leaves depth with no colour on it — the clear
+// colour, unfogged (`alpha_cut.wgsl` has the whole story).
+@fragment
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+#ifdef VERTEX_UVS
+    let uv = cut_uv(in.uv);
+#else
+    let uv = vec2<f32>(0.0);
+#endif
+    let duv = vec4(dpdx(uv), dpdy(uv));
+
+    var pbr_input = pbr_input_from_standard_material(in, is_front);
+#ifdef VERTEX_UVS
+    if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
+        var c = pbr_bindings::material.base_color;
+#ifdef VERTEX_COLORS
+        c *= in.color;
+#endif
+        pbr_input.material.base_color = c * cut_read(uv, duv);
+    }
+#endif
+#ifdef VISIBILITY_RANGE_DITHER
+    visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+
+    var out: FragmentOutput;
+    if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+        out.color = apply_pbr_lighting(pbr_input);
+    } else {
+        out.color = pbr_input.material.base_color;
+    }
+    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

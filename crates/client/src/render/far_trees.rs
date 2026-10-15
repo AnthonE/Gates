@@ -128,6 +128,16 @@ impl MaterialExtension for TreeCard {
     fn prepass_vertex_shader() -> ShaderRef {
         PREPASS_SHADER.into()
     }
+    // Both fragment stages are `StandardMaterial`'s with the atlas read
+    // through `alpha_cut.wgsl`, so the prepass and the main pass cut the same
+    // pixels: Bevy's two reads did not always agree, and a card one kept and
+    // the other cut left depth with no colour on it — a hole in the fog.
+    fn fragment_shader() -> ShaderRef {
+        SHADER.into()
+    }
+    fn prepass_fragment_shader() -> ShaderRef {
+        PREPASS_SHADER.into()
+    }
     // A card turned to the camera casts a card's shadow toward the sun, which
     // is wrong from every angle but one; the shadow cascades end short of
     // where cards begin anyway.
