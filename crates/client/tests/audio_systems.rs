@@ -90,7 +90,10 @@ fn app() -> App {
         .for_each(drop);
     app.add_systems(
         Update,
-        (impacts, fell, voices, ui_click, ui_hover, fires, asked, pump).chain(),
+        (
+            impacts, fell, voices, ui_click, ui_hover, fires, asked, pump,
+        )
+            .chain(),
     );
     app
 }
@@ -259,7 +262,10 @@ fn a_moved_pointer_ticks_on_a_button_once() {
     // Hovered with no motion: a rebuild, not a hover.
     *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::Hovered;
     let still = frames(&mut app, 1);
-    assert!(starts(&still).is_empty(), "a still pointer ticked: {still:?}");
+    assert!(
+        starts(&still).is_empty(),
+        "a still pointer ticked: {still:?}"
+    );
 
     // Off and back on, moving: one tick.
     *app.world_mut().get_mut::<Interaction>(button).unwrap() = Interaction::None;

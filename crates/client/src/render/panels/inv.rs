@@ -1169,7 +1169,10 @@ fn cell(
         .spawn((
             Button,
             SlotCell { kind, slot },
+            // A slot is silent under the pointer and on the press: what it
+            // says is the item landing (`Cue::ItemMove`, `send_move`).
             super::super::audio::NoHover,
+            super::super::audio::Quiet,
             Node {
                 width: Val::Px(SLOT_PX),
                 height: Val::Px(SLOT_PX),

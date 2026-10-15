@@ -731,19 +731,27 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
             let dhdx = (rows[cur][i + 2] - rows[cur][i]) * inv2s;
             let dhdz = (rows[next][i + 1] - rows[prev][i + 1]) * inv2s;
 
-            let (r, g, b) = if h <= SEA_LEVEL {
-                // Water: one ramp from shelf to floor, and NO hillshade. The
-                // sea bed has relief and drawing it would put a second,
-                // competing terrain inside the shape the eye is trying to read
-                // as the coastline.
+            let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+            // The coastline, anti-aliased: how much of this pixel is land,
+            // from how far its centre stands above the waterline against the
+            // rise across one pixel. A hard `h <= SEA_LEVEL` drew the coast
+            // as a staircase of 4 m squares, and the zoomed map (up to 4×,
+            // `MapView`) blows a staircase up into steps. No extra taps: the
+            // slope is the hillshade's own.
+            let land = ((h - SEA_LEVEL) / (slope * step).max(1e-3) + 0.5).clamp(0.0, 1.0);
+            // Water: one ramp from shelf to floor, and NO hillshade. The sea
+            // bed has relief and drawing it would put a second, competing
+            // terrain inside the shape the eye is trying to read as the
+            // coastline.
+            let water = || {
                 let t = (-h / DEEP_M).clamp(0.0, 1.0);
                 (
                     SEA_SHALLOW[0] + (SEA_DEEP[0] - SEA_SHALLOW[0]) * t,
                     SEA_SHALLOW[1] + (SEA_DEEP[1] - SEA_SHALLOW[1]) * t,
                     SEA_SHALLOW[2] + (SEA_DEEP[2] - SEA_SHALLOW[2]) * t,
                 )
-            } else {
-                let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+            };
+            let mut ground = || {
                 let w = terrain::splat_from(h, terrain::moisture(seed, x, z), slope);
                 // They sum to ~255 by construction, and "~" is the splat law's
                 // own word for it — dividing by the actual sum keeps the blend
@@ -765,14 +773,31 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                 let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
                 let shade =
                     (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1);
-                let o = py * size + px;
-                shade_of[o] = shade;
-                cov[o] = match terrain::road_band(seed, haven, x, z) {
-                    terrain::RoadBand::Off => 0.0,
-                    terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
-                    terrain::RoadBand::Carriageway => 1.0,
-                };
+                // The land mask the road pass reads stays the hard line: a
+                // road never runs into a pixel whose centre is under water.
+                if h > SEA_LEVEL {
+                    let o = py * size + px;
+                    shade_of[o] = shade;
+                    cov[o] = match terrain::road_band(seed, haven, x, z) {
+                        terrain::RoadBand::Off => 0.0,
+                        terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
+                        terrain::RoadBand::Carriageway => 1.0,
+                    };
+                }
                 (mix(0) * shade, mix(1) * shade, mix(2) * shade)
+            };
+            let (r, g, b) = if land <= 0.0 {
+                water()
+            } else if land >= 1.0 {
+                ground()
+            } else {
+                let (sr, sg, sb) = water();
+                let (gr, gg, gb) = ground();
+                (
+                    sr + (gr - sr) * land,
+                    sg + (gg - sg) * land,
+                    sb + (gb - sb) * land,
+                )
             };
 
             let o = (py * size + px) * 4;
@@ -1798,6 +1823,18 @@ mod tests {
             for i in (0..size).step_by(7) {
                 let (x, z) = (half + i as f32 * step, half + j as f32 * step);
                 let h = terrain::height(seed, x, z);
+                // The coast's own pixel is shared: `paint` blends land and
+                // sea within a pixel's rise of the waterline, so a sample
+                // that close is neither and says nothing about orientation.
+                let rise = ((terrain::height(seed, x + step, z)
+                    - terrain::height(seed, x - step, z))
+                .abs()
+                .max(
+                    (terrain::height(seed, x, z + step) - terrain::height(seed, x, z - step)).abs(),
+                )) * 0.5;
+                if (h - SEA_LEVEL).abs() < rise {
+                    continue;
+                }
                 let (px, py) = world_to_map(x, z, size);
                 let o = ((py as usize).min(size - 1) * size + (px as usize).min(size - 1)) * 4;
                 let (r, g, b) = (buf[o] as f32, buf[o + 1] as f32, buf[o + 2] as f32);
