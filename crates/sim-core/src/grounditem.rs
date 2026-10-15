@@ -340,26 +340,22 @@ impl GroundItems {
     pub fn nearest_where(
         &self,
         p: &Player,
-        clear: impl Fn((i32, i32, i32)) -> bool,
+        clear: impl Fn(&GroundItemRec) -> bool,
     ) -> Option<usize> {
-        let mut best: Option<(usize, f32)> = None;
+        // Nearest first, the hand's sight asked of as few as find one
+        // (`reach::nearest_clear`); ties to the lower index, as ever.
+        let mut cand = [(0.0f32, 0u16); MAX_GROUND_ITEMS];
+        let mut n = 0;
         for i in 0..self.len {
             if !self.in_reach(i, p) {
                 continue;
             }
-            let e = &self.entries[i];
-            if !clear((e.qx, e.qy, e.qz)) {
-                continue;
-            }
             let dx = self.entries[i].qx as f32 * POS_XZ_Q - p.body.qx as f32 * POS_XZ_Q;
             let dz = self.entries[i].qz as f32 * POS_XZ_Q - p.body.qz as f32 * POS_XZ_Q;
-            let d2 = dx * dx + dz * dz;
-            match best {
-                Some((_, bd2)) if bd2 <= d2 => {}
-                _ => best = Some((i, d2)),
-            }
+            cand[n] = (dx * dx + dz * dz, i as u16);
+            n += 1;
         }
-        best.map(|(i, _)| i)
+        crate::reach::nearest_clear(&mut cand[..n], |i| clear(&self.entries[i]))
     }
 
     /// The stack a take from `p` lifts: `target` (a stack id) when it is
@@ -401,7 +397,7 @@ impl GroundItems {
         p: &mut Player,
         spill: &mut [ItemStack; INV_SLOTS],
         events: &mut EventQueue,
-        clear: impl Fn((i32, i32, i32)) -> bool,
+        clear: impl Fn(&GroundItemRec) -> bool,
     ) -> Option<u32> {
         let i = self.nearest_where(p, clear)?;
         self.take_at(i, gc, p, spill, events)

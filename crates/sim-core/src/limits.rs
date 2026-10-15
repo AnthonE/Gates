@@ -720,6 +720,12 @@ pub const MAX_BACKPACKS: usize = 256;
 /// one with the barrels.
 pub const MAX_GROUND_ITEMS: usize = 512;
 
+/// Line-of-sight walks one take, loot or pull may spend finding the nearest
+/// thing in reach (`reach::nearest_clear`), nearest first. Bounds a command
+/// against a pile of stacks heaped behind a wall: past this many blocked
+/// candidates the hand finds nothing.
+pub const HAND_SIGHT_TESTS_MAX: usize = 8;
+
 /// Deployed storage boxes standing at once (`deploy.rs`, `ARCH_BOX`).
 /// Held in its own dense list beside the hearths, for the same reason:
 /// `DeployRec` is the struct the wire mirrors, so contents may not ride

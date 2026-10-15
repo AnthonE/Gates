@@ -681,8 +681,10 @@ impl Backpacks {
         let pz = p.body.qz as f32 * POS_XZ_Q;
         // A corpse lies half a metre from the pack its body dropped, so the
         // nearest can be the corpse: the pack wins, and a corpse is taken
-        // only when it is all there is in reach.
-        let mut best: Option<(bool, f32, usize)> = None;
+        // only when it is all there is in reach. Nearest first, the hand's
+        // sight asked of as few as find one (`reach::nearest_clear`).
+        let mut cand = [((false, 0.0f32), 0u16); MAX_BACKPACKS];
+        let mut n = 0;
         for i in 0..self.len {
             let dx = self.entries[i].qx as f32 * POS_XZ_Q - px;
             let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
@@ -690,16 +692,13 @@ impl Backpacks {
             if d2 > LOOT_REACH_M * LOOT_REACH_M {
                 continue;
             }
-            let e = &self.entries[i];
-            if !clear((e.qx, e.qy, e.qz)) {
-                continue;
-            }
-            let corpse = self.entries[i].owner == CORPSE_OWNER;
-            if best.is_none_or(|(bc, bd2, _)| (corpse, d2) < (bc, bd2)) {
-                best = Some((corpse, d2, i));
-            }
+            cand[n] = ((self.entries[i].owner == CORPSE_OWNER, d2), i as u16);
+            n += 1;
         }
-        let (_, _, i) = best?;
+        let i = crate::reach::nearest_clear(&mut cand[..n], |i| {
+            let e = &self.entries[i];
+            clear((e.qx, e.qy, e.qz))
+        })?;
         if !self.may_loot(i, p.id, town) {
             events.push(
                 crate::world::EV_MOVE_REFUSED,

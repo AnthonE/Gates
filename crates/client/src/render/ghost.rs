@@ -823,6 +823,7 @@ pub fn deploy_track(
                     dir: [fx * ch, sv, fz * ch],
                     span: &span,
                     reach: None,
+                    lying: None,
                 },
                 core.deploys.entries(),
                 &core.deploy_defs,

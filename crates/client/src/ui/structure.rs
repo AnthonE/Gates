@@ -508,6 +508,7 @@ mod tests {
             dir,
             span: &span,
             reach: None,
+            lying: None,
         };
         let seen = seen_deploy(seed, &haven, &cols, feet, &sight, &[boxed], &dd, dh)
             .expect("the box the crosshair is on");
@@ -530,6 +531,7 @@ mod tests {
             dir,
             span: &span,
             reach: None,
+            lying: None,
         };
         assert_eq!(
             seen_deploy(seed, &haven, &walled, feet, &sight, &[boxed], &dd, dh),

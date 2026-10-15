@@ -2722,7 +2722,13 @@ impl World {
         let dx = (v.body.qx - p.body.qx) as f32 * POS_XZ_Q;
         let dz = (v.body.qz - p.body.qz) as f32 * POS_XZ_Q;
         let r = crate::backpack::LOOT_REACH_M;
-        let at = crate::reach::Target::lying((v.body.qx, v.body.qy, v.body.qz));
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (v.body.qx, v.body.qy, v.body.qz),
+        );
         (dx * dx + dz * dz <= r * r
             && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at))
         .then_some(i)
@@ -2760,7 +2766,12 @@ impl World {
         let (Some(p), Some(b)) = (self.players.get(slot), self.backpacks.entries().get(i)) else {
             return false;
         };
-        let at = crate::reach::Target::lying((b.qx, b.qy, b.qz));
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            (b.qx, b.qy, b.qz),
+        );
         self.backpacks.in_reach(i, p)
             && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at)
     }
@@ -2771,7 +2782,7 @@ impl World {
         else {
             return false;
         };
-        let at = crate::reach::Target::lying((g.qx, g.qy, g.qz));
+        let at = crate::reach::Target::stack(self.seed, &self.haven, self.pieces.cols(), g);
         self.ground_items.in_reach(i, p)
             && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at)
     }
@@ -3311,24 +3322,41 @@ impl World {
         use crate::movement::POS_XZ_Q;
         let p = &self.players[slot];
         let (px, pz) = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
-        let mut best: Option<(usize, f32)> = None;
-        for (i, a) in self.spent.entries().iter().enumerate() {
+        let (eye, feet) = self.hand(slot);
+        let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
+        // The nearest arrow standing in a body the hand reaches — aimed at
+        // the body's middle, so it is not pulled through a wall or a floor.
+        let arrows = self.spent.entries();
+        let mut cand = [(0.0f32, 0u16); crate::limits::MAX_SPENT_ARROWS];
+        let mut n = 0;
+        for (i, a) in arrows.iter().enumerate() {
             if a.host == 0 {
                 continue;
             }
             let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
             let d2 = dx * dx + dz * dz;
-            if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
-                best = Some((i, d2));
+            if d2 <= LOOT_REACH_M * LOOT_REACH_M {
+                cand[n] = (d2, i as u16);
+                n += 1;
             }
         }
-        let Some((i, d2)) = best else {
+        let Some(i) = crate::reach::nearest_clear(&mut cand[..n], |i| {
+            let a = &arrows[i];
+            let at = crate::reach::Target::body(
+                a.qx as f32 / 1000.0,
+                a.qy as f32 / 1000.0,
+                a.qz as f32 / 1000.0,
+            );
+            crate::reach::clear_from(seed, haven, cols, eye, feet, at)
+        }) else {
             return false;
         };
-        let (eye, feet) = self.hand(slot);
-        let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
-        let clear = |q| {
-            crate::reach::clear_from(seed, haven, cols, eye, feet, crate::reach::Target::lying(q))
+        let a = &arrows[i];
+        let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
+        let d2 = dx * dx + dz * dz;
+        let clear = |g: &crate::grounditem::GroundItemRec| {
+            let at = crate::reach::Target::stack(seed, haven, cols, g);
+            crate::reach::clear_from(seed, haven, cols, eye, feet, at)
         };
         if let Some(g) = self.ground_items.nearest_where(p, clear) {
             let g = self.ground_items.entries()[g];
@@ -5612,7 +5640,7 @@ impl World {
                         &mut self.players[slot],
                         &mut self.events,
                         |q| {
-                            let at = crate::reach::Target::lying(q);
+                            let at = crate::reach::Target::lying(seed, haven, cols, q);
                             crate::reach::clear_from(seed, haven, cols, eye, feet, at)
                         },
                     );
@@ -5658,8 +5686,8 @@ impl World {
                             &mut self.players[slot],
                             &mut spill,
                             &mut self.events,
-                            |q| {
-                                let at = crate::reach::Target::lying(q);
+                            |g| {
+                                let at = crate::reach::Target::stack(seed, haven, cols, g);
                                 crate::reach::clear_from(seed, haven, cols, eye, feet, at)
                             },
                         );
