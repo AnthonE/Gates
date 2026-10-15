@@ -3,8 +3,9 @@
 //! A real counter reads the field, not your dose, so the rate follows how
 //! deep the green is where you stand (`sim_core::blight`), read as the meter
 //! reads it: nothing below the beach line (`World::exposure_inputs`), and the
-//! depth at the ground under the feet. A dose that jumps — a turned animal's
-//! bite — bursts a few clicks on top, so the bite that got through is heard.
+//! depth at the ground under the feet. A dose that jumps with a hit — a turned
+//! animal's bite — bursts a few clicks on top, so the bite that got through is
+//! heard.
 //!
 //! Pure: no clock and no Bevy. The caller hands in the frame's `dt` and plays
 //! [`crate::Cue::Geiger`] whenever [`Geiger::due`] says so.
@@ -23,6 +24,10 @@ pub const BURST_CLICKS: u8 = 6;
 pub const BURST_GAP_S: f32 = 0.04;
 /// The longest frame the counter integrates: a hitch does not buy a volley.
 pub const MAX_DT_S: f32 = 0.1;
+/// How long after a hit a dose jump is that hit's, seconds. A bite raises the
+/// meter in the tick it lands; standing in a vent raises it as fast, once a
+/// second, with no hit, and must not be heard as a bite every second.
+pub const HURT_WINDOW_S: f32 = 0.25;
 
 /// How deep the green is for the counter at (`x`, `z`), the body's feet at
 /// `feet`: zero on the beach, else the spread at the ground under it.
@@ -55,6 +60,8 @@ pub struct Geiger {
     burst: u8,
     burst_t: f32,
     last_pct: Option<u8>,
+    /// Seconds left in which a dose jump is a hit's ([`HURT_WINDOW_S`]).
+    hurt_t: f32,
 }
 
 impl Default for Geiger {
@@ -66,6 +73,7 @@ impl Default for Geiger {
             burst: 0,
             burst_t: 0.0,
             last_pct: None,
+            hurt_t: 0.0,
         };
         g.due = g.draw();
         g
@@ -88,11 +96,18 @@ impl Geiger {
         -(1.0 - self.unit()).max(1e-6).ln()
     }
 
+    /// A hit landed on the body this frame: a dose jump close to it is a
+    /// bite that carried the green ([`Geiger::dose`]).
+    pub fn hurt(&mut self) {
+        self.hurt_t = HURT_WINDOW_S;
+    }
+
     /// The meter's reading arrived (`fel_pct`). The first after a reset only
-    /// primes, so a join carrying an old dose is not heard as a bite.
+    /// primes, so a join carrying an old dose is not heard as a bite; and a
+    /// jump with no hit beside it is the green's own rise, not a bite.
     pub fn dose(&mut self, fel_pct: u8) {
         if let Some(l) = self.last_pct {
-            if fel_pct >= l.saturating_add(DOSE_STEP_PCT) {
+            if fel_pct >= l.saturating_add(DOSE_STEP_PCT) && self.hurt_t > 0.0 {
                 self.burst = BURST_CLICKS;
                 self.burst_t = 0.0;
             }
@@ -104,6 +119,7 @@ impl Geiger {
     /// call, which is also all the mixer would start a frame.
     pub fn due(&mut self, depth: f32, dt_s: f32) -> bool {
         let dt = dt_s.clamp(0.0, MAX_DT_S);
+        self.hurt_t = (self.hurt_t - dt).max(0.0);
         let mut click = false;
         // The hazard form: a change in depth is felt at once, where a gap
         // drawn at the old rate would leave you deaf for seconds after
@@ -133,6 +149,7 @@ impl Geiger {
         self.burst = 0;
         self.burst_t = 0.0;
         self.last_pct = None;
+        self.hurt_t = 0.0;
         self.due = self.draw();
     }
 }

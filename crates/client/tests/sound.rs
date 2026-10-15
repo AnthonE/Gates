@@ -3391,27 +3391,38 @@ mod geiger {
         assert!(var.sqrt() / mean > 0.6, "the gaps are too regular");
     }
 
-    /// A dose that jumps bursts; the first reading only primes; a drink that
-    /// lowers it, or a reset, does not.
+    /// A dose that jumps with a hit bursts; the first reading only primes; a
+    /// jump with no hit (a vent's second), a drink that lowers it, or a
+    /// reset, does not.
     #[test]
     fn a_dose_bursts_and_the_first_reading_primes() {
         let mut g = Geiger::default();
+        g.hurt();
         g.dose(40);
         assert!(
             clicks(&mut g, 0.0, 0.5).is_empty(),
             "the first reading primed"
         );
+        g.hurt();
         g.dose(42);
         assert!(clicks(&mut g, 0.0, 0.5).is_empty(), "a creep is not a bite");
-        g.dose(45);
+        g.dose(49);
+        assert!(
+            clicks(&mut g, 0.0, 0.5).is_empty(),
+            "a vent's rise is not a bite"
+        );
+        g.hurt();
+        g.dose(55);
         assert_eq!(
             clicks(&mut g, 0.0, 0.5).len(),
             BURST_CLICKS as usize,
             "a bite bursts"
         );
+        g.hurt();
         g.dose(10);
         assert!(clicks(&mut g, 0.0, 0.5).is_empty(), "the tonic is quiet");
         g.reset();
+        g.hurt();
         g.dose(80);
         assert!(clicks(&mut g, 0.0, 0.5).is_empty(), "a rejoin primes again");
     }

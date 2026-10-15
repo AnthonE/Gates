@@ -3941,7 +3941,10 @@ fn every_consumable_the_content_ships_is_reachable() {
     // The Charcoal Tonic is steeped from mushrooms, so it goes with them.
     assert_eq!(
         unreachable_consumables(&mutant),
-        vec!["item.charcoal_tonic".to_string(), "item.mushrooms".to_string()],
+        vec![
+            "item.charcoal_tonic".to_string(),
+            "item.mushrooms".to_string()
+        ],
         "deleting the tree's mushroom secondary must strand exactly the mushrooms \
          and what is made of them"
     );

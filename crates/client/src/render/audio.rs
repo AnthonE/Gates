@@ -891,7 +891,11 @@ pub fn geiger(
         sound.geiger.reset();
         return;
     }
-    // The meter's reading arrived this frame: a jump in it is a bite heard.
+    // A hit this frame, then the meter's reading: a jump beside a hit is a
+    // bite heard.
+    if !feed.hurt_from().is_empty() {
+        sound.geiger.hurt();
+    }
     if feed.applied2 & client_core::core::APPLIED2_EXPOSURE != 0 {
         sound.geiger.dose(core.fel_pct);
     }

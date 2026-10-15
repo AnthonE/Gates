@@ -1701,8 +1701,13 @@ impl Plugin for GatesRenderPlugin {
                     // linear-scan membership test, so it runs on the frames
                     // the wire moved the set; `harvest_new` is the half a
                     // bit cannot cover, and costs an empty query otherwise.
-                    props::harvest.run_if(props::harvest_changed),
-                    props::harvest_new,
+                    // `harvest_new` first: a part that ARRIVES felled lies
+                    // where it fell (`props::apply_fell_added`), and the sweep
+                    // must not see it first and topple it again.
+                    props::harvest
+                        .run_if(props::harvest_changed)
+                        .after(props::harvest_new),
+                    props::harvest_new.after(props::stream),
                     // After `harvest`, which owns the discrete transition and
                     // arms the topple this integrates. Reversed, a tree would
                     // spend one frame at the pose the previous chop left it.
