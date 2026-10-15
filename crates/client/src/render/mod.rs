@@ -190,6 +190,8 @@ pub mod pipelines;
 pub mod prewarm;
 pub mod quality;
 pub mod rain;
+// Rainbows over a passing shower, opposite the sun.
+pub mod rainbow;
 pub mod render_scale;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
@@ -626,6 +628,8 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<deck::DeckMaterial>::default());
         app.add_plugins(MaterialPlugin::<deck::CloudMaterial>::default());
         app.add_plugins(MaterialPlugin::<deck::SkyFogMaterial>::default());
+        // The rainbow over the sky, under its fog (`rainbow.rs`).
+        app.add_plugins(MaterialPlugin::<rainbow::RainbowMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         // The portrait's layer reaches every node its scene spawns, before
         // visibility is worked out (`portrait.rs`).
@@ -1514,6 +1518,7 @@ impl Plugin for GatesRenderPlugin {
             OnEnter(Screen::Loading),
             (moon::setup, deck::setup).after(sky::setup),
         )
+        .add_systems(OnEnter(Screen::Loading), rainbow::setup.after(sky::setup))
         .add_systems(
             OnEnter(Screen::Loading),
             underwater::setup.after(rig::setup),
@@ -1893,6 +1898,11 @@ impl Plugin for GatesRenderPlugin {
                 deck::drive.after(rig::day_night),
             )
                 .run_if(world_running),
+        )
+        // The rainbow, off this frame's sun and rain.
+        .add_systems(
+            Update,
+            rainbow::drive.after(weather::update).run_if(world_running),
         )
         // The weather (weather v0): read after the drain and before the rig
         // lights the frame from it; the deck is composed after both.
