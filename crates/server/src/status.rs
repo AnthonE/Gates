@@ -78,8 +78,9 @@
 //!   `REWIND_MAX_TICKS`, i.e. how often the 233 ms ceiling is the binding
 //!   constraint rather than the link — the evidence for moving that
 //!   number. `favour_disagree` is the cross-check: claims corrected down
-//!   to the server's own ack evidence, and the one favour counter that is
-//!   also in `anomaly::WATCHED`.
+//!   to the server's own ack evidence, and one of the two favour counters
+//!   in `anomaly::WATCHED` (the other, `favour_playout_high`, is in the
+//!   anomaly log only).
 //!
 //! - `next_wipe` — unix seconds of the next wipe, 0 for none (`wipe.rs`):
 //!   what a server list prints as "wipes Thu 19:00".
