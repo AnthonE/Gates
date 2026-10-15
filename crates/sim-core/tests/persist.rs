@@ -789,7 +789,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 43] = [
+    pub const RE_DERIVED: [&str; 45] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // Comfort and the calm clock rebuild in seconds (`exposure.rs`).
@@ -878,6 +878,10 @@ mod carried_through_death {
         // (climate v0): nothing about them is the corpse's to keep.
         "heat",
         "air_dc",
+        // The Verdigris is the corpse's too (`exposure::corrode`): a body
+        // that respawns comes up clean of it.
+        "fel",
+        "fel_acc",
     ];
 }
 
