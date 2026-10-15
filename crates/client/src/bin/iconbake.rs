@@ -49,35 +49,66 @@ const SETTLE: u32 = 30;
 /// A glTF that has not spawned a mesh by then is reported and skipped.
 const LOAD_TIMEOUT: u32 = 900;
 
+/// Where a subject's geometry comes from: a glTF under `assets/`, or a mesh
+/// `render::heldgen` builds in code (the bat, torch, revolver, crossbow).
+#[derive(Clone, Copy)]
+enum Src {
+    Glb(&'static str),
+    Gen(&'static str),
+}
+
 /// One icon to photograph.
 #[derive(Clone, Copy)]
 struct Subject {
     /// The icon's file stem — the item's display name, normalised
     /// (`ui::icons::stem`).
     stem: &'static str,
-    /// The model, under `assets/`.
-    glb: &'static str,
+    /// The model.
+    src: Src,
     /// Model rotation before framing, degrees: yaw about Y, then pitch about
     /// X, then roll about Z (`EulerRot::YXZ`). The camera never leaves its
     /// three-quarter bearing, so this is how a subject shows its best side.
     turn: [f32; 3],
+    /// Then a turn about the camera's own axis, degrees, counter-clockwise
+    /// on screen: how a long thing is laid on the frame's diagonal.
+    roll: f32,
 }
 
 const fn s(stem: &'static str, glb: &'static str, turn: [f32; 3]) -> Subject {
-    Subject { stem, glb, turn }
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn,
+        roll: 0.0,
+    }
+}
+
+/// A long thing (a tool, a spear, a bow), authored standing: turned to show
+/// its head's broad side, then laid on the diagonal with the head at the
+/// top right — the way Rust frames every tool, and what lets a thin haft
+/// fill the square instead of being a hairline down its middle.
+const fn long(stem: &'static str, src: Src, yaw: f32) -> Subject {
+    Subject {
+        stem,
+        src,
+        turn: [yaw, 0.0, 0.0],
+        roll: -45.0,
+    }
 }
 
 /// The items photographed rather than painted.
 ///
-/// **Chunky things only, and that was measured rather than assumed.** Every
-/// item with a model was rendered on 2026-09-24 and each render put beside
-/// its painted silhouette at the 34 px a cell draws it: the boxes, the bag,
-/// the bench, the cupboard and the stones read better as photographs; the
-/// thin tools (spear, hatchet, pickaxe, hammer, bow) went to a hairline and
-/// read worse, and the generated torch and revolver are boxes that a
-/// silhouette beats. Those stay painted until a model is chunky enough.
-/// Framing is `ci/finish_icons.py`'s, from the pixels, so there is no size
-/// here.
+/// **Chunky things only, and that was measured rather than assumed — twice.**
+/// Every item with a model was rendered on 2026-09-24 and again in the
+/// 2026-10 icon pass, each render put beside its painted silhouette at the
+/// 48 px a slot draws it (`ci/finish_icons.py --renders DIR --out DIR` makes
+/// the sheet). The boxes, benches, cupboard, stones, food, medicine, the
+/// satchel, the plan, the recycler and the barricade read better as
+/// photographs. The thin tools, the bow, the crossbow, the spears and the
+/// revolver went to a hairline even laid on the diagonal ([`long`]), and the
+/// doors and the cold fire pit to a dark slab: those stay painted. The bat
+/// is the one long thing thick enough to photograph. Framing is the
+/// finisher's, from the pixels, so there is no size here.
 const SUBJECTS: &[Subject] = &[
     s("stone", "models/prop/node_stone.glb", [30.0, 0.0, 0.0]),
     s("metal_ore", "models/prop/node_metal.glb", [30.0, 0.0, 0.0]),
@@ -92,6 +123,53 @@ const SUBJECTS: &[Subject] = &[
     s("workbench", "models/deploy/workbench.glb", [0.0, 0.0, 0.0]),
     // The hearth is the tool cupboard, and the render is the cupboard.
     s("hearth", "models/deploy/hearth.glb", [0.0, 0.0, 0.0]),
+    long("bat", Src::Gen("bat"), 0.0),
+    // Things you hold up to use.
+    s(
+        "building_plan",
+        "models/held/building_plan.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "satchel_charge",
+        "models/held/satchel_charge.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("bandage", "models/held/bandage.glb", [0.0, 0.0, 0.0]),
+    s("medkit", "models/held/medkit.glb", [0.0, 0.0, 0.0]),
+    s("berries", "models/held/berries.glb", [0.0, 0.0, 0.0]),
+    s("mushrooms", "models/held/mushrooms.glb", [0.0, 0.0, 0.0]),
+    s("corn", "models/held/corn.glb", [0.0, 0.0, 0.0]),
+    s("raw_meat", "models/held/raw_meat.glb", [0.0, 0.0, 0.0]),
+    s(
+        "cooked_meat",
+        "models/held/cooked_meat.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("burnt_meat", "models/held/burnt_meat.glb", [0.0, 0.0, 0.0]),
+    // The deployables, as they stand in the world.
+    s("furnace", "models/deploy/furnace.glb", [0.0, 0.0, 0.0]),
+    s("recycler", "models/deploy/recycler.glb", [0.0, 0.0, 0.0]),
+    s(
+        "research_table",
+        "models/deploy/research_table.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "workbench_2",
+        "models/deploy/workbench2.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "workbench_3",
+        "models/deploy/workbench3.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "wooden_barricade",
+        "models/deploy/barricade.glb",
+        [0.0, 0.0, 0.0],
+    ),
 ];
 
 /// Where the camera sits relative to the subject: right, above and in front,
@@ -276,6 +354,8 @@ fn drive(
     children: Query<&Children>,
     bounds: Query<(&Aabb, &GlobalTransform)>,
     mut cam: Query<(&mut Transform, &mut Projection), With<IconCam>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut cur) = bake.cur.take() else {
@@ -295,13 +375,23 @@ fn drive(
             subject.turn[1].to_radians(),
             subject.turn[2].to_radians(),
         );
-        let place = Transform::from_rotation(turn);
-        let root = commands
-            .spawn((
-                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(subject.glb))),
-                place,
-            ))
-            .id();
+        let roll = Quat::from_axis_angle(VIEW_DIR.normalize(), subject.roll.to_radians());
+        let place = Transform::from_rotation(roll * turn);
+        let root = match subject.src {
+            Src::Glb(glb) => commands
+                .spawn((
+                    SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(glb))),
+                    place,
+                ))
+                .id(),
+            Src::Gen(name) => commands
+                .spawn((
+                    Mesh3d(meshes.add(client::render::heldgen::mesh(name))),
+                    MeshMaterial3d(mats.add(client::render::heldgen::material(name))),
+                    place,
+                ))
+                .id(),
+        };
         bake.cur = Some(Current {
             subject,
             root,

@@ -135,7 +135,7 @@ every item either way, because the painted ones are derived works of it.
 | `vital_hp.png` | `sbed/health-normal` |
 | `vital_water.png` | `sbed/water-drop` |
 | `waterskin.png` | `delapouite/water-flask` |
-| `wood.png` | `delapouite/log` |
+| `wood.png` | `delapouite/wood-pile` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
 | `wooden_arrow.png` | `lorc/arrowhead` |
 | `wooden_barricade.png` | `delapouite/palisade` |
