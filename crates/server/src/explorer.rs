@@ -7082,9 +7082,26 @@ fn open_reaches(core: &mut ClientCore, body: &EntityState, yaw: u16, pitch: u8, 
         pitch,
         sim_core::backpack::LOOT_REACH_M * MM_PER_M,
     );
-    let (seed, mut island) = core.island();
-    melee::occupant_cast(seed, &mut island, &ray, melee::openable)
-        .is_some_and(|hit| cell_key(hit.cx, hit.cz) == key)
+    let hit = {
+        let (seed, mut island) = core.island();
+        melee::occupant_cast(seed, &mut island, &ray, melee::openable)
+    };
+    let Some(hit) = hit.filter(|hit| cell_key(hit.cx, hit.cz) == key) else {
+        return false;
+    };
+    // And the shard's hand, as the human prompt asks it (`resolve_open`):
+    // the same storey and a clear line, so a crate behind stone is not
+    // pressed at until the verdict times out.
+    let b = as_body(*body);
+    sim_core::reach::clear_from(
+        core.predict.seed(),
+        core.haven(),
+        core.pieces.cols(),
+        core.card_doors,
+        sim_core::reach::eye_of(&b, core.crouched()),
+        b.qy as f32 * POS_Y_Q,
+        sim_core::reach::Target::unopened(&hit.slot),
+    )
 }
 
 /// Conservative line of sight to the near face of the target. Uses the

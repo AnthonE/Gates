@@ -22,7 +22,10 @@
 //! ## Asked at the door and on request, never on a timer
 //!
 //! Once when a player joins, and again when their client says it bought
-//! something (`ACT_SKINS_REFRESH`), at most once per [`REFRESH_COOLDOWN`].
+//! something (`ACT_SKINS_REFRESH`), at most once per [`REFRESH_COOLDOWN`]
+//! per wallet: a rejoin inside it is told the last answer and read again
+//! when it has run, so a reconnect loop costs one read per wallet per
+//! cooldown, however often it rejoins.
 //! Not swept: every read of that route is a block-explorer call elo pays
 //! for (its `CLAUDE.md`: *the explorer door is METERED*), and a 100-player
 //! sweep would spend that budget around the clock for purchases that happen
@@ -44,8 +47,10 @@ use std::time::Duration;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 8;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
 
-/// The least time between two reads for one player. A client that asks
+/// The least time between two reads for one wallet. A client that asks
 /// sooner is ignored, not queued: the answer it wants is at most this old.
+/// A join sooner is told the last answer and read again once this has run
+/// (`net.rs` `PlatformReads`), so a skin bought in that window still lands.
 pub const REFRESH_COOLDOWN: Duration = Duration::from_secs(15);
 
 /// The far end's own ceiling on tokens re-read per wallet
