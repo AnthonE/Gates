@@ -1501,12 +1501,14 @@ pub enum EventMsg {
     /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
-    /// The owner's wet and cold, per cent, and whether the cold is hurting
-    /// them (`SUB_EXPOSURE`).
+    /// The owner's wet and cold, per cent, whether the cold is hurting
+    /// them, and their comfort, per cent (`SUB_EXPOSURE`; comfort wire
+    /// v111).
     Exposure {
         wet_pct: u8,
         cold_pct: u8,
         hurting: bool,
+        comfort_pct: u8,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -4952,15 +4954,17 @@ pub fn encode_event_exposure(
     wet_pct: u8,
     cold_pct: u8,
     hurting: bool,
+    comfort_pct: u8,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if wet_pct > 100 || cold_pct > 100 {
+    if wet_pct > 100 || cold_pct > 100 || comfort_pct > 100 {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_EXPOSURE)?;
     w.write(wet_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write(cold_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write_bit(hurting)?;
+    w.write(comfort_pct as u32, EXPOSURE_PCT_BITS)?;
     Ok(w.finish())
 }
 
@@ -6678,13 +6682,15 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let wet_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let cold_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let hurting = r.read_bit()?;
-            if wet_pct > 100 || cold_pct > 100 {
+            let comfort_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            if wet_pct > 100 || cold_pct > 100 || comfort_pct > 100 {
                 return Err(WireError::Malformed);
             }
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
                 hurting,
+                comfort_pct,
             }
         }
         SUB_ENV => {

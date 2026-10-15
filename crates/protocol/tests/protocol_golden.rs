@@ -1797,10 +1797,11 @@ fn golden_event(fixture: &[u8], name: &str) {
                 EventMsg::Exposure {
                     wet_pct: 64,
                     cold_pct: 100,
-                    hurting: true
+                    hurting: true,
+                    comfort_pct: 50,
                 }
             );
-            protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap()
+            protocol::encode_event_exposure(64, 100, true, 50, &mut buf).unwrap()
         }
         "event_env.bin" => {
             let env = protocol::goldens::event_env();

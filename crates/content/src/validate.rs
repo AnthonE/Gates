@@ -902,6 +902,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("chill_rise_per_s", e.chill_rise_per_s),
             ("chill_fall_per_s", e.chill_fall_per_s),
             ("hurt_at", e.hurt_at),
+            ("fire_comfort", e.fire_comfort),
+            ("company_comfort", e.company_comfort),
+            ("comfort_per_s", e.comfort_per_s),
+            ("regen_chill_max", e.regen_chill_max),
         ] {
             if v > 1000 {
                 return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));
@@ -917,8 +921,32 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if e.cold_food_pct > 300 || e.cold_water_pct > 300 {
             return Err("[exposure]: the cold burns at most 300% more food or water".into());
         }
-        if e.comfort_hp_per_min > 60 {
-            return Err("[exposure]: comfort heals at most 60 hp a minute".into());
+        if e.regen_hp_per_min > 60 {
+            return Err("[exposure]: regen heals at most 60 hp a minute".into());
+        }
+        if e.regen_fed_pct > 100 || e.regen_comfort_pct > 1000 || e.regen_cap_pct > 100 {
+            return Err("[exposure]: regen's fed ≤ 100%, comfort ≤ 1000%, cap ≤ 100%".into());
+        }
+        if e.regen_food_pct > 300 || e.regen_water_pct > 300 {
+            return Err("[exposure]: regen burns at most 300% more food or water".into());
+        }
+        if e.regen_hp_per_min > 0 && e.regen_chill_max >= e.hurt_at {
+            // Regen and the cold share one accumulator (`exposure::step`).
+            return Err("[exposure]: regen_chill_max must be under hurt_at".into());
+        }
+        if e.fire_comfort > 0 && e.comfort_per_s == 0 {
+            return Err("[exposure]: comfort that never moves would never rise".into());
+        }
+        // A zero meter is `[survival]`'s to refuse, with its own words.
+        let sv = &c.balance.survival;
+        if sv.max_food > 0
+            && sv.max_water > 0
+            && (e.regen_food_min > sv.max_food || e.regen_water_min > sv.max_water)
+        {
+            return Err("[exposure]: regen asks for more food or water than a meter holds".into());
+        }
+        if e.regen_calm_s > u16::MAX as u32 {
+            return Err("[exposure]: regen_calm_s overflows u16".into());
         }
         if e.hurt_hp_per_min > 0 && hp / e.hurt_hp_per_min < 5 {
             return Err(format!(
