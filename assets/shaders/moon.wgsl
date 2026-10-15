@@ -6,7 +6,13 @@
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
 }
-#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_value}
+#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_value, slab_step, slab_warp, slab_shape}
+
+// Steps through the raymarched slab for a cover reading (`deck.wgsl`'s
+// `slab_shape`): the shape alone, no erosion, so a cloud hides a little
+// past its eroded rim and never less than it draws.
+const SLAB_STEPS: i32 = 12;
+
 
 // Field for field `moon::MoonParams`.
 struct Moon {
@@ -25,6 +31,9 @@ struct Moon {
     // xyz toward the sun in the disk's frame (x right, y up, z toward the
     // eye), at the phase angle; w the earthshine on the dark side.
     lit: vec4<f32>,
+    // The raymarched slab (`deck::slab_lanes`), as the stars read it; w 0
+    // where the deck is drawn flat.
+    slab: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> moon: Moon;
@@ -126,7 +135,19 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let foot = max(length(dpdx(q)), length(dpdy(q)));
     let f0 = textureSampleGrad(field_tex, field_samp, uv, dpdx(uv), dpdy(uv)).r;
     let f = f0 + moon.deck.w * deck_detail(q, foot);
-    let cov = clamp((f - moon.cloud.z) / moon.cloud.w, 0.0, 1.0) * deck_fade(d.y, moon.deck.y, moon.deck.z);
+    var cov = clamp((f - moon.cloud.z) / moon.cloud.w, 0.0, 1.0) * deck_fade(d.y, moon.deck.y, moon.deck.z);
+    if moon.slab.w > 0.0 {
+        // Behind the slab the sky draws, not its base's outline (`stars.wgsl`).
+        var tau = 0.0;
+        for (var i = 0; i < SLAB_STEPS; i += 1) {
+            let s = slab_step(d, view.world_position.y, moon.slab, moon.deck.y, i, SLAB_STEPS);
+            let h = (s.y - moon.slab.x) / (moon.slab.y - moon.slab.x);
+            let sq = (s.xz + slab_warp(s.xyz, h)) / moon.slab.z + moon.cloud.xy;
+            let sf = textureSampleLevel(field_tex, field_samp, sq * moon.field.x + moon.field.y, 1.0).r;
+            tau += slab_shape(h, (sf - moon.cloud.z) / moon.cloud.w) * moon.slab.w * s.w;
+        }
+        cov = (1.0 - exp(-tau)) * deck_fade(d.y, moon.deck.y, moon.deck.z);
+    }
 
     // Added, not laid over: the air's glow and the halo are in front of
     // the moon and show on its dark side; the stars behind it are left out

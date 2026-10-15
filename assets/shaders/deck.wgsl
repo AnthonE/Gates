@@ -30,6 +30,49 @@ fn deck_haze(y: f32, air: vec4<f32>, dust: vec4<f32>) -> f32 {
     return 1.0 - (1.0 - deck_fog(y, air)) * exp(-min(dust.x / s, dust.y));
 }
 
+// The raymarched slab's shape (`cloud.wgsl`), shared with the stars and
+// the moon so a cloud hides them where it is drawn rather than where its
+// base's outline is. A cumulus seen from the side rises far above that
+// outline, and stars read off the flat deck shone through its flanks.
+//
+// How far a column wanders from its base by the slab's ceiling, m: a 2D
+// field read straight up is an extrusion, and its grain runs up a cloud's
+// side as stripes; none at the base, whose outline the sun's cover reads.
+const SLAB_WARP_M: f32 = 90.0;
+
+fn slab_warp(p: vec3<f32>, h: f32) -> vec2<f32> {
+    return vec2(sin(h * 7.0 + p.z * 0.0031), sin(h * 6.0 + p.x * 0.0027)) * (SLAB_WARP_M * h);
+}
+
+// The slab's density before erosion at height `h` (`0..1` through it) in a
+// column `c` edges past the field's threshold. A flat base at the
+// condensation level and a dome over it: the field is near linear across a
+// cloud's edge, so a height linear in it builds cones, and its square root
+// builds the rounded top of a hemisphere. Steeper than the flat deck's edge:
+// a cumulus has a skin.
+fn slab_shape(h: f32, c: f32) -> f32 {
+    if c <= 0.0 || h <= 0.0 || h >= 1.0 {
+        return 0.0;
+    }
+    let top = 0.15 + 0.7 * sqrt(clamp(c * 0.4, 0.0, 1.0));
+    let profile = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(top * 0.55, top, h));
+    return smoothstep(0.0, 0.45, c) * profile;
+}
+
+// Where a ray from the eye (at height `eye_y`) is at its `i`th of `n` even
+// steps through the slab `slab` (x floor m, y ceiling m), across the deck
+// with the eye at its origin; w is the step's length, m. `cutoff` holds a
+// low ray's height up so the run stays finite. The run is at most 14 km, as
+// the clouds' own (`cloud.wgsl`'s `MAX_RUN_M`).
+fn slab_step(d: vec3<f32>, eye_y: f32, slab: vec4<f32>, cutoff: f32, i: i32, n: i32) -> vec4<f32> {
+    let dy = max(d.y, cutoff);
+    let t0 = max((slab.x - eye_y) / dy, 0.0);
+    let t1 = min((slab.y - eye_y) / dy, t0 + 14000.0);
+    let dt = max(t1 - t0, 0.0) / f32(n);
+    let t = t0 + (f32(i) + 0.5) * dt;
+    return vec4(d.x * t, eye_y + d.y * t, d.z * t, dt);
+}
+
 // How much of the deck stands in front, by the ray's height: none under
 // the cutoff, all of it `fade` above.
 fn deck_fade(y: f32, cutoff: f32, fade: f32) -> f32 {

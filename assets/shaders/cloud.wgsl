@@ -19,7 +19,7 @@
 // fog over it is `sky_fog.wgsl`'s, drawn after the atmosphere.
 #import bevy_pbr::mesh_view_bindings::{view, globals}
 #import bevy_pbr::utils::coords_to_viewport_uv
-#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail}
+#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, slab_warp, slab_shape}
 
 // Field for field `deck::CloudParams`. Colours linear, deck units (1.0 is
 // one `sky::CLOUD_NITS`), already graded by the hour and the weather.
@@ -98,8 +98,6 @@ const HUE_MAX: f32 = 3.0;
 // The longest run a ray makes through the slab, m: the far deck is a
 // band a few pixels tall, and past this it is the horizon fade's anyway.
 const MAX_RUN_M: f32 = 14000.0;
-// How far a column wanders from its base by the slab's ceiling, m.
-const WARP_M: f32 = 90.0;
 // The light march's first step, m; each after it twice the last.
 const LIGHT_FIRST_M: f32 = 40.0;
 
@@ -158,23 +156,8 @@ fn density(p: vec3<f32>, lod: f32, dlod: f32, detail: i32) -> f32 {
     if h <= 0.0 || h >= 1.0 {
         return 0.0;
     }
-    // The field is 2D and a column read straight up it is an extrusion: its
-    // fine grain runs up a cloud's side as stripes. So the column wanders as
-    // it rises — not at all at the base, whose outline the flat deck, the
-    // stars and the sun's cover read, and by up to `WARP_M` at the top.
-    let warp = vec2(sin(h * 7.0 + p.z * 0.0031), sin(h * 6.0 + p.x * 0.0027)) * (WARP_M * h);
-    let c = (field_at(p.xz + warp, lod + 0.5) - cl.top.w) / cl.base.w;
-    if c <= 0.0 {
-        return 0.0;
-    }
-    // A flat base at the condensation level, a dome over it. The field is
-    // near linear across a cloud's edge, so a height linear in it builds
-    // cones; its square root builds the rounded top of a hemisphere.
-    let top = 0.15 + 0.7 * sqrt(clamp(c * 0.4, 0.0, 1.0));
-    let profile = smoothstep(0.0, 0.06, h) * (1.0 - smoothstep(top * 0.55, top, h));
-    // Steeper than the flat deck's edge: a cumulus has a skin, and the
-    // erosion below gives it its lumps.
-    let shape = smoothstep(0.0, 0.45, c) * profile;
+    let c = (field_at(p.xz + slab_warp(p, h), lod + 0.5) - cl.top.w) / cl.base.w;
+    let shape = slab_shape(h, c);
     if shape <= 0.0 || detail == 0 {
         return shape;
     }

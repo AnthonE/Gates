@@ -64,6 +64,9 @@ pub struct StarParams {
     /// disk's radius. The moon adds to the sky (`moon.rs`), so the stars
     /// leave out the ones it passes over themselves.
     pub moon: Vec4,
+    /// The raymarched slab the sky draws (`deck::slab_lanes`), so a star
+    /// goes out behind a cloud's flank and not only behind its base.
+    pub slab: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
@@ -202,6 +205,7 @@ pub fn params_for(w: &WeatherNow, shown: &sky::ComposeParams) -> StarParams {
             0.0,
         ),
         moon: shown.moon.normalize_or(Vec3::Y).extend(sky::MOON_R.cos()),
+        slab: Vec4::ZERO,
     }
 }
 
@@ -240,6 +244,7 @@ pub fn setup(
 /// deck's own material is.
 pub fn drive(
     weather: Res<WeatherNow>,
+    settings: Res<super::Settings>,
     composer: Option<Res<sky::SkyComposer>>,
     handle: Option<Res<StarHandle>>,
     mut materials: ResMut<Assets<StarMaterial>>,
@@ -262,7 +267,10 @@ pub fn drive(
     if !show {
         return;
     }
-    let want = params_for(&weather, &sky::ComposeParams::from_weather(&weather));
+    let want = StarParams {
+        slab: super::deck::slab_lanes(super::quality::effective(settings.gfx).clouds),
+        ..params_for(&weather, &sky::ComposeParams::from_weather(&weather))
+    };
     let stale = materials.get(&handle.0).is_some_and(|m| m.params != want);
     if stale {
         if let Some(m) = materials.get_mut(&handle.0) {

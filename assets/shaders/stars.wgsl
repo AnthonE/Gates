@@ -7,6 +7,12 @@
     mesh_view_bindings::{view, globals},
     view_transformations::position_world_to_clip,
 }
+#import "shaders/deck.wgsl"::{slab_step, slab_warp, slab_shape}
+
+// Steps through the raymarched slab for a cover reading (`deck.wgsl`'s
+// `slab_shape`): the shape alone, no erosion, so a cloud hides a little
+// past its eroded rim and never less than it draws.
+const SLAB_STEPS: i32 = 12;
 
 struct Stars {
     // x: how much of the starfield shows. y: a quad's size, pixels. z: the
@@ -21,6 +27,10 @@ struct Stars {
     field: vec4<f32>,
     // xyz: toward the moon. w: the cosine of its disk's radius.
     moon: vec4<f32>,
+    // The raymarched slab (`deck::slab_lanes`): x its floor, m; y its
+    // ceiling, m; z metres per noise unit; w extinction per metre — 0 where
+    // the deck is drawn flat, which the flat reading above matches.
+    slab: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> stars: Stars;
@@ -78,10 +88,25 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     var clear = 1.0;
     let d = normalize(in.dir);
     if d.y > stars.deck.y {
-        let q = d.xz * (stars.deck.x / d.y) + stars.cloud.xy;
-        let f = textureSampleLevel(field_tex, field_samp, q * stars.field.x + stars.field.y, 0.0).r;
         let fade = clamp((d.y - stars.deck.y) / stars.deck.z, 0.0, 1.0);
-        clear = 1.0 - clamp((f - stars.cloud.z) / stars.cloud.w, 0.0, 1.0) * fade;
+        if stars.slab.w > 0.0 {
+            // The slab the sky draws: a cumulus's flank stands well above
+            // its base's outline, and a star read off the outline shone
+            // through it.
+            var tau = 0.0;
+            for (var i = 0; i < SLAB_STEPS; i += 1) {
+                let s = slab_step(d, view.world_position.y, stars.slab, stars.deck.y, i, SLAB_STEPS);
+                let h = (s.y - stars.slab.x) / (stars.slab.y - stars.slab.x);
+                let q = (s.xz + slab_warp(s.xyz, h)) / stars.slab.z + stars.cloud.xy;
+                let f = textureSampleLevel(field_tex, field_samp, q * stars.field.x + stars.field.y, 1.0).r;
+                tau += slab_shape(h, (f - stars.cloud.z) / stars.cloud.w) * stars.slab.w * s.w;
+            }
+            clear = 1.0 - (1.0 - exp(-tau)) * fade;
+        } else {
+            let q = d.xz * (stars.deck.x / d.y) + stars.cloud.xy;
+            let f = textureSampleLevel(field_tex, field_samp, q * stars.field.x + stars.field.y, 0.0).r;
+            clear = 1.0 - clamp((f - stars.cloud.z) / stars.cloud.w, 0.0, 1.0) * fade;
+        }
     }
     // Alpha zero: `AlphaMode::Add` blends premultiplied (`One,
     // OneMinusSrcAlpha`), so any alpha here would erase the sky behind the

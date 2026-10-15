@@ -143,6 +143,8 @@ pub struct MoonParams {
     pub cloud: Vec4,
     pub field: Vec4,
     pub lit: Vec4,
+    /// The raymarched slab the sky draws (`deck::slab_lanes`).
+    pub slab: Vec4,
 }
 
 impl MoonParams {
@@ -171,6 +173,7 @@ impl MoonParams {
             ),
             lit: sunlight_on_disk(moon, shown.moon_sun, shown.moon_lit)
                 .extend(EARTHSHINE * (1.0 - shown.moon_lit)),
+            slab: Vec4::ZERO,
         }
     }
 }
@@ -273,6 +276,7 @@ pub fn setup(
 /// Put the moon where the weather says, behind the deck on screen.
 pub fn drive(
     weather: Res<WeatherNow>,
+    settings: Res<super::Settings>,
     composer: Option<Res<sky::SkyComposer>>,
     handle: Option<Res<MoonHandle>>,
     mut materials: ResMut<Assets<MoonMaterial>>,
@@ -281,7 +285,10 @@ pub fn drive(
         return;
     };
     let live = ComposeParams::from_weather(&weather);
-    let want = MoonParams::new(weather.moon, weather.night, &live);
+    let want = MoonParams {
+        slab: deck::slab_lanes(super::quality::effective(settings.gfx).clouds),
+        ..MoonParams::new(weather.moon, weather.night, &live)
+    };
     let stale = materials.get(&handle.0).is_some_and(|m| m.params != want);
     if stale {
         if let Some(m) = materials.get_mut(&handle.0) {

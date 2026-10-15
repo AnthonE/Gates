@@ -85,6 +85,22 @@ pub const DETAIL_N: usize = if cfg!(debug_assertions) { 32 } else { 64 };
 /// How fast a cumulus boils, m/s: the detail rising through the slab.
 pub const BOIL_MS: f32 = 0.8;
 
+/// The raymarched slab as the stars and the moon read it for their cover
+/// (`deck.wgsl`'s `slab_shape`): x its floor, y its ceiling, metres; z
+/// metres per noise unit; w the extinction per metre. Zero where the deck is
+/// drawn flat — LOW, and under WebGL2 — so they read the flat deck there.
+pub fn slab_lanes(c: Clouds) -> Vec4 {
+    if sky::BAKE_BACKDROP || steps(c).0 == 0 {
+        return Vec4::ZERO;
+    }
+    Vec4::new(
+        sky::CLOUD_ALT_M,
+        sky::CLOUD_ALT_M + SLAB_M,
+        sky::CLOUD_SCALE_M,
+        CLOUD_SIGMA,
+    )
+}
+
 /// Coarse view steps and light steps for a [`Clouds`] setting. `(0, 0)` is
 /// the flat deck. A coarse step reads the coverage alone; where it finds
 /// cloud the march walks it at a quarter of the step with the detail and
