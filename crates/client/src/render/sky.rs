@@ -819,7 +819,7 @@ impl ComposeParams {
             light: w.sun_lux,
             night: w.night,
             moon: w.moon,
-            fog: SkyFog::new(w.fog_part(), w.rain_part()),
+            fog: SkyFog::new(w.fog_part(), w.rain_part()).with_dust(w.dust_part()),
             backdrop: BAKE_BACKDROP,
             moon_lit: super::moon::lit_fraction(w.moon_phase),
             moonlight: w.moonlight,
@@ -834,6 +834,9 @@ pub const FOG_LAYER_M: f32 = 60.0;
 /// How deep the rain's haze reads, metres: the rain falls from the cloud
 /// base, but past this the deck above it still shows its shapes.
 pub const RAIN_LAYER_M: f32 = 150.0;
+/// How deep the dust lies, metres: a wind lifts sand a few hundred metres,
+/// so a dusty sky is pale overhead and gone at the horizon.
+pub const DUST_LAYER_M: f32 = 300.0;
 
 /// The weather's fog over the sky, as optical depths: straight up through
 /// each layer, and level across the farthest land the eye can see
@@ -849,6 +852,10 @@ pub struct SkyFog {
     /// `σ × rig::FAR_M` of each.
     pub far_fog: f32,
     pub far_rain: f32,
+    /// The dust haze's (`WeatherNow::dust_part`), through [`DUST_LAYER_M`]
+    /// and across the island.
+    pub up_dust: f32,
+    pub far_dust: f32,
 }
 
 impl SkyFog {
@@ -857,6 +864,8 @@ impl SkyFog {
         up_rain: 0.0,
         far_fog: 0.0,
         far_rain: 0.0,
+        up_dust: 0.0,
+        far_dust: 0.0,
     };
 
     /// The sky's fog for extinctions per metre `fog` and `rain`
@@ -868,26 +877,51 @@ impl SkyFog {
             up_rain: rain * RAIN_LAYER_M,
             far_fog: fog * far,
             far_rain: rain * far,
+            up_dust: 0.0,
+            far_dust: 0.0,
         }
     }
 
-    /// The four as the shaders take them.
+    /// This fog with a dust haze of extinction `dust` per metre in it.
+    pub fn with_dust(self, dust: f32) -> Self {
+        Self {
+            up_dust: dust * DUST_LAYER_M,
+            far_dust: dust * super::rig::FAR_M,
+            ..self
+        }
+    }
+
+    /// The fog and the rain as the shaders take them.
     pub fn lanes(&self) -> Vec4 {
         Vec4::new(self.up_fog, self.up_rain, self.far_fog, self.far_rain)
     }
 
+    /// The dust as the shaders take it: x straight up, y across the island.
+    pub fn dust_lanes(&self) -> Vec4 {
+        Vec4::new(self.up_dust, self.far_dust, 0.0, 0.0)
+    }
+
     /// How much of a sky ray `y` above the horizon the fog takes, `0..=1`.
-    /// `deck.wgsl`'s `deck_fog` is this, line for line.
+    /// `deck.wgsl`'s `deck_haze` is this, line for line.
     pub fn band(&self, y: f32) -> f32 {
         let s = (y + 0.02).max(1e-3);
-        let tau = (self.up_fog / s).min(self.far_fog) + (self.up_rain / s).min(self.far_rain);
+        let tau = (self.up_fog / s).min(self.far_fog)
+            + (self.up_rain / s).min(self.far_rain)
+            + (self.up_dust / s).min(self.far_dust);
         1.0 - (-tau).exp()
     }
 
-    /// The whole extinction per metre — what the ground's fog is greyed by
-    /// ([`fog_color`]), so the sky's band is the same colour.
+    /// The whole extinction per metre — what the ground's fog is greyed and
+    /// tinted by ([`fog_rgb_dust`], `rig::day_night`'s [`fog_color_dust`]),
+    /// so the sky's band is the same colour.
     pub fn sigma(&self) -> f32 {
-        (self.far_fog + self.far_rain) / super::rig::FAR_M
+        (self.far_fog + self.far_rain + self.far_dust) / super::rig::FAR_M
+    }
+
+    /// The dust's part of [`Self::sigma`], per metre — what the ground's
+    /// fog is tinted by ([`fog_rgb_dust`]).
+    pub fn dust(&self) -> f32 {
+        self.far_dust / super::rig::FAR_M
     }
 }
 
@@ -1057,7 +1091,7 @@ impl DeckLight {
                 MOON_SCATTER * MOONLIT[c] * p.night * p.moonlight * (1.0 - 0.7 * p.dark)
             }),
             gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
-            fog_rgb: fog_rgb(p.light, p.dark, fog_grey(p.fog.sigma())),
+            fog_rgb: fog_rgb_dust(p.light, p.dark, p.fog.sigma(), p.fog.dust()),
             thresh: 1.0 - p.cover,
         }
     }
@@ -1221,6 +1255,43 @@ pub fn fog_grey(sigma: f32) -> f32 {
 /// [`fog_rgb`] for a fog of extinction `sigma`.
 pub fn fog_color(light: f32, dark: f32, sigma: f32) -> Color {
     let c = fog_rgb(light, dark, fog_grey(sigma));
+    Color::linear_rgb(c[0], c[1], c[2])
+}
+
+/// The colour sand in the air scatters, linear, at luminance 1: a pale
+/// ochre, the reference's beige. Dust takes blue out of what it sends on
+/// and leaves the brightness, so the haze tints the fog it is part of and
+/// does not light it.
+pub const DUST_RGB: [f32; 3] = [1.28, 0.957, 0.6];
+
+/// [`fog_rgb`] for a fog of extinction `sigma` per metre of which `dust`
+/// is sand (`WeatherNow::dust_part`): pulled toward [`DUST_RGB`] at its own
+/// luminance by dust's share of the air. The share is of everything that
+/// fogs the frame — under WebGL2 that includes the island's own air, which
+/// is the haze's floor there ([`fog_falloff`]), so the first grain of sand
+/// tints a grain's worth and not the whole sky.
+pub fn fog_rgb_dust(light: f32, dark: f32, sigma: f32, dust: f32) -> [f32; 3] {
+    let rgb = fog_rgb(light, dark, fog_grey(sigma));
+    if dust <= 0.0 {
+        return rgb;
+    }
+    let floor = if BAKE_BACKDROP {
+        static AIR: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        *AIR.get_or_init(|| {
+            super::fill::luminance(ground_air(&super::rig::island_medium()).0.to_array())
+        })
+    } else {
+        0.0
+    };
+    let share = (dust / (sigma + floor).max(f32::EPSILON)).min(1.0);
+    let lum = super::fill::luminance(rgb);
+    core::array::from_fn(|c| rgb[c] + (DUST_RGB[c] * lum - rgb[c]) * share)
+}
+
+/// [`fog_rgb_dust`] as the `DistanceFog` takes it — what `rig::day_night`
+/// colours the ground's fog with, so the sky's band (`deck.rs`) meets it.
+pub fn fog_color_dust(light: f32, dark: f32, sigma: f32, dust: f32) -> Color {
+    let c = fog_rgb_dust(light, dark, sigma, dust);
     Color::linear_rgb(c[0], c[1], c[2])
 }
 
