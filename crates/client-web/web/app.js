@@ -1225,6 +1225,72 @@ async function openAudio() {
   }
 }
 
+/* ── the microphone, opened on the first push to talk ──────────────────────
+   Proximity voice (`client/src/render/voice.rs`). The game calls `start()` the
+   first time the talk key goes down, which is when the browser asks the
+   player for the microphone, and then `take()` every frame for the samples
+   the `gates-mic` processor captured since (`audio-processor.js`), at `rate`.
+   `state` is "off", "asking", "on" or "none". Never fatal: a page with no
+   microphone still hears everyone near it; it only cannot talk. */
+const MIC_QUEUE = 48; /* ~1 s of 1024-sample batches; the oldest goes past it */
+globalThis.gatesMic = {
+  state: "off",
+  rate: 0,
+  queue: [],
+  start() {
+    if (this.state !== "off") return;
+    this.state = "asking";
+    openMic(this).catch((err) => {
+      console.warn("gates mic: none -", (err && err.message) || err);
+      this.state = "none";
+    });
+  },
+  take() {
+    if (this.queue.length === 0) return null;
+    let n = 0;
+    for (const b of this.queue) n += b.length;
+    const out = new Float32Array(n);
+    let at = 0;
+    for (const b of this.queue) { out.set(b, at); at += b.length; }
+    this.queue.length = 0;
+    return out;
+  },
+};
+/* The talk buttons include a mouse's side buttons, which a browser would
+   otherwise read as back and forward, out of the game. */
+for (const type of ["mousedown", "mouseup", "auxclick"]) {
+  addEventListener(type, (e) => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
+}
+async function openMic(mic) {
+  await startAudio();
+  const a = globalThis.gatesAudio;
+  if (!a) throw new Error("no audio context");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("this page cannot ask for a microphone");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+  });
+  const source = a.context.createMediaStreamSource(stream);
+  /* One output, connected and silent: a node wired to the destination is
+     pulled on every engine, where an output-less one is not everywhere. */
+  const node = new AudioWorkletNode(a.context, "gates-mic", {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+  });
+  node.port.onmessage = (e) => {
+    if (mic.queue.length >= MIC_QUEUE) mic.queue.shift();
+    mic.queue.push(e.data);
+  };
+  source.connect(node);
+  node.connect(a.context.destination);
+  mic.rate = a.context.sampleRate;
+  mic.stream = stream;
+  mic.state = "on";
+  console.info(`gates mic: on at ${a.context.sampleRate} Hz`);
+}
+
 /* ── the score, started inside the gesture ─────────────────────────────────
    The music is whole tracks, four to five minutes each, streamed by the
    browser's own `<audio>` element from `assets/music/` rather than decoded

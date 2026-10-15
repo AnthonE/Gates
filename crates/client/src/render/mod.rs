@@ -60,8 +60,10 @@ pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
+// Proximity voice: the talk key, the microphone, each talker's lane.
 pub mod clutter;
 pub mod collider_debug;
+pub mod voice;
 // The hemisphere sky fill. `rig.rs` owns the light; this owns the arithmetic
 // of what a sky-facing face and a ground-facing face each receive, because
 // Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
@@ -1928,6 +1930,7 @@ impl Plugin for GatesRenderPlugin {
                 // a lid), and what the snapshot already says their hands and
                 // feet did (a draw, a landing).
                 audio::remote_heard,
+                audio::far_reports,
                 audio::remote_hands,
                 // …and every shot in earshot, at the shooter. Same slice,
                 // and after it for the same reason: the transform this
@@ -1974,6 +1977,7 @@ impl Plugin for GatesRenderPlugin {
         if self.capture.is_none() && !filming {
             panels::register(app);
             chat::register(app);
+            voice::register(app);
             faces::register(app);
             paint::register(app);
             team::register(app);

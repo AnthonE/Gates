@@ -455,6 +455,20 @@ pub struct ShardStats {
     /// walk to restart, so unlike every other event this does not force
     /// an `ev_resync` — the line is simply lost, and counted.
     pub chat_undelivered: AtomicU64,
+    /// C→S voice frames decoded and ringed (v113).
+    pub voice_ok: AtomicU64,
+    /// C→S voice datagrams the decoder refused.
+    pub voice_bad: AtomicU64,
+    /// Voice frames the per-connection token bucket refused.
+    pub voice_rate_limited: AtomicU64,
+    /// Voice frames dropped by a full inbound ring.
+    pub voice_ring_drops: AtomicU64,
+    /// Voice frames from a talker with no living body to speak from.
+    pub voice_unheard: AtomicU64,
+    /// Voice frames handed to a listener's writer.
+    pub voice_relayed: AtomicU64,
+    /// Relayed voice frames a listener's full outbound ring refused.
+    pub voice_out_drops: AtomicU64,
     /// Joins that arrived as a *saved* character rather than a fresh one
     /// (`store.rs`). The one number that says persistence is doing anything:
     /// a shard with a save file whose `saves_restored` stays 0 while
@@ -1018,6 +1032,8 @@ impl ShardStats {
             "chat_rate_limited" => &self.chat_rate_limited,
             "chat_ring_drops" => &self.chat_ring_drops,
             "chat_undelivered" => &self.chat_undelivered,
+            "voice_bad" => &self.voice_bad,
+            "voice_out_drops" => &self.voice_out_drops,
             "save_ring_drops" => &self.save_ring_drops,
             "saves_evicted" => &self.saves_evicted,
             "save_write_errors" => &self.save_write_errors,

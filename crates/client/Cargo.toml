@@ -63,6 +63,8 @@ render = [
     "dep:cpal",
     # The native music stream's ring into that callback (`render/music_out.rs`).
     "dep:rtrb",
+    # Proximity voice's codec (`render/voice.rs`).
+    "dep:voice",
 ]
 # Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
 # reloads it into the running client instead of asking for a rebuild and a
@@ -521,6 +523,9 @@ content = { path = "../content" }
 [dependencies]
 # The audio model, its own crate so the browser's AudioWorklet can link it alone.
 sound = { path = "../sound" }
+# Proximity voice's Opus codec (`render/voice.rs`). Pure Rust, so the browser
+# build links it too; on `render`, because only the game talks.
+voice = { path = "../voice", optional = true }
 # Default features for now. Trimming is still a follow-up — but the list of
 # what to trim has changed and the old one is now wrong in a load-bearing way:
 # **`bevy_ui` is not dead weight, it is the whole interaction surface.** Every
