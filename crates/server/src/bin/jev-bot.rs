@@ -273,9 +273,40 @@ async fn run(options: Options) -> Result<(), String> {
             }),
         });
     }
+    // Ears and a voice (`--voice`): the first body gets them, and its mind's
+    // lines are spoken through them.
+    let mut voice = None;
+    let mut speech = None;
+    if options.mind.voice {
+        if !matches!(options.mind.source, Source::External(..) | Source::Mcp) {
+            return Err("--voice needs an external or MCP mind (--external or --mcp)".into());
+        }
+        // No key is a body without a voice, said once, never a body that
+        // does not start: a service gains its voice when the key lands.
+        match server::agent_voice::VoiceConfig::from_env() {
+            Ok(cfg) => {
+                out!(
+                    "voice: {}, speaks with {}",
+                    if cfg.hears() {
+                        format!("hears through {} ({})", cfg.base, cfg.stt_model)
+                    } else {
+                        "no ears (no GATES_VOICE_KEY or OPENAI_API_KEY)".into()
+                    },
+                    match &cfg.eleven {
+                        Some((_, v, m)) => format!("ElevenLabs voice {v} ({m})"),
+                        None => format!("{} voice {}", cfg.tts_model, cfg.tts_voice),
+                    }
+                );
+                let (v, tx) = server::agent_voice::AgentVoice::spawn(cfg)?;
+                voice = Some(Box::new(v));
+                speech = Some(tx);
+            }
+            Err(e) => out!("voice: off - {e}"),
+        }
+    }
     let mut minds = Vec::with_capacity(options.bots);
     for _ in 0..options.bots {
-        minds.push(options.mind.build()?);
+        minds.push(options.mind.build_with_speech(speech.take())?);
     }
     out!(
         "mind: {} × {} · {} hands · {}",
@@ -343,8 +374,10 @@ async fn run(options: Options) -> Result<(), String> {
             name.as_str(),
             &server::agent_demo::guest_secret_path(),
         );
+        let voice = if i == 0 { voice.take() } else { None };
         fleet.spawn(async move {
             let mut survivor = Survivor::with(mind, opts);
+            survivor.voice = voice;
             // The run's end, so the body is home with its doors shut when
             // it comes: counted in the shard's ticks from the welcome.
             let ticks = duration.as_secs().saturating_mul(u64::from(TICK_HZ));
@@ -452,6 +485,13 @@ fn print_report(label: &str, survivor: &Survivor) {
         "{label}chat: said {} ({} heard back), heard {} from others, {} refused, {} replaced unsent",
         s.said, s.echoed, s.heard, s.say_refused, s.say_dropped
     );
+    if let Some(v) = survivor.voice.as_ref() {
+        let v = v.stats;
+        out!(
+            "{label}voice: heard {} frames, {} utterances, {} transcribed ({} over the cap); spoke {} lines in {} frames ({} over the cap); {} service failures",
+            v.frames_heard, v.utterances, v.transcribed, v.heard_dropped, v.lines_spoken, v.frames_sent, v.said_dropped, v.failures
+        );
+    }
     if let Some(core) = survivor.core() {
         let gathered: Vec<String> = (0..usize::from(core.catalog.count))
             .filter(|&i| survivor.gathered.get(i).is_some_and(|&n| n > 0))

@@ -169,6 +169,20 @@ impl EvMsg {
     }
 }
 
+/// One relayed voice datagram crossing sim→net (v113): already encoded, the
+/// talker's id in front, the same bytes for every listener.
+#[derive(Clone, Copy)]
+pub struct VoiceMsg {
+    pub len: u16,
+    pub buf: [u8; protocol::VOICE_DATAGRAM_MAX],
+}
+
+impl VoiceMsg {
+    pub fn bytes(&self) -> &[u8] {
+        &self.buf[..self.len as usize]
+    }
+}
+
 /// The sim thread's ends of one connection's rings.
 pub struct Link {
     pub generation: u32,
@@ -181,6 +195,11 @@ pub struct Link {
     /// — chat never backpressures the shared stream, or a spammer would
     /// stall their own transactions behind their own typing).
     pub chats: Consumer<ChatMsg>,
+    /// C→S voice frames (v113), rate-limited by the reader. Relayed, never
+    /// simulated: the sim thread only measures who is in range.
+    pub voice_in: Consumer<protocol::VoiceFrame>,
+    /// S→C relayed voice datagrams for this connection's writer.
+    pub voice_out: Producer<VoiceMsg>,
     pub snaps: Producer<SnapMsg>,
     pub events: Producer<EvMsg>,
 }

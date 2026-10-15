@@ -7,8 +7,8 @@
 use crate::config::ShardConfig;
 use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WorldDone,
-    WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, VoiceMsg,
+    WorldDone, WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
@@ -22,7 +22,7 @@ use sim_core::input::BTN_MASK;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
     INPUT_RING_CAP, MAX_PLAYERS, MAX_SPECTATORS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ,
-    WORLD_RING_CAP,
+    VOICE_BURST, VOICE_FPS, VOICE_OUT_RING_CAP, VOICE_PER_TICK, VOICE_RING_CAP, WORLD_RING_CAP,
 };
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 use std::net::SocketAddr;
@@ -42,6 +42,32 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 const PLAYER_ID_GEN_MASK: u32 = 0x007F_FFFF;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What one connection may make this shard hold for it, QUIC-side. quinn's
+/// defaults (100 + 100 streams, 1.25 MB a stream, an unbounded connection
+/// window) are a general server's; this one reads exactly one bidi stream
+/// (`accept_bi` once) and never reads another, so every byte a client parks
+/// on a stream it opened is memory nobody frees until the connection does —
+/// from an unauthenticated handshake too.
+///
+/// Bidi: the CONNECT request plus the game stream, with headroom. Uni: the
+/// browser's HTTP/3 control and two QPACK streams (fewer and a browser
+/// stalls), plus GREASE. Every frame the client sends is at most
+/// `protocol::MAX_STREAM_MSG_BYTES` + 2, so a 64 KiB stream window is
+/// hundreds of frames.
+const QUIC_MAX_BIDI_STREAMS: u32 = 4;
+const QUIC_MAX_UNI_STREAMS: u32 = 8;
+const QUIC_STREAM_RWND: u32 = 64 * 1024;
+const QUIC_CONN_RWND: u32 = 256 * 1024;
+/// Inbound datagrams buffered before quinn drops the oldest: an input
+/// datagram is ~74 B, so this is several seconds of a stalled reader.
+const QUIC_DATAGRAM_RBUF: usize = 64 * 1024;
+/// Unacknowledged outbound stream bytes. A client that never acks holds this
+/// much, not quinn's 10 MB; a burst of join sync still moves a window a
+/// round trip, megabytes a second at any real RTT.
+const QUIC_SEND_WINDOW: u64 = 2 * 1024 * 1024;
+const _: () = assert!(QUIC_STREAM_RWND as usize >= 64 * (protocol::MAX_STREAM_MSG_BYTES + 2));
+const _: () = assert!(QUIC_CONN_RWND >= QUIC_STREAM_RWND);
 /// The challenge's signed reply gets its own, longer deadline, because a
 /// person answers it (`protocol::SIGN_WAIT_SECS`). The slot it holds is still
 /// counted in `in_flight`, so `ADMIT_RETRY_AT` / `ADMIT_REFUSE_AT` still bound
@@ -122,6 +148,97 @@ const NET_SAMPLE_EVERY: u32 = 500;
 const _: () = assert!(ADMIT_RETRY_AT < ADMIT_REFUSE_AT);
 const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
 const _: () = assert!(NET_SAMPLE_EVERY > 0);
+
+/// Handshakes one source may hold at once: an IPv4 address, or an IPv6 /64
+/// (one subscriber's whole allocation, so a prefix of addresses is still one
+/// source). `ADMIT_REFUSE_AT` is a count over everybody, and an unanswered
+/// sign-in holds its place for `SIGN_WAIT`, so without this one address
+/// opening a handful of sessions a second kept every other joiner out.
+///
+/// Taken only from an address that has proved it receives where it claims,
+/// so a spoofed flood cannot spend a real player's allowance: at the door
+/// when QUIC has already validated it (under load, the Retry above makes
+/// every newcomer validate first), otherwise once its QUIC handshake has
+/// completed. The shard's own host is exempt — loopback, which the load bots
+/// and every wire suite dial from, and the address it is bound to, which its
+/// population dials (`population::dial_addr`). Eight covers a household or a
+/// café joining at once.
+const ADMIT_PER_SOURCE: u16 = 8;
+/// Buckets in the per-source table. Sources hash in with a key drawn at boot,
+/// so nobody can aim at somebody else's bucket; a collision only makes two
+/// sources share one allowance.
+const SOURCE_BUCKETS: usize = 4096;
+const _: () = assert!((ADMIT_PER_SOURCE as usize) < ADMIT_RETRY_AT);
+const _: () = assert!(SOURCE_BUCKETS.is_power_of_two());
+
+/// In-flight handshakes per source (`ADMIT_PER_SOURCE`).
+struct SourceGate {
+    held: Box<[std::sync::atomic::AtomicU16]>,
+    key: std::collections::hash_map::RandomState,
+    /// The shard's own bound address, when it is a specific one.
+    own: Option<std::net::IpAddr>,
+}
+
+/// One source's place in [`SourceGate`], given back on drop — however the
+/// handshake that holds it ends. A loopback permit holds no bucket.
+struct SourcePermit {
+    gate: Arc<SourceGate>,
+    bucket: Option<usize>,
+}
+
+impl Drop for SourcePermit {
+    fn drop(&mut self) {
+        if let Some(b) = self.bucket {
+            self.gate.held[b].fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl SourceGate {
+    fn new(bound: Option<std::net::IpAddr>) -> Self {
+        Self {
+            held: (0..SOURCE_BUCKETS)
+                .map(|_| std::sync::atomic::AtomicU16::new(0))
+                .collect(),
+            key: std::collections::hash_map::RandomState::new(),
+            own: bound
+                .map(|ip| ip.to_canonical())
+                .filter(|ip| !ip.is_unspecified()),
+        }
+    }
+
+    /// The bucket `ip` counts against: the whole IPv4 address, or the /64 of
+    /// an IPv6 one (a v4-mapped v6 address is its v4 address).
+    fn bucket(&self, ip: std::net::IpAddr) -> usize {
+        use std::hash::BuildHasher;
+        let h = match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => self.key.hash_one(v4.octets()),
+            std::net::IpAddr::V6(v6) => self.key.hash_one(&v6.octets()[..8]),
+        };
+        h as usize & (SOURCE_BUCKETS - 1)
+    }
+
+    /// A place for one more handshake from `ip`, or `None` if it already
+    /// holds `ADMIT_PER_SOURCE`. The shard's own host always gets one,
+    /// uncounted.
+    fn take(gate: &Arc<Self>, ip: std::net::IpAddr) -> Option<SourcePermit> {
+        let ip = ip.to_canonical();
+        let bucket = if ip.is_loopback() || gate.own == Some(ip) {
+            None
+        } else {
+            let b = gate.bucket(ip);
+            if gate.held[b].fetch_add(1, Ordering::Relaxed) >= ADMIT_PER_SOURCE {
+                gate.held[b].fetch_sub(1, Ordering::Relaxed);
+                return None;
+            }
+            Some(b)
+        };
+        Some(SourcePermit {
+            gate: gate.clone(),
+            bucket,
+        })
+    }
+}
 
 /// Binds the shard's UDP socket with the buffer sizes §2.2 asks for, then
 /// **reads back what the OS actually granted** and records both.
@@ -578,6 +695,13 @@ pub async fn spawn_shard(
     // NETCODE.md §2.2: bound worst-case queued staleness; snapshots
     // replace, never accumulate.
     transport.datagram_send_buffer_size(64 * 1024);
+    transport
+        .max_concurrent_bidi_streams(QUIC_MAX_BIDI_STREAMS.into())
+        .max_concurrent_uni_streams(QUIC_MAX_UNI_STREAMS.into())
+        .stream_receive_window(QUIC_STREAM_RWND.into())
+        .receive_window(QUIC_CONN_RWND.into())
+        .send_window(QUIC_SEND_WINDOW)
+        .datagram_receive_buffer_size(Some(QUIC_DATAGRAM_RBUF));
     // Congestion control, selectable because §2.1 names it as the real risk
     // and §2.2 promised an A/B path that had never been built. CUBIC halves
     // cwnd on loss and a collapsed window at 100 ms RTT can fall under our
@@ -1060,6 +1184,7 @@ async fn accept_loop(
     // clock and a window, and what actually protects the shard is "how much
     // unfinished crypto am I holding right now".
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sources = Arc::new(SourceGate::new(endpoint.local_addr().ok().map(|a| a.ip())));
     let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
     let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
     let mut sweep_in_flight = false;
@@ -1085,6 +1210,47 @@ async fn accept_loop(
     let (prices_done_tx, mut prices_done_rx) =
         tokio::sync::mpsc::channel::<crate::skins::Prices>(1);
     let mut prices_in_flight = false;
+    let mut parked: Vec<Parked> = Vec::with_capacity(PARK_MAX);
+    let mut park_poll = tokio::time::interval(PARK_POLL);
+    park_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The door's tail, for a fresh arrival and a parked one alike.
+    macro_rules! admit {
+        ($done:expr) => {{
+            let done = $done;
+            // Before the claim, never after: a record for the slot's
+            // previous tenant has to be filed under the key it was
+            // written for, and installing first would overwrite that key.
+            drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+            if done.hello.is_spectator() {
+                install_spectator(
+                    done,
+                    &facts,
+                    &mut ctrl_tx,
+                    &keys,
+                    &mut seats,
+                    &slots,
+                    &stats,
+                )
+                .await;
+            } else if let Some((slot, gen)) = install(
+                done,
+                &facts,
+                &mut ctrl_tx,
+                &refresh_tx,
+                &mut keys,
+                &store,
+                &slots,
+                &stats,
+            )
+            .await
+            {
+                // The door's read: what this player owns, before they
+                // reach a bench.
+                skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
+                ask_face(slot, gen, &keys, &facts, &face_tx);
+            }
+        }};
+    }
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -1113,10 +1279,23 @@ async fn accept_loop(
                     incoming.retry();
                     continue;
                 }
+                // An address QUIC has validated is charged against its
+                // source here, before any crypto (`ADMIT_PER_SOURCE`).
+                let permit = if incoming.remote_address_validated() {
+                    let Some(p) = SourceGate::take(&sources, incoming.remote_address().ip()) else {
+                        ShardStats::bump(&stats.refused_per_source);
+                        incoming.refuse();
+                        continue;
+                    };
+                    Some(p)
+                } else {
+                    None
+                };
                 in_flight.fetch_add(1, Ordering::Relaxed);
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
                 let in_flight = in_flight.clone();
+                let sources = sources.clone();
                 tokio::spawn(handshake_task(
                     incoming,
                     done_tx,
@@ -1127,6 +1306,8 @@ async fn accept_loop(
                     facts.min_client,
                     facts.spectate.open(),
                     in_flight,
+                    sources,
+                    permit,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -1139,22 +1320,56 @@ async fn accept_loop(
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
                     continue;
                 }
-                // Before the claim, never after: a record for the slot's
-                // previous tenant has to be filed under the key it was
-                // written for, and installing first would overwrite that key.
-                drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                if done.hello.is_spectator() {
-                    install_spectator(done, &facts, &mut ctrl_tx, &keys, &mut seats, &slots, &stats)
-                        .await;
-                } else if let Some((slot, gen)) = install(
-                    done, &facts, &mut ctrl_tx, &refresh_tx, &mut keys, &store, &slots, &stats,
-                )
-                .await
-                {
-                    // The door's read: what this player owns, before they
-                    // reach a bench.
-                    skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
-                    ask_face(slot, gen, &keys, &facts, &face_tx);
+                // One wallet, one body. A second session for a key whose body
+                // is still awake would miss the sleeper (there is none) and
+                // be seated from the store's record: two bodies, one
+                // inventory. So the session already in is closed
+                // (`REFUSE_IN_USE`) and the newcomer waits, unclaimed, until
+                // the sim has put that body to sleep — then it is seated on
+                // it. Never in this pass: the old leave has not reached the
+                // sim yet. A second newcomer for the same key, or one past
+                // the park's room, is refused outright.
+                if !done.hello.is_spectator() {
+                    if let Some(s) = done.key.and_then(|k| seated(&k, &keys, &slots)) {
+                        let twice = parked.iter().any(|p| p.done.key == done.key);
+                        if twice || parked.len() >= PARK_MAX {
+                            ShardStats::bump(&stats.refused_in_use);
+                            spawn_refusal(done.connection, done.send, protocol::REFUSE_IN_USE);
+                        } else {
+                            kick_tenant(s, &mut keys, &slots, protocol::REFUSE_IN_USE);
+                            ShardStats::bump(&stats.parked_in_use);
+                            parked.push(Parked {
+                                done,
+                                slot: s,
+                                generation: keys[s].generation,
+                                until: tokio::time::Instant::now() + PARK_WAIT,
+                            });
+                        }
+                        continue;
+                    }
+                }
+                admit!(done);
+            }
+            _ = park_poll.tick(), if !parked.is_empty() => {
+                let now = tokio::time::Instant::now();
+                let mut i = 0;
+                while i < parked.len() {
+                    let w = slots.load(parked[i].slot);
+                    let freed = crate::slot::state_of(w) == crate::slot::SLOT_EMPTY
+                        || crate::slot::generation_of(w) != parked[i].generation;
+                    if !freed && now < parked[i].until {
+                        i += 1;
+                        continue;
+                    }
+                    let p = parked.swap_remove(i);
+                    // Freed, and nothing else seated the key meanwhile: the
+                    // body is asleep and the join wakes it.
+                    if freed && p.done.key.and_then(|k| seated(&k, &keys, &slots)).is_none() {
+                        admit!(p.done);
+                    } else {
+                        ShardStats::bump(&stats.refused_in_use);
+                        spawn_refusal(p.done.connection, p.done.send, protocol::REFUSE_IN_USE);
+                    }
                 }
             }
             Some((slot, gen)) = refresh_rx.recv() => {
@@ -1668,6 +1883,8 @@ async fn handshake_task(
     min_client: u32,
     spectate_open: bool,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    sources: Arc<SourceGate>,
+    permit: Option<SourcePermit>,
 ) {
     // Decremented however this task leaves — the timeout arm, any of the
     // refusal arms, or success. A guard rather than a line at the end,
@@ -1684,13 +1901,27 @@ async fn handshake_task(
 
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
+        // The QUIC handshake is done, so the address is proven: count it
+        // against its source (`ADMIT_PER_SOURCE`) for the rest of this task,
+        // unless the door already did.
+        let permit = match permit {
+            Some(p) => p,
+            None => {
+                let Some(p) = SourceGate::take(&sources, request.remote_address().ip()) else {
+                    ShardStats::bump(&stats.refused_per_source);
+                    request.too_many_requests().await;
+                    return Err(());
+                };
+                p
+            }
+        };
         let connection = request.accept().await.map_err(|_| ())?;
         let (send, mut recv) = connection.accept_bi().await.map_err(|_| ())?;
         let (hello_buf, hello_len) = read_frame(&mut recv).await.ok_or(())?;
-        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len))
+        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len, permit))
     })
     .await;
-    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len))) = result else {
+    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len, _permit))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
@@ -1967,6 +2198,8 @@ async fn install(
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
     let (action_tx, action_rx) = RingBuffer::<ActionMsg>::new(ACTION_RING_CAP);
     let (chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+    let (voice_tx, voice_rx) = RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP);
+    let (voice_out_tx, voice_out_rx) = RingBuffer::<VoiceMsg>::new(VOICE_OUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
@@ -1974,6 +2207,8 @@ async fn install(
         input: input_rx,
         actions: action_rx,
         chats: chat_rx,
+        voice_in: voice_rx,
+        voice_out: voice_out_tx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -2022,6 +2257,7 @@ async fn install(
     tokio::spawn(reader_task(
         connection.clone(),
         input_tx,
+        voice_tx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -2054,6 +2290,7 @@ async fn install(
     tokio::spawn(writer_task(
         connection,
         snap_rx,
+        voice_out_rx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -2192,6 +2429,10 @@ async fn install_spectator(
     // `Link` names them, and nothing ever pushes into either.
     let (_action_tx, action_rx) = RingBuffer::<ActionMsg>::new(1);
     let (_chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(1);
+    // Nor does it talk; it does hear, when it watches an agent
+    // (`ShardCore::voice_reach`).
+    let (_voice_tx, voice_rx) = RingBuffer::<protocol::VoiceFrame>::new(1);
+    let (voice_out_tx, voice_out_rx) = RingBuffer::<VoiceMsg>::new(VOICE_OUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
@@ -2199,6 +2440,8 @@ async fn install_spectator(
         input: input_rx,
         actions: action_rx,
         chats: chat_rx,
+        voice_in: voice_rx,
+        voice_out: voice_out_tx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -2272,6 +2515,7 @@ async fn install_spectator(
             tokio::spawn(writer_task(
                 connection,
                 snap_rx,
+                voice_out_rx,
                 slots.clone(),
                 stats.clone(),
                 slot,
@@ -2280,6 +2524,8 @@ async fn install_spectator(
             ));
         }
         Some(delay) => {
+            // A delayed feed hears nothing live (`ShardCore::voice_reach`).
+            drop(voice_out_rx);
             tokio::spawn(delayed_writer_task(
                 connection,
                 send,
@@ -2497,6 +2743,7 @@ async fn delayed_writer_task(
 fn accept_input(
     dg: &[u8],
     input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
+    voice: &mut VoiceIn,
     stats: &ShardStats,
 ) {
     // **First, before any verdict on it.** These bytes crossed the path
@@ -2504,7 +2751,12 @@ fn accept_input(
     // that only counted the datagrams we liked would read lowest exactly
     // when a shard is being fed garbage (NOW.md §0q item 4).
     ShardStats::add_msg(&stats.net_dg_in_count, &stats.net_dg_in_bytes, dg.len());
-    let ok = peek_kind(dg).map(|k| k == KIND_INPUT).unwrap_or(false);
+    let kind = peek_kind(dg).ok();
+    if kind == Some(protocol::KIND_VOICE) {
+        voice.accept(dg, stats);
+        return;
+    }
+    let ok = kind == Some(KIND_INPUT);
     if !ok {
         ShardStats::bump(&stats.input_dg_bad);
         return;
@@ -2526,9 +2778,66 @@ fn accept_input(
     }
 }
 
+/// A talker's voice frames on their way in (v113): decoded, rate-limited
+/// by a token bucket of [`VOICE_FPS`] a second and [`VOICE_BURST`] deep,
+/// and ringed for the sim thread's range check. Every refusal is counted
+/// and none is a disconnect: voice is the datagram lane's, and a lost
+/// frame is the codec's to conceal.
+struct VoiceIn {
+    tx: rtrb::Producer<protocol::VoiceFrame>,
+    tokens: u32,
+    last: Option<Instant>,
+}
+
+impl VoiceIn {
+    fn new(tx: rtrb::Producer<protocol::VoiceFrame>) -> Self {
+        Self {
+            tx,
+            tokens: VOICE_BURST,
+            last: None,
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        let last = *self.last.get_or_insert(now);
+        let per = Duration::from_secs(1) / VOICE_FPS;
+        let steps = (now.saturating_duration_since(last).as_nanos() / per.as_nanos()) as u64;
+        if steps >= VOICE_BURST as u64 {
+            self.tokens = VOICE_BURST;
+            self.last = Some(now);
+        } else if steps > 0 {
+            self.tokens = (self.tokens + steps as u32).min(VOICE_BURST);
+            self.last = Some(last + per * steps as u32);
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+
+    fn accept(&mut self, dg: &[u8], stats: &ShardStats) {
+        let Ok(frame) = protocol::decode_voice_up(dg) else {
+            ShardStats::bump(&stats.voice_bad);
+            return;
+        };
+        if !self.allow(Instant::now()) {
+            ShardStats::bump(&stats.voice_rate_limited);
+            return;
+        }
+        if self.tx.push(frame).is_err() {
+            ShardStats::bump(&stats.voice_ring_drops);
+            return;
+        }
+        ShardStats::bump(&stats.voice_ok);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn reader_task(
     connection: Connection,
     mut input_tx: rtrb::Producer<protocol::InputDatagram>,
+    voice_tx: rtrb::Producer<protocol::VoiceFrame>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
@@ -2549,10 +2858,11 @@ async fn reader_task(
         )>(NETSIM_QUEUE);
         {
             let stats = stats.clone();
+            let mut voice = VoiceIn::new(voice_tx);
             tokio::spawn(async move {
                 while let Some((due, dg)) = rx.recv().await {
                     tokio::time::sleep_until(due).await;
-                    accept_input(&dg, &mut input_tx, &stats);
+                    accept_input(&dg, &mut input_tx, &mut voice, &stats);
                 }
             });
         }
@@ -2572,8 +2882,9 @@ async fn reader_task(
         slots.mark_leaving(slot, generation);
         return;
     }
+    let mut voice = VoiceIn::new(voice_tx);
     while let Ok(dg) = connection.receive_datagram().await {
-        accept_input(&dg, &mut input_tx, &stats);
+        accept_input(&dg, &mut input_tx, &mut voice, &stats);
     }
     slots.mark_leaving(slot, generation);
 }
@@ -2734,9 +3045,11 @@ async fn action_reader_task(
     slots.mark_leaving(slot, generation);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn writer_task(
     connection: Connection,
     mut snap_rx: rtrb::Consumer<SnapMsg>,
+    mut voice_rx: rtrb::Consumer<VoiceMsg>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
@@ -2820,6 +3133,20 @@ async fn writer_task(
             stats
                 .net_mtu_last
                 .store(p.current_mtu as u64, Ordering::Relaxed);
+        }
+        // Voice goes out whole and in order: unlike a snapshot, a frame
+        // is not superseded by the next one (v113). `send_datagram` drops
+        // the oldest itself when the path is congested.
+        while let Ok(v) = voice_rx.pop() {
+            match connection.send_datagram(v.bytes()) {
+                Ok(()) => ShardStats::add_msg(
+                    &stats.net_dg_out_count,
+                    &stats.net_dg_out_bytes,
+                    v.bytes().len(),
+                ),
+                Err(SendDatagramError::NotConnected) => break,
+                Err(_) => ShardStats::bump(&stats.voice_out_drops),
+            }
         }
         // Drain to the newest — snapshots replace, never accumulate.
         let mut newest: Option<SnapMsg> = None;
@@ -3001,22 +3328,62 @@ fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> 
     let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some()) else {
         return false;
     };
+    kick_tenant(slot, keys, slots, protocol::REFUSE_ADMIN)
+}
+
+/// End `slot`'s live tenant with `code`: marked leaving (the sim's sweep
+/// puts the body to sleep) and closed with the reason posted. False when the
+/// slot is not live — already leaving, or empty.
+fn kick_tenant(
+    slot: usize,
+    keys: &mut [KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+    code: u8,
+) -> bool {
     let word = slots.load(slot);
     if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
         return false;
     }
-    slots.mark_leaving_why(
-        slot,
-        crate::slot::generation_of(word),
-        protocol::REFUSE_ADMIN,
-    );
+    slots.mark_leaving_why(slot, crate::slot::generation_of(word), code);
     if let Some(conn) = keys[slot].conn.take() {
         // Closed with a posted reason, the entitle kick's rule: a silent
         // close reads as a network fault, and "my internet broke" is the
         // wrong thing for a kicked player to believe.
-        close_with_reason(conn, protocol::REFUSE_ADMIN);
+        close_with_reason(conn, code);
     }
     true
+}
+
+/// A newcomer waiting for its own wallet's old body to fall asleep (one
+/// wallet, one body): the old session has been closed, and once the sim has
+/// applied its leave the slot frees and the newcomer is seated — on the
+/// sleeper, by `connect_as`'s first door. One handshake and one signature,
+/// however the old session ended.
+struct Parked {
+    done: Handshaken,
+    slot: usize,
+    generation: u32,
+    until: tokio::time::Instant,
+}
+
+/// Newcomers that may wait at once, and how long one waits before it is
+/// refused `REFUSE_IN_USE` after all. A leave lands within a tick or two of
+/// the close; the wait only runs long for a body the sim cannot let go of.
+const PARK_MAX: usize = 16;
+const PARK_WAIT: Duration = Duration::from_secs(5);
+const PARK_POLL: Duration = Duration::from_millis(20);
+
+/// The player slot whose tenant is `key` and still has a body awake: live,
+/// or leaving but not yet freed (the sim frees a slot only after it has
+/// applied the leave). A stale `KeySlot` from an earlier generation is not
+/// a tenant — `install` overwrites them lazily.
+fn seated(key: &PlayerKey, keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable) -> Option<usize> {
+    (0..MAX_PLAYERS).find(|&s| {
+        let word = slots.load(s);
+        keys[s].key.as_ref() == Some(key)
+            && crate::slot::state_of(word) != crate::slot::SLOT_EMPTY
+            && crate::slot::generation_of(word) == keys[s].generation
+    })
 }
 
 /// Tell admin `to` how an act went (`admin::AdminReply`). A full ring loses
@@ -3417,6 +3784,8 @@ fn sim_thread(
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_CONNS);
     links.resize_with(MAX_CONNS, || None);
     let mut links = links.into_boxed_slice();
+    // Who hears the talker being relayed (`ShardCore::voice_reach`), reused.
+    let mut voice_hears = [false; MAX_CONNS];
 
     // Startup-only notification: no channel wake or drop enters the tick.
     // A cancelled startup has no accept loop and must not leave a sim alive.
@@ -3560,6 +3929,51 @@ fn sim_thread(
                 // check for room.
                 if let Ok(chat) = link.chats.pop() {
                     core.push_chat(slot, chat);
+                }
+            }
+        }
+        // Proximity voice (v113): each talker's frames go to whoever is in
+        // range now, measured here because positions live on this thread.
+        // Relayed, never simulated — nothing below touches the world.
+        for slot in 0..MAX_PLAYERS {
+            let mut frames = [protocol::VoiceFrame::EMPTY; VOICE_PER_TICK];
+            let mut n = 0;
+            if let Some(link) = links[slot].as_mut() {
+                while n < VOICE_PER_TICK {
+                    let Ok(f) = link.voice_in.pop() else {
+                        break;
+                    };
+                    frames[n] = f;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            let Some(from) = core.voice_reach(slot, &mut voice_hears) else {
+                ShardStats::add(&stats.voice_unheard, n as u64);
+                continue;
+            };
+            for f in &mut frames[..n] {
+                f.from = from;
+                let mut msg = VoiceMsg {
+                    len: 0,
+                    buf: [0; protocol::VOICE_DATAGRAM_MAX],
+                };
+                let Ok(len) = protocol::encode_voice(f, &mut msg.buf) else {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                };
+                msg.len = len as u16;
+                for (to, &hears) in voice_hears.iter().enumerate() {
+                    let Some(link) = links[to].as_mut().filter(|_| hears) else {
+                        continue;
+                    };
+                    if link.voice_out.push(msg).is_ok() {
+                        ShardStats::bump(&stats.voice_relayed);
+                    } else {
+                        ShardStats::bump(&stats.voice_out_drops);
+                    }
                 }
             }
         }
@@ -3787,6 +4201,50 @@ fn fresh_salt() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **One source holds at most `ADMIT_PER_SOURCE` handshakes, and gets
+    /// each back when it ends.** An IPv6 /64 is one source; loopback is
+    /// never counted (the bots and the wire suites dial from it).
+    #[test]
+    fn a_source_holds_at_most_its_allowance_of_handshakes() {
+        let gate = Arc::new(SourceGate::new(Some("192.0.2.1".parse().unwrap())));
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let mut held: Vec<_> = (0..ADMIT_PER_SOURCE)
+            .map(|_| SourceGate::take(&gate, ip).expect("within the allowance"))
+            .collect();
+        assert!(
+            SourceGate::take(&gate, ip).is_none(),
+            "one past the allowance"
+        );
+        held.pop();
+        assert!(
+            SourceGate::take(&gate, ip).is_some(),
+            "a finished handshake gives its place back"
+        );
+
+        let a: std::net::IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        assert_eq!(gate.bucket(a), gate.bucket(b), "a /64 is one source");
+        let mapped: std::net::IpAddr = "::ffff:203.0.113.7".parse().unwrap();
+        assert_eq!(
+            gate.bucket(mapped),
+            gate.bucket(ip),
+            "v4-mapped is its v4 address"
+        );
+
+        let lo: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let many: Vec<_> = (0..4 * ADMIT_PER_SOURCE)
+            .map(|_| SourceGate::take(&gate, lo).expect("loopback is never refused"))
+            .collect();
+        assert!(many.iter().all(|p| p.bucket.is_none()));
+        let own: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let mine: Vec<_> = (0..4 * ADMIT_PER_SOURCE)
+            .map(|_| {
+                SourceGate::take(&gate, own).expect("the shard's own address is never refused")
+            })
+            .collect();
+        assert!(mine.iter().all(|p| p.bucket.is_none()));
+    }
 
     /// **The human feed's delay line holds every message for exactly its
     /// delay, in order, and refuses past its bound** — clock-free: every
@@ -4064,6 +4522,37 @@ mod tests {
     /// the two properties that says: a malformed datagram still costs its
     /// bytes, and the arrival count reconciles with the three verdict
     /// counters that partition it.
+    /// A voice ring nobody drains, for the input-lane tests.
+    fn voice_sink() -> VoiceIn {
+        VoiceIn::new(RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP).0)
+    }
+
+    /// Voice is its own datagram on the input lane (v113): decoded, ringed,
+    /// rate-limited past the burst, and none of it reaches the input ring.
+    #[test]
+    fn voice_datagrams_ring_apart_from_input_and_are_rate_limited() {
+        let stats = ShardStats::default();
+        let (mut tx, mut rx) = RingBuffer::<protocol::InputDatagram>::new(INPUT_RING_CAP);
+        let (vtx, mut vrx) = RingBuffer::<protocol::VoiceFrame>::new(64);
+        let mut voice = VoiceIn::new(vtx);
+        let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+        for seq in 0..(VOICE_BURST + 5) as u16 {
+            let f = protocol::VoiceFrame::new(seq, 0, &[0x0b, 1, 2]).unwrap();
+            let n = protocol::encode_voice_up(&f, &mut buf).unwrap();
+            accept_input(&buf[..n], &mut tx, &mut voice, &stats);
+        }
+        // A truncated frame: the kind says voice, the body is short.
+        let f = protocol::VoiceFrame::new(1, 0, &[0x0b, 1, 2]).unwrap();
+        let n = protocol::encode_voice_up(&f, &mut buf).unwrap();
+        accept_input(&buf[..n - 1], &mut tx, &mut voice, &stats);
+        assert!(rx.pop().is_err(), "voice never reaches the input ring");
+        assert_eq!(ShardStats::get(&stats.voice_ok), VOICE_BURST as u64);
+        assert_eq!(ShardStats::get(&stats.voice_rate_limited), 5);
+        assert_eq!(ShardStats::get(&stats.voice_bad), 1);
+        assert_eq!(ShardStats::get(&stats.input_dg_bad), 0);
+        assert_eq!(vrx.pop().unwrap().seq, 0);
+    }
+
     #[test]
     fn the_lane_counts_the_bytes_that_arrived_not_the_ones_it_liked() {
         use protocol::{encode_input, InputDatagram};
@@ -4076,7 +4565,7 @@ mod tests {
         dg.push(InputFrame::default()).expect("one frame fits");
         let mut buf = [0u8; 256];
         let good = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..good], &mut tx, &stats);
+        accept_input(&buf[..good], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.net_dg_in_count), 1);
         assert_eq!(
             ShardStats::get(&stats.net_dg_in_bytes),
@@ -4087,7 +4576,7 @@ mod tests {
 
         // Line noise: `peek_kind` refuses it. It crossed the path anyway.
         let junk = [0xEEu8; 37];
-        accept_input(&junk, &mut tx, &stats);
+        accept_input(&junk, &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_bad), 1);
         assert_eq!(
             ShardStats::get(&stats.net_dg_in_bytes),
@@ -4108,7 +4597,7 @@ mod tests {
         })
         .expect("one frame fits");
         let forged = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..forged], &mut tx, &stats);
+        accept_input(&buf[..forged], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
 
         // The reconciliation: every arrival lands in exactly one verdict
@@ -4186,7 +4675,7 @@ mod tests {
 
         // Just inside: every meaningful bit at once.
         let (buf, n) = encode(BTN_MASK);
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_ok), 1);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 0);
         let ringed = rx.pop().expect("the in-domain datagram is ringed");
@@ -4201,7 +4690,7 @@ mod tests {
         assert_ne!(unmeant, 0, "the octet is full — this probe needs a new bit");
         assert_eq!(unmeant & BTN_MASK, 0, "the probe bit must be unmeant");
         let (buf, n) = encode(BTN_MASK | unmeant);
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
         assert_eq!(
             ShardStats::get(&stats.input_dg_ok),
@@ -4236,7 +4725,7 @@ mod tests {
         .expect("second frame fits");
         let mut buf = [0u8; 256];
         let n = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 2);
         assert!(rx.pop().is_err(), "no frame of a forged datagram survives");
     }

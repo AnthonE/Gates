@@ -844,7 +844,7 @@ impl Sighting {
 pub const SUMMARY_THREATS: usize = 3;
 
 /// Chat lines one request carries, newest kept, oldest dropped first.
-pub const SUMMARY_HEARD: usize = 8;
+pub const SUMMARY_HEARD: usize = 12;
 
 /// One chat line this body's client received (`EventMsg::Chat`): who said
 /// it, as a player's chat log names them, and what. Words a stranger typed:
@@ -862,6 +862,12 @@ pub struct HeardLine {
     /// This body's own line, come back from the shard.
     pub me: bool,
     pub text: protocol::ChatText,
+    /// Said out loud and transcribed (proximity voice, `agent_voice.rs`),
+    /// not typed. A transcription can mishear.
+    pub voice: bool,
+    /// This piece continues the line before it: a long transcript is cut
+    /// into chat-sized pieces, and the request joins them back up.
+    pub more: bool,
 }
 
 impl HeardLine {
@@ -873,6 +879,8 @@ impl HeardLine {
         channel: protocol::Channel::Local,
         me: false,
         text: protocol::ChatText::EMPTY,
+        voice: false,
+        more: false,
     };
 
     /// The chat log's label: name, else short address, else `#id` — the
@@ -1470,29 +1478,41 @@ impl Summary {
     /// channel and the words. Sent to an external source beside the
     /// observation, never inside it, so Jev is never handed player text.
     /// Worker only (it allocates).
+    /// A line said out loud carries `"voice": true` (a transcription, which
+    /// can mishear), its pieces joined back into one line.
     pub fn heard_json(&self) -> Value {
-        Value::Array(
-            self.heard
-                .lines()
-                .iter()
-                .map(|l| {
-                    json!({
-                        "from": l.label(),
-                        "me": l.me,
-                        "agent": l.agent,
-                        "friend": self.friend.set
-                            && !l.address.is_guest()
-                            && l.address == self.friend.who.address,
-                        "channel": match l.channel {
-                            protocol::Channel::Local => "local",
-                            protocol::Channel::Global => "global",
-                            protocol::Channel::Team => "team",
-                        },
-                        "text": core::str::from_utf8(l.text.as_bytes()).unwrap_or(""),
-                    })
-                })
-                .collect(),
-        )
+        let mut out: Vec<Value> = Vec::new();
+        let mut last: Option<u32> = None;
+        for l in self.heard.lines() {
+            let text = core::str::from_utf8(l.text.as_bytes()).unwrap_or("");
+            if l.more && last == Some(l.from) {
+                if let Some(Value::String(t)) = out.last_mut().map(|v| &mut v["text"]) {
+                    t.push(' ');
+                    t.push_str(text);
+                    continue;
+                }
+            }
+            last = l.voice.then_some(l.from);
+            let mut line = json!({
+                "from": l.label(),
+                "me": l.me,
+                "agent": l.agent,
+                "friend": self.friend.set
+                    && !l.address.is_guest()
+                    && l.address == self.friend.who.address,
+                "channel": match l.channel {
+                    protocol::Channel::Local => "local",
+                    protocol::Channel::Global => "global",
+                    protocol::Channel::Team => "team",
+                },
+                "text": text,
+            });
+            if l.voice {
+                line["voice"] = Value::Bool(true);
+            }
+            out.push(line);
+        }
+        Value::Array(out)
     }
 
     /// THE GATE and the works, the stones, their locks and the ziggurat's
@@ -2902,6 +2922,29 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.water = 10;
         assert_eq!(scripted.pick(&s).0, Goal::Drink, "thirst outranks the work");
+    }
+
+    /// A transcript cut into pieces comes back as one line, marked voice,
+    /// and a typed line after it stays its own.
+    #[test]
+    fn a_spoken_line_is_one_line_again() {
+        let mut s = Summary::EMPTY;
+        let said = "doc follow me to the big rock by the river and bring the bat";
+        for (text, more) in crate::agent_voice::pieces(said) {
+            s.heard.push(HeardLine {
+                from: 9,
+                text,
+                voice: true,
+                more,
+                ..HeardLine::EMPTY
+            });
+        }
+        s.heard.push(heard(protocol::Channel::Local, "hi", false));
+        let v = s.heard_json();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert_eq!(v[0]["text"], said);
+        assert_eq!(v[0]["voice"], true);
+        assert!(v[1].get("voice").is_none());
     }
 
     fn heard(channel: protocol::Channel, text: &str, agent: bool) -> HeardLine {

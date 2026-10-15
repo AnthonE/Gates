@@ -2747,7 +2747,69 @@ impl World {
         let dx = (v.body.qx - p.body.qx) as f32 * POS_XZ_Q;
         let dz = (v.body.qz - p.body.qz) as f32 * POS_XZ_Q;
         let r = crate::backpack::LOOT_REACH_M;
-        (dx * dx + dz * dz <= r * r).then_some(i)
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (v.body.qx, v.body.qy, v.body.qz),
+        );
+        (dx * dx + dz * dz <= r * r
+            && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at))
+        .then_some(i)
+    }
+
+    /// The eye and the feet the player in `slot` reaches from (`reach.rs`).
+    fn hand(&self, slot: usize) -> ((f32, f32, f32), f32) {
+        let p = &self.players[slot];
+        (crate::reach::eye(p), crate::reach::feet_y(p))
+    }
+
+    /// Whether the player in `slot` reaches entry `i` of the box store — a
+    /// box, an oven, a research table: the planar `BUILD_REACH_M`, then the
+    /// same storey and nothing built in the way (`reach.rs`). The move verb
+    /// and the server's container view ask exactly this.
+    pub fn box_reachable(&self, i: usize, slot: usize) -> bool {
+        let Some(p) = self.players.get(slot) else {
+            return false;
+        };
+        self.deploys.box_in_reach(i, p)
+            && crate::reach::clear_box(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                &self.deploy,
+                &self.deploys,
+                i,
+                crate::reach::eye(p),
+                crate::reach::feet_y(p),
+            )
+    }
+
+    /// [`Self::box_reachable`] for bag `i`.
+    pub fn bag_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(b)) = (self.players.get(slot), self.backpacks.entries().get(i)) else {
+            return false;
+        };
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            (b.qx, b.qy, b.qz),
+        );
+        self.backpacks.in_reach(i, p)
+            && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at)
+    }
+
+    /// [`Self::box_reachable`] for loose stack `i`.
+    pub fn ground_item_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(g)) = (self.players.get(slot), self.ground_items.entries().get(i))
+        else {
+            return false;
+        };
+        let at = crate::reach::Target::stack(self.seed, &self.haven, self.pieces.cols(), g);
+        self.ground_items.in_reach(i, p)
+            && crate::reach::clear(self.seed, &self.haven, self.pieces.cols(), p, at)
     }
 
     /// The move verb's one mutating body. Everything it decides is decided
@@ -2833,7 +2895,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.backpacks.in_reach(i, &self.players[slot]) {
+                if !self.bag_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -2853,7 +2915,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.deploys.box_in_reach(i, &self.players[slot]) {
+                if !self.box_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -3285,21 +3347,43 @@ impl World {
         use crate::movement::POS_XZ_Q;
         let p = &self.players[slot];
         let (px, pz) = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
-        let mut best: Option<(usize, f32)> = None;
-        for (i, a) in self.spent.entries().iter().enumerate() {
+        let (eye, feet) = self.hand(slot);
+        let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
+        // The nearest arrow standing in a body the hand reaches — aimed at
+        // the body's middle, so it is not pulled through a wall or a floor.
+        let arrows = self.spent.entries();
+        let mut cand = [(0.0f32, 0u16); crate::limits::MAX_SPENT_ARROWS];
+        let mut n = 0;
+        for (i, a) in arrows.iter().enumerate() {
             if a.host == 0 {
                 continue;
             }
             let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
             let d2 = dx * dx + dz * dz;
-            if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
-                best = Some((i, d2));
+            if d2 <= LOOT_REACH_M * LOOT_REACH_M {
+                cand[n] = (d2, i as u16);
+                n += 1;
             }
         }
-        let Some((i, d2)) = best else {
+        let Some(i) = crate::reach::nearest_clear(&mut cand[..n], |i| {
+            let a = &arrows[i];
+            let at = crate::reach::Target::body(
+                a.qx as f32 / 1000.0,
+                a.qy as f32 / 1000.0,
+                a.qz as f32 / 1000.0,
+            );
+            crate::reach::clear_from(seed, haven, cols, eye, feet, at)
+        }) else {
             return false;
         };
-        if let Some(g) = self.ground_items.nearest(p) {
+        let a = &arrows[i];
+        let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
+        let d2 = dx * dx + dz * dz;
+        let clear = |g: &crate::grounditem::GroundItemRec| {
+            let at = crate::reach::Target::stack(seed, haven, cols, g);
+            crate::reach::clear_from(seed, haven, cols, eye, feet, at)
+        };
+        if let Some(g) = self.ground_items.nearest_where(p, clear) {
             let g = self.ground_items.entries()[g];
             let (dx, dz) = (g.qx as f32 * POS_XZ_Q - px, g.qz as f32 * POS_XZ_Q - pz);
             if dx * dx + dz * dz <= d2 {
@@ -5174,6 +5258,12 @@ impl World {
                     // Down, only the door: research and the oven are hand
                     // work, which `live_slot_of` refuses everywhere else.
                     let down = self.players[slot].wounded;
+                    let (eye, feet) = self.hand(slot);
+                    let (seed, haven, cols, content) =
+                        (self.seed, &self.haven, self.pieces.cols(), &self.deploy);
+                    let reach = |d: &Deploys, i: usize| {
+                        crate::reach::clear_box(seed, haven, cols, content, d, i, eye, feet)
+                    };
                     let lit = !down
                         && (crate::research::begin(
                             &self.research,
@@ -5184,6 +5274,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            reach,
                         ) || crate::oven::toggle(
                             &self.cook,
                             &mut self.deploys,
@@ -5193,6 +5284,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            reach,
                         ));
                     if !lit {
                         let owner = deploy::use_door(
@@ -5569,11 +5661,17 @@ impl World {
             Command::Loot { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
-                    let looted = self.backpacks.loot_nearest(
+                    let (eye, feet) = self.hand(slot);
+                    let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
+                    let looted = self.backpacks.loot_nearest_where(
                         &self.gather,
                         &town,
                         &mut self.players[slot],
                         &mut self.events,
+                        |q| {
+                            let at = crate::reach::Target::lying(seed, haven, cols, q);
+                            crate::reach::clear_from(seed, haven, cols, eye, feet, at)
+                        },
                     );
                     // A bag is a container someone else owns (`TRUST_CONT`):
                     // emptying it with `Loot` is the act `move_item` logs for
@@ -5600,7 +5698,7 @@ impl World {
                     let aimed = self
                         .ground_items
                         .index_of_id(target)
-                        .filter(|&i| self.ground_items.in_reach(i, &self.players[slot]));
+                        .filter(|&i| self.ground_item_reachable(i, slot));
                     if let Some(i) = aimed {
                         self.ground_items.take_at(
                             i,
@@ -5610,11 +5708,17 @@ impl World {
                             &mut self.events,
                         );
                     } else if !self.pull_arrow(slot, &mut spill) {
-                        self.ground_items.take_nearest(
+                        let (eye, feet) = self.hand(slot);
+                        let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
+                        self.ground_items.take_nearest_where(
                             &self.gather,
                             &mut self.players[slot],
                             &mut spill,
                             &mut self.events,
+                            |g| {
+                                let at = crate::reach::Target::stack(seed, haven, cols, g);
+                                crate::reach::clear_from(seed, haven, cols, eye, feet, at)
+                            },
                         );
                     }
                     // A take into a full pack spills at the feet, the same
