@@ -185,6 +185,9 @@ pub const PICK_RETRY_TICKS: u32 = TICK_HZ;
 pub const PICK_TRIES: u8 = 3;
 /// A crate is opened from this near.
 pub const OPEN_STAND_M: f32 = 2.5;
+/// A tree under this share of its adult size, per mille, is not worth the
+/// walk ([`Target::gone`]).
+pub const SKIP_TREE_PM: u16 = 500;
 /// Presses at one crate that went unanswered or were refused before it
 /// is left.
 pub const LID_TRIES: u8 = 3;
@@ -646,12 +649,35 @@ impl Target {
         cell_key(self.cx, self.cz)
     }
 
-    /// Nothing to gather here: harvested, or a picked plant still growing
-    /// back (`gather::pick` refuses a sprout until it is grown).
+    /// The slot at the size it stands now: a young or regrowing tree is
+    /// struck at its own size (tree ages v0, `occupy::grown`), so it is
+    /// aimed at and seen at that size, or the swing passes over a sapling.
+    fn live(self, core: &ClientCore) -> Slot {
+        if self.slot.occupant != Occupant::Tree {
+            return self.slot;
+        }
+        match self.size_pm(core) {
+            0 | 1000.. => self.slot,
+            pm => sim_core::occupy::grown(&self.slot, pm),
+        }
+    }
+
+    /// Nothing to gather here: harvested, a picked plant still growing
+    /// back (`gather::pick` refuses a sprout until it is grown), or a tree
+    /// not yet half grown — a sapling or a young wild tree is a swing or
+    /// two of wood, and a player walks past it to a grown one.
     fn gone(self, core: &ClientCore) -> bool {
         core.harvested.contains(self.key())
             || (sim_core::gather::pickable(self.slot.occupant)
                 && core.harvested.growth(self.key()).is_some())
+            || (self.slot.occupant == Occupant::Tree && self.size_pm(core) < SKIP_TREE_PM)
+    }
+
+    /// How much of a tree stands, per mille of its adult size.
+    fn size_pm(self, core: &ClientCore) -> u16 {
+        use sim_core::occupy::Harvested;
+        core.harvested
+            .tree_pm(core.predict.seed(), self.cx, self.cz)
     }
 }
 
@@ -3056,9 +3082,10 @@ impl Survivor {
                 ..self.wander(core, body, tick)
             };
         };
-        let (yaw, pitch, distance) = aim(body, &target.slot);
+        let slot = target.live(core);
+        let (yaw, pitch, distance) = aim(body, &slot);
         let mut intent = Intent {
-            look: Look::Point(aim_point(body, &target.slot)),
+            look: Look::Point(aim_point(body, &slot)),
             ..hold
         };
         if distance + POS_XZ_Q < self.best_distance {
@@ -3178,9 +3205,15 @@ impl Survivor {
                 Species::Pig => f32::from(self.book.pig().radius_cm) * 0.01,
                 Species::Wolf => f32::from(self.book.wolf().radius_cm) * 0.01,
             };
-            along > -radius
-                && along <= BYSTANDER_RAY_M + radius
-                && across <= radius + BYSTANDER_MISS_M
+            // A body pressed against mine is in the way of any swing,
+            // whichever way it faces: the swing's ray leaves from inside
+            // its capsule, and where my screen draws it lags where it is.
+            let touch = radius + sim_core::collide::CAPSULE_RADIUS_M + BYSTANDER_MISS_M;
+            let pressed = dx * dx + dz * dz <= touch * touch;
+            pressed
+                || (along > -radius
+                    && along <= BYSTANDER_RAY_M + radius
+                    && across <= radius + BYSTANDER_MISS_M)
         };
         let mut lowest: Option<u32> = None;
         for t in self.tracks.all() {
@@ -3744,13 +3777,28 @@ impl Survivor {
                         tick
                     }
                 };
+                // Only what the human's `E` would open from here: a crate
+                // round a corner, or one a wall stands in front of, is not
+                // taken on trust because the walk ended near it.
+                let (yaw, pitch) = self.hands.view();
+                let picks = open_reaches(core, body, yaw, pitch, key);
                 if tick.wrapping_sub(since) >= home::HOLD_TICKS
                     && self.hands.settled()
+                    && picks
                     && self.queue(|buf| protocol::encode_action_container(CONT_WORLD, key, buf))
                 {
                     self.loot_job.lid = Some(Lid::Opening(tick));
                     self.loot_job.fresh = false;
                     self.loot.stats.opened += 1;
+                } else if !picks && late(since) {
+                    // Aimed this long and `E` still would not take it: a
+                    // try spent, and the walk up again.
+                    self.loot_job.tries += 1;
+                    self.loot_job.lid = None;
+                    if self.loot_job.tries >= LID_TRIES {
+                        self.loot.emptied(key, tick);
+                        self.loot_job.next();
+                    }
                 }
                 return look;
             }
@@ -6845,15 +6893,33 @@ fn pick_reaches(
         .is_some_and(|hit| hit.cx == target.cx && hit.cz == target.cz)
 }
 
+/// `E` from where the body stands, along this view, opens the world
+/// container keyed `key`: the cast the human client's `[E] OPEN` prompt
+/// makes (`client::ui::interact::resolve_open`), at the arm a container is
+/// opened from.
+fn open_reaches(core: &mut ClientCore, body: &EntityState, yaw: u16, pitch: u8, key: u32) -> bool {
+    let ray = melee::ray(
+        &as_body(*body),
+        core.crouched(),
+        yaw,
+        pitch,
+        sim_core::backpack::LOOT_REACH_M * MM_PER_M,
+    );
+    let (seed, mut island) = core.island();
+    melee::occupant_cast(seed, &mut island, &ray, melee::openable)
+        .is_some_and(|hit| cell_key(hit.cx, hit.cz) == key)
+}
+
 /// Conservative line of sight to the near face of the target. Uses the
 /// same terrain, occupant and built-volume queries as a player's projectile.
 fn visible(core: &mut ClientCore, haven: &Haven, body: &EntityState, target: Target) -> bool {
-    let (_, pitch, distance) = aim(body, &target.slot);
+    let slot = target.live(core);
+    let (_, pitch, distance) = aim(body, &slot);
     if distance > SIGHT_M || distance <= 0.0 {
         return false;
     }
     let eye = body.qy as f32 * POS_Y_Q + swing_eye_m();
-    let radius = terrain::occupant_volume(target.slot.occupant).0 * target.slot.scale;
+    let radius = terrain::occupant_volume(slot.occupant).0 * slot.scale;
     let stop = (distance - radius - melee::MELEE_PROBE_M).max(0.0);
     let dx = (target.slot.x - body.qx as f32 * POS_XZ_Q) / distance;
     let dz = (target.slot.z - body.qz as f32 * POS_XZ_Q) / distance;

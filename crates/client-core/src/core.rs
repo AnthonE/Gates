@@ -726,6 +726,19 @@ impl Harvested for HarvestedSet {
         }
     }
 
+    /// A tree nobody felled grows with the wild stand (tree ages v0), off
+    /// the seed, as the server's `SlotLives::tree_pm` does.
+    fn tree_pm(&self, seed: u64, cx: u16, cz: u16) -> u16 {
+        let key = cell_key(cx, cz);
+        if self.contains(key) {
+            return 0;
+        }
+        match self.growth(key) {
+            Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
+            None => sim_core::gather::wild_pm(seed, cx, cz, self.now as u64),
+        }
+    }
+
     /// A felled tree's stump stands until the wire says it was grubbed.
     fn stump_standing(&self, cx: u16, cz: u16) -> bool {
         let key = cell_key(cx, cz);

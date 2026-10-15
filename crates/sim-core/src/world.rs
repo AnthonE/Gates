@@ -6989,8 +6989,9 @@ impl World {
                     && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
                     && cols.get(bx as u16, bz as u16).has_piece()
             };
+            let wild_until = |cx: u16, cz: u16| crate::gather::wild_grown_at(seed, cx, cz);
             self.slot_lives
-                .respawn_due_unless(tick, &mut self.events, &built_over);
+                .respawn_due_unless(tick, &mut self.events, &built_over, &wild_until);
         }
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
