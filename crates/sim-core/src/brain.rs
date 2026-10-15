@@ -129,6 +129,8 @@ pub enum Cond {
     /// The same draw at the species' own `MobDef::sleep_pct`: whether an
     /// idle animal beds down tonight.
     Drowsy,
+    /// The same draw at a third of `MobDef::sleep_pct`: a nap by day.
+    Napping,
     /// A noise is remembered (`noise.rs`; the reference's
     /// `OnPositionMemorySet`).
     Noise,
@@ -253,7 +255,10 @@ pub static BOAR: Design = Design {
 /// down, mixes charging with circling (no more than `MobDef::pack_biters`
 /// close in at once), circles a lit torch instead of biting through it,
 /// waits you out on a rock until it has failed `MobDef::give_up_tries`
-/// routes to you, and comes to see what a gunshot was.
+/// routes to you, and comes to see what a gunshot was. Between hunts the
+/// pack lies about its den and sleeps — at night at `MobDef::sleep_pct`, by
+/// day a nap at a third of it — and a sleeping wolf notices at half range
+/// (the rework's idle and sleep, and the reason to crouch in on one).
 pub static WOLF: Design = Design {
     rules: [
         // Idle
@@ -264,6 +269,8 @@ pub static WOLF: Design = Design {
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
             go(&[Noise], MoveTowards),
+            go(&[Timer, Night, Drowsy], Sleep),
+            go(&[Timer, Napping], Sleep),
             go(&[Timer], Roam),
         ],
         // Roam
@@ -323,8 +330,15 @@ pub static WOLF: Design = Design {
             go(&[Finished], Idle),
             go(&[Failed], Idle),
         ],
-        // Sleep: a hunter does not bed down at night; the row is the table's.
-        &[go(&[Target], Chase), go(&[Timer], Idle)],
+        // Sleep: woken by a target, struck awake, or a noise to go and see.
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target], Chase),
+            go(&[Noise], MoveTowards),
+            go(&[Timer], Idle),
+        ],
         // MoveTowards: going to look, until it finds someone or gets there.
         &[
             go(&[Target, Afraid], Flee),
@@ -423,12 +437,14 @@ pub static GUARD: Design = Design {
 };
 
 /// Which design a slot runs. Pure in the slot and the species, like
-/// `kind_of`: a guard is a wolf at a post, and a pack animal is one whose
-/// content row says it answers its pack.
+/// `kind_of`: a guard is a wolf at a post, and a pack hunter is one whose
+/// content row says it answers its pack and bites. A herd that answers its
+/// own but never bites (the stag) is prey: it runs the boar's design, and
+/// its herd's call is a flight it joins (`pack_call`).
 pub fn design_for(slot: usize, def: &MobDef) -> &'static Design {
     if crate::mob::guard_site_of(slot).is_some() {
         &GUARD
-    } else if def.pack_cm > 0 {
+    } else if def.pack_cm > 0 && def.attack > 0 {
         &WOLF
     } else {
         &BOAR
@@ -670,6 +686,7 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         MateStruck => mate_struck(ctx, slot, def, mob),
         Chance(pct) => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < pct as u64,
         Drowsy => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64,
+        Napping => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64 / 3,
     }
 }
 
@@ -802,6 +819,7 @@ fn mate_struck(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> bool {
 fn howl(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     let tick = ctx.tick;
     if def.pack_cm > 0
+        && def.attack > 0
         && crate::mob::pack_of(slot).is_some()
         && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(def.howl_ticks as u64))
     {
@@ -956,10 +974,12 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
 /// A pack-mate on a target inside `pack_cm`: the answer to its call, the
 /// reference wolf's howl. Only its own pack's howl, only from a mate that is
 /// actually running someone down or biting (a wolf circling prey it cannot
-/// reach does not howl for it), and a badly hurt wolf does not answer.
+/// reach does not howl for it), and a badly hurt wolf does not answer. In a
+/// herd that never bites the same answer is a bolt: one stag running from
+/// someone sends its herd-mates running from them too, hurt or not.
 fn pack_call(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(i64, u8)> {
     let pack = crate::mob::pack_of(slot)?;
-    if (mob.hp as u32) * 100 < (def.hp as u32) * ANSWER_PCT {
+    if def.attack > 0 && (mob.hp as u32) * 100 < (def.hp as u32) * ANSWER_PCT {
         return None;
     }
     let mut best: Option<(i64, u8)> = None;
@@ -1080,7 +1100,7 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         Flee => {
             // Ambushed: back off for a moment and call the pack, then the
             // retreat's timer turns it round into the charge.
-            if mob.ambushed && def.pack_cm > 0 {
+            if mob.ambushed && def.pack_cm > 0 && def.attack > 0 {
                 mob.state_until = tick + RETREAT_TICKS;
                 howl(ctx, slot, def, mob);
             }
@@ -1420,9 +1440,10 @@ fn roam_point(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(f3
     let (hx, hz) = home_xz(mob);
     let leash_m = leash_cm as f32 * 0.01;
     let from_home2 = (x - hx) * (x - hx) + (z - hz) * (z - hz);
-    // A pack-mate roams round its leader while the leader is up and about
-    // (the reference's grouped animals roam to a ring round the leader).
-    let leader = crate::mob::pack_leader_of(slot)
+    // A pack- or herd-mate roams round its leader while the leader is up
+    // and about (the reference's grouped animals roam to a ring round the
+    // leader).
+    let leader = crate::mob::group_leader_of(slot)
         .filter(|&l| l != slot && ctx.peers[l].live && def.pack_cm > 0);
     let (cx, cz, lo, span) = if let Some(l) = leader {
         let p = ctx.peers[l];
