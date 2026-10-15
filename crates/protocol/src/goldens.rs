@@ -440,6 +440,8 @@ pub fn exposure() -> sim_core::exposure::Readout {
         hurting: true,
         comfort_pct: 50,
         air_c: -7,
+        fel_pct: 40,
+        fel_hurting: false,
     }
 }
 

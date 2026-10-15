@@ -326,6 +326,21 @@ clothes_heat_pm = 750
 heat_water_pct = 300
 heat_hurt_at = 600
 heat_hp_per_min = 6
+# The Verdigris (`exposure::corrode`): Rust's radiation for our corrupted
+# zone, in its meter's per mille. A second at the heart adds 6 (about three
+# minutes to fill, unwarded), a vent's green fire 60 more (a quarter of a
+# minute standing in it), a second out of it takes 5 away. Past 450 it costs
+# hp, 20 a minute at a full meter — the five-minute floor the validator holds
+# every exposure to — so a body walking the heart starts to hurt after about
+# 75 s. Over 200 nothing mends, and no worn set wards off more than 90%: the
+# heart is never free.
+fel_rise_per_s = 6
+fel_vent_per_s = 60
+fel_fall_per_s = 5
+fel_hurt_at = 450
+fel_hp_per_min = 20
+fel_regen_max = 200
+fel_ward_max = 900
 
 # The air (climate v0, `sim_core::climate`) — the reference's
 # `Climate.GetTemperature`: each biome's curve over the hour, coldest at

@@ -1720,6 +1720,62 @@ fn fel_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     1.0 - fade(((s - FEL_R.0) / (FEL_R.1 - FEL_R.0)).clamp(0.0, 1.0))
 }
 
+// --- The Verdigris' vents: green fire out of the ground ----------------------
+//
+// One chance per `FEL_VENT_CELL_M` cell, at a jittered point kept
+// `FEL_VENT_INSET_M` inside it — farther than a vent's reach, so a body only
+// ever has its own cell's vent to ask about. Pure in the cell, so the sim
+// (the meter's spike, `exposure::corrode`) and the client (the fire,
+// `render/fel.rs`) read the same vents.
+
+/// A vent cell's edge, metres. **(knob)**
+pub const FEL_VENT_CELL_M: f32 = 48.0;
+/// Corruption a vent's point must have: the heart only. **(knob)**
+pub const FEL_VENT_AT: f32 = 0.6;
+/// The share of the heart's cells that hold one. **(knob)**
+const FEL_VENT_PM: u64 = 400;
+/// How close a body must stand to be in its fire, metres. **(knob)**
+pub const FEL_VENT_REACH_M: f32 = 3.0;
+/// How far inside its cell a vent is kept, metres.
+const FEL_VENT_INSET_M: f32 = 8.0;
+const CH_FEL_VENT: u32 = 236;
+
+const _: () = assert!(FEL_VENT_INSET_M > FEL_VENT_REACH_M);
+
+/// The vent in cell (`vx`, `vz`) of the vent grid, if it has one: its point.
+/// On land, not steep, and at the Verdigris' heart.
+pub fn fel_vent(seed: u64, vx: i32, vz: i32) -> Option<(f32, f32)> {
+    let h = cell_hash(seed, vx, vz, CH_FEL_VENT);
+    if h % 1000 >= FEL_VENT_PM {
+        return None;
+    }
+    let span = FEL_VENT_CELL_M - 2.0 * FEL_VENT_INSET_M;
+    let u = ((h >> 16) & 0xFFFF) as f32 * (1.0 / 65_536.0);
+    let v = ((h >> 32) & 0xFFFF) as f32 * (1.0 / 65_536.0);
+    let x = vx as f32 * FEL_VENT_CELL_M + FEL_VENT_INSET_M + u * span;
+    let z = vz as f32 * FEL_VENT_CELL_M + FEL_VENT_INSET_M + v * span;
+    if fel(seed, x, z) < FEL_VENT_AT
+        || height(seed, x, z) < LAND_MIN_H + 1.0
+        || slope(seed, x, z) > 0.6
+    {
+        return None;
+    }
+    Some((x, z))
+}
+
+/// Whether a body at (`x`, `z`) stands in a vent's fire.
+pub fn fel_vent_near(seed: u64, x: f32, z: f32) -> bool {
+    let vx = floor_i32(x / FEL_VENT_CELL_M);
+    let vz = floor_i32(z / FEL_VENT_CELL_M);
+    match fel_vent(seed, vx, vz) {
+        Some((px, pz)) => {
+            let (dx, dz) = (x - px, z - pz);
+            dx * dx + dz * dz < FEL_VENT_REACH_M * FEL_VENT_REACH_M
+        }
+        None => false,
+    }
+}
+
 /// How much of the scatter row at this corruption is the Verdigris row, 0..1
 /// — the soft edge of [`Biome::Fel`] (`biome()` is its hard one).
 pub fn fel_share(fel: f32) -> f32 {

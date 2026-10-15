@@ -1169,7 +1169,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// comfort, per cent, after the hurting bit.
 /// v112 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
 /// whole °C after the comfort, and the death cause admits 9 (`DEATH_BY_HEAT`).
-pub const PROTO_VER: u16 = 112;
+/// v113 — the Verdigris: `SUB_EXPOSURE` carries the owner's corruption, per
+/// cent, and whether it is hurting, after the air; the death cause admits 10
+/// (`DEATH_BY_FEL`).
+pub const PROTO_VER: u16 = 113;
 
 /// This game's slug in the elo catalog.
 ///

@@ -526,6 +526,10 @@ pub struct Armor {
     /// zero: a piece that says nothing about the cold does nothing for it.
     #[serde(default)]
     pub cold_pct: i32,
+    /// The share of the Verdigris it wards off, per cent — the reference's
+    /// Radiation column, our corruption (`exposure::corrode`).
+    #[serde(default)]
+    pub fel_pct: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1322,6 +1326,26 @@ pub struct Exposure {
     pub heat_hurt_at: u32,
     #[serde(default)]
     pub heat_hp_per_min: u32,
+    /// The Verdigris' meter (`sim_core::exposure::corrode`), per mille: what
+    /// a second at its heart adds, what a vent's fire adds on top, what a
+    /// second out of it takes away; past `fel_hurt_at` it costs
+    /// `fel_hp_per_min` at a full meter; over `fel_regen_max` nothing mends;
+    /// no worn set wards off more than `fel_ward_max`. All optional: absent
+    /// is a Verdigris that only looks the part.
+    #[serde(default)]
+    pub fel_rise_per_s: u32,
+    #[serde(default)]
+    pub fel_vent_per_s: u32,
+    #[serde(default)]
+    pub fel_fall_per_s: u32,
+    #[serde(default)]
+    pub fel_hurt_at: u32,
+    #[serde(default)]
+    pub fel_hp_per_min: u32,
+    #[serde(default)]
+    pub fel_regen_max: u32,
+    #[serde(default)]
+    pub fel_ward_max: u32,
 }
 
 /// The air (`content/balance.toml` `[climate]`; climate v0,

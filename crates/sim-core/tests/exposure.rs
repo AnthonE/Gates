@@ -7,8 +7,9 @@ use sim_core::combat::CombatContent;
 use sim_core::exposure::{self, ExposureContent, Inputs};
 use sim_core::gather::ItemStack;
 use sim_core::survival::{Step, SurvivalContent};
+use sim_core::terrain;
 use sim_core::weather;
-use sim_core::world::{Command, EventQueue, Player, World, DEATH_BY_COLD};
+use sim_core::world::{Command, EventQueue, Player, World, DEATH_BY_COLD, DEATH_BY_FEL};
 
 fn body() -> Player {
     Player {
@@ -658,4 +659,180 @@ fn the_heat_burns_water() {
         used(&cool)
     );
     assert_eq!(hot.food, cool.food, "the heat burned food");
+}
+
+// --- The Verdigris (`exposure::corrode`) ------------------------------------
+
+/// The Verdigris armed alone: no cold, so nothing else can move the hp.
+fn fel_fixture() -> ExposureContent {
+    let mut ec = ExposureContent::EMPTY;
+    ec.fel_rise_per_s = 6;
+    ec.fel_vent_per_s = 60;
+    ec.fel_fall_per_s = 5;
+    ec.fel_hurt_at = 450;
+    ec.fel_hp_per_min = 20;
+    ec.fel_regen_max = 200;
+    ec.fel_ward_max = 900;
+    ec
+}
+
+fn deep(fel_pm: u16, vent: bool) -> Inputs {
+    Inputs {
+        fel_pm,
+        vent,
+        ..Inputs::default()
+    }
+}
+
+/// The meter rises by how deep the body stands — rounded up, so the edge
+/// still creeps — a vent's fire adds its own, and out of it the meter falls.
+#[test]
+fn the_verdigris_rises_with_its_depth_and_falls_outside_it() {
+    let ec = fel_fixture();
+    let mut p = body();
+    let mut ev = EventQueue::default();
+    for _ in 0..10 {
+        exposure::corrode(&ec, &deep(1000, false), &mut p, &mut ev);
+    }
+    assert_eq!(p.fel, 60, "six a second at the heart");
+    exposure::corrode(&ec, &deep(50, false), &mut p, &mut ev);
+    assert_eq!(p.fel, 61, "the edge creeps by one, never by none");
+    exposure::corrode(&ec, &deep(1000, true), &mut p, &mut ev);
+    assert_eq!(p.fel, 61 + 66, "a vent's fire on top of the heart");
+    for _ in 0..10 {
+        exposure::corrode(&ec, &Inputs::default(), &mut p, &mut ev);
+    }
+    assert_eq!(p.fel, 127 - 50, "five a second out of it");
+    // Disarmed content leaves a clean body alone.
+    let mut q = body();
+    exposure::corrode(
+        &ExposureContent::probe_fixture(),
+        &deep(1000, true),
+        &mut q,
+        &mut ev,
+    );
+    assert_eq!(q.fel, 0);
+}
+
+/// What is worn wards off its share of the rise, and no set past the cap.
+#[test]
+fn what_you_wear_wards_it_off_up_to_the_cap() {
+    let mut ec = fel_fixture();
+    ec.ward[1] = 500;
+    ec.ward[2] = 600;
+    let mut ev = EventQueue::default();
+    let mut half = body();
+    half.worn[0] = ItemStack {
+        item: 1,
+        count: 1,
+        cond: 100,
+        skin: 0,
+    };
+    for _ in 0..10 {
+        exposure::corrode(&ec, &deep(1000, true), &mut half, &mut ev);
+    }
+    assert_eq!(half.fel, 10 * 33, "66 a second, half warded");
+    let mut both = half;
+    both.fel = 0;
+    both.worn[1] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 100,
+        skin: 0,
+    };
+    for _ in 0..10 {
+        exposure::corrode(&ec, &deep(1000, true), &mut both, &mut ev);
+    }
+    assert_eq!(
+        both.fel,
+        10 * 7,
+        "a set past 90% wards 90%, and the rest rounds up"
+    );
+}
+
+/// Past the line it costs hp, exact over the minute; under it nothing; and
+/// over `fel_regen_max` a body does not mend.
+#[test]
+fn the_verdigris_hp_is_exact_and_it_stops_the_mend() {
+    let mut ec = fel_fixture();
+    ec.fel_rise_per_s = 0;
+    ec.fel_fall_per_s = 0;
+    ec.fel_hurt_at = 0;
+    ec.fel_hp_per_min = 60;
+    let mut p = body();
+    p.fel = 1000;
+    let mut ev = EventQueue::default();
+    for _ in 0..60 {
+        exposure::corrode(&ec, &Inputs::default(), &mut p, &mut ev);
+    }
+    assert_eq!(p.hp, 40, "60 a minute at a full meter is one a second");
+    let ec = fel_fixture();
+    let mut q = body();
+    q.fel = 450;
+    for _ in 0..60 {
+        exposure::corrode(&ec, &deep(0, false), &mut q, &mut ev);
+    }
+    assert_eq!(q.hp, 100, "at or under the line it costs nothing");
+    let mut r = fed();
+    r.hp = 50;
+    r.calm = u16::MAX;
+    let mut regen = regen_fixture();
+    regen.fel_regen_max = 200;
+    assert!(exposure::regens(&regen, &r));
+    r.fel = 201;
+    assert!(
+        !exposure::regens(&regen, &r),
+        "corroded past the line, no mend"
+    );
+}
+
+/// In a world: the heart of the Verdigris kills with its own cause, and the
+/// beach where it reaches the sea is safe.
+#[test]
+fn the_heart_kills_with_its_own_cause_and_the_beach_is_safe() {
+    let mut w = World::new(20260731);
+    w.combat = CombatContent::probe_fixture();
+    let mut sc = SurvivalContent::EMPTY;
+    sc.exposure = fel_fixture();
+    sc.exposure.fel_hp_per_min = 600;
+    sc.exposure.fel_hurt_at = 100;
+    w.survival = sc;
+    w.dev_spawn = Some(terrain::FEL_HEART);
+    w.tick(&[Command::Join { id: 1 }]);
+    let mut died = false;
+    for _ in 0..(120 * 30) {
+        w.tick(&[]);
+        if w.players[0].dead {
+            died = true;
+            break;
+        }
+    }
+    assert!(
+        died,
+        "a naked body at the heart of the Verdigris lived 2 min"
+    );
+    assert_eq!(w.players[0].death_cause, DEATH_BY_FEL);
+    let day = weather::day_tick(0, &w.env);
+    let wx = weather::now(w.seed, 0, &w.env);
+    // Any Verdigris beach: the meter's input there is zero.
+    let (hx, hz) = terrain::FEL_HEART;
+    let mut beach = None;
+    'find: for iz in -150..150 {
+        for ix in -150..150 {
+            let (x, z) = (hx + ix as f32 * 4.0, hz + iz as f32 * 4.0);
+            // The surface a body stands on, carve and all.
+            let h = terrain::ground(w.seed, &w.haven, x, z);
+            if (terrain::LAND_MIN_H..terrain::BEACH_MAX_H).contains(&h)
+                && terrain::fel(w.seed, x, z) > 0.2
+            {
+                beach = Some((x, z));
+                break 'find;
+            }
+        }
+    }
+    if let Some((x, z)) = beach {
+        w.players[0].body = sim_core::movement::Body::at(w.seed, &w.haven, x, z);
+        let inp = w.exposure_inputs(0, &wx, false, day);
+        assert_eq!(inp.fel_pm, 0, "the Verdigris' beach at ({x},{z}) corrodes");
+    }
 }

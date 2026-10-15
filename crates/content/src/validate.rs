@@ -911,6 +911,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("wet_cool", e.wet_cool),
             ("clothes_heat_pm", e.clothes_heat_pm),
             ("heat_hurt_at", e.heat_hurt_at),
+            ("fel_rise_per_s", e.fel_rise_per_s),
+            ("fel_vent_per_s", e.fel_vent_per_s),
+            ("fel_fall_per_s", e.fel_fall_per_s),
+            ("fel_hurt_at", e.fel_hurt_at),
+            ("fel_regen_max", e.fel_regen_max),
+            ("fel_ward_max", e.fel_ward_max),
         ] {
             if v > 1000 {
                 return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));
@@ -962,6 +968,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         if e.heat_water_pct > 300 {
             return Err("[exposure]: the heat burns at most 300% more water".into());
+        }
+        if e.fel_rise_per_s > 0 && e.fel_fall_per_s == 0 {
+            return Err("exposure: a Verdigris that never falls would never leave you".into());
+        }
+        if e.fel_rise_per_s > 0 && e.fel_regen_max > e.fel_hurt_at {
+            return Err("exposure: a body may not mend while the Verdigris hurts it".into());
+        }
+        if e.fel_hp_per_min > 0 && hp / e.fel_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: a full Verdigris kills {hp} hp in under 5 min ({} hp/min)",
+                e.fel_hp_per_min
+            ));
         }
         if e.heat_hp_per_min > 0 && hp / e.heat_hp_per_min < 5 {
             return Err(format!(

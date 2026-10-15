@@ -1029,8 +1029,11 @@ pub const DEATH_BY_FALL: u8 = 8;
 /// The heat took them (climate v0, `exposure.rs`): the desert's noon in
 /// warm clothes, dry, with no shade.
 pub const DEATH_BY_HEAT: u8 = 9;
+/// The Verdigris took them (`exposure::corrode`): they stood in the
+/// corruption until it ate through them.
+pub const DEATH_BY_FEL: u8 = 10;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_HEAT;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_FEL;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1360,6 +1363,11 @@ pub struct Player {
     /// the HUD's reading for that second.
     pub heat: u16,
     pub air_dc: i16,
+    /// The Verdigris' meter, per mille, and the partial hp it is owed
+    /// (`exposure::corrode`). Hashed and kept by the world save like the
+    /// cold's; a body restored from the player store comes back clean.
+    pub fel: u16,
+    pub fel_acc: u32,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1476,6 +1484,8 @@ impl Default for Player {
             cold_acc: 0,
             heat: 0,
             air_dc: 0,
+            fel: 0,
+            fel_acc: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
@@ -4358,6 +4368,8 @@ impl World {
                     cold_acc: 0,
                     heat: 0,
                     air_dc: 0,
+                    fel: 0,
+                    fel_acc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -5768,6 +5780,19 @@ impl World {
         }
         let day_tick = crate::weather::day_tick(tick, &self.env);
         let inp = self.exposure_inputs(i, wx, night, day_tick);
+        // The Verdigris first, on its own accumulator: a body can be cold and
+        // corroded in one second, and either can kill it.
+        let corroded = crate::exposure::corrode(
+            &self.survival.exposure,
+            &inp,
+            &mut self.players[i],
+            &mut self.events,
+        );
+        if corroded == survival::Step::Died {
+            let id = self.players[i].id;
+            self.die(i, id, DEATH_BY_FEL, NO_ITEM, 0);
+            return true;
+        }
         let step = crate::exposure::step(
             &self.survival.exposure,
             &inp,
@@ -5843,6 +5868,16 @@ impl World {
         };
         let ec = &self.survival.exposure;
         let fire = self.near_fire(x, z, feet);
+        // The Verdigris at the feet, none on the beach: the coast is
+        // survivable even where the corruption reaches the sea. Read only
+        // when the meter is armed, so a world without it pays nothing.
+        let fel_pm = if ec.fel_rise_per_s == 0 || feet < crate::terrain::BEACH_MAX_H {
+            0
+        } else {
+            (crate::terrain::fel(self.seed, x, z) * 1000.0) as u16
+        };
+        let vent = fel_pm >= (crate::terrain::FEL_VENT_AT * 1000.0) as u16
+            && crate::terrain::fel_vent_near(self.seed, x, z);
         let comfort = match fire {
             Some(at) if ec.fire_comfort > 0 => {
                 let (awake, asleep) = self.company_at(i, at);
@@ -5870,6 +5905,8 @@ impl World {
                 day_tick,
                 wx,
             ),
+            fel_pm,
+            vent,
         }
     }
 
@@ -7381,6 +7418,14 @@ impl World {
                 xb[2..4].copy_from_slice(&p.chill.to_le_bytes());
                 xb[4..8].copy_from_slice(&p.cold_acc.to_le_bytes());
                 h.update(&xb);
+            }
+            // The Verdigris, the same way: a world nobody walked into hashes
+            // as it did before it existed.
+            if p.fel != 0 || p.fel_acc != 0 {
+                let mut fb = [0u8; 6];
+                fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
+                fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
+                h.update(&fb);
             }
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact

@@ -203,6 +203,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.reduction_pct);
         h.u(a.move_penalty_pct);
         h.u(a.cold_pct as u32);
+        h.u(a.fel_pct);
     }
 
     h.s("consumables");
@@ -507,6 +508,13 @@ pub fn hash(c: &Content) -> u64 {
         ex.heat_water_pct,
         ex.heat_hurt_at,
         ex.heat_hp_per_min,
+        ex.fel_rise_per_s,
+        ex.fel_vent_per_s,
+        ex.fel_fall_per_s,
+        ex.fel_hurt_at,
+        ex.fel_hp_per_min,
+        ex.fel_regen_max,
+        ex.fel_ward_max,
     ] {
         h.u(v);
     }

@@ -179,6 +179,7 @@ pub mod mipmap;
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod embers;
+pub mod fel_rim;
 pub mod panels;
 pub mod pause;
 pub mod prewarm;
@@ -1837,6 +1838,13 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             hurt_flash::flash
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !filming),
+        )
+        .add_systems(
+            Update,
+            fel_rim::rim_drive
                 .after(feed::drain)
                 .run_if(world_running)
                 .run_if(move || !filming),

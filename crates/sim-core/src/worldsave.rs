@@ -217,7 +217,9 @@ use crate::worldcont::WorldContRec;
 /// **23 — the magazine moves into `PlayerSave`** (store format 9): the same
 /// 32 bytes per body, now inside the player's record rather than the tail,
 /// so a body's stride is unchanged and its order is not.
-pub const WORLD_SAVE_FORMAT: u16 = 23;
+/// **24 — the Verdigris** (`exposure::corrode`): each body's meter and the
+/// partial hp it is owed, after the cold's (+6).
+pub const WORLD_SAVE_FORMAT: u16 = 24;
 
 /// The head's arc block: the salt, then every mechanism slot.
 pub const ARC_SAVE_BYTES: usize = 8 + crate::limits::MAX_MECHS * crate::mech::MECH_BYTES;
@@ -272,9 +274,10 @@ pub const SECTION_COUNTS: usize = 12 * 2 + 4;
 /// the round-trip test in `tests/worldsave.rs` is what caught it.
 ///
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
-/// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
+/// the weak-spot pair, the four death-screen facts, `craft_done_at`, wet and
+/// cold (8) and the Verdigris (6).
 /// The magazine rode here from format 12 to 22; it is `PlayerSave`'s now.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + SKIN_WORDS * 8;
+const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + 6 + SKIN_WORDS * 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -645,6 +648,9 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(p.wet);
         o.u16(p.chill);
         o.u32(p.cold_acc);
+        // The Verdigris (format 24): hashed, so saved.
+        o.u16(p.fel);
+        o.u32(p.fel_acc);
         // The owned skins (format 16): hashed, so saved. A body that
         // reloads asleep keeps the set until its owner's next session
         // replaces it (`World::take_over` clears it at the door).
@@ -1069,12 +1075,14 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let wet = r.u16()?;
         let chill = r.u16()?;
         let cold_acc = r.u32()?;
+        let fel = r.u16()?;
+        let fel_acc = r.u32()?;
         let mut skin_bytes = [0u8; SKIN_WORDS * 8];
         for b in skin_bytes.iter_mut() {
             *b = r.u8()?;
         }
         let skins = crate::skin::SkinSet::from_le_bytes(&skin_bytes);
-        if wet > 1000 || chill > 1000 {
+        if wet > 1000 || chill > 1000 || fel > 1000 {
             return Err(WorldSaveError::BadExposure);
         }
         // The hotbar index is read unchecked by every verb that asks what
@@ -1138,6 +1146,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             cold_acc,
             heat: 0,
             air_dc: 0,
+            fel,
+            fel_acc,
             skins,
             safe: false,
             hostile: 0,
@@ -1906,7 +1916,8 @@ mod tests {
         // a world that hashes differently from the one it was written from.
         // 92 → 124 at format 16: the owned skin set, `SKIN_WORDS` words.
         // 124 → 92 at format 23: the magazine moved into `PlayerSave`.
-        assert_eq!(PLAYER_TAIL_BYTES, 92);
+        // 92 → 98 at format 24: the Verdigris' meter and its remainder.
+        assert_eq!(PLAYER_TAIL_BYTES, 98);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
@@ -1917,8 +1928,9 @@ mod tests {
         // in `PlayerSave` (+72) and the owned set in the tail (+32).
         // 485 → 493 at format 22: the glyph mask in `PlayerSave`. 493 at
         // format 23 too: the magazine's 32 B moved from the tail into it.
+        // 493 → 499 at format 24: the Verdigris in the tail.
         assert_eq!(
-            PLAYER_BYTES, 493,
+            PLAYER_BYTES, 499,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1929,7 +1941,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_516                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22)
-            + 100 * 493                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
+            + 100 * 499                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 256 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
@@ -2053,8 +2065,9 @@ mod tests {
         // 3_557_904: 64 fires × 28 and their count. 3_559_192 at format
         // 21: the works block in the head, 8 × 161. 3_560_128 at format 22:
         // the salt and the mechanisms (136) and a glyph mask on 100 bodies.
+        // 3_560_728 at format 24: the Verdigris, six bytes on 100 bodies.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_560_128,
+            WORLD_SAVE_MAX_BYTES, 3_560_728,
             "the world save ceiling moved"
         );
     }

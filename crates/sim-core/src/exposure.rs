@@ -29,6 +29,13 @@
 //! arithmetic and the one partial quantity (hp owed) lives in an exact
 //! accumulator, `survival::tick_units`, for wall 5's reason.
 //!
+//! **The Verdigris** (`terrain::fel`) is a fourth meter, Rust's radiation for
+//! the corrupted zone: it rises with how deep the body stands in it — faster
+//! in a vent's green fire — less what the body wears wards off, and falls
+//! outside it. Past `fel_hurt_at` it costs hp through its own accumulator,
+//! because a body can be cold and corroded in the same second
+//! ([`corrode`]).
+//!
 //! `EMPTY` disarms it: content with no `[exposure]` plays the game it did.
 
 use crate::limits::{MAX_ITEM_DEFS, TICK_HZ};
@@ -122,6 +129,21 @@ pub struct ExposureContent {
     /// in — a road sign jacket is a sheet of metal — as a per-mille share
     /// of the cold the body is already in, never as cold of its own.
     pub warmth: [i16; MAX_ITEM_DEFS],
+    /// The Verdigris ([`corrode`]), per mille of its meter: what a second at
+    /// its heart adds, what a second in a vent's fire adds on top, what a
+    /// second out of it takes away; past `fel_hurt_at` it costs hp,
+    /// `fel_hp_per_min` at a full meter; over `fel_regen_max` a body does not
+    /// mend; and no worn set wards off more than `fel_ward_max`.
+    pub fel_rise_per_s: u16,
+    pub fel_vent_per_s: u16,
+    pub fel_fall_per_s: u16,
+    pub fel_hurt_at: u16,
+    pub fel_hp_per_min: u16,
+    pub fel_regen_max: u16,
+    pub fel_ward_max: u16,
+    /// Per item index: the share of the Verdigris a worn piece wards off,
+    /// per mille (`armor.toml` `fel_pct`).
+    pub ward: [u16; MAX_ITEM_DEFS],
 }
 
 impl ExposureContent {
@@ -168,12 +190,20 @@ impl ExposureContent {
         heat_hurt_at: 1000,
         heat_hp_per_min: 0,
         warmth: [0; MAX_ITEM_DEFS],
+        fel_rise_per_s: 0,
+        fel_vent_per_s: 0,
+        fel_fall_per_s: 0,
+        fel_hurt_at: 1000,
+        fel_hp_per_min: 0,
+        fel_regen_max: 1000,
+        fel_ward_max: 0,
+        ward: [0; MAX_ITEM_DEFS],
     };
 
     /// Is exposure armed? A zero chill rate means nothing ever moves.
     #[inline]
     pub fn armed(&self) -> bool {
-        self.chill_rise_per_s > 0
+        self.chill_rise_per_s > 0 || self.fel_rise_per_s > 0
     }
 
     /// Synthetic table for the parity/replay/alloc gates: fast enough that a
@@ -232,6 +262,11 @@ pub struct Inputs {
     pub max_water: u16,
     /// The air where the body stands, deci-degrees (`climate::air_dc`).
     pub air_dc: i16,
+    /// How deep in the Verdigris the body stands, per mille (`terrain::fel`;
+    /// 0 on the beach), and whether it stands in a vent's fire
+    /// (`terrain::fel_vent_near`).
+    pub fel_pm: u16,
+    pub vent: bool,
 }
 
 /// What is worn, split in two: the warmth that keeps cold out, and the draw
@@ -465,6 +500,67 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
     Step::Quiet
 }
 
+/// What the worn set wards off of the Verdigris, per mille, held to
+/// `fel_ward_max`.
+fn worn_ward(ec: &ExposureContent, p: &Player) -> u32 {
+    let mut ward = 0u32;
+    for s in p.worn.iter() {
+        if s.count == 0 || s.item as usize >= MAX_ITEM_DEFS {
+            continue;
+        }
+        ward += ec.ward[s.item as usize] as u32;
+    }
+    ward.min(ec.fel_ward_max as u32).min(1000)
+}
+
+/// One second of the Verdigris for one body: its meter rises by how deep it
+/// stands (rounded up, so the edge still creeps), plus a vent's fire, less
+/// what it wears wards off; anywhere the Verdigris does not reach it falls.
+/// Past `fel_hurt_at` it costs hp, nothing at the line and
+/// `fel_hp_per_min` at a full meter, exact over the minute through its own
+/// accumulator. Not a hit: armor does not blunt it, as it does not the cold.
+pub fn corrode(
+    ec: &ExposureContent,
+    inp: &Inputs,
+    p: &mut Player,
+    events: &mut EventQueue,
+) -> Step {
+    if ec.fel_rise_per_s == 0 && p.fel == 0 {
+        return Step::Quiet;
+    }
+    let hp_before = p.hp;
+    let mut gain = (inp.fel_pm as u32 * ec.fel_rise_per_s as u32).div_ceil(1000);
+    if inp.vent {
+        gain += ec.fel_vent_per_s as u32;
+    }
+    if gain > 0 {
+        let gain = (gain * (1000 - worn_ward(ec, p))).div_ceil(1000);
+        p.fel = (p.fel as u32 + gain).min(1000) as u16;
+    } else {
+        p.fel = p.fel.saturating_sub(ec.fel_fall_per_s);
+    }
+    let mut died = false;
+    if p.fel > ec.fel_hurt_at && ec.fel_hurt_at < 1000 {
+        let over = (p.fel - ec.fel_hurt_at) as u32;
+        let span = (1000 - ec.fel_hurt_at) as u32;
+        let dmg = tick_units(&mut p.fel_acc, ec.fel_hp_per_min as u32 * over, span * 60);
+        if dmg > 0 && p.hp > 0 {
+            let dmg = dmg.min(u16::MAX as u32) as u16;
+            died = crate::combat::hurt_unreduced(p, dmg).died;
+        }
+    } else {
+        p.fel_acc = 0;
+    }
+    if died {
+        return Step::Died;
+    }
+    if p.hp != hp_before {
+        events.push(EV_HEALTH, p.id, p.hp as u32, p.hp_max as u32);
+        return Step::Changed;
+    }
+    Step::Quiet
+}
+
 /// The regen rate's denominator: a minute, times the stomach's per cent
 /// and comfort's per mille scales in `step`.
 const REGEN_DEN: u32 = 60 * 100 * 1000;
@@ -485,6 +581,7 @@ pub fn regens(ec: &ExposureContent, p: &Player) -> bool {
         && p.food > ec.regen_food_min
         && p.water > ec.regen_water_min
         && p.chill <= ec.regen_chill_max
+        && p.fel <= ec.fel_regen_max
         && p.calm >= ec.regen_calm_s
         && !p.wounded
         && p.hp > 0
@@ -539,6 +636,8 @@ pub fn reset(p: &mut Player) {
     p.heat = 0;
     p.cold_acc = 0;
     p.comfort = 0;
+    p.fel = 0;
+    p.fel_acc = 0;
 }
 
 /// What the owner's HUD reads: wet, cold and heat in per cent, whether
@@ -553,6 +652,9 @@ pub struct Readout {
     pub hurting: bool,
     pub comfort_pct: u8,
     pub air_c: i8,
+    /// The Verdigris' meter, per cent, and whether it is costing hp.
+    pub fel_pct: u8,
+    pub fel_hurting: bool,
 }
 
 #[inline]
@@ -564,5 +666,7 @@ pub fn readout(ec: &ExposureContent, p: &Player) -> Readout {
         hurting: ec.armed() && (p.chill > ec.hurt_at || p.heat > ec.heat_hurt_at),
         comfort_pct: (p.comfort / 10).min(100) as u8,
         air_c: crate::climate::whole_c(p.air_dc),
+        fel_pct: (p.fel / 10).min(100) as u8,
+        fel_hurting: p.fel > ec.fel_hurt_at && ec.fel_hurt_at < 1000,
     }
 }
