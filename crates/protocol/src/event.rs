@@ -1197,7 +1197,9 @@ impl ItemRow {
     }
 
     /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
-    /// on the same three numbers.
+    /// on the same three numbers — less its `fel`, which the catalog does not
+    /// carry; the content refuses a fel-only row, so the two agree on every
+    /// row that ships.
     pub fn eats(&self) -> bool {
         self.food > 0 || self.water > 0 || self.health > 0
     }

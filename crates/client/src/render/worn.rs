@@ -106,7 +106,7 @@ const BURLAP: [f32; 3] = [0.33, 0.25, 0.14];
 const BONE: [f32; 3] = [0.50, 0.46, 0.36];
 /// Tanned hide.
 const HIDE: [f32; 3] = [0.26, 0.15, 0.08];
-/// Cloth blacked with charcoal, the Ash Mask's.
+/// Cloth blacked with charcoal, the Ash Mask's and the Ash Suit's.
 const ASH: [f32; 3] = [0.045, 0.045, 0.040];
 
 /// Build the meshes and materials once (`Startup`).
@@ -205,6 +205,15 @@ pub fn load(
         pieces: vec![
             ("Burlap Hood", vec![part(hood, &burlap, Bone::Head)]),
             ("Ash Mask", vec![part(mask, &ash, Bone::Head)]),
+            // The suit is the tunic's cut in the mask's blacked cloth: two
+            // parts, so a helmet over it still fits `MAX_PARTS`.
+            (
+                "Ash Suit",
+                vec![
+                    part(tunic_top.clone(), &ash, Bone::Spine),
+                    part(tunic_skirt.clone(), &ash, Bone::Hips),
+                ],
+            ),
             (
                 "Bone Helmet",
                 vec![

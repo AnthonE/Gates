@@ -132,3 +132,14 @@ reduction_pct = 4
 move_penalty_pct = 0
 cold_pct = 3
 fel_pct = 60
+
+# Rust's hazmat, ours: a body piece warding off 40% of the Verdigris, so mask
+# and suit together reach the ceiling (`fel_ward_max`). A hide poncho's
+# blow (11, a percentage the band test already holds) and a warm coat's cold.
+[[armor]]
+id = "item.armor_ash_suit"
+slot = "body"
+reduction_pct = 11
+move_penalty_pct = 0
+cold_pct = 15
+fel_pct = 40

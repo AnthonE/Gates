@@ -1368,11 +1368,21 @@ impl Content {
             (seconds as u32).checked_mul(TICK_HZ).ok_or_else(|| {
                 format!("bake: consumable `{}` span {seconds} s overflows", con.id)
             })?;
+            let fel = i16::try_from(con.fel)
+                .ok()
+                .filter(|v| (-1000..=1000).contains(v))
+                .ok_or_else(|| {
+                    format!(
+                        "bake: consumable `{}` fel {} outside ±1000",
+                        con.id, con.fel
+                    )
+                })?;
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
                 water: u16f(con.water, "water")?,
                 seconds,
+                fel,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;

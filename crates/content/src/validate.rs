@@ -866,7 +866,22 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ));
         }
         if con.health == 0 && con.food == 0 && con.water == 0 {
+            // A row that only moves the Verdigris would work in the sim and
+            // never be eaten: the client's eat verb reads the catalog's
+            // food, water and health (`ItemRow::eats`), which carry no fel.
+            if con.fel != 0 {
+                return Err(format!(
+                    "consumable `{}`: a fel-only row is never eaten — give it some health, food or water",
+                    con.id
+                ));
+            }
             return Err(format!("consumable `{}`: does nothing", con.id));
+        }
+        if !(-1000..=1000).contains(&con.fel) {
+            return Err(format!(
+                "consumable `{}`: fel {} outside ±1000 per mille",
+                con.id, con.fel
+            ));
         }
         // A heal with no span would be an instant heal, and the sim's ramp
         // divides by the span — refuse the row rather than let a division

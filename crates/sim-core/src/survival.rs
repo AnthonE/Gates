@@ -99,6 +99,10 @@ pub struct ConsumableDef {
     /// would be an instant heal; the bake refuses that row rather than
     /// letting a division by zero decide.
     pub seconds: u16,
+    /// Per mille of the Verdigris meter (`Player::fel`) the item moves,
+    /// immediately: negative draws the corruption out (the Charcoal Tonic,
+    /// Rust's anti-rad pills).
+    pub fel: i16,
 }
 
 impl ConsumableDef {
@@ -106,7 +110,7 @@ impl ConsumableDef {
     /// not, so this is the sim's read of "is the held item food".
     #[inline]
     pub fn is_food(&self) -> bool {
-        self.health > 0 || self.food > 0 || self.water > 0
+        self.health > 0 || self.food > 0 || self.water > 0 || self.fel != 0
     }
 }
 
@@ -161,6 +165,7 @@ impl SurvivalContent {
             food: 0,
             water: 0,
             seconds: 0,
+            fel: 0,
         }; MAX_ITEM_DEFS],
         belt_recovery: [false; MAX_ITEM_DEFS],
         revive: [false; MAX_ITEM_DEFS],
@@ -205,6 +210,7 @@ impl SurvivalContent {
             food: 40,
             water: 30,
             seconds: 2,
+            fel: 0,
         };
         c
     }
@@ -512,8 +518,10 @@ pub fn consume(
     // Refuse a consume that could not do anything: a full pair and no heal
     // would destroy the item for nothing. A row that heals is always
     // allowed — hp is the one meter a player may top up deliberately.
-    let would_feed =
-        (def.food > 0 && p.food < sc.max_food) || (def.water > 0 && p.water < sc.max_water);
+    let would_feed = (def.food > 0 && p.food < sc.max_food)
+        || (def.water > 0 && p.water < sc.max_water)
+        || (def.fel < 0 && p.fel > 0)
+        || def.fel > 0;
     if def.health == 0 && !would_feed {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_FULL, 0);
         return false;
@@ -544,6 +552,7 @@ pub fn consume(
     // not the same as "cannot happen", and this is one word.
     p.food = p.food.saturating_add(def.food).min(sc.max_food);
     p.water = p.water.saturating_add(def.water).min(sc.max_water);
+    p.fel = (i32::from(p.fel) + i32::from(def.fel)).clamp(0, 1000) as u16;
     start_heal(def, p, heal_pct);
     events.push(
         EV_CONSUMED,
@@ -832,6 +841,43 @@ mod tests {
     /// ceiling. Today's validator cannot produce this content; the add is
     /// saturating anyway, because the clamp is on the result and a wrapped
     /// sum is already wrong by the time it reaches one.
+    /// The tonic: it draws the Verdigris out at full food and water (it
+    /// heals a little, so it is never refused), and never below zero. A row
+    /// that only draws refuses on a clean body.
+    #[test]
+    fn a_tonic_draws_the_green_out() {
+        let mut sc = SurvivalContent::probe_fixture();
+        sc.consumable[0] = ConsumableDef {
+            health: 5,
+            food: 0,
+            water: 0,
+            seconds: 1,
+            fel: -400,
+        };
+        let drink = |sc: &SurvivalContent, fel: u16| {
+            let mut p = player(sc);
+            p.food = sc.max_food;
+            p.water = sc.max_water;
+            p.fel = fel;
+            p.inv[0] = ItemStack {
+                item: 0,
+                count: 1,
+                cond: 0,
+                skin: 0,
+            };
+            let mut ev = EventQueue::default();
+            let ok = consume(sc, 0, &mut p, &mut ev, 100);
+            (ok, p.fel)
+        };
+        assert_eq!(drink(&sc, 900), (true, 500));
+        assert_eq!(drink(&sc, 300), (true, 0), "never below clean");
+        assert_eq!(drink(&sc, 0), (true, 0), "the heal still takes it");
+        sc.consumable[0].health = 0;
+        sc.consumable[0].seconds = 0;
+        assert_eq!(drink(&sc, 0), (false, 0), "nothing to draw out");
+        assert_eq!(drink(&sc, 200), (true, 0));
+    }
+
     #[test]
     fn an_absurd_row_still_clamps_to_the_ceiling() {
         let mut sc = SurvivalContent::probe_fixture();
@@ -840,6 +886,7 @@ mod tests {
             food: u16::MAX,
             water: u16::MAX,
             seconds: 0,
+            fel: 0,
         };
         let mut p = player(&sc);
         p.food = sc.max_food - 1;

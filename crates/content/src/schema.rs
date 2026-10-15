@@ -546,6 +546,10 @@ pub struct Consumable {
     /// Used on a downed body in reach (`Command::Treat`), stand it up.
     #[serde(default)]
     pub revive: bool,
+    /// Per mille of the Verdigris meter it moves, at once; negative draws
+    /// the corruption out. ±1000.
+    #[serde(default)]
+    pub fel: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

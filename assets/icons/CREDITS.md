@@ -30,6 +30,7 @@ every item either way, because the painted ones are derived works of it.
 |---|---|
 | `animal_fat.png` | `lorc/meat` |
 | `ash_mask.png` | `lorc/gas-mask` |
+| `ash_suit.png` | `delapouite/hazmat-suit` |
 | `auto_turret.png` | `lorc/sentry-gun` |
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
@@ -44,6 +45,7 @@ every item either way, because the painted ones are derived works of it.
 | `burlap_tunic.png` | `lorc/leather-vest` |
 | `camp_fire.png` | `lorc/campfire` |
 | `charcoal.png` | `delapouite/coal-pile` |
+| `charcoal_tonic.png` | `lorc/standing-potion` |
 | `cloth.png` | `delapouite/rolled-cloth` |
 | `code_lock.png` | `delapouite/dial-padlock` |
 | `cooked_meat.png` | `lorc/chicken-leg` |

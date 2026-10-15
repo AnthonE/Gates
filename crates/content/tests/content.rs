@@ -4980,3 +4980,26 @@ fn the_arc_refuses_what_it_cannot_resolve() {
         "not in the alphabet",
     );
 }
+
+/// The radiation kit (`sim_core::blight`): the Ash Mask and the Ash Suit each
+/// ward off part of the Verdigris, together they reach the ceiling, and the
+/// tonic draws the meter down without being refused at full.
+#[test]
+fn the_ash_mask_and_suit_reach_the_ward_cap_and_the_tonic_draws() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let sc = c.bake_survival().expect("survival bakes");
+    let ex = &sc.exposure;
+    let ward = |id: &str| ex.ward[c.item_index(id).expect(id) as usize];
+    let (mask, suit) = (ward("item.armor_ash_mask"), ward("item.armor_ash_suit"));
+    assert!(
+        mask < ex.fel_ward_max && suit < ex.fel_ward_max,
+        "one piece is not the cap"
+    );
+    assert!(
+        mask + suit >= ex.fel_ward_max,
+        "mask and suit together reach the cap"
+    );
+    let tonic = sc.consumable[c.item_index("item.charcoal_tonic").expect("tonic") as usize];
+    assert!(tonic.fel < 0, "the tonic draws the green out");
+    assert!(tonic.health > 0 || tonic.water > 0, "the eat verb takes it");
+}
