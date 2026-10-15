@@ -42,6 +42,7 @@ use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS};
 use crate::sound::mixer::{Mixer, Request, Start, Takes};
 use crate::sound::music::{self, Director, Track};
 use crate::sound::steps::Steps;
+use crate::sound::talk::TalkMsg;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
 use crate::sound::{Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP};
@@ -315,7 +316,16 @@ pub struct Engine {
     /// score is whole tracks streamed beside it (`sound::music`). [`music`]
     /// fills it and each target's flush carries it out.
     pub score: Score,
+    /// Players' voices this frame (`render/voice.rs`): decoded samples and
+    /// ear gains for the audio thread's `sound::talk`. Bounded at
+    /// [`TALK_FRAME_CAP`], drop-newest and counted in `talk_dropped`.
+    talk: Vec<TalkMsg>,
+    pub talk_dropped: u32,
 }
+
+/// Voice messages one frame may carry across: ~8 talkers, a frame or two
+/// each, and their gains.
+pub const TALK_FRAME_CAP: usize = 48;
 
 /// What the score asks of the music output: the native stream
 /// (`audio_out::Music`) or the page's `<audio>` element (`audio_web`).
@@ -347,11 +357,27 @@ impl Default for Engine {
             diag: Diag::default(),
             out_rate: SAMPLE_RATE,
             score: Score::default(),
+            talk: Vec::with_capacity(TALK_FRAME_CAP),
+            talk_dropped: 0,
         }
     }
 }
 
 impl Engine {
+    /// Queue a voice message for this frame's flush.
+    pub fn push_talk(&mut self, msg: TalkMsg) {
+        if self.talk.len() >= TALK_FRAME_CAP {
+            self.talk_dropped = self.talk_dropped.saturating_add(1);
+            return;
+        }
+        self.talk.push(msg);
+    }
+
+    /// The frame's voice messages, in order; empty afterwards.
+    pub fn take_talk(&mut self) -> impl Iterator<Item = TalkMsg> + '_ {
+        self.talk.drain(..)
+    }
+
     /// Queue a command for this frame's flush.
     pub fn push(&mut self, cmd: Cmd) {
         if self.n >= CMD_FRAME_CAP {
@@ -1120,6 +1146,23 @@ pub fn remote_heard(
         };
         let p = t.translation;
         sound.play(Request::at(cue, [p.x, p.y + REMOTE_HANDS_H_M, p.z]));
+    }
+}
+
+/// Gunshots and blasts from past the interest set (wire v113, `SUB_REPORT`):
+/// the shard sends no body for them, only what went off and where, out to
+/// `GUN_REPORT_CM` and `BLAST_REPORT_CM`. A gun is its far layer at the
+/// place, a blast is a blast; the falloff and the distance low-pass make
+/// them the dull far crack and rumble they should be.
+pub fn far_reports(feed: Res<super::feed::Feed>, mut sound: ResMut<Sound>) {
+    for &(kind, x, y, z) in feed.reports() {
+        let cue = match kind {
+            protocol::REPORT_GUN => Cue::ShotGunFar,
+            protocol::REPORT_BLAST => Cue::Blast,
+            _ => continue,
+        };
+        let at = [x as f32, y as f32 + REMOTE_HANDS_H_M, z as f32];
+        sound.play(Request::at(cue, at));
     }
 }
 
@@ -2346,6 +2389,8 @@ pub fn pump(
     time: Res<Time>,
     settings: Res<super::Settings>,
     mut reported: Local<Reported>,
+    net: Option<NonSend<Net>>,
+    world: Option<Res<super::WorldId>>,
 ) {
     let mix = mix_of(&settings).under(&sound.snap);
     let dt = time.delta_secs();
@@ -2375,7 +2420,21 @@ pub fn pump(
             *slot = Some(*s);
         }
     }
-    for start in chosen.into_iter().flatten() {
+    // Walls between the ears and a source (`ui::occlusion`): the built
+    // pieces this client already collides against, walked from the ear.
+    let walls = match (settings.occlusion, net.as_deref(), world.as_deref()) {
+        (true, Some(n), Some(w)) => Some((w.seed, &w.haven, n.session.core.pieces.cols())),
+        _ => None,
+    };
+    for mut start in chosen.into_iter().flatten() {
+        let mut walled = 0;
+        if let (Some((seed, haven, cols)), Some(at)) = (walls, start.at) {
+            let n = crate::ui::occlusion::walls_between(seed, haven, cols, listener, at);
+            if let Some((gain, hz)) = crate::ui::occlusion::muffle(n) {
+                start.gain *= gain;
+                walled = engine::lp_hz(hz, out_rate);
+            }
+        }
         // The rate is the mixer's speed resampled to the renderer's rate —
         // `engine::rate` is the one resampler in the chain (`audio_out.rs`).
         // The take is the bank's to count and never the last one played.
@@ -2384,7 +2443,8 @@ pub fn pump(
         engine.push(
             engine::start_cmd(&start, listener, right, out_rate)
                 .with_take(take, takes)
-                .muffled(under),
+                .muffled(under)
+                .muffled(walled),
         );
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence

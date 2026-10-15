@@ -227,6 +227,15 @@ fn main() {
     // The receiver's team (v108).
     let len = protocol::encode_event_team(&goldens::event_team(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[165], &buf[..len]);
+    // Proximity voice (v113): the talker's frame and its relay.
+    let len = protocol::encode_voice_up(&goldens::voice_up(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[166], &buf[..len]);
+    let len = protocol::encode_voice(&goldens::voice(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[167], &buf[..len]);
+    // A far report (v113).
+    let (kind, x, y, z) = goldens::event_report();
+    let len = protocol::encode_event_report(kind, x, y, z, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[168], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -417,7 +426,7 @@ fn main() {
     write_fixture(goldens::FIXTURES[109], &buf[..len]);
     let len = protocol::encode_event_env(&goldens::event_env(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[111], &buf[..len]);
-    let len = protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap();
+    let len = protocol::encode_event_exposure(&goldens::exposure(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[112], &buf[..len]);
     let len =
         protocol::encode_event_slot_grow_sync(&goldens::event_slot_grow_sync(), &mut buf).unwrap();

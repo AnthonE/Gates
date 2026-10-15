@@ -790,7 +790,7 @@ struct LootLive {
     /// The skin `model` is drawn in (v102), zero for plain — and for a
     /// skin the catalog does not know yet, so its landing reads as a change.
     skin: u16,
-    /// The throw it came in on (v111), so a redraw mid-flight carries on
+    /// The throw it came in on (v114), so a redraw mid-flight carries on
     /// flying rather than starting again or dropping into place.
     flight: Option<super::loot::Flight>,
 }
@@ -2991,7 +2991,7 @@ pub fn stream(
 /// A skinned stack (v102) draws its model in the skin's tint — the held
 /// item's rule, `bodies::update_hand`: if `skins` knows the skin, else
 /// plain. A pouch or an arrow stand-in is never tinted. A stack first seen
-/// flying out of a hand (v111) is drawn flying ([`super::loot::Tossed`]),
+/// flying out of a hand (v114) is drawn flying ([`super::loot::Tossed`]),
 /// on the server tick estimate `now`.
 #[allow(clippy::too_many_arguments)]
 fn sync_loot(

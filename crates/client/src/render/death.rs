@@ -171,10 +171,7 @@ pub fn enter(
     net: Option<NonSendMut<Net>>,
 ) {
     *answer = Answer::default();
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
+    ui::free_cursor(&mut cursor);
     // The bag you were reading is not yours any more — it is lying on the
     // ground with your body in it. Close the panel rather than leave it
     // showing a corpse's slots behind the buttons.
@@ -423,14 +420,9 @@ pub fn keys(
     //
     // **Escape is not bound either**: there is nothing to back out to, and a
     // screen you can dismiss without answering is a corpse with no exit.
-    for (n, digit) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3]
-        .into_iter()
-        .enumerate()
-    {
-        if keyboard.just_pressed(digit) {
-            if let Some(wake) = wake_at(offer, n + 1) {
-                answer.chosen = Some(wake);
-            }
+    if let Some(n) = ui::digit_pressed(&keyboard, 3) {
+        if let Some(wake) = wake_at(offer, n + 1) {
+            answer.chosen = Some(wake);
         }
     }
 }
@@ -475,12 +467,6 @@ pub fn act(
             Err(e) => toast.warn(e.to_string()),
         },
         Err(e) => toast.warn(format!("respawn would not encode ({e:?})")),
-    }
-}
-
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<DeathRoot>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
     }
 }
 

@@ -456,6 +456,48 @@ pub const CHAT_RING_CAP: usize = 4;
 /// see.
 pub const CHAT_LOCAL_CM: i64 = 2_000;
 
+/// Proximity voice's radius, centimetres, 3D (wire v113). The server relays
+/// a talker's frames to nobody farther (`reference/VOICE.md` §9.1: the cull
+/// is the server's or it is a wallhack). **The reference's own number**: its
+/// server sends a voice packet to every connection within 100 m of the
+/// speaker (`BasePlayer`'s voice relay, read in its decompiled server), and
+/// the client's falloff is what makes 40 m clear and 90 m a murmur
+/// (`render/voice.rs`). Inside the AOI enter radius, so whoever hears you
+/// is already an entity you can see.
+pub const VOICE_RADIUS_CM: i64 = 10_000;
+
+/// How far a gunshot is reported past the interest set, centimetres
+/// (`EventMsg::Report`, v113). Inside it the shot rides `EV_SHOT` and its
+/// body; past it, out to here, the client is told only that a gun went off
+/// and where. The reference's pistol class carries 400 m (rifles 500,
+/// heavy guns 600; its Sept 2025 maintenance devblog), and the revolver is
+/// the only gun on the island.
+pub const GUN_REPORT_CM: i64 = 40_000;
+
+/// How far a blast is reported past the interest set, centimetres (v113).
+/// The reference sends every explosion to every client; 1500 m on a 4 km
+/// island is a raid heard from most of it.
+pub const BLAST_REPORT_CM: i64 = 150_000;
+
+/// Per-connection inbound ring of a talker's voice frames. Overflow policy:
+/// **drop newest**, counted — the reader rate-limits ahead of it, and a
+/// late frame is worth less than the next one.
+pub const VOICE_RING_CAP: usize = 16;
+
+/// Voice frames the sim relays per talker per tick: 50 frames a second at
+/// 30 Hz is under two, so four takes a burst. The rest wait a tick.
+pub const VOICE_PER_TICK: usize = 4;
+
+/// Per-connection outbound ring of relayed voice datagrams: a crowd of
+/// talkers, a few ticks deep. Overflow policy: **drop newest**, counted —
+/// a listener whose writer is behind loses a frame, never the snapshot.
+pub const VOICE_OUT_RING_CAP: usize = 64;
+
+/// The voice token bucket, per connection: frames a second at a steady
+/// state (one per 20 ms), and the burst a jittery uplink may bunch.
+pub const VOICE_FPS: u32 = 50;
+pub const VOICE_BURST: u32 = 10;
+
 /// How far another body's deed is heard, centimetres (wire v93,
 /// `SUB_HEARD`): a reload, a meal, a drink, a keypad, a lid. The server
 /// sends it to nobody farther, so the fact goes no further than its sound —
@@ -727,6 +769,12 @@ pub const MAX_GROUND_ITEMS: usize = 512;
 /// it landed on every screen that had not seen it fly — the record is the
 /// truth either way, the throw is only its picture.
 pub const MAX_TOSSES: usize = 32;
+
+/// Line-of-sight walks one take, loot or pull may spend finding the nearest
+/// thing in reach (`reach::nearest_clear`), nearest first. Bounds a command
+/// against a pile of stacks heaped behind a wall: past this many blocked
+/// candidates the hand finds nothing.
+pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 
 /// Deployed storage boxes standing at once (`deploy.rs`, `ARCH_BOX`).
 /// Held in its own dense list beside the hearths, for the same reason:

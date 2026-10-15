@@ -946,7 +946,7 @@ impl HomeJob {
                         skip[MAX_DOORS..].copy_from_slice(&self.tried);
                         match nearest_door(core, goal, HOP_M, 0, &skip, x, z) {
                             Some(door) => {
-                                self.doors.begin(door, x, z, tick);
+                                self.doors.begin_toward(door, goal, tick);
                                 Deliver::IDLE
                             }
                             None => self.fail(Why::Stuck),

@@ -86,10 +86,7 @@ pub fn enter(
     look: Res<super::input::Look>,
     net: Option<NonSendMut<Net>>,
 ) {
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
+    ui::free_cursor(&mut cursor);
     // The header's first bullet. Yaw and pitch are kept — they are where the
     // player is looking, not something they are doing — and the buttons and
     // both move axes go to zero. Quantized through `input`'s own two
@@ -200,10 +197,7 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
                 ));
             }
             for (i, (verb, name, detail)) in VERBS.iter().enumerate() {
-                root.spawn((ui::row(460.0), *verb)).with_children(|b| {
-                    b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
-                    b.spawn(ui::label(*detail, 13.0, ui::DIM));
-                });
+                ui::verb_row(root, i + 1, name, detail, *verb);
             }
 
             root.spawn((
@@ -250,18 +244,8 @@ pub fn keys(
         chosen.0 = Some(Verb::Resume);
         return;
     }
-    const DIGITS: [KeyCode; VERBS.len()] = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-    ];
-    for (i, k) in DIGITS.iter().enumerate() {
-        if keyboard.just_pressed(*k) {
-            chosen.0 = Some(VERBS[i].0);
-        }
+    if let Some(i) = ui::digit_pressed(&keyboard, VERBS.len()) {
+        chosen.0 = Some(VERBS[i].0);
     }
 }
 
@@ -311,7 +295,7 @@ pub fn act(
             // world the player is describing, not this menu over it.
             if let Some(mut reports) = reports {
                 reports.open_composer();
-                super::report::free_cursor(&mut cursor);
+                super::ui::free_cursor(&mut cursor);
             }
             next.set(Screen::InWorld);
         }
@@ -351,12 +335,6 @@ fn is_shareable(host: &str) -> bool {
         // 127.0.1.1 is what a Debian box calls itself.
         || h.strip_prefix("127.")
             .is_some_and(|rest| rest.split('.').count() == 3))
-}
-
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<PauseRoot>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
 }
 
 /// Esc from the world opens this screen. Lives here rather than in `input`

@@ -309,7 +309,7 @@ def shoot_and_cut(tape_dir, m, k, keep):
         "width": W,
         "height": H,
         "fps": FPS,
-        "fov": 62,
+        "fov": 58,
         # Lavapipe's frame stays near a second with these turned down.
         "budget": {"ao": 1, "shadow_px": 2048, "shadow_m": 150, "blur_samples": 2, "gaussian": True},
         "shots": [{
@@ -317,7 +317,7 @@ def shoot_and_cut(tape_dir, m, k, keep):
             "at": m["start"],
             "len": length,
             # No `near`: the body this tape watched, wherever he goes.
-            "follow": {"back": 4.2, "up": 2.0, "side": 0.8, "lag": 0.5},
+            "follow": {"back": 3.6, "up": 1.8, "side": 0.7, "lag": 0.5},
             "look": {"focus": "subject", "fstop": 4.0},
         }],
     }

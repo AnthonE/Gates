@@ -2,25 +2,28 @@
 //! about.
 //!
 //! **The shape is the reference's**: a category rail down the left with the
-//! selected one blocked out in olive, a pane of rows on the right, each row a
-//! label and a control. That is the frame the operator handed over, and it is
-//! worth copying because it scales — the pane holds two rows today and thirty
-//! later without the screen changing shape.
+//! selected one blocked out in the accent, a pane of rows on the right, each
+//! row a label and a control. That is the frame the operator handed over, and
+//! it is worth copying because it scales without the screen changing shape.
 //!
 //! **What is NOT copied is the row count.** The reference's GRAPHICS tab lists
 //! shadow cascades, anisotropic filtering, parallax mapping and a dozen more
-//! because it has a renderer with those switches. Ours has ten settings that
-//! do something, and this screen shows ten settings — and the tenth is a
-//! LADDER rather than a panel: `render/quality.rs` states the case for one
-//! knob, which is that six independent toggles is six ways to build a frame
-//! nobody has ever looked at. A category with nothing
+//! because it has a renderer with those switches. This screen shows only the
+//! settings that do something here, and QUALITY is a LADDER rather than a
+//! panel: `render/quality.rs` states the case for one knob, which is that six
+//! independent toggles is six ways to build a frame nobody has ever looked
+//! at. A category with nothing
 //! behind it says so in a sentence instead of drawing greyed rows that imply
 //! a feature exists — the same rule the HUD already obeys, where "a 0-max
 //! meter is undrawn, not drawn empty", and the same rule the intro screen
 //! obeys when it says why the shard list is empty rather than showing nothing.
 //!
+//! **KEYBINDS edits [`Binds`]** (`render/binds.rs`): click a key to change
+//! it, right click to clear it, Esc to cancel. A key can do one thing, so
+//! binding one that is in use moves it and the footer says from where.
+//!
 //! **Settings persist.** `crate::config` owns the file — the path (the
-//! platform's config dir), the format (hand-rolled `key = value` TOML, the
+//! platform's config dir, or `localStorage` in a browser), the format (hand-rolled `key = value` TOML, the
 //! server's `shard.toml` precedent), the `version` field for when a knob is
 //! renamed, and the ignore-and-preserve policy for a key this build does not
 //! know. This module owns the Bevy half: [`load`] runs once at plugin build,
@@ -49,6 +52,7 @@ use super::quality;
 use crate::config::{self, Ao, Persisted, Quality};
 use crate::ui::servers::Favourites;
 
+use super::binds::{self, Action, Bind, Binds};
 use super::rig::{EyeCam, FOV_DEG};
 use super::screen::Screen;
 use super::ui;
@@ -123,6 +127,11 @@ pub struct Settings {
     /// The reference's `audio.musicvolume`, which is the one bus that does
     /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
     pub vol_music: f32,
+    /// Players' voices (proximity voice chat, `render/voice.rs`), 0..1.
+    pub vol_voice: f32,
+    /// Walls, floors and shut doors muffle what is behind them
+    /// (`ui::occlusion`). On, as in the reference.
+    pub occlusion: bool,
     /// How hard the camera shakes and kicks (`render/shake.rs`), 0..1.
     /// Zero turns it off for players it makes queasy.
     pub shake: f32,
@@ -143,6 +152,11 @@ pub struct Settings {
     /// carries, for the same reason: `is_changed()` fires on the frame the
     /// resource is inserted, which would rebuild what `setup` just spawned.
     pub dirty: bool,
+    /// The KEYBINDS cell waiting for a key, if any: (action, slot).
+    pub capturing: Option<(Action, usize)>,
+    /// One line in the footer saying what the last click did, when that is
+    /// not obvious from the pane (a key moved off another action, a reset).
+    pub note: String,
 }
 
 impl Default for Settings {
@@ -213,10 +227,14 @@ impl Default for Settings {
             // master and game ship at 1. A score at parity with footsteps
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
+            vol_voice: 1.0,
+            occlusion: true,
             shake: 1.0,
             cat: 0,
             back: Screen::Menu,
             dirty: false,
+            capturing: None,
+            note: String::new(),
         }
     }
 }
@@ -250,6 +268,8 @@ pub enum Knob {
     VolGame,
     VolAmbience,
     VolMusic,
+    VolVoice,
+    Occlusion,
     Shake,
 }
 
@@ -325,6 +345,7 @@ impl Settings {
                     step_ladder(&quality::TREE_LOD_LADDER, self.gfx.tree_lod_swap_m, delta);
             }
             Knob::Vsync => self.vsync = !self.vsync,
+            Knob::Occlusion => self.occlusion = !self.occlusion,
             Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
             // **Turning presence off takes sharing with it**, and that is the
@@ -364,6 +385,7 @@ impl Settings {
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
             Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
+            Knob::VolVoice => self.vol_voice = step_vol(self.vol_voice, delta),
             Knob::Shake => self.shake = step_vol(self.shake, delta),
         }
         self.dirty = true;
@@ -383,6 +405,50 @@ impl Settings {
             gfx: quality::effective(quality::preset(q)),
             ..Self::default()
         }
+    }
+
+    /// Put one tab's knobs back to their defaults. The graphics rows move
+    /// together with their preset, so any of them resets all of them.
+    pub fn reset_tab(&mut self, cat: usize) {
+        let d = Settings::default();
+        for row in rows(cat) {
+            let knob = match row {
+                Row::Toggle(_, k) | Row::Number(_, k, _) => k,
+                _ => continue,
+            };
+            match knob {
+                Knob::Quality
+                | Knob::Shadows
+                | Knob::ShadowDistance
+                | Knob::ShadowCascades
+                | Knob::ShadowMapPx
+                | Knob::Ambient
+                | Knob::Smaa
+                | Knob::Taa
+                | Knob::Bloom
+                | Knob::TreeLod
+                | Knob::RenderScale => {
+                    self.quality = d.quality;
+                    self.gfx = d.gfx;
+                }
+                Knob::DiscordPresence => self.discord_presence = d.discord_presence,
+                Knob::DiscordShareServer => self.discord_share_server = d.discord_share_server,
+                Knob::Vsync => self.vsync = d.vsync,
+                Knob::MaxFps => self.max_fps = d.max_fps,
+                Knob::Fullscreen => self.fullscreen = d.fullscreen,
+                Knob::Fov => self.fov_deg = d.fov_deg,
+                Knob::Sensitivity => self.sensitivity = d.sensitivity,
+                Knob::InvertLook => self.invert_look = d.invert_look,
+                Knob::VolMaster => self.vol_master = d.vol_master,
+                Knob::VolGame => self.vol_game = d.vol_game,
+                Knob::VolAmbience => self.vol_ambience = d.vol_ambience,
+                Knob::VolMusic => self.vol_music = d.vol_music,
+                Knob::Shake => self.shake = d.shake,
+                Knob::VolVoice => self.vol_voice = d.vol_voice,
+                Knob::Occlusion => self.occlusion = d.occlusion,
+            }
+        }
+        self.dirty = true;
     }
 
     /// The preset the graphics rows currently spell out exactly, if any.
@@ -416,6 +482,7 @@ impl Settings {
             Knob::RenderScale => format!("{}%", self.gfx.render_scale),
             Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
             Knob::Vsync => on_off(self.vsync),
+            Knob::Occlusion => on_off(self.occlusion),
             Knob::MaxFps => {
                 if self.max_fps == 0 {
                     "UNCAPPED".to_string()
@@ -433,11 +500,12 @@ impl Settings {
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
             Knob::VolMusic => pct(self.vol_music),
+            Knob::VolVoice => pct(self.vol_voice),
             Knob::Shake => pct(self.shake),
         }
     }
 
-    /// The eight values that go to disk — everything a player set, none of
+    /// The values that go to disk — everything a player set, none of
     /// the UI state (`cat`, `back`, `dirty` describe this run's screen, not
     /// the player's choices).
     fn persisted(&self) -> Persisted {
@@ -453,6 +521,8 @@ impl Settings {
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
+            vol_voice: self.vol_voice,
+            occlusion: self.occlusion,
             shake: self.shake,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
@@ -515,6 +585,8 @@ impl Settings {
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            vol_voice: step(p.vol_voice, VOL_STEP).clamp(0.0, 1.0),
+            occlusion: p.occlusion,
             shake: step(p.shake, VOL_STEP).clamp(0.0, 1.0),
             discord_presence: p.discord_presence,
             // **Sanitized, not just loaded.** A hand-edited file could carry
@@ -595,20 +667,34 @@ fn nearest_px(px: usize) -> usize {
     best.min(quality::max_shadow_map_px())
 }
 
-/// What is on the disk right now, held so [`save_on_change`] can tell a real
+/// Where the settings file lives: a file in the platform's config dir on the
+/// desktop, the page's `localStorage` in a browser.
+pub enum Store {
+    File(std::path::PathBuf),
+    Browser,
+}
+
+/// The `localStorage` key a browser keeps the settings text under. The text
+/// is the same `key = value` document the desktop writes to a file.
+pub const BROWSER_KEY: &str = "gates.settings";
+
+/// What is stored right now, held so [`save_on_change`] can tell a real
 /// change from a rebuild flag — `dirty` is also set by picking a rail row,
-/// which changes nothing worth a write. Only inserted when there is a file
-/// to keep: a capture run never gets one (frames must not depend on the
+/// which changes nothing worth a write. Only inserted when there is somewhere
+/// to keep it: a capture run never gets one (frames must not depend on the
 /// box's config, so it loads nothing and saves nothing), and neither does a
-/// box whose environment names no config dir.
+/// box whose environment names no config dir, or a browser that refuses
+/// `localStorage`.
 #[derive(Resource)]
 pub struct Disk {
-    path: std::path::PathBuf,
+    store: Store,
     /// The loaded file's version — carried so a save under a newer file
     /// keeps its stamp (`config::serialize` takes the max).
     version: u32,
     /// Another build's keys, preserved verbatim (`crate::config`'s policy).
     unknown: Vec<String>,
+    /// Bind lines for actions this build does not know, kept the same way.
+    other_binds: Vec<(String, String)>,
     /// The sanitized view of what was loaded, NOT the raw file: an
     /// out-of-range value on disk is corrected in memory at load and on disk
     /// only at the player's next change — a boot must not write.
@@ -618,71 +704,136 @@ pub struct Disk {
     /// entirely, so this file has two writers' worth of state in it and
     /// exactly one writer.
     written_favs: Vec<String>,
+    /// The binds as last written, as their file lines.
+    written_binds: Vec<(String, String)>,
 }
 
-/// Read the settings file once, before the first frame that applies
-/// anything. Missing or corrupt is the defaults, silently; no resolvable
-/// path is the defaults with persistence off for the run (`None`).
-pub fn load() -> (Settings, Favourites, Option<Disk>) {
-    let Some(path) = config::settings_path() else {
-        // A browser lands here: no file, so the defaults. Except that inside
-        // an X post the game opens in the post (`web::in_post`); FULLSCREEN
-        // on the settings screen still turns it on.
+impl Disk {
+    /// The footer's account of where the settings go.
+    pub fn describe(&self) -> String {
+        match &self.store {
+            Store::File(path) => format!("saved to {}", path.display()),
+            Store::Browser => "saved in this browser".to_string(),
+        }
+    }
+}
+
+/// Where to keep the settings on this box, and what is there now (`None` for
+/// nothing yet). `None` overall means nowhere to keep them this run.
+fn open_store() -> Option<(Store, Option<String>)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // `local_storage` is `Err` or `None` in a sandboxed frame or with
+        // storage blocked; then the run keeps nothing, as before.
+        let storage = web_sys::window()?.local_storage().ok()??;
+        let text = storage.get_item(BROWSER_KEY).ok().flatten();
+        Some((Store::Browser, text))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path = config::settings_path()?;
+        let text = std::fs::read_to_string(&path).ok();
+        Some((Store::File(path), text))
+    }
+}
+
+fn write_store(store: &Store, text: &str) -> Result<(), String> {
+    match store {
+        Store::File(path) => config::save(path, text),
+        Store::Browser => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                web_sys::window()
+                    .and_then(|w| w.local_storage().ok().flatten())
+                    .ok_or_else(|| "localStorage is not available".to_string())?
+                    .set_item(BROWSER_KEY, text)
+                    .map_err(|e| format!("{e:?}"))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = text;
+                Err("no browser storage on this target".to_string())
+            }
+        }
+    }
+}
+
+/// Read the settings once, before the first frame that applies anything.
+/// Missing or corrupt is the defaults, silently; nowhere to keep them is the
+/// defaults with persistence off for the run (no `Disk`).
+pub fn load() -> (Settings, Favourites, Binds, Option<Disk>) {
+    let Some((store, text)) = open_store() else {
         let mut settings = Settings::default();
+        // Inside an X post the game opens in the post (`web::in_post`);
+        // FULLSCREEN on the settings screen still turns it on.
         if super::web::in_post() {
             settings.fullscreen = false;
         }
-        return (settings, Favourites::default(), None);
+        return (settings, Favourites::default(), Binds::default(), None);
     };
-    let loaded = config::load(&path, Settings::default().persisted());
-    let settings = Settings::from_persisted(loaded.values);
+    let defaults = Settings::default().persisted();
+    let loaded = match text {
+        Some(text) => config::parse(&text, defaults),
+        None => config::parse("", defaults),
+    };
+    let mut settings = Settings::from_persisted(loaded.values);
+    if super::web::in_post() {
+        settings.fullscreen = false;
+    }
     // Bounded and deduplicated where the star is, not where the file is —
     // `config::parse`'s own header says range work does not live there, and a
     // hand-edited list of a thousand ids must reach the browser as the same
     // thing a thousand clicks could have produced.
     let favs = Favourites::from_disk(loaded.favourites);
+    let (binds, other_binds) = Binds::from_lines(&loaded.binds);
     let disk = Disk {
-        path,
+        store,
         version: loaded.version,
         unknown: loaded.unknown,
+        other_binds,
         written: settings.persisted(),
         written_favs: favs.ids().to_vec(),
+        written_binds: binds.to_lines(),
     };
-    (settings, favs, Some(disk))
+    (settings, favs, binds, Some(disk))
 }
 
 /// Save on change, not on exit: a crash must not cost the player their
 /// settings, and a change is a click on a menu screen, not a hot path — the
 /// write is a few hundred bytes behind a change-detection early-out and a
 /// field compare, so an idle frame pays one branch.
-/// **One writer, two watched resources.** The settings screen owns eight
-/// knobs and the server browser owns the favourite list, and both live in one
-/// file — so the alternative was two systems serializing the whole document,
-/// which is the shape where the last one to run silently drops the other's
-/// change. `Browse` is read here rather than `Settings` growing a list,
-/// because a favourite is not a knob and `Settings::adjust` has no arm that
-/// could take one.
+///
+/// **One writer, three watched resources.** The settings screen owns the
+/// knobs and the binds, and the server browser owns the favourite list, and
+/// all of it lives in one file — so the alternative was several systems
+/// serializing the whole document, which is the shape where the last one to
+/// run silently drops another's change.
 pub fn save_on_change(
     settings: Res<Settings>,
     browse: Res<super::screen::Browse>,
+    binds: Res<Binds>,
     disk: Option<ResMut<Disk>>,
 ) {
     let Some(mut disk) = disk else {
         return;
     };
-    if !settings.is_changed() && !browse.is_changed() {
+    if !settings.is_changed() && !browse.is_changed() && !binds.is_changed() {
         return;
     }
     let now = settings.persisted();
     let favs = browse.favourites.ids();
-    if now == disk.written && favs == disk.written_favs {
+    let bind_lines = binds.to_lines();
+    if now == disk.written && favs == disk.written_favs && bind_lines == disk.written_binds {
         return;
     }
-    let text = config::serialize(&now, disk.version, favs, &disk.unknown);
-    match config::save(&disk.path, &text) {
+    let mut all_binds = bind_lines.clone();
+    all_binds.extend(disk.other_binds.iter().cloned());
+    let text = config::serialize(&now, disk.version, favs, &all_binds, &disk.unknown);
+    match write_store(&disk.store, &text) {
         Ok(()) => {
             disk.written = now;
             disk.written_favs = favs.to_vec();
+            disk.written_binds = bind_lines;
         }
         // Warn and keep `written` as it was, so the next change retries.
         // Never a panic and never a dialog: a full disk must not cost the
@@ -839,36 +990,39 @@ enum Row {
     FactOf(&'static str, fn(&Settings) -> String),
     /// A sentence, for a category with nothing in it.
     Note(&'static str),
+    /// A small heading between groups of rows.
+    Group(&'static str),
+    /// A rebindable action: its name, then a cell per bind slot.
+    Bind(Action),
 }
 
 /// The pane's contents, by category. This is the whole of what settings can
 /// do, in one readable place.
 fn rows(cat: usize) -> Vec<Row> {
     match CATEGORIES[cat] {
-        "GAMEPLAY" => vec![Row::Note(
-            "No gameplay options exist yet. Every rule this screen could relax is \
-             the server's, and a client that could turn one off would be a client \
-             deciding - which is the one thing it may never do.",
-        )],
+        // The view, not the rules: every rule this screen could relax is the
+        // server's, and a client that could turn one off would be a client
+        // deciding - which is the one thing it may never do.
+        "GAMEPLAY" => vec![
+            Row::Number("FIELD OF VIEW", Knob::Fov, "vertical degrees"),
+            Row::Number("CAMERA SHAKE", Knob::Shake, "blasts, recoil, hits"),
+        ],
         "AUDIO" => vec![
             Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
             Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
             Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
             Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
-            // A fact rather than a dead slider, which is the rule this
-            // screen already obeys: a category with nothing behind it says
-            // so. There is no voice chat, so there is no voice slider.
-            // **There is also only ONE music slider** where the reference
+            Row::Number("VOICE VOLUME", Knob::VolVoice, "players talking nearby"),
+            // **There is only ONE music slider** where the reference
             // has two - it ships `audio.musicvolume` and
             // `audio.menumusicvolume` separately, and ours is one number for
             // both until somebody wants the menu louder than the world.
-            Row::Fact("SOUND OCCLUSION", "Off - walls do not muffle sound yet"),
+            Row::Toggle("SOUND OCCLUSION", Knob::Occlusion),
         ],
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),
             Row::Number("FPS LIMIT", Knob::MaxFps, "frames per second"),
             Row::Toggle("FULLSCREEN", Knob::Fullscreen),
-            Row::Number("CAMERA SHAKE", Knob::Shake, "blasts, recoil, hits"),
         ],
         // **The readout is DERIVED, not written out beside the knob.** Three
         // of these rows used to be `Row::Fact`s reading "SMAA, always on",
@@ -918,9 +1072,7 @@ fn rows(cat: usize) -> Vec<Row> {
             // switched off for one target reads as handled, and the browser
             // shadow bug this slice fixes was exactly that: two cascades
             // asked for, one drawn, a `warn!` into a console nobody reads.
-            // Absent on the desktop, where nothing is clamped.
             Row::FactOf("  on this machine", target_note),
-            Row::Number("FIELD OF VIEW", Knob::Fov, "vertical degrees"),
             // Still fixed, and still a fact: the rings decide which tiles
             // EXIST, so moving one is a streaming change rather than a draw
             // change — and `ART.md` rule 4 is a floor a tier may not cross.
@@ -952,121 +1104,24 @@ fn rows(cat: usize) -> Vec<Row> {
                 "Anyone who can see your Discord profile - not only friends",
             ),
         ],
-        "KEYBINDS" => BINDS.iter().map(|(k, v)| Row::Fact(k, v)).collect(),
+        "KEYBINDS" => {
+            let mut out = Vec::new();
+            let mut group = "";
+            for spec in binds::SPECS.iter() {
+                if spec.group != group {
+                    group = spec.group;
+                    out.push(Row::Group(group));
+                }
+                out.push(Row::Bind(spec.action));
+            }
+            out.push(Row::Group("FIXED"));
+            out.extend(binds::FIXED.iter().map(|(k, v)| Row::Fact(k, v)));
+            out
+        }
         _ => vec![Row::Note("Nothing here yet.")],
     }
 }
 
-/// The binds, read off `input::gather`, `verbs::keys`, `panels::keys`,
-/// `map::open`, `chat::keys`, `pause::keys`, `shot::take` and `report::keys`. Read-only: rebinding needs a
-/// stored map and a conflict check, which is its own slice. Drawn anyway,
-/// because **a bind the player is never told about is a bind that does not
-/// exist** — the rule the intro screen's numbered rows already obey.
-///
-/// ⚠ **This array is a HAND-KEPT MIRROR of six systems and nothing gates it**
-/// — `CLAUDE.md`'s own recurring defect, the shape of the `props.js` count and
-/// the `pop_*` verb list. It had already drifted before this edit: it named
-/// eight binds against roughly twenty in the code, so every in-world verb the
-/// client has — `E`, the map, chat, the inventory — was absent from the only
-/// screen that tells a player what the keys are. Growing it is the fix for
-/// today; deriving it is the fix, and `tests/ui.rs` §H now at least fails if a
-/// row here names a key no system reads.
-///
-/// **CROUCH is a stance** (v83): slower, lower, quieter, smaller to hit, and
-/// the sneak the animal brain listens for (`sim-core/src/brain.rs`). `Z` is
-/// named beside Ctrl because the browser closes a tab on Ctrl+W.
-pub const BINDS: [(&str, &str); 33] = [
-    ("MOVE", "W A S D"),
-    ("SPRINT", "Left Shift"),
-    (
-        "CROUCH",
-        "Left Ctrl or Z (slower, lower, quieter; smaller to hit; animals cannot hear you)",
-    ),
-    ("JUMP", "Space"),
-    (
-        "FREE LOOK",
-        "Hold Left Alt (the head turns, the body does not)",
-    ),
-    ("LOOK", "Mouse (click to capture the pointer)"),
-    (
-        "USE / ATTACK",
-        "Left Mouse: uses what is in your hand (eats food, places a box, swings a tool)",
-    ),
-    ("INTERACT / OPEN", "E"),
-    (
-        "GIVE",
-        "Hold B looking at a player in reach: hands them what is in your hand",
-    ),
-    ("HOTBAR", "1 - 6, or the scroll wheel"),
-    (
-        "INVENTORY / CRAFTING",
-        "Tab or I: inventory · Q: crafting  (the same key or Esc closes)",
-    ),
-    (
-        "MAP",
-        "Hold G · with it up the mouse aims, right click marks a spot (up to 5)",
-    ),
-    (
-        "THE ISLAND",
-        "O: the works the whole server is switching back on (the same key or Esc closes)",
-    ),
-    (
-        "TEAM",
-        "N looking at a player: invite · Y: join an invite · M: your team (leave, promote, kick)",
-    ),
-    ("CHAT", "T or Enter"),
-    (
-        "EAT / DRINK",
-        "Food's hotbar key (1 - 6) eats one and keeps your hand; or Left Mouse / J with it in hand · H drinks",
-    ),
-    ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
-    (
-        "LIGHT / SNUFF A TORCH",
-        "F or Right Mouse with a torch in hand (it burns while it is lit)",
-    ),
-    ("PICK UP", "V: the nearest loose stack in reach, landed arrows too"),
-    ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
-    (
-        "RELOAD",
-        "R with a gun in hand (a bow: R switches the arrow) · R on the inventory page unloads it",
-    ),
-    (
-        "THROW A CHARGE",
-        "X with a charge in hand: plants it on the nearest structure",
-    ),
-    (
-        "DEMOLISH",
-        "Backspace: takes your nearest structure back down (only soon after it was placed)",
-    ),
-    (
-        "CREW",
-        "At a hearth: L joins its crew · K leaves · Shift+K twice clears it to just you",
-    ),
-    (
-        "TURN WHILE PLACING",
-        "R with a box, a fire or a bench in hand (a quarter turn each press)",
-    ),
-    (
-        "LIGHT / SWITCH ON",
-        "C at a fire, furnace, recycler or research table, or the switch in its panel",
-    ),
-    (
-        "CHANGE SKIN",
-        "P over an item in the inventory, at a workbench (cycles the skins you own)",
-    ),
-    ("SCREENSHOT", "F12"),
-    (
-        "DIAGNOSTICS",
-        "F4: build stamp and network · F3: collision view",
-    ),
-    (
-        "REPORT A BUG",
-        "F7, or Report a bug in the Esc menu (sent with a screenshot)",
-    ),
-    ("FULLSCREEN", "F11"),
-    ("MENU", "Esc"),
-    ("QUIT", "Esc from the server list"),
-];
 /// The footer's BACK button: the way out that is not Esc. In a browser, Esc
 /// also ends fullscreen (the browser's rule, not one a page can opt out of),
 /// so a player who just turned FULLSCREEN on needs a way out that keeps it.
@@ -1122,9 +1177,21 @@ pub struct Adjust {
     pub delta: i32,
 }
 
+/// One KEYBINDS cell: which action, which of its two slots.
+#[derive(Component)]
+pub struct BindCell {
+    pub action: Action,
+    pub slot: usize,
+}
+
+/// The footer's RESET button: the open tab back to its defaults.
+#[derive(Component)]
+pub struct ResetTab;
+
 pub fn setup(
     mut commands: Commands,
-    settings: Res<Settings>,
+    mut settings: ResMut<Settings>,
+    binds: Res<Binds>,
     disk: Option<Res<Disk>>,
     // Not Triple T's: it films into an image, never the window.
     cameras: Query<(), (With<Camera>, Without<super::portrait::PortraitCam>)>,
@@ -1136,43 +1203,84 @@ pub fn setup(
     if cameras.is_empty() {
         commands.spawn((SettingsRoot, SettingsCamera, Camera2d));
     }
-    build(&mut commands, &settings, disk.as_deref());
+    settings.capturing = None;
+    settings.note.clear();
+    build(
+        &mut commands,
+        &settings,
+        &binds,
+        disk.as_deref(),
+        Vec2::ZERO,
+    );
 }
 
 /// Rebuild after a click. Both the rail's selection and every drawn value are
-/// derived from `Settings`, so the screen is respawned from it rather than
-/// patched — a dozen nodes are cheaper to rebuild than to diff, and a patch
-/// path is where a drawn value drifts from the held one.
+/// derived from `Settings` and `Binds`, so the screen is respawned from them
+/// rather than patched — a few dozen nodes are cheaper to rebuild than to
+/// diff, and a patch path is where a drawn value drifts from the held one.
+///
+/// The pane's scroll survives a rebuild on the same tab, so a click halfway
+/// down GRAPHICS or KEYBINDS does not throw the pane back to the top.
 pub fn rebuild(
     mut commands: Commands,
     mut settings: ResMut<Settings>,
+    binds: Res<Binds>,
     disk: Option<Res<Disk>>,
     roots: Query<Entity, (With<SettingsRoot>, Without<SettingsCamera>)>,
+    panes: Query<&ScrollPosition, With<PaneScroll>>,
+    mut last_cat: Local<Option<usize>>,
 ) {
     if !settings.dirty {
+        *last_cat = Some(settings.cat);
         return;
     }
     settings.dirty = false;
+    let scroll = match (*last_cat, panes.iter().next()) {
+        (Some(cat), Some(pos)) if cat == settings.cat => pos.0,
+        _ => Vec2::ZERO,
+    };
+    *last_cat = Some(settings.cat);
     for e in roots.iter() {
         commands.entity(e).despawn();
     }
-    build(&mut commands, &settings, disk.as_deref());
+    build(&mut commands, &settings, &binds, disk.as_deref(), scroll);
 }
 
 /// The screen, as a plain function so `setup` and `rebuild` are provably the
 /// same drawing — the shape `menu::build` already uses for the same reason.
-fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
-    let back = match settings.back {
-        Screen::Paused => "BACK or Esc returns to the game",
-        _ => "BACK or Esc returns to the server list",
+fn build(
+    commands: &mut Commands,
+    settings: &Settings,
+    binds: &Binds,
+    disk: Option<&Disk>,
+    scroll: Vec2,
+) {
+    let from_world = settings.back == Screen::Paused;
+    let back = if from_world {
+        "BACK or Esc returns to the game"
+    } else {
+        "BACK or Esc returns to the server list"
     };
-    // The footer names the file, or says that nothing is being kept — the
-    // honest states are "saved to <path>" and "not saved this run" (a
-    // capture run, or a box whose environment names no config dir), and the
-    // screen must not claim the wrong one.
+    // The footer names where the settings are kept, or says that nothing is
+    // being kept — the screen must not claim the wrong one.
     let saved = match disk {
-        Some(d) => format!("saved to {}", d.path.display()),
+        Some(d) => d.describe(),
         None => "settings are not being saved this run".to_string(),
+    };
+    let keybinds = CATEGORIES[settings.cat] == "KEYBINDS";
+    let hint = if settings.capturing.is_some() {
+        "press the key or mouse button to use  -  Esc cancels"
+    } else if keybinds {
+        "click a key to change it  -  right click clears it"
+    } else {
+        ""
+    };
+    // Opened over a live world, the screen is see-through so a change to the
+    // field of view or the graphics shows behind it as it is made.
+    let (root_bg, panel_bg) = if from_world {
+        (Color::srgba(0.055, 0.051, 0.043, 0.55), ui::PANE_BG)
+    } else {
+        (ui::BG, ui::PANEL)
     };
 
     commands
@@ -1185,7 +1293,7 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                 flex_direction: FlexDirection::Column,
                 ..default()
             },
-            BackgroundColor(ui::BG),
+            BackgroundColor(root_bg),
         ))
         .with_children(|root| {
             root.spawn((
@@ -1200,6 +1308,7 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
             root.spawn((Node {
                 flex_direction: FlexDirection::Row,
                 flex_grow: 1.0,
+                min_height: Val::Px(0.0),
                 column_gap: Val::Px(14.0),
                 padding: UiRect::new(Val::Px(34.0), Val::Px(34.0), Val::Px(0.0), Val::Px(12.0)),
                 ..default()
@@ -1214,7 +1323,7 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                             padding: UiRect::all(Val::Px(8.0)),
                             ..default()
                         },
-                        BackgroundColor(ui::PANEL),
+                        BackgroundColor(panel_bg),
                     ))
                     .with_children(|rail| {
                         for (i, name) in CATEGORIES.iter().enumerate() {
@@ -1246,8 +1355,8 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                     });
 
                     // ---- the pane --------------------------------------------
-                    // Scrolls (the wheel, `scroll`): KEYBINDS is taller than a
-                    // small window.
+                    // Scrolls (the wheel, `scroll`): GRAPHICS and KEYBINDS are
+                    // taller than a small window.
                     body.spawn((
                         Node {
                             flex_grow: 1.0,
@@ -1257,12 +1366,13 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                             overflow: Overflow::scroll_y(),
                             ..default()
                         },
-                        BackgroundColor(ui::PANEL),
+                        BackgroundColor(panel_bg),
                         PaneScroll,
+                        ScrollPosition(scroll),
                     ))
                     .with_children(|pane| {
                         for row in rows(settings.cat) {
-                            spawn_row(pane, &row, settings);
+                            spawn_row(pane, &row, settings, binds);
                         }
                     });
                 });
@@ -1271,7 +1381,7 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                 flex_direction: FlexDirection::Row,
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(18.0),
-                margin: UiRect::new(Val::Px(34.0), Val::Px(0.0), Val::Px(0.0), Val::Px(16.0)),
+                margin: UiRect::new(Val::Px(34.0), Val::Px(34.0), Val::Px(0.0), Val::Px(16.0)),
                 ..default()
             })
             .with_children(|foot| {
@@ -1279,22 +1389,39 @@ fn build(commands: &mut Commands, settings: &Settings, disk: Option<&Disk>) {
                     .with_children(|b| {
                         b.spawn(ui::strong("BACK", 14.0, ui::TITLE));
                     });
-                foot.spawn(ui::label(
-                    format!("{back}    -    {saved}"),
-                    12.0,
-                    ui::FAINT,
-                ));
+                foot.spawn((ui::button(150.0, false), ResetTab))
+                    .with_children(|b| {
+                        b.spawn(ui::strong("RESET TAB", 14.0, ui::TEXT));
+                    });
+                foot.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(3.0),
+                    ..default()
+                })
+                .with_children(|col| {
+                    if !settings.note.is_empty() {
+                        col.spawn(ui::label(settings.note.clone(), 13.0, ui::TEXT));
+                    } else if !hint.is_empty() {
+                        col.spawn(ui::label(hint, 13.0, ui::DIM));
+                    }
+                    col.spawn(ui::label(
+                        format!("{back}    -    {saved}"),
+                        12.0,
+                        ui::FAINT,
+                    ));
+                });
             });
         });
 }
 
 /// One pane row. A function that SPAWNS rather than one that returns a bundle:
-/// the four kinds are four different bundle types, and a match cannot return
-/// four types from one `impl Bundle`.
+/// the kinds are different bundle types, and a match cannot return several
+/// types from one `impl Bundle`.
 fn spawn_row(
     pane: &mut bevy::ecs::relationship::RelatedSpawnerCommands<'_, ChildOf>,
     row: &Row,
     settings: &Settings,
+    binds: &Binds,
 ) {
     // The label/value frame every row but a note shares.
     let frame = || Node {
@@ -1314,6 +1441,15 @@ fn spawn_row(
                     ..default()
                 },
                 children![ui::label(*text, 14.0, ui::DIM)],
+            ));
+        }
+        Row::Group(text) => {
+            pane.spawn((
+                Node {
+                    padding: UiRect::new(Val::Px(4.0), Val::Px(0.0), Val::Px(10.0), Val::Px(2.0)),
+                    ..default()
+                },
+                children![ui::group(text)],
             ));
         }
         Row::Fact(label, value) => {
@@ -1339,6 +1475,52 @@ fn spawn_row(
                 ],
             ));
         }
+        Row::Bind(action) => {
+            let slots = binds.slots(*action);
+            pane.spawn((frame(), BackgroundColor(ui::ROW_IDLE)))
+                .with_children(|row| {
+                    row.spawn(ui::strong(action.name(), 15.0, ui::TEXT));
+                    row.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(8.0),
+                        ..default()
+                    })
+                    .with_children(|cells| {
+                        for (slot, bind) in slots.iter().enumerate() {
+                            let waiting = settings.capturing == Some((*action, slot));
+                            let (text, colour) = match (waiting, bind) {
+                                (true, _) => ("PRESS A KEY", ui::TITLE),
+                                (false, Some(b)) => (b.label(), ui::TEXT),
+                                (false, None) => ("-", ui::FAINT),
+                            };
+                            let (idle, over) = if waiting {
+                                (ui::ACCENT, ui::ACCENT_HOVER)
+                            } else {
+                                (ui::ROW_IDLE, ui::ROW_HOVER)
+                            };
+                            cells.spawn((
+                                Button,
+                                BindCell {
+                                    action: *action,
+                                    slot,
+                                },
+                                ui::Hover::new(idle, over),
+                                Node {
+                                    width: Val::Px(132.0),
+                                    height: Val::Px(26.0),
+                                    justify_content: JustifyContent::Center,
+                                    align_items: AlignItems::Center,
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(idle),
+                                BorderColor::all(if waiting { ui::ACCENT } else { ui::RULE }),
+                                children![ui::strong(text, 14.0, colour)],
+                            ));
+                        }
+                    });
+                });
+        }
         Row::Toggle(label, knob) => {
             pane.spawn((
                 frame(),
@@ -1352,6 +1534,8 @@ fn spawn_row(
                             delta: 0,
                         },
                         ui::Hover::default(),
+                        BackgroundColor(ui::ROW_IDLE),
+                        BorderColor::all(ui::RULE),
                         Node {
                             width: Val::Px(92.0),
                             height: Val::Px(26.0),
@@ -1360,8 +1544,6 @@ fn spawn_row(
                             border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
-                        BackgroundColor(ui::ROW_IDLE),
-                        BorderColor::all(ui::RULE),
                         children![ui::strong(settings.value(*knob), 14.0, ui::TEXT)],
                     ),
                 ],
@@ -1420,28 +1602,127 @@ fn spawn_row(
     }
 }
 
+// Each is its own control on the screen: the rail, the steppers, the bind
+// cells, BACK and RESET, plus the mouse for the right click that clears a
+// bind.
+#[allow(clippy::too_many_arguments)]
 pub fn click(
     cats: Query<(&Interaction, &Category), Changed<Interaction>>,
     controls: Query<(&Interaction, &Adjust), Changed<Interaction>>,
+    cells: Query<(&Interaction, &BindCell)>,
     backs: Query<&Interaction, (Changed<Interaction>, With<Back>)>,
+    resets: Query<&Interaction, (Changed<Interaction>, With<ResetTab>)>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut settings: ResMut<Settings>,
+    mut binds: ResMut<Binds>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if backs.iter().any(|i| *i == Interaction::Pressed) {
         next.set(settings.back.clone());
         return;
     }
+    if resets.iter().any(|i| *i == Interaction::Pressed) {
+        let tab = CATEGORIES[settings.cat];
+        if tab == "KEYBINDS" {
+            *binds = Binds::default();
+        } else {
+            let cat = settings.cat;
+            settings.reset_tab(cat);
+        }
+        settings.capturing = None;
+        settings.note = format!("{tab} is back to its defaults");
+        settings.dirty = true;
+        return;
+    }
     for (interaction, cat) in cats.iter() {
         if *interaction == Interaction::Pressed {
             settings.cat = cat.0;
+            settings.capturing = None;
+            settings.note.clear();
             settings.dirty = true;
         }
     }
     for (interaction, adjust) in controls.iter() {
         if *interaction == Interaction::Pressed {
+            settings.note.clear();
             settings.adjust(adjust.knob, adjust.delta);
         }
     }
+    let right = mouse.just_pressed(MouseButton::Right);
+    for (interaction, cell) in cells.iter() {
+        match interaction {
+            Interaction::Pressed if settings.capturing != Some((cell.action, cell.slot)) => {
+                settings.capturing = Some((cell.action, cell.slot));
+                settings.note.clear();
+                settings.dirty = true;
+            }
+            Interaction::Hovered if right => {
+                binds.set(cell.action, cell.slot, None);
+                settings.capturing = None;
+                settings.note = format!("{} slot {} cleared", cell.action.name(), cell.slot + 1);
+                settings.dirty = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// While a KEYBINDS cell waits, the next key or side mouse button goes into
+/// it. Runs before [`keys`], so the Esc that cancels a capture does not also
+/// leave the screen.
+pub fn capture(
+    mut keyboard: ResMut<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut settings: ResMut<Settings>,
+    mut binds: ResMut<Binds>,
+) {
+    let Some((action, slot)) = settings.capturing else {
+        return;
+    };
+    let pressed = keyboard
+        .get_just_pressed()
+        .next()
+        .map(|k| Bind::Key(binds::normalize(*k)))
+        .or_else(|| {
+            binds::MOUSE
+                .iter()
+                .find(|m| mouse.just_pressed(m.0))
+                .map(|m| Bind::Mouse(m.0))
+        });
+    let Some(bind) = pressed else {
+        return;
+    };
+    if let Bind::Key(k) = bind {
+        keyboard.clear_just_pressed(k);
+    }
+    if bind == Bind::Key(KeyCode::Escape) {
+        settings.capturing = None;
+        settings.note.clear();
+        settings.dirty = true;
+        return;
+    }
+    if !bind.bindable() {
+        settings.note = if bind.token().is_some() {
+            format!("{} is the game's own key and cannot be bound", bind.label())
+        } else {
+            "that key cannot be bound".to_string()
+        };
+        settings.dirty = true;
+        return;
+    }
+    let lost = binds.set(action, slot, Some(bind));
+    settings.note = match lost {
+        Some(from) if binds.slots(from).iter().all(Option::is_none) => format!(
+            "{} moved here from {} - {} has no key now",
+            bind.label(),
+            from.name(),
+            from.name()
+        ),
+        Some(from) => format!("{} moved here from {}", bind.label(), from.name()),
+        None => String::new(),
+    };
+    settings.capturing = None;
+    settings.dirty = true;
 }
 
 pub fn keys(
@@ -1449,7 +1730,7 @@ pub fn keys(
     settings: Res<Settings>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    if keyboard.just_pressed(KeyCode::Escape) {
+    if settings.capturing.is_none() && keyboard.just_pressed(KeyCode::Escape) {
         next.set(settings.back.clone());
     }
 }
@@ -1486,12 +1767,6 @@ pub fn follow_browser_fullscreen(mut settings: ResMut<Settings>, mut was: Local<
         settings.dirty = true;
     }
     *was = now;
-}
-
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<SettingsRoot>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
 }
 
 /// Field of view onto the camera. Runs in every state: the camera may not
@@ -1742,6 +2017,8 @@ mod tests {
                     for row in rows(cat) {
                         let (label, value) = match row {
                             Row::Note(t) => ("note", t.to_string()),
+                            Row::Group(t) => ("group", t.to_string()),
+                            Row::Bind(a) => (a.name(), Binds::default().key(a).to_string()),
                             Row::Fact(l, v) => (l, v.to_string()),
                             Row::FactOf(l, of) => (l, of(&s)),
                             Row::Toggle(l, k) | Row::Number(l, k, _) => (l, s.value(k)),
@@ -1779,7 +2056,7 @@ mod tests {
         s.adjust(Knob::VolMaster, -2);
         s.adjust(Knob::VolGame, -5);
         s.adjust(Knob::VolAmbience, -10);
-        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[]);
+        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[], &[]);
         let back =
             Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
         assert_eq!(back.persisted(), s.persisted(), "{text}");
@@ -2035,7 +2312,7 @@ mod tests {
         s.adjust(Knob::Shadows, 0);
         assert_eq!(s.preset_name(), None, "the fixture moved nothing");
 
-        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[]);
+        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[], &[]);
         let back =
             Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
         assert_eq!(
@@ -2087,7 +2364,7 @@ mod tests {
     fn render_scale_survives_the_settings_file_and_sanitizes_its_bounds() {
         let mut s = Settings::default();
         s.gfx.render_scale = 75;
-        let text = config::serialize(&s.persisted(), 1, &[], &[]);
+        let text = config::serialize(&s.persisted(), 1, &[], &[], &[]);
         let loaded = config::parse(&text, Settings::default().persisted());
         let back = Settings::from_persisted(loaded.values);
         assert_eq!(back.gfx.render_scale, 75);

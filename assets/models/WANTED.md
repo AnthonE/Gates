@@ -488,7 +488,7 @@ row. The kit entry can stay as the fallback, or go.
 | 12.21 | SMG Body | 0.32×0.17×0.04 | a bare compact submachine-gun receiver with a magazine well and pistol grip, no stock, no barrel | **landed 2026-10-15**, `held/smg_body.glb` (second roll: name the shape, not the part) |
 | 12.22 | Rifle Body | 0.46×0.14×0.04 | a long bolt-action receiver with its bolt handle, no stock, no barrel | **landed 2026-10-15**, `held/rifle_body.glb` |
 | 12.23 | Auto Turret | 0.26×0.27×0.41 | a small improvised sentry gun on a tripod base, sheet-metal housing, one barrel | the world draws it as boxes too (`sentry.rs`, `DEPLOY` 18): one model could replace both, a bigger job |
-| 12.24 | Fire Pit | 0.52×0.19×0.53 | — | **Reuse first**: `deploy/fire.glb` with its emissive stripped is the cold campfire for free; Meshy only if that reads wrong |
+| 12.24 | Camp Fire | 0.52×0.19×0.53 | — | **Reuse first**: `deploy/fire.glb` with its emissive stripped is the cold campfire for free; Meshy only if that reads wrong |
 
 ### 12.2 · Garments — 5 items, Meshy, ~120 credits, and worth more than the rest
 

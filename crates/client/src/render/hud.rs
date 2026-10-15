@@ -1073,11 +1073,16 @@ impl Vital {
 pub enum ExposureChip {
     Wet,
     Cold,
+    /// The desert's noon (climate v0): hot, and what cools you.
+    Hot,
     /// Inside THE GATE's safe zone (`sim_core::town::safe`).
     Safe,
     /// Standing in your own base: how long its hearth keeps it, or that it
     /// is decaying (the crew HUD vital, `ui::hearth::vital`).
     Upkeep,
+    /// Rust's COMFORT chip: shown while a fire (and company at it) gives
+    /// any, because comfort is what makes the body mend past 60 %.
+    Comfort,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1128,7 +1133,14 @@ fn safe_chip(
 const UPKEEP_CHIP: Color = Color::srgba(0.46, 0.34, 0.16, 0.85);
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
+const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
+
+/// What the COMFORT chip says: Rust's `COMFORT 50%`.
+pub fn comfort_line(comfort_pct: u8) -> String {
+    format!("COMFORT {comfort_pct}%")
+}
 
 /// The world around the body, as the exposure chips read it: the client's
 /// own sky (`weather::WeatherNow`), never a second opinion of the sim's.
@@ -1201,6 +1213,22 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     }
 }
 
+/// What the HOT chip says (climate v0): the air, and what cools a body —
+/// shade, the water, getting wet. Heatstroke while it is taking hp.
+pub fn hot_line(hurting: bool, air_c: i8, wet_pct: u8, w: ExposureWorld) -> String {
+    let help = if w.underwater {
+        "THE WATER COOLS YOU"
+    } else if w.sheltered {
+        "SHADE HELPS"
+    } else if wet_pct >= 30 {
+        "WET HELPS"
+    } else {
+        "FIND SHADE OR WATER"
+    };
+    let what = if hurting { "HEATSTROKE" } else { "HOT" };
+    format!("{what} · {air_c}°C · {help}")
+}
+
 /// Keep the wet and cold chips on what the server last said. Hidden while
 /// there is nothing to say — dry, and warm enough not to mention. The
 /// upkeep chip likewise: shown while the shard keeps re-telling you your
@@ -1224,17 +1252,36 @@ pub fn exposure(
     if core.wet_pct > 0 || core.cold_pct >= 25 || core.cold_hurting {
         w.fire = core.near_fire();
     }
+    // One `hurting` bit answers for both; a body is never past both at once,
+    // so the larger of the two is the one hurting.
+    let hot = core.heat_pct > core.cold_pct;
+    let air = core.air_c;
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
+            ExposureChip::Comfort => (
+                core.comfort_pct > 0,
+                comfort_line(core.comfort_pct),
+                COMFORT_CHIP,
+            ),
             // The one chip that costs hp says what stops it.
-            ExposureChip::Cold if core.cold_hurting => {
-                (true, cold_line(true, core.wet_pct, w), FREEZE_CHIP)
-            }
+            ExposureChip::Cold if core.cold_hurting && !hot => (
+                true,
+                format!("{air}°C · {}", cold_line(true, core.wet_pct, w)),
+                FREEZE_CHIP,
+            ),
             ExposureChip::Cold => (
                 core.cold_pct >= 25,
-                cold_line(false, core.wet_pct, w),
+                format!("{air}°C · {}", cold_line(false, core.wet_pct, w)),
                 COLD_CHIP,
+            ),
+            ExposureChip::Hot if core.cold_hurting && hot => {
+                (true, hot_line(true, air, core.wet_pct, w), FREEZE_CHIP)
+            }
+            ExposureChip::Hot => (
+                core.heat_pct >= 25,
+                hot_line(false, air, core.wet_pct, w),
+                HOT_CHIP,
             ),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
@@ -1615,6 +1662,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     // (`ui::hold::eats_on_key`), so which key is which cell
                     // is now worth a glance.
                     cell.spawn((
+                        SlotKey(i),
                         Text::new((i + 1).to_string()),
                         super::ui::font_bold(10.0),
                         TextColor(Color::srgba(0.97, 0.95, 0.88, 0.55)),
@@ -1803,6 +1851,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Safe,
                 ExposureChip::Wet,
                 ExposureChip::Cold,
+                ExposureChip::Hot,
+                ExposureChip::Comfort,
             ] {
                 stack.spawn((
                     chip,
@@ -2222,6 +2272,7 @@ pub fn update(
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
+    binds: Res<super::binds::Binds>,
 ) {
     let core = &net.session.core;
 
@@ -2359,14 +2410,14 @@ pub fn update(
                     // wall the nudge is sent and ignored, and a hint about
                     // it there would teach a key that does nothing.
                     let keys = if shape == sim_core::build::SHAPE_FOUNDATION_STEPS {
-                        "(hold right · R/F rotate · Shift+R/F height)"
+                        "(hold right · [R]/[F] rotate · SHIFT+[R]/[F] height)"
                     } else if matches!(
                         shape,
                         sim_core::build::SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
                     ) {
-                        "(hold right · R/F height)"
+                        "(hold right · [R]/[F] height)"
                     } else if sim_core::circulation::is_riser(shape) {
-                        "(hold right · R/F rotate)"
+                        "(hold right · [R]/[F] rotate)"
                     } else {
                         "(hold right)"
                     };
@@ -2393,6 +2444,8 @@ pub fn update(
                 None => "BUILD  -   (hold right)".to_string(),
             }
         };
+        // Written against the default keys; the player's own go in here.
+        let out = binds.relabel(&out);
         if text.0 != out {
             text.0 = out;
         }
@@ -3222,6 +3275,34 @@ pub fn conn_warn(
     }
 }
 
+/// A belt cell's key label. Follows the player's binds (`slot_keys`).
+#[derive(Component)]
+pub struct SlotKey(usize);
+
+/// Redraw the belt's key labels when the binds change. Run in every world
+/// state; it does nothing on a frame the binds did not move.
+pub fn slot_keys(
+    binds: Res<super::binds::Binds>,
+    mut labels: Query<(&SlotKey, &mut Text)>,
+    added: Query<(), Added<SlotKey>>,
+) {
+    if !binds.is_changed() && added.is_empty() {
+        return;
+    }
+    for (slot, mut text) in labels.iter_mut() {
+        let Some(a) = super::binds::HOTBAR.get(slot.0) else {
+            continue;
+        };
+        let want = match binds.key(*a) {
+            "UNBOUND" => "",
+            k => k,
+        };
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
+    }
+}
+
 /// How often [`net_line`] rebuilds its string. The HUD's own cadence
 /// (`DECISIONS.md`, client render cosmetics: "HUD 250 ms").
 const NET_LINE_PERIOD_S: f32 = 0.25;
@@ -3246,6 +3327,7 @@ pub fn prompt(
     time: Res<Time>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
+    binds: Res<super::binds::Binds>,
 ) {
     if let Ok(mut text) = prompts.single_mut() {
         // `E` outranks the swing, and the swing is drawn only where `E` is
@@ -3338,6 +3420,9 @@ pub fn prompt(
             }
             None => want,
         };
+        // Every line above names the default keys; the player's own go in
+        // here, once, rather than at each of the places that build one.
+        let want = binds.relabel(&want);
         if text.0 != want {
             text.0 = want;
         }
@@ -4191,6 +4276,25 @@ mod tests {
             .unwrap()
             .starts_with("HIGH PING"));
         assert_eq!(conn_warning(0.0, None, None), None);
+    }
+
+    /// The HOT chip names the air and what cools you, shade first.
+    #[test]
+    fn the_hot_chip_says_what_cools_you() {
+        let open = ExposureWorld::default();
+        let shade = ExposureWorld {
+            sheltered: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            hot_line(false, 41, 0, open),
+            "HOT · 41°C · FIND SHADE OR WATER"
+        );
+        assert_eq!(
+            hot_line(true, 44, 0, shade),
+            "HEATSTROKE · 44°C · SHADE HELPS"
+        );
+        assert_eq!(hot_line(false, 38, 50, open), "HOT · 38°C · WET HELPS");
     }
 
     /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that

@@ -70,8 +70,12 @@ finish_bonus_pct = 50
 # 500, stone hatchet 810, metal hatchet 867. Wood is the one resource
 # whose total is set by species and size rather than by tool alone — large
 # beech/oak 1000 at the very best tool, smaller pine/palm ~¾, dead logs
-# ~¼ (§4.1b) — and we have one `tree` archetype, so this row is their
-# LARGE tree and the species spread is a terrain question we do not model.
+# ~¼ (§4.1b) — and we have one `tree` archetype. Its size is a terrain
+# fact now (tree size classes v0, `terrain::slot_scale`): a tree pays this
+# row's hits times its scale's share of the island's mean
+# (`gather::tree_wood_pm`) — a large tree up to ~19 % more, a small one
+# ~35 % less, the island's wood unchanged — at the same pay per hit, and a
+# young or regrowing tree less again for its age.
 # Note the wood ladder is much flatter than the ore ladder: 810 → 867 is
 # 0.93, where a stone pickaxe draws 0.79 of a metal one.
 [gatherable.yield_per_hit]

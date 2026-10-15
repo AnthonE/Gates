@@ -25,6 +25,7 @@ use protocol::Address;
 
 use crate::ui::chat::{Composer, Line, Log};
 
+use super::binds::Action;
 use super::faces::Pics;
 use super::hud::Toast;
 use super::panels::Panel;
@@ -202,14 +203,24 @@ pub fn keys(
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     ui: Option<Res<super::panels::Ui>>,
     reports: Option<Res<super::report::Reports>>,
+    (mouse, binds): (Res<ButtonInput<MouseButton>>, Res<super::binds::Binds>),
+    pad: Option<Res<super::verbs::Pad>>,
+    mut voice: (
+        Option<ResMut<super::voice::Mutes>>,
+        Option<Res<super::voice::VoiceHud>>,
+    ),
 ) {
     // The report composer is a text field too, and it is the one that draws on
     // every screen — so it can be up here, where a panel cannot. Same rule as
     // the panels: two text fields open at once is one of them eating the
     // other's keystrokes, and this pair bites hardest because typing the
     // letter `t` into a bug report would otherwise open chat mid-sentence.
-    let panel_up =
-        ui.map(|u| u.panel != Panel::None).unwrap_or(false) || reports.is_some_and(|r| r.open);
+    //
+    // The door keypad counts too: it types with `T` (TAKE) and Enter (TRY),
+    // and chat opening on those keys ate them before the keypad saw them.
+    let panel_up = ui.map(|u| u.panel != Panel::None).unwrap_or(false)
+        || reports.is_some_and(|r| r.open)
+        || pad.is_some_and(|p| p.0.is_open());
 
     if !chat.composer.open {
         // A panel already owns the keyboard — the search box is a text field
@@ -219,16 +230,12 @@ pub fn keys(
             chars.clear();
             return;
         }
-        if keyboard.just_pressed(KeyCode::KeyT) || keyboard.just_pressed(KeyCode::Enter) {
+        if binds.just_pressed(Action::Chat, &keyboard, &mouse) {
             chat.composer.open = true;
             chat.composer.clear();
             chat.dirty = true;
-            keyboard.clear_just_pressed(KeyCode::KeyT);
-            keyboard.clear_just_pressed(KeyCode::Enter);
-            if let Ok(mut c) = cursor.single_mut() {
-                c.grab_mode = CursorGrabMode::None;
-                c.visible = true;
-            }
+            binds.clear_just_pressed(Action::Chat, &mut keyboard);
+            super::ui::free_cursor(&mut cursor);
         }
         // Not open: drain, so a keystroke pressed with the composer shut
         // does not arrive in it the moment it opens.
@@ -244,7 +251,17 @@ pub fn keys(
     }
 
     if keyboard.just_pressed(KeyCode::Enter) {
-        send(&mut chat, &net, &mut toast);
+        // `/mute` and `/unmute` are this client's (`render/voice.rs`): never
+        // sent, so nobody learns who muted them.
+        let line = chat.composer.text.clone();
+        let reply = match (voice.0.as_deref_mut(), voice.1.as_deref()) {
+            (Some(mutes), Some(hud)) => super::voice::command(&line, mutes, &net, hud),
+            _ => None,
+        };
+        match reply {
+            Some(reply) => toast.say(reply),
+            None => send(&mut chat, &net, &mut toast),
+        }
         close(&mut chat, &mut cursor);
         keyboard.clear_just_pressed(KeyCode::Enter);
         chars.clear();

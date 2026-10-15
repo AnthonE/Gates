@@ -53,8 +53,9 @@ pub enum Screen {
     /// what stops is `input::gather`, so a corpse does not walk or swing.
     /// `death`.
     Dead,
-    /// The island map. A screen you read: the pointer is released, the world
-    /// keeps pumping behind it, and `input::gather` stands down. `map`.
+    /// The island map, held up by its key. The pointer stays locked and
+    /// `input::gather` keeps running, so the player can read it on the move.
+    /// `map`.
     Map,
     /// Reachable from `Menu` and from `Paused`; `settings::Settings::back`
     /// carries which. `settings`.
@@ -169,6 +170,15 @@ pub struct Connecting {
 /// can — so "Bevy draws, it does not decide" is untouched.
 #[derive(Resource)]
 pub struct Who(pub Player);
+
+/// `--cert-hash`, with the `--server` address it was given for. The connect
+/// screen pins the certificate only when it dials that same address; a shard
+/// picked from the list afterwards is validated the normal way.
+#[derive(Resource)]
+pub struct Pin {
+    pub addr: String,
+    pub hash: String,
+}
 
 /// The address this binary was started with. Held as a resource so the splash
 /// can hand it to the connect screen without reaching into the plugin's own

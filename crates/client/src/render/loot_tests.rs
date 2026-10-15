@@ -360,7 +360,7 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
     );
 }
 
-/// A stack first seen flying out of a hand (v111) is drawn on its way: out
+/// A stack first seen flying out of a hand (v114) is drawn on its way: out
 /// of the hand, above where it rests mid-flight, and at the end lying
 /// exactly as it would have without the throw. Before it leaves the hand on
 /// this clock it is hidden.

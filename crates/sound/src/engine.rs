@@ -458,6 +458,16 @@ pub fn lp_under(t: f32, out_rate: u32) -> u8 {
     (a * 256.0).round().clamp(1.0, 255.0) as u8
 }
 
+/// The one-pole low-pass byte for a cutoff of `hz` at `out_rate`: what a
+/// sound heard through a wall is filtered by (`client::ui::occlusion`).
+pub fn lp_hz(hz: f32, out_rate: u32) -> u8 {
+    if hz.is_nan() || hz <= 0.0 {
+        return 0;
+    }
+    let a = 1.0 - (-core::f32::consts::TAU * hz / out_rate.max(1) as f32).exp();
+    (a * 256.0).round().clamp(1.0, 255.0) as u8
+}
+
 impl Cmd {
     /// This start through the lower of its own cutoff and `lp` (0 = none):
     /// a far source heard under water keeps whichever filter is darker.

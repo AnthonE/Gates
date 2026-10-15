@@ -781,7 +781,7 @@ pub const HELD_MODELS: [HeldModelDef; 94] = [
     ),
     HeldModelDef::kit_deploy("planter_box", 0.249, 0.80, 0.40),
     HeldModelDef::kit_deploy("auto_turret", 0.270, 0.80, 0.45),
-    HeldModelDef::kit_deploy("fire_pit", 0.193, 0.80, 0.30),
+    HeldModelDef::kit_deploy("camp_fire", 0.193, 0.80, 0.30),
     HeldModelDef::kit_deploy("metal_window_bars", 1.200, 0.50, 0.12),
     HeldModelDef::kit_deploy("garage_door", 1.000, 0.50, 0.12),
     HeldModelDef::kit_deploy("glass_window", 0.960, 0.50, 0.12),

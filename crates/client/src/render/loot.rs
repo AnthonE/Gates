@@ -175,7 +175,7 @@ const ROLL_SHARE: f32 = 0.25;
 const HOP_M: f32 = 0.06;
 const HOP_SHARE: f32 = 0.5;
 
-/// What the wire said about a throw (v111), kept beside the stack so a
+/// What the wire said about a throw (v114), kept beside the stack so a
 /// model that loads mid-flight takes the flight over rather than starting
 /// it again.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -221,7 +221,7 @@ pub fn toss_born(born_lo: u8, now: f64) -> f64 {
     (now + if d >= 128 { d - 256 } else { d }) as f64
 }
 
-/// A loose stack still on its way out of a hand (wire v111): the flight the
+/// A loose stack still on its way out of a hand (wire v114): the flight the
 /// sim keeps in closed form (`sim_core::grounditem::toss_at`) carries the
 /// model's middle from the hand to just short of where it rests, tumbling,
 /// then it hops and rolls the rest of the way into its resting pose. Only

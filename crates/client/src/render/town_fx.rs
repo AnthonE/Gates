@@ -220,6 +220,8 @@ pub struct TownFx {
     /// The pennants' heading, smoothed: radians of yaw.
     heading: f32,
     lit_at: Option<f32>,
+    /// The searchlight beams' brightness last written.
+    beam_k: Option<f32>,
 }
 
 impl TownFx {
@@ -865,6 +867,7 @@ pub fn spawn(
         short_flash: 0.0,
         heading: 0.0,
         lit_at: None,
+        beam_k: None,
     });
     let n: usize = FESTOONS.len();
     info!(
@@ -968,9 +971,11 @@ pub fn animate(
             *vis = want;
         }
     }
-    if on {
+    // Only on a visible change: a material taken mutably is re-prepared.
+    let k = night;
+    if on && st.beam_k.is_none_or(|a| (a - k).abs() > 0.004 * k.max(0.1)) {
+        st.beam_k = Some(k);
         if let Some(m) = materials.get_mut(&st.beam_mat) {
-            let k = night;
             m.base_color =
                 Color::linear_rgb(SEARCH_RGB[0] * k, SEARCH_RGB[1] * k, SEARCH_RGB[2] * k);
         }

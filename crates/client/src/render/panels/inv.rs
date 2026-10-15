@@ -1295,7 +1295,7 @@ fn flame_badge(parent: &mut ChildSpawnerCommands, icons: &Icons) {
         height: Val::Px(15.0),
         ..default()
     };
-    match icons.glyph("fire_pit") {
+    match icons.glyph("camp_fire") {
         Some(image) => parent.spawn((node, ImageNode { image, ..default() }, Pickable::IGNORE)),
         None => parent.spawn((
             node,
@@ -1455,6 +1455,10 @@ pub fn skin_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     cells: Query<(&SlotCell, &Interaction)>,
     mut was_open: Local<bool>,
+    (mouse, binds): (
+        Res<ButtonInput<MouseButton>>,
+        Res<super::super::binds::Binds>,
+    ),
 ) {
     // Either page: the skin picker is on the crafting page, the re-skin on
     // this one, and both want what was bought in the launcher.
@@ -1467,7 +1471,9 @@ pub fn skin_keys(
         }
     }
     *was_open = open;
-    if ui.panel != Panel::Inventory || !keyboard.just_pressed(KeyCode::KeyP) {
+    if ui.panel != Panel::Inventory
+        || !binds.just_pressed(super::super::binds::Action::ChangeSkin, &keyboard, &mouse)
+    {
         return;
     }
     let core = &net.session.core;

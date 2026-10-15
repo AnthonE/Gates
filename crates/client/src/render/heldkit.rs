@@ -778,7 +778,7 @@ pub const NAMES: &[&str] = &[
     "metal_window_bars",
     "garage_door",
     "glass_window",
-    "fire_pit",
+    "camp_fire",
     "wood_shutters",
 ];
 
@@ -824,7 +824,7 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "metal_window_bars" => insert(sim_core::deploy::ARCH_WINDOW_BARS, DARK_STEEL),
         "garage_door" => garage_door(),
         "glass_window" => glass_window(),
-        "fire_pit" => fire_pit(),
+        "camp_fire" => fire_pit(),
         "wood_shutters" => insert(sim_core::deploy::ARCH_WINDOW_SHUTTER, WOOD),
         _ => return None,
     })
@@ -2162,7 +2162,7 @@ mod tests {
         }
         // A cold fire pit's logs shade each other and the ash where they cross.
         let paint = BARK.color().to_linear();
-        let pit = baked("fire_pit").expect("fire_pit");
+        let pit = baked("camp_fire").expect("camp_fire");
         let Some(V::Float32x4(cs)) = pit.attribute(Mesh::ATTRIBUTE_COLOR) else {
             panic!("no colours")
         };

@@ -61,6 +61,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 
 use crate::sound::engine::{self, Cmd, In, Renderer, Stats, BLOCK};
+use crate::sound::talk::{Talk, TalkMsg};
 use crate::sound::{Cue, SAMPLE_RATE};
 
 use super::audio;
@@ -86,6 +87,10 @@ pub struct Feed {
     /// The score's ring, mixed into each block as it is rendered
     /// (`render/music_out.rs`).
     music: Tap,
+    /// Players talking (`sound::talk`), and the ring their samples and
+    /// gains arrive on from the game thread.
+    talk: Box<Talk>,
+    talk_rx: rtrb::Consumer<TalkMsg>,
 }
 
 impl Feed {
@@ -109,11 +114,15 @@ impl Feed {
     /// untouched rather than guessed at.
     pub fn fill<T: SizedSample + FromSample<f32>>(&mut self, out: &mut [T], channels: u16) {
         self.input.drain_into(&mut self.renderer);
+        while let Ok(msg) = self.talk_rx.pop() {
+            self.talk.apply(&msg);
+        }
         let ch = (channels as usize).max(1);
         for frame in out.chunks_exact_mut(ch) {
             if self.at >= 2 * BLOCK {
                 self.renderer.render(&mut self.buf);
                 self.music.mix(&mut self.buf);
+                self.talk.mix(&mut self.buf);
                 self.at = 0;
             }
             let (l, r) = (self.buf[self.at], self.buf[self.at + 1]);
@@ -179,6 +188,10 @@ pub struct Native {
     feeder: Option<Feeder>,
     /// The score's decoder thread, once a device is playing.
     music: Option<Stream>,
+    /// Players' voices to the audio thread (`sound::talk`).
+    talk_tx: rtrb::Producer<TalkMsg>,
+    /// Voice messages the ring refused (the audio thread is behind).
+    pub talk_dropped: u32,
 }
 
 impl Native {
@@ -249,6 +262,7 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
     let live = Arc::new(AtomicU32::new(0));
     let alive = Arc::new(AtomicBool::new(false));
     let (feeder, tap) = music_out::pair(out_rate);
+    let (talk_tx, talk_rx) = rtrb::RingBuffer::new(TALK_RING_CAP);
     (
         Native {
             out,
@@ -262,6 +276,8 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
             out_rate,
             feeder: Some(feeder),
             music: None,
+            talk_tx,
+            talk_dropped: 0,
         },
         Feed {
             renderer: Box::new(Renderer::new(out_rate)),
@@ -272,9 +288,15 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
             live,
             alive,
             music: tap,
+            talk: Box::new(Talk::new(out_rate)),
+            talk_rx,
         },
     )
 }
+
+/// Voice messages in flight to the audio thread: a few frames of a full
+/// crowd of talkers. Past it the newest is dropped and counted.
+const TALK_RING_CAP: usize = 64;
 
 /// Open the device and start the callback. At plugin build, after
 /// `DefaultPlugins` — `bevy::log` is live by then, and the `Engine`
@@ -402,9 +424,17 @@ pub fn flush(mut engine: ResMut<audio::Engine>, mut out: NonSendMut<Native>) {
         for cmd in engine.take() {
             out.send(cmd);
         }
+        let mut refused = 0u32;
+        for msg in engine.take_talk() {
+            if out.talk_tx.push(msg).is_err() {
+                refused += 1;
+            }
+        }
+        out.talk_dropped = out.talk_dropped.saturating_add(refused);
     } else {
         let n = engine.take_installs().count() + engine.take().count();
         out.unrouted = out.unrouted.saturating_add(n as u32);
+        engine.take_talk().for_each(drop);
     }
     let score = engine.score;
     if let Some(music) = out.music.as_mut() {

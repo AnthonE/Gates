@@ -347,7 +347,7 @@ const SUBJECTS: &[Subject] = &[
     kit("bone_helmet", [30.0, 0.0, 0.0]),
     kit("roadsign_vest", [30.0, -20.0, 0.0]),
     kit("planter_box", [0.0, 0.0, 0.0]),
-    kit("fire_pit", [0.0, 0.0, 0.0]),
+    kit("camp_fire", [0.0, 0.0, 0.0]),
     kit("auto_turret", [30.0, 0.0, 0.0]),
     kit("metal_window_bars", [90.0, 0.0, 0.0]),
     kit("garage_door", [90.0, 0.0, 0.0]),

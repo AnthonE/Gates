@@ -95,7 +95,7 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 
 /// Loose ground stacks one sync message carries (ground items v0).
 /// A lying stack is 118 bits; the widest record — a stack still flying,
-/// carrying a condition and a skin (v111) — is 190, so thirteen of those
+/// carrying a condition and a skin (v114) — is 190, so thirteen of those
 /// are 311 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were, until the skin
 /// took 17 bits a record, and fourteen until the throw took 41): the assert at
 /// `GITEM_SYNC_COUNT_BITS` and `gitem_sync_widest_batch_fits_the_cap`
@@ -558,7 +558,12 @@ const SUB_AGENT: u32 = 96;
 /// on the receiver. Own-fact: sent when it changes and, while anyone is on
 /// it, as its members move.
 const SUB_TEAM: u32 = 97;
-const SUB_MAX: u32 = SUB_TEAM;
+/// A gunshot or a blast heard from past the receiver's interest set (wire
+/// v113): what it was and where, to the metre, and nothing about who. The
+/// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
+/// shot rides `EV_SHOT` on its body and the blast its impact.
+const SUB_REPORT: u32 = 98;
+const SUB_MAX: u32 = SUB_REPORT;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -1514,12 +1519,17 @@ pub enum EventMsg {
     /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
-    /// The owner's wet and cold, per cent, and whether the cold is hurting
-    /// them (`SUB_EXPOSURE`).
+    /// The owner's wet, cold and heat, per cent, whether either is hurting
+    /// them, their comfort, per cent, and the air they stand in, whole °C
+    /// (`SUB_EXPOSURE`; comfort wire v111, the heat and the air v112,
+    /// climate v0).
     Exposure {
         wet_pct: u8,
         cold_pct: u8,
+        heat_pct: u8,
         hurting: bool,
+        comfort_pct: u8,
+        air_c: i8,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -1959,6 +1969,9 @@ pub enum EventMsg {
     /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
     /// for a meal the item. A sound and nothing else.
     Heard { body: u32, deed: u8, item: u16 },
+    /// A gunshot or a blast from far off (wire v113): `REPORT_*`, and where
+    /// in whole metres. A sound and nothing else.
+    Report { kind: u8, x: u16, y: i16, z: u16 },
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
@@ -3899,6 +3912,45 @@ pub fn encode_event_heard(
     Ok(w.finish())
 }
 
+/// A [`SUB_REPORT`]'s gunshot.
+pub const REPORT_GUN: u8 = 0;
+/// A [`SUB_REPORT`]'s blast.
+pub const REPORT_BLAST: u8 = 1;
+/// The last report kind the wire knows; a higher one is refused at both ends.
+pub const REPORT_MAX: u8 = REPORT_BLAST;
+const REPORT_BITS: u32 = 2;
+const REPORT_XZ_BITS: u32 = 13;
+const REPORT_Y_BITS: u32 = 10;
+/// `y` rides biased: −128..=895 m.
+const REPORT_Y_BIAS: i32 = 128;
+const _: () = assert!((REPORT_MAX as u32) < (1 << REPORT_BITS));
+const _: () = assert!(sim_core::terrain::ISLAND_SIZE as u32 <= (1 << REPORT_XZ_BITS));
+
+/// A far gunshot or blast at `(x, y, z)` metres. Refuses a kind past
+/// [`REPORT_MAX`] and a place the fields cannot carry.
+pub fn encode_event_report(
+    kind: u8,
+    x: u16,
+    y: i16,
+    z: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let yb = y as i32 + REPORT_Y_BIAS;
+    if kind > REPORT_MAX
+        || x as u32 >= 1 << REPORT_XZ_BITS
+        || z as u32 >= 1 << REPORT_XZ_BITS
+        || !(0..1 << REPORT_Y_BITS).contains(&yb)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_REPORT)?;
+    w.write(kind as u32, REPORT_BITS)?;
+    w.write(x as u32, REPORT_XZ_BITS)?;
+    w.write(yb as u32, REPORT_Y_BITS)?;
+    w.write(z as u32, REPORT_XZ_BITS)?;
+    Ok(w.finish())
+}
+
 /// Which arrow your bow looses — see `EventMsg::Ammo`.
 pub fn encode_event_ammo(weapon: u16, round: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_AMMO)?;
@@ -4343,7 +4395,7 @@ pub struct WireGItem {
     /// zero for none (one bit on the wire). The client draws it if its skin
     /// catalog knows it (`ui::skins::tint_of`), else plain.
     pub skin: u16,
-    /// The throw it is still flying on (wire v111): a dropped stack leaves
+    /// The throw it is still flying on (wire v114): a dropped stack leaves
     /// the hand and lands where this record says, and a client draws the
     /// flight between (`sim_core::grounditem::toss_at`). Sent only while it
     /// flies, one bit otherwise, and never with a stuck arrow's `dir`.
@@ -4511,7 +4563,7 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
     if g.skin != 0 {
         w.write(g.skin as u32, 16)?;
     }
-    // The throw (v111), the same shape once more, and never beside a stuck
+    // The throw (v114), the same shape once more, and never beside a stuck
     // arrow's angle: a thing thrown lies, and the batch's room is sized on
     // the two being exclusive (`GITEM_REC_MAX_BITS`).
     w.write_bit(g.toss.is_some())?;
@@ -5042,20 +5094,21 @@ pub fn encode_event_env(env: &sim_core::weather::Env, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
-/// The owner's wet and cold — see `EventMsg::Exposure`.
+/// The owner's wet, cold, heat and air — see `EventMsg::Exposure`.
 pub fn encode_event_exposure(
-    wet_pct: u8,
-    cold_pct: u8,
-    hurting: bool,
+    x: &sim_core::exposure::Readout,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if wet_pct > 100 || cold_pct > 100 {
+    if x.wet_pct > 100 || x.cold_pct > 100 || x.comfort_pct > 100 || x.heat_pct > 100 {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_EXPOSURE)?;
-    w.write(wet_pct as u32, EXPOSURE_PCT_BITS)?;
-    w.write(cold_pct as u32, EXPOSURE_PCT_BITS)?;
-    w.write_bit(hurting)?;
+    w.write(x.wet_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.cold_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(x.hurting)?;
+    w.write(x.comfort_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.heat_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.air_c as u8 as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -6223,6 +6276,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
         },
+        SUB_REPORT => {
+            let kind = r.read(REPORT_BITS)? as u8;
+            if kind > REPORT_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Report {
+                kind,
+                x: r.read(REPORT_XZ_BITS)? as u16,
+                y: (r.read(REPORT_Y_BITS)? as i32 - REPORT_Y_BIAS) as i16,
+                z: r.read(REPORT_XZ_BITS)? as u16,
+            }
+        }
         SUB_FIRE => EventMsg::Fire {
             qx: r.read(POS_XZ_BITS)? as i32,
             qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
@@ -6773,13 +6838,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let wet_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let cold_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let hurting = r.read_bit()?;
-            if wet_pct > 100 || cold_pct > 100 {
+            let comfort_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let heat_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let air_c = r.read(8)? as u8 as i8;
+            if wet_pct > 100 || cold_pct > 100 || comfort_pct > 100 || heat_pct > 100 {
                 return Err(WireError::Malformed);
             }
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
+                comfort_pct,
+                air_c,
             }
         }
         SUB_ENV => {
@@ -7867,7 +7938,7 @@ mod tests {
         );
     }
 
-    /// The loose-stack batch at its widest (v111): every record a stack
+    /// The loose-stack batch at its widest (v114): every record a stack
     /// still flying AND carrying a condition and a skin, every field at the
     /// top of its range — and the same batch as arrows stuck where they
     /// went in, the throw's narrower twin. Both must encode inside the
@@ -8002,7 +8073,7 @@ mod tests {
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }
 
-    /// The throw (v111) crosses whole with every sign and costs a lying
+    /// The throw (v114) crosses whole with every sign and costs a lying
     /// stack one bit, and neither end holds one beside a stuck arrow's
     /// angle or with the hand further off than the sim keeps.
     #[test]
@@ -9087,8 +9158,16 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/ranged.rs"),
         },
         Module {
+            file: "reach.rs",
+            src: include_str!("../../sim-core/src/reach.rs"),
+        },
+        Module {
             file: "claim.rs",
             src: include_str!("../../sim-core/src/claim.rs"),
+        },
+        Module {
+            file: "climate.rs",
+            src: include_str!("../../sim-core/src/climate.rs"),
         },
         Module {
             file: "circulation.rs",
@@ -9297,8 +9376,8 @@ mod wire_domains {
             // this one through only because arrow recovery v1 spent the
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
-            // the widening to four.
-            live_max: 8,
+            // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
+            live_max: 9,
         },
         Domain {
             what: "move refusal",
@@ -9975,6 +10054,13 @@ mod wire_domains {
             "TEAM_COUNT_BITS",
             "TEAM_STATE_BITS",
             "TEAM_POS_BITS",
+            // A far report (v113): the wire's own two kinds, refused past
+            // `REPORT_MAX` at both ends (const-asserted beside the width);
+            // and a whole-metre place, the island's side const-asserted
+            // inside the x/z width, y refused outside its biased range.
+            "REPORT_BITS",
+            "REPORT_XZ_BITS",
+            "REPORT_Y_BITS",
             // An item description's length (v103): bounded by
             // `MAX_ITEM_DESC_BYTES`, const-asserted beside the width.
             "DESC_LEN_BITS",
@@ -10080,7 +10166,7 @@ mod wire_domains {
             // converter added to `ROLE_ARCHES` widens the field with it;
             // `ItemRow::coherent` refuses a value past it at both ends.
             "OVEN_ROLE_BITS",
-            // The throw (v111): a tick's low byte, which wraps by design
+            // The throw (v114): a tick's low byte, which wraps by design
             // (a flight is shorter than the byte's span), and the hand's
             // offset, bounded by `grounditem::TOSS_XZ_MAX_Q`/`TOSS_Y_MAX_Q`,
             // sim-core *caps* tied by compile-time asserts at the

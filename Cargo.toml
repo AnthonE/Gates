@@ -25,6 +25,8 @@ members = [
     # is held. Its own crate so "never in the page" is a dependency edge:
     # `client` names it under `native` only.
     "crates/agentkey",
+    # Proximity voice's Opus codec, shared by the client and the agent bot.
+    "crates/voice",
 ]
 
 [workspace.package]
