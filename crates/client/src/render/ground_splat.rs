@@ -735,6 +735,19 @@ pub struct GroundSplat {
     /// sample BLACK and put the whole island in shadow.
     #[texture(103, dimension = "2d_array")]
     pub data: Handle<Image>,
+    /// The cloud deck's coverage field (`sky::SkyComposer::field_image`), for
+    /// its shadows on the land (`cloud_shadow.rs`), and their lanes. **Native
+    /// only**: under WebGPU's atmosphere the arrays above already fill the
+    /// floor's sixteen sampled textures, and a seventeenth loses the frame
+    /// (`the_ground_fits_the_fragment_texture_budget`). Read with
+    /// `textureLoad`, so it adds a texture and no sampler. `Handle::default()`
+    /// until `cloud_shadow::drive` writes the deck's.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[texture(104)]
+    pub cloud_field: Handle<Image>,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[uniform(105)]
+    pub cloud: super::cloud_shadow::CloudShadowParams,
 }
 
 impl GroundSplat {
@@ -744,6 +757,10 @@ impl GroundSplat {
             params: GroundSplatParams::new(),
             albedo: arrays.albedo.clone(),
             data: arrays.data.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud_field: Handle::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud: super::cloud_shadow::CloudShadowParams::off(),
         }
     }
 }
@@ -770,6 +787,12 @@ impl MaterialExtension for GroundSplat {
         descriptor.vertex.buffers[0]
             .attributes
             .extend(road.attributes);
+        // The deck's shadows, where the bind group carries the field
+        // (`cloud_field`): the fragment imports `cloud_shadow.wgsl` on this.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("CLOUD_SHADOWS".into());
+        }
         Ok(())
     }
 

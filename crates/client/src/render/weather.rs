@@ -83,6 +83,10 @@ pub struct WeatherNow {
     pub thunder_n: usize,
     /// The last second whose bolt was queued, so a bolt is heard once.
     last_bolt: u64,
+    /// How fast [`Self::drift`] moves, m/s: what the ground's cloud
+    /// shadows run on between the writes that re-anchor them
+    /// (`cloud_shadow.rs`). Zero on a pinned sky, which holds still.
+    pub drift_vel: Vec2,
 }
 
 impl WeatherNow {
@@ -203,13 +207,15 @@ pub fn update(
     if pinned {
         // A probe's sky holds still and dry-or-soaked as asked.
         now.drift = Vec2::ZERO;
+        now.drift_vel = Vec2::ZERO;
         now.ground_wet = now.rain;
         now.flash = 0.0;
     } else {
         // The deck drifts downwind: a breeze at clear, a gale in a storm.
         let speed = 1.5 + 6.0 * now.wind;
         let period = super::sky::FIELD_PERIOD as f32 * super::sky::CLOUD_SCALE_M;
-        now.drift += now.wind_dir * speed * dt;
+        now.drift_vel = now.wind_dir * speed;
+        now.drift += now.drift_vel * dt;
         now.drift.x = now.drift.x.rem_euclid(period);
         now.drift.y = now.drift.y.rem_euclid(period);
         // Wet arrives in about a minute and dries over about eight.

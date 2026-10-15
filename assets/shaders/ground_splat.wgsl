@@ -57,6 +57,10 @@
         calculate_tbn_mikktspace,
     },
 }
+// The cloud deck's shadows on the land, natively (`render/cloud_shadow.rs`).
+#ifdef CLOUD_SHADOWS
+#import "shaders/cloud_shadow.wgsl"::cloud_shadow
+#endif
 
 struct GroundSplat {
     // Per identity, in `terrain::splat`'s order — sand · grass · litter · rock:
@@ -912,6 +916,9 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ra.g));
 
     out.color = apply_pbr_lighting(pbr_input);
+#ifdef CLOUD_SHADOWS
+    out.color = vec4(out.color.rgb + view.exposure * cloud_shadow(pbr_input), out.color.a);
+#endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

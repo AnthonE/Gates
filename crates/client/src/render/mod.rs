@@ -54,6 +54,10 @@ pub mod boulders;
 pub mod capture;
 pub mod cliff_skin;
 pub mod cliffs;
+// The cloud deck's shadows on the land. Native only — the browser's ground
+// has no texture to spare for the deck's field (`cloud_shadow.rs`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cloud_shadow;
 pub mod deck;
 // The trailer camera: a recorded session through a scripted lens, encoded as
 // it renders. Native only — it pipes frames to an `ffmpeg` process.
@@ -1988,6 +1992,16 @@ impl Plugin for GatesRenderPlugin {
             )
                 .chain()
                 .after(Stream)
+                .run_if(world_running),
+        );
+
+        // The deck's shadows on the land, off the weather they are read from
+        // (`cloud_shadow.rs`). Native only, as the module is.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(
+            Update,
+            cloud_shadow::drive
+                .after(weather::update)
                 .run_if(world_running),
         );
 
