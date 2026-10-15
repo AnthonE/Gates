@@ -515,6 +515,7 @@ pub fn hash(c: &Content) -> u64 {
         ex.fel_hp_per_min,
         ex.fel_regen_max,
         ex.fel_ward_max,
+        ex.fel_pocket_per_s,
     ] {
         h.u(v);
     }

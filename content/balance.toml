@@ -341,6 +341,13 @@ fel_hurt_at = 450
 fel_hp_per_min = 20
 fel_regen_max = 200
 fel_ward_max = 900
+# The hot spots (`sim_core::blight`): the haven pad, the ziggurat and the
+# lesser sites burn from act II, faster than the heart. 20 a second at a
+# core: at a tier-C haven pad (0.75 deep) a bare body starts to hurt after
+# about half a minute, a masked one after a minute and a quarter, and one in
+# the mask and the Ash Suit (the 90% cap, 2 a second rounded up) after nearly
+# four.
+fel_pocket_per_s = 20
 
 # The air (climate v0, `sim_core::climate`) — the reference's
 # `Climate.GetTemperature`: each biome's curve over the hour, coldest at

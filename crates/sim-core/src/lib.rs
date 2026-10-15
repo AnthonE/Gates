@@ -7,6 +7,7 @@
 
 pub mod assist;
 pub mod backpack;
+pub mod blight;
 pub mod bots;
 pub mod boulder;
 pub mod brain;

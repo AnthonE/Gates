@@ -78,7 +78,7 @@ const COAST_WOBBLE: f32 = 380.0;
 /// scales be priced separately, which is what they are.
 const COAST_BAY_FREQ: f32 = 1.0 / 380.0;
 const COAST_BAY_WOBBLE: f32 = 120.0;
-const CONTINENT_RADIUS: f32 = 1720.0;
+pub const CONTINENT_RADIUS: f32 = 1720.0;
 const COAST_EDGE_WIDTH: f32 = 240.0;
 const SEA_FLOOR_DEPTH: f32 = 12.0;
 
@@ -1653,9 +1653,9 @@ const FEL_DIR: (f32, f32) = (0.819_152, -0.573_576);
 const FEL_OUT: f32 = 0.76;
 /// Where the corruption is whole and where it ends, as a distance from the
 /// heart in units of `CONTINENT_RADIUS`, before the edge wanders. **(knob)**
-const FEL_R: (f32, f32) = (0.15, 0.30);
+pub const FEL_R: (f32, f32) = (0.15, 0.30);
 /// How far the edge wanders in and out, same units. **(knob)**
-const FEL_WANDER: f32 = 0.10;
+pub const FEL_WANDER: f32 = 0.10;
 const FEL_WANDER_FREQ: f32 = 1.0 / 420.0;
 /// The edge's noise is gained before it is clamped back to ±1, so the edge
 /// spends its time near the full wander rather than near zero (raw `fbm`
@@ -1706,18 +1706,50 @@ pub fn fel_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
 }
 
 fn fel_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
-    let dx = (x - FEL_HEART.0) * (1.0 / CONTINENT_RADIUS);
-    let dz = (z - FEL_HEART.1) * (1.0 / CONTINENT_RADIUS);
-    let d2 = dx * dx + dz * dz;
+    let d2 = fel_d2(x, z);
     // `fbm` is within ±1, so nothing past this can be touched: the island
     // outside pays one compare and no noise tap.
     let reach = FEL_R.1 + FEL_WANDER;
     if d2 >= reach * reach {
         return 0.0;
     }
-    let n = (fbm(c, seed, CH_FEL, x, z, FEL_WANDER_FREQ, 3) * FEL_WANDER_GAIN).clamp(-1.0, 1.0);
+    fel_of(d2, fel_wander_in(c, seed, x, z))
+}
+
+/// The squared distance from the heart, in units of `CONTINENT_RADIUS`:
+/// [`fel`]'s first half, shared with the spread (`blight.rs`) so the two
+/// agree to the bit.
+pub fn fel_d2(x: f32, z: f32) -> f32 {
+    let dx = (x - FEL_HEART.0) * (1.0 / CONTINENT_RADIUS);
+    let dz = (z - FEL_HEART.1) * (1.0 / CONTINENT_RADIUS);
+    dx * dx + dz * dz
+}
+
+/// The heart's profile at squared distance `d2` with wander `n`
+/// ([`fel_wander`]): [`fel`]'s second half.
+pub fn fel_of(d2: f32, n: f32) -> f32 {
+    let reach = FEL_R.1 + FEL_WANDER;
+    if d2 >= reach * reach {
+        return 0.0;
+    }
     let s = d2.sqrt() + n * FEL_WANDER;
     1.0 - fade(((s - FEL_R.0) / (FEL_R.1 - FEL_R.0)).clamp(0.0, 1.0))
+}
+
+/// The heart's edge noise at a point, within ±1: what the spread's front,
+/// its outbreaks and the client's ground all wander by, everywhere on the
+/// island (the heart itself only reads it inside its reach).
+pub fn fel_wander(seed: u64, x: f32, z: f32) -> f32 {
+    fel_wander_in(&mut Direct, seed, x, z)
+}
+
+/// [`fel_wander`] against a caller-owned [`Lattice`].
+pub fn fel_wander_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    fel_wander_in(lat, seed, x, z)
+}
+
+fn fel_wander_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    (fbm(c, seed, CH_FEL, x, z, FEL_WANDER_FREQ, 3) * FEL_WANDER_GAIN).clamp(-1.0, 1.0)
 }
 
 // --- The Verdigris' vents: green fire out of the ground ----------------------

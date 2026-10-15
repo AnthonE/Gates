@@ -141,6 +141,10 @@ pub struct ExposureContent {
     pub fel_hp_per_min: u16,
     pub fel_regen_max: u16,
     pub fel_ward_max: u16,
+    /// What a second at the core of a hot spot adds (`blight.rs`: the loot
+    /// sites burning once act II begins), per mille — faster than the heart,
+    /// so the best crates want a mask.
+    pub fel_pocket_per_s: u16,
     /// Per item index: the share of the Verdigris a worn piece wards off,
     /// per mille (`armor.toml` `fel_pct`).
     pub ward: [u16; MAX_ITEM_DEFS],
@@ -197,6 +201,7 @@ impl ExposureContent {
         fel_hp_per_min: 0,
         fel_regen_max: 1000,
         fel_ward_max: 0,
+        fel_pocket_per_s: 0,
         ward: [0; MAX_ITEM_DEFS],
     };
 
@@ -267,6 +272,8 @@ pub struct Inputs {
     /// (`terrain::fel_vent_near`).
     pub fel_pm: u16,
     pub vent: bool,
+    /// How deep in a hot spot the body stands, per mille (`blight::Depth`).
+    pub hot_pm: u16,
 }
 
 /// What is worn, split in two: the warmth that keeps cold out, and the draw
@@ -502,7 +509,7 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
 
 /// What the worn set wards off of the Verdigris, per mille, held to
 /// `fel_ward_max`.
-fn worn_ward(ec: &ExposureContent, p: &Player) -> u32 {
+pub(crate) fn worn_ward(ec: &ExposureContent, p: &Player) -> u32 {
     let mut ward = 0u32;
     for s in p.worn.iter() {
         if s.count == 0 || s.item as usize >= MAX_ITEM_DEFS {
@@ -514,8 +521,8 @@ fn worn_ward(ec: &ExposureContent, p: &Player) -> u32 {
 }
 
 /// One second of the Verdigris for one body: its meter rises by how deep it
-/// stands (rounded up, so the edge still creeps), plus a vent's fire, less
-/// what it wears wards off; anywhere the Verdigris does not reach it falls.
+/// stands (rounded up, so the edge still creeps), plus a vent's fire, plus a
+/// hot spot's burn at its own rate, less what it wears wards off; anywhere the Verdigris does not reach it falls.
 /// Past `fel_hurt_at` it costs hp, nothing at the line and
 /// `fel_hp_per_min` at a full meter, exact over the minute through its own
 /// accumulator. Not a hit: armor does not blunt it, as it does not the cold.
@@ -533,6 +540,7 @@ pub fn corrode(
     if inp.vent {
         gain += ec.fel_vent_per_s as u32;
     }
+    gain += (inp.hot_pm as u32 * ec.fel_pocket_per_s as u32).div_ceil(1000);
     if gain > 0 {
         let gain = (gain * (1000 - worn_ward(ec, p))).div_ceil(1000);
         p.fel = (p.fel as u32 + gain).min(1000) as u16;

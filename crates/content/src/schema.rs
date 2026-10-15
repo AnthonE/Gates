@@ -1346,6 +1346,11 @@ pub struct Exposure {
     pub fel_regen_max: u32,
     #[serde(default)]
     pub fel_ward_max: u32,
+    /// What a second at a hot spot's core adds (`sim_core::blight`: the loot
+    /// sites burning from act II), per mille. Optional; absent is hot spots
+    /// that only look the part.
+    #[serde(default)]
+    pub fel_pocket_per_s: u32,
 }
 
 /// The air (`content/balance.toml` `[climate]`; climate v0,

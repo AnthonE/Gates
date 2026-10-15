@@ -1317,6 +1317,7 @@ impl Content {
             1000
         };
         ex.fel_ward_max = u16f(e.fel_ward_max, "fel_ward_max")?;
+        ex.fel_pocket_per_s = u16f(e.fel_pocket_per_s, "fel_pocket_per_s")?;
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
             temperate_low_dc: dc(cl.temperate_low_c),

@@ -2334,11 +2334,20 @@ pub struct World {
     /// when the WAL file format lands, it pins into the header beside the
     /// seed so replays reproduce the spawns they were played under.
     pub dev_spawn: Option<(f32, f32)>,
+    /// This wipe's blight salt (`blight.rs`): drawn by the server for each
+    /// new world like `arc.salt`, but public — it only says where this
+    /// wipe's outbreaks erupt, and every client draws them from it. 0 until
+    /// the server draws one.
+    pub blight_salt: u32,
+    /// The outbreaks that salt draws ([`crate::blight::Plan`]): derived,
+    /// rebuilt by [`World::set_blight_salt`], never saved or hashed.
+    pub blight: crate::blight::Plan,
 }
 
 impl World {
     pub fn new(seed: u64) -> Self {
         let haven = terrain::haven(seed);
+        let blight = crate::blight::Plan::new(seed, 0, &haven);
         Self {
             seed,
             tick: 0,
@@ -2399,6 +2408,8 @@ impl World {
             trust: TrustLedger::new(),
             last_hash: 0,
             dev_spawn: None,
+            blight_salt: 0,
+            blight,
         }
     }
 
@@ -3529,6 +3540,23 @@ impl World {
                 i += 1;
             }
         }
+    }
+
+    /// Seat this wipe's blight salt and redraw its outbreaks from it.
+    pub fn set_blight_salt(&mut self, salt: u32) {
+        self.blight_salt = salt;
+        self.blight = crate::blight::Plan::new(self.seed, salt, &self.haven);
+    }
+
+    /// The spread right now (`blight.rs`): the heart's front for this hour
+    /// and tier, every outbreak alive and every hot spot burning.
+    pub fn blight_now(&self) -> crate::blight::Now {
+        crate::blight::now(
+            &self.blight,
+            &self.haven,
+            self.tick,
+            self.works.fel_tier(&self.works_def),
+        )
     }
 
     /// The species table in the island's current fel tier (`mob::FelTier`,
@@ -6088,12 +6116,26 @@ impl World {
         // The Verdigris at the feet, none on the beach: the coast is
         // survivable even where the corruption reaches the sea. Read only
         // when the meter is armed, so a world without it pays nothing.
-        let fel_pm = if ec.fel_rise_per_s == 0 || feet < crate::terrain::BEACH_MAX_H {
-            0
+        // The heart, the creep and the outbreaks fill it at one rate and the
+        // hot spots at their own (`blight.rs`); the vents are the heart's.
+        let (fel_pm, hot_pm) = if ec.fel_rise_per_s == 0 || feet < crate::terrain::BEACH_MAX_H {
+            (0, 0)
         } else {
-            (crate::terrain::fel(self.seed, x, z) * 1000.0) as u16
+            // Read at the ground, not the feet: the coast's fade and the
+            // ridges' hold are the terrain's, as the client draws them, so a
+            // second storey on a beach or a tower in the front's path is in
+            // the same green as the ground under it.
+            let now = self.blight_now();
+            if crate::blight::within_reach(&now, x, z) {
+                let ground = crate::terrain::ground(self.seed, &self.haven, x, z);
+                let d = crate::blight::depth(&now, self.seed, x, z, ground);
+                ((d.fel * 1000.0) as u16, (d.hot * 1000.0) as u16)
+            } else {
+                (0, 0)
+            }
         };
         let vent = fel_pm >= (crate::terrain::FEL_VENT_AT * 1000.0) as u16
+            && crate::terrain::fel(self.seed, x, z) >= crate::terrain::FEL_VENT_AT
             && crate::terrain::fel_vent_near(self.seed, x, z);
         let comfort = match fire {
             Some(at) if ec.fire_comfort > 0 => {
@@ -6124,6 +6166,7 @@ impl World {
             ),
             fel_pm,
             vent,
+            hot_pm,
         }
     }
 
@@ -8221,6 +8264,12 @@ impl World {
             for m in self.arc.mechs.iter() {
                 h.update(&m.to_bytes());
             }
+        }
+        // The blight's salt (`blight.rs`), only once one is drawn, so a world
+        // without one hashes as it always did. The outbreaks it draws are
+        // derived from it and the seed, and are not folded twice.
+        if self.blight_salt != 0 {
+            h.update(&self.blight_salt.to_le_bytes());
         }
         // The glyphs each player reads (`lore.rs`), only where there are
         // any, so a world nobody has read in hashes as it always did.
