@@ -3,9 +3,8 @@
 //! A second session for a wallet whose body was awake used to miss the
 //! sleeper (there was none) and be seated from the store's record: two
 //! bodies carrying one inventory, each free to stash its copy. The accept
-//! loop now refuses the newcomer with `REFUSE_IN_USE` and closes the session
-//! already in with the same code, so the player's next join wakes the body
-//! the first one left asleep.
+//! loop now closes the session already in (`REFUSE_IN_USE`), holds the
+//! newcomer until the sim has put that body to sleep, and seats it there.
 
 use server::config::ShardConfig;
 use server::net::{spawn_shard, ShardHandle};
@@ -14,7 +13,7 @@ use server::store::Saves;
 use std::time::Duration;
 
 use client::agentkey::AgentKey;
-use client::{JoinError, Session};
+use client::Session;
 
 fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
@@ -63,7 +62,7 @@ async fn join(ep: &Ep, h: &ShardHandle, k: &AgentKey) -> Session {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_session_for_a_seated_wallet_is_refused_and_takes_over() {
+async fn a_second_session_for_a_seated_wallet_takes_over_the_one_body() {
     let h = spawn_shard(
         ShardConfig::ephemeral(20_261_015),
         baked_content(),
@@ -77,17 +76,32 @@ async fn a_second_session_for_a_seated_wallet_is_refused_and_takes_over() {
     let k = key(7);
     let mut first = join(&ep, &h, &k).await;
 
-    // The same wallet again, while the first body is awake: refused at the
-    // door, before it can claim a slot.
-    let name = protocol::Name::new("twin").unwrap();
-    match Session::connect_agent(&ep, &h.local_addr.to_string(), &k, name).await {
-        Err(JoinError::Refused(code)) => assert_eq!(code, protocol::REFUSE_IN_USE),
-        Err(e) => panic!("expected a refusal with a code, got {e}"),
-        Ok(_) => panic!("a second session was seated for a wallet already playing"),
-    }
-    assert_eq!(ShardStats::get(&h.stats.refused_in_use), 1);
+    // The same wallet again, while the first body is awake. It is seated —
+    // once the first session has been closed and its body put to sleep, and
+    // on that body: a takeover, never a second body from the record.
+    let second = tokio::time::timeout(
+        Duration::from_secs(20),
+        Session::connect_agent(
+            &ep,
+            &h.local_addr.to_string(),
+            &k,
+            protocol::Name::new("twin").unwrap(),
+        ),
+    )
+    .await
+    .expect("an answer")
+    .expect("the second session is seated");
+    assert!(!second.closed());
+    assert_eq!(ShardStats::get(&h.stats.parked_in_use), 1);
+    assert_eq!(ShardStats::get(&h.stats.refused_in_use), 0);
+    assert_eq!(ShardStats::get(&h.stats.takeovers), 1, "woke the sleeper");
+    assert_eq!(
+        ShardStats::get(&h.stats.saves_restored),
+        0,
+        "no body from a record"
+    );
 
-    // ...and the session already in is closed with the same reason.
+    // ...and the session that was in is closed, told why.
     tokio::time::timeout(Duration::from_secs(20), async {
         while !first.closed() {
             frame(&mut [&mut first]).await;
@@ -96,31 +110,5 @@ async fn a_second_session_for_a_seated_wallet_is_refused_and_takes_over() {
     .await
     .expect("the first session is closed");
     assert_eq!(first.close_code(), Some(protocol::REFUSE_IN_USE as u64));
-    drop(first);
-
-    // Joining again lands on the body the first session left asleep — a
-    // takeover, never a second body seated from a record.
-    let back = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let name = protocol::Name::new("twin").unwrap();
-            match Session::connect_agent(&ep, &h.local_addr.to_string(), &k, name).await {
-                Ok(s) => return s,
-                // The old slot frees once the sim has applied its leave.
-                Err(JoinError::Refused(code)) if code == protocol::REFUSE_IN_USE => {
-                    tokio::time::sleep(Duration::from_millis(50)).await
-                }
-                Err(e) => panic!("rejoin failed: {e}"),
-            }
-        }
-    })
-    .await
-    .expect("the wallet gets back in");
-    assert!(!back.closed());
-    assert_eq!(ShardStats::get(&h.stats.takeovers), 1, "woke the sleeper");
-    assert_eq!(
-        ShardStats::get(&h.stats.saves_restored),
-        0,
-        "no body from a record"
-    );
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }

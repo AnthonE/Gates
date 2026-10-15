@@ -1639,9 +1639,10 @@ pub const REFUSE_WATCH_ENDED: u8 = 8;
 /// This wallet already has a body awake on this shard, on another
 /// connection. One wallet, one body: a second session seated from the
 /// store's record while the first still played was two copies of one
-/// inventory. The newcomer is refused with this, and the session already in
-/// is closed with it, so whichever device the player is holding, joining
-/// again lands on the body the first one left asleep.
+/// inventory. The session already in is closed with this, and the newcomer
+/// waits for that body to fall asleep and is seated on it; a newcomer is
+/// refused with it only when the old body does not let go in time, or a
+/// second newcomer is already waiting.
 ///
 /// No layout moved for this: `Refuse.code` is a full `u8` and this is the
 /// tenth of 256 values.

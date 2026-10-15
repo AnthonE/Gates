@@ -1204,6 +1204,47 @@ async fn accept_loop(
     let (prices_done_tx, mut prices_done_rx) =
         tokio::sync::mpsc::channel::<crate::skins::Prices>(1);
     let mut prices_in_flight = false;
+    let mut parked: Vec<Parked> = Vec::with_capacity(PARK_MAX);
+    let mut park_poll = tokio::time::interval(PARK_POLL);
+    park_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The door's tail, for a fresh arrival and a parked one alike.
+    macro_rules! admit {
+        ($done:expr) => {{
+            let done = $done;
+            // Before the claim, never after: a record for the slot's
+            // previous tenant has to be filed under the key it was
+            // written for, and installing first would overwrite that key.
+            drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+            if done.hello.is_spectator() {
+                install_spectator(
+                    done,
+                    &facts,
+                    &mut ctrl_tx,
+                    &keys,
+                    &mut seats,
+                    &slots,
+                    &stats,
+                )
+                .await;
+            } else if let Some((slot, gen)) = install(
+                done,
+                &facts,
+                &mut ctrl_tx,
+                &refresh_tx,
+                &mut keys,
+                &store,
+                &slots,
+                &stats,
+            )
+            .await
+            {
+                // The door's read: what this player owns, before they
+                // reach a bench.
+                skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
+                ask_face(slot, gen, &keys, &facts, &face_tx);
+            }
+        }};
+    }
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -1264,34 +1305,53 @@ async fn accept_loop(
                 // One wallet, one body. A second session for a key whose body
                 // is still awake would miss the sleeper (there is none) and
                 // be seated from the store's record: two bodies, one
-                // inventory. Refused here, before the claim — and the session
-                // already in is closed with the same code, so the player's
-                // next join wakes the body it leaves asleep. Never admitted
-                // in this pass: the old leave has not reached the sim yet.
+                // inventory. So the session already in is closed
+                // (`REFUSE_IN_USE`) and the newcomer waits, unclaimed, until
+                // the sim has put that body to sleep — then it is seated on
+                // it. Never in this pass: the old leave has not reached the
+                // sim yet. A second newcomer for the same key, or one past
+                // the park's room, is refused outright.
                 if !done.hello.is_spectator() {
                     if let Some(s) = done.key.and_then(|k| seated(&k, &keys, &slots)) {
-                        ShardStats::bump(&stats.refused_in_use);
-                        kick_tenant(s, &mut keys, &slots, protocol::REFUSE_IN_USE);
-                        spawn_refusal(done.connection, done.send, protocol::REFUSE_IN_USE);
+                        let twice = parked.iter().any(|p| p.done.key == done.key);
+                        if twice || parked.len() >= PARK_MAX {
+                            ShardStats::bump(&stats.refused_in_use);
+                            spawn_refusal(done.connection, done.send, protocol::REFUSE_IN_USE);
+                        } else {
+                            kick_tenant(s, &mut keys, &slots, protocol::REFUSE_IN_USE);
+                            ShardStats::bump(&stats.parked_in_use);
+                            parked.push(Parked {
+                                done,
+                                slot: s,
+                                generation: keys[s].generation,
+                                until: tokio::time::Instant::now() + PARK_WAIT,
+                            });
+                        }
                         continue;
                     }
                 }
-                // Before the claim, never after: a record for the slot's
-                // previous tenant has to be filed under the key it was
-                // written for, and installing first would overwrite that key.
-                drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                if done.hello.is_spectator() {
-                    install_spectator(done, &facts, &mut ctrl_tx, &keys, &mut seats, &slots, &stats)
-                        .await;
-                } else if let Some((slot, gen)) = install(
-                    done, &facts, &mut ctrl_tx, &refresh_tx, &mut keys, &store, &slots, &stats,
-                )
-                .await
-                {
-                    // The door's read: what this player owns, before they
-                    // reach a bench.
-                    skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
-                    ask_face(slot, gen, &keys, &facts, &face_tx);
+                admit!(done);
+            }
+            _ = park_poll.tick(), if !parked.is_empty() => {
+                let now = tokio::time::Instant::now();
+                let mut i = 0;
+                while i < parked.len() {
+                    let w = slots.load(parked[i].slot);
+                    let freed = crate::slot::state_of(w) == crate::slot::SLOT_EMPTY
+                        || crate::slot::generation_of(w) != parked[i].generation;
+                    if !freed && now < parked[i].until {
+                        i += 1;
+                        continue;
+                    }
+                    let p = parked.swap_remove(i);
+                    // Freed, and nothing else seated the key meanwhile: the
+                    // body is asleep and the join wakes it.
+                    if freed && p.done.key.and_then(|k| seated(&k, &keys, &slots)).is_none() {
+                        admit!(p.done);
+                    } else {
+                        ShardStats::bump(&stats.refused_in_use);
+                        spawn_refusal(p.done.connection, p.done.send, protocol::REFUSE_IN_USE);
+                    }
                 }
             }
             Some((slot, gen)) = refresh_rx.recv() => {
@@ -3172,6 +3232,25 @@ fn kick_tenant(
     }
     true
 }
+
+/// A newcomer waiting for its own wallet's old body to fall asleep (one
+/// wallet, one body): the old session has been closed, and once the sim has
+/// applied its leave the slot frees and the newcomer is seated — on the
+/// sleeper, by `connect_as`'s first door. One handshake and one signature,
+/// however the old session ended.
+struct Parked {
+    done: Handshaken,
+    slot: usize,
+    generation: u32,
+    until: tokio::time::Instant,
+}
+
+/// Newcomers that may wait at once, and how long one waits before it is
+/// refused `REFUSE_IN_USE` after all. A leave lands within a tick or two of
+/// the close; the wait only runs long for a body the sim cannot let go of.
+const PARK_MAX: usize = 16;
+const PARK_WAIT: Duration = Duration::from_secs(5);
+const PARK_POLL: Duration = Duration::from_millis(20);
 
 /// The player slot whose tenant is `key` and still has a body awake: live,
 /// or leaving but not yet freed (the sim frees a slot only after it has

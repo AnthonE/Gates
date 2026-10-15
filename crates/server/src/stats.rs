@@ -242,6 +242,9 @@ pub struct ShardStats {
     /// Handshakes that proved a wallet already seated on another connection,
     /// refused `REFUSE_IN_USE` before claiming a slot (one wallet, one body).
     pub refused_in_use: AtomicU64,
+    /// Joins for a wallet seated on another connection that closed the old
+    /// session and waited for its body to sleep, then were seated on it.
+    pub parked_in_use: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.
     pub input_dg_ok: AtomicU64,
@@ -988,6 +991,7 @@ impl ShardStats {
             "refused_full" => &self.refused_full,
             "refused_banned" => &self.refused_banned,
             "refused_in_use" => &self.refused_in_use,
+            "parked_in_use" => &self.parked_in_use,
             "refused_per_source" => &self.refused_per_source,
             "entitle_unknown" => &self.entitle_unknown,
             "entitle_kicked" => &self.entitle_kicked,
