@@ -1799,6 +1799,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                     cold_pct: 100,
                     heat_pct: 0,
                     hurting: true,
+                    comfort_pct: 50,
                     air_c: -7,
                 }
             );

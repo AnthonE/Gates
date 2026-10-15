@@ -16,6 +16,13 @@
 //!   `hurt_at` it costs hp, through the same unreduced funnel starvation
 //!   uses: cold is not a hit and armor does not blunt it.
 //!
+//! **Comfort and regen are Rust's** (`PlayerMetabolism`). A third meter,
+//! comfort, follows what the body's surroundings give it: a lit fire half,
+//! and each other body at the same fire a quarter more, a sleeper an eighth
+//! (`TriggerComfort`). A calm, fed, watered, warm body mends on its own up
+//! to 60 % of its hp, and comfort takes that to 100 % and the rate up to
+//! seven-fold; mending eats food. By a fire, 50 % comfort heals you to 80.
+//!
 //! Stepped once a second per body, staggered by slot, on live and downed
 //! bodies only — a sleeper's metabolism runs, but an offline player must not
 //! freeze to death in a rainstorm they never saw. Every rate is integer
@@ -65,9 +72,30 @@ pub struct ExposureContent {
     /// normal food and water drain added at full chill, scaled by chill.
     pub cold_food_pct: u16,
     pub cold_water_pct: u16,
-    /// Comfort: hit points a minute a warm, dry, fed body gets back by a
-    /// fire or under a roof.
-    pub comfort_hp_per_min: u16,
+    /// Comfort, per mille: what a lit fire gives a body in its warmth,
+    /// what each other body by the same fire adds (a sleeper half), and how
+    /// far the meter moves toward its target a second.
+    pub fire_comfort: u16,
+    pub company_comfort: u16,
+    pub comfort_per_s: u16,
+    /// Natural regen: hp a minute at an empty stomach and no comfort; what
+    /// a full stomach adds and what full comfort adds, per cent; and how
+    /// far it mends with no comfort, per cent of max hp (full comfort
+    /// mends to full).
+    pub regen_hp_per_min: u16,
+    pub regen_fed_pct: u16,
+    pub regen_comfort_pct: u16,
+    pub regen_cap_pct: u16,
+    /// What regen asks: more food and more water than these, no more chill
+    /// than this, and this many seconds since the body last lost hp.
+    pub regen_food_min: u16,
+    pub regen_water_min: u16,
+    pub regen_chill_max: u16,
+    pub regen_calm_s: u16,
+    /// What regen costs: percent of the normal food and water drain added
+    /// while it runs.
+    pub regen_food_pct: u16,
+    pub regen_water_pct: u16,
     /// The air (climate v0, `climate.rs`): where it is, how warm.
     pub air: crate::climate::ClimateContent,
     /// Air under this chills, `cold_per_c` per mille a degree. With
@@ -115,7 +143,19 @@ impl ExposureContent {
         hurt_hp_per_min: 0,
         cold_food_pct: 0,
         cold_water_pct: 0,
-        comfort_hp_per_min: 0,
+        fire_comfort: 0,
+        company_comfort: 0,
+        comfort_per_s: 0,
+        regen_hp_per_min: 0,
+        regen_fed_pct: 0,
+        regen_comfort_pct: 0,
+        regen_cap_pct: 0,
+        regen_food_min: 0,
+        regen_water_min: 0,
+        regen_chill_max: 0,
+        regen_calm_s: 0,
+        regen_food_pct: 0,
+        regen_water_pct: 0,
         air: crate::climate::ClimateContent::EMPTY,
         cold_below_dc: 0,
         cold_per_c: 0,
@@ -184,8 +224,12 @@ pub struct Inputs {
     pub fire: bool,
     /// A lit torch in hand.
     pub torch: bool,
-    /// Both meters at least half full — what comfort asks of the body.
-    pub fed: bool,
+    /// The comfort the surroundings give, per mille: a lit fire, and
+    /// company at it (`World::exposure_inputs`).
+    pub comfort: u16,
+    /// The meters' ceilings, for the stomach's share of regen and its bill.
+    pub max_food: u16,
+    pub max_water: u16,
     /// The air where the body stands, deci-degrees (`climate::air_dc`).
     pub air_dc: i16,
 }
@@ -351,7 +395,18 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
     p.air_dc = inp.air_dc;
     p.heat = target_heat(ec, inp, p);
 
-    // 3 · Hurt: nothing at `hurt_at`, the full rate at 1000, exact over
+    // 3 · Comfort follows its target (Rust's `comfort.MoveTowards`), and
+    // the calm clock runs (`combat::debit` zeroes it on any hp lost). A
+    // body the heat reaches has none, as Rust's too-hot body has none.
+    let want = if p.heat > 0 { 0 } else { inp.comfort };
+    p.comfort = if p.comfort < want {
+        p.comfort.saturating_add(ec.comfort_per_s).min(want)
+    } else {
+        p.comfort.saturating_sub(ec.comfort_per_s).max(want)
+    };
+    p.calm = p.calm.saturating_add(1);
+
+    // 4 · Hurt: nothing at `hurt_at`, the full rate at 1000, exact over
     // the minute through the survival clock's accumulator. The heat shares
     // the cold's accumulator: a body is not past both at once.
     let mut died = false;
@@ -371,25 +426,31 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
             let dmg = dmg.min(u16::MAX as u32) as u16;
             died = crate::combat::hurt_unreduced(p, dmg).died;
         }
-    } else if ec.comfort_hp_per_min > 0
-        && inp.fed
-        && (inp.fire || inp.roofed)
-        && p.chill == 0
-        && p.heat == 0
-        && p.wet == 0
-        && !p.wounded
-        && p.hp > 0
-        && p.hp < p.hp_max
-    {
-        // Comfort: warm, dry, fed and by a fire or under a roof, the body
-        // mends. The cold's accumulator carries it, because the two can
-        // never run at once — comfort needs no chill at all.
-        let give = tick_units(&mut p.cold_acc, ec.comfort_hp_per_min as u32, 60);
+    } else if regens(ec, p) {
+        // Regen (Rust's metabolism): the cold's accumulator carries it,
+        // because the two never run at once — regen wants the chill under
+        // `regen_chill_max`, which the bake holds under `hurt_at`.
+        let full = (p.food as u32 * 1000 / inp.max_food.max(1) as u32).min(1000);
+        let fed = 100 + ec.regen_fed_pct as u32 * full / 1000;
+        let comfy = 1000 + ec.regen_comfort_pct as u32 * p.comfort as u32 / 100;
+        let give = tick_units(
+            &mut p.cold_acc,
+            ec.regen_hp_per_min as u32 * fed * comfy,
+            REGEN_DEN,
+        );
         if give > 0 {
             p.hp =
                 p.hp.saturating_add(give.min(u16::MAX as u32) as u16)
-                    .min(p.hp_max);
+                    .min(regen_cap(ec, p));
         }
+        // The bill: a share of one second's drain, `burn`'s shape.
+        let bill = |max: u16, pct: u16| max as u32 * TICK_HZ * pct as u32 / 100;
+        p.food_acc = p
+            .food_acc
+            .saturating_add(bill(inp.max_food, ec.regen_food_pct));
+        p.water_acc = p
+            .water_acc
+            .saturating_add(bill(inp.max_water, ec.regen_water_pct));
     } else {
         // Warm again: the partial point owed does not bank.
         p.cold_acc = 0;
@@ -402,6 +463,46 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
         return Step::Changed;
     }
     Step::Quiet
+}
+
+/// The regen rate's denominator: a minute, times the stomach's per cent
+/// and comfort's per mille scales in `step`.
+const REGEN_DEN: u32 = 60 * 100 * 1000;
+
+/// How far regen mends this body now: `regen_cap_pct` of max hp with no
+/// comfort, all of it at full comfort (Rust's `0.6 + 0.4 × comfort`).
+pub fn regen_cap(ec: &ExposureContent, p: &Player) -> u16 {
+    let base = (ec.regen_cap_pct as u32 * 10).min(1000);
+    let pm = base + (1000 - base) * p.comfort.min(1000) as u32 / 1000;
+    (p.hp_max as u32 * pm / 1000) as u16
+}
+
+/// Does this body mend on its own this second? Rust's gates: fed past
+/// `regen_food_min`, watered past `regen_water_min`, warm enough, calm for
+/// `regen_calm_s`, standing, and under its cap.
+pub fn regens(ec: &ExposureContent, p: &Player) -> bool {
+    ec.regen_hp_per_min > 0
+        && p.food > ec.regen_food_min
+        && p.water > ec.regen_water_min
+        && p.chill <= ec.regen_chill_max
+        && p.calm >= ec.regen_calm_s
+        && !p.wounded
+        && p.hp > 0
+        && p.hp < regen_cap(ec, p)
+}
+
+/// The comfort a body's surroundings give it, per mille (Rust's
+/// `TriggerComfort.CalculateComfort`): `fire_comfort` in a lit fire's
+/// warmth, and `company_comfort` for each other body there, half for a
+/// sleeper. Nothing away from a fire.
+pub fn comfort_target(ec: &ExposureContent, fire: bool, awake: u32, asleep: u32) -> u16 {
+    if !fire {
+        return 0;
+    }
+    let c = ec.fire_comfort as u32
+        + ec.company_comfort as u32 * awake
+        + ec.company_comfort as u32 * asleep / 2;
+    c.min(1000) as u16
 }
 
 /// One second of the cold's and the heat's metabolic cost (`NOW.md` §0wx
@@ -437,18 +538,20 @@ pub fn reset(p: &mut Player) {
     p.chill = 0;
     p.heat = 0;
     p.cold_acc = 0;
+    p.comfort = 0;
 }
 
 /// What the owner's HUD reads: wet, cold and heat in per cent, whether
-/// either is hurting, and the air in whole degrees. Per cent rather than
-/// per mille, because that is the resolution a chip shows and every
-/// per-mille step would otherwise be a message.
+/// either is hurting, comfort in per cent, and the air in whole degrees.
+/// Per cent rather than per mille, because that is the resolution a chip
+/// shows and every per-mille step would otherwise be a message.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Readout {
     pub wet_pct: u8,
     pub cold_pct: u8,
     pub heat_pct: u8,
     pub hurting: bool,
+    pub comfort_pct: u8,
     pub air_c: i8,
 }
 
@@ -459,6 +562,7 @@ pub fn readout(ec: &ExposureContent, p: &Player) -> Readout {
         cold_pct: (p.chill / 10).min(100) as u8,
         heat_pct: (p.heat / 10).min(100) as u8,
         hurting: ec.armed() && (p.chill > ec.hurt_at || p.heat > ec.heat_hurt_at),
+        comfort_pct: (p.comfort / 10).min(100) as u8,
         air_c: crate::climate::whole_c(p.air_dc),
     }
 }

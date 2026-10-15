@@ -1257,10 +1257,40 @@ pub struct Exposure {
     pub cold_food_pct: u32,
     #[serde(default)]
     pub cold_water_pct: u32,
-    /// Comfort: hit points a minute a warm, dry, fed body gets back by a fire
-    /// or under a roof.
+    /// Comfort (Rust's), per mille: a lit fire's, each other body's at it,
+    /// and how far the meter moves a second.
     #[serde(default)]
-    pub comfort_hp_per_min: u32,
+    pub fire_comfort: u32,
+    #[serde(default)]
+    pub company_comfort: u32,
+    #[serde(default)]
+    pub comfort_per_s: u32,
+    /// Natural regen (Rust's metabolism): hp a minute at an empty stomach
+    /// and no comfort; what a full stomach and full comfort add, per cent;
+    /// how far it mends with no comfort, per cent of max hp.
+    #[serde(default)]
+    pub regen_hp_per_min: u32,
+    #[serde(default)]
+    pub regen_fed_pct: u32,
+    #[serde(default)]
+    pub regen_comfort_pct: u32,
+    #[serde(default)]
+    pub regen_cap_pct: u32,
+    /// What regen asks: more food and water than these, no more chill than
+    /// this, and this many seconds unhurt.
+    #[serde(default)]
+    pub regen_food_min: u32,
+    #[serde(default)]
+    pub regen_water_min: u32,
+    #[serde(default)]
+    pub regen_chill_max: u32,
+    #[serde(default)]
+    pub regen_calm_s: u32,
+    /// What regen costs: percent of the normal food and water drain added.
+    #[serde(default)]
+    pub regen_food_pct: u32,
+    #[serde(default)]
+    pub regen_water_pct: u32,
     /// The air (climate v0): under `cold_below_c` it chills, `cold_per_c`
     /// per mille a degree, in place of `night_cold` (0 keeps the night's
     /// flat cold). Over `hot_above_c` it heats, `heat_per_c` a degree.

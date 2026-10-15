@@ -161,7 +161,7 @@ ITEMS = {
     "bandage": "lorc/bandage-roll",
     "sleeping_bag": "delapouite/sleeping-bag",
     "box_small": "delapouite/wooden-crate",
-    "fire_pit": "lorc/campfire",
+    "camp_fire": "lorc/campfire",
     "waterskin": "delapouite/water-flask",
     "waterskin_full": "delapouite/water-flask",
     "barricade_wood": "delapouite/palisade",

@@ -619,7 +619,7 @@ pub fn parts(name: &str) -> Option<Vec<Part>> {
         "metal_window_bars" => insert(sim_core::deploy::ARCH_WINDOW_BARS, DARK_STEEL),
         "garage_door" => garage_door(),
         "glass_window" => glass_window(),
-        "fire_pit" => fire_pit(),
+        "camp_fire" => fire_pit(),
         "wood_shutters" => insert(sim_core::deploy::ARCH_WINDOW_SHUTTER, WOOD),
         _ => return None,
     })

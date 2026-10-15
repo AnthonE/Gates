@@ -1141,6 +1141,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             skins,
             safe: false,
             hostile: 0,
+            comfort: 0,
+            calm: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
             dead: save.dead,

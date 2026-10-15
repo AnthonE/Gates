@@ -273,15 +273,34 @@ chill_fall_per_s = 20
 hurt_at = 600
 hurt_hp_per_min = 6
 # The cold eats (`NOW.md` §0wx item 1): at full chill food drains twice as
-# fast (the reference's cold burns calories); water is the heat's to burn,
-# and the island has no heat, so it stays at the normal drain. Scaled by the
-# chill, so a clear night (380) is +38 % food.
+# fast (the reference's cold burns calories); water is the heat's to burn
+# (`heat_water_pct` below), so the cold leaves it at the normal drain. Scaled
+# by the chill, so a clear temperate dawn (~465) is +46 % food.
 cold_food_pct = 100
 cold_water_pct = 0
-# Comfort: warm (no chill), dry, both meters at least half full, and by a lit
-# fire or under a roof — the body mends 6 hp a minute. Ours; the reference's
-# comfort raises a regen it pays from food.
-comfort_hp_per_min = 6
+# Comfort and regen are Rust's (`PlayerMetabolism`, `TriggerComfort`). A lit
+# fire (or furnace) gives 50 % comfort to whoever is in its warmth, and each
+# other body there adds 25 % (a sleeper 12.5 %); the meter follows in 5 s.
+fire_comfort = 500
+company_comfort = 250
+comfort_per_s = 200
+# A body with food over 100 and water over 40, warm (chill no more than 300:
+# a clear night with nothing on is too cold), and unhurt for 10 s mends on its
+# own: 8 hp a minute on an empty-ish stomach, half again on a full one, up to
+# 60 % of its hp. Comfort lifts the cap to 60 % + 40 % × comfort (by a fire,
+# 80 hp) and the rate by 600 % × comfort (by a fire, ×4: ~40 hp a minute).
+# Mending doubles the food drain and adds half again to the water's.
+regen_hp_per_min = 8
+regen_fed_pct = 50
+regen_comfort_pct = 600
+regen_cap_pct = 60
+regen_food_min = 100
+regen_water_min = 40
+regen_chill_max = 300
+regen_calm_s = 10
+regen_food_pct = 100
+regen_water_pct = 50
+
 # The air (climate v0, `[climate]` below) is the cold now: every degree
 # under 13 °C adds 50, night or day, in place of the old flat night. So a
 # naked, dry, still body starts to hurt at 1 °C, which is where the

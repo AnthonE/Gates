@@ -403,7 +403,7 @@ description = "Fresh water to drink, or to water a planter."
 
 [[item]]
 id = "item.fire_pit"
-name = "Fire Pit"
+name = "Camp Fire"
 stack = 1
 tier = 0
 rarity = "common"

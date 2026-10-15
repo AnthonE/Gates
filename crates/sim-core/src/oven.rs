@@ -83,12 +83,10 @@
 //! archetype with no layout (the furnace, the recycler) is the unsectioned
 //! box it always was: every slot takes whatever the converter accepts.
 //!
-//! Not in this slice (documented, not forgotten): no burnt state (the
-//! reference's overcook), because a burnt row is a cook row whose input
-//! is a cooked item and the food to demonstrate it does not exist yet;
-//! no spoilage clock; no warmth, comfort or light radius (the sim has no
-//! temperature). The furnace smelts ore here (its `cooking.toml` rows) and
-//! the station-gated craft rows in `content/recipes.toml` still work too.
+//! A lit fire's warmth and comfort are `exposure.rs`'s (`World::near_fire`
+//! reads this module's lit bit). No spoilage clock. The furnace smelts ore
+//! here (its `cooking.toml` rows) and the station-gated craft rows in
+//! `content/recipes.toml` still work too.
 
 use core::ops::Range;
 

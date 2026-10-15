@@ -1,7 +1,7 @@
 //! Wet and cold (weather v0): the rates are the rates the content states,
 //! a roof and a fire do what they say, the road sign jacket draws the cold
 //! in, the cold's hp is exact to the point, it kills with its own cause, and
-//! it never touches a body nobody is driving.
+//! it never touches a body nobody is driving. Comfort and regen are Rust's.
 
 use sim_core::combat::CombatContent;
 use sim_core::exposure::{self, ExposureContent, Inputs};
@@ -361,43 +361,169 @@ fn the_cold_burns_food() {
     assert_eq!(cold.water, warm.water, "the cold burned water at 0%");
 }
 
-/// Comfort: warm, dry, fed and by a fire, the body mends at
-/// `comfort_hp_per_min`; hungry, or with no fire or roof, it does not.
-#[test]
-fn comfort_mends_a_warm_dry_fed_body_by_a_fire() {
+/// Rust's regen, fast: a point a second, nothing on the stomach or the
+/// comfort, no calm to wait out.
+fn regen_fixture() -> ExposureContent {
     let mut ec = ExposureContent::probe_fixture();
-    ec.comfort_hp_per_min = 60;
+    ec.fire_comfort = 500;
+    ec.company_comfort = 250;
+    ec.comfort_per_s = 200;
+    ec.regen_hp_per_min = 60;
+    ec.regen_cap_pct = 60;
+    ec.regen_food_min = 100;
+    ec.regen_water_min = 40;
+    ec.regen_chill_max = 300;
+    ec
+}
+
+fn fed() -> Player {
+    Player {
+        food: 500,
+        water: 250,
+        ..body()
+    }
+}
+
+fn calm() -> Inputs {
+    Inputs {
+        max_food: 500,
+        max_water: 250,
+        ..Inputs::default()
+    }
+}
+
+/// Comfort is Rust's campfire: half by a lit fire, a quarter more for each
+/// other body at it and an eighth for a sleeper, and nothing away from one.
+/// The meter follows its target at `comfort_per_s`.
+#[test]
+fn a_fire_gives_half_comfort_and_company_adds() {
+    let ec = regen_fixture();
+    assert_eq!(exposure::comfort_target(&ec, false, 3, 0), 0);
+    assert_eq!(exposure::comfort_target(&ec, true, 0, 0), 500);
+    assert_eq!(exposure::comfort_target(&ec, true, 1, 1), 875);
+    assert_eq!(exposure::comfort_target(&ec, true, 4, 0), 1000, "capped");
+    let mut p = fed();
     let mut ev = EventQueue::default();
-    let mended = |inp: Inputs, ev: &mut EventQueue| {
-        let mut p = body();
-        p.hp = 50;
-        for _ in 0..10 {
+    let fire = Inputs {
+        fire: true,
+        comfort: 500,
+        ..calm()
+    };
+    exposure::step(&ec, &fire, &mut p, &mut ev);
+    assert_eq!(p.comfort, 200, "it climbs, it does not jump");
+    for _ in 0..2 {
+        exposure::step(&ec, &fire, &mut p, &mut ev);
+    }
+    assert_eq!(p.comfort, 500);
+    exposure::step(&ec, &calm(), &mut p, &mut ev);
+    assert_eq!(p.comfort, 300, "and falls away from the fire");
+    assert_eq!(exposure::readout(&ec, &p).comfort_pct, 30);
+}
+
+/// Rust's heal-to: 60 % with no comfort, 80 % by a fire (50 % comfort),
+/// full at full comfort.
+#[test]
+fn comfort_lifts_how_far_the_body_mends() {
+    let ec = regen_fixture();
+    let mut ev = EventQueue::default();
+    let mended = |comfort: u16, ev: &mut EventQueue| {
+        let mut p = fed();
+        p.hp = 10;
+        let inp = Inputs { comfort, ..calm() };
+        for _ in 0..200 {
             exposure::step(&ec, &inp, &mut p, ev);
         }
         p.hp
     };
-    let fire = Inputs {
-        fire: true,
-        fed: true,
-        ..Inputs::default()
+    assert_eq!(mended(0, &mut ev), 60);
+    assert_eq!(mended(500, &mut ev), 80);
+    assert_eq!(mended(1000, &mut ev), 100);
+}
+
+/// Comfort makes it faster too: `regen_comfort_pct` at full comfort, and a
+/// full stomach adds `regen_fed_pct`.
+#[test]
+fn comfort_and_a_full_stomach_speed_the_mend() {
+    let mut ec = regen_fixture();
+    ec.regen_hp_per_min = 6;
+    ec.regen_comfort_pct = 600;
+    ec.regen_fed_pct = 50;
+    let mut ev = EventQueue::default();
+    let minute = |comfort: u16, food: u16, ev: &mut EventQueue| {
+        let mut p = fed();
+        p.food = food;
+        p.comfort = comfort;
+        p.hp = 10;
+        let inp = Inputs { comfort, ..calm() };
+        for _ in 0..60 {
+            exposure::step(&ec, &inp, &mut p, ev);
+        }
+        p.hp - 10
     };
-    assert_eq!(mended(fire, &mut ev), 60, "a second by the fire is a point");
-    let roof = Inputs {
-        roofed: true,
-        fed: true,
-        ..Inputs::default()
+    assert_eq!(minute(0, 250, &mut ev), 7, "6 × 1.25 a minute, half fed");
+    assert_eq!(minute(0, 500, &mut ev), 9, "6 × 1.5, full");
+    assert_eq!(minute(500, 500, &mut ev), 36, "× 4 by a fire");
+}
+
+/// Rust's gates: food over 100, water over 40, warm enough, and ten calm
+/// seconds after any hp lost. Mending eats.
+#[test]
+fn regen_wants_food_water_warmth_and_calm_and_eats() {
+    let mut ec = regen_fixture();
+    ec.regen_calm_s = 10;
+    ec.regen_food_pct = 100;
+    let mut ev = EventQueue::default();
+    let run = |mut p: Player, inp: Inputs, ev: &mut EventQueue| {
+        p.hp = 10;
+        for _ in 0..20 {
+            exposure::step(&ec, &inp, &mut p, ev);
+        }
+        p
     };
-    assert_eq!(mended(roof, &mut ev), 60, "a roof is comfort too");
-    let hungry = Inputs {
-        fire: true,
-        ..Inputs::default()
+    assert_eq!(
+        run(fed(), calm(), &mut ev).hp,
+        21,
+        "ten calm seconds, then a point a second"
+    );
+    let hungry = Player { food: 100, ..fed() };
+    assert_eq!(
+        run(hungry, calm(), &mut ev).hp,
+        10,
+        "100 food is not over 100"
+    );
+    let thirsty = Player { water: 40, ..fed() };
+    assert_eq!(run(thirsty, calm(), &mut ev).hp, 10);
+    let cold = Inputs {
+        night: true,
+        ..calm()
     };
-    assert_eq!(mended(hungry, &mut ev), 50, "a hungry body mended");
-    let open = Inputs {
-        fed: true,
-        ..Inputs::default()
+    let chilled = Player {
+        chill: 500,
+        ..fed()
     };
-    assert_eq!(mended(open, &mut ev), 50, "a body in the open mended");
+    assert_eq!(run(chilled, cold, &mut ev).hp, 10, "too cold to mend");
+    let downed = Player {
+        wounded: true,
+        ..fed()
+    };
+    assert_eq!(run(downed, calm(), &mut ev).hp, 10);
+
+    // A hit restarts the wait.
+    let mut p = fed();
+    p.hp = 50;
+    p.calm = 100;
+    sim_core::combat::hurt_unreduced(&mut p, 1);
+    assert_eq!(p.calm, 0);
+
+    // The bill: a second's normal drain on top for each second mending
+    // (`regen_food_pct` 100), and nothing for a body past its cap.
+    let mended = run(fed(), calm(), &mut ev);
+    assert_eq!(mended.food_acc, 11 * 500 * sim_core::limits::TICK_HZ);
+    let mut whole = fed();
+    for _ in 0..20 {
+        exposure::step(&ec, &calm(), &mut whole, &mut ev);
+    }
+    assert_eq!(whole.food_acc, 0, "a whole body does not pay");
 }
 
 /// The air's fixture (climate v0): cold under 14 °C, hot over 30 °C.
