@@ -172,7 +172,8 @@ pub struct PropAssets {
     food_box: Handle<Mesh>,
     car_wreck: Handle<Mesh>,
     tire_stack: Handle<Mesh>,
-    /// The ground pickups (`Occupant::StonePile` …): one small blob for the
+    /// The ground pickups' massing (`Occupant::StonePile` …), where their
+    /// held models ([`PICKUP_GLB`]) did not load: one small blob for the
     /// stone and ore lumps (their ore materials tell them apart), a stack of
     /// logs, and a cluster of mushrooms.
     pile: Handle<Mesh>,
@@ -207,6 +208,8 @@ pub struct PropAssets {
     tier_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     /// The roadside junk's models, row for row with [`ROADSIDE_GLB`].
     roadside_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 5],
+    /// The ground pickups' models, row for row with [`PICKUP_GLB`].
+    pickup_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 5],
     /// The ziggurat's green, blue and elite crates: the supply crate's shape
     /// in painted steel, so a tier reads at a glance.
     tier_crates: [Handle<StandardMaterial>; 3],
@@ -1481,6 +1484,9 @@ pub struct PropModels {
     /// The roadside junk's models, row for row with [`ROADSIDE_GLB`]. Empty
     /// on a headless build, which then draws the box massing.
     roadside: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// The ground pickups' models, row for row with [`PICKUP_GLB`]. Empty on
+    /// a headless build, which then draws the lumps and boxes.
+    pickup: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
 
 /// The ziggurat's green, blue and elite crates, built by `ci/prop_kit.py`:
@@ -1506,6 +1512,19 @@ pub const ROADSIDE_GLB: [(Occupant, &str); 5] = [
     (Occupant::FoodCrate, "models/prop/food_crate.glb"),
     (Occupant::CarWreck, "models/prop/car_wreck.glb"),
     (Occupant::TireStack, "models/prop/tire_stack.glb"),
+];
+
+/// The ground pickups draw the item they give: the held model
+/// (`ui::hold::HELD_MODELS`), the same file the hand and a dropped stack draw,
+/// scaled up from hand size to a pile on the ground. `(occupant, model,
+/// scale)`. The models stand on their own base, so a pickup's lift is 0
+/// where its lump's was the lump's half-height ([`archetype_lift`]).
+pub const PICKUP_GLB: [(Occupant, &str, f32); 5] = [
+    (Occupant::StonePile, "models/held/stone.glb", 2.2),
+    (Occupant::MetalPile, "models/held/metal_ore.glb", 2.4),
+    (Occupant::SulfurPile, "models/held/sulfur_ore.glb", 2.4),
+    (Occupant::WoodPile, "models/held/wood.glb", 1.8),
+    (Occupant::MushroomPatch, "models/held/mushrooms.glb", 1.8),
 ];
 
 fn load_model(
@@ -1559,11 +1578,22 @@ impl PropModels {
             .iter()
             .map(|(_, path)| load_model(server, path))
             .collect();
+        let pickup = PICKUP_GLB
+            .iter()
+            .map(|(_, path, _)| load_model(server, path))
+            .collect();
         Self {
             pools,
             tier,
             roadside,
+            pickup,
         }
+    }
+
+    /// The pickup model for `o`, or `None` for the lump.
+    pub fn pickup(&self, o: Occupant) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        let i = PICKUP_GLB.iter().position(|(r, _, _)| *r == o)?;
+        self.pickup.get(i).cloned()
     }
 
     /// The roadside model for `o`, or `None` for the massing.
@@ -2051,6 +2081,7 @@ pub fn assets(
         ],
         tier_models: [0, 1, 2].map(|i| models.tier_crate(i)),
         roadside_models: ROADSIDE_GLB.map(|(o, _)| models.roadside(o)),
+        pickup_models: PICKUP_GLB.map(|(o, _, _)| models.pickup(o)),
         tier_crates: [
             Color::srgb(0.22, 0.55, 0.28),
             Color::srgb(0.20, 0.36, 0.78),
@@ -2683,7 +2714,10 @@ pub fn spawn_slot(
     // The lift comes off `archetype_lift` rather than being written here, so
     // the number the draw uses and the number `tests/greybox.rs` checks
     // against `OCCUPANT_TOP_M` are the same number.
-    let lift = archetype_lift(slot.occupant);
+    let mut lift = archetype_lift(slot.occupant);
+    // How much bigger than its file the mesh draws: 1 but for a pickup's
+    // hand-sized model (`PICKUP_GLB`).
+    let mut grow = 1.0;
     // What a shrub cell grows, off its biome (`plants::scenery`).
     let scenery = plants::scenery(seed, slot, key);
     let (mesh, material) = match slot.occupant {
@@ -2751,11 +2785,30 @@ pub fn spawn_slot(
         },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
-        Occupant::StonePile => (a.pile.clone(), a.ore_stone.clone()),
-        Occupant::MetalPile => (a.pile.clone(), a.ore_metal.clone()),
-        Occupant::SulfurPile => (a.pile.clone(), a.ore_sulfur.clone()),
-        Occupant::WoodPile => (a.wood_pile.clone(), a.wood.clone()),
-        Occupant::MushroomPatch => (a.mushrooms.clone(), a.painted.clone()),
+        Occupant::StonePile
+        | Occupant::MetalPile
+        | Occupant::SulfurPile
+        | Occupant::WoodPile
+        | Occupant::MushroomPatch => {
+            let i = PICKUP_GLB
+                .iter()
+                .position(|(o, _, _)| *o == slot.occupant)
+                .unwrap_or(0);
+            match &a.pickup_models[i] {
+                Some(m) => {
+                    lift = 0.0;
+                    grow = PICKUP_GLB[i].2;
+                    m.clone()
+                }
+                None => match slot.occupant {
+                    Occupant::StonePile => (a.pile.clone(), a.ore_stone.clone()),
+                    Occupant::MetalPile => (a.pile.clone(), a.ore_metal.clone()),
+                    Occupant::SulfurPile => (a.pile.clone(), a.ore_sulfur.clone()),
+                    Occupant::WoodPile => (a.wood_pile.clone(), a.wood.clone()),
+                    _ => (a.mushrooms.clone(), a.painted.clone()),
+                },
+            }
+        }
         Occupant::OilBarrel
         | Occupant::RoadSign
         | Occupant::FoodCrate
@@ -2794,7 +2847,7 @@ pub fn spawn_slot(
     let transform = Transform {
         translation: Vec3::new(slot.x, slot.y + lift * slot.scale - sink, slot.z),
         rotation: Quat::from_rotation_y(yaw),
-        scale: Vec3::splat(slot.scale),
+        scale: Vec3::splat(slot.scale * grow),
     };
     // **Every gatherable node carries the harvested bit, not just trees.**
     // `gather::node_index` covers the nodes and the two picked plants, and a
@@ -2896,7 +2949,8 @@ pub fn spawn_slot(
         }
         if let Some(span) = regrow {
             c.entity(id).insert(Grow {
-                base: slot.scale,
+                // The drawn scale, which is a pickup's model scale too.
+                base: transform.scale.x,
                 span,
                 fruit: false,
             });
