@@ -586,6 +586,9 @@ impl Session {
         // `prove` block below for why that inversion is the whole fix.
         sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
     ) -> Result<Self, JoinError> {
+        if net::handshake::server_host(server).is_none() {
+            return Err(format!("{server:?} is not a server address (host:port)").into());
+        }
         let url = format!("https://{server}");
         let connection = endpoint
             .connect(&url)
@@ -797,6 +800,12 @@ impl Session {
         use wasm_bindgen_futures::{spawn_local, JsFuture};
         use web_sys::WritableStreamDefaultWriter;
 
+        // `host:port` and nothing a URL parser could read another way: the
+        // page signs for the host it believes it dials, so the two must be
+        // the same string (`net::handshake::server_host`).
+        if net::handshake::server_host(server).is_none() {
+            return Err(format!("{server:?} is not a server address (host:port)").into());
+        }
         let transport = net::web::open(server, cert_hash).await?;
 
         let bidi = JsFuture::from(transport.create_bidirectional_stream())

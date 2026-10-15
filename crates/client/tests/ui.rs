@@ -3391,6 +3391,8 @@ fn only_hosts_under_the_official_domain_are_official() {
     for addr in [
         "evilelopros.com:61234",
         "elopros.com.evil.net:61234",
+        "evil.example/.elopros.com:61234",
+        "evil.example:4433/.elopros.com:1",
         ".elopros.com:61234",
         "game.elopros.com",
         "127.0.0.1:4433",

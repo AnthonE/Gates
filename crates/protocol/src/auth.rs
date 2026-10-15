@@ -300,6 +300,28 @@ pub fn siwe_message(
     issued_at: u64,
     out: &mut [u8; SIWE_MESSAGE_MAX],
 ) -> usize {
+    siwe_message_for(domain, domain, address, game, nonce, issued_at, out)
+}
+
+/// [`siwe_message`] with the shard named in the `URI:` line, where a page
+/// signs its own name in the domain line (`client::net::handshake::page_domain`).
+///
+/// The domain line is the page's, because a wallet compares it with the
+/// page that asked; the URI is the resource being signed in to (EIP-4361
+/// allows it to differ), and it is what binds the proof to ONE shard. Without
+/// it a page on `elopros.com` signed the same bytes for every shard under
+/// that name, so any one of them could pass a player's sign-in on to
+/// another. `uri_host == domain` is [`siwe_message`] byte for byte — the
+/// launcher's `prove` form, which a desktop client signs.
+pub fn siwe_message_for(
+    domain: &str,
+    uri_host: &str,
+    address: &str,
+    game: &str,
+    nonce: &[u8; NONCE_BYTES],
+    issued_at: u64,
+    out: &mut [u8; SIWE_MESSAGE_MAX],
+) -> usize {
     let mut w = TextWriter { out, at: 0 };
     w.s(domain);
     w.s(" wants you to sign in with your Ethereum account:\n");
@@ -307,7 +329,7 @@ pub fn siwe_message(
     w.s("\n\nProve your identity to play ");
     w.s(game);
     w.s(". This signature authorises nothing and moves no funds.\n\nURI: https://");
-    w.s(domain);
+    w.s(uri_host);
     w.s("\nVersion: 1\nChain ID: ");
     w.num(CHAIN_ID);
     w.s("\nNonce: ");
@@ -338,8 +360,8 @@ fn keccak256(data: &[u8]) -> [u8; 32] {
 }
 
 /// Ceiling for [`siwe_message`]: the fixed text is ~220 bytes, the address
-/// 42, the nonce 64 hex, the timestamp ≤ 20, and `domain` appears twice and
-/// is capped by [`DOMAIN_MAX`].
+/// 42, the nonce 64 hex, the timestamp ≤ 20, and `domain` and the URI host
+/// are each capped by [`DOMAIN_MAX`].
 pub const SIWE_MESSAGE_MAX: usize = 512;
 /// Longest shard domain that fits the message above with room to spare.
 pub const DOMAIN_MAX: usize = 64;

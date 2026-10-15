@@ -51,6 +51,7 @@ mod pitch_lut;
 pub mod poles;
 pub mod probe;
 pub mod ranged;
+pub mod reach;
 pub mod research;
 pub mod rewind;
 pub mod rng;
