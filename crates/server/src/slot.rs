@@ -56,6 +56,14 @@ pub fn generation_of(word: u32) -> u32 {
 /// the sim thread.
 pub struct SlotTable {
     words: Box<[AtomicU32]>,
+    /// Ticks published: bumped by the sim thread once per tick, after that
+    /// tick's snapshots, events and voice are on the rings ([`Self::publish`]).
+    /// An atomic, so the sim side stays lock-free (L3); `net.rs`'s
+    /// `wake_relay` carries it to the writer tasks over [`Self::wake`].
+    published: AtomicU64,
+    /// What the writer tasks wait on instead of each polling its rings
+    /// every 2 ms. Touched by tokio tasks only, never the sim thread.
+    wake: tokio::sync::watch::Sender<u64>,
     /// Why a slot was sent away: `generation << 9 | 0x100 | refuse code`,
     /// written before the leave (`mark_leaving_why`) and read by the event
     /// writer, which posts it as the session's last message.
@@ -70,8 +78,30 @@ impl SlotTable {
         why.resize_with(slots, || AtomicU64::new(0));
         Self {
             words: v.into_boxed_slice(),
+            published: AtomicU64::new(0),
+            wake: tokio::sync::watch::Sender::new(0),
             why: why.into_boxed_slice(),
         }
+    }
+
+    /// Sim thread only: this tick's frames are on the rings.
+    pub fn publish(&self) {
+        self.published.fetch_add(1, Ordering::Release);
+    }
+
+    /// Ticks published so far ([`Self::publish`]).
+    pub fn published(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
+    }
+
+    /// The relay's half: wake every writer for tick count `n`.
+    pub fn wake_writers(&self, n: u64) {
+        self.wake.send_replace(n);
+    }
+
+    /// A writer's half: changes each time the relay wakes the writers.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.wake.subscribe()
     }
 
     pub fn load(&self, slot: usize) -> u32 {
@@ -240,7 +270,21 @@ pub struct Connect {
     /// An agent's self-declared name (`--agent-name`), its tag's name until
     /// the platform names its wallet. Empty for a person or a spectator.
     pub name: protocol::Name,
+    /// What the platform last said about this wallet, when it said it inside
+    /// the read cooldown (`net.rs` `PlatformReads`): stated WITH the join, so
+    /// it can never reach the sim before the body it is about. A guest's
+    /// skins are the config's, said here too. Empty ⇒ nothing remembered
+    /// applies: a read was started, is still out, or is owed for when the
+    /// cooldown has run, and lands on the skins/faces rings.
+    pub said: Said,
     pub link: Link,
+}
+
+/// A joiner's remembered platform answers (`Connect::said`).
+#[derive(Clone, Copy, Default)]
+pub struct Said {
+    pub skins: Option<sim_core::skin::SkinSet>,
+    pub face: Option<(protocol::Name, u32)>,
 }
 
 /// Accept→sim: what the platform said the player in `slot` owns
@@ -318,6 +362,23 @@ pub struct WorldMsg {
     /// `ShardCore` (which is server-side) and rides along here.
     pub idents: Vec<(PlayerKey, u32)>,
 }
+
+/// Sim→storage thread: a small text file the shard keeps beside the world —
+/// the gift ledger (`gifts.rs`), the teams (`team.rs`) — whole, ready to
+/// write. Moved like [`WorldMsg`]: the `String` is a pointer on the ring and
+/// the store thread frees it after the write. Built only when the file
+/// changed, never per tick, and each is the whole file, so a later one to the
+/// same path supersedes an earlier one and FIFO order lands the newest last.
+pub struct FileMsg {
+    pub path: std::path::PathBuf,
+    pub text: String,
+}
+
+/// Side files in flight: a burst of gifts between the store thread's polls.
+/// Overflow policy: **leave it dirty** — the producer checks for room before
+/// it builds the text and tries again on its next pass (a gift the next
+/// tick, the teams the next world save).
+pub const FILE_RING_CAP: usize = 8;
 
 /// Storage→sim: an emptied world buffer, returning to the pool.
 pub struct WorldDone {

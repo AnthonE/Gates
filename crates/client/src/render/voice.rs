@@ -31,11 +31,6 @@ use super::hud::Toast;
 use super::settings::Settings;
 use super::{Eye, Net};
 
-/// The talk keys: hold one to be heard.
-pub const TALK_KEYS: [KeyCode; 1] = [KeyCode::Backquote];
-/// The talk buttons: a mouse's side buttons, for a hand that stays on WASD.
-pub const TALK_BUTTONS: [MouseButton; 2] = [MouseButton::Back, MouseButton::Forward];
-
 /// Where a voice is heard from to nothing, metres: the shard's radius.
 const RADIUS_M: f32 = VOICE_RADIUS_CM as f32 / 100.0;
 /// Full volume inside this, metres.
@@ -148,9 +143,14 @@ impl Voice {
     }
 }
 
-/// Is a talk key or button held?
-pub fn talk_held(keys: &ButtonInput<KeyCode>, mouse: &ButtonInput<MouseButton>) -> bool {
-    TALK_KEYS.iter().any(|&k| keys.pressed(k)) || TALK_BUTTONS.iter().any(|&b| mouse.pressed(b))
+/// Is a talk key or button held? The keys are the player's
+/// (`binds::Action::Talk`: `` ` `` and a mouse side button by default).
+pub fn talk_held(
+    binds: &super::binds::Binds,
+    keys: &ButtonInput<KeyCode>,
+    mouse: &ButtonInput<MouseButton>,
+) -> bool {
+    binds.pressed(super::binds::Action::Talk, keys, mouse)
 }
 
 /// The talking half: the key, the microphone, the encoder, the send.
@@ -163,11 +163,12 @@ pub fn talk(
     chat: Option<Res<Chat>>,
     mut hud: ResMut<VoiceHud>,
     mut toast: ResMut<Toast>,
+    binds: Res<super::binds::Binds>,
 ) {
     let v = &mut *voice;
     // A watcher has no voice, and a line being typed owns the keyboard.
     let can = net.session.watching.is_none() && !chat.is_some_and(|c| c.open());
-    let held = can && talk_held(&keys, &mouse);
+    let held = can && talk_held(&binds, &keys, &mouse);
     if held && v.mic.is_none() {
         v.mic = Some(mic::Mic::open());
     }

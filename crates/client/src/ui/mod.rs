@@ -11,7 +11,8 @@
 //! `render` feature and no GPU** — which is also why this module is not
 //! feature-gated.
 //!
-//! The three panels, and what each owes:
+//! The first three panels, and what each owes (the rest of the modules below
+//! follow the same rule):
 //!
 //! - [`slots`] — the inventory grid and the container panel. Owns the
 //!   move verb's marshalling, which `CLAUDE.md` names as the most
@@ -26,7 +27,7 @@
 //!
 //! Nothing here reads a clock, opens a socket, or holds a handle to
 //! anything. A panel that wants one of those asks the render layer for it.
-
+//!
 //! [`interact`] is the fourth and is not a panel: it is what the crosshair
 //! is pointed at, and it lives here because a pick is arithmetic too — the
 //! browser learned its `t > 0` guard by probing the resolver, which is only

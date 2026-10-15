@@ -78,6 +78,7 @@ REFUSAL = {
     "admin_refused",
     "aim_stale_refused",
     "favour_disagree",
+    "favour_playout_high",
     "spectate_input_refused",
     "spectate_actions_refused",
 }

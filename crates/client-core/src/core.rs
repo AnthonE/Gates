@@ -1460,15 +1460,17 @@ struct InputState {
 // the second one is (the interp-delay lesson, re-paid). Read at the point
 // of use. `INTERP_DELAY_TICKS` (4) stays the starting point, so a fresh
 // session feels exactly what shipped before the delay learned to move.
+// The server reads the two below by path to bound the playout a datagram
+// reports (`server::stats::PLAYOUT_BOUND_DECAY_TICKS`, `JITTER_K_WHOLE`).
 /// Delay above the floor per unit of smoothed jitter: two jitters of
 /// margin, the classic adaptive-playout sizing (a sample later than the
 /// mean by one jitter is ordinary; by two is the tail worth buffering).
-const PLAYOUT_JITTER_K: f64 = 2.0;
+pub const PLAYOUT_JITTER_K: f64 = 2.0;
 /// How fast the playout delay may move, in ticks per second. A delay
 /// change slides every remote body on screen; half a tick per second is
 /// 16 ms of slide per second — beneath notice, and fast enough to double
 /// the buffer inside a rough patch's first seconds.
-const PLAYOUT_SLEW_PER_S: f64 = 0.5;
+pub const PLAYOUT_SLEW_PER_S: f64 = 0.5;
 /// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
 const JITTER_GAIN: f64 = 1.0 / 16.0;
 

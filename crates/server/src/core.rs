@@ -1865,6 +1865,7 @@ impl ShardCore {
         // Read before the client is borrowed: `world` and `clients` are two
         // fields of one `self`, the `tick` loop's problem one method over.
         let now = self.world.tick as u16;
+        let tick = self.world.tick; // the playout bound's decay clock, full width
         let c = &mut self.clients[slot];
         if !c.connected {
             return;
@@ -1901,7 +1902,8 @@ impl ShardCore {
         });
         // The playout report is a level, not an edge: latest datagram
         // wins, exactly as the nudge and the gauges are levels in every
-        // header going the other way. Clamped at the favour mint, not
+        // header going the other way. Clamped to the rails and capped at
+        // the measured bound at the favour mint (`priced_playout`), not
         // here — the mint is the one place the claim buys anything.
         c.reported_playout = dg.playout_ticks;
         // A spectator's datagram is its acks and nothing else. The net side
@@ -1912,9 +1914,19 @@ impl ShardCore {
         if slot >= MAX_PLAYERS {
             return;
         }
+        // Frames this datagram delivered for the first time: a client whose
+        // render frame spans several ticks sends them together, and that
+        // burst is jitter its own estimator reads (`note_ack_age`).
+        let mut fresh = 0;
         for f in dg.frames() {
-            c.push_frame(*f, view);
+            if c.push_frame(*f, view) {
+                fresh += 1;
+            }
         }
+        // The playout bound, read off the same `view` the frames were just
+        // stamped with, so the bound and the favour are two readings of one
+        // number. After the spectator return: a seat never mints.
+        c.note_ack_age(tick, view.map(|v| now.wrapping_sub(v)), fresh);
     }
 
     /// Whether this client can accept another C→S action this tick — the
@@ -2080,7 +2092,16 @@ impl ShardCore {
                     // staleness above it: a frame the buffer had no room
                     // for spends no favour, and counting one would report
                     // help nobody received.
-                    let favour = stats::favour_for(now, view, c.reported_playout);
+                    // The claim, capped at what this connection's own ack
+                    // history supports (`priced_playout`). Counted only
+                    // where the cap cost something: favour 0 is no
+                    // measurable aim, and the ceiling would have bought
+                    // the claim no more.
+                    let (playout, capped) = c.priced_playout();
+                    let favour = stats::favour_for(now, view, playout);
+                    if capped && favour > 0 && favour < sim_core::limits::REWIND_MAX_TICKS {
+                        ShardStats::bump(&stats.favour_playout_high);
+                    }
                     stats.record_favour(favour);
                     // A throttle tick carries BOTH consumed frames — the
                     // older must still move the body (`InputPair`'s doc:
@@ -6548,14 +6569,16 @@ impl ShardCore {
                     // it again here would be ~60 `noise2` evaluations per
                     // open panel per tick — the cold-scatter spike
                     // `occupy.rs` exists to refuse, in the one loop that
-                    // runs for every connected client. An unopened cell
+                    // runs for every connected client. It kept the floor
+                    // the crate stands on (`qy`), so the storey and the
+                    // line are asked here without paying it again. An unopened cell
                     // resolves to nothing, which is correct: there is no
                     // container there yet.
                     CONT_WORLD => self
                         .world
                         .world_conts
                         .index_of(handle)
-                        .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                        .filter(|&i| self.world.world_cont_reachable(i, c.own_wslot)),
                     // A sleeper's pack: the move verb's own resolution, so
                     // a sleeper that woke, died or was evicted shuts it.
                     CONT_BODY => self.world.body_loot_index(handle, c.own_wslot),

@@ -1038,6 +1038,7 @@ impl Harness {
                 harvested: &w.slot_lives,
                 cache: &mut cache,
             },
+            w.pieces.cols(),
         )
     }
 

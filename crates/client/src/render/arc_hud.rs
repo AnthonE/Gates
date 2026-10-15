@@ -86,6 +86,7 @@ pub fn setup(mut commands: Commands) {
             // Where the rest of it is: the banner is one work, the ISLAND
             // page every work, the standings and the journal.
             b.spawn((
+                super::binds::Keyed("[O] ISLAND".into()),
                 Text::new("[O] ISLAND"),
                 super::ui::font_bold(10.0),
                 TextColor(Color::srgba(0.90, 0.88, 0.82, 0.45)),

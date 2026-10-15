@@ -373,6 +373,51 @@ pub fn browser_fullscreen() -> Option<bool> {
     }
 }
 
+/// Frames the app draws before the page's handoff overlay is taken down.
+/// The overlay sits above the canvas until then, so the first frames (a
+/// surface that has been configured but not drawn, a clear with no UI on it
+/// yet) are never what the player sees.
+pub const REVEAL_FRAMES: u32 = 3;
+
+/// `Update` on wasm32: once this app has drawn [`REVEAL_FRAMES`] frames,
+/// tell the page (`window.gatesShown()`), which fades its handoff out. If
+/// the page has no such hook, hide `#handoff` directly. Fires once.
+pub fn reveal(mut frames: Local<u32>) {
+    if *frames > REVEAL_FRAMES {
+        return;
+    }
+    *frames += 1;
+    if *frames > REVEAL_FRAMES {
+        #[cfg(target_arch = "wasm32")]
+        tell_page_shown();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tell_page_shown() {
+    use wasm_bindgen::{JsCast, JsValue};
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let hook = js_sys::Reflect::get(&window, &JsValue::from_str("gatesShown"))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
+    match hook {
+        Some(f) => {
+            let _ = f.call0(&window);
+        }
+        None => {
+            if let Some(el) = window
+                .document()
+                .and_then(|d| d.get_element_by_id("handoff"))
+                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                el.set_hidden(true);
+            }
+        }
+    }
+}
+
 /// `OnEnter(Screen::Menu)` on wasm32: there is no menu to draw, so the page
 /// takes over, told why (`Menu::status` — "left <shard>", "left while the
 /// world was loading", the disconnect's reason).

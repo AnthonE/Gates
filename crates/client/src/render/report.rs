@@ -62,9 +62,9 @@ use super::audio::Diag;
 use super::screen::Screen;
 use super::Net;
 
-/// The key. `F7` because the two function keys this client already binds are
-/// `F3` (`collider_debug`) and `F12` (`shot`), and `F7` sits with neither a
-/// debug view nor a screenshot in any game a player has come from.
+/// The key. `F7` because it sits with neither a debug view (`F3`, `F4`) nor
+/// a screenshot (`F12`) in any game a player has come from. Reserved from
+/// binds (`binds::RESERVED`).
 pub const KEY: KeyCode = KeyCode::F7;
 
 /// How long the result line stays up, in seconds.
@@ -223,14 +223,6 @@ pub fn setup(mut commands: Commands) {
     ));
 }
 
-/// Free the pointer for typing.
-pub fn free_cursor(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
-}
-
 /// `F7` opens; `Tab` changes the kind; `Enter` sends; `Esc` abandons.
 ///
 /// `keyboard` is `ResMut` for `chat::keys`' reason: **a key this consumed must
@@ -274,7 +266,7 @@ pub fn keys(
         }
         if keyboard.just_pressed(KEY) {
             reports.open_composer();
-            free_cursor(&mut cursor);
+            super::ui::free_cursor(&mut cursor);
             keyboard.clear_just_pressed(KEY);
         }
         // Not open: drain, so a keystroke pressed with the composer shut does
