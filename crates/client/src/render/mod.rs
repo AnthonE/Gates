@@ -2036,7 +2036,9 @@ impl Plugin for GatesRenderPlugin {
                 // The interface: the click, the hover tick, the panels' own.
                 (audio::ui_click, audio::ui_hover, audio::panel_sounds).chain(),
                 audio::hands,
-                audio::fires,
+                // The counter after the blight's moment is read, beside the
+                // fires (the tuple is at Bevy's limit).
+                (audio::fires, audio::geiger.after(blight::update)).chain(),
                 audio::bed,
                 audio::pump,
             )

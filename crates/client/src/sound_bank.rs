@@ -105,6 +105,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::ItemDrop, takes!("kenney", "item_drop", 0)),
     (Cue::CraftStart, takes!("kenney", "craft_start", 0 1)),
     (Cue::MapPin, takes!("kenney", "map_pin", 0)),
+    (Cue::Geiger, takes!("pd", "geiger", 0 1 2 3)),
     (Cue::BowDraw, takes!("freesound", "bow_draw", 0 1)),
     (Cue::Reload, takes!("freesound", "reload", 0 1)),
     (Cue::Ricochet, takes!("freesound", "ricochet", 0 1 2 3)),
@@ -220,7 +221,8 @@ pub fn synth_takes(cue: Cue) -> u8 {
         | Cue::StepWater
         | Cue::Eat
         | Cue::BushPick
-        | Cue::Brush => 3,
+        | Cue::Brush
+        | Cue::Geiger => 3,
         Cue::Blast | Cue::Collapse => 2,
         _ => 1,
     }

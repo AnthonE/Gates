@@ -440,6 +440,8 @@ pub struct Sound {
     /// The forest layer's clock (`sound::birds`), driven by [`bed`], which
     /// already has the cover score and the props to perch on.
     pub birds: Birds,
+    /// The Verdigris counter's clock (`sound::geiger`), driven by [`geiger`].
+    pub geiger: crate::sound::geiger::Geiger,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -667,6 +669,9 @@ pub fn teardown(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>, mut last_h
     // is the same rule and the same reason.
     sound.voices.reset();
     sound.birds.reset();
+    // And the counter's: a dose carried over would read the next island's
+    // first reading as a bite and burst on the join.
+    sound.geiger.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
     // The waterline and the snapshot go with it, and the second one is the
@@ -868,6 +873,38 @@ pub fn fires(
     };
     sound.play(Request::at(Cue::FireCrackle, at.to_array()));
     next.0 = 0.45 + 0.75 * r;
+}
+
+/// The Verdigris counter in your ear: clicks at the rate of the green where
+/// you stand (`sound::geiger`), and a burst when your dose jumps. Quiet on
+/// the beach, out of the green, and when you are dead.
+pub fn geiger(
+    net: NonSend<Net>,
+    world: Res<super::WorldId>,
+    feed: Res<super::feed::Feed>,
+    blight: Option<Res<super::blight::Blight>>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+) {
+    let core = &net.session.core;
+    if core.dead {
+        sound.geiger.reset();
+        return;
+    }
+    // The meter's reading arrived this frame: a jump in it is a bite heard.
+    if feed.applied2 & client_core::core::APPLIED2_EXPOSURE != 0 {
+        sound.geiger.dose(core.fel_pct);
+    }
+    let [x, feet, z] = core.predict.render_position();
+    let depth = blight
+        .as_deref()
+        .and_then(|b| b.now.as_ref())
+        .map_or(0.0, |now| {
+            crate::sound::geiger::field(now, world.seed, &world.haven, x, z, feet)
+        });
+    if sound.geiger.due(depth, time.delta_secs()) {
+        sound.play(Request::own(Cue::Geiger));
+    }
 }
 
 /// One remote body's step odometer — the same `sound::steps::Steps` the
