@@ -726,6 +726,19 @@ impl Harvested for HarvestedSet {
         }
     }
 
+    /// A tree nobody felled grows with the wild stand (tree ages v0), off
+    /// the seed, as the server's `SlotLives::tree_pm` does.
+    fn tree_pm(&self, seed: u64, cx: u16, cz: u16) -> u16 {
+        let key = cell_key(cx, cz);
+        if self.contains(key) {
+            return 0;
+        }
+        match self.growth(key) {
+            Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
+            None => sim_core::gather::wild_pm(seed, cx, cz, self.now as u64),
+        }
+    }
+
     /// A felled tree's stump stands until the wire says it was grubbed.
     fn stump_standing(&self, cx: u16, cz: u16) -> bool {
         let key = cell_key(cx, cz);
@@ -1948,6 +1961,10 @@ pub struct ClientCore {
     pub cold_hurting: bool,
     /// Own comfort, per cent (Rust's; a lit fire gives 50).
     pub comfort_pct: u8,
+    /// The heat the owner is in, per cent, and the air they stand in, whole
+    /// °C (climate v0) — what the server's exposure step last read.
+    pub heat_pct: u8,
+    pub air_c: i8,
     /// Until when you are hostile, the low 32 bits of the server tick
     /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
     pub hostile_until: u32,
@@ -2314,6 +2331,8 @@ impl ClientCore {
             cold_pct: 0,
             cold_hurting: false,
             comfort_pct: 0,
+            heat_pct: 0,
+            air_c: 0,
             hostile_until: 0,
             gate_spawn_at: 0,
             wounded_fact: None,
@@ -3718,13 +3737,17 @@ impl ClientCore {
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
                 comfort_pct,
+                air_c,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
                 self.cold_hurting = hurting;
                 self.comfort_pct = comfort_pct;
+                self.heat_pct = heat_pct;
+                self.air_c = air_c;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
             EventMsg::Recovered { chance_pm, hp } => {

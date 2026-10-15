@@ -442,6 +442,14 @@ pub fn node_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<NodeHit> {
     })
 }
 
+/// What `E` opens in the scatter: a world container with a loot table
+/// (`worldcont::table_of`). One predicate for [`occupant_cast`]'s two
+/// askers, the human client's `[E] OPEN` prompt and the agent player, so
+/// they cannot disagree about what a crate is.
+pub fn openable(o: Occupant) -> bool {
+    crate::worldcont::table_of(o).is_some()
+}
+
 /// The plant a hand reaching along `ray` would pick (`E`, `gather::pick`):
 /// the nearest occupant the ray enters, if that is a grown berry bush or
 /// hemp — a trunk, a node or a crate in front of it is in the way, and a
@@ -518,7 +526,9 @@ pub fn occupant_cast(
             // A sapling is struck at its own size (tree growth v0): the
             // full-size cylinder above is the cheap outer test.
             let mut stump = false;
-            let (slot, t_in) = match occ.harvested.standing_pm(cx as u16, cz as u16) {
+            let pm =
+                crate::occupy::slot_pm(occ.harvested, seed, cx as u16, cz as u16, slot.occupant);
+            let (slot, t_in) = match pm {
                 // A felled tree's stump is struck at its own height: the
                 // trunk's radius, cut off at `STUMP_TOP_M`.
                 0 if slot.occupant == Occupant::Tree

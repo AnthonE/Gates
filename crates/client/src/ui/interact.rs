@@ -1979,7 +1979,7 @@ fn nearest_animal(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::MobHit> {
 /// barrel and `worldcont::table_of` claims these two — and this is those
 /// two predicates read from the client side, never a third opinion.
 fn openable(o: Occupant) -> bool {
-    sim_core::worldcont::table_of(o).is_some()
+    melee::openable(o)
 }
 
 /// What `E` would OPEN in the scatter, or `Occupant::None` for nothing.

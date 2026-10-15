@@ -47,7 +47,11 @@ fn lone_tree() -> (Slot, (f32, f32), Aim) {
     for cz in 40..216i32 {
         for cx in 40..216i32 {
             let s = terrain::scatter(SEED, &table, &haven, cx, cz);
-            if s.occupant != Occupant::Tree {
+            // Grown at the wipe (tree ages v0), so the first chop is a whole
+            // tree of its size class.
+            if s.occupant != Occupant::Tree
+                || sim_core::gather::wild_grown_at(SEED, cx as u16, cz as u16) != 0
+            {
                 continue;
             }
             let (px, pz) = (s.x - 1.2, s.z);
@@ -158,6 +162,14 @@ fn cell(s: &Slot) -> (u16, u16) {
     ((s.x / CELL_SIZE) as u16, (s.z / CELL_SIZE) as u16)
 }
 
+/// The swings a tree of `slot`'s size class takes at `pm` of its size: its
+/// row's hits at the size it is struck at (`gather::tree_wood_pm`, on the
+/// slot `occupy::grown` hands the swing), rounded up.
+fn hits_at(hits: u16, slot: &Slot, pm: u16) -> u32 {
+    let struck = sim_core::occupy::grown(slot, pm).scale;
+    (hits as u32 * sim_core::gather::tree_wood_pm(struck)).div_ceil(1000)
+}
+
 #[test]
 fn a_sapling_grows_in_its_steps_and_never_shrinks() {
     let grown_at = 1_000_000;
@@ -183,26 +195,27 @@ fn a_young_tree_pays_and_falls_at_its_own_size() {
     let (cx, cz) = cell(&slot);
     let mut w = world_at(pos);
     let tree = w.gather.nodes[0];
+    let whole = hits_at(tree.hits, &slot, 1000);
     assert_eq!(
         chop(&mut w, aim),
-        (tree.hits as u32, (tree.hits * tree.hand_yield) as u32),
-        "a grown tree pays its whole row"
+        (whole, whole * tree.hand_yield as u32),
+        "a grown tree pays its size class's row"
     );
     sprout(&mut w, cx, cz);
 
     // Fresh, it is 15% of the tree: one swing, one swing's wood.
     assert_eq!(w.slot_lives.standing_pm(cx, cz), SAPLING_PM);
-    let hits = (tree.hits as u32 * SAPLING_PM as u32).div_ceil(1000);
+    let hits = hits_at(tree.hits, &slot, SAPLING_PM);
     assert_eq!(chop(&mut w, aim), (hits, hits * tree.hand_yield as u32));
 
     // Half grown, half the swings and half the wood, rounded up.
     let grown_at = sprout(&mut w, cx, cz);
     w.tick = grown_at - TREE_GROW_TICKS / 2;
     w.tick(&[]);
-    let pm = w.slot_lives.standing_pm(cx, cz) as u32;
+    let pm = w.slot_lives.standing_pm(cx, cz);
     assert!(pm > 500 && pm < 1000, "{pm}");
-    let hits = (tree.hits as u32 * pm).div_ceil(1000);
-    assert!(hits > 1 && hits < tree.hits as u32);
+    let hits = hits_at(tree.hits, &slot, pm);
+    assert!(hits >= 1 && hits < whole);
     assert_eq!(chop(&mut w, aim), (hits, hits * tree.hand_yield as u32));
 }
 

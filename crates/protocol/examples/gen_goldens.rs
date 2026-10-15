@@ -417,7 +417,7 @@ fn main() {
     write_fixture(goldens::FIXTURES[109], &buf[..len]);
     let len = protocol::encode_event_env(&goldens::event_env(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[111], &buf[..len]);
-    let len = protocol::encode_event_exposure(64, 100, true, 50, &mut buf).unwrap();
+    let len = protocol::encode_event_exposure(&goldens::exposure(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[112], &buf[..len]);
     let len =
         protocol::encode_event_slot_grow_sync(&goldens::event_slot_grow_sync(), &mut buf).unwrap();

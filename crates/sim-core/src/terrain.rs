@@ -7262,7 +7262,8 @@ pub struct Slot {
     pub y: f32,
     pub z: f32,
     pub yaw: u8,
-    /// Visual scale in [0.9, 1.1].
+    /// Visual scale: a tree's size class, small [0.6, 0.78] or large
+    /// [0.95, 1.1] ([`slot_scale`]); anything else in [0.9, 1.1].
     pub scale: f32,
     /// Which species this slot is, in `0..SLOT_SPECIES` — a tree's kind of
     /// tree, a rock's kind of rock. **Drawn from the cell hash against
@@ -7672,7 +7673,7 @@ fn scatter_in<C: Corners>(
         return none;
     }
 
-    let scale = 0.9 + ((h >> 36) & 0xFF) as f32 * (0.2 / 255.0);
+    let scale = slot_scale(occupant, ((h >> 36) & 0xFF) as u8);
     // Clearing anchors alone leaves shoulder rocks and trunks protruding
     // into the road. Reserve the actual scaled collision volume, with a
     // cheap segment bounding-box reject before the distance calculation.
@@ -9641,9 +9642,39 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.0,              // MushroomPatch
 ];
 
-/// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
-/// so this is the exact supremum and not a rounded one.
+/// Widest scale `scatter` can hand a slot. Both draws top out at
+/// `... + 255 * (span/255)` = 1.1 ([`slot_scale`]), so this is the exact
+/// supremum and not a rounded one.
 pub const SLOT_SCALE_MAX: f32 = 1.1;
+
+/// Trees come in two sizes (tree size classes v0) — the reference's
+/// `_small` and `_large` populations over the same ground
+/// (`reference/FORESTS.md` §4). This share of the scale byte is the small
+/// class, out of 256: about 30 %.
+pub const TREE_SMALL_BYTES: u8 = 77;
+/// The small class's scale span, and the large class's.
+pub const TREE_SMALL_SCALE: (f32, f32) = (0.6, 0.78);
+pub const TREE_LARGE_SCALE: (f32, f32) = (0.95, SLOT_SCALE_MAX);
+/// The mean tree scale over the byte, so a tree's wood can be its share of
+/// it and the island's wood stays what it was before the split
+/// (`gather::tree_wood_pm`). `tests/forest.rs` re-derives it.
+pub const TREE_SCALE_MEAN: f32 = 0.9242;
+
+/// A slot's scale from its scale byte: a tree's size class, or anything
+/// else's ±10 % wobble.
+pub fn slot_scale(occupant: Occupant, b: u8) -> f32 {
+    if occupant != Occupant::Tree {
+        return 0.9 + b as f32 * (0.2 / 255.0);
+    }
+    if b < TREE_SMALL_BYTES {
+        let (lo, hi) = TREE_SMALL_SCALE;
+        lo + b as f32 * ((hi - lo) / (TREE_SMALL_BYTES - 1) as f32)
+    } else {
+        let (lo, hi) = TREE_LARGE_SCALE;
+        let n = (255 - TREE_SMALL_BYTES) as f32;
+        lo + (b - TREE_SMALL_BYTES) as f32 * ((hi - lo) / n)
+    }
+}
 
 /// Cells either side of a body's own that can hold a slot touching it.
 ///

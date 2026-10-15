@@ -25,6 +25,11 @@ use crate::rng::cell_hash;
 pub const SEG_TICKS: u64 = 81_000;
 /// How long a new preset takes to fade in, ticks: 15 min (their 6 h).
 pub const FADE_TICKS: u64 = 27_000;
+/// No rain this early in a wipe (the reference's `weather.rain_grace_period`,
+/// 18 in-game hours): the first three quarters of a day, an hour at 30 Hz.
+/// A segment that starts inside it and rolled rain, heavy rain or a storm
+/// is overcast instead, so a fresh wipe's first naked hour is dry.
+pub const RAIN_GRACE_TICKS: u64 = DAY_TICKS * 3 / 4;
 /// How long an admin's `/weather` takes to arrive, ticks: 20 s — quick
 /// enough to show off, slow enough that the sky does not pop.
 pub const FORCE_FADE_TICKS: u64 = 600;
@@ -150,6 +155,21 @@ pub fn preset_of(seed: u64, seg: u64) -> u8 {
     CLEAR
 }
 
+/// The preset segment `seg` plays: its roll, held dry through the rain
+/// grace ([`RAIN_GRACE_TICKS`]).
+pub fn preset_at(seed: u64, seg: u64) -> u8 {
+    let code = preset_of(seed, seg);
+    // The segment before the world's first wraps to `u64::MAX`: it is
+    // before the wipe too, and the first fade blends from it.
+    let in_grace =
+        seg == u64::MAX || seg.saturating_mul(SEG_TICKS) < RAIN_GRACE_TICKS + phase(seed);
+    if in_grace && code >= RAIN_MILD {
+        OVERCAST
+    } else {
+        code
+    }
+}
+
 fn wind_of(seed: u64, seg: u64) -> u8 {
     (seg_hash(seed, seg, CH_WIND) >> 24) as u8
 }
@@ -200,12 +220,12 @@ pub fn blend(a: &Wx, b: &Wx, t_pm: u64) -> Wx {
 /// the last segment's over `FADE_TICKS`.
 pub fn auto(seed: u64, tick: u64) -> Wx {
     let (seg, into) = segment(seed, tick);
-    let cur = preset(preset_of(seed, seg), wind_of(seed, seg));
+    let cur = preset(preset_at(seed, seg), wind_of(seed, seg));
     if into >= FADE_TICKS {
         return cur;
     }
     let prev_seg = seg.wrapping_sub(1);
-    let prev = preset(preset_of(seed, prev_seg), wind_of(seed, prev_seg));
+    let prev = preset(preset_at(seed, prev_seg), wind_of(seed, prev_seg));
     blend(&prev, &cur, smooth_pm(into * 1000 / FADE_TICKS))
 }
 

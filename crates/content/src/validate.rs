@@ -906,6 +906,11 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("company_comfort", e.company_comfort),
             ("comfort_per_s", e.comfort_per_s),
             ("regen_chill_max", e.regen_chill_max),
+            ("cold_per_c", e.cold_per_c),
+            ("heat_per_c", e.heat_per_c),
+            ("wet_cool", e.wet_cool),
+            ("clothes_heat_pm", e.clothes_heat_pm),
+            ("heat_hurt_at", e.heat_hurt_at),
         ] {
             if v > 1000 {
                 return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));
@@ -918,6 +923,52 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err("exposure: a chill that never falls would never warm".to_string());
         }
         let hp = c.balance.globals.player_hp;
+        let cl = &c.balance.climate;
+        for (name, v) in [
+            ("cold_below_c", e.cold_below_c),
+            ("hot_above_c", e.hot_above_c),
+            ("shade_c", e.shade_c),
+            ("temperate_low_c", cl.temperate_low_c),
+            ("temperate_high_c", cl.temperate_high_c),
+            ("arid_low_c", cl.arid_low_c),
+            ("arid_high_c", cl.arid_high_c),
+            ("rain_cool_c", cl.rain_cool_c),
+            ("crop_frost_c", cl.crop_frost_c),
+            ("crop_warm_c", cl.crop_warm_c),
+            ("crop_hot_c", cl.crop_hot_c),
+            ("crop_scorch_c", cl.crop_scorch_c),
+        ] {
+            if !(-100..=100).contains(&v) {
+                return Err(format!("climate `{name}`: {v} °C is past ±100"));
+            }
+        }
+        if cl.temperate_low_c > cl.temperate_high_c || cl.arid_low_c > cl.arid_high_c {
+            return Err("[climate]: a biome's dawn is warmer than its afternoon".into());
+        }
+        if cl.cloud_flatten_pm > 1000 || cl.lapse_from_m > u16::MAX as u32 || cl.lapse_m > 1000 {
+            return Err("[climate]: cloud past 1000 per mille or a lapse out of range".into());
+        }
+        let crop = [
+            cl.crop_frost_c,
+            cl.crop_warm_c,
+            cl.crop_hot_c,
+            cl.crop_scorch_c,
+        ];
+        if crop != [0; 4] && !(crop[0] < crop[1] && crop[1] <= crop[2] && crop[2] < crop[3]) {
+            return Err("[climate]: the crop curve must run frost < warm <= hot < scorch".into());
+        }
+        if e.heat_per_c > 0 && e.hot_above_c <= e.cold_below_c {
+            return Err("[exposure]: the air turns hot before it stops being cold".into());
+        }
+        if e.heat_water_pct > 300 {
+            return Err("[exposure]: the heat burns at most 300% more water".into());
+        }
+        if e.heat_hp_per_min > 0 && hp / e.heat_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: full heat kills {hp} hp in under 5 min ({} hp/min)",
+                e.heat_hp_per_min
+            ));
+        }
         if e.cold_food_pct > 300 || e.cold_water_pct > 300 {
             return Err("[exposure]: the cold burns at most 300% more food or water".into());
         }

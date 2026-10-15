@@ -497,6 +497,34 @@ pub fn hash(c: &Content) -> u64 {
         ex.regen_calm_s,
         ex.regen_food_pct,
         ex.regen_water_pct,
+        ex.cold_below_c as u32,
+        ex.cold_per_c,
+        ex.hot_above_c as u32,
+        ex.heat_per_c,
+        ex.shade_c as u32,
+        ex.wet_cool,
+        ex.clothes_heat_pm,
+        ex.heat_water_pct,
+        ex.heat_hurt_at,
+        ex.heat_hp_per_min,
+    ] {
+        h.u(v);
+    }
+    let cl = &c.balance.climate;
+    h.s("climate");
+    for v in [
+        cl.temperate_low_c as u32,
+        cl.temperate_high_c as u32,
+        cl.arid_low_c as u32,
+        cl.arid_high_c as u32,
+        cl.lapse_from_m,
+        cl.lapse_m,
+        cl.cloud_flatten_pm,
+        cl.rain_cool_c as u32,
+        cl.crop_frost_c as u32,
+        cl.crop_warm_c as u32,
+        cl.crop_hot_c as u32,
+        cl.crop_scorch_c as u32,
     ] {
         h.u(v);
     }

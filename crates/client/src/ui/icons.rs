@@ -138,7 +138,7 @@ pub const STEMS: [&str; 130] = [
     "bandage",
     "sleeping_bag",
     "small_box",
-    "fire_pit",
+    "camp_fire",
     "workbench",
     "workbench_2",
     "workbench_3",

@@ -421,7 +421,7 @@ pub struct ClientNetState {
     pub skins_platform: sim_core::skin::SkinSet,
     /// The wet/cold readout as last sent, `(wet %, cold %, hurting)`.
     /// `None` owes the client the reading.
-    pub last_expo: Option<(u8, u8, bool, u8)>,
+    pub last_expo: Option<sim_core::exposure::Readout>,
     /// Until when the owner is hostile, as last sent (`EventMsg::Hostile`).
     /// `None` owes the client the reading.
     pub last_hostile: Option<u32>,

@@ -41,6 +41,7 @@ every item either way, because the painted ones are derived works of it.
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
+| `camp_fire.png` | `lorc/campfire` |
 | `charcoal.png` | `delapouite/coal-pile` |
 | `cloth.png` | `delapouite/rolled-cloth` |
 | `code_lock.png` | `delapouite/dial-padlock` |
@@ -51,7 +52,6 @@ every item either way, because the painted ones are derived works of it.
 | `electric_fuse.png` | `delapouite/electrical-resistance` |
 | `empty_propane_tank.png` | `delapouite/fire-extinguisher` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
-| `fire_pit.png` | `lorc/campfire` |
 | `full_waterskin.png` | `delapouite/water-flask` |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |

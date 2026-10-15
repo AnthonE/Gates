@@ -243,26 +243,25 @@ drink_hp_cost = 2
 vessel = "item.waterskin"
 vessel_full = "item.waterskin_full"
 
-# Wet and cold (weather v0, `sim_core::exposure`) — the reference's exposure:
-# rain soaks you unless something is overhead (their `weather.wetness_rain`),
-# the sea soaks you to the depth you stand in, and a fire dries you. The chill
-# a body heads for is the night, the rain, the wind and how wet it is, made
-# worse by a piece that draws cold in (armor.toml's negative `cold_pct`, as a
-# share of that cold), less what it wears (wet clothes keep half) and less a
-# fire or a torch. Per mille of a meter, per second; distances in cm.
+# Wet, cold and heat (weather v0, climate v0, `sim_core::exposure`) — the
+# reference's exposure: rain soaks you unless something is overhead (their
+# `weather.wetness_rain`), the sea soaks you to the depth you stand in, and a
+# fire dries you. The chill a body heads for is the air (`[climate]`), the
+# rain, the wind and how wet it is, made worse by a piece that draws cold in
+# (armor.toml's negative `cold_pct`, as a share of that cold), less what it
+# wears (wet clothes keep half) and less a fire or a torch. Per mille of a
+# meter, per second; distances in cm.
 #
-# What these numbers do, measured against the formula rather than chosen:
-# naked and dry on a clear night heads for 380 (no damage; the clear sky's
-# wind adds 30); in the road sign jacket, 509 (cold, no damage); clothed,
-# soaked in daytime heavy rain, 575 (none); soaked at night in heavy rain,
-# ~925 — about 5 hp a minute, a slow death with time to find a roof and a
-# fire. A roof and a lit campfire take anyone back to zero.
+# The rain, the wind and the wet chill in full at 13 °C and fade to nothing
+# at 32 °C (`exposure::feel_pm`). Measured against the formula: in burlap,
+# soaked in daytime heavy rain (~15 °C), ~530 (no damage); soaked at dawn in
+# heavy rain (~4 °C), past 1000 — 6 hp a minute, a slow death with time to
+# find a roof and a fire. A roof and a lit campfire take anyone back to zero.
 [exposure]
 wet_rain_per_s = 8
 dry_per_s = 2
 dry_fire_per_s = 12
 soak_depth_cm = 120
-night_cold = 350
 rain_cold = 250
 wind_cold = 150
 wet_cold = 450
@@ -274,9 +273,9 @@ chill_fall_per_s = 20
 hurt_at = 600
 hurt_hp_per_min = 6
 # The cold eats (`NOW.md` §0wx item 1): at full chill food drains twice as
-# fast (the reference's cold burns calories); water is the heat's to burn,
-# and the island has no heat, so it stays at the normal drain. Scaled by the
-# chill, so a clear night (380) is +38 % food.
+# fast (the reference's cold burns calories); water is the heat's to burn
+# (`heat_water_pct` below), so the cold leaves it at the normal drain. Scaled
+# by the chill, so a clear temperate dawn (~465) is +46 % food.
 cold_food_pct = 100
 cold_water_pct = 0
 # Comfort and regen are Rust's (`PlayerMetabolism`, `TriggerComfort`). A lit
@@ -301,6 +300,61 @@ regen_chill_max = 300
 regen_calm_s = 10
 regen_food_pct = 100
 regen_water_pct = 50
+
+# The air (climate v0, `[climate]` below) is the cold now: every degree
+# under 13 °C adds 50, night or day, in place of the old flat night. So a
+# naked, dry, still body starts to hurt at 1 °C, which is where the
+# reference's cold damage starts (`PlayerMetabolism`, body under 1 °C), and
+# shows COLD (25 %) under about 8 °C, near their "too cold" at 5. A clear
+# temperate dawn (~4 °C) heads for ~465 naked, ~135 in burlap; the desert's
+# dawn (~-3 °C) for ~835 naked, past `hurt_at`, and ~505 in burlap.
+cold_below_c = 13
+cold_per_c = 50
+# The heat: every degree over 32 °C adds 50. The desert's afternoon (~35 °C)
+# is ~145 naked, a little thirsty. Warm clothes hold the heat in at 750 per
+# mille of their warmth, the reference's +10 °C × 1.5 × protection: burlap
+# +248, hide and bone +293, so a clothed body in the desert is HOT and drinks
+# more than double. Being soaked takes all of it off (theirs: −34 °C wet), a
+# roof's shade 8 degrees. Their heat damage needs a body past 60 °C, which
+# their desert never gives; ours keeps the rule at 600 and the shipped air
+# does not reach it either.
+hot_above_c = 32
+heat_per_c = 50
+shade_c = 8
+wet_cool = 1000
+clothes_heat_pm = 750
+heat_water_pct = 300
+heat_hurt_at = 600
+heat_hp_per_min = 6
+
+# The air (climate v0, `sim_core::climate`) — the reference's
+# `Climate.GetTemperature`: each biome's curve over the hour, coldest at
+# dawn, warmest in the afternoon. Theirs: temperate nights 1–4 °C, the
+# desert ~35 °C by day and −2 to −7 at night (`rust.fandom.com` Biomes;
+# ginx.tv's desert guide). The arid north (`terrain::aridity`) is our
+# desert. Their snow is a biome that high ground tends to land in; ours is
+# the height itself: above 30 m the air loses a degree every 10 m, so the
+# 141 m peaks are 11 colder. Theirs reads no weather; ours lets full cloud
+# take 40 % off the day's swing (cooler overcast noons, milder overcast
+# nights) and the heaviest rain take 3 degrees. Whole degrees Celsius.
+[climate]
+temperate_low_c = 3
+temperate_high_c = 22
+arid_low_c = -6
+arid_high_c = 38
+lapse_from_m = 30
+lapse_m = 10
+cloud_flatten_pm = 400
+rain_cool_c = 3
+# Crops feel the air (the reference: a plant grows at its worst factor, and
+# temperature is one, by a curve of its own). Ours: full pace from 12 to
+# 30 °C, slower toward a frost at 0 and a scorch at 45, stopped past either.
+# A temperate morning is ~5-12 °C, so a planter grows slower before noon; a
+# planter on a peak waits for the afternoon; the desert's noon is fine.
+crop_frost_c = 0
+crop_warm_c = 12
+crop_hot_c = 30
+crop_scorch_c = 45
 
 # The starter base the raid ratio prices (CONTENT §3: "2×1 stone, door,
 # bag, hearth, box"): 2 foundations, 5 walls, 1 doorway, 2 roofs, plus

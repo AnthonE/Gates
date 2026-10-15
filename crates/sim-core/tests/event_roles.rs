@@ -1400,7 +1400,11 @@ fn scanned_slot(w: &World, kind: terrain::Occupant) -> (f32, f32, u16, u16) {
     for cz in 0..span {
         for cx in 0..span {
             let s = terrain::scatter(SEED, &w.scatter, &w.haven, cx, cz);
-            if s.occupant == kind {
+            // A tree grown at the wipe (tree ages v0): a young one stands
+            // at a sapling's size, which is a different swing.
+            let grown = kind != terrain::Occupant::Tree
+                || gather::wild_grown_at(SEED, cx as u16, cz as u16) == 0;
+            if s.occupant == kind && grown {
                 return (s.x, s.z, cx as u16, cz as u16);
             }
         }

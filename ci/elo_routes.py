@@ -378,7 +378,8 @@ def self_test() -> int:
         fails += not cond
 
     want, cbad = load_content(SKINS_FIXTURE, ITEMS_FIXTURE)
-    ok(not cbad and want[1] == {"name": "Obsidian Bat", "covers": "Bat", "tint": "#463e54"},
+    ok(not cbad and want[1] == {"name": "Obsidian Bat", "covers": "Bat", "tint": "#463e54",
+                                "texture": None},
        "content: a skin's covers is its item's display name, its tint a hex string")
 
     def run(bodies, endpoints=None, raw=None, icons=ICONS_FIXTURE):
@@ -461,7 +462,10 @@ def self_test() -> int:
     caps = [rust_cap(*r.cap) for r in ROUTES if r.cap]
     ok(all(c > 0 for c in caps), f"every reader's cap reads from its source ({caps})")
     real, rbad, icons = repo_content()
-    store = {"skins": [dict(catalog_id=c, **w) for c, w in real.items()]}
+    # The store a correct catalog would serve: a painted skin's picture at
+    # the short-hash name the game asks for (`parity`'s texture rule).
+    store = {"skins": [dict(catalog_id=c, **w, texture_url=(
+        f"/skins/{w['texture'][:16]}.png" if w.get("texture") else None)) for c, w in real.items()]}
     ok(bool(real) and not rbad and parity(store, real, icons) == [],
        f"the repo's {len(real)} skins load, name their items, and ship their icons")
 

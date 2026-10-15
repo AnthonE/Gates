@@ -379,8 +379,9 @@ impl Grow {
 
 /// Draw every regrowing tree at its size — a sapling where the stump was,
 /// full height an hour later (`sim_core::gather::grow_pm`, the server's own
-/// sizing, in its sixteen steps) — and every picked plant, a sprout grown in
-/// three minutes and only then fruiting. Twice a second, or at once when the
+/// sizing, in its sixteen steps), and a young wild tree at its age
+/// (`gather::wild_pm`) — and every picked plant, a sprout grown in three
+/// minutes and only then fruiting. Twice a second, or at once when the
 /// harvested set moved or a tree streamed in: the steps are minutes apart.
 pub fn grow(
     net: NonSend<Net>,
@@ -396,13 +397,24 @@ pub fn grow(
     }
     *since = 0.0;
     let core = &net.session.core;
+    let seed = core.predict.seed();
     let now = feed.server_tick_est.max(0.0) as u64;
     for (f, g, mut t) in q.iter_mut() {
         // A felled tree lies at the size it fell at.
         if f.felled {
             continue;
         }
-        let pm = core.harvested.growth(f.key).map_or(1000, |at| {
+        // A tree nobody has felled grows with the wild stand (tree ages v0):
+        // a young tree at a fresh wipe, full-grown a day of uptime later.
+        let wild = || {
+            if g.span == sim_core::gather::TREE_GROW_TICKS {
+                let (cx, cz) = ((f.key >> 16) as u16, (f.key & 0xFFFF) as u16);
+                sim_core::gather::wild_pm(seed, cx, cz, now)
+            } else {
+                1000
+            }
+        };
+        let pm = core.harvested.growth(f.key).map_or_else(wild, |at| {
             sim_core::gather::grow_pm_over(at as u64, now, g.span)
         });
         // Berries come when the bush is grown. Not a zero scale: a singular
