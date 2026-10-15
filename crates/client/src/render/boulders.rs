@@ -192,7 +192,10 @@ pub fn stream(
                     rocks.built.insert(key, None);
                     continue;
                 }
-                let mut cell = commands.spawn((WorldEntity, Transform::IDENTITY));
+                // Visible itself, mesh or not: a formation of nothing but
+                // spires is a parent the spires inherit their visibility from.
+                let mut cell =
+                    commands.spawn((WorldEntity, Transform::IDENTITY, Visibility::default()));
                 if let Some(mesh) = formation_mesh(world.seed, &f) {
                     cell.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
                 }
