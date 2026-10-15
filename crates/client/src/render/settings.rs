@@ -437,6 +437,7 @@ impl Settings {
                 | Knob::Taa
                 | Knob::Bloom
                 | Knob::TreeLod
+                | Knob::Clouds
                 | Knob::RenderScale => {
                     self.quality = d.quality;
                     self.gfx = d.gfx;
