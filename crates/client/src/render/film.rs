@@ -1187,6 +1187,7 @@ pub fn roll(
         && *screen.get() == super::Screen::InWorld
         && ring.is_full()
         && props.is_full()
+        && props.stale_len() == 0
         && clutter.is_full();
 
     match film.phase {

@@ -179,10 +179,16 @@ pub fn scenery_of(b: Biome, species: u8, key: u32) -> Scenery {
 /// biome the sim classifies its ground as (`terrain::biome`), and
 /// [`Scenery::Shrub`] — unread — for anything else.
 pub fn scenery(seed: u64, slot: &Slot, key: u32) -> Scenery {
+    scenery_with(seed, slot, key, terrain::fel(seed, slot.x, slot.z))
+}
+
+/// [`scenery`] in a Verdigris `fel` deep — the spread as it stands now
+/// (`render::blight::live_fel`) rather than the wipe-day heart.
+pub fn scenery_with(seed: u64, slot: &Slot, key: u32, fel: f32) -> Scenery {
     if slot.occupant != Occupant::Shrub {
         return Scenery::Shrub;
     }
-    let b = terrain::biome_at(seed, slot.y, slot.x, slot.z);
+    let b = terrain::biome(slot.y, terrain::moisture(seed, slot.x, slot.z), fel);
     scenery_of(b, slot.species, key)
 }
 

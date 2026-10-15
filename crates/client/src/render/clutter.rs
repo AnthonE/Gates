@@ -115,7 +115,7 @@ const DESERT_PEBBLE_C: u32 = 0xa07850;
 /// mostly sand, and a grey dot every metre read as polka dots. **(knob)**
 const DESERT_PEBBLE_THIN: f32 = 0.6;
 /// A stone in the Verdigris: obsidian, a green-black charcoal, mixed in by the
-/// ground's corruption (`terrain::fel`). **(knob)**
+/// ground's corruption (the spread, `render::blight`). **(knob)**
 const FEL_STONE_C: u32 = 0x2a2d28;
 /// The share of the turf's cards (grass, brush, sprigs) and its twigs the
 /// heart of the Verdigris leaves out: dead ground is bare. **(knob)**
@@ -690,8 +690,13 @@ pub fn stream(
     world: Res<WorldId>,
     eye: Res<Eye>,
     assets: Res<AssetServer>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     let Some(foliages) = foliages else { return };
+    // The spread as it stands (`render/blight.rs`): a tile built now is bare
+    // where the green has reached, and one built earlier lags until it
+    // streams again.
+    let live = blight.as_deref().and_then(|b| b.now);
     // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
     // is the browser's name for exactly this sum and the two fills are
     // documented as sharing a population, so a single allocation holds both.
@@ -866,7 +871,14 @@ pub fn stream(
             for e in buf.iter().take(n) {
                 // The Verdigris: dead ground is bare, and its stones are
                 // glass. Outside its reach this is one compare.
-                let fel = terrain::fel_memo(&mut lat, world.seed, e.x, e.z);
+                let fel = super::blight::live_fel_memo(
+                    live.as_ref(),
+                    &mut lat,
+                    world.seed,
+                    e.x,
+                    e.z,
+                    e.y,
+                );
                 if fel > 0.0 {
                     let roll = hash01(
                         (e.x * 64.0) as i32 as u32,

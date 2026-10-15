@@ -140,6 +140,7 @@ impl RockRing {
 
 /// Keep the formations within [`ROCK_RING`] cells of the eye built, nearest
 /// first, and drop the ones that fall out of it.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     mut rocks: ResMut<RockRing>,
@@ -148,7 +149,9 @@ pub fn stream(
     server: Res<AssetServer>,
     world: Res<WorldId>,
     eye: Res<Eye>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
+    let live = blight.as_deref().and_then(|b| b.now);
     let Some(material) = ground.ground_material() else {
         return;
     };
@@ -196,7 +199,7 @@ pub fn stream(
                 // spires is a parent the spires inherit their visibility from.
                 let mut cell =
                     commands.spawn((WorldEntity, Transform::IDENTITY, Visibility::default()));
-                if let Some(mesh) = formation_mesh(world.seed, &world.haven, &f) {
+                if let Some(mesh) = formation_mesh(world.seed, &world.haven, &f, live.as_ref()) {
                     cell.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
                 }
                 for b in f.iter().filter(|b| b.kind == BLOCK_SPIRE) {
@@ -728,15 +731,21 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
 
 /// Every block of a formation, and the loose stones round it, as one mesh:
 /// `None` when the formation is all spires, which are models of their own.
-pub fn formation_mesh(seed: u64, haven: &terrain::Haven, f: &boulder::Formation) -> Option<Mesh> {
+pub fn formation_mesh(
+    seed: u64,
+    haven: &terrain::Haven,
+    f: &boulder::Formation,
+    now: Option<&sim_core::blight::Now>,
+) -> Option<Mesh> {
     let mut soup = RockSoup::default();
+    let mut lat = terrain::Lattice::new();
     for b in f.iter().filter(|b| b.kind != BLOCK_SPIRE) {
         // Moss where the ground around is green: not on a beach, not above
-        // the treeline.
+        // the treeline, not where the spread stands now.
         let h0 = terrain::height(seed, b.x, b.z);
         let moss = h0 > terrain::BEACH_MAX_H + 1.5
             && h0 < terrain::TREELINE_H
-            && terrain::fel(seed, b.x, b.z) < 0.3;
+            && super::blight::live_fel_memo(now, &mut lat, seed, b.x, b.z, h0) < 0.3;
         let mut r = RockShape::of(seed, b, if moss { 1.0 } else { 0.0 });
         if b.on == ON_GROUND {
             rock_block(&mut soup, &r);

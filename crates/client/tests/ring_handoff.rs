@@ -316,3 +316,82 @@ fn no_frame_of_the_walk_shows_both() {
     }
     assert!(doubled(&mut app).is_empty());
 }
+
+// ── The wither ──────────────────────────────────────────────────────────────
+
+fn canopies(app: &mut App) -> usize {
+    let mut q = app.world_mut().query::<&Fellable>();
+    q.iter(app.world())
+        .filter(|f| f.part == FellPart::Canopy)
+        .count()
+}
+
+/// The blight surges over standing forest: the chunks holding a tree it
+/// killed are built again as snags, one a frame, and through every frame of
+/// it the ring keeps its chunks (no bare ground, no chunk in both rings, no
+/// tree drawn twice).
+#[test]
+fn a_spreading_blight_rebuilds_the_forest_it_kills_without_a_gap() {
+    use client::render::blight::Blight;
+    use sim_core::blight as spread;
+    use sim_core::terrain;
+    let haven = terrain::haven(SEED);
+    let plan = spread::Plan::new(SEED, 1, &haven);
+    // A little outside the heart's edge, toward the island's middle: clean
+    // forest on wipe day, deep in the creep a week on at tier C.
+    let (hx, hz) = terrain::FEL_HEART;
+    let c = terrain::ISLAND_SIZE * 0.5;
+    let (dx, dz) = (c - hx, c - hz);
+    let d = (dx * dx + dz * dz).sqrt();
+    let r = (spread::F0 + 0.06) * terrain::CONTINENT_RADIUS;
+    let (x, z) = (hx + dx / d * r, hz + dz / d * r);
+    let mut app = app_at(x, z);
+    let mut b = Blight::default();
+    b.now = Some(spread::now(&plan, &haven, 0, 0));
+    app.insert_resource(b);
+    settle(&mut app);
+    let (cx, cz) = chunk_of(x, z);
+    let near_keys: Vec<(i32, i32)> = (-NEAR_RADIUS..=NEAR_RADIUS)
+        .flat_map(|dz| (-NEAR_RADIUS..=NEAR_RADIUS).map(move |dx| (cx + dx, cz + dz)))
+        .collect();
+    let before: Vec<Option<Entity>> = {
+        let ring = app.world().resource::<PropRing>();
+        near_keys.iter().map(|k| ring.chunk_entity(*k)).collect()
+    };
+    let crowns = canopies(&mut app);
+    assert!(crowns > 0, "no standing forest to wither");
+
+    app.world_mut().resource_mut::<Blight>().now =
+        Some(spread::now(&plan, &haven, 168 * spread::TICKS_PER_HOUR, 2));
+    let mut frames = 0;
+    loop {
+        app.update();
+        let ring = app.world().resource::<PropRing>();
+        assert_eq!(
+            ring.len(),
+            NEAR_CHUNKS,
+            "frame {frames}: a near chunk went bare"
+        );
+        assert_eq!(ring.overlap(), 0, "frame {frames}: a chunk in both rings");
+        if ring.stale_len() == 0 {
+            break;
+        }
+        frames += 1;
+        assert!(frames < SETTLE_FRAMES, "the wither never finished");
+    }
+    app.update();
+    assert!(
+        doubled(&mut app).is_empty(),
+        "a tree drawn twice after the wither"
+    );
+    let rebuilt = {
+        let ring = app.world().resource::<PropRing>();
+        near_keys
+            .iter()
+            .zip(&before)
+            .filter(|(k, was)| ring.chunk_entity(**k) != **was)
+            .count()
+    };
+    assert!(rebuilt > 0, "the surge rebuilt no chunk");
+    assert!(canopies(&mut app) < crowns, "the surge killed no crown");
+}

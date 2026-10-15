@@ -129,3 +129,23 @@ pub fn live_fel(now: Option<&spread::Now>, x: f32, z: f32, h: f32, n: f32) -> f3
         None => terrain::fel_of(terrain::fel_d2(x, z), n).max(0.0),
     }
 }
+
+/// [`live_fel`] tapping the noise through a streamer's lattice, and only
+/// where the spread could reach: one compare out of it.
+pub fn live_fel_memo(
+    now: Option<&spread::Now>,
+    lat: &mut terrain::Lattice,
+    seed: u64,
+    x: f32,
+    z: f32,
+    h: f32,
+) -> f32 {
+    match now {
+        Some(now) if spread::within_reach(now, x, z) => {
+            let n = terrain::fel_wander_memo(lat, seed, x, z);
+            spread::depth_n(now, x, z, h, n).fel
+        }
+        Some(_) => 0.0,
+        None => terrain::fel_memo(lat, seed, x, z).max(0.0),
+    }
+}
