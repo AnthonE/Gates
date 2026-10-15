@@ -63,6 +63,8 @@ REFUSAL = {
     "refused_ticket",
     "refused_full",
     "refused_banned",
+    "refused_in_use",
+    "refused_per_source",
     "entitle_unknown",
     "entitle_kicked",
     "skins_unknown",
@@ -76,6 +78,7 @@ REFUSAL = {
     "admin_refused",
     "aim_stale_refused",
     "favour_disagree",
+    "favour_playout_high",
     "spectate_input_refused",
     "spectate_actions_refused",
 }

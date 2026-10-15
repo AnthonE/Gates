@@ -94,10 +94,10 @@ pub const VEND_BATCH: usize = 8;
 pub const VENDOR_NAME_BYTES: usize = 16;
 
 /// Loose ground stacks one sync message carries (ground items v0).
-/// A lying stack is 117 bits; the widest record — an arrow stuck where it
-/// went in, carrying a condition and a skin (v94, v102) — is 173, so
-/// fourteen of those are 305 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were,
-/// until the skin took 17 bits a record): the assert at
+/// A lying stack is 118 bits; the widest record — a stack still flying,
+/// carrying a condition and a skin (v114) — is 190, so thirteen of those
+/// are 311 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were, until the skin
+/// took 17 bits a record, and fourteen until the throw took 41): the assert at
 /// `GITEM_SYNC_COUNT_BITS` and `gitem_sync_widest_batch_fits_the_cap`
 /// hold it there. Overflow policy: the next message
 /// continues the walk, exactly as the bag walk does — and the walk
@@ -105,7 +105,7 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// batch much larger than this would spend a tick's lane on a set the
 /// next barrel invalidates. Proposed default, DECISIONS.md §open (ground
 /// items v0).
-pub const GITEM_SYNC_BATCH: usize = 14;
+pub const GITEM_SYNC_BATCH: usize = 13;
 
 /// Arrows in bodies one sync message carries (wire v94): the body, the
 /// round, where in it the arrow went in and which way. Fifteen bytes a
@@ -558,7 +558,12 @@ const SUB_AGENT: u32 = 96;
 /// on the receiver. Own-fact: sent when it changes and, while anyone is on
 /// it, as its members move.
 const SUB_TEAM: u32 = 97;
-const SUB_MAX: u32 = SUB_TEAM;
+/// A gunshot or a blast heard from past the receiver's interest set (wire
+/// v113): what it was and where, to the metre, and nothing about who. The
+/// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
+/// shot rides `EV_SHOT` on its body and the blast its impact.
+const SUB_REPORT: u32 = 98;
+const SUB_MAX: u32 = SUB_REPORT;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -999,9 +1004,22 @@ const GITEM_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
 /// The widest loose-stack record `write_gitem` can put down: id, the three
 /// position quanta, item and count, then the stuck direction, the
-/// condition and the skin, each behind its own bit.
-const GITEM_REC_MAX_BITS: usize =
-    32 + 2 * POS_XZ_BITS as usize + POS_Y_BITS as usize + 16 + 16 + (1 + 24) + (1 + 16) + (1 + 16);
+/// condition, the skin and the throw, each behind its own bit — and the
+/// direction and the throw never both (`write_gitem` refuses it), so only
+/// the wider of the two is counted.
+const GITEM_REC_MAX_BITS: usize = 32
+    + 2 * POS_XZ_BITS as usize
+    + POS_Y_BITS as usize
+    + 16
+    + 16
+    + 2
+    + if 24 > TOSS_BITS as usize {
+        24
+    } else {
+        TOSS_BITS as usize
+    }
+    + (1 + 16)
+    + (1 + 16);
 // A full batch of the widest records still fits one message (v102's skin
 // shrank it 16 → 14, leaving fifteen bytes): a field added to the record
 // must shrink the batch first.
@@ -1955,6 +1973,9 @@ pub enum EventMsg {
     /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
     /// for a meal the item. A sound and nothing else.
     Heard { body: u32, deed: u8, item: u16 },
+    /// A gunshot or a blast from far off (wire v113): `REPORT_*`, and where
+    /// in whole metres. A sound and nothing else.
+    Report { kind: u8, x: u16, y: i16, z: u16 },
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
@@ -3895,6 +3916,45 @@ pub fn encode_event_heard(
     Ok(w.finish())
 }
 
+/// A [`SUB_REPORT`]'s gunshot.
+pub const REPORT_GUN: u8 = 0;
+/// A [`SUB_REPORT`]'s blast.
+pub const REPORT_BLAST: u8 = 1;
+/// The last report kind the wire knows; a higher one is refused at both ends.
+pub const REPORT_MAX: u8 = REPORT_BLAST;
+const REPORT_BITS: u32 = 2;
+const REPORT_XZ_BITS: u32 = 13;
+const REPORT_Y_BITS: u32 = 10;
+/// `y` rides biased: −128..=895 m.
+const REPORT_Y_BIAS: i32 = 128;
+const _: () = assert!((REPORT_MAX as u32) < (1 << REPORT_BITS));
+const _: () = assert!(sim_core::terrain::ISLAND_SIZE as u32 <= (1 << REPORT_XZ_BITS));
+
+/// A far gunshot or blast at `(x, y, z)` metres. Refuses a kind past
+/// [`REPORT_MAX`] and a place the fields cannot carry.
+pub fn encode_event_report(
+    kind: u8,
+    x: u16,
+    y: i16,
+    z: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let yb = y as i32 + REPORT_Y_BIAS;
+    if kind > REPORT_MAX
+        || x as u32 >= 1 << REPORT_XZ_BITS
+        || z as u32 >= 1 << REPORT_XZ_BITS
+        || !(0..1 << REPORT_Y_BITS).contains(&yb)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_REPORT)?;
+    w.write(kind as u32, REPORT_BITS)?;
+    w.write(x as u32, REPORT_XZ_BITS)?;
+    w.write(yb as u32, REPORT_Y_BITS)?;
+    w.write(z as u32, REPORT_XZ_BITS)?;
+    Ok(w.finish())
+}
+
 /// Which arrow your bow looses — see `EventMsg::Ammo`.
 pub fn encode_event_ammo(weapon: u16, round: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_AMMO)?;
@@ -4339,7 +4399,40 @@ pub struct WireGItem {
     /// zero for none (one bit on the wire). The client draws it if its skin
     /// catalog knows it (`ui::skins::tint_of`), else plain.
     pub skin: u16,
+    /// The throw it is still flying on (wire v114): a dropped stack leaves
+    /// the hand and lands where this record says, and a client draws the
+    /// flight between (`sim_core::grounditem::toss_at`). Sent only while it
+    /// flies, one bit otherwise, and never with a stuck arrow's `dir`.
+    pub toss: Option<WireToss>,
 }
+
+/// A throw in flight on the wire: the low byte of the tick it left the hand
+/// (a client puts it back beside its own clock — a flight is under three
+/// seconds and the byte wraps at eight and a half) and where the hand was
+/// relative to the landing, in body quanta (`sim_core::grounditem::Toss`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireToss {
+    pub born_lo: u8,
+    pub from: [i16; 3],
+}
+
+impl WireToss {
+    pub fn of(t: &sim_core::grounditem::Toss) -> Self {
+        Self {
+            born_lo: t.born as u8,
+            from: t.from,
+        }
+    }
+}
+
+/// The toss block's widths: a byte of tick, then the hand's offset across,
+/// up and across, signed. Tied to the sim's own limits on what it keeps.
+const TOSS_BORN_BITS: u32 = 8;
+const TOSS_XZ_BITS: u32 = 10;
+const TOSS_Y_BITS: u32 = 12;
+const TOSS_BITS: u32 = TOSS_BORN_BITS + 2 * TOSS_XZ_BITS + TOSS_Y_BITS;
+const _: () = assert!((1i32 << (TOSS_XZ_BITS - 1)) - 1 == sim_core::grounditem::TOSS_XZ_MAX_Q);
+const _: () = assert!((1i32 << (TOSS_Y_BITS - 1)) - 1 == sim_core::grounditem::TOSS_Y_MAX_Q);
 
 impl WireGItem {
     pub fn of(g: &sim_core::grounditem::GroundItemRec) -> Self {
@@ -4353,7 +4446,15 @@ impl WireGItem {
             dir: g.dir,
             cond: g.stack.cond,
             skin: g.stack.skin,
+            toss: None,
         }
+    }
+
+    /// The same record with the throw it is flying on, if any
+    /// (`GroundItems::toss_of`).
+    pub fn tossed(mut self, t: Option<sim_core::grounditem::Toss>) -> Self {
+        self.toss = t.as_ref().map(WireToss::of);
+        self
     }
 
     /// Whether this is an arrow stuck where it went in.
@@ -4466,6 +4567,30 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
     if g.skin != 0 {
         w.write(g.skin as u32, 16)?;
     }
+    // The throw (v114), the same shape once more, and never beside a stuck
+    // arrow's angle: a thing thrown lies, and the batch's room is sized on
+    // the two being exclusive (`GITEM_REC_MAX_BITS`).
+    w.write_bit(g.toss.is_some())?;
+    if let Some(t) = g.toss {
+        let in_range = |v: i16, bits: u32| {
+            let half = 1i32 << (bits - 1);
+            (-(half - 1)..half).contains(&(v as i32))
+        };
+        if g.stuck()
+            || !in_range(t.from[0], TOSS_XZ_BITS)
+            || !in_range(t.from[1], TOSS_Y_BITS)
+            || !in_range(t.from[2], TOSS_XZ_BITS)
+        {
+            return Err(WireError::Range);
+        }
+        w.write(t.born_lo as u32, TOSS_BORN_BITS)?;
+        let signed = |w: &mut BitWriter, v: i16, bits: u32| {
+            w.write((v as i32 + (1 << (bits - 1))) as u32, bits)
+        };
+        signed(w, t.from[0], TOSS_XZ_BITS)?;
+        signed(w, t.from[1], TOSS_Y_BITS)?;
+        signed(w, t.from[2], TOSS_XZ_BITS)?;
+    }
     Ok(())
 }
 
@@ -4480,6 +4605,7 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         dir: [0; 3],
         cond: 0,
         skin: 0,
+        toss: None,
     };
     if r.read_bit()? {
         for d in g.dir.iter_mut() {
@@ -4503,6 +4629,22 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         if g.skin == 0 {
             return Err(WireError::Malformed);
         }
+    }
+    if r.read_bit()? {
+        // A stuck arrow is not flying: the encoder refuses both.
+        if g.stuck() {
+            return Err(WireError::Malformed);
+        }
+        let born_lo = r.read(TOSS_BORN_BITS)? as u8;
+        let mut signed = |bits: u32| -> Result<i16, WireError> {
+            Ok((r.read(bits)? as i32 - (1 << (bits - 1))) as i16)
+        };
+        let from = [
+            signed(TOSS_XZ_BITS)?,
+            signed(TOSS_Y_BITS)?,
+            signed(TOSS_XZ_BITS)?,
+        ];
+        g.toss = Some(WireToss { born_lo, from });
     }
     // The client's own door: a zero count would draw a picture of nothing
     // and offer a prompt that takes nothing.
@@ -6145,6 +6287,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
         },
+        SUB_REPORT => {
+            let kind = r.read(REPORT_BITS)? as u8;
+            if kind > REPORT_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Report {
+                kind,
+                x: r.read(REPORT_XZ_BITS)? as u16,
+                y: (r.read(REPORT_Y_BITS)? as i32 - REPORT_Y_BIAS) as i16,
+                z: r.read(REPORT_XZ_BITS)? as u16,
+            }
+        }
         SUB_FIRE => EventMsg::Fire {
             qx: r.read(POS_XZ_BITS)? as i32,
             qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
@@ -7804,38 +7958,54 @@ mod tests {
         );
     }
 
-    /// The loose-stack batch at its widest (v102): every record an arrow
-    /// stuck where it went in AND carrying a condition, every field at the
-    /// top of its range. It must encode inside the message cap and come
-    /// back whole — the const assert beside `GITEM_SYNC_COUNT_BITS` sums
-    /// the widths, this measures the bytes.
+    /// The loose-stack batch at its widest (v114): every record a stack
+    /// still flying AND carrying a condition and a skin, every field at the
+    /// top of its range — and the same batch as arrows stuck where they
+    /// went in, the throw's narrower twin. Both must encode inside the
+    /// message cap and come back whole — the const assert beside
+    /// `GITEM_SYNC_COUNT_BITS` sums the widths, this measures the bytes.
     #[test]
     fn gitem_sync_widest_batch_fits_the_cap() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let recs: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
+        let flying: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
             id: u32::MAX - i as u32,
             qx: (1 << POS_XZ_BITS) - 1,
             qy: (1 << POS_Y_BITS) - 1 - POS_Y_BIAS,
             qz: (1 << POS_XZ_BITS) - 1 - i as i32,
             item: (MAX_ITEM_DEFS - 1 - i) as u16,
             count: u16::MAX,
-            dir: [-128, 127, -(i as i8) - 1],
+            dir: [0; 3],
             cond: u16::MAX - i as u16,
             skin: u16::MAX - 2 * i as u16,
+            toss: Some(WireToss {
+                born_lo: u8::MAX - i as u8,
+                from: [
+                    -(sim_core::grounditem::TOSS_XZ_MAX_Q as i16),
+                    sim_core::grounditem::TOSS_Y_MAX_Q as i16 - i as i16,
+                    sim_core::grounditem::TOSS_XZ_MAX_Q as i16,
+                ],
+            }),
         });
-        let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
-        assert!(len <= MAX_EVENT_MSG_BYTES);
-        match decode_event(&buf[..len]).unwrap() {
-            EventMsg::GItemSync {
-                reset,
-                recs: got,
-                count,
-            } => {
-                assert!(reset);
-                assert_eq!(count as usize, GITEM_SYNC_BATCH);
-                assert_eq!(got, recs);
+        let stuck: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
+            dir: [-128, 127, -(i as i8) - 1],
+            toss: None,
+            ..flying[i]
+        });
+        for recs in [flying, stuck] {
+            let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
+            assert!(len <= MAX_EVENT_MSG_BYTES);
+            match decode_event(&buf[..len]).unwrap() {
+                EventMsg::GItemSync {
+                    reset,
+                    recs: got,
+                    count,
+                } => {
+                    assert!(reset);
+                    assert_eq!(count as usize, GITEM_SYNC_BATCH);
+                    assert_eq!(got, recs);
+                }
+                other => panic!("wrong variant: {other:?}"),
             }
-            other => panic!("wrong variant: {other:?}"),
         }
 
         // Litter pays one bit for the condition it does not have, and a
@@ -7919,6 +8089,84 @@ mod tests {
         w.write_bit(false).unwrap();
         w.write_bit(true).unwrap();
         w.write(0, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// The throw (v114) crosses whole with every sign and costs a lying
+    /// stack one bit, and neither end holds one beside a stuck arrow's
+    /// angle or with the hand further off than the sim keeps.
+    #[test]
+    fn gitem_toss_roundtrips_and_refuses_a_bad_shape() {
+        use sim_core::grounditem::{TOSS_XZ_MAX_Q as XZ, TOSS_Y_MAX_Q as Y};
+        let (xz, y) = (XZ as i16, Y as i16);
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let lying = WireGItem {
+            id: 9,
+            qx: 100,
+            qz: 200,
+            item: 3,
+            count: 1,
+            ..WireGItem::default()
+        };
+        let bare = encode_event_gitem_sync(false, &[lying], &mut buf).unwrap();
+        for from in [[-xz, -y, xz], [xz, y, -xz], [0, -1, 0], [-1, 0, 1]] {
+            let rec = WireGItem {
+                toss: Some(WireToss {
+                    born_lo: 0xA5,
+                    from,
+                }),
+                ..lying
+            };
+            let with = encode_event_gitem_sync(false, &[rec], &mut buf).unwrap();
+            assert!(with > bare, "the throw took no room");
+            match decode_event(&buf[..with]).unwrap() {
+                EventMsg::GItemSync { recs, count, .. } => {
+                    assert_eq!(count, 1);
+                    assert_eq!(recs[0], rec);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+        let thrown = |from| WireGItem {
+            toss: Some(WireToss { born_lo: 1, from }),
+            ..lying
+        };
+        for from in [[xz + 1, 0, 0], [0, -y - 1, 0], [0, 0, -xz - 1]] {
+            let far = encode_event_gitem_sync(false, &[thrown(from)], &mut buf);
+            assert_eq!(far, Err(WireError::Range), "{from:?}");
+        }
+        let stuck = WireGItem {
+            dir: [0, -1, 127],
+            ..thrown([0; 3])
+        };
+        assert_eq!(
+            encode_event_gitem_sync(false, &[stuck], &mut buf),
+            Err(WireError::Range)
+        );
+        // Forged by hand: a stuck arrow's angle with the throw's bit after.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_GITEM_SYNC, SUB_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(1, GITEM_SYNC_COUNT_BITS).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(100, POS_XZ_BITS).unwrap();
+        w.write(POS_Y_BIAS as u32, POS_Y_BITS).unwrap();
+        w.write(200, POS_XZ_BITS).unwrap();
+        w.write(3, 16).unwrap();
+        w.write(1, 16).unwrap();
+        w.write_bit(true).unwrap();
+        for d in [0u32, 0xFF, 0x7F] {
+            w.write(d, 8).unwrap();
+        }
+        w.write_bit(false).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(1, TOSS_BORN_BITS).unwrap();
+        for bits in [TOSS_XZ_BITS, TOSS_Y_BITS, TOSS_XZ_BITS] {
+            w.write(1 << (bits - 1), bits).unwrap();
+        }
         let len = w.finish();
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }
@@ -8930,6 +9178,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/ranged.rs"),
         },
         Module {
+            file: "reach.rs",
+            src: include_str!("../../sim-core/src/reach.rs"),
+        },
+        Module {
             file: "claim.rs",
             src: include_str!("../../sim-core/src/claim.rs"),
         },
@@ -9823,6 +10075,13 @@ mod wire_domains {
             "TEAM_COUNT_BITS",
             "TEAM_STATE_BITS",
             "TEAM_POS_BITS",
+            // A far report (v113): the wire's own two kinds, refused past
+            // `REPORT_MAX` at both ends (const-asserted beside the width);
+            // and a whole-metre place, the island's side const-asserted
+            // inside the x/z width, y refused outside its biased range.
+            "REPORT_BITS",
+            "REPORT_XZ_BITS",
+            "REPORT_Y_BITS",
             // An item description's length (v103): bounded by
             // `MAX_ITEM_DESC_BYTES`, const-asserted beside the width.
             "DESC_LEN_BITS",
@@ -9928,6 +10187,15 @@ mod wire_domains {
             // converter added to `ROLE_ARCHES` widens the field with it;
             // `ItemRow::coherent` refuses a value past it at both ends.
             "OVEN_ROLE_BITS",
+            // The throw (v114): a tick's low byte, which wraps by design
+            // (a flight is shorter than the byte's span), and the hand's
+            // offset, bounded by `grounditem::TOSS_XZ_MAX_Q`/`TOSS_Y_MAX_Q`,
+            // sim-core *caps* tied by compile-time asserts at the
+            // declaration; `TOSS_BITS` is their sum.
+            "TOSS_BORN_BITS",
+            "TOSS_XZ_BITS",
+            "TOSS_Y_BITS",
+            "TOSS_BITS",
         ];
 
         let mut widths = Vec::new();

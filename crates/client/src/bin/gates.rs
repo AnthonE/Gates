@@ -250,6 +250,13 @@ fn main() -> AppExit {
             light: false,
         });
     }
+    // The pin rides to the connect screen with the address it belongs to.
+    if let Some(hash) = &a.cert_hash {
+        app.insert_resource(client::render::screen::Pin {
+            addr: server.clone(),
+            hash: hash.clone(),
+        });
+    }
     let start = Start {
         direct: server,
         servers_url: a.servers_url.clone(),

@@ -186,7 +186,13 @@ pub fn hint(p: &mut ChildSpawnerCommands, text: &str) {
         Pickable::IGNORE,
     ))
     .with_children(|h| {
-        h.spawn((Text::new(text), font(11.0), TextColor(TEXT_DIM)));
+        h.spawn((
+            Text::new(text),
+            font(11.0),
+            TextColor(TEXT_DIM),
+            // Hints name keys; they follow the player's binds.
+            crate::render::binds::Keyed(text.to_string()),
+        ));
     });
 }
 

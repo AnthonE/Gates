@@ -1567,10 +1567,16 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         {
             return Err(WorldSaveError::AddressOutOfRange);
         }
+        // The rest height is not in the file and is trusted from nowhere:
+        // it is re-derived from the cell, the one `scatter` per record
+        // `open` paid at the mint. Boot only, at most `MAX_WORLD_CONTS`.
+        let s = terrain::scatter(w.seed, &w.scatter, &w.haven, cx as i32, cz as i32);
+        let qy = crate::worldcont::stand_q(s.x, s.y, s.z).1;
         *c = WorldContRec {
             cx,
             cz,
             qx,
+            qy,
             qz,
             table,
             refill_at,

@@ -162,6 +162,40 @@ async fn a_kick_closes_the_target_with_the_admin_reason() {
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// **A guest can be kicked.** A guest has no wallet to ban, but griefs as
+/// well as anyone: `/kick` closes its connection with the admin's reason,
+/// the same as a wallet's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kick_closes_a_guest() {
+    let ka = key(7);
+    let h = shard(&ka, 20_261_016, None).await;
+    let ep = endpoint(&h);
+    let mut admin = join(&ep, &h, &ka, "admin").await;
+    let mut guest = Session::connect_as(
+        &ep,
+        &h.local_addr.to_string(),
+        protocol::Address::GUEST,
+        &client::Join::Player { watchable: false },
+        |_, _, _| None,
+    )
+    .await
+    .expect("a guest joins a shard that takes guests");
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !(guest.core.predict.started && guest.core.hp > 0) {
+            frame(&mut [&mut guest]).await;
+        }
+    })
+    .await
+    .expect("placed and alive");
+    let id = guest.welcome.player_id;
+
+    type_line(&admin, &format!("/kick {id}"));
+    closed_by_admin(&mut admin, &mut guest).await;
+    assert_eq!(hear(&mut admin, 0).await, format!("[server] kicked {id}"));
+    assert_eq!(ShardStats::get(&h.stats.admin_kicked), 1);
+    h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// **A ban is refused at the door, and `/unban` lifts it.** `/ban <id>`
 /// closes the target like a kick, writes the wallet to the ban file and
 /// tells the admin the wallet's front. The same wallet dialling again is

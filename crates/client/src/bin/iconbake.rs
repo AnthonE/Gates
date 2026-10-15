@@ -4,7 +4,8 @@
 //! Rust's icons are renders of the item's own model on a transparent ground,
 //! lit from the upper left and seen from a three-quarter angle. This renders
 //! every item the same way ([`SUBJECTS`]): its own model where it has one,
-//! and otherwise a prop from the icon-only kit in `iconbake/props.rs`. Then
+//! and otherwise its prop from the kit (`render::heldkit`), baked exactly as
+//! the hand and the ground draw it. Then
 //! `ci/finish_icons.py` turns the frames into `assets/icons/*.png`; it paints
 //! a silhouette only for a stem with no render.
 //!
@@ -20,6 +21,13 @@
 //! cargo run -p client --features render --bin iconbake -- ci/icons/renders
 //! python3 ci/finish_icons.py
 //! ```
+//!
+//! `--hand <out_dir> [stem…]` shoots each held row instead, the way the
+//! first-person camera frames it at rest (`viewmodel::pose` under the hold,
+//! no arm): the check for a new row's grip and scale.
+//!
+//! `--look <out_dir> <file.glb…>` photographs any files under `assets/` the
+//! icon's way — a generator's rolls, before one becomes a row.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,9 +43,6 @@ use bevy::render::view::Msaa;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 
-#[path = "iconbake/props.rs"]
-mod props;
-
 /// Edge of the offscreen frame, px. The finisher downsamples to the shipped
 /// 128, and four samples per output pixel on top of MSAA is what keeps a
 /// spear's thin haft from stair-stepping.
@@ -52,8 +57,9 @@ const SETTLE: u32 = 12;
 const LOAD_TIMEOUT: u32 = 900;
 
 /// Where a subject's geometry comes from: a glTF under `assets/`, a mesh
-/// `render::heldgen` builds in code (the bat), or the icon-only prop kit
-/// (`props`) for the items with no model.
+/// `render::heldgen` builds in code (the bat), or the prop kit
+/// (`render::heldkit`) for the items with no model — its own torch, revolver,
+/// crossbow and strung bow included, which photograph better than the hand's.
 #[derive(Clone, Copy)]
 enum Src {
     Glb(&'static str),
@@ -116,6 +122,19 @@ const fn kit(stem: &'static str, turn: [f32; 3]) -> Subject {
     }
 }
 
+/// A model laid side on and turned `roll` on screen: a gun's framing. A
+/// generated gun is authored muzzle to -X, the kit's to +X, so it is turned
+/// round first and every gun in the bag points the same way.
+const fn side(stem: &'static str, glb: &'static str, roll: f32) -> Subject {
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn: [180.0, 0.0, 0.0],
+        roll,
+        girth: 1.0,
+    }
+}
+
 /// A long prop from the kit, on the diagonal.
 const fn kit_long(stem: &'static str, roll: f32) -> Subject {
     Subject {
@@ -138,12 +157,39 @@ const fn kit_long(stem: &'static str, roll: f32) -> Subject {
 /// they read as the reference's do — the same object, lit. Framing is the
 /// finisher's, from the pixels, so there is no size here.
 const SUBJECTS: &[Subject] = &[
-    s("stone", "models/prop/node_stone.glb", [30.0, 0.0, 0.0]),
-    s("metal_ore", "models/prop/node_metal.glb", [30.0, 0.0, 0.0]),
+    // The resources, as the hand carries them (`WANTED.md` §12).
+    s("stone", "models/held/stone.glb", [0.0, 0.0, 0.0]),
+    s("metal_ore", "models/held/metal_ore.glb", [0.0, 0.0, 0.0]),
+    s("sulfur_ore", "models/held/sulfur_ore.glb", [0.0, 0.0, 0.0]),
+    s("wood", "models/held/wood.glb", [0.0, 0.0, 0.0]),
+    s("cloth", "models/held/cloth.glb", [0.0, 0.0, 0.0]),
+    s("charcoal", "models/held/charcoal.glb", [0.0, 0.0, 0.0]),
     s(
-        "sulfur_ore",
-        "models/prop/node_sulfur.glb",
-        [30.0, 0.0, 0.0],
+        "metal_fragments",
+        "models/held/metal_fragments.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "low_grade_fuel",
+        "models/held/low_grade_fuel.glb",
+        [25.0, 0.0, 0.0],
+    ),
+    s("junk", "models/held/junk.glb", [0.0, 0.0, 0.0]),
+    s("leather", "models/held/leather.glb", [0.0, 0.0, 0.0]),
+    s("sulfur", "models/held/sulfur.glb", [0.0, 0.0, 0.0]),
+    s("gunpowder", "models/held/gunpowder.glb", [0.0, 0.0, 0.0]),
+    s("animal_fat", "models/held/animal_fat.glb", [0.0, 0.0, 0.0]),
+    s(
+        "bone_fragments",
+        "models/held/bone_fragments.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("tarp", "models/held/tarp.glb", [0.0, 0.0, 0.0]),
+    s("waterskin", "models/held/waterskin.glb", [0.0, 0.0, 0.0]),
+    s(
+        "full_waterskin",
+        "models/held/full_waterskin.glb",
+        [0.0, 0.0, 0.0],
     ),
     // The small box shares this model; the finisher draws it smaller.
     s("large_box", "models/deploy/box.glb", [0.0, 0.0, 0.0]),
@@ -273,25 +319,17 @@ const SUBJECTS: &[Subject] = &[
     kit_long("metal_spring", -30.0),
     // …guns and plates side on, nudged up at the muzzle…
     kit_long("revolver", 18.0),
-    kit_long("semi_automatic_body", 18.0),
-    kit_long("smg_body", 18.0),
-    kit_long("rifle_body", 18.0),
+    side(
+        "semi_automatic_body",
+        "models/held/semi_automatic_body.glb",
+        18.0,
+    ),
+    side("smg_body", "models/held/smg_body.glb", 18.0),
+    side("rifle_body", "models/held/rifle_body.glb", 18.0),
     kit_long("blueprint", 20.0),
     // …and the rest as they would sit on a table.
-    kit("wood", [0.0, 0.0, 0.0]),
-    kit("cloth", [0.0, 0.0, 0.0]),
-    kit("tarp", [0.0, 0.0, 0.0]),
-    kit("animal_fat", [0.0, 0.0, 0.0]),
-    kit("charcoal", [0.0, 0.0, 0.0]),
-    kit("metal_fragments", [0.0, 0.0, 0.0]),
-    kit("sulfur", [0.0, 0.0, 0.0]),
-    kit("gunpowder", [0.0, 0.0, 0.0]),
-    kit("low_grade_fuel", [25.0, 0.0, 0.0]),
-    kit("leather", [0.0, 0.0, 0.0]),
-    kit("bone_fragments", [0.0, 0.0, 0.0]),
     kit("gears", [30.0, 0.0, 0.0]),
     kit("rope", [0.0, 0.0, 0.0]),
-    kit("junk", [0.0, 0.0, 0.0]),
     kit("empty_propane_tank", [0.0, 0.0, 0.0]),
     kit("sewing_kit", [0.0, 0.0, 0.0]),
     kit("sheet_metal", [0.0, 0.0, 0.0]),
@@ -299,16 +337,15 @@ const SUBJECTS: &[Subject] = &[
     kit("tech_trash", [30.0, 30.0, 0.0]),
     kit("key_lock", [30.0, 0.0, 0.0]),
     kit("code_lock", [30.0, 0.0, 0.0]),
-    kit("waterskin", [30.0, 0.0, 0.0]),
-    kit("full_waterskin", [30.0, 0.0, 0.0]),
     kit("pistol_round", [30.0, 0.0, 0.0]),
     kit("corn_seed", [0.0, 0.0, 0.0]),
     kit("hemp_seed", [0.0, 0.0, 0.0]),
-    kit("burlap_tunic", [30.0, 0.0, 0.0]),
+    // The garments stand up in the hand; laid back for the camera.
+    kit("burlap_tunic", [30.0, -20.0, 0.0]),
     kit("burlap_hood", [30.0, 0.0, 0.0]),
-    kit("hide_poncho", [30.0, 0.0, 0.0]),
+    kit("hide_poncho", [30.0, -20.0, 0.0]),
     kit("bone_helmet", [30.0, 0.0, 0.0]),
-    kit("roadsign_vest", [30.0, 0.0, 0.0]),
+    kit("roadsign_vest", [30.0, -20.0, 0.0]),
     kit("planter_box", [0.0, 0.0, 0.0]),
     kit("camp_fire", [0.0, 0.0, 0.0]),
     kit("auto_turret", [30.0, 0.0, 0.0]),
@@ -324,6 +361,8 @@ const VIEW_DIR: Vec3 = Vec3::new(0.62, 0.55, 1.0);
 
 #[derive(Resource)]
 struct Bake {
+    /// Shooting held rows in the first-person frame (`--hand`), not icons.
+    hand: bool,
     out: PathBuf,
     queue: Vec<Subject>,
     target: Handle<Image>,
@@ -353,35 +392,87 @@ struct Written(bool);
 #[derive(Component)]
 struct IconCam;
 
-/// The prop kit's detail maps, one per `props::Tex`.
-#[derive(Resource, Default)]
-struct Kit(Vec<(props::Tex, Handle<Image>)>);
-
-impl Kit {
-    fn material(&self, m: &props::Mat) -> StandardMaterial {
-        let tex = self
-            .0
-            .iter()
-            .find(|(t, _)| *t == m.tex)
-            .map(|(_, h)| h.clone());
-        let c = m.color();
-        // Metal is mostly diffuse here: with no environment to reflect, a
-        // fully metallic surface renders black but for its highlights. A
-        // third of it keeps the sheen and the colour both.
-        StandardMaterial {
-            base_color: c,
-            base_color_texture: tex,
-            perceptual_roughness: m.rough,
-            metallic: m.metal * 0.3,
-            reflectance: 0.5 + 0.3 * m.metal,
-            emissive: c.to_linear() * m.glow * 4.0,
-            ..default()
-        }
+/// The kit's material as the studio lights it. Metal is mostly diffuse
+/// here: with no environment to reflect, a metallic surface renders black but
+/// for its highlights, and the game's `METAL_GAIN` is set for a hand that has
+/// the island's sky in it. A third keeps the sheen and the colour both.
+fn kit_material() -> StandardMaterial {
+    StandardMaterial {
+        metallic: 0.3 / client::render::heldkit::METAL_GAIN,
+        ..client::render::heldkit::material()
     }
 }
 
+/// A frame of the `--hand` sheet, px: the game's 16:9.
+const HAND_PX: (u32, u32) = (960, 540);
+
+/// `--hand`'s subjects: every held row, in its own source, or `stems`.
+fn hand_queue(only: &[&String]) -> Vec<Subject> {
+    use client::ui::hold::{HeldSrc, HELD_MODELS};
+    HELD_MODELS
+        .iter()
+        .filter(|m| only.is_empty() || only.iter().any(|o| o.as_str() == m.key))
+        .map(|m| Subject {
+            stem: m.key,
+            src: match m.src {
+                HeldSrc::Glb(path) => Src::Glb(path),
+                HeldSrc::Gen(name) => Src::Gen(name),
+            },
+            turn: [0.0; 3],
+            roll: 0.0,
+            girth: 1.0,
+        })
+        .rev()
+        .collect()
+}
+
+/// `--look`'s subjects: files, by their path under `assets/`, each shot
+/// under its own file stem. Leaked: a subject's names are `'static` because
+/// every other subject is a table row, and this is a one-shot process.
+fn look_queue(files: &[&String]) -> Vec<Subject> {
+    let root = std::env::current_dir().unwrap_or_default().join("assets");
+    files
+        .iter()
+        .map(|f| {
+            let p = std::path::Path::new(f.as_str());
+            let p = p
+                .canonicalize()
+                .ok()
+                .and_then(|abs| abs.strip_prefix(&root).ok().map(|r| r.to_path_buf()))
+                .unwrap_or_else(|| p.to_path_buf());
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("look");
+            Subject {
+                stem: Box::leak(stem.to_owned().into_boxed_str()),
+                src: Src::Glb(Box::leak(p.to_string_lossy().into_owned().into_boxed_str())),
+                turn: [0.0; 3],
+                roll: 0.0,
+                girth: 1.0,
+            }
+        })
+        .rev()
+        .collect()
+}
+
+/// Where a held row's model sits in view space at rest: the rig's carry,
+/// the hold, then the row's own pose about the palm.
+fn hand_place(key: &str) -> Transform {
+    use client::render::viewmodel::{carried, carry_of, item_pose, pose, VIEWMODEL_PALM};
+    let def = client::ui::hold::HELD_MODELS
+        .iter()
+        .find(|m| m.key == key)
+        .expect("a held row");
+    carried(carry_of(Some(def)), 0.0, Quat::IDENTITY, Vec3::ZERO)
+        * item_pose(None, Quat::IDENTITY)
+        * pose(def, VIEWMODEL_PALM)
+}
+
 fn main() -> AppExit {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let hand = args.first().is_some_and(|a| a == "--hand");
+    let look = args.first().is_some_and(|a| a == "--look");
+    if hand || look {
+        args.remove(0);
+    }
     let Some(out) = args.first().cloned() else {
         eprintln!("usage: iconbake <out_dir> [stem…]");
         for s in SUBJECTS {
@@ -390,12 +481,18 @@ fn main() -> AppExit {
         return AppExit::from_code(2);
     };
     let only: Vec<&String> = args.iter().skip(1).collect();
-    let queue: Vec<Subject> = SUBJECTS
-        .iter()
-        .copied()
-        .filter(|s| only.is_empty() || only.iter().any(|o| o.as_str() == s.stem))
-        .rev()
-        .collect();
+    let queue: Vec<Subject> = if hand {
+        hand_queue(&only)
+    } else if look {
+        look_queue(&only)
+    } else {
+        SUBJECTS
+            .iter()
+            .copied()
+            .filter(|s| only.is_empty() || only.iter().any(|o| o.as_str() == s.stem))
+            .rev()
+            .collect()
+    };
     if queue.is_empty() {
         eprintln!("iconbake: no subject matches {only:?}");
         return AppExit::from_code(2);
@@ -441,8 +538,8 @@ fn main() -> AppExit {
         ..default()
     });
     app.insert_resource(Written::default());
-    app.init_resource::<Kit>();
     app.insert_resource(Bake {
+        hand,
         out,
         queue,
         target: Handle::default(),
@@ -456,46 +553,66 @@ fn main() -> AppExit {
 }
 
 /// The camera, its offscreen target and the studio lights.
-fn stage(
-    mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    mut bake: ResMut<Bake>,
-    mut kit: ResMut<Kit>,
-) {
-    kit.0 = props::Tex::ALL
-        .iter()
-        .map(|t| (*t, images.add(props::texture(*t))))
-        .collect();
+fn stage(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut bake: ResMut<Bake>) {
+    client::render::heldkit::install(&mut images);
+    let (w, h) = if bake.hand {
+        HAND_PX
+    } else {
+        (FRAME_PX, FRAME_PX)
+    };
     let target = images.add(Image::new_target_texture(
-        FRAME_PX,
-        FRAME_PX,
+        w,
+        h,
         TextureFormat::Rgba8UnormSrgb,
         None,
     ));
     bake.target = target.clone();
-    commands.spawn((
-        IconCam,
-        Camera3d::default(),
-        Camera {
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        RenderTarget::Image(target.into()),
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::Fixed {
-                width: 1.0,
-                height: 1.0,
+    if bake.hand {
+        // The eye: at the origin looking down −Z, the game's lens, a dull
+        // sky behind so a dark item still has an edge.
+        commands.spawn((
+            IconCam,
+            Camera3d::default(),
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::srgb(0.52, 0.58, 0.64)),
+                ..default()
             },
-            near: 0.0,
-            far: 100.0,
-            ..OrthographicProjection::default_3d()
-        }),
-        // ACES over the game's TonyMcMapface: an icon sits on a dark cell at
-        // 34 px, and the extra contrast is what keeps it a picture there.
-        Tonemapping::AcesFitted,
-        Msaa::Sample4,
-        Transform::from_translation(VIEW_DIR.normalize() * 10.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+            RenderTarget::Image(target.into()),
+            Projection::Perspective(PerspectiveProjection {
+                fov: client::render::rig::FOV_DEG.to_radians(),
+                near: 0.01,
+                ..default()
+            }),
+            Tonemapping::AcesFitted,
+            Msaa::Sample4,
+            Transform::IDENTITY,
+        ));
+    } else {
+        commands.spawn((
+            IconCam,
+            Camera3d::default(),
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            RenderTarget::Image(target.into()),
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::Fixed {
+                    width: 1.0,
+                    height: 1.0,
+                },
+                near: 0.0,
+                far: 100.0,
+                ..OrthographicProjection::default_3d()
+            }),
+            // ACES over the game's TonyMcMapface: an icon sits on a dark cell at
+            // 34 px, and the extra contrast is what keeps it a picture there.
+            Tonemapping::AcesFitted,
+            Msaa::Sample4,
+            Transform::from_translation(VIEW_DIR.normalize() * 10.0)
+                .looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+    }
     // Key: high and to the camera's left, so every icon is lit from the
     // upper left like Rust's and the silhouettes the finisher shades.
     commands.spawn((
@@ -539,7 +656,6 @@ fn drive(
     mut cam: Query<(&mut Transform, &mut Projection), With<IconCam>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    kit: Res<Kit>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut cur) = bake.cur.take() else {
@@ -565,7 +681,37 @@ fn drive(
             1.0,
             subject.girth,
         ));
+        let place = if bake.hand {
+            hand_place(subject.stem)
+        } else {
+            place
+        };
         let root = match subject.src {
+            // The hand loads a row's file the way `viewmodel` does: its one
+            // primitive and its one material.
+            Src::Glb(glb) if bake.hand => commands
+                .spawn((
+                    Mesh3d(
+                        assets.load(
+                            GltfAssetLabel::Primitive {
+                                mesh: 0,
+                                primitive: 0,
+                            }
+                            .from_asset(glb),
+                        ),
+                    ),
+                    MeshMaterial3d::<StandardMaterial>(
+                        assets.load(
+                            GltfAssetLabel::Material {
+                                index: 0,
+                                is_scale_inverted: false,
+                            }
+                            .from_asset(glb),
+                        ),
+                    ),
+                    place,
+                ))
+                .id(),
             Src::Glb(glb) => commands
                 .spawn((
                     SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(glb))),
@@ -579,18 +725,18 @@ fn drive(
                     place,
                 ))
                 .id(),
-            Src::Kit(name) => {
-                let root = commands.spawn((place, Visibility::default())).id();
-                for part in props::parts(name).unwrap_or_default() {
-                    commands.spawn((
-                        Mesh3d(meshes.add(part.mesh)),
-                        MeshMaterial3d(mats.add(kit.material(&part.mat))),
-                        part.at,
-                        ChildOf(root),
-                    ));
-                }
-                root
-            }
+            Src::Kit(name) => commands
+                .spawn((
+                    Mesh3d(
+                        meshes.add(
+                            client::render::heldkit::baked(name)
+                                .unwrap_or_else(|| panic!("no kit prop {name}")),
+                        ),
+                    ),
+                    MeshMaterial3d(mats.add(kit_material())),
+                    place,
+                ))
+                .id(),
         };
         bake.cur = Some(Current {
             subject,
@@ -604,7 +750,10 @@ fn drive(
 
     match cur.phase {
         Phase::Loading => {
-            if let Some((min, max)) = world_bounds(cur.root, &children, &bounds) {
+            if bake.hand && world_bounds(cur.root, &children, &bounds).is_some() {
+                cur.phase = Phase::Settling;
+                cur.frames = 0;
+            } else if let Some((min, max)) = world_bounds(cur.root, &children, &bounds) {
                 // Frame it: the corners on the camera's own axes, a square
                 // around the larger extent, centred on the middle of both.
                 let back = VIEW_DIR.normalize();

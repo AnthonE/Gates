@@ -778,12 +778,7 @@ pub fn discord_text(wipe: u32, c: &Closed, next: Option<&str>) -> String {
 /// Post `text` to a Discord webhook. Blocking, bounded, and best-effort: a
 /// wipe never waits on Discord or fails for it.
 pub fn post_discord(url: &str, text: &str) -> Result<(), String> {
-    let body = format!(
-        "{{\"content\":\"{}\"}}",
-        text.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-    );
+    let body = discord_body(text);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(5)))
         .build()
@@ -794,6 +789,19 @@ pub fn post_discord(url: &str, text: &str) -> Result<(), String> {
         .send(&body)
         .map(|_| ())
         .map_err(|e| format!("discord: {e}"))
+}
+
+/// The webhook's JSON for `text`. **Mentions are switched off**: a podium
+/// name is whatever a player called themselves, and `@everyone` is nine
+/// printable bytes — without `allowed_mentions` it would ping the whole
+/// server from the wipe post.
+fn discord_body(text: &str) -> String {
+    format!(
+        "{{\"content\":\"{}\",\"allowed_mentions\":{{\"parse\":[]}}}}",
+        text.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+    )
 }
 
 // ---- this wipe ---------------------------------------------------------------
@@ -1559,6 +1567,16 @@ mod tests {
         assert!(!csv.contains(BOT), "an agent is not paid");
         let text = discord_text(3, &closed, Some("Thu 15 Oct 19:00 UTC"));
         assert!(text.contains("ALICE 700 ELO") && !text.contains("0x"));
+        // A podium name like `@everyone` must not ping anyone.
+        let body = discord_body("@everyone \"won\"\n");
+        assert!(
+            body.ends_with(r#","allowed_mentions":{"parse":[]}}"#),
+            "{body}"
+        );
+        assert!(
+            body.starts_with(r#"{"content":"@everyone \"won\"\n""#),
+            "{body}"
+        );
         let hall = Hall::load(&base);
         assert_eq!(hall.last_wipe, 3);
         assert_eq!(hall.last.get(CAROL), Some(&(3, 30)));

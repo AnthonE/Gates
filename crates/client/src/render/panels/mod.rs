@@ -915,7 +915,9 @@ pub fn keys(
     // A watcher's last seen open container, and whether the inventory is up
     // because of it (the seat block below).
     mut follow: Local<((u8, u32), bool)>,
+    binds: Res<super::binds::Binds>,
 ) {
+    use super::binds::Action;
     // **The wheel is held RIGHT, and only by an item that owns one.**
     //
     // It was `B`, held, whatever was in your hand. Both halves were wrong
@@ -932,9 +934,8 @@ pub fn keys(
     let holding_wheel = !down && hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
     if down {
-        if keyboard.just_pressed(KeyCode::Tab)
-            || keyboard.just_pressed(KeyCode::KeyI)
-            || keyboard.just_pressed(KeyCode::KeyQ)
+        if binds.just_pressed(Action::Inventory, &keyboard, &mouse)
+            || binds.just_pressed(Action::Crafting, &keyboard, &mouse)
         {
             toast.warn(crate::ui::wounded::HANDS_LINE);
         }
@@ -1002,26 +1003,35 @@ pub fn keys(
     // keyboard only while it is clicked into (`Ui::search_focus`, Rust's
     // amber field), and while it does, `Q` and `I` are letters.
     let typing = ui.panel == Panel::Craft && ui.search_focus;
+    // While the search box has the keyboard only binds that type nothing
+    // (Tab, by default) still work: a letter there is a letter.
+    let pressed = |a: Action| {
+        if typing {
+            binds.just_pressed_typing(a, &keyboard, &mouse)
+        } else {
+            binds.just_pressed(a, &keyboard, &mouse)
+        }
+    };
     let page = ui.panel.page();
     let mut want = tabs
         .iter()
         .find(|(i, _)| **i == Interaction::Pressed)
         .map(|(_, t)| crate::ui::nav::click(t.0.page()));
-    if keyboard.just_pressed(KeyCode::Tab) || (!typing && keyboard.just_pressed(KeyCode::KeyI)) {
+    if pressed(Action::Inventory) {
         want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Inventory));
-    } else if !typing && keyboard.just_pressed(KeyCode::KeyQ) {
+    } else if pressed(Action::Crafting) {
         want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Crafting));
     }
     // `R` on the inventory page unloads the gun in your hand — the
     // reference's *Unload Ammo*, which lives on its inventory screen too.
     // `verbs::keys` stands down while this page owns the pointer, so the
     // key reloads nowhere else at the same time.
-    if ui.panel == Panel::Inventory && !down && keyboard.just_pressed(KeyCode::KeyR) {
+    if ui.panel == Panel::Inventory && !down && pressed(Action::Reload) {
         super::verbs::unload_held(&net, &mut toast);
     }
     // `O`: the island (`ARC.md` F4). A toggle, and it takes over from any
     // other screen the way `Tab` takes over from the tree.
-    if !typing && keyboard.just_pressed(KeyCode::KeyO) {
+    if pressed(Action::Island) {
         ui.panel = if ui.panel == Panel::Island {
             Panel::None
         } else {
@@ -1034,7 +1044,7 @@ pub fn keys(
         want = None;
     }
     // `M`: the team (`team.rs`), a toggle like `O`.
-    if !typing && keyboard.just_pressed(KeyCode::KeyM) {
+    if pressed(Action::TeamScreen) {
         ui.panel = if ui.panel == Panel::Team {
             Panel::None
         } else {

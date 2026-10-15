@@ -1,6 +1,7 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 94 kB — fixed-capacity by design (wall 4), and
+# `World` is 95 kB — fixed-capacity by design (wall 4), and
+# (94 kB until a dropped stack's throw put its ring on the world;
 # (93 kB until comfort, the calm clock, the heat and the air joined each
 # player in one merge;
 # 92 kB until Rust's components took the loot tables to 24 rows;

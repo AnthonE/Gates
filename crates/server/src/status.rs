@@ -78,8 +78,9 @@
 //!   `REWIND_MAX_TICKS`, i.e. how often the 233 ms ceiling is the binding
 //!   constraint rather than the link — the evidence for moving that
 //!   number. `favour_disagree` is the cross-check: claims corrected down
-//!   to the server's own ack evidence, and the one favour counter that is
-//!   also in `anomaly::WATCHED`.
+//!   to the server's own ack evidence, and one of the two favour counters
+//!   in `anomaly::WATCHED` (the other, `favour_playout_high`, is in the
+//!   anomaly log only).
 //!
 //! - `next_wipe` — unix seconds of the next wipe, 0 for none (`wipe.rs`):
 //!   what a server list prints as "wipes Thu 19:00".
@@ -98,7 +99,9 @@
 //!
 //! - a request is read up to [`STATUS_REQUEST_CAP`] bytes and no further —
 //!   past the cap the connection is closed unanswered;
-//! - reads and writes both time out at [`STATUS_IO_TIMEOUT_MS`];
+//! - the whole request and its response share one deadline,
+//!   [`STATUS_IO_TIMEOUT_MS`] from accept — not a timeout per read, which a
+//!   client trickling a byte a call renews forever;
 //! - one response per connection, then close — no keep-alive, no pipelining;
 //! - connections are answered serially on the one thread, so a slow client
 //!   costs the next poller a bounded wait and never a thread.
@@ -126,7 +129,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Most bytes of a request this will read before closing the connection
 /// unanswered. The only line it acts on is the request line, and
@@ -135,10 +138,11 @@ use std::time::Duration;
 /// which are never parsed. DECISIONS.md §open ("shard status endpoint v0").
 pub const STATUS_REQUEST_CAP: usize = 512;
 
-/// Read and write timeout per connection, in milliseconds. A client that
-/// stalls past it is closed; at two seconds a slow-loris costs the next
-/// poller a bounded wait on the serial accept loop, never a thread.
-/// DECISIONS.md §open ("shard status endpoint v0").
+/// How long one connection may take, request and response together, in
+/// milliseconds. A client still talking or still reading past it is closed;
+/// at two seconds a slow-loris costs the next poller a bounded wait on the
+/// serial accept loop, never a thread. DECISIONS.md §open ("shard status
+/// endpoint v0").
 pub const STATUS_IO_TIMEOUT_MS: u64 = 2000;
 
 /// Bind `addr`, spawn the responder thread, and return the bound address —
@@ -222,12 +226,58 @@ fn serve(listener: TcpListener, stats: Arc<ShardStats>, base: Option<PathBuf>) {
     }
 }
 
+/// A connection with one deadline for everything said on it. A socket
+/// timeout is per call: a client sending a byte at a time renewed it on
+/// every read, 512 reads of two seconds each, and held the one responder
+/// thread — and `/payout`, which the cashier reads — for a quarter of an
+/// hour. Each call here gets only the time that is left.
+struct Deadlined {
+    s: TcpStream,
+    until: Instant,
+}
+
+impl Deadlined {
+    fn arm(&self, read: bool) -> std::io::Result<()> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "status request deadline",
+            ));
+        }
+        if read {
+            self.s.set_read_timeout(Some(left))
+        } else {
+            self.s.set_write_timeout(Some(left))
+        }
+    }
+}
+
+impl Read for Deadlined {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.arm(true)?;
+        self.s.read(buf)
+    }
+}
+
+impl Write for Deadlined {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.arm(false)?;
+        self.s.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.s.flush()
+    }
+}
+
 /// Read one request, bounded; answer it or close. Every early `Ok(())` is
 /// a deliberate refusal — the connection closes with nothing written.
-fn answer(mut stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io::Result<()> {
-    let timeout = Some(Duration::from_millis(STATUS_IO_TIMEOUT_MS));
-    stream.set_read_timeout(timeout)?;
-    stream.set_write_timeout(timeout)?;
+fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io::Result<()> {
+    let mut stream = Deadlined {
+        s: stream,
+        until: Instant::now() + Duration::from_millis(STATUS_IO_TIMEOUT_MS),
+    };
 
     // Read until the request line is complete or the cap is hit. Headers
     // past the first `\r\n` may or may not have arrived; they are never
@@ -376,4 +426,47 @@ fn answer(mut stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std
     );
     stream.write_all(head.as_bytes())?;
     stream.write_all(body.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    fn pair() -> (TcpStream, TcpStream) {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let client = TcpStream::connect(l.local_addr().unwrap()).expect("connect");
+        let (server, _) = l.accept().expect("accept");
+        (client, server)
+    }
+
+    /// **A spent deadline refuses the next call outright**, however lively
+    /// the peer: the time a connection gets is counted once, from accept,
+    /// not renewed by every byte that arrives.
+    #[test]
+    fn a_spent_deadline_ends_the_connection_whatever_the_peer_sends() {
+        let (mut client, server) = pair();
+        client.write_all(b"G").unwrap();
+        let mut live = Deadlined {
+            s: server.try_clone().unwrap(),
+            until: Instant::now() + Duration::from_secs(10),
+        };
+        let mut b = [0u8; 4];
+        assert_eq!(
+            live.read(&mut b).unwrap(),
+            1,
+            "inside the deadline a byte reads"
+        );
+        client.write_all(b"E").unwrap();
+        let mut spent = Deadlined {
+            s: server,
+            until: Instant::now(),
+        };
+        let e = spent
+            .read(&mut b)
+            .expect_err("a spent deadline reads nothing");
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        let e = spent.write_all(b"HTTP/1.1").expect_err("nor writes");
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+    }
 }

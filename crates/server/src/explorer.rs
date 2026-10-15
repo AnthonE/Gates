@@ -968,6 +968,8 @@ pub struct Survivor {
     awaiting: Option<(Pending, u32)>,
     verdict: Option<Verdict>,
     learning: Option<(u16, u16, u16)>,
+    /// Its ears and voice, when it has them (`--voice`, `agent_voice.rs`).
+    pub voice: Option<Box<crate::agent_voice::AgentVoice>>,
 }
 
 impl Survivor {
@@ -1095,6 +1097,7 @@ impl Survivor {
             awaiting: None,
             verdict: None,
             learning: None,
+            voice: None,
         }
     }
 
@@ -5663,6 +5666,8 @@ impl Survivor {
                 channel,
                 me,
                 text,
+                voice: false,
+                more: false,
             });
         }
         while let Some(victim) = core.pop_death() {
@@ -6078,6 +6083,42 @@ impl BotDriver for Survivor {
         out[..len].copy_from_slice(&buf[..len]);
         self.stats.actions += 1;
         Some(len)
+    }
+
+    fn voice_in(&mut self, frame: &protocol::VoiceFrame) {
+        if let Some(v) = self.voice.as_mut() {
+            v.hear(frame, Instant::now());
+        }
+    }
+
+    fn voice_out(&mut self, out: &mut [protocol::VoiceFrame]) -> usize {
+        let Some(v) = self.voice.as_mut() else {
+            return 0;
+        };
+        let now = Instant::now();
+        let (memory, stats, core) = (&mut self.memory, &mut self.stats, self.core.as_deref());
+        // What the players near it said out loud, filed like a line they
+        // typed — who said it included, so its friend's words are its
+        // friend's — and asked about early, as a local line is.
+        v.tick(now, |from, text| {
+            stats.heard += 1;
+            memory.chat_wake = true;
+            let tag = core.and_then(|c| c.tag(from));
+            for (text, more) in crate::agent_voice::pieces(text) {
+                memory.chat.push(HeardLine {
+                    from,
+                    name: tag.map_or(protocol::Name::EMPTY, |t| t.name),
+                    address: tag.map_or(protocol::Address::GUEST, |t| t.address),
+                    agent: core.is_some_and(|c| c.is_agent(from)),
+                    channel: protocol::Channel::Local,
+                    me: false,
+                    text,
+                    voice: true,
+                    more,
+                });
+            }
+        });
+        v.due(now, out)
     }
 
     fn say(&mut self, out: &mut [u8]) -> Option<usize> {
@@ -7041,9 +7082,26 @@ fn open_reaches(core: &mut ClientCore, body: &EntityState, yaw: u16, pitch: u8, 
         pitch,
         sim_core::backpack::LOOT_REACH_M * MM_PER_M,
     );
-    let (seed, mut island) = core.island();
-    melee::occupant_cast(seed, &mut island, &ray, melee::openable)
-        .is_some_and(|hit| cell_key(hit.cx, hit.cz) == key)
+    let hit = {
+        let (seed, mut island) = core.island();
+        melee::occupant_cast(seed, &mut island, &ray, melee::openable)
+    };
+    let Some(hit) = hit.filter(|hit| cell_key(hit.cx, hit.cz) == key) else {
+        return false;
+    };
+    // And the shard's hand, as the human prompt asks it (`resolve_open`):
+    // the same storey and a clear line, so a crate behind stone is not
+    // pressed at until the verdict times out.
+    let b = as_body(*body);
+    sim_core::reach::clear_from(
+        core.predict.seed(),
+        core.haven(),
+        core.pieces.cols(),
+        core.card_doors,
+        sim_core::reach::eye_of(&b, core.crouched()),
+        b.qy as f32 * POS_Y_Q,
+        sim_core::reach::Target::unopened(&hit.slot),
+    )
 }
 
 /// Conservative line of sight to the near face of the target. Uses the

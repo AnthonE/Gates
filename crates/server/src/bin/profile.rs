@@ -10,11 +10,12 @@
 //! `MAX_PLAYERS` bodies inside one AOI cell (every body is a candidate for
 //! every other, which is the shape `snapshot_budget.rs` already uses), the
 //! roster alive, and a piece store filled to whatever the terrain will
-//! take. Then it separates the sim from the netcode by *ablation* rather
-//! than by instrumenting the hot path: `World::tick` is public, so a run of
-//! bare sim ticks measures the sim alone, and `ShardCore::tick` on even and
-//! odd ticks straddles the snapshot cadence (`SNAPSHOT_INTERVAL_TICKS`).
-//! Three numbers, three subtractions, no `#[cfg]` in the code being timed.
+//! take. Then it separates the sim from the netcode: `World::tick` is
+//! public, so a run of bare sim ticks measures the sim alone, and
+//! `ShardCore::tick_bare_marked` stamps a clock just before the snapshot
+//! phase, so every full tick splits into "before snapshots" and "snapshots".
+//! The mark is a closure the shard passes as a no-op, so there is still no
+//! `#[cfg]` in the code being timed.
 //!
 //! ```text
 //! cargo run --release -p server --bin profile -- --clients 100 --ticks 600
@@ -32,7 +33,7 @@ use server::stats::ShardStats;
 use sim_core::build::{LOC_PLANE, MAT_TWIG, SHAPE_FOUNDATION};
 use sim_core::gather::ItemStack;
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::{MAX_COMMANDS_PER_TICK, MAX_PIECES, MAX_PLAYERS, SNAPSHOT_INTERVAL_TICKS};
+use sim_core::limits::{MAX_COMMANDS_PER_TICK, MAX_PIECES, MAX_PLAYERS};
 use sim_core::world::Command;
 use std::time::{Duration, Instant};
 
@@ -299,13 +300,9 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     core.world.pieces.len()
 }
 
-/// Mean and worst of a sample, in microseconds. An empty sample is zeros:
-/// since netcode v2 took `SNAPSHOT_INTERVAL_TICKS` to 1 every tick is a
-/// snapshot tick, the no-snapshot sample is always empty, and indexing it
-/// panicked the tool on every run.
+/// Mean, p99 and worst of a sample, in microseconds. An empty sample
+/// (`--ticks 0`) is zeros rather than a panic.
 fn stat(v: &mut [Duration]) -> (f64, f64, f64) {
-    // An empty sample is a phase that never ran — the no-snapshot ticks,
-    // since `SNAPSHOT_INTERVAL_TICKS` went to 1 — not a reason to panic.
     if v.is_empty() {
         return (0.0, 0.0, 0.0);
     }
@@ -389,26 +386,29 @@ fn main() {
         });
     }
 
-    // --- full ticks, split on the snapshot cadence.
-    let mut even = Vec::with_capacity(a.ticks as usize);
-    let mut odd = Vec::with_capacity(a.ticks as usize);
+    // --- full ticks, each split at the snapshot phase by the core's mark.
+    let mut full = Vec::with_capacity(a.ticks as usize);
+    let mut head = Vec::with_capacity(a.ticks as usize);
+    let mut snap = Vec::with_capacity(a.ticks as usize);
     for _ in 0..a.ticks {
         feed(&mut core, &mut seq, &last_snap);
         let snap_tick = (core.world.tick + 1) as u16;
-        let is_snap = (core.world.tick + 1).is_multiple_of(SNAPSHOT_INTERVAL_TICKS);
-        let t = Instant::now();
-        core.tick_bare(&stats, |lane, slot, _| {
-            if lane == Lane::Snapshot {
-                last_snap[slot] = snap_tick;
-            }
-            true
-        });
-        let d = t.elapsed();
-        if is_snap {
-            even.push(d)
-        } else {
-            odd.push(d)
-        }
+        let t0 = Instant::now();
+        let mut t1 = t0;
+        core.tick_bare_marked(
+            &stats,
+            |lane, slot, _| {
+                if lane == Lane::Snapshot {
+                    last_snap[slot] = snap_tick;
+                }
+                true
+            },
+            || t1 = Instant::now(),
+        );
+        let t2 = Instant::now();
+        full.push(t2 - t0);
+        head.push(t1 - t0);
+        snap.push(t2 - t1);
     }
 
     // --- the sim alone. `World::tick` is public and takes the command
@@ -442,8 +442,9 @@ fn main() {
         save_t.push(t.elapsed());
     }
 
-    let (e_avg, e_p99, e_max) = stat(&mut even);
-    let (o_avg, o_p99, o_max) = stat(&mut odd);
+    let (f_avg, f_p99, f_max) = stat(&mut full);
+    let (b_avg, b_p99, b_max) = stat(&mut head);
+    let (n_avg, n_p99, n_max) = stat(&mut snap);
     let (s_avg, s_p99, s_max) = stat(&mut sim);
     let (h_avg, h_p99, h_max) = stat(&mut hash_t);
     let (w_avg, w_p99, w_max) = stat(&mut save_t);
@@ -477,12 +478,16 @@ fn main() {
     println!("  phase                         avg µs      p99 µs      max µs   % budget");
     println!("  ------------------------------------------------------------------------");
     println!(
-        "  full tick (snapshot)       {e_avg:10.1}  {e_p99:10.1}  {e_max:10.1}  {:8.1}%",
-        100.0 * e_avg / budget_us
+        "  full tick                  {f_avg:10.1}  {f_p99:10.1}  {f_max:10.1}  {:8.1}%",
+        100.0 * f_avg / budget_us
     );
     println!(
-        "  full tick (no snapshot)    {o_avg:10.1}  {o_p99:10.1}  {o_max:10.1}  {:8.1}%",
-        100.0 * o_avg / budget_us
+        "    before snapshots         {b_avg:10.1}  {b_p99:10.1}  {b_max:10.1}  {:8.1}%",
+        100.0 * b_avg / budget_us
+    );
+    println!(
+        "    snapshot encode          {n_avg:10.1}  {n_p99:10.1}  {n_max:10.1}  {:8.1}%",
+        100.0 * n_avg / budget_us
     );
     println!(
         "  World::tick alone          {s_avg:10.1}  {s_p99:10.1}  {s_max:10.1}  {:8.1}%",
@@ -499,14 +504,11 @@ fn main() {
         100.0 * w_avg / budget_us
     );
     println!();
-    println!("  by subtraction:");
+    println!("  split (avg):");
+    println!("    snapshot encode (all clients) {n_avg:10.1} µs  (measured)");
     println!(
-        "    snapshot encode (all clients) {:10.1} µs",
-        e_avg - o_avg
-    );
-    println!(
-        "    interest + events + drip      {:10.1} µs",
-        o_avg - s_avg
+        "    interest + events + drip      {:10.1} µs  (before snapshots - sim alone)",
+        b_avg - s_avg
     );
     println!("    sim                           {s_avg:10.1} µs");
     println!();

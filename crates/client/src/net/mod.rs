@@ -322,9 +322,43 @@ pub(crate) struct DgRing {
     /// copy). `None` for a loss with no reason: a dead route, a timeout.
     /// Written by the desktop reader; the browser's is owed (`NOW.md` §5sp).
     pub(crate) close_code: Option<u64>,
+    /// Relayed voice frames (v113), split off at arrival so a crowd of
+    /// talkers can never push a snapshot out of the ring above. Its own
+    /// bound, drop-oldest, counted in `voice_dropped`.
+    voice: [protocol::VoiceFrame; VOICE_DG_RING],
+    voice_head: usize,
+    voice_len: usize,
+    pub(crate) voice_dropped: u64,
 }
 
+/// Voice frames held between two frames' drains: ~8 talkers over ~4 game
+/// frames. Past it the oldest goes (a talker's jitter buffer conceals it).
+pub(crate) const VOICE_DG_RING: usize = 64;
+
 impl DgRing {
+    /// Take the voice frames that arrived since the last call, oldest first.
+    pub(crate) fn drain_voice(&mut self, mut each: impl FnMut(&protocol::VoiceFrame)) {
+        while self.voice_len > 0 {
+            each(&self.voice[self.voice_head]);
+            self.voice_head = (self.voice_head + 1) % VOICE_DG_RING;
+            self.voice_len -= 1;
+        }
+    }
+
+    fn push_voice(&mut self, bytes: &[u8]) {
+        let Ok(frame) = protocol::decode_voice(bytes) else {
+            self.voice_dropped += 1;
+            return;
+        };
+        if self.voice_len == VOICE_DG_RING {
+            self.voice_head = (self.voice_head + 1) % VOICE_DG_RING;
+            self.voice_len -= 1;
+            self.voice_dropped += 1;
+        }
+        self.voice[(self.voice_head + self.voice_len) % VOICE_DG_RING] = frame;
+        self.voice_len += 1;
+    }
+
     /// Would the next [`push`](Self::push) drop the oldest? A replay asks
     /// first, because a recorded snapshot is never droppable (`film`).
     pub(crate) fn is_full(&self) -> bool {
@@ -332,6 +366,10 @@ impl DgRing {
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) {
+        if protocol::peek_kind(bytes) == Ok(protocol::KIND_VOICE) {
+            self.push_voice(bytes);
+            return;
+        }
         let cap = sim_core::limits::CLIENT_DG_RING;
         if self.len == cap {
             self.head = (self.head + 1) % cap;
@@ -373,6 +411,10 @@ pub(crate) fn datagram_lane() -> DatagramRx {
         dropped: 0,
         closed: false,
         close_code: None,
+        voice: [protocol::VoiceFrame::EMPTY; VOICE_DG_RING],
+        voice_head: 0,
+        voice_len: 0,
+        voice_dropped: 0,
     }))
 }
 

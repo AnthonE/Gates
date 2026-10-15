@@ -1988,8 +1988,11 @@ pub enum Command {
         slot: u8,
     },
     /// Drop `count` of inventory slot `slot` on the ground (Rust's drop).
-    /// It lands in a bag at your feet, merged into your own bag there if one
-    /// is in reach (`backpack::spill_at`). An empty slot does nothing.
+    /// It is thrown out of the hand along the look and lands as a loose
+    /// stack (`grounditem::throw_spot`, `GroundItems::toss`), its own model
+    /// on every screen. Where there is nowhere to land it (the sea), or
+    /// content has loose stacks off, it goes into a bag at your feet as it
+    /// always did (`backpack::spill_at`). An empty slot does nothing.
     Drop {
         id: u32,
         slot: u8,
@@ -2762,7 +2765,119 @@ impl World {
         let dx = (v.body.qx - p.body.qx) as f32 * POS_XZ_Q;
         let dz = (v.body.qz - p.body.qz) as f32 * POS_XZ_Q;
         let r = crate::backpack::LOOT_REACH_M;
-        (dx * dx + dz * dz <= r * r).then_some(i)
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (v.body.qx, v.body.qy, v.body.qz),
+        );
+        (dx * dx + dz * dz <= r * r
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            ))
+        .then_some(i)
+    }
+
+    /// The eye and the feet the player in `slot` reaches from (`reach.rs`).
+    fn hand(&self, slot: usize) -> ((f32, f32, f32), f32) {
+        let p = &self.players[slot];
+        (crate::reach::eye(p), crate::reach::feet_y(p))
+    }
+
+    /// Whether the player in `slot` reaches entry `i` of the box store — a
+    /// box, an oven, a research table: the planar `BUILD_REACH_M`, then the
+    /// same storey and nothing built in the way (`reach.rs`). The move verb
+    /// and the server's container view ask exactly this.
+    pub fn box_reachable(&self, i: usize, slot: usize) -> bool {
+        let Some(p) = self.players.get(slot) else {
+            return false;
+        };
+        self.deploys.box_in_reach(i, p)
+            && crate::reach::clear_box(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                &self.deploy,
+                &self.deploys,
+                i,
+                crate::reach::eye(p),
+                crate::reach::feet_y(p),
+            )
+    }
+
+    /// [`Self::box_reachable`] for bag `i`.
+    pub fn bag_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(b)) = (self.players.get(slot), self.backpacks.entries().get(i)) else {
+            return false;
+        };
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            (b.qx, b.qy, b.qz),
+        );
+        self.backpacks.in_reach(i, p)
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
+    }
+
+    /// [`Self::box_reachable`] for loose stack `i`.
+    pub fn ground_item_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(g)) = (self.players.get(slot), self.ground_items.entries().get(i))
+        else {
+            return false;
+        };
+        let at = crate::reach::Target::stack(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+            g,
+        );
+        self.ground_items.in_reach(i, p)
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
+    }
+
+    /// [`Self::box_reachable`] for world container `i` — the pad's crate, a
+    /// waystation's cache, a ziggurat room's crate: the planar arm
+    /// (`WorldConts::in_reach`), then the same storey and nothing in the
+    /// way, measured to the floor `open` read off `terrain::scatter`. The
+    /// move verb and the server's container view ask exactly this.
+    pub fn world_cont_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(c)) = (self.players.get(slot), self.world_conts.entries().get(i)) else {
+            return false;
+        };
+        let o = crate::worldcont::occupant_of(c.table as usize);
+        let at = crate::reach::Target::world_cont((c.qx, c.qy, c.qz), o);
+        self.world_conts.in_reach(i, p)
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
     }
 
     /// The move verb's one mutating body. Everything it decides is decided
@@ -2848,7 +2963,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.backpacks.in_reach(i, &self.players[slot]) {
+                if !self.bag_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -2868,7 +2983,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.deploys.box_in_reach(i, &self.players[slot]) {
+                if !self.box_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -2908,7 +3023,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.world_conts.in_reach(i, &self.players[slot]) {
+                if !self.world_cont_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -3300,21 +3415,48 @@ impl World {
         use crate::movement::POS_XZ_Q;
         let p = &self.players[slot];
         let (px, pz) = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
-        let mut best: Option<(usize, f32)> = None;
-        for (i, a) in self.spent.entries().iter().enumerate() {
+        let (eye, feet) = self.hand(slot);
+        let (seed, haven, cols, doors) = (
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+        );
+        // The nearest arrow standing in a body the hand reaches — aimed at
+        // the body's middle, so it is not pulled through a wall or a floor.
+        let arrows = self.spent.entries();
+        let mut cand = [(0.0f32, 0u16); crate::limits::MAX_SPENT_ARROWS];
+        let mut n = 0;
+        for (i, a) in arrows.iter().enumerate() {
             if a.host == 0 {
                 continue;
             }
             let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
             let d2 = dx * dx + dz * dz;
-            if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
-                best = Some((i, d2));
+            if d2 <= LOOT_REACH_M * LOOT_REACH_M {
+                cand[n] = (d2, i as u16);
+                n += 1;
             }
         }
-        let Some((i, d2)) = best else {
+        let Some(i) = crate::reach::nearest_clear(&mut cand[..n], |i| {
+            let a = &arrows[i];
+            let at = crate::reach::Target::body(
+                a.qx as f32 / 1000.0,
+                a.qy as f32 / 1000.0,
+                a.qz as f32 / 1000.0,
+            );
+            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+        }) else {
             return false;
         };
-        if let Some(g) = self.ground_items.nearest(p) {
+        let a = &arrows[i];
+        let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
+        let d2 = dx * dx + dz * dz;
+        let clear = |g: &crate::grounditem::GroundItemRec| {
+            let at = crate::reach::Target::stack(seed, haven, cols, doors, g);
+            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+        };
+        if let Some(g) = self.ground_items.nearest_where(p, clear) {
             let g = self.ground_items.entries()[g];
             let (dx, dz) = (g.qx as f32 * POS_XZ_Q - px, g.qz as f32 * POS_XZ_Q - pz);
             if dx * dx + dz * dz <= d2 {
@@ -5191,6 +5333,17 @@ impl World {
                     // Down, only the door: research and the oven are hand
                     // work, which `live_slot_of` refuses everywhere else.
                     let down = self.players[slot].wounded;
+                    let (eye, feet) = self.hand(slot);
+                    let (seed, haven, cols, doors, content) = (
+                        self.seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
+                        &self.deploy,
+                    );
+                    let reach = |d: &Deploys, i: usize| {
+                        crate::reach::clear_box(seed, haven, cols, doors, content, d, i, eye, feet)
+                    };
                     let lit = !down
                         && (crate::research::begin(
                             &self.research,
@@ -5201,6 +5354,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            reach,
                         ) || crate::oven::toggle(
                             &self.cook,
                             &mut self.deploys,
@@ -5210,6 +5364,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            reach,
                         ));
                     if !lit {
                         let owner = deploy::use_door(
@@ -5550,8 +5705,7 @@ impl World {
                     let p = &mut self.players[slot];
                     let n = count.min(p.inv[i].count);
                     if n > 0 {
-                        let mut spill = [ItemStack::default(); INV_SLOTS];
-                        spill[0] = ItemStack {
+                        let thrown = ItemStack {
                             count: n,
                             ..p.inv[i]
                         };
@@ -5559,7 +5713,46 @@ impl World {
                         if p.inv[i].count == 0 {
                             p.inv[i] = ItemStack::default();
                         }
-                        self.drain_spill(slot, &mut spill);
+                        // Thrown out of the hand to where the sim says it
+                        // lands; the flight is a closed form every client
+                        // draws alike (`grounditem.rs`'s header).
+                        let (body, crouched, yaw, pitch) = {
+                            let p = &self.players[slot];
+                            (p.body, p.crouched(), p.frame.yaw, p.frame.pitch)
+                        };
+                        let seed = self.seed;
+                        let tick = self.tick;
+                        let eye_m = ranged::eye_mm(crouched) as f32 / ranged::MM_PER_M;
+                        let haven = &self.haven;
+                        let cols = self.pieces.cols();
+                        let mut occ = crate::occupy::Occupants {
+                            doors: self.card_door_bits,
+                            table: &self.scatter,
+                            haven,
+                            harvested: &self.slot_lives,
+                            cache: &mut self.slot_cache,
+                        };
+                        let throw = crate::grounditem::throw_spot(
+                            seed,
+                            haven,
+                            cols,
+                            &mut occ,
+                            (body.qx, body.qy, body.qz),
+                            eye_m,
+                            yaw,
+                            pitch,
+                        );
+                        // Nowhere to land (the sea), or loose stacks
+                        // disarmed by content: the bag at the feet.
+                        let laid = throw.map_or(0, |(from, rest)| {
+                            self.ground_items
+                                .toss(&self.backpack, rest, thrown, tick, from)
+                        });
+                        if laid == 0 {
+                            let mut spill = [ItemStack::default(); INV_SLOTS];
+                            spill[0] = thrown;
+                            self.drain_spill(slot, &mut spill);
+                        }
                     }
                 }
             }
@@ -5586,11 +5779,22 @@ impl World {
             Command::Loot { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
-                    let looted = self.backpacks.loot_nearest(
+                    let (eye, feet) = self.hand(slot);
+                    let (seed, haven, cols, doors) = (
+                        self.seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
+                    );
+                    let looted = self.backpacks.loot_nearest_where(
                         &self.gather,
                         &town,
                         &mut self.players[slot],
                         &mut self.events,
+                        |q| {
+                            let at = crate::reach::Target::lying(seed, haven, cols, q);
+                            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+                        },
                     );
                     // A bag is a container someone else owns (`TRUST_CONT`):
                     // emptying it with `Loot` is the act `move_item` logs for
@@ -5617,7 +5821,7 @@ impl World {
                     let aimed = self
                         .ground_items
                         .index_of_id(target)
-                        .filter(|&i| self.ground_items.in_reach(i, &self.players[slot]));
+                        .filter(|&i| self.ground_item_reachable(i, slot));
                     if let Some(i) = aimed {
                         self.ground_items.take_at(
                             i,
@@ -5627,11 +5831,22 @@ impl World {
                             &mut self.events,
                         );
                     } else if !self.pull_arrow(slot, &mut spill) {
-                        self.ground_items.take_nearest(
+                        let (eye, feet) = self.hand(slot);
+                        let (seed, haven, cols, doors) = (
+                            self.seed,
+                            &self.haven,
+                            self.pieces.cols(),
+                            self.card_door_bits,
+                        );
+                        self.ground_items.take_nearest_where(
                             &self.gather,
                             &mut self.players[slot],
                             &mut spill,
                             &mut self.events,
+                            |g| {
+                                let at = crate::reach::Target::stack(seed, haven, cols, doors, g);
+                                crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+                            },
                         );
                     }
                     // A take into a full pack spills at the feet, the same
@@ -5649,6 +5864,8 @@ impl World {
                         self.seed,
                         &self.scatter,
                         &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
                         &self.loot,
                         &self.gather,
                         self.tick,
@@ -7949,8 +8166,9 @@ impl World {
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
         }
-        // World containers (`worldcont.rs`). Every field is hashed
-        // including `refill_at`: two shards whose crates were emptied on
+        // World containers (`worldcont.rs`). Every saved field is hashed
+        // (`qy` is derived from the cell and re-derived at load, never read
+        // from a file) including `refill_at`: two shards whose crates were emptied on
         // different ticks agree about the contents (both empty) and
         // disagree about *when they pay again*, which is a divergence that
         // would otherwise stay silent until the first refill.
@@ -8147,6 +8365,7 @@ mod tests {
                 cx: 20,
                 cz: 20,
                 qx: 5_000,
+                qy: 0,
                 qz: 5_000,
                 table: crate::loot::LOOT_CRATE as u8,
                 refill_at: 0,

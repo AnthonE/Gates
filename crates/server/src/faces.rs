@@ -13,13 +13,20 @@
 //!
 //! ## Where this runs
 //!
-//! On a blocking thread spawned by the accept loop (`net.rs`), once per join.
+//! On a blocking thread spawned by the accept loop (`net.rs`), once per join
+//! and at most once per [`REFRESH_COOLDOWN`] per wallet, behind the accept
+//! loop's read gate.
 //! What it learns reaches the sim thread as a [`crate::slot::FaceMsg`] and
 //! goes out as `EventMsg::Tag`; it never enters `sim-core`.
 
 use std::time::Duration;
 
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// The least time between two reads for one wallet. A join sooner is shown
+/// the last name and picture, and read again once this has run, so a name
+/// changed on the platform shows at most this long after the last read.
+pub const REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// The whole answer is a wallet, a 16-byte name, a url and two numbers.
 pub const MAX_RESPONSE_BYTES: usize = 4 * 1024;

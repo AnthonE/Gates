@@ -2381,12 +2381,17 @@ impl Models {
 /// ordinary handle and no scene hierarchy is spawned. `tests/held_assets.rs`
 /// is what keeps that true. The generated rows are built here, once — the
 /// same startup, the same vectors, so `swap` cannot tell the sources apart.
+/// The prop kit's rows share one material over two textures built here
+/// (`heldkit::install`), so it is registered once and every row holds it.
 pub fn load_models(
     mut commands: Commands,
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
+    super::heldkit::install(&mut images);
+    let kit_mat = materials.add(super::heldkit::material());
     let glb_mesh = |path: &'static str| -> Handle<Mesh> {
         assets.load(
             GltfAssetLabel::Primitive {
@@ -2414,7 +2419,11 @@ pub fn load_models(
             }
             crate::ui::hold::HeldSrc::Gen(name) => {
                 mesh.push(meshes.add(super::heldgen::mesh(name)));
-                mat.push(materials.add(super::heldgen::material(name)));
+                mat.push(if super::heldgen::is_kit(name) {
+                    kit_mat.clone()
+                } else {
+                    materials.add(super::heldgen::material(name))
+                });
             }
         }
     }

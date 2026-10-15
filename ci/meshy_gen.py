@@ -187,14 +187,16 @@ def main():
             # `meshy-7.1`, not `meshy-7`: same parameters and credits, more
             # geometry detail, and 7 is deprecated (Meshy changelog
             # 2026-09-18).
-            # `target_polycount` is only honoured with `should_remesh` on this
-            # path: without it the 2026-10-15 spires came back at 213k
-            # triangles against a 1,400 ask (`ci/meshy_beast.py` passes both).
+            # **`target_polycount` is ignored on this path unless the mesh is
+            # remeshed**: measured 2026-10-15, a pile of three stones asked
+            # for 3,000 came back at 580,271 triangles and 26 MB. Smart
+            # topology remeshes by construction; this path has to be told,
+            # which is what `ci/meshy_beast.py` already does.
             mesh_id = call("POST", "/openapi/v1/multi-image-to-3d", {
                 "image_urls": urls[:4],
                 "ai_model": "meshy-7.1",
-                **({"should_remesh": True, "topology": "triangle"} if a.tris else {}),
                 **common,
+                **({"should_remesh": True, "topology": "triangle"} if a.tris else {}),
             })["result"]
             mesh_ep = "/openapi/v1/multi-image-to-3d"
         else:
