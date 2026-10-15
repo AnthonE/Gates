@@ -115,6 +115,7 @@ pub struct DeckParams {
     pub drift: Vec4,
     pub shade: Vec4,
     pub air: Vec4,
+    pub dust: Vec4,
 }
 
 impl DeckParams {
@@ -159,6 +160,7 @@ impl DeckParams {
             ),
             shade: Vec4::new(sky::CORE_SHADE, sky::RIM_GLOW, sky::SIDE_VIEW_Y, 0.0),
             air: p.fog.lanes(),
+            dust: p.fog.dust_lanes(),
         }
     }
 }
@@ -498,22 +500,26 @@ pub struct SkyFogParams {
     /// xyz the ground fog's sun glow (`sky::fog_glow`, times its alpha); w
     /// its exponent.
     pub glow: Vec4,
+    /// `sky::SkyFog::dust_lanes`.
+    pub dust: Vec4,
 }
 
 impl SkyFogParams {
     /// The fog over a compose's sky, the colour the rig gives the ground's
-    /// (`sky::fog_color` of the same light, weight and extinction), or none
-    /// under the sea, where the shell is the sky (`underwater.rs`).
+    /// (`sky::fog_color_dust` of the same light, weight, extinction and
+    /// dust), or none under the sea, where the shell is the sky
+    /// (`underwater.rs`).
     pub fn new(p: &ComposeParams, underwater: bool) -> Self {
         if underwater {
             return Self::default();
         }
-        let c = sky::fog_rgb(p.light, p.dark, sky::fog_grey(p.fog.sigma()));
+        let c = sky::fog_rgb_dust(p.light, p.dark, p.fog.sigma(), p.fog.dust());
         let g = sky::fog_glow().to_linear();
         Self {
             color: Vec3::from_array(c).extend(0.0),
             air: p.fog.lanes(),
             glow: (Vec3::new(g.red, g.green, g.blue) * g.alpha).extend(sky::FOG_SUN_EXPONENT),
+            dust: p.fog.dust_lanes(),
         }
     }
 }

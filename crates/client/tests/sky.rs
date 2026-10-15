@@ -419,12 +419,19 @@ fn a_grey_composite_gets_a_grey_lift() {
 #[test]
 fn the_sky_fog_meets_the_ground_fog_at_the_horizon() {
     use client::render::rig::FAR_M;
-    use client::render::sky::{SkyFog, FOG_LAYER_M};
+    use client::render::sky::{SkyFog, DUST_LAYER_M, FOG_LAYER_M};
     assert_eq!(SkyFog::CLEAR.band(0.0), 0.0);
-    // The fog preset's ground fog, and a storm's rain haze.
-    for (fog, rain) in [(0.0199, 0.0), (0.0, 0.005), (0.0007, 0.005)] {
-        let air = SkyFog::new(fog, rain);
-        let far = 1.0 - (-(fog + rain) * FAR_M).exp();
+    // The fog preset's ground fog, a storm's rain haze, and the dust of a
+    // windy overcast over the sand, alone and with a little fog.
+    for (fog, rain, dust) in [
+        (0.0199, 0.0, 0.0),
+        (0.0, 0.005, 0.0),
+        (0.0007, 0.005, 0.0),
+        (0.0, 0.0, 0.0043),
+        (0.0007, 0.0, 0.0026),
+    ] {
+        let air = SkyFog::new(fog, rain).with_dust(dust);
+        let far = 1.0 - (-(fog + rain + dust) * FAR_M).exp();
         assert!(
             (air.band(-0.02) - far).abs() < 1e-5,
             "the horizon read {} where the far land reads {far}",
@@ -440,6 +447,140 @@ fn the_sky_fog_meets_the_ground_fog_at_the_horizon() {
     let ground = SkyFog::new(0.02, 0.0);
     let up = 1.0 - (-(0.02 * FOG_LAYER_M) / 1.02f32).exp();
     assert!((ground.band(1.0) - up).abs() < 1e-5);
+    // Dust stands deeper than the ground fog: overhead it crosses its own
+    // layer, and the sky there is pale rather than gone.
+    let dusty = SkyFog::CLEAR.with_dust(0.004);
+    let up = 1.0 - (-(0.004 * DUST_LAYER_M) / 1.02f32).exp();
+    assert!((dusty.band(1.0) - up).abs() < 1e-5);
+    assert!(dusty.band(1.0) < 0.9 && dusty.band(-0.02) > 0.99);
+}
+
+const DESERT: (f32, f32) = (2048.0, 3400.0);
+const MEADOW: (f32, f32) = (1500.0, 600.0);
+
+/// A dry wind of `wind` blowing toward `toward`, under overcast at noon.
+fn dry_wind(wind: f32, toward: bevy::math::Vec2) -> client::render::weather::WeatherNow {
+    use client::render::weather::WeatherNow;
+    // A private field: built and then set, not by struct update.
+    let mut w = WeatherNow::default();
+    w.wind = wind;
+    w.wind_dir = toward;
+    w.cloud = 0.9;
+    w.dark = 0.35;
+    w.sun = Vec3::new(0.3, 0.9, 0.3).normalize();
+    w.sun_lux = 1.0;
+    w
+}
+
+/// Dust is the sand's and the wind's: a windy dry day over the desert
+/// carries it, and a calm one, a wet one, a rainy one and the temperate
+/// south carry none.
+#[test]
+fn dust_rides_a_dry_wind_over_the_sand_and_nowhere_else() {
+    use bevy::math::Vec2;
+    use client::render::weather::dust_at;
+    use sim_core::terrain::aridity;
+    let (dx, dz) = DESERT;
+    let (mx, mz) = MEADOW;
+    assert_eq!(aridity(SEED, dx, dz), 1.0, "the desert point is not desert");
+    assert_eq!(aridity(SEED, mx, mz), 0.0, "the meadow point is arid");
+    let south = Vec2::new(0.0, -1.0);
+    // Overcast's wind over the sand: a beige wall a few hundred metres off.
+    let w = dry_wind(0.35, south);
+    let d = dust_at(SEED, dx, dz, &w);
+    assert!(d > 0.6, "a windy dry desert carries {d}");
+    // Clear weather's breeze: a haze, not a wall.
+    let light = dust_at(SEED, dx, dz, &dry_wind(0.2, south));
+    assert!(light > 0.0 && light < 0.4 * d, "a breeze carries {light}");
+    // Calm.
+    for wind in [0.0, 0.1] {
+        assert_eq!(
+            dust_at(SEED, dx, dz, &dry_wind(wind, south)),
+            0.0,
+            "calm at {wind}"
+        );
+    }
+    // Rain lays it, and so does ground the rain left wet.
+    let mut rain = dry_wind(0.4, south);
+    rain.rain = 0.35;
+    rain.ground_wet = 0.35;
+    assert_eq!(dust_at(SEED, dx, dz, &rain), 0.0, "dust in the rain");
+    let mut wet = dry_wind(0.35, south);
+    wet.ground_wet = 0.3;
+    assert_eq!(dust_at(SEED, dx, dz, &wet), 0.0, "dust off wet sand");
+    // The temperate south, in any wind.
+    for toward in [south, -south, Vec2::X, -Vec2::X] {
+        assert_eq!(dust_at(SEED, mx, mz, &dry_wind(0.35, toward)), 0.0);
+    }
+}
+
+/// The air at the eye came from upwind: just short of the desert's edge,
+/// a wind off the sand brings the haze and a wind toward it does not.
+#[test]
+fn dust_spills_downwind_of_the_desert() {
+    use bevy::math::Vec2;
+    use client::render::weather::dust_at;
+    use sim_core::terrain::aridity;
+    let x = DESERT.0;
+    let edge = (2048..4000)
+        .step_by(10)
+        .map(|z| z as f32)
+        .find(|&z| aridity(SEED, x, z) > 0.0)
+        .expect("no desert north of the centre");
+    let z = edge - 100.0;
+    let off_the_sand = dust_at(SEED, x, z, &dry_wind(0.35, Vec2::new(0.0, -1.0)));
+    let toward_it = dust_at(SEED, x, z, &dry_wind(0.35, Vec2::new(0.0, 1.0)));
+    assert!(off_the_sand > 0.0, "no dust downwind of the desert's edge");
+    assert_eq!(toward_it, 0.0, "dust upwind of the desert");
+}
+
+/// Dust goes through the one fog path: it is part of the extinction the
+/// rig gives the ground's `DistanceFog`, the sky's band at the horizon is
+/// that fog at the island's far edge, the two are one colour, and that
+/// colour is sand rather than sky.
+#[test]
+fn the_dust_is_the_ground_fogs_and_the_skys_alike() {
+    use bevy::math::Vec2;
+    use client::render::deck::SkyFogParams;
+    use client::render::rig::FAR_M;
+    use client::render::sky::{fog_color, fog_color_dust, fog_grey, fog_rgb, ComposeParams};
+    let mut w = dry_wind(0.35, Vec2::new(0.0, -1.0));
+    w.dust = client::render::weather::dust_at(SEED, DESERT.0, DESERT.1, &w);
+    assert!(w.dust_part() > 0.0);
+    assert_eq!(w.fog_sigma(), w.dust_part(), "dust is not the fog's");
+    let p = ComposeParams::from_weather(&w);
+    let far = 1.0 - (-w.fog_sigma() * FAR_M).exp();
+    assert!(
+        (p.fog.band(-0.02) - far).abs() < 1e-5,
+        "the dusty horizon read {} where the far land reads {far}",
+        p.fog.band(-0.02)
+    );
+    let sky = SkyFogParams::new(&p, false).color;
+    let ground = fog_color_dust(w.sun_lux, w.dark, w.fog_sigma(), w.dust_part()).to_linear();
+    for (a, b) in [
+        (sky.x, ground.red),
+        (sky.y, ground.green),
+        (sky.z, ground.blue),
+    ] {
+        assert!(
+            (a - b).abs() < 1e-6,
+            "sky fog {sky} against ground fog {ground:?}"
+        );
+    }
+    // Sand: warm where the sky's horizon is blue, and no brighter.
+    assert!(
+        sky.x > sky.y && sky.y > sky.z,
+        "the dust is not sand: {sky}"
+    );
+    let plain = fog_rgb(w.sun_lux, w.dark, fog_grey(w.fog_sigma()));
+    let l = luminance([sky.x, sky.y, sky.z]);
+    assert!(
+        (l / luminance(plain) - 1.0).abs() < 1e-3,
+        "the dust lit the fog"
+    );
+    // And no dust, no tint: a clear sky's colour is what it always was.
+    let clear = fog_color_dust(1.0, 0.0, 0.0, 0.0).to_linear();
+    assert_eq!(clear, fog_color(1.0, 0.0, 0.0).to_linear());
 }
 
 /// The deck drifts the way the wind blows — the way the rain slants

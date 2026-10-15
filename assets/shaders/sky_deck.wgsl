@@ -5,7 +5,7 @@
 // plane; land and sea are in front of it by depth.
 #import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::utils::coords_to_viewport_uv
-#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_fog}
+#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_haze}
 
 // Field for field `deck::DeckParams`. Colours are linear, in deck units
 // (1.0 is one `sky::CLOUD_NITS`), already graded by the hour and weather.
@@ -42,6 +42,8 @@ struct Deck {
     shade: vec4<f32>,
     // The weather's air over the sky (`sky::SkyFog::lanes`).
     air: vec4<f32>,
+    // Its dust (`sky::SkyFog::dust_lanes`).
+    dust: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> deck: Deck;
@@ -127,7 +129,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
 
     // Fog lies between the eye and everything: as much of the sky as the
     // weather's air takes along this ray.
-    rgb = mix(rgb, deck.fog.rgb, deck_fog(d.y, deck.air));
+    rgb = mix(rgb, deck.fog.rgb, deck_haze(d.y, deck.air, deck.dust));
 
     return vec4(rgb * deck.horizon.w * view.exposure, 1.0);
 }

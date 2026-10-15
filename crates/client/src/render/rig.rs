@@ -968,7 +968,7 @@ pub fn day_night(
         env.intensity = super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark);
         // Weather fog on both targets: nothing in clear weather on the
         // desktop, the island's own air in a browser, and the weather's
-        // fog and rain on top of either.
+        // fog, rain and dust on top of either.
         if let Some(mut fog) = fog {
             if w.underwater {
                 // Under the surface the water is the fog.
@@ -980,7 +980,7 @@ pub fn day_night(
                 fog.directional_light_color = Color::NONE;
             } else {
                 let sigma = w.fog_sigma();
-                fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
+                fog.color = super::sky::fog_color_dust(lux_share, w.dark, sigma, w.dust_part());
                 fog.falloff = super::sky::fog_falloff(sigma);
                 fog.directional_light_color = super::sky::fog_glow();
             }

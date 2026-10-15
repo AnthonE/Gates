@@ -83,6 +83,9 @@ pub struct WeatherNow {
     pub thunder_n: usize,
     /// The last second whose bolt was queued, so a bolt is heard once.
     last_bolt: u64,
+    /// How much sand the air carries round the eye, `0..=1` ([`dust_at`]):
+    /// local like the drift, the same for everyone standing there.
+    pub dust: f32,
 }
 
 impl WeatherNow {
@@ -95,12 +98,12 @@ impl WeatherNow {
         self.sun_cover.max(heavy).max(self.fog)
     }
 
-    /// Per-metre extinction of the weather's fog and rain on geometry —
-    /// the `DistanceFog` density. Zero in clear weather, so on the desktop
-    /// the atmosphere stays the only haze until the weather adds one.
-    /// ~150 m sight in the fog preset, ~500 m in a storm.
+    /// Per-metre extinction of the weather's fog, rain and dust on
+    /// geometry — the `DistanceFog` density. Zero in clear weather off the
+    /// sand, so on the desktop the atmosphere stays the only haze until the
+    /// weather adds one. ~150 m sight in the fog preset, ~500 m in a storm.
     pub fn fog_sigma(&self) -> f32 {
-        self.fog_part() + self.rain_part()
+        self.fog_part() + self.rain_part() + self.dust_part()
     }
 
     /// The ground fog's share of [`Self::fog_sigma`], per metre.
@@ -113,6 +116,14 @@ impl WeatherNow {
     pub fn rain_part(&self) -> f32 {
         let r = self.rain;
         r * r * (3.0 / 600.0)
+    }
+
+    /// The dust haze's share of [`Self::fog_sigma`], per metre: squared,
+    /// as the rain's is, so the desert's edge and a light breeze are a
+    /// tint on the far hills and only a wind over open sand is a wall.
+    pub fn dust_part(&self) -> f32 {
+        let d = self.dust;
+        d * d * DUST_SIGMA
     }
 
     /// Queue a thunderclap, dropping it if the queue is full (a storm is
@@ -136,6 +147,67 @@ impl WeatherNow {
 
 fn pm(v: u16) -> f32 {
     v as f32 * 0.001
+}
+
+// ── Dust ──────────────────────────────────────────────────────────────────
+//
+// Rust's Dust preset is beige fog over the whole map, and the schedule here
+// dropped it because the island had no desert. Climate v0 gave it one in the
+// north (`terrain::aridity`), and dust belongs to the ground rather than to
+// the sky: the same wind that is a breeze over the meadow lifts sand off the
+// dunes. So it is not a preset but a reading of the weather at a place —
+// the wind, the dry, and how much sand lies under and upwind of the eye.
+// No state and nothing on the wire: a pure function of the seed, the
+// weather everyone shares and where the eye stands, so two players on one
+// dune see one haze.
+
+/// Full dust's extinction, per metre: ~450 m of sight (`3 / σ`), the
+/// reference's beige wall. A gale over open sand; the schedule's driest
+/// winds reach about two thirds of it.
+const DUST_SIGMA: f32 = 3.0 / 450.0;
+/// The wind that starts lifting sand and the wind that carries all it can,
+/// smoothstepped: clear weather's 200‰ is a haze on the far dunes (~20 km
+/// of sight), overcast's 350‰ a beige wall at ~750 m.
+const DUST_WIND: (f32, f32) = (0.12, 0.45);
+/// The aridity where open sand starts to show and where it is all sand
+/// (`terrain::DESERT_MOIST` falls between them on most of the band).
+const DUST_ARID: (f32, f32) = (0.25, 0.75);
+/// Rain, or ground still this wet from it, lays the dust: past this there
+/// is none, and it comes back as the sand dries (`ground_wet`'s minutes).
+const DUST_DAMP: f32 = 0.15;
+/// How far upwind the sand is read, metres. The air at the eye came from
+/// there, so the haze spills off the desert's edge downwind and thins
+/// where clean air blows in.
+const DUST_FETCH_M: [f32; 2] = [250.0, 500.0];
+
+fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How much sand the air at `(x, z)` carries in weather `w`, `0..=1`:
+/// arid ground under and upwind, times a wind to lift it, times dry — none
+/// in rain or on ground still wet from it. Per mille, as the weather is, so
+/// the sky's materials re-upload when the haze moves and not every frame
+/// the eye does.
+pub fn dust_at(seed: u64, x: f32, z: f32, w: &WeatherNow) -> f32 {
+    let damp = w.rain.max(w.ground_wet);
+    let dry = (1.0 - damp / DUST_DAMP).max(0.0);
+    let windy = smooth(DUST_WIND.0, DUST_WIND.1, w.wind);
+    if dry * windy <= 0.0 {
+        return 0.0;
+    }
+    let up = -w.wind_dir;
+    let mut arid = sim_core::terrain::aridity(seed, x, z);
+    for f in DUST_FETCH_M {
+        arid += sim_core::terrain::aridity(seed, x + up.x * f, z + up.y * f);
+    }
+    let sand = smooth(
+        DUST_ARID.0,
+        DUST_ARID.1,
+        arid / (1 + DUST_FETCH_M.len()) as f32,
+    );
+    (sand * windy * dry * 1000.0).round() / 1000.0
 }
 
 /// The wind's bearing (a yaw-LUT index, the sim's convention) as a unit
@@ -253,6 +325,9 @@ pub fn update(
     now.sun_cover = composer.map_or(0.0, |c| {
         c.cover_at(now.sun, super::sky::deck_cover(now.cloud), now.drift)
     });
+
+    // The sand in the air, off the wind and the wet just worked out.
+    now.dust = dust_at(world.seed, eye.pos.x, eye.pos.z, now);
 
     // Under a roof, or under the sea: what the rain and its sound ask.
     now.underwater = eye.pos.y < sim_core::terrain::SEA_LEVEL;

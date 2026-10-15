@@ -11,7 +11,7 @@
 // `sky::SkyFog::band`, which at the horizon is the far land's own fog.
 #import bevy_pbr::mesh_view_bindings::{view, lights}
 #import bevy_pbr::utils::coords_to_viewport_uv
-#import "shaders/deck.wgsl"::deck_fog
+#import "shaders/deck.wgsl"::deck_haze
 
 struct SkyFog {
     // xyz the ground fog's colour (`DistanceFog::color`); w unused.
@@ -21,6 +21,8 @@ struct SkyFog {
     // xyz `DistanceFog::directional_light_color` times its alpha; w its
     // exponent.
     glow: vec4<f32>,
+    // `sky::SkyFog::dust_lanes`.
+    dust: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> fog: SkyFog;
@@ -45,7 +47,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let ndc = coords_to_viewport_uv(in.clip.xy, view.viewport) * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
     let v = view.view_from_clip * vec4(ndc, 1.0, 1.0);
     let d = normalize((view.world_from_view * vec4(v.xyz / v.w, 0.0)).xyz);
-    let band = deck_fog(d.y, fog.air);
+    let band = deck_haze(d.y, fog.air, fog.dust);
     // The glow toward each directional light, as Bevy's `apply_fog` lays it
     // on the ground's fog (no shadow: nothing shades the sky), so the two
     // still meet toward the sun and toward a lightning bolt.
