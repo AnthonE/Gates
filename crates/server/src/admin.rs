@@ -246,10 +246,10 @@ pub fn ban_full_line(id: u32) -> String {
     format!("{id} not banned: {MAX_BANS} bans")
 }
 
-/// `/ban`'s answer, from the sim, when the target joined with no wallet
-/// (a dev login): there is nothing a ban could hold at the door.
+/// `/ban`'s answer, from the sim, when the target joined with no wallet (a
+/// guest): there is nothing a ban could hold at the door, but a kick works.
 pub fn no_wallet_line(id: u32) -> String {
-    format!("{id} not banned: no wallet")
+    format!("{id} not banned: no wallet (/kick works)")
 }
 
 /// The sim's answer to `/kick`, `/ban` or `/unban` when the ring to the

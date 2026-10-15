@@ -27,7 +27,7 @@ use crate::bits::{BitReader, BitWriter, WireError};
 use crate::{expect_zero_padding, KIND_BITS, KIND_CHAT};
 
 /// Longest chat line on the wire, in UTF-8 bytes. Bounded by the server's
-/// own C→S frame acceptance (`MAX_STREAM_MSG_BYTES` = 64): 48 text bytes
+/// own C→S frame acceptance (`MAX_STREAM_MSG_BYTES`): 48 text bytes
 /// plus the 8-bit header encode to 50 B, which leaves the length prefix
 /// and a margin. Proposed default, DECISIONS.md §open ("chat v0").
 pub const CHAT_MAX_BYTES: usize = 48;
@@ -104,7 +104,7 @@ impl ChatText {
             return None;
         }
         let text = core::str::from_utf8(s).ok()?;
-        if text.chars().any(|c| c.is_control()) {
+        if text.chars().any(|c| c.is_control() || hides_or_reorders(c)) {
             return None;
         }
         let mut out = Self::EMPTY;
@@ -112,6 +112,26 @@ impl ChatText {
         out.len = s.len() as u8;
         Some(out)
     }
+}
+
+/// A character that is invisible or turns the text around it: the bidi
+/// embeddings, overrides, isolates and marks, and the zero-width space, word
+/// joiner and byte-order mark. A line carrying one can draw as something it
+/// does not say — a name reversed into another, a gap that is not there.
+/// The zero-width joiners stay: emoji and several scripts are spelled with
+/// them.
+fn hides_or_reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
 /// Who a line is for (wire v108; one bit, global or not, before). The
@@ -249,6 +269,16 @@ mod tests {
         assert!(ChatText::sanitize(&[0xff, 0xfe]).is_none());
         // Exactly at the cap is fine.
         assert!(ChatText::sanitize(&[b'a'; CHAT_MAX_BYTES]).is_some());
+        // Text that draws as something it does not say: a right-to-left
+        // override, an isolate, a zero-width space, a byte-order mark.
+        for hidden in ["\u{202E}nimda", "a\u{2067}b", "pay\u{200B}me", "\u{FEFF}hi"] {
+            assert!(
+                ChatText::sanitize(hidden.as_bytes()).is_none(),
+                "{hidden:?}"
+            );
+        }
+        // The joiners that spell emoji and scripts stay.
+        assert!(ChatText::sanitize("👩\u{200D}🚀".as_bytes()).is_some());
     }
 
     #[test]

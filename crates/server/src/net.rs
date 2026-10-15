@@ -3325,7 +3325,10 @@ async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
 /// player and slots are the accept loop's business — and a reconnect between
 /// the two must not be kicked in the first one's name.
 fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> bool {
-    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some()) else {
+    // The tenant with that id, wallet or guest: a guest griefs as well as
+    // anyone, and a kick needs no wallet (a ban does — `core.rs` refuses
+    // that one before it reaches here). `kick_tenant` checks it is live.
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].conn.is_some()) else {
         return false;
     };
     kick_tenant(slot, keys, slots, protocol::REFUSE_ADMIN)
