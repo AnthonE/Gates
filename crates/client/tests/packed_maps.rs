@@ -132,6 +132,10 @@ fn packed_models() -> Vec<&'static str> {
             set.insert(*p);
         }
     }
+    // The skins that bring a model of their own (`hold::SKIN_MODELS`).
+    for s in client::ui::hold::SKIN_MODELS.iter() {
+        set.insert(s.path);
+    }
     set.into_iter().collect()
 }
 

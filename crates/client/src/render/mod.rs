@@ -122,6 +122,7 @@ pub mod ziggurat;
 /// Painted skins: the items a skin can be a picture on, and their meshes.
 pub mod canvas;
 pub mod heldgen;
+pub mod heldkit;
 // The right hand's finger bones, closed on what it holds.
 pub mod fingers;
 // **Desktop only.** This module reaches a local elo launcher over a unix

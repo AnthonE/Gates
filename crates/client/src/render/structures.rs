@@ -3013,6 +3013,9 @@ fn sync_loot(
         name[..raw.len()].copy_from_slice(raw);
         let want = match live.get(&g.id) {
             Some(old) if old.item == g.item && old.name == name => old.wanted,
+            // An arrow lies stuck where it hit or planted point-down, which
+            // its held row's laid pose cannot draw: the stand-in below.
+            _ if crate::ui::hold::is_arrow(catalog, g.item) => None,
             _ => crate::ui::hold::held_model(
                 catalog,
                 sim_core::gather::ItemStack {

@@ -88,7 +88,27 @@ pub fn sack_mesh(size: [f32; 3]) -> Mesh {
     s.mesh()
 }
 
-/// Lay a model on its side and seat its transformed bounds on the surface.
+/// The turn that rests a model on its broadest face: its thinnest axis up.
+/// A hafted tool falls on its side, a coil of rope or a pile of ore stays
+/// as it sits, and a shirt lies flat rather than standing like a sign.
+fn lie_flat(positions: &[[f32; 3]]) -> Quat {
+    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    for p in positions {
+        lo = lo.min(Vec3::from(*p));
+        hi = hi.max(Vec3::from(*p));
+    }
+    let e = hi - lo;
+    if e.y <= e.x && e.y <= e.z {
+        Quat::IDENTITY
+    } else if e.x <= e.z {
+        Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
+    } else {
+        Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
+    }
+}
+
+/// Lay a model on its broadest face and seat its transformed bounds on the
+/// surface.
 /// The hand's grip offset is deliberately absent: it has no meaning on dirt.
 /// Sampling the footprint also covers wire-height quantization and slopes.
 pub fn resting_transform(
@@ -100,17 +120,17 @@ pub fn resting_transform(
     ground: impl Fn(f32, f32) -> f32,
 ) -> Transform {
     let yaw = Quat::from_rotation_y((id % 4) as f32 * std::f32::consts::FRAC_PI_2);
-    let mut rotation = yaw
-        * if laid {
-            Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)
-        } else {
-            Quat::IDENTITY
-        };
     let Some(VertexAttributeValues::Float32x3(positions)) =
         mesh.attribute(Mesh::ATTRIBUTE_POSITION)
     else {
         return Transform::from_translation(position);
     };
+    let mut rotation = yaw
+        * if laid {
+            lie_flat(positions)
+        } else {
+            Quat::IDENTITY
+        };
     let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
     for p in positions {
         let p = rotation * (Vec3::from(*p) * scale);
