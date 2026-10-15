@@ -138,6 +138,12 @@ const SEARCH_RGB: [f32; 3] = [0.75, 0.74, 0.62];
 const SEARCH_LUMENS: f32 = 14_000.0;
 const SEARCH_RANGE_M: f32 = 80.0;
 const SEARCH_CONE: f32 = 0.085;
+/// The lamp head, generated: a finned steel drum 0.5 m across, its lens up
+/// +Y (the way [`SearchHead`] aims) and centred on the pivot.
+pub const SEARCHLIGHT_GLB: &str = "models/site/searchlight.glb";
+/// The glowing disc over the model's lens: its radius and height on +Y.
+const LENS_R: f32 = 0.18;
+const LENS_Y: f32 = 0.21;
 
 #[derive(Component)]
 pub struct Searchlight {
@@ -570,6 +576,7 @@ pub fn spawn(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    server: Res<AssetServer>,
     drawn: Query<(), With<TownFxRoot>>,
 ) {
     let Some(world) = world else { return };
@@ -691,8 +698,8 @@ pub fn spawn(
         0.32,
         1.6,
     ));
-    let drum = meshes.add(Cylinder::new(0.3, 0.55));
-    let lens = meshes.add(Cylinder::new(0.26, 0.02));
+    let (drum, drum_material) = super::mobs::model(&server, SEARCHLIGHT_GLB);
+    let lens = meshes.add(Cylinder::new(LENS_R, 0.01));
     let lens_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.9, 0.9, 0.85),
         emissive: LinearRgba::rgb(2.0, 2.0, 1.8),
@@ -727,7 +734,7 @@ pub fn spawn(
                 WorldEntity,
                 SearchHead(k),
                 Mesh3d(drum.clone()),
-                MeshMaterial3d(steel.clone()),
+                MeshMaterial3d(drum_material.clone()),
                 Transform::from_translation(at_w),
             ))
             .id();
@@ -735,7 +742,7 @@ pub fn spawn(
             ChildOf(head),
             Mesh3d(lens.clone()),
             MeshMaterial3d(lens_mat.clone()),
-            Transform::from_xyz(0.0, 0.28, 0.0),
+            Transform::from_xyz(0.0, LENS_Y, 0.0),
             NotShadowCaster,
         ));
         commands.spawn((

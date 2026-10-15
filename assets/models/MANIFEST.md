@@ -1081,7 +1081,7 @@ with `ci/prop_kit.py sheet <names…>`.
 | `held/metal_hatchet`, `metal_pickaxe`, `metal_spear`, `satchel_charge`, `bandage`, `medkit`, `berries`, `mushrooms`, `corn`, `raw_meat`, `cooked_meat`, `burnt_meat`, `green_keycard`, `blue_keycard`, `red_keycard` | held items that drew the stand-in tool |
 | `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
 | `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
-| `prop/oil_barrel`, `road_sign`, `food_crate`, `tire_stack`, `car_wreck` | the roadside junk (`props::ROADSIDE_GLB`); the sign and the wreck are authored as-is over the sim's box tables |
+| `prop/oil_barrel`, `road_sign`, `food_crate` | the roadside junk (`props::ROADSIDE_GLB`); the sign is authored as-is over the sim's box table. The wreck and the tyres were here until Meshy's replaced them (§Roadside and monuments) |
 | `mob/pig_body`, `pig_leg`, `wolf_body`, `wolf_leg`, `stag_body`, `stag_leg`, `pig_carcass`, `wolf_carcass`, `stag_carcass` | the animals, authored in `render/mobs.rs`'s frame (+Z forward, a leg's hip at its origin) and exported as-is; the box tables there stay the measured truth |
 
 ## `mob/fel/` — the fel pig, wolf and stag, generated, rigged here (2026-10-13)
@@ -1113,3 +1113,66 @@ three days, which is how the first boar and wolf were lost).
 
 The stag's rack is cut out of the weight proxy (`rig_beast.py` `heat`):
 whole, it failed bone heat on two of three stags, and a rack does not bend.
+
+## Roadside and monuments — Meshy, 2026-10-15
+
+The roadside junk and the monuments' parts that were code primitives or box
+recipes. Same terms as `deploy/` (Meshy paid plan, no `NOTICE` entry, no
+proper noun in any prompt) and the same pipeline as the held items above:
+`meshy_gen.py` (nano-banana-pro → meshy-t2 smart topology, single view) →
+`import_meshy.py` → `ktx_pack.py --size 1024`. **264 credits for eleven
+rolls** (balance 2,419 → 2,155, measured; they ran four at a time, so the
+sidecars' per-roll deltas overlap and only the total holds). Nine ship.
+`import_meshy.py` grew `--turn` (right-angle turns before the fit: Meshy
+lays a car, a gunship and a turret head along −X) and `--shift` (a pivot that
+is not the box's middle); `ci/cut_glb.py` is new.
+
+| file | slug | draws | image task | mesh task | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `prop/car_wreck.glb` | car_wreck | `CarWreck` (`ROADSIDE_GLB`) | `01a140f7-150b` | `01a140f7-df92` | 4,233 | 1.70 × 1.50 × 4.00 | `--fit-axes --turn=y90` to `CAR_WRECK_BOXES`' bounds (aspect 1.32: the delivery was 2.09 wide) |
+| `prop/tire_stack.glb` | tire_stack | `TireStack` (`ROADSIDE_GLB`) | `01a140f7-1548` | `01a140f7-919a` | 4,446 | 0.83 × 1.20 × 0.78 | `--fit-radius --center` (aspect 1.34: the delivery stood 1.0 to 0.93 across) |
+| `mob/heli.glb` | heli | the heli's hull (`heli::HULL_GLB`) | `01a140f8-b946` | `01a140f9-0c13` | 8,418 | 4.75 × 4.19 × 13.00 | uniform to 13 m, `--turn=y90`; then `ci/cut_glb.py --box -1.6 3.74 -0.3 1.6 3.995 3.0 --spare 0 1.33 0.2` cut the static blade stubs (591 triangles) |
+| `site/sentry_head.glb` | sentry_head | sentry and turret head (`sentry::HEAD_GLB`) | `01a140f8-ddf6` | `01a140f9-30cc` | 2,202 | 0.80 × 0.40 × 0.89 | uniform to 0.8 wide, `--turn=y90 --center --shift=0,0,0.17` (pivot mid-housing) |
+| `deploy/turret_base.glb` | turret_base | DEPLOY row 18 and the sentries' pedestal | `01a140f8-df9e` | `01a140f9-5ab8` | 2,050 | 0.70 × 0.56 × 0.70 | uniform to the `DEPLOY` row |
+| `site/works_plinth.glb` | works_plinth | a work's plinth and bowl (`works::PLINTH_GLB`) | `01a140f8-e4f5` | `01a140f9-daf6` | 3,144 | 1.60 × 1.58 × 1.60 | uniform to 1.6 wide; the gold ring stays a torus |
+| `site/lore_slab.glb` | lore_slab | an inscription's stele (`lore::SLAB_GLB`) | `01a140f9-bae1` | `01a140fa-87b8` | 2,177 | 1.59 × 2.00 × 0.55 | uniform to 2.0 tall; the ring on top stays a torus |
+| `site/lore_dial.glb` | lore_dial | a mechanism's dial drum (`lore::DIAL_GLB`) | `01a140f9-e137` | `01a140fa-85a8` | 2,209 | 1.11 × 1.00 × 1.11 | uniform to 1.0 tall; the gold notch stays code |
+| `site/searchlight.glb` | searchlight | a watchtower's lamp head (`town_fx::SEARCHLIGHT_GLB`) | `01a140fa-81b3` | `01a140fb-2473` | 2,069 | 0.51 × 0.46 × 0.60 | uniform, `--turn=x-90 --center` (lens up +Y); an emissive disc lies on the lens |
+
+**Rolled and not shipped:** the red oil drum (`01a140f7-1533` / `01a140f7-b9c4`) shaded its lid
+as a starburst and streaked its sides, and the food crate (`01a140f7-152b` / `01a140f8-07a4`)
+came back dark and streaky against the plank box it would replace. The
+`ci/prop_kit.py` drum, crate and road sign stay; the sign's chevrons are crisp
+in a way a generated texture is not. The car and tyre recipes are gone from
+`ci/prop_recipes.py` so a `gen` cannot overwrite the deliveries.
+
+**Anchors measured off the models** (the code's numbers, so a re-roll means
+re-measuring): the heli's rotor hub at (0, 3.88, 1.33), its tail rotor on the
+fin's left at (−0.25, 2.55, −5.95), its chin gun's muzzle at (0.02, 0.82,
+6.55); the sentry's muzzle at (0, 0.07, 0.62) in head space; the works bowl's
+rim 1.48 m over the ground with the plinth sunk 0.1; the searchlight's lens at
+y 0.21.
+
+Prompts, in full, for the IP rail:
+
+> **car_wreck** — "A single abandoned wrecked four-door saloon car on a plain white background, three-quarter front view. A boxy old family sedan 4.0 metres long, 1.7 metres wide and 1.5 metres tall, its wheels gone so it sits low on its sills, the bonnet buckled and rusted through, the roof slightly caved in, every window smashed out, the doors still shut. Faded dull green paint peeling to brown rust across every panel, rust holes along the sills and the empty wheel arches, a sagging dull chrome bumper, broken headlamps. Long abandoned, weathered, dirty. Exactly one car. No wheels, no tyres, no ground, no terrain, no grass, no people, no plants, no text, no logos, no badges, no number plates, no scale bar."  ·  texture: "Faded dull green car paint peeling to brown rust, rust holes, dirty smashed glass, grimy dull chrome, no text, no logos, no badges, no number plates"
+>
+> **tire_stack** — "A single stack of five worn car tyres lying flat on top of one another on a plain white background, three-quarter view. The stack is 120 centimetres tall and 84 centimetres across, the tyres slightly offset from each other and not perfectly aligned. Black rubber faded to dusty grey, worn tread on the outer faces, cracked sidewalls, dried mud and dust, no wheel rims, empty centres. Real, photographed in soft daylight. Exactly one stack. No ground, no people, no plants, no text, no letters on the sidewalls, no logos, no scale bar."  ·  texture: "Worn black rubber faded to dusty grey, deep tread grooves, cracked sidewalls, dried mud and dust, no text, no letters, no logos"
+>
+> **heli** — "A single military attack helicopter on a plain white background, side three-quarter view. A narrow armoured gunship 13 metres long nose to tail: a stepped two-seat glass cockpit at the nose, a short cannon in a turret under the nose, short stub wings on both sides of the fuselage each carrying a rocket pod, two engine housings on the roof, a long slim tail boom ending in a swept vertical fin and a small horizontal stabiliser, two landing skids underneath. The main rotor blades and the tail rotor blades are removed, leaving only the rotor hub on its mast. Matte olive drab paint, worn and dirty, exhaust soot behind the engines, scuffed panel edges. Exactly one helicopter. No rotor blades, no ground, no people, no plants, no text, no numbers, no insignia, no markings, no logos, no scale bar."  ·  texture: "Matte olive drab military paint, worn scuffed panel edges, exhaust soot, dark tinted cockpit glass, gunmetal cannon and skids, no text, no numbers, no insignia, no markings"
+>
+> **sentry_head** — "A single automated sentry gun turret head on a plain white background, three-quarter view. A compact armoured steel housing 52 centimetres wide, 32 centimetres tall and 60 centimetres deep with bevelled sides, one heavy machine gun barrel 50 centimetres long projecting straight forward from the middle of its front face, a small boxy camera sensor mounted on its right side, an ammunition box on its left side, a flat underside. Dark olive painted steel, chipped and scratched, gunmetal barrel, bolts and panel seams. Exactly one turret head. No base, no stand, no tripod, no ground, no people, no text, no numbers, no logos, no scale bar."  ·  texture: "Dark olive painted armour steel, chipped and scratched paint, gunmetal barrel, bolts and panel seams, black camera lens, no text, no markings"
+>
+> **turret_base** — "A single squat steel gun turret pedestal on a plain white background, three-quarter view. A square armoured steel box 70 centimetres wide, 70 centimetres deep and 60 centimetres tall with bevelled top edges, a heavy bolted flange foot around the bottom, a round slewing ring bearing on the flat top where a gun would mount, a small hinged access panel and a cable gland on one side. Dark grey painted steel, chipped and scratched, rust at the bolts and seams, grimy. Exactly one pedestal. No gun, no barrel, no ground, no people, no text, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted armour steel, chipped and scratched paint, rusty bolts and seams, grime, no text, no markings"
+>
+> **works_plinth** — "A single square black stone altar plinth on a plain white background, three-quarter view. A solid block of polished black basalt 160 centimetres square and 100 centimetres tall with chamfered edges, a stepped base and a plain worn band around the top edge, and set on top a wide shallow round wrought-iron fire bowl 110 centimetres across on short iron feet, the bowl holding grey ash and charred wood. Ancient, weathered, chipped corners. Exactly one plinth. No fire, no flames, no smoke, no ground, no people, no plants, no text, no letters, no symbols, no carvings, no scale bar."  ·  texture: "Polished black basalt with chipped corners, dark wrought iron fire bowl with soot and grey ash, charred wood, no text, no letters, no symbols"
+>
+> **lore_slab** — "A single tall upright black stone slab on a plain white background, three-quarter view. A standing stele of dark polished basalt 130 centimetres wide, 200 centimetres tall and 35 centimetres thick, its sides roughly dressed with chisel marks and chipped edges, its broad front face smooth, flat and blank, its top edge squared, standing in a low rough stone footing. Ancient, weathered, grey-green lichen in the cracks. Exactly one slab. No carving on the face, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Dark polished basalt with a smooth blank front face, roughly dressed chiselled sides, chipped edges, grey-green lichen in the cracks, no text, no letters, no symbols"
+>
+> **lore_dial** — "A single short round stone drum on a plain white background, three-quarter view. A solid cylinder of dark grey basalt 84 centimetres across and 100 centimetres tall, its flat top polished smooth with a low raised rim, two plain carved bands around the body, a slightly wider rough base. Ancient, weathered, chipped, grey-green lichen in the cracks. Exactly one drum. No ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Dark grey basalt, polished smooth top, chipped edges, carved bands, grey-green lichen in the cracks, no text, no letters, no symbols"
+>
+> **searchlight** — "A single industrial searchlight lamp head on a plain white background, three-quarter view looking at its front. A round steel drum lamp housing 60 centimetres across and 55 centimetres deep, a flat round glass lens filling the whole front face behind a ring of bolts, deep cooling fins around the back of the drum, a curved carrying handle across the top. Dark grey painted steel, worn and chipped, rusty bolts, clear glass lens with a silvered reflector visible inside. Exactly one lamp head. No stand, no yoke, no bracket, no light beam, no glow, no ground, no people, no text, no logos, no scale bar."  ·  texture: "Dark grey painted steel, worn and chipped, rusty bolts, cooling fins, clear glass lens over a silvered reflector, no text, no logos"
+>
+> **oil_barrel** — "A single red-painted steel 55-gallon oil drum standing upright on a plain white background, three-quarter view. 88 centimetres tall and 58 centimetres across, two rolling hoops around the body, rolled rims top and bottom, two bung caps on the closed lid. Red paint dented, scratched and chipped through to grey steel, rust creeping up from the bottom rim, oily black drips down one side. Real, weathered, photographed in soft daylight. Exactly one drum. No ground, no people, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Red painted steel drum, dented, chipped and scratched paint, grey steel showing through, rust at the bottom rim, oily black drips, no text, no labels, no logos"
+>
+> **food_crate** — "A single low wooden supply crate on a plain white background, three-quarter view. A long rectangular box 100 centimetres long, 60 centimetres deep and 40 centimetres tall, rough pine planks nailed into a dark wooden batten frame, a lid of three boards, iron corner brackets and a rope handle at each end. Weathered grey-brown wood, dirty, a faded green paint band across the front with no letters. Real, photographed in soft daylight. Exactly one crate. No ground, no people, no plants, no text, no letters, no labels, no logos, no scale bar."  ·  texture: "Weathered grey-brown pine planks, dark wooden battens, rusty iron corner brackets, frayed rope handles, faded green paint band, no text, no letters"
