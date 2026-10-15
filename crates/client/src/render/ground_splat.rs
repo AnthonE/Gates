@@ -134,6 +134,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::render::storage::ShaderStorageBuffer;
 use bevy::shader::ShaderRef;
 
 use super::terrain_mesh::{
@@ -757,6 +759,20 @@ pub struct GroundSplat {
     /// sample BLACK and put the whole island in shadow.
     #[texture(103, dimension = "2d_array")]
     pub data: Handle<Image>,
+    /// The cloud deck's coverage field (`sky::SoftField`, bytes packed four
+    /// to a word), for its shadows on the land (`cloud_shadow.rs`), and
+    /// their lanes. **A storage buffer, not a texture**: the arrays above
+    /// already fill the sixteen sampled textures a downlevel adapter allows
+    /// under the atmosphere (`the_ground_fits_the_fragment_texture_budget`),
+    /// and a buffer counts against none of them. **Native only**, where the
+    /// shadows are drawn. `cloud_shadow::NO_FIELD` until
+    /// `cloud_shadow::drive` writes the deck's.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[storage(104, read_only, visibility(fragment))]
+    pub cloud_field: Handle<ShaderStorageBuffer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[uniform(105)]
+    pub cloud: super::cloud_shadow::CloudShadowParams,
 }
 
 impl GroundSplat {
@@ -766,6 +782,10 @@ impl GroundSplat {
             params: GroundSplatParams::new(),
             albedo: arrays.albedo.clone(),
             data: arrays.data.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud_field: super::cloud_shadow::NO_FIELD,
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud: super::cloud_shadow::CloudShadowParams::off(),
         }
     }
 }
@@ -792,6 +812,12 @@ impl MaterialExtension for GroundSplat {
         descriptor.vertex.buffers[0]
             .attributes
             .extend(road.attributes);
+        // The deck's shadows, where the bind group carries the field
+        // (`cloud_field`): the fragment imports `cloud_shadow.wgsl` on this.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("CLOUD_SHADOWS".into());
+        }
         Ok(())
     }
 

@@ -500,6 +500,17 @@ pub fn effective(g: Gfx) -> Gfx {
     }
 }
 
+/// Whether the ground draws the cloud deck's shadows (`cloud_shadow.rs`):
+/// natively, where its bind group carries the deck's field, and on the
+/// HIGH clouds row only — the term is a second look at the sun for most of
+/// the ground, and MEDIUM is the rung for a GPU that cannot spare it until
+/// a mid-range card says otherwise. `rig::day_night` reads this too: where
+/// the ground draws the deck's shadows, the eye's own cloud no longer puts
+/// the sun's shadows out.
+pub fn cloud_shadows(g: Gfx) -> bool {
+    !cfg!(target_arch = "wasm32") && effective(g).clouds == Clouds::High
+}
+
 /// What one effective [`Gfx`] asks the renderer for, in Bevy's own types.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Tier {
