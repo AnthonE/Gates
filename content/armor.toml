@@ -119,3 +119,16 @@ reduction_pct = 14
 move_penalty_pct = 0
 cold_pct = 4
 fel_pct = 5
+
+# The Verdigris' own answer (`sim_core::exposure::corrode`): charcoal in a
+# cloth over the mouth wards off most of its rise and almost no blow or cold.
+# 4, not 2 or 3: those sum with a body piece to a percentage where the band
+# and the sim round a hit apart (`content.rs`
+# `the_band_and_the_sim_kill_in_the_same_number_of_hits`).
+[[armor]]
+id = "item.armor_ash_mask"
+slot = "head"
+reduction_pct = 4
+move_penalty_pct = 0
+cold_pct = 3
+fel_pct = 60

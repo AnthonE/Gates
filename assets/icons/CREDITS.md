@@ -29,6 +29,7 @@ every item either way, because the painted ones are derived works of it.
 | file | source icon |
 |---|---|
 | `animal_fat.png` | `lorc/meat` |
+| `ash_mask.png` | `lorc/gas-mask` |
 | `auto_turret.png` | `lorc/sentry-gun` |
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |

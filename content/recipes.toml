@@ -138,6 +138,17 @@ seconds = 15
 inputs = [{ item = "item.leather", count = 20 }]
 
 [[recipe]]
+id = "recipe.armor_ash_mask"
+output = "item.armor_ash_mask"
+count = 1
+station = "none"
+seconds = 10
+inputs = [
+    { item = "item.cloth", count = 8 },
+    { item = "item.charcoal", count = 15 },
+]
+
+[[recipe]]
 id = "recipe.armor_bone_head"
 output = "item.armor_bone_head"
 count = 1

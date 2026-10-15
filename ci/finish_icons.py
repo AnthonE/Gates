@@ -137,6 +137,7 @@ PAINT = {
     "leather": dict(mat="leather", c=("#b07a4a", "#5e3a1e")),
     "hide_poncho": dict(mat="leather", c=("#a8784c", "#5a3a20")),
     "bone_helmet": dict(mat="bone", c=BONE),
+    "ash_mask": dict(mat="cloth", c=("#9a978e", "#45433c")),
     "fire_arrow": dict(c=FLAME),
     "crossbow": dict(c=WOOD),
     "revolver": dict(c=DARK_STEEL, metal=True),

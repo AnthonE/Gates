@@ -975,6 +975,16 @@ class = "clothing"
 condition_max = 10000
 description = "A helmet of bone and leather. Solid protection for the head."
 
+[[item]]
+id = "item.armor_ash_mask"
+name = "Ash Mask"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "head"
+class = "clothing"
+description = "Charcoal in cloth over mouth and nose. Keeps the Verdigris out of your lungs."
+
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.
 [[item]]
