@@ -166,10 +166,17 @@ const DEV_ADDR = "127.0.0.1:4433";
 let rows = [];
 let picked = null;
 
+/* `host:port` and nothing a URL could read another way — the rule
+   `client::net::handshake::server_host` holds the dial to. A link's
+   `?server=evil.example/.elopros.com:1` dials evil.example; it must not
+   reach the list, let alone wear the official mark. */
+const ADDR = /^(?:[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const addrOk = (a) => ADDR.test(String(a || ""));
+
 function baseRows() {
   const out = [];
   const linked = (q.get("server") || "").trim();
-  if (linked) out.push({ id: "link", name: "From your link", addr: linked, direct: true });
+  if (linked && addrOk(linked)) out.push({ id: "link", name: "From your link", addr: linked, direct: true });
   if (!onOrigin) out.push({ id: "dev", name: "Local dev server", addr: DEV_ADDR, direct: true });
   out.push({ id: "public", name: "Gates public server", addr: PUBLIC_ADDR, map: null, max: 100 });
   return out;
@@ -294,6 +301,7 @@ function freshReload(r) {
    anything a list says about a row, so a community shard cannot wear it
    (`client::ui::servers::is_official_addr` is the same rule). */
 function official(r) {
+  if (!addrOk(r.addr)) return false;
   const at = String(r.addr || "").lastIndexOf(":");
   if (at < 1 || r.addr.startsWith("[")) return false;
   const host = r.addr.slice(0, at).toLowerCase().replace(/\.+$/, "");

@@ -43,8 +43,8 @@ pub mod goldens;
 pub mod version;
 
 pub use auth::{
-    siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
-    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    siwe_message, siwe_message_for, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
+    NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1636,6 +1636,16 @@ pub const REFUSE_WATCH_FULL: u8 = 7;
 /// **close** code rather than as a refusal frame, the admin kick's shape: the
 /// seat was granted, and it ended.
 pub const REFUSE_WATCH_ENDED: u8 = 8;
+/// This wallet already has a body awake on this shard, on another
+/// connection. One wallet, one body: a second session seated from the
+/// store's record while the first still played was two copies of one
+/// inventory. The newcomer is refused with this, and the session already in
+/// is closed with it, so whichever device the player is holding, joining
+/// again lands on the body the first one left asleep.
+///
+/// No layout moved for this: `Refuse.code` is a full `u8` and this is the
+/// tenth of 256 values.
+pub const REFUSE_IN_USE: u8 = 9;
 
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
@@ -1665,6 +1675,10 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
         REFUSE_WATCH => "that player cannot be watched on this shard",
         REFUSE_WATCH_FULL => "too many people are watching that player — try again later",
         REFUSE_WATCH_ENDED => "the player you were watching left",
+        REFUSE_IN_USE => {
+            "this wallet signed in on another connection, and only one can play — \
+             join again to take over"
+        }
         _ => return None,
     })
 }
@@ -5426,6 +5440,7 @@ mod tests {
             (REFUSE_WATCH, "REFUSE_WATCH"),
             (REFUSE_WATCH_FULL, "REFUSE_WATCH_FULL"),
             (REFUSE_WATCH_ENDED, "REFUSE_WATCH_ENDED"),
+            (REFUSE_IN_USE, "REFUSE_IN_USE"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -5434,7 +5449,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            9,
+            10,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );

@@ -1560,6 +1560,18 @@ impl ShardCore {
         key: Option<PlayerKey>,
         save: Option<PlayerSave>,
     ) -> Option<(Admitted, Option<(PlayerKey, PlayerSave)>)> {
+        // One wallet, one body. The accept loop refuses a second session
+        // for a seated key (`REFUSE_IN_USE`) before it claims a slot, so
+        // this never fires through the net path; it is here because the
+        // failure it stops — a second body seated from the record while the
+        // first still plays — is a duplication, not a glitch.
+        if let Some(k) = key {
+            if (0..MAX_PLAYERS)
+                .any(|s| s != slot && self.clients[s].connected && self.keys[s] == Some(k))
+            {
+                return None;
+            }
+        }
         // A hint from the index, verified against the world before it is
         // trusted — and against this window's own queue, because a sleeper
         // a queued `Evict` has already condemned is one this join must not

@@ -35,7 +35,7 @@
 //! derivation against a published vector (private key 1), and this module
 //! has a golden on the full recover-and-compare path.
 
-use protocol::{siwe_message, Address, Auth, Signature, NONCE_BYTES, SIWE_MESSAGE_MAX};
+use protocol::{Address, Auth, Signature, NONCE_BYTES, SIWE_MESSAGE_MAX};
 
 use crate::store::PlayerKey;
 use k256::ecdsa::{RecoveryId, Signature as EcdsaSig, VerifyingKey};
@@ -140,7 +140,7 @@ pub fn verify(
     issued_at: u64,
     auth: &Auth,
 ) -> Result<PlayerKey, AuthError> {
-    verify_any(&[domain], nonce, issued_at, auth)
+    verify_any(&[domain], domain, nonce, issued_at, auth)
 }
 
 /// [`verify`] against a shard that answers to more than one name
@@ -154,11 +154,25 @@ pub fn verify(
 /// bound to it recovers nobody it could match — which is the whole of the
 /// domain binding, widened by exactly the names the operator wrote.
 ///
+/// **And bound to this shard.** `shard` is the shard's own name
+/// (`ShardConfig::domain`), and every rebuild puts it in the `URI:` line
+/// (`protocol::siwe_message_for`): a page on `elopros.com` signs its own name
+/// in the domain line for every shard under it, so the URI is what stops a
+/// sibling shard passing a player's sign-in on to this one. For `shard`
+/// itself that is the launcher's own form, byte for byte.
+///
+/// ⚠ **Transitional:** a listed name is also still accepted with itself as
+/// the URI, which is what a page built before the URI binding signs. A page
+/// built after it only ever puts the shard it dialled there, so the old form
+/// adds nothing an attacker can make a current page produce; drop it once the
+/// web build carrying the binding has been published.
+///
 /// One name is [`verify`] exactly: the same checks in the same order, the
 /// same refusal for each failure. An empty list proves nothing and refuses —
 /// there is no message the signature could have been over.
 pub fn verify_any<S: AsRef<str>>(
     domains: &[S],
+    shard: &str,
     nonce: &[u8; NONCE_BYTES],
     issued_at: u64,
     auth: &Auth,
@@ -188,10 +202,16 @@ pub fn verify_any<S: AsRef<str>>(
     // `WrongSigner` outranks `Malformed`: if any name recovered somebody,
     // somebody signed something, which is the more useful count.
     let mut refused = None;
-    for domain in domains {
+    let bound = domains.iter().map(|d| (d.as_ref(), shard));
+    let legacy = domains
+        .iter()
+        .map(|d| (d.as_ref(), d.as_ref()))
+        .filter(|&(d, _)| d != shard);
+    for (domain, uri) in bound.chain(legacy) {
         let mut text = [0u8; SIWE_MESSAGE_MAX];
-        let len = siwe_message(
-            domain.as_ref(),
+        let len = protocol::siwe_message_for(
+            domain,
+            uri,
             addr,
             protocol::SLUG,
             nonce,
@@ -266,7 +286,7 @@ mod tests {
         // verifier that did the same and fail against every real wallet.
         let checksummed = address.to_checksum_hex();
         let addr = core::str::from_utf8(&checksummed).expect("utf-8");
-        let len = siwe_message(domain, addr, protocol::SLUG, nonce, issued_at, &mut text);
+        let len = protocol::siwe_message(domain, addr, protocol::SLUG, nonce, issued_at, &mut text);
         let digest = personal_sign_digest(&text[..len]);
         let (sig, rec) = sk.sign_prehash_recoverable(&digest).expect("signs");
         let mut raw = [0u8; 65];
@@ -417,7 +437,7 @@ mod tests {
         for domain in listed {
             let auth = sign_for(&sk, domain, &nonce, 9, 27);
             assert_eq!(
-                verify_any(&listed, &nonce, 9, &auth),
+                verify_any(&listed, "game.test", &nonce, 9, &auth),
                 Ok(key_of(&auth.address).expect("a key")),
                 "a proof bound to the listed `{domain}` was refused"
             );
@@ -425,11 +445,46 @@ mod tests {
         for domain in ["evil.test", "sub.game.test", "game.test.", "TEST", ""] {
             let auth = sign_for(&sk, domain, &nonce, 9, 27);
             assert_eq!(
-                verify_any(&listed, &nonce, 9, &auth),
+                verify_any(&listed, "game.test", &nonce, 9, &auth),
                 Err(AuthError::WrongSigner),
                 "a proof bound to the unlisted `{domain}` was accepted"
             );
         }
+    }
+
+    /// **A page's proof names the shard it was collected for.** A page on
+    /// `test` signs its own name in the domain line for any shard under it;
+    /// the `URI:` line is the dialled shard, so `game.test` takes the proof a
+    /// page collected for it and refuses the one collected for `play.test` —
+    /// the sibling that would otherwise pass a player's sign-in straight on.
+    #[test]
+    fn a_page_proof_for_a_sibling_shard_is_refused() {
+        let listed = ["game.test", "test"];
+        let sk = signer_for(15);
+        let nonce = [8u8; NONCE_BYTES];
+        let page = |uri: &str| {
+            let address = address_of(sk.verifying_key());
+            let sum = address.to_checksum_hex();
+            let addr = core::str::from_utf8(&sum).expect("utf-8");
+            let mut text = [0u8; SIWE_MESSAGE_MAX];
+            let len =
+                protocol::siwe_message_for("test", uri, addr, protocol::SLUG, &nonce, 9, &mut text);
+            let digest = personal_sign_digest(&text[..len]);
+            let (sig, rec) = sk.sign_prehash_recoverable(&digest).expect("signs");
+            let mut raw = [0u8; 65];
+            raw[..64].copy_from_slice(&sig.to_bytes());
+            raw[64] = 27 + rec.to_byte();
+            Auth {
+                address,
+                signature: Signature(raw),
+            }
+        };
+        assert!(verify_any(&listed, "game.test", &nonce, 9, &page("game.test")).is_ok());
+        assert_eq!(
+            verify_any(&listed, "game.test", &nonce, 9, &page("play.test")),
+            Err(AuthError::WrongSigner),
+            "a proof a page collected for a sibling shard was accepted"
+        );
     }
 
     /// One name is `verify`, refusal for refusal — the shard without
@@ -447,12 +502,12 @@ mod tests {
         wrong.address = address_of(signer_for(14).verifying_key());
         for auth in [good, bad_v, zero_sig, wrong, Auth::default()] {
             assert_eq!(
-                verify_any(&[DOMAIN], &nonce, 5, &auth),
+                verify_any(&[DOMAIN], DOMAIN, &nonce, 5, &auth),
                 verify(DOMAIN, &nonce, 5, &auth)
             );
         }
         assert_eq!(
-            verify_any::<&str>(&[], &nonce, 5, &good),
+            verify_any::<&str>(&[], DOMAIN, &nonce, 5, &good),
             Err(AuthError::WrongSigner),
             "an empty list proves nothing"
         );

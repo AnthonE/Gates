@@ -527,6 +527,12 @@ pub(crate) async fn write_frame(
 /// the world and cannot move it, which is the worst shape for the failure to
 /// take.
 pub(crate) async fn open(server: &str, cert_hash: Option<&str>) -> Result<WebTransport, String> {
+    // `host:port` and nothing a URL parser could read another way
+    // (`handshake::server_host`): the page signs for the host it believes it
+    // dials, so the two must be the same string.
+    if super::handshake::server_host(server).is_none() {
+        return Err(format!("{server:?} is not a server address (host:port)"));
+    }
     let url = format!("https://{server}");
     let opts = web_sys::WebTransportOptions::new();
     opts.set_require_unreliable(true);

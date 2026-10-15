@@ -504,6 +504,7 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
     ] {
         let proof = client::net::handshake::Proof {
             domain: domain.to_string(),
+            uri: cfg.domain.clone(),
             nonce,
             issued_at,
         };
@@ -512,10 +513,28 @@ fn the_public_shard_accepts_what_its_page_and_its_desktop_sign() {
             signature: wallet_sign(&sk, &proof.message(address)),
         };
         assert!(
-            server::auth::verify_any(cfg.siwe_accepts(), &nonce, issued_at, &auth).is_ok(),
+            server::auth::verify_any(cfg.siwe_accepts(), &cfg.domain, &nonce, issued_at, &auth)
+                .is_ok(),
             "the public shard refuses what {who} signs (`{domain}`)"
         );
     }
+    // ...and refuses what the same page signs for a sibling under its name:
+    // the proof a relay would carry from that shard to this one.
+    let sibling = client::net::handshake::Proof {
+        domain: page.to_string(),
+        uri: "play.elopros.com".to_string(),
+        nonce,
+        issued_at,
+    };
+    let auth = protocol::Auth {
+        address,
+        signature: wallet_sign(&sk, &sibling.message(address)),
+    };
+    assert!(
+        server::auth::verify_any(cfg.siwe_accepts(), &cfg.domain, &nonce, issued_at, &auth)
+            .is_err(),
+        "the public shard accepted a page's proof collected for another shard"
+    );
 }
 
 // ── the browser's half ───────────────────────────────────────────────────────
@@ -545,6 +564,7 @@ fn a_signature_over_the_browsers_own_text_verifies_at_the_shard() {
 
     let proof = client::net::handshake::Proof {
         domain: DOMAIN.to_string(),
+        uri: DOMAIN.to_string(),
         nonce,
         issued_at,
     };
@@ -611,6 +631,7 @@ fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
 
     let elsewhere = client::net::handshake::Proof {
         domain: "evil.example".to_string(),
+        uri: "evil.example".to_string(),
         nonce,
         issued_at,
     };

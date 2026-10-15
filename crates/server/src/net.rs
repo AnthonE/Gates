@@ -42,6 +42,32 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 const PLAYER_ID_GEN_MASK: u32 = 0x007F_FFFF;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What one connection may make this shard hold for it, QUIC-side. quinn's
+/// defaults (100 + 100 streams, 1.25 MB a stream, an unbounded connection
+/// window) are a general server's; this one reads exactly one bidi stream
+/// (`accept_bi` once) and never reads another, so every byte a client parks
+/// on a stream it opened is memory nobody frees until the connection does —
+/// from an unauthenticated handshake too.
+///
+/// Bidi: the CONNECT request plus the game stream, with headroom. Uni: the
+/// browser's HTTP/3 control and two QPACK streams (fewer and a browser
+/// stalls), plus GREASE. Every frame the client sends is at most
+/// `protocol::MAX_STREAM_MSG_BYTES` + 2, so a 64 KiB stream window is
+/// hundreds of frames.
+const QUIC_MAX_BIDI_STREAMS: u32 = 4;
+const QUIC_MAX_UNI_STREAMS: u32 = 8;
+const QUIC_STREAM_RWND: u32 = 64 * 1024;
+const QUIC_CONN_RWND: u32 = 256 * 1024;
+/// Inbound datagrams buffered before quinn drops the oldest: an input
+/// datagram is ~74 B, so this is several seconds of a stalled reader.
+const QUIC_DATAGRAM_RBUF: usize = 64 * 1024;
+/// Unacknowledged outbound stream bytes. A client that never acks holds this
+/// much, not quinn's 10 MB; a burst of join sync still moves a window a
+/// round trip, megabytes a second at any real RTT.
+const QUIC_SEND_WINDOW: u64 = 2 * 1024 * 1024;
+const _: () = assert!(QUIC_STREAM_RWND as usize >= 64 * (protocol::MAX_STREAM_MSG_BYTES + 2));
+const _: () = assert!(QUIC_CONN_RWND >= QUIC_STREAM_RWND);
 /// The challenge's signed reply gets its own, longer deadline, because a
 /// person answers it (`protocol::SIGN_WAIT_SECS`). The slot it holds is still
 /// counted in `in_flight`, so `ADMIT_RETRY_AT` / `ADMIT_REFUSE_AT` still bound
@@ -122,6 +148,87 @@ const NET_SAMPLE_EVERY: u32 = 500;
 const _: () = assert!(ADMIT_RETRY_AT < ADMIT_REFUSE_AT);
 const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
 const _: () = assert!(NET_SAMPLE_EVERY > 0);
+
+/// Handshakes one source may hold at once: an IPv4 address, or an IPv6 /64
+/// (one subscriber's whole allocation, so a prefix of addresses is still one
+/// source). `ADMIT_REFUSE_AT` is a count over everybody, and an unanswered
+/// sign-in holds its place for `SIGN_WAIT`, so without this one address
+/// opening a handful of sessions a second kept every other joiner out.
+///
+/// Taken once the QUIC handshake has completed, never at the door: by then
+/// the source has proved it receives at the address it claims, so a spoofed
+/// flood cannot spend a real player's allowance. Loopback is exempt — the
+/// load bots and every wire suite dial from it, and a local attacker is
+/// already on the box. Eight covers a household or a café joining at once.
+const ADMIT_PER_SOURCE: u16 = 8;
+/// Buckets in the per-source table. Sources hash in with a key drawn at boot,
+/// so nobody can aim at somebody else's bucket; a collision only makes two
+/// sources share one allowance.
+const SOURCE_BUCKETS: usize = 4096;
+const _: () = assert!((ADMIT_PER_SOURCE as usize) < ADMIT_RETRY_AT);
+const _: () = assert!(SOURCE_BUCKETS.is_power_of_two());
+
+/// In-flight handshakes per source (`ADMIT_PER_SOURCE`).
+struct SourceGate {
+    held: Box<[std::sync::atomic::AtomicU16]>,
+    key: std::collections::hash_map::RandomState,
+}
+
+/// One source's place in [`SourceGate`], given back on drop — however the
+/// handshake that holds it ends. A loopback permit holds no bucket.
+struct SourcePermit {
+    gate: Arc<SourceGate>,
+    bucket: Option<usize>,
+}
+
+impl Drop for SourcePermit {
+    fn drop(&mut self) {
+        if let Some(b) = self.bucket {
+            self.gate.held[b].fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl SourceGate {
+    fn new() -> Self {
+        Self {
+            held: (0..SOURCE_BUCKETS)
+                .map(|_| std::sync::atomic::AtomicU16::new(0))
+                .collect(),
+            key: std::collections::hash_map::RandomState::new(),
+        }
+    }
+
+    /// The bucket `ip` counts against: the whole IPv4 address, or the /64 of
+    /// an IPv6 one (a v4-mapped v6 address is its v4 address).
+    fn bucket(&self, ip: std::net::IpAddr) -> usize {
+        use std::hash::BuildHasher;
+        let h = match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => self.key.hash_one(v4.octets()),
+            std::net::IpAddr::V6(v6) => self.key.hash_one(&v6.octets()[..8]),
+        };
+        h as usize & (SOURCE_BUCKETS - 1)
+    }
+
+    /// A place for one more handshake from `ip`, or `None` if it already
+    /// holds `ADMIT_PER_SOURCE`. Loopback always gets one, uncounted.
+    fn take(gate: &Arc<Self>, ip: std::net::IpAddr) -> Option<SourcePermit> {
+        let bucket = if ip.to_canonical().is_loopback() {
+            None
+        } else {
+            let b = gate.bucket(ip);
+            if gate.held[b].fetch_add(1, Ordering::Relaxed) >= ADMIT_PER_SOURCE {
+                gate.held[b].fetch_sub(1, Ordering::Relaxed);
+                return None;
+            }
+            Some(b)
+        };
+        Some(SourcePermit {
+            gate: gate.clone(),
+            bucket,
+        })
+    }
+}
 
 /// Binds the shard's UDP socket with the buffer sizes §2.2 asks for, then
 /// **reads back what the OS actually granted** and records both.
@@ -578,6 +685,13 @@ pub async fn spawn_shard(
     // NETCODE.md §2.2: bound worst-case queued staleness; snapshots
     // replace, never accumulate.
     transport.datagram_send_buffer_size(64 * 1024);
+    transport
+        .max_concurrent_bidi_streams(QUIC_MAX_BIDI_STREAMS.into())
+        .max_concurrent_uni_streams(QUIC_MAX_UNI_STREAMS.into())
+        .stream_receive_window(QUIC_STREAM_RWND.into())
+        .receive_window(QUIC_CONN_RWND.into())
+        .send_window(QUIC_SEND_WINDOW)
+        .datagram_receive_buffer_size(Some(QUIC_DATAGRAM_RBUF));
     // Congestion control, selectable because §2.1 names it as the real risk
     // and §2.2 promised an A/B path that had never been built. CUBIC halves
     // cwnd on loss and a collapsed window at 100 ms RTT can fall under our
@@ -769,6 +883,7 @@ pub async fn spawn_shard(
             dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some(),
             require_auth: cfg.require_auth,
             siwe_domains: cfg.siwe_accepts().into(),
+            siwe_shard: cfg.domain.as_str().into(),
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
             faces: cfg.faces.clone(),
@@ -820,6 +935,9 @@ struct ShardFacts {
     /// (`ShardConfig::siwe_accepts`). Shared, because every handshake task
     /// gets a handle and none of them needs its own copy.
     siwe_domains: Arc<[String]>,
+    /// This shard's own name (`ShardConfig::domain`): the `URI:` every proof
+    /// it accepts must name (`auth::verify_any`).
+    siwe_shard: Arc<str>,
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
@@ -1060,6 +1178,7 @@ async fn accept_loop(
     // clock and a window, and what actually protects the shard is "how much
     // unfinished crypto am I holding right now".
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sources = Arc::new(SourceGate::new());
     let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
     let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
     let mut sweep_in_flight = false;
@@ -1117,16 +1236,19 @@ async fn accept_loop(
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
                 let in_flight = in_flight.clone();
+                let sources = sources.clone();
                 tokio::spawn(handshake_task(
                     incoming,
                     done_tx,
                     stats,
                     facts.require_auth,
                     facts.siwe_domains.clone(),
+                    facts.siwe_shard.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
                     in_flight,
+                    sources,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -1138,6 +1260,21 @@ async fn accept_loop(
                     ShardStats::bump(&stats.refused_banned);
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
                     continue;
+                }
+                // One wallet, one body. A second session for a key whose body
+                // is still awake would miss the sleeper (there is none) and
+                // be seated from the store's record: two bodies, one
+                // inventory. Refused here, before the claim — and the session
+                // already in is closed with the same code, so the player's
+                // next join wakes the body it leaves asleep. Never admitted
+                // in this pass: the old leave has not reached the sim yet.
+                if !done.hello.is_spectator() {
+                    if let Some(s) = done.key.and_then(|k| seated(&k, &keys, &slots)) {
+                        ShardStats::bump(&stats.refused_in_use);
+                        kick_tenant(s, &mut keys, &slots, protocol::REFUSE_IN_USE);
+                        spawn_refusal(done.connection, done.send, protocol::REFUSE_IN_USE);
+                        continue;
+                    }
                 }
                 // Before the claim, never after: a record for the slot's
                 // previous tenant has to be filed under the key it was
@@ -1664,10 +1801,12 @@ async fn handshake_task(
     stats: Arc<ShardStats>,
     require_auth: bool,
     siwe_domains: Arc<[String]>,
+    siwe_shard: Arc<str>,
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    sources: Arc<SourceGate>,
 ) {
     // Decremented however this task leaves — the timeout arm, any of the
     // refusal arms, or success. A guard rather than a line at the end,
@@ -1684,13 +1823,20 @@ async fn handshake_task(
 
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
+        // The QUIC handshake is done, so the address is proven: count it
+        // against its source (`ADMIT_PER_SOURCE`) for the rest of this task.
+        let Some(permit) = SourceGate::take(&sources, request.remote_address().ip()) else {
+            ShardStats::bump(&stats.refused_per_source);
+            request.too_many_requests().await;
+            return Err(());
+        };
         let connection = request.accept().await.map_err(|_| ())?;
         let (send, mut recv) = connection.accept_bi().await.map_err(|_| ())?;
         let (hello_buf, hello_len) = read_frame(&mut recv).await.ok_or(())?;
-        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len))
+        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len, permit))
     })
     .await;
-    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len))) = result else {
+    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len, _permit))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
@@ -1817,7 +1963,7 @@ async fn handshake_task(
     let key = if auth.address.is_guest() {
         None
     } else {
-        match crate::auth::verify_any(&siwe_domains, &nonce, issued_at, &auth) {
+        match crate::auth::verify_any(&siwe_domains, &siwe_shard, &nonce, issued_at, &auth) {
             Ok(key) => Some(key),
             Err(_) => {
                 // Counted, never explained to the caller: which of the four
@@ -3001,22 +3147,43 @@ fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> 
     let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some()) else {
         return false;
     };
+    kick_tenant(slot, keys, slots, protocol::REFUSE_ADMIN)
+}
+
+/// End `slot`'s live tenant with `code`: marked leaving (the sim's sweep
+/// puts the body to sleep) and closed with the reason posted. False when the
+/// slot is not live — already leaving, or empty.
+fn kick_tenant(
+    slot: usize,
+    keys: &mut [KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+    code: u8,
+) -> bool {
     let word = slots.load(slot);
     if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
         return false;
     }
-    slots.mark_leaving_why(
-        slot,
-        crate::slot::generation_of(word),
-        protocol::REFUSE_ADMIN,
-    );
+    slots.mark_leaving_why(slot, crate::slot::generation_of(word), code);
     if let Some(conn) = keys[slot].conn.take() {
         // Closed with a posted reason, the entitle kick's rule: a silent
         // close reads as a network fault, and "my internet broke" is the
         // wrong thing for a kicked player to believe.
-        close_with_reason(conn, protocol::REFUSE_ADMIN);
+        close_with_reason(conn, code);
     }
     true
+}
+
+/// The player slot whose tenant is `key` and still has a body awake: live,
+/// or leaving but not yet freed (the sim frees a slot only after it has
+/// applied the leave). A stale `KeySlot` from an earlier generation is not
+/// a tenant — `install` overwrites them lazily.
+fn seated(key: &PlayerKey, keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable) -> Option<usize> {
+    (0..MAX_PLAYERS).find(|&s| {
+        let word = slots.load(s);
+        keys[s].key.as_ref() == Some(key)
+            && crate::slot::state_of(word) != crate::slot::SLOT_EMPTY
+            && crate::slot::generation_of(word) == keys[s].generation
+    })
 }
 
 /// Tell admin `to` how an act went (`admin::AdminReply`). A full ring loses
@@ -3787,6 +3954,43 @@ fn fresh_salt() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **One source holds at most `ADMIT_PER_SOURCE` handshakes, and gets
+    /// each back when it ends.** An IPv6 /64 is one source; loopback is
+    /// never counted (the bots and the wire suites dial from it).
+    #[test]
+    fn a_source_holds_at_most_its_allowance_of_handshakes() {
+        let gate = Arc::new(SourceGate::new());
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let mut held: Vec<_> = (0..ADMIT_PER_SOURCE)
+            .map(|_| SourceGate::take(&gate, ip).expect("within the allowance"))
+            .collect();
+        assert!(
+            SourceGate::take(&gate, ip).is_none(),
+            "one past the allowance"
+        );
+        held.pop();
+        assert!(
+            SourceGate::take(&gate, ip).is_some(),
+            "a finished handshake gives its place back"
+        );
+
+        let a: std::net::IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        assert_eq!(gate.bucket(a), gate.bucket(b), "a /64 is one source");
+        let mapped: std::net::IpAddr = "::ffff:203.0.113.7".parse().unwrap();
+        assert_eq!(
+            gate.bucket(mapped),
+            gate.bucket(ip),
+            "v4-mapped is its v4 address"
+        );
+
+        let lo: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let many: Vec<_> = (0..4 * ADMIT_PER_SOURCE)
+            .map(|_| SourceGate::take(&gate, lo).expect("loopback is never refused"))
+            .collect();
+        assert!(many.iter().all(|p| p.bucket.is_none()));
+    }
 
     /// **The human feed's delay line holds every message for exactly its
     /// delay, in order, and refuses past its bound** — clock-free: every

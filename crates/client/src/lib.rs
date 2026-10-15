@@ -586,6 +586,9 @@ impl Session {
         // `prove` block below for why that inversion is the whole fix.
         sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
     ) -> Result<Self, JoinError> {
+        if net::handshake::server_host(server).is_none() {
+            return Err(format!("{server:?} is not a server address (host:port)").into());
+        }
         let url = format!("https://{server}");
         let connection = endpoint
             .connect(&url)
