@@ -4,7 +4,11 @@
 # This runs `ops/buddy/runner.py`, which starts one jev-bot per agent with
 # credit (its own key, its owner's `--friend` for a buddy, a name and a
 # face from the platform), stops it when its pool is spent, and writes what
-# each spent and is doing to /var/lib/gates-buddies/public/rent.json.
+# each spent and is doing to /var/lib/gates-buddies/public/rent.json. An
+# agent with its owner's brain runs `jev-bot --mcp` instead, played through
+# the bridge on 127.0.0.1:8433 (`ops/buddy/mind_bridge.py`); once a day each
+# agent gets a written recap, and `ops/gates-clips.service` cuts clips of
+# the ones whose owners turned them on.
 #
 # Free while the house's trial pool lasts, so the key below is ours: a
 # Console key, billed per call. Top-ups in ELO pay the same bill back.
@@ -16,19 +20,36 @@
 #     CLAUDE_MODEL=claude-haiku-5-5    # optional; the runner's default
 #     BUDDY_SLOTS=6                    # optional; owned agents at once
 #     BUDDY_COMMUNITY_SLOTS=2          # optional
+#     BUDDY_MIND_PORT=8433             # optional; the own-brain bridge
+#     BUDDY_OWN_IDLE_S=1800            # optional; a quiet harness's body leaves
 #
 #   python3 -m venv ~master/gates-jev/venv && ~master/gates-jev/venv/bin/pip install anthropic
 #   sudo cp ops/gates-buddies.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now gates-buddies
 #   journalctl -u gates-buddies -f
 #
-# and the `/gates/rent.json` block in `ops/game-elopros-status.nginx.conf`.
-# `ci/deploy_shard.sh` copies jev-bot, claude_agent.py and runner.py to
+# and the `/gates/rent.json`, `/gates/mind/` and `/gates/clips/` blocks in
+# `ops/game-elopros-status.nginx.conf`. `ci/deploy_shard.sh` copies jev-bot,
+# claude_agent.py and runner.py (with mind_bridge.py and recap.py) to
 # ~/gates-jev and restarts this, so a wire bump never strands an agent.
+#
+# Doctor Wood is one of ours here (a community agent who keeps the
+# platform's ELO_BUDDY_HOUSE_FRIEND as his friend). To keep his body, name
+# and history from the old gates-buddy@doctor-wood unit, once:
+#
+#   sudo install -o master -g master -m 600 ~master/gates-jev/doctor-wood.key \
+#       /var/lib/gates-buddies/keys/pot-doctor-wood.key
+#   sudo -u master sh -c 'cat /var/lib/gates-buddy/doctor-wood/journal.jsonl \
+#       >> /var/lib/gates-buddies/journal/pot-doctor-wood.jsonl'
+#   sudo systemctl disable --now gates-buddy@doctor-wood
+#
+# before the runner first sees him (it learns the address when it signs his
+# face).
 #
 # Spend: a buddy asks its model only while its owner is on the island; solo
 # and community agents whenever they play. Each at most BUDDY_MAX_HOUR (400)
-# times an hour, and never past its pool's credit.
+# times an hour, and never past its pool's credit. An own brain costs us
+# nothing but its slot.
 
 [Unit]
 Description=Gates buddies on game.elopros.com:61234

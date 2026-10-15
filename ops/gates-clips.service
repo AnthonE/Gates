@@ -1,0 +1,65 @@
+# Highlight clips of the buddies (`ops/buddy/clips.py auto`): the agents
+# whose owners turned clips on, and our community agents that have them
+# (Doctor Wood), taped one at a time while they think, cut, and published
+# under /var/lib/gates-buddies/public/clips/ for the buddy page
+# (game.elopros.com/gates/clips/, `ops/game-elopros-status.nginx.conf`).
+# `ops/buddy/runner.py` writes who wants them to clips-queue.json; each gets
+# at most CLIPS_PER_DAY a day, and the moment-picking call is billed to its
+# pool. Ours also go to the Discord channel posts are made from.
+#
+# Once, as master: a checkout of its own (the main one changes branch under
+# the loop) and the Python the pipeline uses.
+#
+#   git clone https://github.com/AnthonE/Gates ~/gates-clips/Gates
+#   python3 -m venv ~/gates-clips/venv && ~/gates-clips/venv/bin/pip install anthropic Pillow
+#
+# Then as root: the film's tools (`ci/film.sh`), and the environment file
+# (0600, outside the repo).
+#
+#   apt-get install ffmpeg xvfb mesa-vulkan-drivers libwayland-dev \
+#       libasound2-dev libudev-dev libxkbcommon-x11-0
+#   /etc/gates-clips/env
+#     ANTHROPIC_API_KEY=sk-ant-...       # picks moments and writes captions
+#     CLIPS_DISCORD_WEBHOOK_URL=...      # optional: our drafts to a channel
+#
+#   sudo cp ops/gates-clips.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-clips
+#   journalctl -u gates-clips -f
+#
+# It replaces the per-buddy gates-clips@ and gates-clips-make@ units, which
+# taped Doctor Wood's old journal:
+#
+#   sudo systemctl disable --now gates-clips@doctor-wood gates-clips-make@doctor-wood.timer
+#
+# Every start pulls main, so the recorder speaks the shard's wire after a
+# deploy: one on an old wire is refused, exits, and comes back through the
+# pull. Lavapipe draws a frame in about a second on every core, so this runs
+# at the bottom of the box's CPU and IO: the shard always comes first.
+
+[Unit]
+Description=Highlight clips of the Gates buddies
+Documentation=https://github.com/AnthonE/Gates/blob/main/ops/buddy/clips.py
+After=network-online.target gates-buddies.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-clips/Gates
+EnvironmentFile=/etc/gates-clips/env
+Environment=CLIPS_DIR=/home/master/gates-clips
+Environment=CLIPS_QUEUE=/var/lib/gates-buddies/clips-queue.json
+Environment=PATH=/home/master/gates-clips/venv/bin:/home/master/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=-/usr/bin/git pull --ff-only --quiet
+ExecStart=/home/master/gates-clips/venv/bin/python ops/buddy/clips.py auto --minutes 20
+Restart=always
+RestartSec=60
+Nice=19
+CPUWeight=10
+IOSchedulingClass=idle
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -235,7 +235,7 @@ if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 || [ -n "$TEAMMAT
   run cp -f target/release/jev-bot "$AGENT_BIN/jev-bot.new"
   run mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
   run cp -f crates/server/examples/claude_agent.py "$AGENT_BIN/claude_agent.py"
-  run cp -f ops/buddy/runner.py "$AGENT_BIN/runner.py"
+  run cp -f ops/buddy/runner.py ops/buddy/mind_bridge.py ops/buddy/recap.py "$AGENT_BIN/"
 fi
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1; then
   run sudo systemctl restart gates-jev.service

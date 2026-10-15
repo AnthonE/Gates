@@ -76,8 +76,8 @@ SHARE_EVERY_S = float(os.environ.get("SHARE_EVERY_S", "300"))
 JOURNAL = os.environ.get("GATES_JOURNAL", "")
 # The observation fields a journal line keeps: enough to tell a fight, a
 # death or a haul from a walk, and small enough to write every turn.
-JOURNAL_OBS = ("hp", "hp_max", "food", "water", "threats", "last_fight", "last",
-               "current", "players", "deaths")
+JOURNAL_OBS = ("health", "food", "water", "threats", "last_fight", "last_goal",
+               "current_goal", "deaths", "respawns")
 # Models that take the server-side refusal fallback (API route only).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 # Anthropic's posted list prices, dollars per million tokens: input, output,
@@ -448,7 +448,9 @@ def journal(request, goal, reason, say, to):
                    "channel": h.get("channel", "local"), "text": h["text"]}
                   for h in request.get("heard", []) if not h.get("me")],
         "friend": request.get("friend"),
-        "obs": {k: obs[k] for k in JOURNAL_OBS if k in obs},
+        "obs": {**{k: obs[k] for k in JOURNAL_OBS if k in obs},
+                **({"players": obs["in_view"]["players"]}
+                   if isinstance(obs.get("in_view"), dict) and "players" in obs["in_view"] else {})},
     }
     try:
         with open(JOURNAL, "a") as f:
