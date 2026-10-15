@@ -2417,6 +2417,13 @@ pub fn event_skins() -> SkinCatalog {
                 tint,
                 coin,
                 price,
+                // The second row painted (v110), so the hash's bits and
+                // the flag before them are in the golden too.
+                texture: if i == 1 {
+                    [0xC0, 0xFF, 0xEE, 0x00, 0x5E, 0xED, 0x00, 0x01]
+                } else {
+                    [0; 8]
+                },
             },
         )
         .expect("a legal row");

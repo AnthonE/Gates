@@ -70,7 +70,6 @@ use bevy::prelude::*;
 
 use super::feed::Feed;
 use super::rig::EyeCam;
-use super::textures::PropMaps;
 use super::Eye;
 use super::Net;
 use crate::ui::hold::{held_model_in_hand, HeldModelDef, Stroke, HELD_MODELS};
@@ -1137,15 +1136,22 @@ pub struct HeldModel {
     shown: Option<usize>,
     /// The skin the shown model is drawn in (skins v0), 0 for its own look.
     skin: u16,
-    /// The shown model is the first-person copy (`bow::FpBow`, the bow
-    /// without its baked string) rather than the row's own mesh.
-    fp: bool,
+    /// The shown model is a first-person copy (`bow::FpBow`, a bow without
+    /// its baked string) rather than the row's own mesh: where that string
+    /// was tied on, model space, for the live one `bow::drive` draws.
+    ends: Option<[Vec3; 2]>,
 }
 
 impl HeldModel {
     /// The [`crate::ui::hold::HELD_MODELS`] row on screen, if any.
     pub fn shown(&self) -> Option<usize> {
         self.shown
+    }
+
+    /// Where the shown bow's string is tied on, if its string was taken
+    /// out to be drawn live.
+    pub fn string_ends(&self) -> Option<[Vec3; 2]> {
+        self.ends
     }
 }
 
@@ -1161,6 +1167,21 @@ impl HeldModel {
 pub struct SkinMats {
     rows: std::collections::HashMap<(usize, u16), Handle<StandardMaterial>>,
     parts: std::collections::HashMap<(AssetId<StandardMaterial>, u16), Handle<StandardMaterial>>,
+    /// What each catalog id looks like, as `paint::paint` learned it from
+    /// the catalog. A skin not learned yet is not drawn yet: the caller
+    /// keeps the plain look and asks again, so a painted skin is never
+    /// drawn as its tint and then left that way.
+    looks: std::collections::HashMap<u16, Look>,
+}
+
+/// A skin's look (wire v110): a tint, or a picture that is on its way,
+/// here, or never coming (then its tint, its picture's average colour).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Look {
+    Tint,
+    Waiting,
+    Ready(Handle<Image>),
+    Failed,
 }
 
 /// `base` with its base colour multiplied by `tint` (sRGB factors): the
@@ -1174,6 +1195,24 @@ fn tinted(base: &StandardMaterial, tint: [f32; 3]) -> StandardMaterial {
 }
 
 impl SkinMats {
+    /// Learn what skin `skin` looks like (`paint::paint`, each frame).
+    pub fn learn(&mut self, skin: u16, look: Look) {
+        if self.looks.get(&skin) != Some(&look) {
+            self.looks.insert(skin, look);
+        }
+    }
+
+    /// The look learned for `skin`, if any.
+    pub fn look(&self, skin: u16) -> Option<&Look> {
+        self.looks.get(&skin)
+    }
+
+    /// A skin not learned yet, or a picture still on its way: draw the
+    /// plain look this frame and ask again.
+    fn wait(&self, skin: u16) -> bool {
+        matches!(self.looks.get(&skin), None | Some(Look::Waiting))
+    }
+
     /// Row `row`'s material in skin `skin`, tinted by `tint` (sRGB factors,
     /// `ui::skins::tint_of`). `None` while the row's own material has not
     /// loaded yet (a glTF row), so the caller draws the plain look this
@@ -1188,6 +1227,11 @@ impl SkinMats {
     ) -> Option<Handle<StandardMaterial>> {
         if let Some(h) = self.rows.get(&(row, skin)) {
             return Some(h.clone());
+        }
+        // A painted held skin is drawn by `Models::skinned` once its
+        // picture lands; until then, and if it never does, its tint here.
+        if self.wait(skin) {
+            return None;
         }
         let m = tinted(materials.get(base)?, tint);
         let h = materials.add(m);
@@ -1208,7 +1252,14 @@ impl SkinMats {
         if let Some(h) = self.parts.get(&(base.id(), skin)) {
             return Some(h.clone());
         }
-        let m = tinted(materials.get(base)?, tint);
+        if self.wait(skin) {
+            return None;
+        }
+        // A painted piece: its picture over the piece's own canvas UVs.
+        let m = match self.looks.get(&skin) {
+            Some(Look::Ready(img)) => super::paint::painted(materials.get(base)?, img.clone()),
+            _ => tinted(materials.get(base)?, tint),
+        };
         let h = materials.add(m);
         self.parts.insert((base.id(), skin), h.clone());
         Some(h)
@@ -1368,7 +1419,7 @@ impl Motion {
 /// **`OnEnter(Screen::Loading)` runs BEFORE `Startup`** on a connected start,
 /// because Bevy schedules the first state transition with
 /// `insert_startup_before(PreStartup, …)`. `textures::load` is a `Startup`
-/// system, so a viewmodel spawned on that transition asks for [`PropMaps`]
+/// system, so a viewmodel spawned on that transition asked for `PropMaps`
 /// one schedule too early and the run dies with "Resource does not exist".
 /// The HUD does not hit this only because it never wanted a texture.
 ///
@@ -1380,7 +1431,6 @@ pub fn spawn_item(
     mut done: Local<bool>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    maps: Res<PropMaps>,
     fx: Res<super::fx::Fx>,
     cam: Query<Entity, With<EyeCam>>,
 ) {
@@ -1389,38 +1439,6 @@ pub fn spawn_item(
     }
     let Ok(cam) = cam.single() else { return };
     *done = true;
-
-    let wood = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        base_color_texture: Some(maps.wood.albedo.clone()),
-        normal_map_texture: Some(maps.wood.normal.clone()),
-        perceptual_roughness: 0.82,
-        // See `render::fresnel`: 0.14 was F0 0.31%.
-        reflectance: super::fresnel::DIELECTRIC,
-        ..default()
-    });
-    // **The head carries no map, and that is a sourcing gap stated rather than
-    // papered over.** The only metal in `assets/` is `CorrugatedSteel009` —
-    // photoscanned RIBBED SHEET. Two tile rates were tried, 9.0 and 1.1, and
-    // both showed corrugation across a 10 cm blade, because the ribs are dense
-    // in the source and no scaling removes a feature the map is made of. That
-    // is the `Bricks089`-on-a-boulder failure a second time: **a map whose own
-    // features are wrong for the identity cannot be rescaled into the right
-    // one.** A plain worn-steel albedo is the entry `MANIFEST.md` is missing,
-    // and until one is sourced this is flat steel with per-face value
-    // break-up from the mesh — a knowing, recorded exception to `ART.md`
-    // rule 1 on one 10 cm object, not a silent one.
-    let steel = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.44, 0.45, 0.47),
-        // Not a mirror. An earlier cut ran roughness 0.38 / metallic 0.85, and
-        // a near-specular metal with no image-based lighting has nothing to
-        // reflect but the atmosphere — the head came back pale sky-blue. A
-        // polished one needs a reflection probe, which is a slice, not a knob.
-        perceptual_roughness: 0.52,
-        metallic: 0.55,
-        reflectance: super::fresnel::METAL_DIELECTRIC,
-        ..default()
-    });
 
     commands.entity(cam).with_children(|c| {
         // The assembly node. Everything the viewmodel does to itself — bob,
@@ -1435,21 +1453,6 @@ pub fn spawn_item(
                     Visibility::Inherited,
                 ))
                 .with_children(|item| {
-                    // The generic tool, kept as the fallback for every item with no
-                    // model of its own. It is NOT what an empty hand draws — see
-                    // `swap` — it is what a revolver draws until a revolver is made.
-                    item.spawn((
-                        Mesh3d(meshes.add(super::heldgen::handle_mesh())),
-                        MeshMaterial3d(wood.clone()),
-                        Transform::from_translation(VIEWMODEL_PALM),
-                        Fallback,
-                    ));
-                    item.spawn((
-                        Mesh3d(meshes.add(super::heldgen::head_mesh())),
-                        MeshMaterial3d(steel.clone()),
-                        Transform::from_translation(VIEWMODEL_PALM),
-                        Fallback,
-                    ));
                     // The model in hand. Spawned empty and filled by `swap`, which is
                     // what keeps this file free of the inventory: it reads a row index
                     // from `ui::hold` and never an item id.
@@ -1465,7 +1468,7 @@ pub fn spawn_item(
                         HeldModel {
                             shown: None,
                             skin: 0,
-                            fp: false,
+                            ends: None,
                         },
                         Mesh3d(Handle::default()),
                         MeshMaterial3d::<StandardMaterial>(Handle::default()),
@@ -1529,11 +1532,6 @@ pub fn spawn_item(
             });
     });
 }
-
-/// The two-primitive stand-in, so `swap` can hide it without knowing what it
-/// is made of.
-#[derive(Component)]
-pub struct Fallback;
 
 /// The first-person arms: the player's own character, from the inside.
 ///
@@ -1948,11 +1946,12 @@ pub fn arms_report(
 /// **The three states are deliberately different pictures**, because
 /// collapsing any two of them tells the player something false:
 ///
-///   · a modelled item → its own model, stand-in hidden
-///   · an item with no model yet → the stand-in tool, as before
-///   · an EMPTY hand → neither, because a tool that appears when you are
-///     holding nothing is a lie about your own inventory, and the hotbar
-///     right next to it says the cell is empty
+///   · a modelled item → its own model
+///   · anything else (an item with no model yet, a resource, an empty hand)
+///     → nothing in the fist. A generic hafted tool used to stand in for
+///     every unmodelled item, and a stack of wood drawn as a hatchet is a
+///     lie about your own hand (operator, 2026-10-14: *"what is this goofy
+///     thing he is holding?"*)
 ///
 /// Handles are loaded once into [`Models`] rather than per swap: `AssetServer`
 /// dedups, but a `load` per frame still walks a path and hashes it, and this
@@ -2015,9 +2014,8 @@ pub fn swap(
         &mut Visibility,
         &mut Transform,
     )>,
-    mut fallback: Query<&mut Visibility, (With<Fallback>, Without<HeldModel>)>,
 ) {
-    let (want, empty, skin, tint, tool) = match net.as_deref() {
+    let (want, skin, tint) = match net.as_deref() {
         Some(n) => {
             let core = &n.session.core;
             let stack = core
@@ -2033,56 +2031,55 @@ pub fn swap(
                 &core.inv,
                 n.sel,
             );
-            // Food and paper are not tools: a left click eats or reads them
-            // (`ui::hold::Click`), and the hafted stand-in in the fist said
-            // the opposite — a mushroom drawn as an axe.
-            let tool = !matches!(
-                click,
-                crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
-            );
             // **Holstered in THE GATE** (Rust: no weapon can be drawn in a
             // safe zone): the hands are empty until you step out. A
             // deployable is held as a blueprint (`sheet`), not in the fist.
             if core.holstered() || click == crate::ui::hold::Click::Deploy {
-                (None, true, 0, None, tool)
+                (None, 0, None)
             } else {
                 (
                     crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
-                    stack.is_none_or(|s| s.count == 0),
                     skin,
                     crate::ui::skins::tint_of(&core.skins, skin),
-                    tool,
                 )
             }
         }
-        None => (None, true, 0, None, true),
+        None => (None, 0, None),
     };
 
     // The bow in your own hand is drawn without its baked string once that
     // copy exists; `bow::drive` draws a live one on it.
     let fp = fp_bow
-        .mesh
-        .as_ref()
+        .copy(skin)
         .filter(|_| want.is_some() && want == super::bow::bow_row());
     for (mut held, mut mesh, mut mat, mut vis, mut tf) in &mut q {
-        if held.shown != want || held.skin != skin || held.fp != fp.is_some() {
-            held.fp = fp.is_some();
+        let ends = fp.as_ref().map(|(_, e)| *e);
+        if held.shown != want || held.skin != skin || held.ends != ends {
+            held.ends = ends;
             match want {
                 Some(i) => {
-                    let (m, mt) = models.row(i);
-                    mesh.0 = fp.cloned().unwrap_or(m);
                     *tf = pose(&crate::ui::hold::HELD_MODELS[i], VIEWMODEL_PALM);
-                    // The skin's tinted copy when it is ready; the plain look
-                    // (and a retry next frame, by not recording the skin)
-                    // while the row's own material is still loading.
-                    let skinned =
-                        tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mt, &mut materials));
-                    held.skin = if skinned.is_some() || tint.is_none() {
-                        skin
+                    let fp_mesh = fp.as_ref().map(|(c, _)| c.clone());
+                    if let Some((m, mt)) = models.skinned(i, skin) {
+                        // A skin with a model of its own draws that, untinted.
+                        mesh.0 = fp_mesh.unwrap_or(m);
+                        mat.0 = mt;
+                        held.skin = skin;
                     } else {
-                        u16::MAX
-                    };
-                    mat.0 = skinned.unwrap_or(mt);
+                        let (m, mt) = models.row(i);
+                        mesh.0 = fp_mesh.unwrap_or(m);
+                        // The skin's tinted copy when it is ready; the plain
+                        // look (and a retry next frame, by not recording the
+                        // skin) while the row's own material is still loading.
+                        let skinned =
+                            tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mt, &mut materials));
+                        held.skin = if skinned.is_some() || tint.is_none() {
+                            skin
+                        } else {
+                            u16::MAX
+                        };
+                        mat.0 = skinned.unwrap_or(mt);
+                    }
                 }
                 None => {
                     mesh.0 = Handle::default();
@@ -2093,16 +2090,6 @@ pub fn swap(
             held.shown = want;
         }
         *vis = if want.is_some() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-    }
-    // The stand-in covers "a tool with no model of its own", never "nothing
-    // in hand" and never a meal.
-    let show_fallback = want.is_none() && !empty && tool;
-    for mut v in &mut fallback {
-        *v = if show_fallback {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -2326,7 +2313,17 @@ pub fn apply_hand_light(
 pub struct Models {
     mesh: Vec<Handle<Mesh>>,
     mat: Vec<Handle<StandardMaterial>>,
+    /// The skins with models of their own, index-aligned with
+    /// [`crate::ui::hold::SKIN_MODELS`].
+    skin_mesh: Vec<Handle<Mesh>>,
+    skin_mat: Vec<Handle<StandardMaterial>>,
+    /// Painted skins on a held canvas row (`paint::paint`, wire v110): the
+    /// row's tint-free mesh and a material with the picture as its colour.
+    painted: Vec<((usize, u16), Drawn)>,
 }
+
+/// A mesh and the material it is drawn in.
+type Drawn = (Handle<Mesh>, Handle<StandardMaterial>);
 
 impl Models {
     /// The geometry and the surface for one [`crate::ui::hold::HELD_MODELS`]
@@ -2342,6 +2339,40 @@ impl Models {
     pub fn row(&self, i: usize) -> (Handle<Mesh>, Handle<StandardMaterial>) {
         (self.mesh[i].clone(), self.mat[i].clone())
     }
+
+    /// Skin `skin`'s own model for row `row` (`hold::SKIN_MODELS`), drawn
+    /// instead of the row's and untinted. `None` for a tint-only skin.
+    pub fn skinned(
+        &self,
+        row: usize,
+        skin: u16,
+    ) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        if let Some(k) = crate::ui::hold::skin_model(row, skin) {
+            return Some((self.skin_mesh[k].clone(), self.skin_mat[k].clone()));
+        }
+        self.painted
+            .iter()
+            .find(|(k, _)| *k == (row, skin))
+            .map(|(_, pair)| pair.clone())
+    }
+
+    /// Whether row `row` in skin `skin` has its painted model yet.
+    pub fn painted(&self, row: usize, skin: u16) -> bool {
+        self.painted.iter().any(|(k, _)| *k == (row, skin))
+    }
+
+    /// Give row `row` in painted skin `skin` its mesh and material.
+    pub fn paint(
+        &mut self,
+        row: usize,
+        skin: u16,
+        mesh: Handle<Mesh>,
+        mat: Handle<StandardMaterial>,
+    ) {
+        if !self.painted(row, skin) {
+            self.painted.push(((row, skin), (mesh, mat)));
+        }
+    }
 }
 
 /// Load every held model once at startup. For the `.glb` rows, the same
@@ -2356,28 +2387,30 @@ pub fn load_models(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let glb_mesh = |path: &'static str| -> Handle<Mesh> {
+        assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(path),
+        )
+    };
+    let glb_mat = |path: &'static str| -> Handle<StandardMaterial> {
+        assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(path),
+        )
+    };
     let (mut mesh, mut mat) = (Vec::new(), Vec::new());
     for m in &crate::ui::hold::HELD_MODELS {
         match m.src {
             crate::ui::hold::HeldSrc::Glb(path) => {
-                mesh.push(
-                    assets.load(
-                        GltfAssetLabel::Primitive {
-                            mesh: 0,
-                            primitive: 0,
-                        }
-                        .from_asset(path),
-                    ),
-                );
-                mat.push(
-                    assets.load(
-                        GltfAssetLabel::Material {
-                            index: 0,
-                            is_scale_inverted: false,
-                        }
-                        .from_asset(path),
-                    ),
-                );
+                mesh.push(glb_mesh(path));
+                mat.push(glb_mat(path));
             }
             crate::ui::hold::HeldSrc::Gen(name) => {
                 mesh.push(meshes.add(super::heldgen::mesh(name)));
@@ -2385,7 +2418,14 @@ pub fn load_models(
             }
         }
     }
-    commands.insert_resource(Models { mesh, mat });
+    let skins = &crate::ui::hold::SKIN_MODELS;
+    commands.insert_resource(Models {
+        mesh,
+        mat,
+        skin_mesh: skins.iter().map(|s| glb_mesh(s.path)).collect(),
+        skin_mat: skins.iter().map(|s| glb_mat(s.path)).collect(),
+        painted: Vec::new(),
+    });
     commands.insert_resource(SkinMats::default());
 }
 
@@ -2745,8 +2785,8 @@ pub fn animate(
         if in_hand {
             *it = item_pose(Some(fit), snap * aim);
             m.set = Some(hand_set(fit));
-            // The fist closes on a row the hand fits round; a palmed or
-            // stand-in row keeps the rest curl.
+            // The fist closes on a row the hand fits round; a palmed row or
+            // an empty hand keeps the rest curl.
             if def
                 .filter(|_| !holstered)
                 .is_some_and(|d| d.grip_roll.is_some())

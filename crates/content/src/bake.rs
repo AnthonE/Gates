@@ -2128,6 +2128,7 @@ impl Content {
                         sp.id
                     ));
                 }
+                let mut gifts = [false; 3];
                 for l in &t.lines {
                     if l.text.is_empty() || l.text.len() > ARC_TEXT_BYTES {
                         return Err(format!(
@@ -2135,9 +2136,31 @@ impl Content {
                             sp.id
                         ));
                     }
-                    if let Some(w) = &l.when {
-                        self.when_of(w)
-                            .map_err(|e| format!("arc: {}: {e}", sp.id))?;
+                    let when = match &l.when {
+                        Some(w) => self
+                            .when_of(w)
+                            .map_err(|e| format!("arc: {}: {e}", sp.id))?,
+                        None => When::Always,
+                    };
+                    match (when, t.gift.is_some()) {
+                        (When::Gift(g), true) => gifts[g as usize] = true,
+                        (When::Gift(_), false) | (_, true) => {
+                            return Err(format!(
+                                "arc: {}: `{}`: gift lines go in a gift topic, and only there",
+                                sp.id, t.title
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(season) = &t.gift {
+                    self.gift_set(season)
+                        .map_err(|e| format!("arc: {}: {e}", sp.id))?;
+                    if gifts != [true; 3] {
+                        return Err(format!(
+                            "arc: {}: `{}` needs a gift:guest, gift:owned and gift:given line",
+                            sp.id, t.title
+                        ));
                     }
                 }
             }
@@ -2189,6 +2212,21 @@ impl Content {
         Ok(out)
     }
 
+    /// Every skin row of season `season`, the thing a gift topic gives.
+    fn gift_set(&self, season: &str) -> Result<sim_core::skin::SkinSet, String> {
+        let mut set = sim_core::skin::SkinSet::EMPTY;
+        for (i, s) in self.skins.iter().enumerate() {
+            if s.season == season {
+                if s.price.is_some() {
+                    return Err(format!("gift `{season}`: `{}` is on sale", s.id));
+                }
+                set.insert(i);
+            }
+        }
+        // An empty gift is legal: whoever asks already holds all of it.
+        Ok(set)
+    }
+
     /// A speaker line's condition.
     fn when_of(&self, w: &str) -> Result<When, String> {
         let (kind, arg) = w
@@ -2213,6 +2251,12 @@ impl Content {
             "embers" => When::Embers(work()?),
             "holds" => When::Holds(unlock()?),
             "lacks" => When::Lacks(unlock()?),
+            "gift" => When::Gift(match arg {
+                "guest" => Gift::Guest,
+                "owned" => Gift::Owned,
+                "given" => Gift::Given,
+                _ => return Err(format!("`{w}`: a gift line is guest, owned or given")),
+            }),
             _ => return Err(format!("`{kind}` is not a condition")),
         })
     }
@@ -2284,6 +2328,7 @@ impl Content {
                 }
                 topics.push(TopicText {
                     title: t.title.clone(),
+                    gift: t.gift.as_deref().map(|g| self.gift_set(g)).transpose()?,
                     lines,
                 });
             }
@@ -2638,6 +2683,20 @@ pub enum When {
     Embers(u8),
     Holds(u8),
     Lacks(u8),
+    /// A gift topic's outcome, said by [`ArcText::gift_line`] and never by
+    /// [`ArcText::line`].
+    Gift(Gift),
+}
+
+/// What asking a gift topic came to (`server/src/gifts.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gift {
+    /// No wallet to give to.
+    Guest,
+    /// This wallet already holds every row.
+    Owned,
+    /// Given just now.
+    Given,
 }
 
 impl When {
@@ -2653,6 +2712,7 @@ impl When {
             When::Embers(k) => w(k).state == WORK_LIT && w(k).fuel == 0,
             When::Holds(u) => sim_core::works::holds(works.unlocks, u),
             When::Lacks(u) => !sim_core::works::holds(works.unlocks, u),
+            When::Gift(_) => false,
         }
     }
 }
@@ -2661,6 +2721,8 @@ impl When {
 #[derive(Clone, Debug)]
 pub struct TopicText {
     pub title: String,
+    /// A gift topic's skins, over the baked catalog's rows.
+    pub gift: Option<sim_core::skin::SkinSet>,
     pub lines: Vec<(When, String)>,
 }
 
@@ -2690,6 +2752,21 @@ impl ArcText {
             .lines
             .iter()
             .find(|(w, _)| w.holds(works))
+            .map(|(_, s)| s.as_str())
+    }
+
+    /// The skins topic `t` of speaker `k` gives, if it is a gift topic.
+    pub fn gift(&self, k: usize, t: usize) -> Option<sim_core::skin::SkinSet> {
+        self.speakers.get(k)?.topics.get(t)?.gift
+    }
+
+    /// What speaker `k` says on gift topic `t` when asking came to `g`.
+    pub fn gift_line(&self, k: usize, t: usize, g: Gift) -> Option<&str> {
+        let topic = self.speakers.get(k)?.topics.get(t)?;
+        topic
+            .lines
+            .iter()
+            .find(|(w, _)| *w == When::Gift(g))
             .map(|(_, s)| s.as_str())
     }
 

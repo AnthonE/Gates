@@ -20,6 +20,10 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
+/// The items a painted skin can cover: the ones whose UV layout is frozen
+/// for painting (`client::render::canvas::CANVASES` names the same).
+pub const SKIN_CANVAS_ITEMS: [&str; 2] = ["item.bat", "item.armor_burlap_body"];
+
 pub const FILES: [&str; 16] = [
     "items.toml",
     "gatherables.toml",

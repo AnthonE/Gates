@@ -4,17 +4,36 @@ use server::agent_demo::{bot_name, check_page, Door, MindArgs, Source, AGENT_NAM
 use server::explorer::Survivor;
 use sim_core::limits::TICK_HZ;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 const RUN_SECONDS: u64 = 120;
+/// An MCP harness's run: the longest `--seconds` allows. The harness ends
+/// it sooner by closing its end.
+const MCP_RUN_SECONDS: u64 = 86400;
+/// Where `--set-face` signs in: the platform every Gates nametag reads.
+const FACE_ORIGIN: &str = "https://elopros.com";
+
+/// Under `--mcp` stdout is the harness's JSON-RPC, so the run's report
+/// goes to stderr instead.
+static MCP: AtomicBool = AtomicBool::new(false);
+
+macro_rules! out {
+    ($($arg:tt)*) => {
+        if MCP.load(Ordering::Relaxed) {
+            eprintln!($($arg)*);
+        } else {
+            println!($($arg)*);
+        }
+    };
+}
 /// Most bots one run may start on one island. Plumbing bound.
 const MAX_BOTS: usize = 8;
 
 fn usage() -> String {
     format!(
-        "jev-bot --new-key PATH | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
+        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
     )
 }
 
@@ -29,6 +48,11 @@ struct Options {
     duration: Duration,
     bots: usize,
     mind: MindArgs,
+    set_face: bool,
+    face_name: Option<String>,
+    face_pic: Option<PathBuf>,
+    origin: String,
+    seconds_given: bool,
 }
 
 impl Options {
@@ -44,6 +68,11 @@ impl Options {
             duration: Duration::from_secs(RUN_SECONDS),
             bots: 1,
             mind: MindArgs::default(),
+            set_face: false,
+            face_name: None,
+            face_pic: None,
+            origin: FACE_ORIGIN.into(),
+            seconds_given: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -53,6 +82,13 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => return Ok(None),
                 "--local" => options.local = true,
+                "--set-face" => options.set_face = true,
+                "--name" => options.face_name = Some(args.next().ok_or("--name needs a name")?),
+                "--pic" => {
+                    options.face_pic =
+                        Some(PathBuf::from(args.next().ok_or("--pic needs a PNG file")?))
+                }
+                "--origin" => options.origin = args.next().ok_or("--origin needs a URL")?,
                 // A new wallet for an agent, written owner-only (`agentkey`).
                 "--new-key" => {
                     options.new_key = Some(PathBuf::from(
@@ -99,9 +135,25 @@ impl Options {
                         return Err("run duration must be 1..86400 seconds".into());
                     }
                     options.duration = Duration::from_secs(value);
+                    options.seconds_given = true;
                 }
                 _ => return Err(format!("unknown argument: {arg}")),
             }
+        }
+        if options.set_face {
+            if options.agent_key.is_none() {
+                return Err("--set-face signs with --agent-key PATH".into());
+            }
+            if options.face_name.is_none() && options.face_pic.is_none() {
+                return Err("--set-face needs --name, --pic or both".into());
+            }
+            if options.local || options.server.is_some() || options.new_key.is_some() {
+                return Err("--set-face sets the face and exits; run the bot without it".into());
+            }
+            return Ok(Some(options));
+        }
+        if options.face_name.is_some() || options.face_pic.is_some() {
+            return Err("--name and --pic go with --set-face (in game, --agent-name)".into());
         }
         if options.new_key.is_some() {
             if options.local || options.server.is_some() || options.agent_key.is_some() {
@@ -120,6 +172,14 @@ impl Options {
                 "--bots above 1 runs scripted or external agents; Jev is billed per bot".into(),
             );
         }
+        if options.mind.source == Source::Mcp {
+            if options.bots > 1 {
+                return Err("--mcp is one body: one harness on this process's stdio".into());
+            }
+            if !options.seconds_given {
+                options.duration = Duration::from_secs(MCP_RUN_SECONDS);
+            }
+        }
         if options.bots > 1 && options.agent_key.is_some() {
             return Err("one --agent-key is one body; --bots above 1 runs guest agents".into());
         }
@@ -130,12 +190,50 @@ impl Options {
     }
 }
 
+/// `--set-face`: this key's name and picture on its Elo Pros profile,
+/// signed by the key itself (`server::face_set`).
+fn set_face(options: &Options) -> Result<(), String> {
+    let path = options.agent_key.as_deref().expect("validated");
+    let key = Door::load_key(path)?;
+    let png = match &options.face_pic {
+        Some(pic) => {
+            let bytes = std::fs::read(pic).map_err(|e| format!("{}: {e}", pic.display()))?;
+            if bytes.len() > server::face_set::FACE_PIC_MAX_BYTES {
+                return Err(format!(
+                    "{} is over the platform's {}-byte cap",
+                    pic.display(),
+                    server::face_set::FACE_PIC_MAX_BYTES
+                ));
+            }
+            Some(bytes)
+        }
+        None => None,
+    };
+    let face = server::face_set::set_face(
+        &key,
+        &options.origin,
+        options.face_name.as_deref(),
+        png.as_deref(),
+    )?;
+    let hex = key.address().to_hex();
+    let wallet = String::from_utf8_lossy(&hex);
+    out!(
+        "face set for {wallet}: name {}, picture {}\nsee it: {}/api/face/{wallet}",
+        face["name"]
+            .as_str()
+            .map_or("(none)".into(), |n| format!("{n:?}")),
+        face["picture"].as_str().unwrap_or("(none)"),
+        options.origin.trim_end_matches('/')
+    );
+    Ok(())
+}
+
 /// `--new-key`: a fresh wallet for an agent, its address printed. The
 /// secret stays in the file.
 fn new_key(path: &std::path::Path) -> Result<(), String> {
     let key = agentkey::AgentKey::create(path).map_err(|e| e.to_string())?;
     let address = key.address().to_checksum_hex();
-    println!(
+    out!(
         "new agent key in {} (owner-only; keep it safe)\naddress: {}\nrun: jev-bot --server game.elopros.com:61234 --agent-key {} --scripted",
         path.display(),
         String::from_utf8_lossy(&address),
@@ -147,6 +245,10 @@ fn new_key(path: &std::path::Path) -> Result<(), String> {
 async fn run(options: Options) -> Result<(), String> {
     if let Some(path) = &options.new_key {
         return new_key(path);
+    }
+    if options.set_face {
+        // Blocking HTTP: off the runtime's worker, which it would stall.
+        return tokio::task::block_in_place(|| set_face(&options));
     }
     // Load the key (if any) and start every source before booting a shard:
     // a refused key or credential costs nothing.
@@ -161,11 +263,21 @@ async fn run(options: Options) -> Result<(), String> {
             Door::new(server.clone(), None, None)?;
         }
     }
+    if options.mind.source == Source::Mcp {
+        MCP.store(true, Ordering::Relaxed);
+        server::mcp::set_me(server::mcp::Me {
+            name: options.agent_name.clone(),
+            wallet: key.as_ref().map(|k| {
+                let hex = k.address().to_hex();
+                String::from_utf8_lossy(&hex).into_owned()
+            }),
+        });
+    }
     let mut minds = Vec::with_capacity(options.bots);
     for _ in 0..options.bots {
         minds.push(options.mind.build()?);
     }
-    println!(
+    out!(
         "mind: {} × {} · {} hands · {}",
         options.mind.label(),
         options.bots,
@@ -174,7 +286,7 @@ async fn run(options: Options) -> Result<(), String> {
     );
     let shard = if options.local {
         let handle = server::agent_demo::spawn_local().await?;
-        println!(
+        out!(
             "local shard: {} · proto {} · spectator seats open to this machine",
             handle.local_addr,
             protocol::PROTO_VER
@@ -191,7 +303,7 @@ async fn run(options: Options) -> Result<(), String> {
             key,
         )?,
     };
-    println!(
+    out!(
         "{}: {}",
         if door.key.is_some() {
             "wallet agent"
@@ -205,15 +317,18 @@ async fn run(options: Options) -> Result<(), String> {
     );
     // Where the owner watches its own view (NETCODE.md §2.3): the public
     // page off this machine, a named page on it, else the bare query.
+    if let Some(url) = door.watch_url(options.spectate_page.as_deref()) {
+        server::mcp::set_watch(url);
+    }
     match door.watch_url(options.spectate_page.as_deref()) {
-        Some(url) if door.loopback() => println!("watch it (this machine only): {url}"),
-        Some(url) => println!("watch it live: {url}"),
-        None => println!(
+        Some(url) if door.loopback() => out!("watch it (this machine only): {url}"),
+        Some(url) => out!("watch it live: {url}"),
+        None => out!(
             "watch it (this machine only): a Gates web page with ?{}",
             door.spectate_query()
         ),
     }
-    println!("  or the desktop client: {}", door.desktop_command());
+    out!("  or the desktop client: {}", door.desktop_command());
     let endpoint = Arc::new(door.endpoint()?);
     let door = Arc::new(door);
     let mut fleet = tokio::task::JoinSet::new();
@@ -257,7 +372,7 @@ async fn run(options: Options) -> Result<(), String> {
         while let Some(joined) = fleet.join_next().await {
             outcomes.push(joined);
         }
-        println!("interrupted by Ctrl-C");
+        out!("interrupted by Ctrl-C");
     }
     if let Some(shard) = &shard {
         shard.shutdown.store(true, Ordering::Relaxed);
@@ -273,7 +388,7 @@ async fn run(options: Options) -> Result<(), String> {
         print_report(&label, &survivor);
         match result {
             Ok(report) => {
-                println!(
+                out!(
                     "{label}player {}: {} snapshots, {} inputs, {} actions, executed seq {}, decode errors {}, truncated {}",
                     report.player_id,
                     report.snapshots_applied,
@@ -303,7 +418,7 @@ async fn run(options: Options) -> Result<(), String> {
 fn print_report(label: &str, survivor: &Survivor) {
     let (hour, hour_cap, day, day_cap) = survivor.mind.guard().counts();
     let m = survivor.mind.stats;
-    println!(
+    out!(
         "{label}mind {}: {} requests, {} decisions, {} failures, {} late, {} input tokens, {} output tokens, {} pauses; this hour {hour}/{hour_cap}, today {day}/{day_cap}",
         survivor.mind.kind().label(),
         m.requests,
@@ -315,7 +430,7 @@ fn print_report(label: &str, survivor: &Survivor) {
         m.pauses
     );
     let s = survivor.stats;
-    println!(
+    out!(
         "{label}survival: {} deaths, {} respawns ({} asks), {} retreats; goals {} done, {} failed, {} interrupted; {} targets finished, {} abandoned, {} given way; crafted {}, eaten {}, drinks {}, equips {}; {} actions sent",
         s.deaths,
         s.respawns,
@@ -333,7 +448,7 @@ fn print_report(label: &str, survivor: &Survivor) {
         s.equips,
         s.actions
     );
-    println!(
+    out!(
         "{label}chat: said {} ({} heard back), heard {} from others, {} refused, {} replaced unsent",
         s.said, s.echoed, s.heard, s.say_refused, s.say_dropped
     );
@@ -348,11 +463,12 @@ fn print_report(label: &str, survivor: &Survivor) {
                 )
             })
             .collect();
-        println!("{label}gathered: {}", gathered.join(", "));
+        out!("{label}gathered: {}", gathered.join(", "));
         if survivor.delivered > 0 || survivor.took > 0 {
-            println!(
+            out!(
                 "{label}team's boxes: {} units put in, {} taken out",
-                survivor.delivered, survivor.took
+                survivor.delivered,
+                survivor.took
             );
         }
         let mut pack: Vec<(String, u32)> = Vec::new();
@@ -364,7 +480,7 @@ fn print_report(label: &str, survivor: &Survivor) {
             }
         }
         let pack: Vec<String> = pack.iter().map(|(n, c)| format!("{n} {c}")).collect();
-        println!(
+        out!(
             "{label}pack: {}; health {}/{}, food {}/{}, water {}/{}",
             pack.join(", "),
             core.hp,
@@ -392,7 +508,7 @@ fn print_report(label: &str, survivor: &Survivor) {
             )
         })
         .collect();
-    println!("{label}recent goals: {}", goals.join(" | "));
+    out!("{label}recent goals: {}", goals.join(" | "));
 }
 
 #[tokio::main]

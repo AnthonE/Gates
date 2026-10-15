@@ -95,8 +95,15 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "boulder.rs",
-        "formation",
+        "core",
         "locator: a rock formation is placed against the raw surface, and it \
+         keeps clear of every road and site the carve touches, so over its \
+         footprint the two surfaces are the same one.",
+    ),
+    (
+        "boulder.rs",
+        "strays",
+        "locator: a lone boulder is placed against the raw surface, and it \
          keeps clear of every road and site the carve touches, so over its \
          footprint the two surfaces are the same one.",
     ),

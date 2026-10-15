@@ -1528,7 +1528,7 @@ pub fn feed(
 /// time it streamed in.
 ///
 /// **A bush is picked, not felled** (`E`, `gather::pick`): it plays
-/// [`Cue::BushPick`] and sheds a puff of leaves, once per slot — a bush is
+/// [`Cue::BushPick`] and throws a dust poof and a few leaves, once per slot — a bush is
 /// two `Vanish` entities (the blob and its leaf cards), so the key is
 /// remembered for the frame. Which `Vanish` node is a bush is read off the
 /// scatter by its key, on the transition frame only.
@@ -1575,16 +1575,9 @@ pub fn fell(
                     n_picked += 1;
                 }
                 let high = super::impact::strike_height(plant.map_or(0, |o| o as u8));
-                let at = t.translation() + Vec3::Y * high;
-                fx.impact(
-                    &super::impact::Contact {
-                        at,
-                        matter: super::impact::Matter::Plant,
-                        weapon: super::impact::Weapon::Melee,
-                        ..Default::default()
-                    },
-                    eye.pos,
-                );
+                let base = t.translation();
+                super::fx::world::picked(&mut fx, base, high, eye.pos);
+                let at = base + Vec3::Y * high;
                 sound.play(Request::at(Cue::BushPick, [at.x, at.y, at.z]));
                 continue;
             }

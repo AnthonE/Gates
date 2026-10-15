@@ -669,6 +669,67 @@ pub const HELD_MODELS: [HeldModelDef; 38] = [
     ),
 ];
 
+/// A skin with a model of its own: it replaces its row's mesh and material
+/// outright, where every other skin tints the row's (`content/skins.toml`'s
+/// `tint`, which still colours its icon). Authored to the row's own height
+/// and grip so the row's pose holds it unchanged; `tests/held_assets.rs`
+/// checks the file against the row and the catalog id against the content.
+#[derive(Clone, Copy, Debug)]
+pub struct SkinModelDef {
+    /// `content/skins.toml`'s `catalog`.
+    pub catalog: u16,
+    /// The [`HELD_MODELS`] row it covers.
+    pub key: &'static str,
+    pub path: &'static str,
+}
+
+/// Every skin that has its own model. Made by `ci/meshy_gen.py`
+/// (`assets/models/MANIFEST.md`, `held/skins/`).
+pub const SKIN_MODELS: [SkinModelDef; 6] = [
+    SkinModelDef {
+        catalog: 1,
+        key: "bat",
+        path: "models/held/skins/obsidian_bat.glb",
+    },
+    SkinModelDef {
+        catalog: 2,
+        key: "stone_hatchet",
+        path: "models/held/skins/ember_hatchet.glb",
+    },
+    SkinModelDef {
+        catalog: 3,
+        key: "stone_pickaxe",
+        path: "models/held/skins/frost_pickaxe.glb",
+    },
+    SkinModelDef {
+        catalog: 4,
+        key: "hunting_bow",
+        path: "models/held/skins/bone_bow.glb",
+    },
+    SkinModelDef {
+        catalog: 7,
+        key: "bat",
+        path: "models/held/skins/founder_bat.glb",
+    },
+    SkinModelDef {
+        catalog: 8,
+        key: "stone_hatchet",
+        path: "models/held/skins/founder_hatchet.glb",
+    },
+];
+
+/// The [`SKIN_MODELS`] index of skin `skin` worn on [`HELD_MODELS`] row
+/// `row`, if that skin has a model for that row.
+pub fn skin_model(row: usize, skin: u16) -> Option<usize> {
+    if skin == 0 {
+        return None;
+    }
+    let key = HELD_MODELS.get(row)?.key;
+    SKIN_MODELS
+        .iter()
+        .position(|s| s.catalog == skin && s.key == key)
+}
+
 /// The pose a head-heavy hafted tool is carried in — the axe's, shared by the
 /// pickaxe and the hammer.
 ///
@@ -1592,8 +1653,8 @@ mod tests {
         let c = catalog_with(&["Bat"]);
         // The commonest state in the game, and the one worth stating: a count
         // of zero is not "hold a rock", it is hold nothing. `viewmodel::swap`
-        // hides both the model and the stand-in on `None`, so a tool must
-        // never appear over an empty cell.
+        // hides the model on `None`, so a tool must never appear over an
+        // empty cell.
         assert_eq!(
             held_model(
                 &c,
@@ -1627,9 +1688,8 @@ mod tests {
         // armour is the honest example now: `reference/ARMOR.md`'s shape of
         // gap — content priced and validated with no picture behind it.
         let c = catalog_with(&["Burlap Hood"]);
-        // `None` here means "wear the generic stand-in", which is a different
-        // picture from an empty hand and from a modelled item. Returning
-        // `Some(0)` would put a rock in the player's hand instead of a tool.
+        // `None` here means an empty fist, never somebody else's model:
+        // returning `Some(0)` would put a rock in the player's hand.
         assert_eq!(
             held_model(
                 &c,

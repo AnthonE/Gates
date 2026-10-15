@@ -71,3 +71,41 @@ name = "Moss Tunic"
 covers = "item.armor_burlap_body"
 tint = [124, 152, 92]
 season = "launch"
+
+# ── The alpha's gift ─────────────────────────────────────────────────────────
+# Never sold: no coin or price, so they stay off the store. THE OUTFITTER at
+# THE GATE hands every row of season "founder" to a signed-in wallet that asks
+# (`content/arc.toml`'s gift topic); the shard keeps who took them in its
+# `.gifts` file (`server/src/gifts.rs`), which a wipe leaves alone.
+
+[[skin]]
+id = "skin.bat_founder"
+catalog = 7
+name = "Founder's Bat"
+covers = "item.bat"
+tint = [92, 112, 196]
+season = "founder"
+
+[[skin]]
+id = "skin.hatchet_stone_founder"
+catalog = 8
+name = "Founder's Hatchet"
+covers = "item.hatchet_stone"
+tint = [84, 104, 204]
+season = "founder"
+
+# ── Painted skins (wire v110) ────────────────────────────────────────────────
+# A picture rather than a tint: `texture` is the sha256 of a square PNG drawn
+# on the item's canvas (`client::render::canvas`; `skinkit template`), served
+# by the platform at /api/items/skin/<first 16 hex>.png. `tint` is its average
+# colour, what its icon wears. Made with `skinkit` (crates/client/src/bin);
+# the PNGs and their makers are in assets/skins/.
+
+[[skin]]
+id = "skin.tunic_field_medic"
+catalog = 9
+name = "Field Medic Tunic"
+covers = "item.armor_burlap_body"
+tint = [171, 159, 138]
+texture = "a3e59a08d11ce4f21077c189df6d489e813f1b44ec14f25fa1ba74e84c980b58"
+season = "community"

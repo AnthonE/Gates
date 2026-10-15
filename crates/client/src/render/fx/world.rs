@@ -307,6 +307,32 @@ pub fn landing(fx: &mut Fx, world: &WorldId, base: Vec3, bearing: f32, scale: f3
     );
 }
 
+/// A plant picked by hand (`audio::fell`): a poof of dust off the ground it
+/// stood on and leaves shaken out of it at `high` metres. No chips — nothing
+/// struck it.
+pub fn picked(fx: &mut Fx, base: Vec3, high: f32, eye: Vec3) {
+    let k = lod(base.distance(eye));
+    if k <= 0.0 {
+        return;
+    }
+    emit(
+        &mut fx.soft,
+        Layer::Dust,
+        scaled(6, k),
+        base + Vec3::Y * 0.2,
+        Vec3::Y,
+        Matter::Dirt,
+    );
+    emit(
+        &mut fx.soft,
+        Layer::Leaves,
+        scaled(8, k),
+        base + Vec3::Y * high,
+        Vec3::Y,
+        Matter::Plant,
+    );
+}
+
 /// Remote footsteps farther than this throw nothing, metres.
 pub const STEP_FX_M: f32 = 30.0;
 

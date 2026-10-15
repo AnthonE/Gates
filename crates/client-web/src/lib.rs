@@ -530,5 +530,7 @@ pub fn start() {
                 let _ = f.call1(&global, &msg);
             }
         }
+        // A crash report to the platform, as a beacon that outlives the trap.
+        client::render::report::web_crash(info);
     }));
 }

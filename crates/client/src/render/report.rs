@@ -1,10 +1,9 @@
-//! The report key: `F7`, on every screen, all run long.
+//! The report key: `F7` on every screen, or "Report a bug" in the Esc menu.
 //!
-//! One line of typing and one keypress produce two files beside the player's
-//! screenshots — `gates-report-<stamp>-<fp>.md` for a person and `.json` for
-//! anything listing them — plus a `.png` of the frame the player was looking
-//! at when they pressed it. [`crate::report`] owns what goes in them and why;
-//! this file owns nodes, keys, and the live facts.
+//! One line of typing and Enter send a report to the platform's intake
+//! ([`crate::report::INTAKE_PATH`]) with a PNG of the frame the player was
+//! looking at. [`crate::report`] owns what goes in it and why; this file owns
+//! nodes, keys, the live facts, and the send.
 //!
 //! **Why a key rather than a website.** `AGENTS.md` §the deal has paid the
 //! board's posted price for every accepted pull request since 2026-08-09, and
@@ -14,15 +13,22 @@
 //! repo, read the walls, describe the build, remember the seed) is a step
 //! where the report stops existing. This is that distance made one key.
 //!
-//! ## It writes a file; it does not send one
+//! ## Desktop and browser
 //!
-//! Nothing here opens a socket. The report lands on the player's disk, next to
-//! their pictures, and they decide what happens to it — paste it into an
-//! issue, hand it to their own agent, or delete it. That is a deliberate
-//! shape rather than an unbuilt feature: a game that quietly posted what its
-//! player typed would be a game whose bug button nobody presses twice, and an
-//! intake endpoint can be added later behind a prompt without changing a line
-//! of what the document *is*.
+//! The same composer and the same document on both; what differs is where a
+//! copy can live and how the bytes leave.
+//!
+//! - **Desktop:** the `.md`/`.json` pair and the `.png` are written beside the
+//!   screenshots as before, then the report is POSTed from a thread
+//!   (`ureq`). If the send fails, the line says so and names the file.
+//! - **Browser:** a tab has no disk, so the send IS the report — `fetch` from
+//!   the page, same-origin on elopros.com. If it fails, what the player typed
+//!   is kept and `F7` reopens with it.
+//!
+//! A panic files a crash report on both: the desktop hook writes its file and
+//! posts it with a short timeout; the page's hook (`client-web`'s `start`)
+//! calls [`web_crash`], which uses `navigator.sendBeacon` because the module
+//! is about to stop and a beacon outlives it.
 //!
 //! ## The composer owns the keyboard while it is open
 //!
@@ -43,10 +49,13 @@
 
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use bevy::render::renderer::RenderAdapterInfo;
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::report::{self, Audio, Build, Kind, Netstat, Place, Report, Vitals, TITLE_MAX};
+use crate::report::{
+    self, Audio, Build, Kind, Machine, Netstat, Place, Receipt, Report, Vitals, TITLE_MAX,
+};
 use crate::shot;
 
 use super::audio::Diag;
@@ -58,13 +67,22 @@ use super::Net;
 /// debug view nor a screenshot in any game a player has come from.
 pub const KEY: KeyCode = KeyCode::F7;
 
-/// How long the "filed" line stays up, in seconds.
+/// How long the result line stays up, in seconds.
 ///
-/// The HUD's toast cadence is 250 ms and this is not a toast: it names a file
-/// the player is about to go and look for, so it has to survive tabbing away
-/// and back. Six seconds is long enough to read a filename aloud and short
-/// enough that it is gone before it is furniture.
-pub const NOTICE_SECS: f32 = 6.0;
+/// It names a reference or a file the player may want to copy, so it has to
+/// survive tabbing away and back, and short enough that it is gone before it
+/// is furniture.
+pub const NOTICE_SECS: f32 = 8.0;
+
+/// The longest side of the screenshot that is sent. A 4K frame is halved
+/// until it fits — the evidence survives, the upload stays a few hundred KB.
+/// The desktop's own copy on disk is the full frame.
+pub const SHOT_SEND_SIDE: u32 = 1920;
+
+/// How long the desktop waits on the intake, in seconds. On a panic the wait
+/// is shorter ([`CRASH_TIMEOUT_S`]): the process is dying either way.
+pub const SEND_TIMEOUT_S: u64 = 20;
+pub const CRASH_TIMEOUT_S: u64 = 3;
 
 /// What a player may choose, in the order `Tab` walks them, ending on the
 /// honest one.
@@ -82,43 +100,49 @@ pub const KINDS: [Kind; 6] = [
     Kind::Other,
 ];
 
+/// One send's result, back on the frame thread.
+struct Outcome {
+    sent: Result<Receipt, String>,
+    /// The desktop's copy on disk, by file name.
+    saved: Option<String>,
+    /// What the player typed, kept so a failed send is not a retype.
+    draft: String,
+}
+
+type OutTx = tokio::sync::mpsc::UnboundedSender<Outcome>;
+
 /// The composer, the chosen kind, and the last thing this key said.
 #[derive(Resource)]
 pub struct Reports {
-    /// `None` when the environment named no base — [`shot::dir`]'s rule, and
-    /// resolved **once** at startup so the key does not read the environment
-    /// on the frame it is pressed.
+    /// Where the desktop keeps its copy — [`shot::dir`]'s rule, resolved
+    /// **once** at startup. `None` in a browser, and on a desktop whose
+    /// environment names no home: the report is still sent.
     pub dir: Option<std::path::PathBuf>,
     /// Does the composer own the keyboard this frame?
     pub open: bool,
     kind: usize,
     text: String,
+    /// Text from a send that failed, handed back on the next open.
+    draft: String,
     notice: String,
     notice_left: f32,
-    /// Reports written this run. Read by the tests.
+    /// Reports filed this run. Read by the tests.
     pub filed: u32,
     dirty: bool,
+    tx: OutTx,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Outcome>,
 }
 
 impl Default for Reports {
     fn default() -> Self {
         let dir = shot::dir();
-        if dir.is_none() {
+        if dir.is_none() && !cfg!(target_arch = "wasm32") {
             warn!(
-                "gates: no home directory in the environment, so the {KEY:?} report key is off \
-                 for this run — set GATES_SHOTS_DIR to name a directory"
+                "gates: no home directory in the environment, so {KEY:?} reports are sent \
+                 but no copy is kept — set GATES_SHOTS_DIR to name a directory"
             );
         }
-        Self {
-            dir,
-            open: false,
-            kind: 0,
-            text: String::new(),
-            notice: String::new(),
-            notice_left: 0.0,
-            filed: 0,
-            dirty: true,
-        }
+        Self::new(dir)
     }
 }
 
@@ -127,15 +151,19 @@ impl Reports {
     /// for its reason: a test points this somewhere without touching the
     /// process's real (and test-shared) environment.
     pub fn new(dir: Option<std::path::PathBuf>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         Self {
             dir,
             open: false,
             kind: 0,
             text: String::new(),
+            draft: String::new(),
             notice: String::new(),
             notice_left: 0.0,
             filed: 0,
             dirty: true,
+            tx,
+            rx,
         }
     }
 
@@ -149,6 +177,14 @@ impl Reports {
     /// own reasoning, and its wording).
     pub fn remaining(&self) -> usize {
         TITLE_MAX.saturating_sub(self.text.chars().count())
+    }
+
+    /// Open the composer, with the text of a send that failed if there was
+    /// one. The F7 key and the Esc menu's row both come through here.
+    pub fn open_composer(&mut self) {
+        self.open = true;
+        self.text = std::mem::take(&mut self.draft);
+        self.dirty = true;
     }
 
     fn say(&mut self, what: impl Into<String>) {
@@ -187,7 +223,15 @@ pub fn setup(mut commands: Commands) {
     ));
 }
 
-/// `F7` opens; `Tab` changes the kind; `Enter` files; `Esc` abandons.
+/// Free the pointer for typing.
+pub fn free_cursor(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>) {
+    if let Ok(mut c) = cursor.single_mut() {
+        c.grab_mode = CursorGrabMode::None;
+        c.visible = true;
+    }
+}
+
+/// `F7` opens; `Tab` changes the kind; `Enter` sends; `Esc` abandons.
 ///
 /// `keyboard` is `ResMut` for `chat::keys`' reason: **a key this consumed must
 /// not reach the system after it**, which is what stops a typed line also
@@ -199,11 +243,14 @@ pub fn keys(
     net: Option<NonSend<Net>>,
     who: Option<Res<super::screen::Who>>,
     direct: Option<Res<super::screen::Direct>>,
+    pics: Option<Res<super::faces::Pics>>,
     screen: Res<State<Screen>>,
     time: Res<Time>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mut chars: MessageReader<KeyboardInput>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    adapter: Option<Res<RenderAdapterInfo>>,
     chat: Option<Res<super::chat::Chat>>,
     // The audio seam's last report. Not optional: the engine exists from
     // plugin build, on the menus too, and a report filed anywhere carries it.
@@ -226,17 +273,8 @@ pub fn keys(
             return;
         }
         if keyboard.just_pressed(KEY) {
-            if reports.dir.is_none() {
-                reports.say("no directory for reports — set GATES_SHOTS_DIR");
-            } else {
-                reports.open = true;
-                reports.text.clear();
-                reports.dirty = true;
-                if let Ok(mut c) = cursor.single_mut() {
-                    c.grab_mode = CursorGrabMode::None;
-                    c.visible = true;
-                }
-            }
+            reports.open_composer();
+            free_cursor(&mut cursor);
             keyboard.clear_just_pressed(KEY);
         }
         // Not open: drain, so a keystroke pressed with the composer shut does
@@ -262,21 +300,34 @@ pub fn keys(
     }
 
     if keyboard.just_pressed(KeyCode::Enter) {
-        let png = file(
-            &mut commands,
+        let machine = machine(adapter.as_deref(), windows.single().ok());
+        let origin = pics
+            .as_deref()
+            .map(|p| p.origin.clone())
+            .unwrap_or_else(|| crate::ui::names::PLATFORM_ORIGIN.to_string());
+        let job = compose(
             &mut reports,
             net.as_deref(),
             who.as_deref(),
             direct.as_deref(),
             &screen,
             Some(&engine.diag),
+            machine,
+            report::intake_url(&origin),
         );
-        if let Some(png) = png {
-            commands
-                .spawn(Screenshot::primary_window())
-                .observe(save_to_disk(png));
-        }
+        // The frame is shot after the composer's line is cleared, so the
+        // evidence is the world and not our own prompt over it. One job, one
+        // send: an observer can fire again, the `take` cannot.
+        let mut job = Some(job);
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(move |cap: On<ScreenshotCaptured>| {
+                if let Some(job) = job.take() {
+                    job.finish(cap.image.clone());
+                }
+            });
         reports.close();
+        reports.say("sending report…");
         release(&mut cursor, &screen);
         keyboard.clear_just_pressed(KeyCode::Enter);
         chars.clear();
@@ -324,8 +375,194 @@ fn release(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>, screen: 
     }
 }
 
-/// Build the report from whatever this client currently knows, write both
-/// files, and answer with the screenshot path the caller should shoot into.
+/// The browser's user agent; `None` on the desktop.
+fn user_agent() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?.navigator().user_agent().ok()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// What the report ran on: the adapter wgpu picked, the window, and in a
+/// browser the user agent.
+fn machine(adapter: Option<&RenderAdapterInfo>, window: Option<&Window>) -> Machine {
+    let (gpu, backend, driver) = adapter
+        .map(|a| {
+            (
+                a.name.clone(),
+                format!("{:?}", a.backend),
+                format!("{} {}", a.driver, a.driver_info),
+            )
+        })
+        .unwrap_or_default();
+    let size = window
+        .map(|w| [w.physical_width(), w.physical_height()])
+        .unwrap_or([0, 0]);
+    Machine::new(&gpu, &backend, driver.trim(), size, user_agent().as_deref())
+}
+
+/// A report waiting on its screenshot.
+struct Job {
+    report: Report,
+    url: String,
+    /// Where the desktop's full-size copy goes.
+    png: Option<std::path::PathBuf>,
+    saved: Option<String>,
+    draft: String,
+    tx: OutTx,
+}
+
+impl Job {
+    /// The frame landed: encode it, keep the desktop's copy, send.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish(self, img: Image) {
+        // Off the frame thread: a 4K PNG is tens of milliseconds to encode,
+        // and the POST can take seconds.
+        std::thread::spawn(move || {
+            let rgb = rgb8(img);
+            let full = rgb.as_ref().and_then(|(px, w, h)| encode_png(px, *w, *h));
+            if let (Some(path), Some(bytes)) = (&self.png, &full) {
+                if let Err(e) = std::fs::write(path, bytes) {
+                    error!("gates: report screenshot not saved: {e}");
+                }
+            }
+            let send = match rgb {
+                Some((px, w, h)) if w.max(h) > SHOT_SEND_SIDE => {
+                    let (px, w, h) = shrink(px, w, h, SHOT_SEND_SIDE);
+                    encode_png(&px, w, h)
+                }
+                _ => full,
+            };
+            let sent = post(
+                &self.url,
+                self.report.submission(send.as_deref()),
+                SEND_TIMEOUT_S,
+            );
+            let _ = self.tx.send(Outcome {
+                sent,
+                saved: self.saved,
+                draft: self.draft,
+            });
+        });
+    }
+
+    /// The frame landed: encode it and send. One thread, so the encode is on
+    /// this frame — a single hitch at the moment the player pressed Enter.
+    #[cfg(target_arch = "wasm32")]
+    fn finish(self, img: Image) {
+        // A tab has no disk, so `compose` never names a copy here.
+        debug_assert!(self.png.is_none() && self.saved.is_none());
+        let send = rgb8(img).and_then(|(px, w, h)| {
+            let (px, w, h) = shrink(px, w, h, SHOT_SEND_SIDE);
+            encode_png(&px, w, h)
+        });
+        let body = self.report.submission(send.as_deref());
+        wasm_bindgen_futures::spawn_local(async move {
+            let sent = post_web(&self.url, body).await;
+            let _ = self.tx.send(Outcome {
+                sent,
+                saved: None,
+                draft: self.draft,
+            });
+        });
+    }
+}
+
+/// The captured frame as tightly packed RGB8. Alpha is dropped for
+/// `save_to_disk`'s reason: with HDR on it carries brightness, not coverage.
+fn rgb8(img: Image) -> Option<(Vec<u8>, u32, u32)> {
+    let rgb = img.try_into_dynamic().ok()?.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    Some((rgb.into_raw(), w, h))
+}
+
+/// Halve an RGB8 frame (2×2 box) until its longest side is at most `side`.
+fn shrink(mut px: Vec<u8>, mut w: u32, mut h: u32, side: u32) -> (Vec<u8>, u32, u32) {
+    while w.max(h) > side && w >= 2 && h >= 2 {
+        let (nw, nh) = (w / 2, h / 2);
+        let mut out = vec![0u8; (nw * nh * 3) as usize];
+        for y in 0..nh as usize {
+            for x in 0..nw as usize {
+                for c in 0..3 {
+                    let at = |xx: usize, yy: usize| u32::from(px[(yy * w as usize + xx) * 3 + c]);
+                    let sum = at(2 * x, 2 * y)
+                        + at(2 * x + 1, 2 * y)
+                        + at(2 * x, 2 * y + 1)
+                        + at(2 * x + 1, 2 * y + 1);
+                    out[(y * nw as usize + x) * 3 + c] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        (px, w, h) = (out, nw, nh);
+    }
+    (px, w, h)
+}
+
+fn encode_png(px: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.set_compression(png::Compression::Fast);
+    let mut wr = enc.write_header().ok()?;
+    wr.write_image_data(px).ok()?;
+    wr.finish().ok()?;
+    Some(out)
+}
+
+/// One POST to the intake, blocking. The status and the body both come back
+/// so a refusal is read in the intake's own words.
+#[cfg(not(target_arch = "wasm32"))]
+fn post(url: &str, body: String, timeout_s: u64) -> Result<Receipt, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(timeout_s)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut res = agent
+        .post(url)
+        .header("content-type", "application/json")
+        .send(body)
+        .map_err(|e| format!("{e}"))?;
+    let status = res.status().as_u16();
+    let bytes = res
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024)
+        .read_to_vec()
+        .map_err(|e| format!("{e}"))?;
+    report::read_receipt(status, &bytes)
+}
+
+/// One POST to the intake from the page. The body goes as text, which keeps
+/// it a simple request — no preflight, even from a dev page on another origin.
+#[cfg(target_arch = "wasm32")]
+async fn post_web(url: &str, body: String) -> Result<Receipt, String> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    let window = web_sys::window().ok_or("no window")?;
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_body(&wasm_bindgen::JsValue::from_str(&body));
+    let res = JsFuture::from(window.fetch_with_str_and_init(url, &init))
+        .await
+        .map_err(|e| crate::net::web::js_err("send", &e))?;
+    let res: web_sys::Response = res.dyn_into().map_err(|_| "not a response")?;
+    let status = res.status();
+    let text = match res.text() {
+        Ok(p) => JsFuture::from(p).await.ok().and_then(|t| t.as_string()),
+        Err(_) => None,
+    };
+    report::read_receipt(status, text.unwrap_or_default().as_bytes())
+}
+
+/// Build the report from whatever this client currently knows and, on the
+/// desktop, write its two files — answering the job that sends it once the
+/// screenshot lands.
 ///
 /// Every fact is read rather than kept: this function is the only place the
 /// live session is touched, so there is no second copy of "what the netcode
@@ -333,19 +570,19 @@ fn release(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>, screen: 
 /// seam's `diag` is the same rule one seam over, copied in by the flush
 /// rather than read off the audio thread here.
 #[allow(clippy::too_many_arguments)]
-fn file(
-    commands: &mut Commands,
+fn compose(
     reports: &mut Reports,
     net: Option<&Net>,
     who: Option<&super::screen::Who>,
     direct: Option<&super::screen::Direct>,
     screen: &State<Screen>,
     diag: Option<&Diag>,
-) -> Option<std::path::PathBuf> {
-    let _ = commands;
-    let dir = reports.dir.clone()?;
+    machine: Machine,
+    url: String,
+) -> Job {
     let at = shot::now_secs();
     let mut r = Report::new(reports.kind(), &reports.text, "", at, Build::here());
+    r.machine = Some(machine);
     r.audio = diag.map(|d| Audio {
         alive: d.alive,
         routed: d.routed,
@@ -388,37 +625,70 @@ fn file(
     }
     r.wallet = who.and_then(|w| w.0.address().map(str::to_string));
 
-    // The picture is named before the document, so the document can name it.
-    // `pick` answers `None` only when `shot::PER_STAMP` is spent inside one
-    // second, which a report cannot reach — but a report that silently
-    // referenced a picture nobody took would be worse than one that admits it
-    // has none, so the `None` is carried rather than assumed away.
-    let png = shot::pick(&dir, &shot::stamp(at), |p| p.exists());
-    if let Some(p) = &png {
-        r.attach_shot(p);
-    }
-
-    let (stem, json) = match report::write_pair(&dir, &r) {
-        Ok(v) => v,
-        Err(why) => {
-            error!("gates: {why}");
-            reports.say("report failed — see the log");
-            return None;
+    // The desktop's copy. The picture is named before the document, so the
+    // document can name it; `pick` answers `None` only when
+    // `shot::PER_STAMP` is spent inside one second, and a report that
+    // referenced a picture nobody took would be worse than one that has none.
+    let mut png = None;
+    let mut saved = None;
+    if let Some(dir) = reports.dir.clone() {
+        png = shot::pick(&dir, &shot::stamp(at), |p| p.exists());
+        if let Some(p) = &png {
+            r.attach_shot(p);
         }
-    };
-    if !json {
-        // The Markdown is the report and it landed; the JSON is for a machine
-        // listing them. One line, and nothing the player has to act on.
-        error!("gates: the report's json half did not reach disk: {stem}.json");
+        match report::write_pair(&dir, &r) {
+            Ok((stem, json)) => {
+                if !json {
+                    error!("gates: the report's json half did not reach disk: {stem}.json");
+                }
+                info!(
+                    "gates: report → {}",
+                    dir.join(format!("{stem}.md")).display()
+                );
+                saved = Some(format!("{stem}.md"));
+            }
+            Err(why) => {
+                error!("gates: {why}");
+                png = None;
+            }
+        }
     }
 
-    info!(
-        "gates: report → {}",
-        dir.join(format!("{stem}.md")).display()
-    );
     reports.filed += 1;
-    reports.say(format!("report filed  ·  {stem}.md"));
-    png
+    Job {
+        report: r,
+        url,
+        png,
+        saved,
+        draft: reports.text.clone(),
+        tx: reports.tx.clone(),
+    }
+}
+
+/// Read what the sends said and put it on the line.
+pub fn poll(mut reports: ResMut<Reports>) {
+    while let Ok(o) = reports.rx.try_recv() {
+        let line = match (&o.sent, &o.saved) {
+            (Ok(r), _) => {
+                let mut s = format!("report sent  ·  ref {}", r.id);
+                if r.seen > 1 {
+                    s.push_str(&format!("  ·  {} reports like it", r.seen));
+                }
+                s
+            }
+            (Err(why), Some(file)) => format!("report not sent ({why}) — saved as {file}"),
+            (Err(why), None) => {
+                format!("report NOT sent: {why} — press F7 to try again, your text is kept")
+            }
+        };
+        if o.sent.is_err() {
+            warn!("gates: report not sent: {line}");
+            if !reports.open && reports.draft.is_empty() {
+                reports.draft = o.draft;
+            }
+        }
+        reports.say(line);
+    }
 }
 
 /// Which screen, for the report's `place.screen`. A bug on the death screen
@@ -452,7 +722,8 @@ pub fn draw(mut reports: ResMut<Reports>, mut line: Query<&mut Text, With<Report
     };
     text.0 = if reports.open {
         format!(
-            "report · [{}]  Tab changes  ·  {}_    ({} left, Enter files it, Esc cancels)",
+            "report a bug · [{}]  Tab changes  ·  {}_    ({} left, Enter sends it with a \
+             screenshot, Esc cancels)",
             reports.kind().label(),
             reports.text,
             reports.remaining()
@@ -462,43 +733,66 @@ pub fn draw(mut reports: ResMut<Reports>, mut line: Query<&mut Text, With<Report
     };
 }
 
-/// Install the panic hook: a crash writes the same document a player would.
+/// Install the desktop's panic hook: a crash writes the same document a
+/// player would, and sends it.
 ///
 /// **Chained, never replaced.** The default hook prints the message and the
 /// backtrace, and a hook that swallowed those would trade a report for the two
-/// things a developer already relies on. This one writes its file and then
-/// calls the hook it displaced.
+/// things a developer already relies on. This one writes its file, sends it
+/// with a short timeout, and then calls the hook it displaced.
 ///
 /// Called from the binary rather than from a plugin: `set_hook` is
 /// process-global, and a test harness that installed it would be a test
 /// harness changing how every other test in the binary reports its failures.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn install_panic_hook() {
-    let Some(dir) = shot::dir() else {
-        return;
-    };
+    let dir = shot::dir();
+    let url = report::intake_url(crate::ui::names::PLATFORM_ORIGIN);
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "unknown".into());
-        // The payload can quote a stranger — a message built from a shard's
-        // name or a chat line carries that text in here — so it goes through
-        // `Report::new`'s door like any other prose.
-        let at = shot::now_secs();
-        let mut r = Report::new(Kind::Crash, "the client panicked", "", at, Build::here());
-        let (message, cut) =
-            report::many_lines(&info.to_string(), report::BODY_MAX, report::BODY_LINES_MAX);
-        r.truncated |= cut;
-        r.crash = Some(report::Crash { location, message });
-        if let Ok((stem, _)) = report::write_pair(&dir, &r) {
-            eprintln!(
-                "gates: a crash report was written to {}",
-                dir.join(format!("{stem}.md")).display()
-            );
+        let r = Report::crash(location(info), &info.to_string(), shot::now_secs());
+        if let Some(dir) = &dir {
+            if let Ok((stem, _)) = report::write_pair(dir, &r) {
+                eprintln!(
+                    "gates: a crash report was written to {}",
+                    dir.join(format!("{stem}.md")).display()
+                );
+            }
+        }
+        match post(&url, r.submission(None), CRASH_TIMEOUT_S) {
+            Ok(receipt) => eprintln!("gates: crash report sent, ref {}", receipt.id),
+            Err(why) => eprintln!("gates: crash report not sent: {why}"),
         }
         previous(info);
     }));
+}
+
+/// The page's half of the panic hook, called from `client-web`'s `start`.
+///
+/// `sendBeacon` rather than `fetch`: the module traps the moment the hook
+/// returns, and a beacon is the request a page hands to the browser to finish
+/// after it is gone. Once per page — a second panic is the first one's echo.
+#[cfg(target_arch = "wasm32")]
+pub fn web_crash(info: &std::panic::PanicHookInfo<'_>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SENT: AtomicBool = AtomicBool::new(false);
+    if SENT.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let mut r = Report::crash(location(info), &info.to_string(), shot::now_secs());
+    r.machine = Some(Machine::new("", "", "", [0, 0], user_agent().as_deref()));
+    let url = report::intake_url(crate::ui::names::PLATFORM_ORIGIN);
+    if let Some(w) = web_sys::window() {
+        let _ = w
+            .navigator()
+            .send_beacon_with_opt_str(&url, Some(&r.submission(None)));
+    }
+}
+
+fn location(info: &std::panic::PanicHookInfo<'_>) -> String {
+    info.location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 /// Wire the report key in. **Not on a capture run** — the caller enforces
@@ -523,12 +817,17 @@ pub fn register(app: &mut App) {
                     // Before the Esc menu, so cancelling a report does not
                     // also pause the game.
                     .before(super::pause::open)
+                    // And before the Esc menu's own keys, so the digit that
+                    // picks "Report a bug" is drained here before the
+                    // composer it opens can read it as text.
+                    .before(super::pause::keys)
                     // And well before `input::gather`, which reads
                     // `Reports::open` to decide whether the world's binds
                     // stand down this frame — `chat::register`'s rule, and
                     // the reason typing a report does not also walk you into
                     // a wall.
                     .before(super::input::gather),
+                poll.before(draw),
                 draw.after(keys),
             ),
         );

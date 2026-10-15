@@ -22,6 +22,12 @@ cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --scripte
 cargo run -p server --release --bin jev-bot -- --server game.example:61234 --agent-key /path/to/agent.key --scripted
 # a new wallet for it: writes the 0600 file (never over an existing one), prints the address
 cargo run -p server --release --bin jev-bot -- --new-key /path/to/agent.key
+# its name and picture on every nametag, signed by its own key
+cargo run -p server --release --bin jev-bot -- --set-face --agent-key /path/to/agent.key --name Rook --pic rook.png
+# an MCP server on its own stdio: any MCP harness is its mind (see "MCP")
+cargo run -p server --release --bin jev-bot -- --server game.elopros.com:61234 --agent-key /path/to/agent.key --mcp
+# a buddy: plays with one wallet, meets it at THE GATE
+cargo run -p server --release --bin jev-bot -- --server game.elopros.com:61234 --agent-key /path/to/agent.key --friend 0xYOU --mcp
 ```
 
 **No Rust needed.** Every release archive ships `jev-bot` beside the game,
@@ -322,6 +328,22 @@ Every decision is one API call: `--max-requests-hour` is the spend bound.
 `CLAUDE_MODEL` picks the model. Join the printed island from the game to
 talk to it.
 
+**On the public island.** A wallet key once, then the same agent on
+`game.elopros.com` (Gates is free: any wallet gets in). It prints the link to
+watch it; in the game, look at it, press N, then `/t follow me`. With Claude
+Code open in this repo, `/play-gates` does all of it
+(`.claude/skills/play-gates`).
+
+```sh
+mkdir -p -m 700 ~/.gates
+cargo run -p server --release --bin jev-bot -- --new-key ~/.gates/agent.key
+cargo run -p server --release --bin jev-bot -- \
+    --server game.elopros.com:61234 --agent-key ~/.gates/agent.key \
+    --agent-name claude --seconds 3600 --think-ms 3000 --timeout-ms 20000 \
+    --max-requests-hour 300 \
+    --external python3 crates/server/examples/claude_agent.py
+```
+
 **On your Claude plan.** Three ways to pay for the decisions:
 
 - An API key, as above.
@@ -350,6 +372,72 @@ cargo run -p server --release --features watch --bin jev-watch -- \
 worth showing (the frame and a one-line caption) to that channel, at most once
 every `SHARE_EVERY_S` (300). Its caption can never ping anyone.
 
+## MCP: any harness is the mind
+
+`--mcp` makes `jev-bot` a stdio MCP server (`mcp.rs`): the harness starts it
+and plays through three tools. `look` waits up to 25 s for the next decision
+and returns it (`decision_id`, the observation, `options`, `heard`, `team`,
+`friend`, `places`, and who it is with the link to watch it). `act` answers
+it: `id`, one `goal` from its options, and optionally `reason`, `say`, `to`
+and `code`, exactly as the JSON-lines reply above. `status` says how the body
+is doing. It is the `--external` door with the pipes in-process, so every rule
+above holds and a bad answer comes back as a tool error the harness can fix.
+
+A harness thinks slower than a goal ends. A decision it has not answered in
+`--autopilot-s` (45, 5–55) is played by the scripted policy, named in the
+reason (`autopilot (...)`), and a late `act` is told so; `look` again. Its
+run is a day unless `--seconds` says less, and it ends when the harness
+closes its end. Stdout is the protocol, so the run's report goes to stderr.
+
+```sh
+# Claude Code
+claude mcp add gates -- /path/to/jev-bot --server game.elopros.com:61234 \
+    --agent-key ~/.gates/agent.key --agent-name rook --mcp
+# Codex
+codex mcp add gates -- /path/to/jev-bot --server game.elopros.com:61234 \
+    --agent-key ~/.gates/agent.key --agent-name rook --mcp
+# Hermes Agent: ~/.hermes/config.yaml
+mcp_servers:
+  gates:
+    command: /path/to/jev-bot
+    args: ["--server", "game.elopros.com:61234", "--agent-key", "/home/you/.gates/agent.key", "--agent-name", "rook", "--mcp"]
+# OpenClaw
+openclaw mcp set gates '{"command": "/path/to/jev-bot", "args": ["--server", "game.elopros.com:61234",
+  "--agent-key", "/home/you/.gates/agent.key", "--agent-name", "rook", "--mcp"]}'
+# any harness that takes a JSON server list (Claude Desktop, Cursor, ...)
+{"mcpServers": {"gates": {"command": "/path/to/jev-bot",
+  "args": ["--server", "game.elopros.com:61234", "--agent-key", "/home/you/.gates/agent.key",
+           "--agent-name", "rook", "--mcp"]}}}
+```
+
+Then tell it: *play Gates: call look, then act, and keep going.* The
+server's own instructions tell the model the rest.
+
+## A buddy, and its face
+
+**`--friend 0xWALLET`** names the one person it plays with. The request
+carries `friend` (their name, `online`, `on_my_team`, `in_sight`,
+`in_invite_reach`, `invited_me`), and lines they typed have `friend: true`.
+It never fights them. While they are on the island and not on its team,
+`meet` walks it to THE GATE to wait; in reach, `invite` goes to them before
+anyone else (they press **Y**), and `join_team` takes theirs. On the team it
+is a teammate like any other: `follow`, the base, team chat. A team holds for
+the wipe, so the meeting is once. While the friend is away the scripted
+policy plays and the mind is not asked (those turns are free of the spend
+guard), so a buddy costs model calls only while its person plays.
+Before a team says where they are, a friend counts as on the island for
+30 minutes after they joined or were last seen.
+
+`claude_agent.py --persona TEXT` (or `GATES_PERSONA`) gives Claude a
+character. The house buddy is Doctor Wood: `ops/gates-buddy@.service` runs
+him on the public island, and its header is the runbook.
+
+**`--set-face`** signs this key's Elo Pros name (1–16 printable characters)
+and picture (a square PNG, 64–512 px, at most 256 KiB) and exits: what every
+nametag shows, read by wallet (`faces.rs`). The key composes the text it
+signs (`agentkey::sign_face`) and refuses when the platform asks for any
+other; `--origin` points it at another platform.
+
 ## Limits
 
 A full pack stops gathering what cannot fit; crafting frees room. Tools and
@@ -357,9 +445,11 @@ good crafts are known by name, not discovered. Speech is local or team,
 never global, and `give` and `authorize` are not agent verbs yet
 (`PLAYERS.md`): it fills a chest rather than handing things over. The team
 chest's doors are found by trying: the nearest door within 12 m of the chest
-when the route says there is no way to it, at most four doors deep; a base
-it cannot route into through its doors (stairs, a second floor) fails as
-stuck. Teams do not survive a shard restart. A guest is
+when the route says there is no way to it, at most four doors deep. It
+follows a teammate up and down stairs and comes down from an upper floor on
+its own, but a team chest whose only way in is through an upper floor fails
+as stuck. Teams survive a shard restart for keyed players; a guest's team
+does not. A guest is
 loopback-only; a wallet agent on a public shard needs what `NETCODE.md` §2.4
 lists for the operator to provision — a generated wallet, entitled, its key
 file owned by the service user — and none of it is a loop's act.

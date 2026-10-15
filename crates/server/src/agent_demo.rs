@@ -2,6 +2,7 @@
 
 use crate::agent::combat::Temperament;
 use crate::agent::hands::Preset;
+use crate::autopilot::Autopilot;
 use crate::botclient::{
     agent_endpoint, run_agent_bot, run_guest_agent, AgentIdentity, BotDriver, BotReport,
 };
@@ -232,7 +233,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --external PROGRAM [ARG...]] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked. Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -241,6 +242,8 @@ pub enum Source {
     Jev,
     Scripted,
     External(String, Vec<String>),
+    /// An MCP harness on this process's own stdio (`mcp.rs`).
+    Mcp,
 }
 
 #[derive(Clone, Debug)]
@@ -255,7 +258,19 @@ pub struct MindArgs {
     /// source as `GATES_FRAME_URL` (`jev-watch` only: `jev-bot` renders
     /// nothing).
     pub frame_url: Option<String>,
+    /// The one wallet it plays with (`--friend 0x…`).
+    pub friend: Option<protocol::Address>,
+    /// How long an MCP harness has to answer before the scripted policy
+    /// plays that turn (`--autopilot-s`).
+    pub autopilot: Duration,
 }
+
+/// `--autopilot-s`'s default: a long think for a big model, well inside the
+/// minute a decision may wait.
+pub const AUTOPILOT_DEFAULT: Duration = Duration::from_secs(45);
+/// The longest a decision may wait (`MindConfig::check`), and what MCP mode
+/// sets it to: the harness's own deadline is `autopilot`.
+const MCP_DECISION_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Default for MindArgs {
     fn default() -> Self {
@@ -265,6 +280,8 @@ impl Default for MindArgs {
             skill: Preset::default(),
             temperament: Temperament::default(),
             frame_url: None,
+            friend: None,
+            autopilot: AUTOPILOT_DEFAULT,
         }
     }
 }
@@ -303,6 +320,21 @@ impl MindArgs {
                 self.temperament = Temperament::parse(&name)
                     .ok_or("--temperament is one of passive, defensive, opportunist, kos")?;
             }
+            "--mcp" => self.source = Source::Mcp,
+            "--autopilot-s" => {
+                let secs = number(arg)?;
+                if !(5..=55).contains(&secs) {
+                    return Err("--autopilot-s must be 5..55".into());
+                }
+                self.autopilot = Duration::from_secs(secs);
+            }
+            "--friend" => {
+                let wallet = args.next().ok_or("--friend needs a wallet (0x + 40 hex)")?;
+                let address = protocol::Address::from_hex(wallet.trim().as_bytes())
+                    .filter(|a| !a.is_guest())
+                    .ok_or("--friend needs a wallet (0x + 40 hex)")?;
+                self.friend = Some(address);
+            }
             "--external" => {
                 let program = args.next().ok_or("--external needs a program")?;
                 self.source = Source::External(program, args.collect());
@@ -318,6 +350,7 @@ impl MindArgs {
             skill: self.skill.skill(),
             temperament: self.temperament,
             lock: None,
+            friend: self.friend,
         }
     }
 
@@ -326,20 +359,51 @@ impl MindArgs {
             Source::Jev => format!("Jev {}", crate::jev::MODEL),
             Source::Scripted => "SCRIPTED goals; no model calls".into(),
             Source::External(program, _) => format!("EXTERNAL agent: {program}"),
+            Source::Mcp => format!(
+                "MCP harness on stdio; autopilot after {} s",
+                self.autopilot.as_secs()
+            ),
         }
     }
 
     /// Check the configuration and credentials, then start the source.
     pub fn build(&self) -> Result<Mind, String> {
         self.cfg.check()?;
+        let buddy = self.friend.is_some();
+        // A buddy's mind costs nothing while its friend is away: those
+        // turns are the autopilot's and never reach the spend guard.
+        let priced = |mind: Mind| {
+            if buddy {
+                mind.free_when(crate::autopilot::friend_away)
+            } else {
+                mind
+            }
+        };
         match &self.source {
             Source::Scripted => Mind::new(Scripted::default(), self.cfg),
+            Source::Mcp => {
+                let cfg = MindConfig {
+                    timeout: MCP_DECISION_TIMEOUT,
+                    ..self.cfg
+                };
+                cfg.check()?;
+                let door = crate::mcp::spawn(self.autopilot)?;
+                Mind::new(Autopilot::new(door, buddy), cfg).map(priced)
+            }
             Source::External(program, args) => {
                 let env: Vec<(&str, String)> = self
                     .frame_url
                     .iter()
                     .map(|url| ("GATES_FRAME_URL", url.clone()))
                     .collect();
+                if buddy {
+                    // The autopilot's answer to a request the agent missed
+                    // must land inside the mind's own deadline.
+                    let inner = self.cfg.timeout.mul_f32(0.8);
+                    let door =
+                        crate::external::External::spawn_with_env(program, args, &env, inner)?;
+                    return Mind::new(Autopilot::new(door, true), self.cfg).map(priced);
+                }
                 Mind::new(
                     crate::external::External::spawn_with_env(
                         program,

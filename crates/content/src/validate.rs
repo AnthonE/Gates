@@ -1782,6 +1782,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 s.id
             ));
         }
+        // A painted skin: a whole sha256, on an item whose UVs are frozen
+        // for painting. Anywhere else the picture would land on a layout
+        // nobody promised to keep.
+        if let Some(t) = &s.texture {
+            if t.len() != 64 || !t.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(format!(
+                    "skin `{}`: texture is the PNG's sha256, 64 lowercase hex",
+                    s.id
+                ));
+            }
+            if !crate::SKIN_CANVAS_ITEMS.contains(&s.covers.as_str()) {
+                return Err(format!(
+                    "skin `{}`: `{}` cannot be painted (canvases: {})",
+                    s.id,
+                    s.covers,
+                    crate::SKIN_CANVAS_ITEMS.join(", ")
+                ));
+            }
+        }
         // A skin is on ONE item: condition and stacking are per-stack, and
         // a skin on a stack of forty would have to decide whose look forty
         // merged stacks wear. V7's shape.

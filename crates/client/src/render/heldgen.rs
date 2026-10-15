@@ -1,10 +1,10 @@
 //! Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
-//! rows, and the two-primitive stand-in tool the viewmodel falls back to.
+//! rows.
 //!
 //! **Why generated rather than sourced.** The revolver is 0.5.0's headline
 //! weapon and the torch is in every starter kit, and neither has a `.glb` —
 //! `assets/models/WANTED.md` carries both. Until one lands, holding either
-//! drew the generic stand-in, which is the exact lie `ui::hold::held_model`'s
+//! drew a generic stand-in tool, which is the exact lie `ui::hold::held_model`'s
 //! doc warns about one state earlier: the hand told the player nothing about
 //! what swapping items had put in it. A dozen tinted boxes are not art, but
 //! they are the RIGHT dozen boxes — a revolver reads as a revolver at 0.5 m.
@@ -38,7 +38,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use super::props::{tint1, Soup};
+use super::props::Soup;
 
 /// Emit an axis-aligned box into a soup. `c` is the centre, `h` the
 /// half-extent, `tint` a mean-1 colour over whatever photograph the material
@@ -127,83 +127,6 @@ pub(super) fn hexa(s: &mut Soup, back: [Vec3; 4], front: [Vec3; 4], tint: [f32; 
     quad(s, [back[3], back[0], front[0], front[3]], 0.99);
 }
 
-/// The stand-in's handle: a long box down the view's forward axis.
-///
-/// The stand-in covers every item with no model of its own — since the table
-/// grew its deployables and generated rows that is the metal tools, the
-/// resources and the small consumables — so it stays deliberately generic:
-/// a hafted something, not a claim about the item.
-pub(super) fn handle_mesh() -> Mesh {
-    // Tiles per metre, and deliberately dense: a haft is ~0.5 m and the plank
-    // map is authored for a wall, so at 1.0 the handle shows one blurred
-    // plank rather than grain.
-    let mut s = Soup::tiling(3.0);
-    let grain = tint1(0x8a6f4a);
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.0, 0.0),
-        Vec3::new(0.016, 0.019, 0.25),
-        grain,
-    );
-    s.mesh()
-}
-
-/// The stand-in's head: an eye around the haft and a bit swept out to one
-/// side.
-///
-/// **The tiling here is 1.1 and the first cut was 9.0, which is the boulder's
-/// mistake in miniature.** `CorrugatedSteel009` is photoscanned RIBBED SHEET;
-/// at nine tiles per metre a 10 cm head samples a dozen full rib periods and
-/// resolves into a stack of pale stripes — it read as a paperback on a stick.
-/// At 1.1 the head samples roughly a tenth of the map, so what reaches the
-/// frame is the broad tonal variation of worn steel rather than its
-/// corrugation. The rule the two share: **match the tile rate to the scale
-/// the map was photographed at, not to the size of the object.** A map whose
-/// own features are wrong for the identity cannot be fixed by either — that
-/// is a sourcing gap, and a plain steel albedo is the entry `MANIFEST.md` is
-/// missing.
-pub(super) fn head_mesh() -> Mesh {
-    // Tiling is irrelevant to this mesh's own material, which carries no map —
-    // see `viewmodel::spawn_item`. Kept sane so the UVs are well-formed for
-    // tangents.
-    let mut s = Soup::tiling(1.0);
-    let steel = tint1(0x9aa0a6);
-    // The eye, wrapped around the haft.
-    boxed(
-        &mut s,
-        Vec3::new(-0.004, 0.014, -0.238),
-        Vec3::new(0.024, 0.040, 0.030),
-        steel,
-    );
-    // The bit, TAPERED — thick and short where it meets the eye, thin and
-    // flared at the cutting edge. Two earlier cuts made this out of boxes
-    // (one, then three) and both read as a cluster of blocks rather than a
-    // blade: at 10 cm the silhouette is the whole of what the eye gets, and a
-    // rectangle is not an axe. The flare in Y and the taper in Z are what
-    // make the outline read.
-    let (zb, zf) = (0.022f32, 0.004f32);
-    let (yb, yf) = (0.040f32, 0.060f32);
-    let (xb, xf) = (-0.020f32, -0.098f32);
-    let y0 = 0.018f32;
-    hexa(
-        &mut s,
-        [
-            Vec3::new(xb, y0 - yb, zb),
-            Vec3::new(xb, y0 + yb, zb),
-            Vec3::new(xb, y0 + yb, -zb),
-            Vec3::new(xb, y0 - yb, -zb),
-        ],
-        [
-            Vec3::new(xf, y0 - yf, zf),
-            Vec3::new(xf, y0 + yf, zf),
-            Vec3::new(xf, y0 + yf, -zf),
-            Vec3::new(xf, y0 - yf, -zf),
-        ],
-        steel,
-    );
-    s.mesh()
-}
-
 /// Revolve a profile around +Y. Radial zero closes a cap; a return along
 /// the inner radius leaves an actual bore instead of a painted muzzle.
 fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
@@ -236,6 +159,21 @@ fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
 /// skipped (mikktspace refuses a zero-area triangle).
 fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> [f32; 4]) -> Mesh {
     let n = profile.len();
+    // V by arc length down the profile, tip at the top of the image (0) and
+    // the foot at the bottom (1), so a painted skin's knob and dome get the
+    // room their surface has. **A public contract** (`DECISIONS.md:432`):
+    // `tests/skin_templates.rs` pins it.
+    let mut arc = Vec::with_capacity(n);
+    let mut run = 0.0f32;
+    for k in 0..n {
+        if k > 0 {
+            let (y0, r0) = profile[k - 1];
+            let (y1, r1) = profile[k];
+            run += ((y1 - y0).powi(2) + (r1 - r0).powi(2)).sqrt();
+        }
+        arc.push(run);
+    }
+    let total = run.max(1e-9);
     let cols = sides + 1;
     let mut pos = Vec::with_capacity(n * cols);
     let mut nrm = Vec::with_capacity(n * cols);
@@ -254,7 +192,7 @@ fn lathe(profile: &[(f32, f32)], sides: usize, color: impl Fn(f32, f32, f32) -> 
             let (sin, cos) = a.sin_cos();
             pos.push([cos * r, y, sin * r]);
             nrm.push([cos * nr, ny, sin * nr]);
-            uv.push([j as f32 / sides as f32, y * 3.0]);
+            uv.push([j as f32 / sides as f32, 1.0 - arc[k] / total]);
             col.push(color(y, r, a));
         }
     }
@@ -736,6 +674,20 @@ fn crossbow_mesh() -> Mesh {
 /// model is the silent failure `viewmodel::spawn_item`'s comment already
 /// paid a capture to find. `tests/held_assets.rs` builds every `Gen` row, so
 /// CI reaches this before a boot does.
+/// The mesh a painted skin draws on (`ui::skins::CANVASES`): the row's own
+/// shape with its vertex tints taken off, so the painted texture is the
+/// whole of its colour. `None` for a row nobody can paint yet.
+pub fn canvas_mesh(name: &str) -> Option<Mesh> {
+    match name {
+        "bat" => {
+            let mut m = bat_mesh();
+            m.remove_attribute(Mesh::ATTRIBUTE_COLOR);
+            Some(m)
+        }
+        _ => None,
+    }
+}
+
 pub fn mesh(name: &str) -> Mesh {
     match name {
         "bat" => bat_mesh(),
@@ -792,13 +744,10 @@ mod tests {
     #[test]
     fn every_generated_mesh_carries_uvs_and_tangents() {
         // A normal map without tangents is silently ignored — the failure that
-        // looks like "the texture did not load" and reports nothing. Only the
-        // stand-in handle actually wears a map today, but the four meshes
-        // share one emitter and one law is cheaper than remembering which
-        // rows are allowed to regress.
+        // looks like "the texture did not load" and reports nothing. The
+        // meshes share one emitter and one law is cheaper than remembering
+        // which rows are allowed to regress.
         for m in [
-            handle_mesh(),
-            head_mesh(),
             mesh("bat"),
             mesh("torch"),
             mesh("revolver"),

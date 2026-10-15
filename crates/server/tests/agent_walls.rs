@@ -1068,6 +1068,19 @@ impl Harness {
 #[test]
 fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     let mut h = Harness::new(false);
+    // A belt already full of food, so the crafted tool lands in the pack and
+    // has to be moved: what a long gather used to leave on the belt by
+    // itself, until the world put stone nearer the spawn.
+    h.until(5, |_| false);
+    let shrooms = sim_core::gather::ItemStack {
+        count: 10,
+        ..common::stack(&common::content(), "item.mushrooms")
+    };
+    h.stage(|p| {
+        for s in p.inv[..HOTBAR_SLOTS].iter_mut().filter(|s| s.count == 0) {
+            *s = shrooms;
+        }
+    });
 
     // 1. Gather both resources, then craft a better tool by name. The
     //    craft goal ends once the tool is on the belt, whether it landed
