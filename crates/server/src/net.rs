@@ -7,8 +7,8 @@
 use crate::config::ShardConfig;
 use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
-    generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WorldDone,
-    WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
+    generation_of, state_of, Connect, EvMsg, FileMsg, Link, SaveMsg, SlotTable, SnapMsg, VoiceMsg,
+    WorldDone, WorldMsg, WriteMsg, FILE_RING_CAP, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
@@ -22,7 +22,7 @@ use sim_core::input::BTN_MASK;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
     INPUT_RING_CAP, MAX_PLAYERS, MAX_SPECTATORS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ,
-    WORLD_RING_CAP,
+    VOICE_BURST, VOICE_FPS, VOICE_OUT_RING_CAP, VOICE_PER_TICK, VOICE_RING_CAP, WORLD_RING_CAP,
 };
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 use std::net::SocketAddr;
@@ -42,6 +42,32 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 const PLAYER_ID_GEN_MASK: u32 = 0x007F_FFFF;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What one connection may make this shard hold for it, QUIC-side. quinn's
+/// defaults (100 + 100 streams, 1.25 MB a stream, an unbounded connection
+/// window) are a general server's; this one reads exactly one bidi stream
+/// (`accept_bi` once) and never reads another, so every byte a client parks
+/// on a stream it opened is memory nobody frees until the connection does —
+/// from an unauthenticated handshake too.
+///
+/// Bidi: the CONNECT request plus the game stream, with headroom. Uni: the
+/// browser's HTTP/3 control and two QPACK streams (fewer and a browser
+/// stalls), plus GREASE. Every frame the client sends is at most
+/// `protocol::MAX_STREAM_MSG_BYTES` + 2, so a 64 KiB stream window is
+/// hundreds of frames.
+const QUIC_MAX_BIDI_STREAMS: u32 = 4;
+const QUIC_MAX_UNI_STREAMS: u32 = 8;
+const QUIC_STREAM_RWND: u32 = 64 * 1024;
+const QUIC_CONN_RWND: u32 = 256 * 1024;
+/// Inbound datagrams buffered before quinn drops the oldest: an input
+/// datagram is ~74 B, so this is several seconds of a stalled reader.
+const QUIC_DATAGRAM_RBUF: usize = 64 * 1024;
+/// Unacknowledged outbound stream bytes. A client that never acks holds this
+/// much, not quinn's 10 MB; a burst of join sync still moves a window a
+/// round trip, megabytes a second at any real RTT.
+const QUIC_SEND_WINDOW: u64 = 2 * 1024 * 1024;
+const _: () = assert!(QUIC_STREAM_RWND as usize >= 64 * (protocol::MAX_STREAM_MSG_BYTES + 2));
+const _: () = assert!(QUIC_CONN_RWND >= QUIC_STREAM_RWND);
 /// The challenge's signed reply gets its own, longer deadline, because a
 /// person answers it (`protocol::SIGN_WAIT_SECS`). The slot it holds is still
 /// counted in `in_flight`, so `ADMIT_RETRY_AT` / `ADMIT_REFUSE_AT` still bound
@@ -49,9 +75,16 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// outlives the wait on the transport's 10 s keep-alive.
 const SIGN_WAIT: Duration = Duration::from_secs(protocol::SIGN_WAIT_SECS);
 const _: () = assert!(protocol::SIGN_WAIT_SECS > HANDSHAKE_TIMEOUT.as_secs());
-/// Writer poll cadence: how often per-connection outbound rings drain.
-/// Latency floor for a snapshot, far under the 66 ms snapshot interval.
-const WRITER_POLL: Duration = Duration::from_millis(2);
+/// How often `wake_relay` looks for a published tick: the latency floor
+/// between the sim pushing a frame and its writer sending it. One task polls
+/// for every connection, where each writer used to poll its own rings every
+/// 2 ms (~100k wakeups a second at a full shard for ~30 frames each).
+const WAKE_POLL: Duration = Duration::from_millis(1);
+/// A writer wakes at least this often with no tick published: a stalled sim
+/// still has its leaves noticed and its telemetry sampled.
+const WRITER_FALLBACK: Duration = Duration::from_millis(50);
+/// How long a reader waits before it retries a full ring.
+const RING_RETRY: Duration = Duration::from_millis(2);
 /// Sim thread abandons backlog beyond this many ticks (a debugger pause,
 /// a VM freeze) instead of sprinting to catch up.
 const MAX_TICK_BACKLOG: u32 = 8;
@@ -101,12 +134,12 @@ const ADMIT_RETRY_AT: usize = 2 * MAX_PLAYERS;
 /// size again waiting, before anybody is turned away silently.
 const ADMIT_REFUSE_AT: usize = 4 * MAX_PLAYERS;
 
-/// Writer polls between transport-telemetry samples. `WRITER_POLL` is 2 ms,
-/// so this is ~1 Hz per connection — cheap enough to leave on in production
-/// and often enough to catch a congestion episode that lasts a second.
-const NET_SAMPLE_EVERY: u32 = 500;
+/// Between transport-telemetry samples, per connection: cheap enough to leave
+/// on in production and often enough to catch a congestion episode that
+/// lasts a second.
+const NET_SAMPLE_EVERY: Duration = Duration::from_secs(1);
 
-// These three are **compile-time** rather than tests, which is the stronger
+// These two are **compile-time** rather than tests, which is the stronger
 // form and is available because every term is a constant: get one wrong and
 // the shard does not build, so there is no version of the tree where the
 // admission gate is inverted and a suite is merely red.
@@ -116,12 +149,99 @@ const NET_SAMPLE_EVERY: u32 = 500;
 //    thing that separates a spoofed source from a busy one — is unreachable.
 // 2. Both must sit past a full shard, or an ordinary rush to join a popular
 //    server is answered as an attack.
-// 3. `writer_task` counts down from `NET_SAMPLE_EVERY`; at zero it
-//    underflows a `u32` on the first poll, which is a panic in every
-//    connection's writer.
 const _: () = assert!(ADMIT_RETRY_AT < ADMIT_REFUSE_AT);
 const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
-const _: () = assert!(NET_SAMPLE_EVERY > 0);
+
+/// Handshakes one source may hold at once: an IPv4 address, or an IPv6 /64
+/// (one subscriber's whole allocation, so a prefix of addresses is still one
+/// source). `ADMIT_REFUSE_AT` is a count over everybody, and an unanswered
+/// sign-in holds its place for `SIGN_WAIT`, so without this one address
+/// opening a handful of sessions a second kept every other joiner out.
+///
+/// Taken only from an address that has proved it receives where it claims,
+/// so a spoofed flood cannot spend a real player's allowance: at the door
+/// when QUIC has already validated it (under load, the Retry above makes
+/// every newcomer validate first), otherwise once its QUIC handshake has
+/// completed. The shard's own host is exempt — loopback, which the load bots
+/// and every wire suite dial from, and the address it is bound to, which its
+/// population dials (`population::dial_addr`). Eight covers a household or a
+/// café joining at once.
+const ADMIT_PER_SOURCE: u16 = 8;
+/// Buckets in the per-source table. Sources hash in with a key drawn at boot,
+/// so nobody can aim at somebody else's bucket; a collision only makes two
+/// sources share one allowance.
+const SOURCE_BUCKETS: usize = 4096;
+const _: () = assert!((ADMIT_PER_SOURCE as usize) < ADMIT_RETRY_AT);
+const _: () = assert!(SOURCE_BUCKETS.is_power_of_two());
+
+/// In-flight handshakes per source (`ADMIT_PER_SOURCE`).
+struct SourceGate {
+    held: Box<[std::sync::atomic::AtomicU16]>,
+    key: std::collections::hash_map::RandomState,
+    /// The shard's own bound address, when it is a specific one.
+    own: Option<std::net::IpAddr>,
+}
+
+/// One source's place in [`SourceGate`], given back on drop — however the
+/// handshake that holds it ends. A loopback permit holds no bucket.
+struct SourcePermit {
+    gate: Arc<SourceGate>,
+    bucket: Option<usize>,
+}
+
+impl Drop for SourcePermit {
+    fn drop(&mut self) {
+        if let Some(b) = self.bucket {
+            self.gate.held[b].fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl SourceGate {
+    fn new(bound: Option<std::net::IpAddr>) -> Self {
+        Self {
+            held: (0..SOURCE_BUCKETS)
+                .map(|_| std::sync::atomic::AtomicU16::new(0))
+                .collect(),
+            key: std::collections::hash_map::RandomState::new(),
+            own: bound
+                .map(|ip| ip.to_canonical())
+                .filter(|ip| !ip.is_unspecified()),
+        }
+    }
+
+    /// The bucket `ip` counts against: the whole IPv4 address, or the /64 of
+    /// an IPv6 one (a v4-mapped v6 address is its v4 address).
+    fn bucket(&self, ip: std::net::IpAddr) -> usize {
+        use std::hash::BuildHasher;
+        let h = match ip.to_canonical() {
+            std::net::IpAddr::V4(v4) => self.key.hash_one(v4.octets()),
+            std::net::IpAddr::V6(v6) => self.key.hash_one(&v6.octets()[..8]),
+        };
+        h as usize & (SOURCE_BUCKETS - 1)
+    }
+
+    /// A place for one more handshake from `ip`, or `None` if it already
+    /// holds `ADMIT_PER_SOURCE`. The shard's own host always gets one,
+    /// uncounted.
+    fn take(gate: &Arc<Self>, ip: std::net::IpAddr) -> Option<SourcePermit> {
+        let ip = ip.to_canonical();
+        let bucket = if ip.is_loopback() || gate.own == Some(ip) {
+            None
+        } else {
+            let b = gate.bucket(ip);
+            if gate.held[b].fetch_add(1, Ordering::Relaxed) >= ADMIT_PER_SOURCE {
+                gate.held[b].fetch_sub(1, Ordering::Relaxed);
+                return None;
+            }
+            Some(b)
+        };
+        Some(SourcePermit {
+            gate: gate.clone(),
+            bucket,
+        })
+    }
+}
 
 /// Binds the shard's UDP socket with the buffer sizes §2.2 asks for, then
 /// **reads back what the OS actually granted** and records both.
@@ -578,6 +698,13 @@ pub async fn spawn_shard(
     // NETCODE.md §2.2: bound worst-case queued staleness; snapshots
     // replace, never accumulate.
     transport.datagram_send_buffer_size(64 * 1024);
+    transport
+        .max_concurrent_bidi_streams(QUIC_MAX_BIDI_STREAMS.into())
+        .max_concurrent_uni_streams(QUIC_MAX_UNI_STREAMS.into())
+        .stream_receive_window(QUIC_STREAM_RWND.into())
+        .receive_window(QUIC_CONN_RWND.into())
+        .send_window(QUIC_SEND_WINDOW)
+        .datagram_receive_buffer_size(Some(QUIC_DATAGRAM_RBUF));
     // Congestion control, selectable because §2.1 names it as the real risk
     // and §2.2 promised an A/B path that had never been built. CUBIC halves
     // cwnd on loss and a collapsed window at 100 ms RTT can fall under our
@@ -609,6 +736,7 @@ pub async fn spawn_shard(
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     // Players, then spectator seats (`slot::MAX_CONNS`).
     let slots = Arc::new(SlotTable::new(MAX_CONNS));
+    tokio::spawn(wake_relay(slots.clone()));
 
     let (ctrl_tx, ctrl_rx) = RingBuffer::<Connect>::new(CTRL_RING_CAP);
     let (grave_tx, grave_rx) = RingBuffer::<Link>::new(GRAVEYARD_RING_CAP);
@@ -625,6 +753,11 @@ pub async fn spawn_shard(
     // when the correct answer to a slow disk is to skip a save.
     let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(WORLD_RING_CAP);
     let (world_done_tx, world_done_rx) = RingBuffer::<WorldDone>::new(WORLD_RING_CAP);
+    // The side files, sim → storage thread: the gift ledger and the teams
+    // (`slot::FileMsg`), each message a whole small file. On the store
+    // thread because it is the one the binary waits on at shutdown: the last
+    // gift lands before exit, and the teams before a wipe archives them.
+    let (file_tx, file_rx) = RingBuffer::<FileMsg>::new(FILE_RING_CAP);
     // The admin path, sim → accept, one direction: a kick needs a socket
     // and the sim thread holds none (`admin.rs`'s split). Shallow because
     // an admin is a person typing — `CTRL_RING_CAP` is the same size for
@@ -724,6 +857,7 @@ pub async fn spawn_shard(
                     save_tx,
                     world_tx,
                     world_done_rx,
+                    file_tx,
                     admin_tx,
                     answer_rx,
                     log,
@@ -748,7 +882,17 @@ pub async fn spawn_shard(
         let file = saves.file;
         std::thread::Builder::new()
             .name("store".into())
-            .spawn(move || store_thread(file, write_rx, world_file, world_rx, world_done_tx, stats))
+            .spawn(move || {
+                store_thread(
+                    file,
+                    write_rx,
+                    world_file,
+                    world_rx,
+                    world_done_tx,
+                    file_rx,
+                    stats,
+                )
+            })
             .map_err(|e| format!("store thread spawn: {e}"))?;
     }
 
@@ -918,97 +1062,205 @@ struct SeatSlot {
     target_gen: u32,
 }
 
-/// The accept loop's bookkeeping for skin-ownership reads: which tenant of
-/// each slot has one in flight, and when each was last asked. One read per
-/// tenant at a time, and a client-asked read no sooner than
-/// `skins::REFRESH_COOLDOWN` after the last.
-struct SkinReads {
-    busy: [Option<u32>; MAX_PLAYERS],
-    last: [Option<(u32, Instant)>; MAX_PLAYERS],
+/// Wallets the per-join platform reads remember (`PlatformReads`): a full
+/// shard and as many again who just left. Past it the stalest is forgotten,
+/// which costs that wallet one more read and nothing else.
+const READ_MEMORY: usize = 2 * MAX_PLAYERS;
+/// Skin and face reads out at once. The rest wait on a task, never on the
+/// accept loop and never on a blocking thread: the pool is shared with the
+/// ticket door's join read.
+const READ_PERMITS: usize = 32;
+
+type SkinsAnswer = (usize, u32, Option<PlayerKey>, crate::skins::Owned);
+type FaceAnswer = (usize, u32, PlayerKey, crate::faces::Face);
+
+/// One wallet's last platform read.
+#[derive(Clone, Copy)]
+struct LastRead<A> {
+    key: PlayerKey,
+    /// When it was last asked; the cooldown runs from here.
+    at: Instant,
+    /// That read has not answered yet.
+    out: bool,
+    /// The last answer that knew something, and when ITS read was asked.
+    /// Told again only while younger than the cooldown, so a skin sold since
+    /// is never lent back for longer than a client refresh could see it.
+    known: Option<(A, Instant)>,
+    /// A join came inside the cooldown and was told the remembered answer:
+    /// read again once the cooldown has run ([`PlatformReads::owed`]), so a
+    /// skin bought in that window still arrives without the player asking.
+    owed: bool,
 }
 
-impl SkinReads {
-    fn new() -> Self {
+/// Skin-ownership and face reads, remembered **by wallet**, so a reconnect
+/// loop costs the platform one read per cooldown rather than one per join.
+/// Bounded (`READ_MEMORY`) and clock-free: every instant is handed in.
+struct PlatformReads<A> {
+    recent: Vec<LastRead<A>>,
+    cooldown: Duration,
+}
+
+impl<A: Copy> PlatformReads<A> {
+    fn new(cooldown: Duration) -> Self {
         Self {
-            busy: [None; MAX_PLAYERS],
-            last: [None; MAX_PLAYERS],
+            recent: Vec::with_capacity(READ_MEMORY),
+            cooldown,
         }
     }
 
-    /// Start a read for tenant `gen` of `slot`. `forced` is the door's read,
-    /// which the cooldown does not apply to.
-    fn ask(
-        &mut self,
-        slot: usize,
-        gen: u32,
-        forced: bool,
-        keys: &[KeySlot; MAX_PLAYERS],
-        facts: &ShardFacts,
-        owned_tx: &tokio::sync::mpsc::Sender<(usize, u32, crate::skins::Owned)>,
-    ) {
-        if slot >= MAX_PLAYERS || self.busy[slot] == Some(gen) {
-            return;
+    /// The answer to state again with `key`'s join: a known one younger than
+    /// the cooldown.
+    fn known(&self, key: &PlayerKey, now: Instant) -> Option<A> {
+        let e = self.recent.iter().find(|e| e.key == *key)?;
+        e.known
+            .filter(|&(_, at)| now.duration_since(at) < self.cooldown)
+            .map(|(a, _)| a)
+    }
+
+    /// Should `key` be read now? Never while a read is out or inside the
+    /// cooldown. `door` is a join's ask: refused, it owes a read for when
+    /// the cooldown has run. A client's ask is simply ignored, as before.
+    fn ask(&mut self, key: &PlayerKey, door: bool, now: Instant) -> bool {
+        if let Some(e) = self.recent.iter_mut().find(|e| e.key == *key) {
+            if e.out || now.duration_since(e.at) < self.cooldown {
+                e.owed |= door;
+                return false;
+            }
+            e.at = now;
+            e.out = true;
+            e.owed = false;
+            return true;
         }
-        let now = Instant::now();
-        if !forced {
-            if let Some((g, at)) = self.last[slot] {
-                if g == gen && now.duration_since(at) < crate::skins::REFRESH_COOLDOWN {
-                    return;
-                }
+        if self.recent.len() >= READ_MEMORY {
+            // The stalest idle one first: forgetting a wallet with a read
+            // out or owed would lose the read the join was promised.
+            let busy = |e: &LastRead<A>| e.out || e.owed;
+            if let Some(i) =
+                (0..self.recent.len()).min_by_key(|&i| (busy(&self.recent[i]), self.recent[i].at))
+            {
+                self.recent.swap_remove(i);
             }
         }
-        self.busy[slot] = Some(gen);
-        self.last[slot] = Some((gen, now));
-        // The key IS the wallet (`auth::key_of`), as at the ticket door.
-        let wallet = keys[slot]
-            .key
-            .as_ref()
-            .and_then(|k| std::str::from_utf8(k.as_bytes()).ok())
-            .map(str::to_string);
-        let cfg = facts.skins.clone();
-        let sc = facts.skin_content.clone();
-        let tx = owned_tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let owned = crate::skins::owned_of(&cfg, wallet.as_deref(), &sc);
-            let _ = tx.blocking_send((slot, gen, owned));
+        self.recent.push(LastRead {
+            key: *key,
+            at: now,
+            out: true,
+            known: None,
+            owed: false,
         });
+        true
     }
 
-    fn done(&mut self, slot: usize, gen: u32) {
-        if slot < MAX_PLAYERS && self.busy[slot] == Some(gen) {
-            self.busy[slot] = None;
+    /// A read about `key` came back; `None` is "could not look", which
+    /// changes nothing remembered (the sim keeps its set too).
+    fn done(&mut self, key: &PlayerKey, answer: Option<A>) {
+        if let Some(e) = self.recent.iter_mut().find(|e| e.key == *key) {
+            e.out = false;
+            if let Some(a) = answer {
+                e.known = Some((a, e.at));
+            }
         }
+    }
+
+    /// A wallet owed a read whose cooldown has run, handed out once.
+    fn owed(&mut self, now: Instant) -> Option<PlayerKey> {
+        let cooldown = self.cooldown;
+        let e = self
+            .recent
+            .iter_mut()
+            .find(|e| e.owed && !e.out && now.duration_since(e.at) >= cooldown)?;
+        e.owed = false;
+        Some(e.key)
     }
 }
 
-/// Start the name-and-picture read for tenant `gen` of `slot` (`faces.rs`).
-/// A guest has no wallet and an unarmed shard no origin: both stay their
-/// address (a guest, `#id`) and nothing is asked.
-fn ask_face(
+/// One blocking platform read behind `gate` (`READ_PERMITS`). A read that
+/// died answers `failed`, so an answer always comes back and a wallet's read
+/// is never left out for ever.
+fn spawn_read<M: Send + 'static>(
+    gate: &Arc<tokio::sync::Semaphore>,
+    tx: &tokio::sync::mpsc::Sender<M>,
+    failed: M,
+    read: impl FnOnce() -> M + Send + 'static,
+) {
+    let gate = gate.clone();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let answer = match gate.acquire_owned().await {
+            // `_permit`, not `_`: held until the read is done.
+            Ok(_permit) => tokio::task::spawn_blocking(read).await.unwrap_or(failed),
+            Err(_) => failed,
+        };
+        let _ = tx.send(answer).await;
+    });
+}
+
+/// The skin-ownership read for tenant `gen` of `slot` (`skins.rs`). The
+/// answer carries the wallet, so it lands on whoever holds it by then
+/// ([`landing`]). A guest (`None`) owns what the config says; nothing is
+/// remembered for one.
+fn read_skins(
     slot: usize,
     gen: u32,
-    keys: &[KeySlot; MAX_PLAYERS],
+    key: Option<PlayerKey>,
     facts: &ShardFacts,
-    face_tx: &tokio::sync::mpsc::Sender<(usize, u32, crate::faces::Face)>,
+    gate: &Arc<tokio::sync::Semaphore>,
+    tx: &tokio::sync::mpsc::Sender<SkinsAnswer>,
 ) {
-    if slot >= MAX_PLAYERS || facts.faces.origin.is_none() {
-        return;
-    }
-    // The key IS the wallet (`auth::key_of`), lowercase.
-    let Some(wallet) = keys[slot]
-        .key
-        .as_ref()
-        .and_then(|k| std::str::from_utf8(k.as_bytes()).ok())
-        .map(str::to_string)
-    else {
-        return;
-    };
-    let cfg = facts.faces.clone();
-    let tx = face_tx.clone();
-    tokio::task::spawn_blocking(move || {
-        let face = crate::faces::face_of(&cfg, &wallet);
-        let _ = tx.blocking_send((slot, gen, face));
+    let cfg = facts.skins.clone();
+    let sc = facts.skin_content.clone();
+    let failed = (slot, gen, key, crate::skins::Owned::Unknown);
+    spawn_read(gate, tx, failed, move || {
+        // The key IS the wallet (`auth::key_of`), as at the ticket door.
+        let wallet = key
+            .as_ref()
+            .and_then(|k| std::str::from_utf8(k.as_bytes()).ok());
+        (slot, gen, key, crate::skins::owned_of(&cfg, wallet, &sc))
     });
+}
+
+/// The name-and-picture read for tenant `gen` of `slot` (`faces.rs`).
+fn read_face(
+    slot: usize,
+    gen: u32,
+    key: PlayerKey,
+    facts: &ShardFacts,
+    gate: &Arc<tokio::sync::Semaphore>,
+    tx: &tokio::sync::mpsc::Sender<FaceAnswer>,
+) {
+    let cfg = facts.faces.clone();
+    let failed = (slot, gen, key, crate::faces::Face::Unknown);
+    spawn_read(gate, tx, failed, move || {
+        // The key IS the wallet, lowercase; a non-utf8 key reads as none.
+        let wallet = std::str::from_utf8(key.as_bytes()).unwrap_or_default();
+        (slot, gen, key, crate::faces::face_of(&cfg, wallet))
+    });
+}
+
+/// Where a platform answer about tenant `gen` of `slot` lands: that tenant
+/// while it is live, otherwise (for a wallet) whoever holds that wallet live
+/// now, because a reconnect while the read was out is the same person. An
+/// answer about a guest who left lands nowhere, and a stranger who took the
+/// slot is never told.
+fn landing(
+    slot: usize,
+    gen: u32,
+    key: Option<&PlayerKey>,
+    keys: &[KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+) -> Option<usize> {
+    if slot < MAX_PLAYERS {
+        let w = slots.load(slot);
+        if generation_of(w) == gen && state_of(w) == SLOT_LIVE {
+            return Some(slot);
+        }
+    }
+    key.and_then(|k| live_seat(k, keys, slots))
+}
+
+/// The live player slot holding wallet `key`, if any ([`seated`], live only).
+fn live_seat(key: &PlayerKey, keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable) -> Option<usize> {
+    seated(key, keys, slots).filter(|&s| state_of(slots.load(s)) == SLOT_LIVE)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1060,6 +1312,7 @@ async fn accept_loop(
     // clock and a window, and what actually protects the shard is "how much
     // unfinished crypto am I holding right now".
     let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sources = Arc::new(SourceGate::new(endpoint.local_addr().ok().map(|a| a.ip())));
     let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
     let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
     let mut sweep_in_flight = false;
@@ -1068,15 +1321,22 @@ async fn accept_loop(
     // Asked at the door and when a client says it bought something, never
     // on a timer. Requests come from the action readers, answers from
     // blocking reads, both through channels so this loop never waits on
-    // the platform — the ticket sweep's shape.
+    // the platform — the ticket sweep's shape. Remembered per wallet
+    // (`PlatformReads`): a join inside the cooldown is told the last answer
+    // and read again when the cooldown has run, so a reconnect loop costs
+    // the platform nothing extra.
     let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel::<(usize, u32)>(MAX_PLAYERS);
-    let (owned_tx, mut owned_rx) =
-        tokio::sync::mpsc::channel::<(usize, u32, crate::skins::Owned)>(MAX_PLAYERS);
-    let mut skin_reads = SkinReads::new();
-    // Names and pictures (`faces.rs`): once per join, answered on a channel
-    // for the same reason — the platform being slow never slows the door.
-    let (face_tx, mut face_rx) =
-        tokio::sync::mpsc::channel::<(usize, u32, crate::faces::Face)>(MAX_PLAYERS);
+    let (owned_tx, mut owned_rx) = tokio::sync::mpsc::channel::<SkinsAnswer>(MAX_PLAYERS);
+    let mut skin_reads =
+        PlatformReads::<sim_core::skin::SkinSet>::new(crate::skins::REFRESH_COOLDOWN);
+    // Names and pictures (`faces.rs`): once per join and cooldown, answered
+    // on a channel for the same reason — a slow platform never slows the door.
+    let (face_tx, mut face_rx) = tokio::sync::mpsc::channel::<FaceAnswer>(MAX_PLAYERS);
+    let mut face_reads =
+        PlatformReads::<(protocol::Name, u32)>::new(crate::faces::REFRESH_COOLDOWN);
+    let faces_armed = facts.faces.origin.is_some();
+    // Every skin and face read waits its turn here (`READ_PERMITS`).
+    let read_gate = Arc::new(tokio::sync::Semaphore::new(READ_PERMITS));
     // The item store's prices: at boot, then every `PRICES_EVERY`. Only a
     // shard that reads ownership from the platform reads prices from it.
     let prices_armed = facts.skins.origin.is_some() && !facts.skins.all;
@@ -1085,6 +1345,84 @@ async fn accept_loop(
     let (prices_done_tx, mut prices_done_rx) =
         tokio::sync::mpsc::channel::<crate::skins::Prices>(1);
     let mut prices_in_flight = false;
+    let mut parked: Vec<Parked> = Vec::with_capacity(PARK_MAX);
+    let mut park_poll = tokio::time::interval(PARK_POLL);
+    park_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The door's tail, for a fresh arrival and a parked one alike.
+    macro_rules! admit {
+        ($done:expr) => {{
+            let done = $done;
+            // Before the claim, never after: a record for the slot's
+            // previous tenant has to be filed under the key it was
+            // written for, and installing first would overwrite that key.
+            drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
+            if done.hello.is_spectator() {
+                install_spectator(
+                    done,
+                    &facts,
+                    &mut ctrl_tx,
+                    &keys,
+                    &mut seats,
+                    &slots,
+                    &stats,
+                )
+                .await;
+            } else {
+                // A wallet read inside the cooldown is not read again: what
+                // it said rides the join itself (`Connect::said`). The same
+                // `now` for `known` and `ask`, so "told" and "not read"
+                // always agree.
+                let now = Instant::now();
+                // A guest owns what the config says, which asks nobody
+                // (`skins::owned_of` with no wallet): said with the join too.
+                let said = crate::slot::Said {
+                    skins: match done.key {
+                        Some(k) => skin_reads.known(&k, now),
+                        None => {
+                            match crate::skins::owned_of(&facts.skins, None, &facts.skin_content) {
+                                crate::skins::Owned::Known(set) => Some(set),
+                                crate::skins::Owned::Unknown => None,
+                            }
+                        }
+                    },
+                    face: done
+                        .key
+                        .filter(|_| faces_armed)
+                        .and_then(|k| face_reads.known(&k, now)),
+                };
+                if let Some((slot, gen)) = install(
+                    done,
+                    said,
+                    &facts,
+                    &mut ctrl_tx,
+                    &refresh_tx,
+                    &mut keys,
+                    &store,
+                    &slots,
+                    &stats,
+                )
+                .await
+                {
+                    if said.skins.is_some() && keys[slot].key.is_some() {
+                        ShardStats::bump(&stats.skins_replayed);
+                    }
+                    if said.face.is_some() {
+                        ShardStats::bump(&stats.faces_replayed);
+                    }
+                    // The door's reads: what this player owns, before they
+                    // reach a bench, and what they are called.
+                    if let Some(k) = keys[slot].key {
+                        if skin_reads.ask(&k, true, now) {
+                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                        }
+                        if faces_armed && face_reads.ask(&k, true, now) {
+                            read_face(slot, gen, k, &facts, &read_gate, &face_tx);
+                        }
+                    }
+                }
+            }
+        }};
+    }
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -1113,10 +1451,23 @@ async fn accept_loop(
                     incoming.retry();
                     continue;
                 }
+                // An address QUIC has validated is charged against its
+                // source here, before any crypto (`ADMIT_PER_SOURCE`).
+                let permit = if incoming.remote_address_validated() {
+                    let Some(p) = SourceGate::take(&sources, incoming.remote_address().ip()) else {
+                        ShardStats::bump(&stats.refused_per_source);
+                        incoming.refuse();
+                        continue;
+                    };
+                    Some(p)
+                } else {
+                    None
+                };
                 in_flight.fetch_add(1, Ordering::Relaxed);
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
                 let in_flight = in_flight.clone();
+                let sources = sources.clone();
                 tokio::spawn(handshake_task(
                     incoming,
                     done_tx,
@@ -1127,6 +1478,8 @@ async fn accept_loop(
                     facts.min_client,
                     facts.spectate.open(),
                     in_flight,
+                    sources,
+                    permit,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -1139,22 +1492,56 @@ async fn accept_loop(
                     spawn_refusal(done.connection, done.send, protocol::REFUSE_ADMIN);
                     continue;
                 }
-                // Before the claim, never after: a record for the slot's
-                // previous tenant has to be filed under the key it was
-                // written for, and installing first would overwrite that key.
-                drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                if done.hello.is_spectator() {
-                    install_spectator(done, &facts, &mut ctrl_tx, &keys, &mut seats, &slots, &stats)
-                        .await;
-                } else if let Some((slot, gen)) = install(
-                    done, &facts, &mut ctrl_tx, &refresh_tx, &mut keys, &store, &slots, &stats,
-                )
-                .await
-                {
-                    // The door's read: what this player owns, before they
-                    // reach a bench.
-                    skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
-                    ask_face(slot, gen, &keys, &facts, &face_tx);
+                // One wallet, one body. A second session for a key whose body
+                // is still awake would miss the sleeper (there is none) and
+                // be seated from the store's record: two bodies, one
+                // inventory. So the session already in is closed
+                // (`REFUSE_IN_USE`) and the newcomer waits, unclaimed, until
+                // the sim has put that body to sleep — then it is seated on
+                // it. Never in this pass: the old leave has not reached the
+                // sim yet. A second newcomer for the same key, or one past
+                // the park's room, is refused outright.
+                if !done.hello.is_spectator() {
+                    if let Some(s) = done.key.and_then(|k| seated(&k, &keys, &slots)) {
+                        let twice = parked.iter().any(|p| p.done.key == done.key);
+                        if twice || parked.len() >= PARK_MAX {
+                            ShardStats::bump(&stats.refused_in_use);
+                            spawn_refusal(done.connection, done.send, protocol::REFUSE_IN_USE);
+                        } else {
+                            kick_tenant(s, &mut keys, &slots, protocol::REFUSE_IN_USE);
+                            ShardStats::bump(&stats.parked_in_use);
+                            parked.push(Parked {
+                                done,
+                                slot: s,
+                                generation: keys[s].generation,
+                                until: tokio::time::Instant::now() + PARK_WAIT,
+                            });
+                        }
+                        continue;
+                    }
+                }
+                admit!(done);
+            }
+            _ = park_poll.tick(), if !parked.is_empty() => {
+                let now = tokio::time::Instant::now();
+                let mut i = 0;
+                while i < parked.len() {
+                    let w = slots.load(parked[i].slot);
+                    let freed = crate::slot::state_of(w) == crate::slot::SLOT_EMPTY
+                        || crate::slot::generation_of(w) != parked[i].generation;
+                    if !freed && now < parked[i].until {
+                        i += 1;
+                        continue;
+                    }
+                    let p = parked.swap_remove(i);
+                    // Freed, and nothing else seated the key meanwhile: the
+                    // body is asleep and the join wakes it.
+                    if freed && p.done.key.and_then(|k| seated(&k, &keys, &slots)).is_none() {
+                        admit!(p.done);
+                    } else {
+                        ShardStats::bump(&stats.refused_in_use);
+                        spawn_refusal(p.done.connection, p.done.send, protocol::REFUSE_IN_USE);
+                    }
                 }
             }
             Some((slot, gen)) = refresh_rx.recv() => {
@@ -1162,7 +1549,13 @@ async fn accept_loop(
                     && crate::slot::generation_of(slots.load(slot)) == gen
                     && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
                 {
-                    skin_reads.ask(slot, gen, false, &keys, &facts, &owned_tx);
+                    // A guest's answer is the shard's config, the same every
+                    // time: there is nothing to ask again.
+                    if let Some(k) = keys[slot].key {
+                        if skin_reads.ask(&k, false, Instant::now()) {
+                            read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                        }
+                    }
                 }
             }
             _ = prices_sweep.tick(), if prices_armed && !prices_in_flight => {
@@ -1185,11 +1578,13 @@ async fn accept_loop(
                     crate::skins::Prices::Unknown => ShardStats::bump(&stats.skin_prices_unknown),
                 }
             }
-            Some((slot, gen, face)) = face_rx.recv() => {
-                if slot < MAX_PLAYERS
-                    && crate::slot::generation_of(slots.load(slot)) == gen
-                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
-                {
+            Some((slot, gen, key, face)) = face_rx.recv() => {
+                face_reads.done(&key, match face {
+                    crate::faces::Face::Known { name, pic } => Some((name, pic)),
+                    crate::faces::Face::Unknown => None,
+                });
+                // The generation guard, widened to the wallet (`landing`).
+                if let Some(slot) = landing(slot, gen, Some(&key), &keys, &slots) {
                     match face {
                         crate::faces::Face::Known { name, pic } => {
                             let msg = crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic };
@@ -1203,14 +1598,17 @@ async fn accept_loop(
                     }
                 }
             }
-            Some((slot, gen, owned)) = owned_rx.recv() => {
-                skin_reads.done(slot, gen);
-                // The generation guard: an answer about a tenant who has
-                // left is not an answer about whoever holds the slot now.
-                if slot < MAX_PLAYERS
-                    && crate::slot::generation_of(slots.load(slot)) == gen
-                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
-                {
+            Some((slot, gen, key, owned)) = owned_rx.recv() => {
+                if let Some(k) = key.as_ref() {
+                    skin_reads.done(k, match owned {
+                        crate::skins::Owned::Known(set) => Some(set),
+                        crate::skins::Owned::Unknown => None,
+                    });
+                }
+                // The generation guard, widened to the wallet: an answer
+                // about a tenant who has left lands on the same wallet's new
+                // seat, never on whoever else holds the slot now (`landing`).
+                if let Some(slot) = landing(slot, gen, key.as_ref(), &keys, &slots) {
                     match owned {
                         crate::skins::Owned::Known(set) => {
                             let msg = crate::slot::SkinsMsg { slot, id: keys[slot].id, owned: set };
@@ -1293,6 +1691,24 @@ async fn accept_loop(
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
                     drop(link); // net side deallocates, never the sim
+                }
+                // Reads owed to joins that were told a remembered answer
+                // (`PlatformReads::owed`), now that the cooldown has run: at
+                // most one per wallet per cooldown, however often it rejoined.
+                let now = Instant::now();
+                while let Some(k) = skin_reads.owed(now) {
+                    if let Some(s) = live_seat(&k, &keys, &slots) {
+                        if skin_reads.ask(&k, false, now) {
+                            read_skins(s, keys[s].generation, Some(k), &facts, &read_gate, &owned_tx);
+                        }
+                    }
+                }
+                while let Some(k) = face_reads.owed(now) {
+                    if let Some(s) = live_seat(&k, &keys, &slots) {
+                        if face_reads.ask(&k, false, now) {
+                            read_face(s, keys[s].generation, k, &facts, &read_gate, &face_tx);
+                        }
+                    }
                 }
                 // Spectator seats whose target left (`NETCODE.md` §2.3). The
                 // sim stopped feeding them the tick the target's slot turned
@@ -1513,6 +1929,19 @@ fn drain_saves(
     }
 }
 
+/// A side file the store thread failed to write (`side_file_errors`) is
+/// handed over again: the teams at the save that follows, the ledger on the
+/// next tick. On the world-save cadence, so a disk that keeps failing costs
+/// one retry per save, not one per tick.
+fn retry_side_files(core: &mut ShardCore, stats: &ShardStats, seen: &mut u64) {
+    let failed = ShardStats::get(&stats.side_file_errors);
+    if failed != *seen {
+        *seen = failed;
+        core.teams.forget_written();
+        core.gifts.mark_dirty();
+    }
+}
+
 /// Take one world save: fill a pooled buffer and hand it to the store
 /// thread, or skip and count.
 ///
@@ -1538,6 +1967,7 @@ fn take_world_save(
     pool: &mut Vec<Box<[u8]>>,
     idents: &mut Vec<Vec<(PlayerKey, u32)>>,
     world_tx: &mut rtrb::Producer<WorldMsg>,
+    file_tx: &mut rtrb::Producer<FileMsg>,
     stats: &ShardStats,
 ) {
     let (Some(mut buf), Some(mut ids)) = (pool.pop(), idents.pop()) else {
@@ -1556,10 +1986,14 @@ fn take_world_save(
     ids.resize(MAX_PLAYERS, (PlayerKey::PLACEHOLDER, 0));
     let n = core.identities(&mut ids);
     ids.truncate(n);
-    // The teams by the same keys, so a restart finds them again. Small
-    // text, off the tick, on the save's cadence.
-    if let Err(e) = core.teams.save(&ids) {
-        eprintln!("shard: teams not saved: {e}");
+    // The teams by the same keys, so a restart finds them again. The text is
+    // made here, only when it changed; the store thread writes it. No room
+    // on the ring leaves it for the next save (`FILE_RING_CAP`); this thread
+    // is the ring's only producer, so room now is room at the push.
+    if !file_tx.is_full() {
+        if let Some(msg) = core.teams.take_write(&ids) {
+            let _ = file_tx.push(msg);
+        }
     }
     let tick = core.world.tick;
     if let Err(rtrb::PushError::Full(msg)) = world_tx.push(WorldMsg {
@@ -1577,7 +2011,8 @@ fn take_world_save(
 }
 
 /// The storage thread: the only thing in this process that touches the save
-/// file, and it makes no decisions — the index owner already chose the slot.
+/// file, the world file and the side files (`slot::FileMsg`), and it makes
+/// no decisions — the index owner already chose the slot.
 ///
 /// Exits when its producer is gone AND the ring is dry, which is exact rather
 /// than timed: the accept loop dropping `write_tx` is the shutdown signal, and
@@ -1589,9 +2024,16 @@ fn store_thread(
     mut world_file: crate::worldfile::WorldFile,
     mut world_rx: rtrb::Consumer<WorldMsg>,
     mut world_done_tx: rtrb::Producer<WorldDone>,
+    mut file_rx: rtrb::Consumer<FileMsg>,
     stats: Arc<ShardStats>,
 ) {
     loop {
+        // Read BEFORE the drains: a producer seen gone here has pushed all it
+        // ever will, and the drains below take every bit of it. Read after,
+        // a push landing between a ring's drain and the check would be left
+        // on the ring.
+        let gone = write_rx.is_abandoned() && world_rx.is_abandoned() && file_rx.is_abandoned();
+        std::sync::atomic::fence(Ordering::Acquire);
         let mut idle = true;
         // The world first: it is the bigger write and the rarer one, and
         // taking it before the player records means a shutdown flush lands
@@ -1620,6 +2062,18 @@ fn store_thread(
             idents.clear();
             let _ = world_done_tx.push(WorldDone { buf, idents, ok });
         }
+        // The side files (`slot::FileMsg`): each a whole file, temp + fsync
+        // + rename. The teams are handed over just before the world they
+        // were keyed against, so they may land a pass ahead of it — the order
+        // the old synchronous write had. A failed write is logged; the
+        // in-memory copy stands and the next change writes it again.
+        while let Ok(msg) = file_rx.pop() {
+            idle = false;
+            if let Err(e) = crate::gifts::write_atomic(&msg.path, &msg.text) {
+                eprintln!("store: writing {}: {e}", msg.path.display());
+                ShardStats::bump(&stats.side_file_errors);
+            }
+        }
         while let Ok(msg) = write_rx.pop() {
             idle = false;
             match file.write(msg.index, &msg.key, msg.stamp, &msg.save) {
@@ -1636,12 +2090,10 @@ fn store_thread(
                 Err(_) => ShardStats::bump(&stats.save_write_errors),
             }
         }
-        // Both rings, not just the player one. The ordering makes a
-        // single check safe in practice — the accept loop only drops
-        // `write_tx` after the sim has already dropped `world_tx` — but
-        // "safe because of what another thread does first" is a thing to
-        // write down or check, and checking is one `&&`.
-        if write_rx.is_abandoned() && world_rx.is_abandoned() {
+        // Every ring, read by `gone` above: the drains in this pass ran after
+        // all three producers were seen dropped, so nothing pushed can still
+        // be waiting.
+        if gone {
             // Everything this process will ever write has been written.
             // `bin/shard.rs` waits on this before it exits, which is what
             // turns a SIGTERM into a save instead of a lost hour.
@@ -1668,6 +2120,8 @@ async fn handshake_task(
     min_client: u32,
     spectate_open: bool,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
+    sources: Arc<SourceGate>,
+    permit: Option<SourcePermit>,
 ) {
     // Decremented however this task leaves — the timeout arm, any of the
     // refusal arms, or success. A guard rather than a line at the end,
@@ -1684,13 +2138,27 @@ async fn handshake_task(
 
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
+        // The QUIC handshake is done, so the address is proven: count it
+        // against its source (`ADMIT_PER_SOURCE`) for the rest of this task,
+        // unless the door already did.
+        let permit = match permit {
+            Some(p) => p,
+            None => {
+                let Some(p) = SourceGate::take(&sources, request.remote_address().ip()) else {
+                    ShardStats::bump(&stats.refused_per_source);
+                    request.too_many_requests().await;
+                    return Err(());
+                };
+                p
+            }
+        };
         let connection = request.accept().await.map_err(|_| ())?;
         let (send, mut recv) = connection.accept_bi().await.map_err(|_| ())?;
         let (hello_buf, hello_len) = read_frame(&mut recv).await.ok_or(())?;
-        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len))
+        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len, permit))
     })
     .await;
-    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len))) = result else {
+    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len, _permit))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
@@ -1908,6 +2376,7 @@ async fn handshake_task(
 #[allow(clippy::too_many_arguments)]
 async fn install(
     done: Handshaken,
+    said: crate::slot::Said,
     facts: &ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
     refresh_tx: &tokio::sync::mpsc::Sender<(usize, u32)>,
@@ -1967,6 +2436,8 @@ async fn install(
     let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
     let (action_tx, action_rx) = RingBuffer::<ActionMsg>::new(ACTION_RING_CAP);
     let (chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(CHAT_RING_CAP);
+    let (voice_tx, voice_rx) = RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP);
+    let (voice_out_tx, voice_out_rx) = RingBuffer::<VoiceMsg>::new(VOICE_OUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
@@ -1974,6 +2445,8 @@ async fn install(
         input: input_rx,
         actions: action_rx,
         chats: chat_rx,
+        voice_in: voice_rx,
+        voice_out: voice_out_tx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -1984,6 +2457,7 @@ async fn install(
             save,
             key,
             watch: None,
+            said,
             agent: hello.is_agent(),
             name: if hello.is_agent() {
                 hello.name
@@ -2022,6 +2496,7 @@ async fn install(
     tokio::spawn(reader_task(
         connection.clone(),
         input_tx,
+        voice_tx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -2054,6 +2529,7 @@ async fn install(
     tokio::spawn(writer_task(
         connection,
         snap_rx,
+        voice_out_rx,
         slots.clone(),
         stats.clone(),
         slot,
@@ -2192,6 +2668,10 @@ async fn install_spectator(
     // `Link` names them, and nothing ever pushes into either.
     let (_action_tx, action_rx) = RingBuffer::<ActionMsg>::new(1);
     let (_chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(1);
+    // Nor does it talk; it does hear, when it watches an agent
+    // (`ShardCore::voice_reach`).
+    let (_voice_tx, voice_rx) = RingBuffer::<protocol::VoiceFrame>::new(1);
+    let (voice_out_tx, voice_out_rx) = RingBuffer::<VoiceMsg>::new(VOICE_OUT_RING_CAP);
     let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
     let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
     let link = Link {
@@ -2199,6 +2679,8 @@ async fn install_spectator(
         input: input_rx,
         actions: action_rx,
         chats: chat_rx,
+        voice_in: voice_rx,
+        voice_out: voice_out_tx,
         snaps: snap_tx,
         events: ev_tx,
     };
@@ -2209,6 +2691,7 @@ async fn install_spectator(
             save: None,
             key: None,
             watch: Some(target),
+            said: crate::slot::Said::default(),
             agent: false,
             name: protocol::Name::EMPTY,
             link,
@@ -2272,6 +2755,7 @@ async fn install_spectator(
             tokio::spawn(writer_task(
                 connection,
                 snap_rx,
+                voice_out_rx,
                 slots.clone(),
                 stats.clone(),
                 slot,
@@ -2280,6 +2764,8 @@ async fn install_spectator(
             ));
         }
         Some(delay) => {
+            // A delayed feed hears nothing live (`ShardCore::voice_reach`).
+            drop(voice_out_rx);
             tokio::spawn(delayed_writer_task(
                 connection,
                 send,
@@ -2419,6 +2905,55 @@ const DELAY_EVENTS_PER_S: usize = 8 * TICK_HZ as usize;
 /// own policy. The acks this seat sends back are `delay` stale, so the shard
 /// falls back to zero-state snapshots for it: correct, and more bytes, which
 /// is the price of the delay and one reason human feeds are off by default.
+/// A writer's wake: the sim's next published tick (`SlotTable::publish`,
+/// carried by [`wake_relay`]), or [`WRITER_FALLBACK`] with none.
+struct Wake {
+    rx: tokio::sync::watch::Receiver<u64>,
+    fallback: tokio::time::Interval,
+}
+
+impl Wake {
+    fn new(slots: &SlotTable) -> Self {
+        let mut fallback = tokio::time::interval(WRITER_FALLBACK);
+        fallback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        Self {
+            rx: slots.subscribe(),
+            fallback,
+        }
+    }
+
+    /// The first call returns at once, so a writer drains what was pushed
+    /// before it started.
+    async fn next(&mut self) {
+        tokio::select! {
+            r = self.rx.changed() => {
+                if r.is_err() {
+                    self.fallback.tick().await;
+                }
+            }
+            _ = self.fallback.tick() => {}
+        }
+        self.fallback.reset();
+    }
+}
+
+/// Carries the sim's published ticks to every writer: one task polling one
+/// atomic, so the sim thread wakes nobody itself (it takes no lock, L3) and
+/// the writers sleep until there is something to send.
+async fn wake_relay(slots: Arc<SlotTable>) {
+    let mut poll = tokio::time::interval(WAKE_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut seen = 0;
+    loop {
+        poll.tick().await;
+        let n = slots.published();
+        if n != seen {
+            seen = n;
+            slots.wake_writers(n);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn delayed_writer_task(
     connection: Connection,
@@ -2434,10 +2969,9 @@ async fn delayed_writer_task(
     let secs = delay.as_secs() as usize + 1;
     let mut snaps = DelayLine::<SnapMsg>::new(secs * DELAY_SNAPS_PER_S);
     let mut events = DelayLine::<EvMsg>::new(secs * DELAY_EVENTS_PER_S);
-    let mut poll = tokio::time::interval(WRITER_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wake = Wake::new(&slots);
     loop {
-        poll.tick().await;
+        wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return;
@@ -2497,6 +3031,7 @@ async fn delayed_writer_task(
 fn accept_input(
     dg: &[u8],
     input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
+    voice: &mut VoiceIn,
     stats: &ShardStats,
 ) {
     // **First, before any verdict on it.** These bytes crossed the path
@@ -2504,7 +3039,12 @@ fn accept_input(
     // that only counted the datagrams we liked would read lowest exactly
     // when a shard is being fed garbage (NOW.md §0q item 4).
     ShardStats::add_msg(&stats.net_dg_in_count, &stats.net_dg_in_bytes, dg.len());
-    let ok = peek_kind(dg).map(|k| k == KIND_INPUT).unwrap_or(false);
+    let kind = peek_kind(dg).ok();
+    if kind == Some(protocol::KIND_VOICE) {
+        voice.accept(dg, stats);
+        return;
+    }
+    let ok = kind == Some(KIND_INPUT);
     if !ok {
         ShardStats::bump(&stats.input_dg_bad);
         return;
@@ -2526,9 +3066,66 @@ fn accept_input(
     }
 }
 
+/// A talker's voice frames on their way in (v113): decoded, rate-limited
+/// by a token bucket of [`VOICE_FPS`] a second and [`VOICE_BURST`] deep,
+/// and ringed for the sim thread's range check. Every refusal is counted
+/// and none is a disconnect: voice is the datagram lane's, and a lost
+/// frame is the codec's to conceal.
+struct VoiceIn {
+    tx: rtrb::Producer<protocol::VoiceFrame>,
+    tokens: u32,
+    last: Option<Instant>,
+}
+
+impl VoiceIn {
+    fn new(tx: rtrb::Producer<protocol::VoiceFrame>) -> Self {
+        Self {
+            tx,
+            tokens: VOICE_BURST,
+            last: None,
+        }
+    }
+
+    fn allow(&mut self, now: Instant) -> bool {
+        let last = *self.last.get_or_insert(now);
+        let per = Duration::from_secs(1) / VOICE_FPS;
+        let steps = (now.saturating_duration_since(last).as_nanos() / per.as_nanos()) as u64;
+        if steps >= VOICE_BURST as u64 {
+            self.tokens = VOICE_BURST;
+            self.last = Some(now);
+        } else if steps > 0 {
+            self.tokens = (self.tokens + steps as u32).min(VOICE_BURST);
+            self.last = Some(last + per * steps as u32);
+        }
+        if self.tokens == 0 {
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+
+    fn accept(&mut self, dg: &[u8], stats: &ShardStats) {
+        let Ok(frame) = protocol::decode_voice_up(dg) else {
+            ShardStats::bump(&stats.voice_bad);
+            return;
+        };
+        if !self.allow(Instant::now()) {
+            ShardStats::bump(&stats.voice_rate_limited);
+            return;
+        }
+        if self.tx.push(frame).is_err() {
+            ShardStats::bump(&stats.voice_ring_drops);
+            return;
+        }
+        ShardStats::bump(&stats.voice_ok);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn reader_task(
     connection: Connection,
     mut input_tx: rtrb::Producer<protocol::InputDatagram>,
+    voice_tx: rtrb::Producer<protocol::VoiceFrame>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
@@ -2549,10 +3146,11 @@ async fn reader_task(
         )>(NETSIM_QUEUE);
         {
             let stats = stats.clone();
+            let mut voice = VoiceIn::new(voice_tx);
             tokio::spawn(async move {
                 while let Some((due, dg)) = rx.recv().await {
                     tokio::time::sleep_until(due).await;
-                    accept_input(&dg, &mut input_tx, &stats);
+                    accept_input(&dg, &mut input_tx, &mut voice, &stats);
                 }
             });
         }
@@ -2572,8 +3170,9 @@ async fn reader_task(
         slots.mark_leaving(slot, generation);
         return;
     }
+    let mut voice = VoiceIn::new(voice_tx);
     while let Ok(dg) = connection.receive_datagram().await {
-        accept_input(&dg, &mut input_tx, &stats);
+        accept_input(&dg, &mut input_tx, &mut voice, &stats);
     }
     slots.mark_leaving(slot, generation);
 }
@@ -2720,7 +3319,7 @@ async fn action_reader_task(
                             if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
                                 return;
                             }
-                            tokio::time::sleep(WRITER_POLL).await;
+                            tokio::time::sleep(RING_RETRY).await;
                         }
                     }
                 }
@@ -2734,9 +3333,11 @@ async fn action_reader_task(
     slots.mark_leaving(slot, generation);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn writer_task(
     connection: Connection,
     mut snap_rx: rtrb::Consumer<SnapMsg>,
+    mut voice_rx: rtrb::Consumer<VoiceMsg>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
@@ -2762,22 +3363,21 @@ async fn writer_task(
         });
         (ns, netsim_rng(&ns, slot ^ 0x80), tx)
     });
-    let mut poll = tokio::time::interval(WRITER_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wake = Wake::new(&slots);
     // Per-connection previous readings, so what reaches `ShardStats` is a
     // delta. Local to the task on purpose: a shared table keyed by
     // connection would be a map with a lifetime problem and a lock, to hold
     // two numbers that only this task ever reads.
-    // **One, not `NET_SAMPLE_EVERY`**: the first poll samples. Starting a
-    // full period out would mean a connection that lives under a second
+    // **Now, not `NET_SAMPLE_EVERY` out**: the first wake samples. Starting
+    // a full period out would mean a connection that lives under a second
     // contributes nothing at all — and a shard being hammered by clients
     // that connect and die is exactly when the loss counters matter most.
     // The first sample's `prev_*` are zero, so it correctly reports
     // everything since the connection opened.
-    let mut sample_in = 1u32;
+    let mut sample_at = tokio::time::Instant::now();
     let (mut prev_lost, mut prev_sent, mut prev_cong, mut prev_holes) = (0u64, 0u64, 0u64, 0u64);
     loop {
-        poll.tick().await;
+        wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return; // slot moved on; sim (or reader) already knows
@@ -2786,9 +3386,9 @@ async fn writer_task(
         // through wtransport's passthrough — no wire field, no PROTO_VER,
         // no golden: the numbers already exist and nothing was asking for
         // them.
-        sample_in -= 1;
-        if sample_in == 0 {
-            sample_in = NET_SAMPLE_EVERY;
+        let now = tokio::time::Instant::now();
+        if now >= sample_at {
+            sample_at = now + NET_SAMPLE_EVERY;
             let s = connection.quic_connection().stats();
             let p = s.path;
             // `saturating_sub` rather than `-`: these are monotonic per
@@ -2820,6 +3420,20 @@ async fn writer_task(
             stats
                 .net_mtu_last
                 .store(p.current_mtu as u64, Ordering::Relaxed);
+        }
+        // Voice goes out whole and in order: unlike a snapshot, a frame
+        // is not superseded by the next one (v113). `send_datagram` drops
+        // the oldest itself when the path is congested.
+        while let Ok(v) = voice_rx.pop() {
+            match connection.send_datagram(v.bytes()) {
+                Ok(()) => ShardStats::add_msg(
+                    &stats.net_dg_out_count,
+                    &stats.net_dg_out_bytes,
+                    v.bytes().len(),
+                ),
+                Err(SendDatagramError::NotConnected) => break,
+                Err(_) => ShardStats::bump(&stats.voice_out_drops),
+            }
         }
         // Drain to the newest — snapshots replace, never accumulate.
         let mut newest: Option<SnapMsg> = None;
@@ -2887,23 +3501,23 @@ async fn event_writer_task(
     slot: usize,
     generation: u32,
 ) {
-    let mut poll = tokio::time::interval(WRITER_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wake = Wake::new(&slots);
     loop {
-        poll.tick().await;
+        wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             // Sent away with a reason: post it as the session's last word,
             // inside the grace `close_with_reason` waits out. A browser
             // cannot read the QUIC close code, so this is how it learns why.
-            if generation_of(word) == generation {
-                if let Some(code) = slots.why(slot, generation) {
-                    let _ = tokio::time::timeout(REFUSE_POST_TIMEOUT, async {
-                        write_refuse(&mut send, code).await?;
-                        send.finish().await.map_err(|_| ())
-                    })
-                    .await;
-                }
+            // `why` matches the whole generation, so this holds even when
+            // the slot was freed and claimed again before this writer woke
+            // (a takeover's newcomer takes the slot it left).
+            if let Some(code) = slots.why(slot, generation) {
+                let _ = tokio::time::timeout(REFUSE_POST_TIMEOUT, async {
+                    write_refuse(&mut send, code).await?;
+                    send.finish().await.map_err(|_| ())
+                })
+                .await;
             }
             return; // slot moved on; sim (or reader) already knows
         }
@@ -2978,11 +3592,16 @@ const REFUSE_POST_TIMEOUT: Duration = Duration::from_millis(300);
 fn close_with_reason(conn: Connection, code: u8) {
     tokio::spawn(async move {
         tokio::time::sleep(KICK_GRACE).await;
-        conn.close(
-            wtransport::VarInt::from_u32(code as u32),
-            protocol::refuse_text(code).unwrap_or("closed").as_bytes(),
-        );
+        close_now(&conn, code);
     });
+}
+
+/// Close with the refusal code and its text, which the desktop reads.
+fn close_now(conn: &Connection, code: u8) {
+    conn.close(
+        wtransport::VarInt::from_u32(code as u32),
+        protocol::refuse_text(code).unwrap_or("closed").as_bytes(),
+    );
 }
 
 async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
@@ -2998,25 +3617,68 @@ async fn write_refuse(send: &mut SendStream, code: u8) -> Result<(), ()> {
 /// player and slots are the accept loop's business — and a reconnect between
 /// the two must not be kicked in the first one's name.
 fn admin_kick(id: u32, keys: &mut [KeySlot; MAX_PLAYERS], slots: &SlotTable) -> bool {
-    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some()) else {
+    // The tenant with that id, wallet or guest: a guest griefs as well as
+    // anyone, and a kick needs no wallet (a ban does — `core.rs` refuses
+    // that one before it reaches here). `kick_tenant` checks it is live.
+    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].conn.is_some()) else {
         return false;
     };
+    kick_tenant(slot, keys, slots, protocol::REFUSE_ADMIN)
+}
+
+/// End `slot`'s live tenant with `code`: marked leaving (the sim's sweep
+/// puts the body to sleep) and closed with the reason posted. False when the
+/// slot is not live — already leaving, or empty.
+fn kick_tenant(
+    slot: usize,
+    keys: &mut [KeySlot; MAX_PLAYERS],
+    slots: &SlotTable,
+    code: u8,
+) -> bool {
     let word = slots.load(slot);
     if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
         return false;
     }
-    slots.mark_leaving_why(
-        slot,
-        crate::slot::generation_of(word),
-        protocol::REFUSE_ADMIN,
-    );
+    slots.mark_leaving_why(slot, crate::slot::generation_of(word), code);
     if let Some(conn) = keys[slot].conn.take() {
         // Closed with a posted reason, the entitle kick's rule: a silent
         // close reads as a network fault, and "my internet broke" is the
         // wrong thing for a kicked player to believe.
-        close_with_reason(conn, protocol::REFUSE_ADMIN);
+        close_with_reason(conn, code);
     }
     true
+}
+
+/// A newcomer waiting for its own wallet's old body to fall asleep (one
+/// wallet, one body): the old session has been closed, and once the sim has
+/// applied its leave the slot frees and the newcomer is seated — on the
+/// sleeper, by `connect_as`'s first door. One handshake and one signature,
+/// however the old session ended.
+struct Parked {
+    done: Handshaken,
+    slot: usize,
+    generation: u32,
+    until: tokio::time::Instant,
+}
+
+/// Newcomers that may wait at once, and how long one waits before it is
+/// refused `REFUSE_IN_USE` after all. A leave lands within a tick or two of
+/// the close; the wait only runs long for a body the sim cannot let go of.
+const PARK_MAX: usize = 16;
+const PARK_WAIT: Duration = Duration::from_secs(5);
+const PARK_POLL: Duration = Duration::from_millis(20);
+
+/// The player slot whose tenant is `key` and still has a body awake: live,
+/// or leaving but not yet freed (the sim frees a slot only after it has
+/// applied the leave). A stale `KeySlot` from an earlier generation is not
+/// a tenant — `install` overwrites them lazily.
+fn seated(key: &PlayerKey, keys: &[KeySlot; MAX_PLAYERS], slots: &SlotTable) -> Option<usize> {
+    (0..MAX_PLAYERS).find(|&s| {
+        let word = slots.load(s);
+        keys[s].key.as_ref() == Some(key)
+            && crate::slot::state_of(word) != crate::slot::SLOT_EMPTY
+            && crate::slot::generation_of(word) == keys[s].generation
+    })
 }
 
 /// Tell admin `to` how an act went (`admin::AdminReply`). A full ring loses
@@ -3035,14 +3697,57 @@ fn answer_admin(
     }
 }
 
+/// Refusals posting at once, process-wide (one socket, one set of
+/// connections). Past it a refusal is a bare close carrying the code, so a
+/// loop of doomed handshakes (a stale build, a banned wallet) cannot hold
+/// more connections open than the admission gate lets in.
+const REFUSALS_MAX: usize = ADMIT_REFUSE_AT;
+/// How long a refusal waits for the peer to ack its frame. A client that
+/// read it acks within a round trip.
+const REFUSAL_WAIT: Duration = Duration::from_secs(2);
+
+/// The count of refusals posting ([`REFUSALS_MAX`]).
+struct RefusalGate(std::sync::atomic::AtomicUsize);
+
+/// One refusal's place in a [`RefusalGate`], given back on drop.
+struct RefusalOut(&'static RefusalGate);
+
+impl RefusalGate {
+    const fn new() -> Self {
+        Self(std::sync::atomic::AtomicUsize::new(0))
+    }
+
+    fn take(&'static self) -> Option<RefusalOut> {
+        if self.0.fetch_add(1, Ordering::Relaxed) >= REFUSALS_MAX {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        Some(RefusalOut(self))
+    }
+}
+
+impl Drop for RefusalOut {
+    fn drop(&mut self) {
+        self.0 .0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+static REFUSALS: RefusalGate = RefusalGate::new();
+
 /// Refusals are posted, never hung (DESIGN.md §5.9) — and never block the
 /// accept loop. A buffered write dies with the dropped connection, so
 /// delivery needs `finish` (retransmit-until-acked) before the drop; that
-/// waits on the peer, so it runs detached, bounded by the handshake
-/// timeout so a non-acking client can't pin the task.
+/// waits on the peer, so it runs detached, bounded by [`REFUSAL_WAIT`] so a
+/// non-acking client can't pin the task, and at most [`REFUSALS_MAX`] at
+/// once: past that the code rides a bare close.
 fn spawn_refusal(connection: Connection, mut send: SendStream, code: u8) {
+    let Some(out) = REFUSALS.take() else {
+        close_now(&connection, code);
+        return;
+    };
     tokio::spawn(async move {
-        let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        let _out = out; // moved in, so an unpolled task still gives it back
+        let _ = tokio::time::timeout(REFUSAL_WAIT, async {
             write_refuse(&mut send, code).await?;
             send.finish().await.map_err(|_| ())
         })
@@ -3257,6 +3962,7 @@ fn sim_thread(
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
     mut world_done_rx: rtrb::Consumer<WorldDone>,
+    mut file_tx: rtrb::Producer<FileMsg>,
     mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
     mut answer_rx: rtrb::Consumer<crate::admin::AdminReply>,
     mut log: crate::anomaly::Sink,
@@ -3413,10 +4119,14 @@ fn sim_thread(
         .map(|_| Vec::with_capacity(MAX_PLAYERS))
         .collect();
     let mut next_world_save = core.world.tick + world_interval.min(u64::MAX / 2);
+    // Side-file failures already answered (`retry_side_files`).
+    let mut side_failures_seen = 0u64;
     // Every connection slot: players, then spectator seats (`MAX_CONNS`).
     let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_CONNS);
     links.resize_with(MAX_CONNS, || None);
     let mut links = links.into_boxed_slice();
+    // Who hears the talker being relayed (`ShardCore::voice_reach`), reused.
+    let mut voice_hears = [false; MAX_CONNS];
 
     // Startup-only notification: no channel wake or drop enters the tick.
     // A cancelled startup has no accept loop and must not leave a sim alive.
@@ -3455,6 +4165,16 @@ fn sim_thread(
                 core.tag_join(c.slot, c.id, key.as_ref());
                 core.name_agent(c.slot, c.name);
                 core.note_agent(c.slot, c.agent);
+                // A wallet read inside the cooldown, stated with the join
+                // (`Connect::said`): after `tag_join`, which owes the gifts
+                // (`skins_owned` unions them back in), and after
+                // `name_agent`, whose name an empty face keeps.
+                if let Some(owned) = c.said.skins {
+                    core.skins_owned(c.slot, c.id, owned);
+                }
+                if let Some((name, pic)) = c.said.face {
+                    core.set_face(c.slot, c.id, name, pic);
+                }
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
                 // as it stands NOW — raid included — not as its leave left
@@ -3563,6 +4283,51 @@ fn sim_thread(
                 }
             }
         }
+        // Proximity voice (v113): each talker's frames go to whoever is in
+        // range now, measured here because positions live on this thread.
+        // Relayed, never simulated — nothing below touches the world.
+        for slot in 0..MAX_PLAYERS {
+            let mut frames = [protocol::VoiceFrame::EMPTY; VOICE_PER_TICK];
+            let mut n = 0;
+            if let Some(link) = links[slot].as_mut() {
+                while n < VOICE_PER_TICK {
+                    let Ok(f) = link.voice_in.pop() else {
+                        break;
+                    };
+                    frames[n] = f;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            let Some(from) = core.voice_reach(slot, &mut voice_hears) else {
+                ShardStats::add(&stats.voice_unheard, n as u64);
+                continue;
+            };
+            for f in &mut frames[..n] {
+                f.from = from;
+                let mut msg = VoiceMsg {
+                    len: 0,
+                    buf: [0; protocol::VOICE_DATAGRAM_MAX],
+                };
+                let Ok(len) = protocol::encode_voice(f, &mut msg.buf) else {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                };
+                msg.len = len as u16;
+                for (to, &hears) in voice_hears.iter().enumerate() {
+                    let Some(link) = links[to].as_mut().filter(|_| hears) else {
+                        continue;
+                    };
+                    if link.voice_out.push(msg).is_ok() {
+                        ShardStats::bump(&stats.voice_relayed);
+                    } else {
+                        ShardStats::bump(&stats.voice_out_drops);
+                    }
+                }
+            }
+        }
         // One step of the autosave sweep, before the tick rather than after
         // it for a reason worth stating: the record is then the state the
         // *previous* tick published, which is the state a client has actually
@@ -3587,11 +4352,13 @@ fn sim_thread(
         // published, which is a state clients have actually been shown.
         if core.world.tick >= next_world_save {
             next_world_save = core.world.tick.saturating_add(world_interval);
+            retry_side_files(&mut core, &stats, &mut side_failures_seen);
             take_world_save(
                 &mut core,
                 &mut world_pool,
                 &mut ident_pool,
                 &mut world_tx,
+                &mut file_tx,
                 &stats,
             );
             core.standings.snapshot();
@@ -3668,7 +4435,18 @@ fn sim_thread(
                 }
             }
         });
+        // This tick's snapshots and events, and the voice relayed above,
+        // are on the rings: wake the writers (`wake_relay`).
+        slots.publish();
         ShardStats::bump(&stats.ticks);
+        // A gift given this tick: the whole ledger to the store thread, which
+        // owns every write (`gifts.rs`). Room is checked before the text is
+        // built; a full ring leaves the ledger dirty for the next tick.
+        if core.gifts.is_dirty() && !file_tx.is_full() {
+            if let Some(msg) = core.gifts.take_write() {
+                let _ = file_tx.push(msg);
+            }
+        }
         // `/save` asked for the world now rather than at the cadence. Set
         // the deadline to this tick and let the cadence check above take
         // it on the next pass — the admin verb moves the deadline, it does
@@ -3755,13 +4533,33 @@ fn sim_thread(
     if let Err(e) = core.standings.save_now() {
         eprintln!("shard: standings at shutdown: {e}");
     }
+    // Room for the shutdown's side files — the teams the save below takes,
+    // and a gift ledger a full ring left dirty — on the ring the store thread
+    // is draining right now. Bounded like the accept loop's drain; past the
+    // bound the teams keep their last file and a gift is asked for again.
+    for _ in 0..SHUTDOWN_DRAIN_TRIES {
+        if file_tx.slots() >= 2 {
+            break;
+        }
+        std::thread::sleep(SHUTDOWN_DRAIN_POLL);
+    }
+    // The last teams go over whatever the last write did: a failed one
+    // reaches the store thread's count only after the fact.
+    core.teams.forget_written();
+    retry_side_files(&mut core, &stats, &mut side_failures_seen);
     take_world_save(
         &mut core,
         &mut world_pool,
         &mut ident_pool,
         &mut world_tx,
+        &mut file_tx,
         &stats,
     );
+    if !file_tx.is_full() {
+        if let Some(msg) = core.gifts.take_write() {
+            let _ = file_tx.push(msg);
+        }
+    }
     // Then every connected player's exact record, which is the same read a
     // leave takes and is what makes a clean restart cost nobody anything.
     for slot in 0..MAX_PLAYERS {
@@ -3769,10 +4567,11 @@ fn sim_thread(
             push_save(&mut save_tx, id, None, save, &stats);
         }
     }
-    // Both producers drop here, which is the signal the other two threads
-    // are already written to wait for: the accept loop drains `save_rx`
-    // until it is abandoned, and the store thread exits when its own ring is
-    // dry and abandoned. Nothing is timed and nothing is guessed.
+    // Every producer drops here — `save_tx`, `world_tx`, `file_tx` — which is
+    // the signal the other two threads are already written to wait for: the
+    // accept loop drains `save_rx` until it is abandoned, and the store
+    // thread exits when its rings are dry and abandoned. Nothing is timed and
+    // nothing is guessed.
 }
 
 /// A random `u64` for a world's arc salt, from the OS-seeded hasher keys
@@ -3787,6 +4586,50 @@ fn fresh_salt() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **One source holds at most `ADMIT_PER_SOURCE` handshakes, and gets
+    /// each back when it ends.** An IPv6 /64 is one source; loopback is
+    /// never counted (the bots and the wire suites dial from it).
+    #[test]
+    fn a_source_holds_at_most_its_allowance_of_handshakes() {
+        let gate = Arc::new(SourceGate::new(Some("192.0.2.1".parse().unwrap())));
+        let ip: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let mut held: Vec<_> = (0..ADMIT_PER_SOURCE)
+            .map(|_| SourceGate::take(&gate, ip).expect("within the allowance"))
+            .collect();
+        assert!(
+            SourceGate::take(&gate, ip).is_none(),
+            "one past the allowance"
+        );
+        held.pop();
+        assert!(
+            SourceGate::take(&gate, ip).is_some(),
+            "a finished handshake gives its place back"
+        );
+
+        let a: std::net::IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: std::net::IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        assert_eq!(gate.bucket(a), gate.bucket(b), "a /64 is one source");
+        let mapped: std::net::IpAddr = "::ffff:203.0.113.7".parse().unwrap();
+        assert_eq!(
+            gate.bucket(mapped),
+            gate.bucket(ip),
+            "v4-mapped is its v4 address"
+        );
+
+        let lo: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let many: Vec<_> = (0..4 * ADMIT_PER_SOURCE)
+            .map(|_| SourceGate::take(&gate, lo).expect("loopback is never refused"))
+            .collect();
+        assert!(many.iter().all(|p| p.bucket.is_none()));
+        let own: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let mine: Vec<_> = (0..4 * ADMIT_PER_SOURCE)
+            .map(|_| {
+                SourceGate::take(&gate, own).expect("the shard's own address is never refused")
+            })
+            .collect();
+        assert!(mine.iter().all(|p| p.bucket.is_none()));
+    }
 
     /// **The human feed's delay line holds every message for exactly its
     /// delay, in order, and refuses past its bound** — clock-free: every
@@ -4064,6 +4907,37 @@ mod tests {
     /// the two properties that says: a malformed datagram still costs its
     /// bytes, and the arrival count reconciles with the three verdict
     /// counters that partition it.
+    /// A voice ring nobody drains, for the input-lane tests.
+    fn voice_sink() -> VoiceIn {
+        VoiceIn::new(RingBuffer::<protocol::VoiceFrame>::new(VOICE_RING_CAP).0)
+    }
+
+    /// Voice is its own datagram on the input lane (v113): decoded, ringed,
+    /// rate-limited past the burst, and none of it reaches the input ring.
+    #[test]
+    fn voice_datagrams_ring_apart_from_input_and_are_rate_limited() {
+        let stats = ShardStats::default();
+        let (mut tx, mut rx) = RingBuffer::<protocol::InputDatagram>::new(INPUT_RING_CAP);
+        let (vtx, mut vrx) = RingBuffer::<protocol::VoiceFrame>::new(64);
+        let mut voice = VoiceIn::new(vtx);
+        let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+        for seq in 0..(VOICE_BURST + 5) as u16 {
+            let f = protocol::VoiceFrame::new(seq, 0, &[0x0b, 1, 2]).unwrap();
+            let n = protocol::encode_voice_up(&f, &mut buf).unwrap();
+            accept_input(&buf[..n], &mut tx, &mut voice, &stats);
+        }
+        // A truncated frame: the kind says voice, the body is short.
+        let f = protocol::VoiceFrame::new(1, 0, &[0x0b, 1, 2]).unwrap();
+        let n = protocol::encode_voice_up(&f, &mut buf).unwrap();
+        accept_input(&buf[..n - 1], &mut tx, &mut voice, &stats);
+        assert!(rx.pop().is_err(), "voice never reaches the input ring");
+        assert_eq!(ShardStats::get(&stats.voice_ok), VOICE_BURST as u64);
+        assert_eq!(ShardStats::get(&stats.voice_rate_limited), 5);
+        assert_eq!(ShardStats::get(&stats.voice_bad), 1);
+        assert_eq!(ShardStats::get(&stats.input_dg_bad), 0);
+        assert_eq!(vrx.pop().unwrap().seq, 0);
+    }
+
     #[test]
     fn the_lane_counts_the_bytes_that_arrived_not_the_ones_it_liked() {
         use protocol::{encode_input, InputDatagram};
@@ -4076,7 +4950,7 @@ mod tests {
         dg.push(InputFrame::default()).expect("one frame fits");
         let mut buf = [0u8; 256];
         let good = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..good], &mut tx, &stats);
+        accept_input(&buf[..good], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.net_dg_in_count), 1);
         assert_eq!(
             ShardStats::get(&stats.net_dg_in_bytes),
@@ -4087,7 +4961,7 @@ mod tests {
 
         // Line noise: `peek_kind` refuses it. It crossed the path anyway.
         let junk = [0xEEu8; 37];
-        accept_input(&junk, &mut tx, &stats);
+        accept_input(&junk, &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_bad), 1);
         assert_eq!(
             ShardStats::get(&stats.net_dg_in_bytes),
@@ -4108,7 +4982,7 @@ mod tests {
         })
         .expect("one frame fits");
         let forged = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..forged], &mut tx, &stats);
+        accept_input(&buf[..forged], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
 
         // The reconciliation: every arrival lands in exactly one verdict
@@ -4186,7 +5060,7 @@ mod tests {
 
         // Just inside: every meaningful bit at once.
         let (buf, n) = encode(BTN_MASK);
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_ok), 1);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 0);
         let ringed = rx.pop().expect("the in-domain datagram is ringed");
@@ -4201,7 +5075,7 @@ mod tests {
         assert_ne!(unmeant, 0, "the octet is full — this probe needs a new bit");
         assert_eq!(unmeant & BTN_MASK, 0, "the probe bit must be unmeant");
         let (buf, n) = encode(BTN_MASK | unmeant);
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
         assert_eq!(
             ShardStats::get(&stats.input_dg_ok),
@@ -4236,7 +5110,7 @@ mod tests {
         .expect("second frame fits");
         let mut buf = [0u8; 256];
         let n = encode_input(&dg, &mut buf).expect("encodes");
-        accept_input(&buf[..n], &mut tx, &stats);
+        accept_input(&buf[..n], &mut tx, &mut voice_sink(), &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 2);
         assert!(rx.pop().is_err(), "no frame of a forged datagram survives");
     }
@@ -4356,5 +5230,136 @@ mod tests {
             .map(|w| w.key)
             .collect();
         assert_eq!(filed, who, "the drain stopped before the sim let go");
+    }
+
+    /// **A wallet is read once per cooldown, however often it rejoins.** A
+    /// join inside the cooldown is told the last answer and owes one read
+    /// for when it has run; an answer older than the cooldown is never told.
+    #[test]
+    fn a_wallet_is_read_once_per_cooldown_however_often_it_rejoins() {
+        let mut r = PlatformReads::<u8>::new(Duration::from_secs(15));
+        let k = PlayerKey::new(b"0x00000000000000000000000000000000000000a1").unwrap();
+        let t0 = Instant::now();
+        let s = |n: u64| t0 + Duration::from_secs(n);
+        assert!(r.ask(&k, true, t0), "the first join reads");
+        assert!(!r.ask(&k, true, s(1)), "a read is out");
+        assert_eq!(r.known(&k, s(1)), None);
+        r.done(&k, Some(7));
+        assert_eq!(r.known(&k, s(2)), Some(7), "a rejoin is told it");
+        assert!(!r.ask(&k, true, s(2)), "inside the cooldown");
+        assert!(!r.ask(&k, false, s(3)), "a client ask inside it too");
+        assert_eq!(r.owed(s(14)), None, "owed only once the cooldown has run");
+        assert_eq!(r.owed(s(15)), Some(k));
+        assert_eq!(r.owed(s(15)), None, "handed out once");
+        assert!(r.ask(&k, false, s(15)));
+        assert_eq!(r.known(&k, s(16)), None, "older than the cooldown");
+        r.done(&k, None);
+        assert!(r.ask(&k, false, s(31)), "could-not-look leaves nothing out");
+    }
+
+    /// **The read memory is bounded and forgets the stalest wallet.**
+    #[test]
+    fn the_read_memory_is_bounded_and_forgets_the_stalest() {
+        let mut r = PlatformReads::<u8>::new(Duration::from_secs(15));
+        let key = |i: usize| PlayerKey::new(format!("0x{i:040x}").as_bytes()).unwrap();
+        let t0 = Instant::now();
+        for i in 0..=READ_MEMORY {
+            assert!(r.ask(&key(i), true, t0 + Duration::from_millis(i as u64)));
+        }
+        assert_eq!(r.recent.len(), READ_MEMORY);
+        let late = t0 + Duration::from_secs(1);
+        assert!(!r.ask(&key(READ_MEMORY), true, late), "the newest is kept");
+        assert!(r.ask(&key(0), true, late), "the stalest was forgotten");
+    }
+
+    /// **A platform answer lands on whoever holds the wallet now**: the
+    /// tenant it was asked for, or the same wallet's new seat after a
+    /// reconnect, and never a stranger who took the old slot.
+    #[test]
+    fn a_platform_answer_lands_on_whoever_holds_the_wallet_now() {
+        fn seat(
+            slots: &SlotTable,
+            keys: &mut [KeySlot; MAX_PLAYERS],
+            slot: usize,
+            key: Option<PlayerKey>,
+        ) -> u32 {
+            let generation = slots.claim(slot).unwrap();
+            keys[slot] = KeySlot {
+                key,
+                generation,
+                ..KeySlot::default()
+            };
+            generation
+        }
+        let slots = SlotTable::new(MAX_CONNS);
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let w = PlayerKey::new(b"0x00000000000000000000000000000000000000b2").unwrap();
+        let g1 = seat(&slots, &mut keys, 2, Some(w));
+        assert_eq!(landing(2, g1, Some(&w), &keys, &slots), Some(2));
+        slots.mark_leaving(2, g1);
+        slots.free(2, g1);
+        seat(&slots, &mut keys, 5, Some(w));
+        assert_eq!(
+            landing(2, g1, Some(&w), &keys, &slots),
+            Some(5),
+            "reconnected"
+        );
+        seat(&slots, &mut keys, 2, None);
+        assert_eq!(landing(2, g1, None, &keys, &slots), None, "a guest's, gone");
+        assert_eq!(
+            landing(2, g1, Some(&w), &keys, &slots),
+            Some(5),
+            "never the stranger now on slot 2"
+        );
+    }
+
+    /// **Refusals posting at once are capped**, and each gives its place
+    /// back when it ends.
+    #[test]
+    fn refusals_posting_at_once_are_capped_and_give_their_place_back() {
+        static GATE: RefusalGate = RefusalGate::new();
+        let mut out: Vec<_> = (0..REFUSALS_MAX).map(|_| GATE.take().unwrap()).collect();
+        assert!(GATE.take().is_none(), "one past the cap");
+        out.pop();
+        assert!(
+            GATE.take().is_some(),
+            "an ended refusal gives its place back"
+        );
+    }
+
+    /// **A side file pushed as the sim lets go is on disk when the store
+    /// thread returns.** The ledger rides the same exit as the world: the
+    /// thread drains every ring after it sees all three producers dropped.
+    #[test]
+    fn the_store_thread_writes_a_side_file_before_it_stops() {
+        let dir = std::env::temp_dir().join(format!("gates-sidefile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("island.world.gifts");
+        let _ = std::fs::remove_file(&path);
+        let (write_tx, write_rx) = RingBuffer::<WriteMsg>::new(1);
+        let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(1);
+        let (world_done_tx, _world_done_rx) = RingBuffer::<WorldDone>::new(1);
+        let (mut file_tx, file_rx) = RingBuffer::<FileMsg>::new(FILE_RING_CAP);
+        let store = std::thread::spawn(move || {
+            store_thread(
+                SaveFile::closed(),
+                write_rx,
+                crate::worldfile::WorldFile::closed(),
+                world_rx,
+                world_done_tx,
+                file_rx,
+                Arc::new(ShardStats::default()),
+            )
+        });
+        file_tx
+            .push(FileMsg {
+                path: path.clone(),
+                text: "the ledger\n".into(),
+            })
+            .unwrap();
+        drop((write_tx, world_tx, file_tx));
+        store.join().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the ledger\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

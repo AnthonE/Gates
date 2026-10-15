@@ -41,10 +41,11 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 pub mod version;
+pub mod voice;
 
 pub use auth::{
-    siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
-    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    siwe_message, siwe_message_for, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
+    NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -73,11 +74,11 @@ pub use event::{
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_BODY,
-    BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
+    RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
@@ -90,6 +91,7 @@ pub use event::{
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
+pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
 pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
     STANDING_TICKER_BYTES, STANDING_TOP,
@@ -104,6 +106,10 @@ pub use event::{
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
+pub use voice::{
+    decode_voice, decode_voice_up, encode_voice, encode_voice_up, VoiceFrame, VOICE_DATAGRAM_MAX,
+    VOICE_END, VOICE_MAX_BYTES,
+};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
@@ -1169,9 +1175,24 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// comfort, per cent, after the hurting bit.
 /// v112 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
 /// whole °C after the comfort, and the death cause admits 9 (`DEATH_BY_HEAT`).
-/// v113 — the death screen's "alive for": `SUB_DEATH` carries `alive_s`, the
-/// victim's seconds since its body stood up, after the range.
-pub const PROTO_VER: u16 = 113;
+/// v113 — a page's SIWE proof names the shard it dialled in its `URI:` line
+/// (`siwe_message_for`); the domain line stays the page's. No layout moved,
+/// but the signed text did, and a shard that cannot rebuild it refuses every
+/// browser sign-in — so the page and the shard turn together.
+/// v113 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
+/// frame each (`voice.rs`); the server relays a talker's frame only to
+/// players inside `VOICE_RADIUS_CM`. And far reports: `SUB_REPORT` tells a
+/// client a gunshot or a blast went off past its interest set, and where,
+/// to the metre (`GUN_REPORT_CM`, `BLAST_REPORT_CM`).
+/// v114 — a dropped stack is thrown: a loose-stack record still in the air
+/// carries its throw (`WireToss`: a tick byte and the hand's offset), one
+/// bit when it is not, and a sync message carries thirteen, down from
+/// fourteen.
+/// v115 — the death screen: `SUB_DEATH` carries `alive_s`, the victim's
+/// seconds since its body stood up, after the range ("alive for"); and a
+/// `SUB_BAGS` entry that is not ready carries its seconds to go after the
+/// ready bit (`BagAnchor::wait_s`), the cooling bag's timer.
+pub const PROTO_VER: u16 = 115;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1231,6 +1252,10 @@ pub const KIND_AUTH: u32 = 9;
 /// is watching ([`Watch`]). Its own kind rather than a welcome field so that a
 /// player's welcome — the message every other path reads — did not move.
 pub const KIND_WATCH: u32 = 10;
+/// Proximity voice, a datagram both ways (v113, `voice.rs`): C→S the
+/// talker's own Opus frame, S→C the server's relay of it with the talker's
+/// id in front.
+pub const KIND_VOICE: u32 = 11;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.
@@ -1642,6 +1667,17 @@ pub const REFUSE_WATCH_FULL: u8 = 7;
 /// **close** code rather than as a refusal frame, the admin kick's shape: the
 /// seat was granted, and it ended.
 pub const REFUSE_WATCH_ENDED: u8 = 8;
+/// This wallet already has a body awake on this shard, on another
+/// connection. One wallet, one body: a second session seated from the
+/// store's record while the first still played was two copies of one
+/// inventory. The session already in is closed with this, and the newcomer
+/// waits for that body to fall asleep and is seated on it; a newcomer is
+/// refused with it only when the old body does not let go in time, or a
+/// second newcomer is already waiting.
+///
+/// No layout moved for this: `Refuse.code` is a full `u8` and this is the
+/// tenth of 256 values.
+pub const REFUSE_IN_USE: u8 = 9;
 
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
@@ -1671,6 +1707,10 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
         REFUSE_WATCH => "that player cannot be watched on this shard",
         REFUSE_WATCH_FULL => "too many people are watching that player — try again later",
         REFUSE_WATCH_ENDED => "the player you were watching left",
+        REFUSE_IN_USE => {
+            "this wallet signed in on another connection, and only one can play — \
+             join again to take over"
+        }
         _ => return None,
     })
 }
@@ -5432,6 +5472,7 @@ mod tests {
             (REFUSE_WATCH, "REFUSE_WATCH"),
             (REFUSE_WATCH_FULL, "REFUSE_WATCH_FULL"),
             (REFUSE_WATCH_ENDED, "REFUSE_WATCH_ENDED"),
+            (REFUSE_IN_USE, "REFUSE_IN_USE"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -5440,7 +5481,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            9,
+            10,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );

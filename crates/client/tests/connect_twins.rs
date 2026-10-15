@@ -161,8 +161,11 @@ fn both_twins_drive_the_same_handshake_in_the_same_order() {
     assert_eq!(
         a,
         // v73: the hello says what the session is (`hello_as`), and a
-        // watcher reads the frame after the welcome (`watch_from`).
+        // watcher reads the frame after the welcome (`watch_from`). First of
+        // all, the address is one host and nothing else (`server_host`): the
+        // page signs for the host it dials, so both must refuse the rest.
         vec![
+            "server_host",
             "hello_as",
             "proof_wanted",
             "auth_frame",

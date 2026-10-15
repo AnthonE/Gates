@@ -19,8 +19,9 @@
 use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
-    SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
+    SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, WireToss, BAG_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS,
+    PLATE_BITS, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
@@ -42,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 166] = [
+pub const FIXTURES: [&str; 169] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -300,6 +301,11 @@ pub const FIXTURES: [&str; 166] = [
     "action_team.bin",
     // The receiver's team, three members and an invite (v108).
     "event_team.bin",
+    // Proximity voice (v113): the talker's frame, and its relay.
+    "voice_up.bin",
+    "voice.bin",
+    // A far report (v113): a blast, below sea level and far from the origin.
+    "event_report.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1528,7 +1534,7 @@ pub fn event_bags() -> ([BagAnchor; BAG_CAP], usize) {
         ready: true,
         wait_s: 0,
     };
-    // Cooling, with a wait past eight bits (v113), so a decoder that read
+    // Cooling, with a wait past eight bits (v115), so a decoder that read
     // the field narrower would not round-trip it.
     bags[1] = BagAnchor {
         cx: 17,
@@ -1906,6 +1912,32 @@ pub fn event_chat() -> (u32, crate::Channel, ChatText) {
     (7, crate::Channel::Team, chat_line())
 }
 
+/// The talker's last frame of a push (v113): the end flag set and a
+/// payload of bytes no Opus packet would make, so the golden pins that the
+/// wire carries the payload untouched.
+pub fn voice_up() -> crate::VoiceFrame {
+    crate::VoiceFrame::new(
+        40_961,
+        crate::VOICE_END,
+        &[0xf8, 0xff, 0xfe, 0x00, 0x01, 0x80],
+    )
+    .expect("a frame")
+}
+
+/// That frame relayed from player 0x0102_0307 (generation 0x10203, slot 7).
+pub fn voice() -> crate::VoiceFrame {
+    let mut f = voice_up();
+    f.from = 0x0102_0307;
+    f
+}
+
+/// A blast heard from far off (v113): the kind that is not zero, an x near
+/// the top of its field, a y under the bias's zero, so a narrowed field or a
+/// dropped bias moves a byte.
+pub fn event_report() -> (u8, u16, i16, u16) {
+    (crate::REPORT_BLAST, 4_095, -12, 1_337)
+}
+
 /// A landed shot: 25 on another player, on the **head** (v58).
 ///
 /// `Part::Head` and not the spear hit this used to be, because melee only
@@ -2070,6 +2102,21 @@ pub fn event_gitem_sync() -> (bool, [WireGItem; GITEM_SYNC_BATCH]) {
                 256 + rng.next_bounded(60_000) as u16
             } else {
                 0
+            },
+            // Every third from the second is still flying (v114): never a
+            // stuck one, every offset drawn across its sign so a lost sign
+            // or two transposed axes redden; record 7 also wears a skin.
+            toss: if i % 3 == 1 {
+                Some(WireToss {
+                    born_lo: rng.next_bounded(256) as u8,
+                    from: [
+                        (rng.next_bounded(1_023) as i32 - 511) as i16,
+                        (rng.next_bounded(4_095) as i32 - 2_047) as i16,
+                        (rng.next_bounded(1_023) as i32 - 511) as i16,
+                    ],
+                })
+            } else {
+                None
             },
         };
     }

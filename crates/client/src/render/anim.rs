@@ -1392,6 +1392,7 @@ pub fn bind_spine(
     mut commands: Commands,
     names: Query<(Entity, &Name)>,
     parents: Query<&ChildOf>,
+    children: Query<&Children>,
     transforms: Query<&Transform>,
     bodies: Query<Entity, (With<BodyAnim>, Without<SpineBones>)>,
     added: Query<Entity, Added<AnimationPlayer>>,
@@ -1413,12 +1414,27 @@ pub fn bind_spine(
 
         // The head, by name, among this body's descendants only — two bodies
         // are in the world at once and a global search would find somebody
-        // else's. Its ancestors up to the body are the chain.
-        let mut chain = Vec::new();
-        for (e, name) in &names {
-            if name.as_str() != HEAD_BONE {
-                continue;
+        // else's (and cost every named entity in the world per body joined).
+        // A bounded walk down, `reshade`'s cap; its ancestors up to the body
+        // are the chain.
+        let mut head = None;
+        let mut stack = vec![body];
+        let mut visited = 0usize;
+        while let Some(e) = stack.pop() {
+            visited += 1;
+            if visited > 256 {
+                break;
             }
+            if names.get(e).is_ok_and(|(_, n)| n.as_str() == HEAD_BONE) {
+                head = Some(e);
+                break;
+            }
+            if let Ok(kids) = children.get(e) {
+                stack.extend(kids.iter());
+            }
+        }
+        let mut chain = Vec::new();
+        if let Some(e) = head {
             let mut walk = vec![e];
             let mut up = e;
             let mut ours = false;
@@ -1438,7 +1454,6 @@ pub fn bind_spine(
             if ours {
                 walk.reverse();
                 chain = walk;
-                break;
             }
         }
         if chain.is_empty() {

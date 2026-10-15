@@ -95,20 +95,6 @@ const SKULL: Color = Color::srgb(0.86, 0.17, 0.13);
 /// THE GATE's gilt, `MarkKind::Town`'s.
 const GATE_INK: Color = Color::srgb(236.0 / 255.0, 190.0 / 255.0, 96.0 / 255.0);
 
-/// The digits a button answers to, in its place on the bar: `1`…`9`, `0`.
-const DIGITS: [KeyCode; 10] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-    KeyCode::Digit7,
-    KeyCode::Digit8,
-    KeyCode::Digit9,
-    KeyCode::Digit0,
-];
-
 /// Everything this screen owns.
 #[derive(Component)]
 pub struct DeathRoot;
@@ -259,12 +245,9 @@ pub fn enter(
     net: Option<NonSendMut<Net>>,
 ) {
     *answer = Answer::default();
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
+    ui::free_cursor(&mut cursor);
     // REPORT CHEAT's composer types above the bottom bar, not over its
-    // buttons; `teardown` puts it back.
+    // buttons; `leave` puts it back.
     for mut node in &mut report {
         node.bottom = Val::Px(BOTTOM_H + 14.0);
     }
@@ -1219,12 +1202,15 @@ pub fn keys(
     // printed on. No letters — `G` is the map everywhere else in the game,
     // and a key somebody already knows for something else is the one most
     // likely to be pressed here by mistake. **Escape is not bound either**:
-    // there is nothing to back out to.
-    for (i, key) in DIGITS.iter().enumerate() {
-        if keyboard.just_pressed(*key) {
-            if let Some(wake) = model::wake_at(bags, gate, i + 1) {
-                choose(core, wake, &mut answer, &mut notes);
-            }
+    // there is nothing to back out to. `1`…`9` are the numbered rows' own
+    // keys (`ui::DIGITS`); `0` is the tenth button, which only a full rack
+    // of bags and THE GATE reach.
+    let n = ui::digit_pressed(&keyboard, ui::DIGITS.len())
+        .map(|i| i + 1)
+        .or_else(|| keyboard.just_pressed(KeyCode::Digit0).then_some(10));
+    if let Some(n) = n {
+        if let Some(wake) = model::wake_at(bags, gate, n) {
+            choose(core, wake, &mut answer, &mut notes);
         }
     }
 }
@@ -1386,15 +1372,9 @@ pub fn refresh(
     }
 }
 
-pub fn teardown(
-    mut commands: Commands,
-    roots: Query<Entity, With<DeathRoot>>,
-    mut report: Query<&mut Node, With<super::report::ReportLine>>,
-) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
-    // The report composer's line back where every other screen has it.
+/// Put the report composer's line back where every other screen has it.
+/// `OnExit`, beside `ui::despawn_all::<DeathRoot>`.
+pub fn leave(mut report: Query<&mut Node, With<super::report::ReportLine>>) {
     for mut node in &mut report {
         node.bottom = Val::Px(super::report::LINE_BOTTOM);
     }
@@ -1402,18 +1382,13 @@ pub fn teardown(
 
 #[cfg(test)]
 mod tests {
-    use super::DIGITS;
-
     /// A button the keyboard cannot reach is a button half the players will
     /// not use: every bag a player can own, THE GATE and RANDOM RESPAWN each
-    /// need a digit, and the digit list is hand-written.
+    /// need a digit — `1`…`9` from `ui::DIGITS`, and `0` for the tenth.
     #[test]
     fn the_digits_cover_every_button_the_bar_can_hold() {
         let most = crate::ui::death::wakes(sim_core::deploy::BAG_CAP, true).count();
-        assert!(
-            DIGITS.len() >= most,
-            "{most} buttons and {} digits",
-            DIGITS.len()
-        );
+        let keys = super::ui::DIGITS.len() + 1;
+        assert!(keys >= most, "{most} buttons and {keys} digits");
     }
 }

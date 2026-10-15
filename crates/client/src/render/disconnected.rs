@@ -39,7 +39,7 @@
 //! and reads the screen, the reason and the torn-down world back.
 
 use bevy::prelude::*;
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy::window::{CursorOptions, PrimaryWindow};
 
 use super::screen::{Connecting, Menu, Screen};
 use super::{audio, fx, impact, input, map, ui, viewmodel, water, world_teardown, Net};
@@ -77,7 +77,7 @@ pub fn plugin(app: &mut App) {
             OnEnter(Screen::Disconnected),
             (map::forget, viewmodel::forget, impact::forget, fx::forget),
         )
-        .add_systems(OnExit(Screen::Disconnected), teardown)
+        .add_systems(OnExit(Screen::Disconnected), ui::despawn_all::<Root>)
         .add_systems(
             Update,
             (click, keys, act)
@@ -183,10 +183,7 @@ pub fn setup(
     // The pointer comes back: the world that held it locked is gone, and a
     // screen with rows on it that kept the cursor captive would be a screen
     // only the number keys could leave.
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
+    ui::free_cursor(&mut cursor);
 
     commands.spawn((Camera2d, Root));
     commands
@@ -203,10 +200,7 @@ pub fn setup(
             ));
 
             for (i, (verb, name, detail)) in VERBS.iter().enumerate() {
-                root.spawn((ui::row(460.0), *verb)).with_children(|b| {
-                    b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
-                    b.spawn(ui::label(*detail, 13.0, ui::DIM));
-                });
+                ui::verb_row(root, i + 1, name, detail, *verb);
             }
 
             root.spawn((
@@ -245,11 +239,8 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut chosen: ResMut<Chosen>) {
         chosen.0 = Some(Verb::Back);
         return;
     }
-    const DIGITS: [KeyCode; 2] = [KeyCode::Digit1, KeyCode::Digit2];
-    for (i, k) in DIGITS.iter().enumerate() {
-        if keyboard.just_pressed(*k) {
-            chosen.0 = Some(VERBS[i].0);
-        }
+    if let Some(i) = ui::digit_pressed(&keyboard, VERBS.len()) {
+        chosen.0 = Some(VERBS[i].0);
     }
 }
 
@@ -270,12 +261,6 @@ pub fn act(
         Verb::Quit => {
             exit.write(AppExit::Success);
         }
-    }
-}
-
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<Root>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
     }
 }
 

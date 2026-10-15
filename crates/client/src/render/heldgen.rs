@@ -688,13 +688,25 @@ pub fn canvas_mesh(name: &str) -> Option<Mesh> {
     }
 }
 
+/// Whether a `HeldSrc::Gen` name is the prop kit's (`render::heldkit`) rather
+/// than one of the four built here. The kit has its own torch, revolver and
+/// crossbow for the icons; the hand keeps these, which its poses were solved
+/// on.
+pub fn is_kit(name: &str) -> bool {
+    !matches!(name, "bat" | "torch" | "revolver" | "crossbow")
+        && super::heldkit::NAMES.contains(&name)
+}
+
 pub fn mesh(name: &str) -> Mesh {
     match name {
         "bat" => bat_mesh(),
         "torch" => torch_mesh(),
         "revolver" => revolver_mesh(),
         "crossbow" => crossbow_mesh(),
-        _ => panic!("HeldSrc::Gen({name:?}) has no generator in render::heldgen"),
+        // Everything else with no model is the prop kit's.
+        _ => super::heldkit::baked(name).unwrap_or_else(|| {
+            panic!("HeldSrc::Gen({name:?}) has no generator in render::heldgen")
+        }),
     }
 }
 
@@ -733,6 +745,7 @@ pub fn material(name: &str) -> StandardMaterial {
             reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
+        _ if is_kit(name) => super::heldkit::material(),
         _ => panic!("HeldSrc::Gen({name:?}) has no material in render::heldgen"),
     }
 }

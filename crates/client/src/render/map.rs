@@ -324,13 +324,15 @@ pub fn prepaint(
 /// keyboard while it is open.
 pub fn open(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    binds: Res<super::binds::Binds>,
     mut next: ResMut<NextState<Screen>>,
     ui: Option<Res<super::panels::Ui>>,
     pad: Option<Res<super::verbs::Pad>>,
 ) {
     let busy = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
         || pad.map(|p| p.0.is_open()).unwrap_or(false);
-    if !busy && keyboard.just_pressed(KeyCode::KeyG) {
+    if !busy && binds.just_pressed(super::binds::Action::Map, &keyboard, &mouse) {
         next.set(Screen::Map);
     }
 }
@@ -347,13 +349,17 @@ pub fn open(
 /// label is kept (`Enter`) or put back (`Esc`), and then it follows `G` again.
 pub fn keys(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    binds: Res<super::binds::Binds>,
     cursor: Res<MapCursor>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if cursor.typing.is_some() {
         return;
     }
-    if !keyboard.pressed(KeyCode::KeyG) || keyboard.just_pressed(KeyCode::Escape) {
+    if !binds.pressed(super::binds::Action::Map, &keyboard, &mouse)
+        || keyboard.just_pressed(KeyCode::Escape)
+    {
         next.set(Screen::InWorld);
     }
 }
@@ -1104,12 +1110,6 @@ pub fn mates(
         if text.0 != want {
             text.0 = want;
         }
-    }
-}
-
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MapRoot>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
     }
 }
 

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 166] = [
+const GOLDEN: [&[u8]; 169] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -229,6 +229,9 @@ const GOLDEN: [&[u8]; 166] = [
     include_bytes!("golden/event_agent.bin"),
     include_bytes!("golden/action_team.bin"),
     include_bytes!("golden/event_team.bin"),
+    include_bytes!("golden/voice_up.bin"),
+    include_bytes!("golden/voice.bin"),
+    include_bytes!("golden/event_report.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -508,8 +511,13 @@ fn test_protocol_golden() {
     // A team verb and the receiver's team (v108).
     g!(seen, golden_action, 164);
     g!(seen, golden_event, 165);
+    // Proximity voice (v113).
+    g!(seen, golden_voice_up, 166);
+    g!(seen, golden_voice, 167);
+    // A far report (v113).
+    g!(seen, golden_event, 168);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 166, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 169, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -544,6 +552,26 @@ fn golden_auth(fixture: &[u8], name: &str) {
     let len = encode_auth(&want, &mut buf).expect("encodes");
     assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
     assert_eq!(decode_auth(fixture).unwrap(), want, "{name}: decode");
+}
+
+/// The talker's voice frame (v113): its own kind, byte-stable, decode-exact.
+fn golden_voice_up(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+    assert_eq!(peek_kind(fixture).unwrap(), protocol::KIND_VOICE, "{name}");
+    let want = protocol::goldens::voice_up();
+    assert_eq!(protocol::decode_voice_up(fixture).unwrap(), want, "{name}");
+    let len = protocol::encode_voice_up(&want, &mut buf).unwrap();
+    assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
+}
+
+/// The relayed voice frame (v113), the talker's id in front.
+fn golden_voice(fixture: &[u8], name: &str) {
+    let mut buf = [0u8; protocol::VOICE_DATAGRAM_MAX];
+    assert_eq!(peek_kind(fixture).unwrap(), protocol::KIND_VOICE, "{name}");
+    let want = protocol::goldens::voice();
+    assert_eq!(protocol::decode_voice(fixture).unwrap(), want, "{name}");
+    let len = protocol::encode_voice(&want, &mut buf).unwrap();
+    assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
 }
 
 /// The C→S chat frame: its own kind, byte-stable, decode-exact.
@@ -1253,6 +1281,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_team(&view, &mut buf).unwrap()
+        }
+        "event_report.bin" => {
+            let (kind, x, y, z) = protocol::goldens::event_report();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Report { kind, x, y, z },
+                "{name}"
+            );
+            protocol::encode_event_report(kind, x, y, z, &mut buf).unwrap()
         }
         "event_agent.bin" => {
             let id = protocol::goldens::event_agent();
@@ -2667,10 +2704,12 @@ fn test_snapshot_cap_within_budget() {
 }
 
 /// Decode is total: every single-bit corruption of every fixture, every
-/// truncation, and 10k pseudorandom buffers must return — Ok or Err, never
-/// a panic (the server decodes client-driven bytes; a panic is a remote
-/// crash). The decoded value on corruption is unspecified; not panicking
-/// and not unbounded work is the contract.
+/// truncation, several-byte corruptions of every fixture, 10k pseudorandom
+/// buffers, and 10k more that start with a real kind must return — Ok or
+/// Err, never a panic (the server decodes client-driven bytes; a panic is a
+/// remote crash). Every decoder and peek a peer's bytes reach is asked,
+/// the handshake's included. The decoded value on corruption is
+/// unspecified; not panicking and not unbounded work is the contract.
 #[test]
 fn test_decode_is_total() {
     let delta_case = snapshot_delta();
@@ -2684,6 +2723,14 @@ fn test_decode_is_total() {
         let _ = decode_event(bytes);
         let _ = decode_action(bytes);
         let _ = decode_chat(bytes);
+        let _ = protocol::decode_voice_up(bytes);
+        let _ = protocol::decode_voice(bytes);
+        let _ = decode_auth(bytes);
+        let _ = decode_challenge(bytes);
+        let _ = protocol::decode_watch(bytes);
+        let _ = protocol::peek_kind(bytes);
+        let _ = protocol::peek_hello_version(bytes);
+        let _ = protocol::peek_snapshot_header(bytes);
     };
     let mut scratch = [0u8; DATAGRAM_BUDGET_BYTES];
     for fixture in GOLDEN {
@@ -2705,6 +2752,45 @@ fn test_decode_is_total() {
             *b = rng.next_bounded(256) as u8;
         }
         try_both(s);
+    }
+    // Random bytes behind a real kind. The kind is the first field every
+    // decoder reads (its low bits, LSB first), so uniform bytes stop there
+    // nearly always; with the kind forced, each decoder's body gets the
+    // garbage instead.
+    let mut rng = Pcg32::new(0x0047_4154_4553, 16);
+    for _ in 0..10_000 {
+        let len = 1 + rng.next_bounded(DATAGRAM_BUDGET_BYTES as u32) as usize;
+        let s = &mut scratch[..len];
+        for b in s.iter_mut() {
+            *b = rng.next_bounded(256) as u8;
+        }
+        s[0] = (s[0] & !((1 << KIND_BITS) - 1)) | rng.next_bounded(1 << KIND_BITS) as u8;
+        try_both(s);
+    }
+    // Several bytes of a real message overwritten at once, kind kept, and the
+    // length sometimes changed: the counts and sub-tags a single flipped bit
+    // reaches only one at a time.
+    let mut rng = Pcg32::new(0x0047_4154_4553, 17);
+    for fixture in GOLDEN {
+        if fixture.is_empty() {
+            continue;
+        }
+        for _ in 0..32 {
+            let len = match rng.next_bounded(4) {
+                0 => 1 + rng.next_bounded(DATAGRAM_BUDGET_BYTES as u32) as usize,
+                _ => fixture.len().min(DATAGRAM_BUDGET_BYTES),
+            };
+            let s = &mut scratch[..len];
+            for (i, b) in s.iter_mut().enumerate() {
+                *b = fixture.get(i).copied().unwrap_or(0);
+            }
+            for _ in 0..1 + rng.next_bounded(4) {
+                let at = rng.next_bounded(len as u32) as usize;
+                s[at] = rng.next_bounded(256) as u8;
+            }
+            s[0] = (s[0] & !((1 << KIND_BITS) - 1)) | (fixture[0] & ((1 << KIND_BITS) - 1));
+            try_both(s);
+        }
     }
 }
 

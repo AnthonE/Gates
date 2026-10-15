@@ -759,6 +759,18 @@ pub fn resolve_take_aimed(
     sight: Option<([f32; 3], [f32; 3])>,
     items: &[protocol::event::WireGItem],
 ) -> Pick {
+    resolve_take_aimed_where(x, z, sight, items, |_| true)
+}
+
+/// [`resolve_take_aimed`] over the stacks `clear` passes — the shard's hand
+/// test (`sim_core::reach`), so a stack behind a wall is not named.
+fn resolve_take_aimed_where(
+    x: f32,
+    z: f32,
+    sight: Option<([f32; 3], [f32; 3])>,
+    items: &[protocol::event::WireGItem],
+    clear: impl Fn(&protocol::event::WireGItem) -> bool,
+) -> Pick {
     // (index, rank, d2): rank is the ray offset² for an aimed stack and
     // infinity for one merely in reach.
     let mut best: Option<(usize, f32, f32)> = None;
@@ -766,7 +778,7 @@ pub fn resolve_take_aimed(
         let (gx, gz) = (g.qx as f32 * POS_XZ_Q, g.qz as f32 * POS_XZ_Q);
         let (dx, dz) = (gx - x, gz - z);
         let d2 = dx * dx + dz * dz;
-        if d2 > LOOT_REACH_M * LOOT_REACH_M {
+        if d2 > LOOT_REACH_M * LOOT_REACH_M || !clear(g) {
             continue;
         }
         let rank = sight
@@ -815,8 +827,9 @@ pub fn resolve_take_or_pull(
     items: &[protocol::event::WireGItem],
     lodged: &[protocol::WireLodged],
     mut body_at: impl FnMut(u32) -> Option<(f32, f32)>,
+    clear: impl Fn(&protocol::event::WireGItem) -> bool,
 ) -> Pick {
-    let take = resolve_take_aimed(x, z, sight, items);
+    let take = resolve_take_aimed_where(x, z, sight, items, clear);
     if take.aimed {
         return take;
     }
@@ -892,7 +905,22 @@ pub struct Sight<'a> {
     /// floor (`sim_core::deploy::body_base_y`) and that plus its drawn
     /// height. The ui tier holds no render table, so the caller lends it.
     pub span: &'a dyn Fn(&DeployRec, u8) -> (f32, f32),
+    /// Whether the shard would let this hand reach a container in the box
+    /// store — the same storey, nothing built in the way
+    /// (`sim_core::reach`). `None` offers on the look alone. Lent like
+    /// `span`, because the ui tier holds no collision index.
+    pub reach: Option<ReachTest<'a>>,
+    /// The same for a thing lying where it fell — a bag, a sleeper, a loose
+    /// stack — named by its quantized position and, for an arrow stuck in
+    /// something, its flight (`[0; 3]` otherwise).
+    pub lying: Option<LyingTest<'a>>,
 }
+
+/// [`Sight::reach`]'s lent test: may this hand reach that record?
+pub type ReachTest<'a> = &'a dyn Fn(&DeployRec, u8) -> bool;
+
+/// [`Sight::lying`]'s lent test: may this hand reach the thing at `q`?
+pub type LyingTest<'a> = &'a dyn Fn((i32, i32, i32), [i8; 3]) -> bool;
 
 impl core::fmt::Debug for Sight<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1092,6 +1120,11 @@ pub fn resolve(
                 if sight_hit(s, &rect, bottom, top).is_none() {
                     continue;
                 }
+                // A container the shard would refuse through a wall or a
+                // floor is not offered: `E` there would only be told no.
+                if handle != 0 && s.reach.is_some_and(|r| !r(rec, arch)) {
+                    continue;
+                }
                 seen = true;
             }
         }
@@ -1109,7 +1142,13 @@ pub fn resolve(
         out.has_lock = rec.has_lock;
     }
 
+    let lying = aim.sight.as_ref().and_then(|s| s.lying);
     for bag in bags {
+        // Not offered where the shard would refuse it: behind a wall, under
+        // a floor.
+        if lying.is_some_and(|r| !r((bag.qx, bag.qy, bag.qz), [0; 3])) {
+            continue;
+        }
         // A bag carries a world position, not a grid cell — it is dropped
         // where its owner died.
         let x = bag.qx as f32 * sim_core::movement::POS_XZ_Q;
@@ -1581,19 +1620,23 @@ impl SwingAim {
     /// (`ranged::eye_mm`) over the feet, along the look — `melee::ray`,
     /// from a body quantized the way the server holds one.
     fn ray(&self, reach_m: f32) -> Ray {
-        let body = Body {
-            qx: quant_xz(self.x),
-            qy: quant_y(self.y),
-            qz: quant_xz(self.z),
-            ..Body::default()
-        };
         melee::ray(
-            &body,
+            &self.body(),
             self.crouched,
             self.yaw,
             self.pitch,
             reach_m * MM_PER_M,
         )
+    }
+
+    /// The body this aim is cast from, quantized the way the server holds one.
+    fn body(&self) -> Body {
+        Body {
+            qx: quant_xz(self.x),
+            qy: quant_y(self.y),
+            qz: quant_xz(self.z),
+            ..Body::default()
+        }
     }
 }
 
@@ -1993,8 +2036,9 @@ fn openable(o: Occupant) -> bool {
 /// exactly that.
 ///
 /// ⚠ **It is narrower than the verb it prompts for, and it always was.**
-/// `worldcont::open` asks for planar proximity inside `LOOT_REACH_M` and
-/// nothing else — no aim at any distance — so the prompt has been the
+/// `worldcont::open` asks for planar proximity inside `LOOT_REACH_M`, the
+/// same storey and a clear line (`reach.rs`) — no aim at any distance. This
+/// asks the same storey and line, and the ray on top, so the prompt has been the
 /// stricter of the two since it was a 30° cone, and a ray is stricter again:
 /// a crate is 0.68 m across and 0.8 m tall, so from a 1.6 m eye it wants the
 /// look dropped 44° at 1.5 m and 13° at 4 m. Whether stooping to open a
@@ -2002,13 +2046,28 @@ fn openable(o: Occupant) -> bool {
 /// unanswered (`NOW.md` §0ray item 6); padding the cast is the fix if it
 /// reads badly, and inventing the pad before anybody has looked would be
 /// inventing a knob.
-pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+pub fn resolve_open(at: SwingAim, island: &mut Island<'_>, cols: &ColIndex) -> SwingPick {
     let ray = at.ray(OPEN_REACH_M);
     let seed = island.seed;
-    match melee::occupant_cast(seed, &mut island.occupants(), &ray, openable) {
-        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
-        None => SwingPick::default(),
+    let Some(hit) = melee::occupant_cast(seed, &mut island.occupants(), &ray, openable) else {
+        return SwingPick::default();
+    };
+    // And the shard's hand (`worldcont::open`, `reach.rs`): the same storey
+    // and a clear line, so `E` is not offered on a crate through stone.
+    let body = at.body();
+    let reached = sim_core::reach::clear_from(
+        seed,
+        island.haven,
+        cols,
+        island.doors,
+        sim_core::reach::eye_of(&body, at.crouched),
+        body.qy as f32 * sim_core::movement::POS_Y_Q,
+        sim_core::reach::Target::unopened(&hit.slot),
+    );
+    if !reached {
+        return SwingPick::default();
     }
+    pick_of(at, hit.cx, hit.cz, hit.slot)
 }
 
 /// What `E` would PICK in the scatter — a standing berry bush or hemp — or

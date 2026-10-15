@@ -601,8 +601,9 @@ pub(crate) fn announce(
 pub use crate::deploy::REFUSE_D_FUEL;
 
 /// Apply one use press against the oven at the address: light it, or
-/// snuff it. Reach is the box's own (`BUILD_REACH_M`, planar), so the
-/// press that opens a fire is the press that can light it.
+/// snuff it. Reach is the box's own — `BUILD_REACH_M` planar, then `reach`,
+/// the world's hand test (`reach.rs`: same storey, nothing built in the way)
+/// — so the press that opens a fire is the press that can light it.
 ///
 /// Returns false when no oven stands there — `world.rs` then routes the
 /// press to the door verb, which owns the same command.
@@ -616,11 +617,12 @@ pub fn toggle(
     level: u8,
     loc: u8,
     events: &mut EventQueue,
+    reach: impl Fn(&Deploys, usize) -> bool,
 ) -> bool {
     let Some(i) = deploys.oven_index(crate::deploy::box_key(cx, cz, level, loc)) else {
         return false;
     };
-    if !deploys.box_in_reach(i, p) {
+    if !deploys.box_in_reach(i, p) || !reach(deploys, i) {
         events.push(
             crate::world::EV_DEPLOY_REFUSED,
             p.id,

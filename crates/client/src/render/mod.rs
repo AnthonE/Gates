@@ -37,6 +37,9 @@ pub mod music_out;
 #[cfg(target_arch = "wasm32")]
 pub mod audio_web;
 pub mod bodies;
+// Rebindable keys: the action table, the defaults, and the settings file's
+// `bind.*` lines.
+pub mod binds;
 // The boot splash. The window is the first thing a double-click gets now, and
 // the launcher handshake and connect happen behind it as states rather than
 // before it as preconditions.
@@ -60,8 +63,10 @@ pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
+// Proximity voice: the talk key, the microphone, each talker's lane.
 pub mod clutter;
 pub mod collider_debug;
+pub mod voice;
 // The hemisphere sky fill. `rig.rs` owns the light; this owns the arithmetic
 // of what a sky-facing face and a ground-facing face each receive, because
 // Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
@@ -122,6 +127,7 @@ pub mod ziggurat;
 /// Painted skins: the items a skin can be a picture on, and their meshes.
 pub mod canvas;
 pub mod heldgen;
+pub mod heldkit;
 // The right hand's finger bones, closed on what it holds.
 pub mod fingers;
 // **Desktop only.** This module reaches a local elo launcher over a unix
@@ -180,6 +186,8 @@ pub mod mipmap;
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod panels;
 pub mod pause;
+// How many render pipelines are still compiling, for the loading gate.
+pub mod pipelines;
 pub mod prewarm;
 pub mod quality;
 pub mod rain;
@@ -523,8 +531,9 @@ pub struct Start {
     pub direct: String,
     /// The shard list to fetch, if any.
     pub servers_url: Option<String>,
-    /// `gates.rs` already connected before the window, so open on the loading
-    /// screen. **Only `--capture` arrives this way now**, and the module doc
+    /// The session already exists, so open on the loading screen: a browser
+    /// start (the page joined first), and `--capture`, `--spectate` and
+    /// `--film` on the desktop. The module doc
     /// on `boot` has the argument: a probe harness must not photograph a
     /// half-finished handshake, so its connect stays a precondition, while a
     /// launcher join became a state (`chosen`) so that a dead shard lands on
@@ -598,6 +607,12 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<water::WaterMaterial>::default());
         weathering::plugin(app);
         foliage::plugin(app);
+        pipelines::plugin(app);
+        // Bevy's default clear is a mid grey that no screen in this game
+        // uses. Any frame where nothing covers the clear (a pipeline still
+        // compiling, a camera with no sky yet) now reads as the same warm
+        // near-black as every menu and the browser page, not as a grey flash.
+        app.insert_resource(ClearColor(ui::BG));
         app.init_resource::<far_trees::FarForest>();
         app.init_resource::<boulders::RockRing>();
         app.init_resource::<cliffs::CliffRing>();
@@ -683,6 +698,10 @@ impl Plugin for GatesRenderPlugin {
         // gate's frames must not depend on the box's config file, so it takes
         // the defaults and gets no `Disk` — which is also what makes
         // `save_on_change` a no-op there.
+        // The defaults for every run; a player's run replaces them with the
+        // file's below. A capture or film run keeps these, for the same
+        // reason it keeps the default settings.
+        app.init_resource::<binds::Binds>();
         if filming {
             // A film takes the top preset whatever this box's config file
             // says, and never paces itself: every frame is written, however
@@ -703,8 +722,9 @@ impl Plugin for GatesRenderPlugin {
             };
             app.insert_resource(s);
         } else if self.capture.is_none() {
-            let (settings, favourites, disk) = settings::load();
+            let (settings, favourites, binds, disk) = settings::load();
             app.insert_resource(settings);
+            app.insert_resource(binds);
             // The starred shards come off the same file and land on the
             // browser's own resource — a favourite is not a knob, and
             // `settings::save_on_change` is the one writer for both.
@@ -889,8 +909,8 @@ impl Plugin for GatesRenderPlugin {
         // has the whole argument for compiling them in.
         ui::build_fonts(app);
         // The wordmark's sigil and the server list's stars, beside the
-        // faces: the menu is the first screen after the splash.
-        #[cfg(not(target_arch = "wasm32"))]
+        // faces: the menu is the first screen after the splash, and the
+        // loading screen (the browser's first) carries the wordmark too.
         ui::build_marks(app);
 
         // ---- the desktop front end -----------------------------------
@@ -898,7 +918,7 @@ impl Plugin for GatesRenderPlugin {
         // rather than twenty `cfg`s. A browser reaches none of these states:
         // the page owns the shard address, the wallet and the join, and the
         // app starts already in `Loading` with a live `Session` (see the
-        // `insert_state` below).
+        // `insert_state` above).
         #[cfg(not(target_arch = "wasm32"))]
         add_desktop_front_end(app);
 
@@ -943,6 +963,10 @@ impl Plugin for GatesRenderPlugin {
             Update,
             web::heap_report.run_if(|| cfg!(target_arch = "wasm32")),
         )
+        // Key hints follow the player's binds, on every screen.
+        .add_systems(Update, binds::keyed)
+        // Take the page's handoff overlay down once this app has drawn.
+        .add_systems(Update, web::reveal.run_if(|| cfg!(target_arch = "wasm32")))
         // The bank, one cue a frame, while `Synth` says some are owed —
         // which is only ever on wasm32 (`audio::SPREAD_BANK`).
         .add_systems(
@@ -956,6 +980,7 @@ impl Plugin for GatesRenderPlugin {
         // frame that finishes the ring is the frame that ends the screen.
         app.add_systems(OnEnter(Screen::Loading), loading::setup)
             .add_systems(OnExit(Screen::Loading), loading::teardown)
+            .add_systems(Update, loading::fade)
             .add_systems(
                 Update,
                 (
@@ -975,7 +1000,7 @@ impl Plugin for GatesRenderPlugin {
             OnEnter(Screen::Paused),
             (pause::enter, pause::setup).chain(),
         )
-        .add_systems(OnExit(Screen::Paused), pause::teardown)
+        .add_systems(OnExit(Screen::Paused), ui::despawn_all::<pause::PauseRoot>)
         .add_systems(
             Update,
             (pause::click, pause::keys, pause::act)
@@ -995,7 +1020,10 @@ impl Plugin for GatesRenderPlugin {
         // while the Esc menu is up raises the screen on resume, which is the
         // right order — two full-screen states cannot both be entered.
         app.add_systems(OnEnter(Screen::Dead), (death::enter, death::setup).chain())
-            .add_systems(OnExit(Screen::Dead), death::teardown)
+            .add_systems(
+                OnExit(Screen::Dead),
+                (ui::despawn_all::<death::DeathRoot>, death::leave),
+            )
             .add_systems(
                 Update,
                 (
@@ -1055,7 +1083,10 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnExit(Screen::Map),
-                ((map::teardown, map::leave), audio::map_paper),
+                (
+                    (ui::despawn_all::<map::MapRoot>, map::leave),
+                    audio::map_paper,
+                ),
             )
             .add_systems(
                 Update,
@@ -1092,10 +1123,14 @@ impl Plugin for GatesRenderPlugin {
             render_scale::apply.before(bevy::camera::CameraUpdateSystems),
         );
         app.add_systems(OnEnter(Screen::Settings), settings::setup)
-            .add_systems(OnExit(Screen::Settings), settings::teardown)
+            .add_systems(
+                OnExit(Screen::Settings),
+                ui::despawn_all::<settings::SettingsRoot>,
+            )
             .add_systems(
                 Update,
                 (
+                    settings::capture,
                     settings::click,
                     settings::rebuild,
                     settings::keys,
@@ -1671,7 +1706,13 @@ impl Plugin for GatesRenderPlugin {
                     mobs::trot,
                     rig::follow_eye,
                     // The HUD's numbers, then how fast its bars move to them.
-                    (hud::update, hud::vital_motion, hud::hotbar_pop).chain(),
+                    (
+                        hud::update,
+                        hud::vital_motion,
+                        hud::hotbar_pop,
+                        hud::slot_keys,
+                    )
+                        .chain(),
                     // The feedback surface. Under `world_running` rather than
                     // `InWorld`: a refusal that arrived while the Esc menu was
                     // up is still owed to the player, and a ring nobody drains
@@ -1879,6 +1920,9 @@ impl Plugin for GatesRenderPlugin {
                 viewmodel::torch_watch.after(feed::drain),
                 // A deployable's damage band, drawn on its material.
                 structures::deploy_hurt.after(structures::stream),
+                // A dropped stack flying out of a hand (v114), on the
+                // clock the drain just read, spawned by `stream`.
+                loot::fly.after(structures::stream).after(feed::drain),
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a
                 // respawned trunk up — before it, a sapling would stand one
@@ -1935,6 +1979,7 @@ impl Plugin for GatesRenderPlugin {
                 // a lid), and what the snapshot already says their hands and
                 // feet did (a draw, a landing).
                 audio::remote_heard,
+                audio::far_reports,
                 audio::remote_hands,
                 // …and every shot in earshot, at the shooter. Same slice,
                 // and after it for the same reason: the transform this
@@ -1981,6 +2026,7 @@ impl Plugin for GatesRenderPlugin {
         if self.capture.is_none() && !filming {
             panels::register(app);
             chat::register(app);
+            voice::register(app);
             faces::register(app);
             paint::register(app);
             team::register(app);
@@ -2136,7 +2182,7 @@ fn add_desktop_front_end(app: &mut App) {
         OnEnter(Screen::Menu),
         (world_teardown, menu::begin_fetch, menu::setup).chain(),
     )
-    .add_systems(OnExit(Screen::Menu), menu::teardown)
+    .add_systems(OnExit(Screen::Menu), ui::despawn_all::<menu::MenuRoot>)
     .add_systems(
         Update,
         (
@@ -2166,7 +2212,10 @@ fn add_desktop_front_end(app: &mut App) {
         OnEnter(Screen::Connecting),
         (menu::begin_connect, menu::connecting_screen),
     )
-    .add_systems(OnExit(Screen::Connecting), menu::teardown)
+    .add_systems(
+        OnExit(Screen::Connecting),
+        ui::despawn_all::<menu::MenuRoot>,
+    )
     .add_systems(
         Update,
         menu::poll_connect.run_if(in_state(Screen::Connecting)),

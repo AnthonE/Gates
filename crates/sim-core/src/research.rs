@@ -359,11 +359,13 @@ pub fn begin(
     level: u8,
     loc: u8,
     events: &mut EventQueue,
+    reach: impl Fn(&Deploys, usize) -> bool,
 ) -> bool {
     let Some(i) = deploys.table_index(box_key(cx, cz, level, loc)) else {
         return false;
     };
-    if !deploys.box_in_reach(i, p) {
+    // The planar reach, then the world's hand test (`reach.rs`).
+    if !deploys.box_in_reach(i, p) || !reach(deploys, i) {
         events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_TABLE, 0);
         return true;
     }

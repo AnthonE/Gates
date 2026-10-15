@@ -36,7 +36,7 @@ pub struct Death {
     pub range_cm: u16,
     /// This client's own id, so "you did it to yourself" is answerable.
     pub own_id: u32,
-    /// How long the body had been standing, in seconds (wire v113).
+    /// How long the body had been standing, in seconds (wire v115).
     pub alive_s: u32,
 }
 

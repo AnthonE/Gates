@@ -3,6 +3,7 @@
 //! tests, the smoke gate, and later the status page. Integer-only by
 //! design (L5: diagnostics are numbers, not strings).
 
+use client_core::core::{PLAYOUT_JITTER_K, PLAYOUT_SLEW_PER_S};
 use sim_core::limits::{
     INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
     REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ,
@@ -78,6 +79,25 @@ const _: () = assert!(AIM_STALE_CEILING_TICKS < u16::MAX / 2);
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the mint").
 pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
 
+/// Ticks of playout a claim may sit above the server's own reading of the
+/// client's jitter (`ClientNetState::note_ack_age`) and still be paid. The
+/// client sizes its delay from downstream arrivals the server cannot see;
+/// the server reads the same jitter off the ack age, which carries it plus
+/// the upstream leg, and this absorbs the difference between the two
+/// estimators.
+pub const PLAYOUT_CLAIM_MARGIN_TICKS: u8 = 1;
+/// Sim ticks over which an earned playout bound gives back one tick: the
+/// client's own slew, inverted, so a delay still sliding down after a rough
+/// patch is never undercut. Asserted exact, so a slew that no longer divides
+/// `TICK_HZ` fails the build instead of rounding the wrong way.
+pub const PLAYOUT_BOUND_DECAY_TICKS: u64 = (TICK_HZ as f64 / PLAYOUT_SLEW_PER_S) as u64;
+const _: () = assert!(PLAYOUT_BOUND_DECAY_TICKS as f64 * PLAYOUT_SLEW_PER_S == TICK_HZ as f64);
+/// The client's jitter multiplier as the integer the bound's fixed point needs.
+pub const JITTER_K_WHOLE: u32 = PLAYOUT_JITTER_K as u32;
+const _: () = assert!(JITTER_K_WHOLE as f64 == PLAYOUT_JITTER_K);
+const _: () =
+    assert!(INTERP_DELAY_TICKS >= PLAYOUT_MIN_TICKS && INTERP_DELAY_TICKS <= PLAYOUT_MAX_TICKS);
+
 /// The formula's two terms cannot underflow the raw staleness: it is added
 /// to, then subtracted from, and this is the order that keeps it in `u16`
 /// without a saturating call that would hide a constant moving. Compared
@@ -139,7 +159,10 @@ const _: () = assert!(INTERP_DELAY_TICKS as i32 >= REWIND_ACK_BIAS_TICKS as i32)
 /// at the floor, 2) and under-favoured every jittery one (actual delay
 /// up to 8) — the fairness gap NETCODE.md §8 always specified closing
 /// ("the server tracks each client's current interpolation delay — it
-/// varies").
+/// varies"). The value passed here is also capped at what this
+/// connection's own ack history supports (`ClientNetState::priced_playout`,
+/// counted by `favour_playout_high`), so a forged ceiling on a clean link
+/// buys the shipped delay rather than the rails' 8.
 pub fn favour_for(now: u16, view: Option<u16>, playout: u8) -> u8 {
     let Some(ack) = view else {
         return 0;
@@ -224,12 +247,16 @@ pub struct ShardStats {
     /// Answers that found the skins ring full and were dropped. The client
     /// can ask again; a count here says it had to.
     pub skins_dropped: AtomicU64,
+    /// Joins told their skins from the wallet's read inside the cooldown
+    /// (`net.rs` `PlatformReads`) instead of asking the platform again.
+    pub skins_replayed: AtomicU64,
     /// Name-and-picture reads (`faces.rs`) whose answer reached the sim, the
     /// ones that could not be answered (the player stays their address), and
     /// the ones that found the ring full. Not watched: a label, never a gate.
     pub faces_read: AtomicU64,
     pub faces_unknown: AtomicU64,
     pub faces_dropped: AtomicU64,
+    pub faces_replayed: AtomicU64,
     /// Item-store price reads (`skins::prices_of`) whose answer reached the
     /// sim, and the ones that could not be answered. An unanswered read keeps
     /// the prices the store screen already shows.
@@ -239,6 +266,12 @@ pub struct ShardStats {
     /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
     /// the door before claiming a slot (`admin::Bans`).
     pub refused_banned: AtomicU64,
+    /// Handshakes that proved a wallet already seated on another connection,
+    /// refused `REFUSE_IN_USE` before claiming a slot (one wallet, one body).
+    pub refused_in_use: AtomicU64,
+    /// Joins for a wallet seated on another connection that closed the old
+    /// session and waited for its body to sleep, then were seated on it.
+    pub parked_in_use: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.
     pub input_dg_ok: AtomicU64,
@@ -449,6 +482,20 @@ pub struct ShardStats {
     /// walk to restart, so unlike every other event this does not force
     /// an `ev_resync` — the line is simply lost, and counted.
     pub chat_undelivered: AtomicU64,
+    /// C→S voice frames decoded and ringed (v113).
+    pub voice_ok: AtomicU64,
+    /// C→S voice datagrams the decoder refused.
+    pub voice_bad: AtomicU64,
+    /// Voice frames the per-connection token bucket refused.
+    pub voice_rate_limited: AtomicU64,
+    /// Voice frames dropped by a full inbound ring.
+    pub voice_ring_drops: AtomicU64,
+    /// Voice frames from a talker with no living body to speak from.
+    pub voice_unheard: AtomicU64,
+    /// Voice frames handed to a listener's writer.
+    pub voice_relayed: AtomicU64,
+    /// Relayed voice frames a listener's full outbound ring refused.
+    pub voice_out_drops: AtomicU64,
     /// Joins that arrived as a *saved* character rather than a fresh one
     /// (`store.rs`). The one number that says persistence is doing anything:
     /// a shard with a save file whose `saves_restored` stays 0 while
@@ -615,6 +662,9 @@ pub struct ShardStats {
     /// which is a *polite* refusal carrying a reason to a client that
     /// completed a handshake; this one is a flood defence and says nothing.
     pub admit_refused: AtomicU64,
+    /// Sessions refused (HTTP 429) once their QUIC handshake completed,
+    /// because their source already held `ADMIT_PER_SOURCE` handshakes.
+    pub refused_per_source: AtomicU64,
 
     /// **The storage thread has written everything and stopped.** The one
     /// flag here, and it is not a statistic — it is how `bin/shard.rs`
@@ -672,6 +722,10 @@ pub struct ShardStats {
     /// outcome than a shard that forgets — so this is the only place that
     /// failure is visible.
     pub save_write_errors: AtomicU64,
+    /// Side files (`slot::FileMsg`: the gift ledger, the teams) the store
+    /// thread failed to write. The sim reads it on the world-save cadence
+    /// and hands both files over again (`net.rs` `retry_side_files`).
+    pub side_file_errors: AtomicU64,
     // No counter for records refused at load, deliberately: corruption is a
     // boot-time fact about a file, not a running rate, so it is reported once
     // in the line that says the shard came up (`store::SaveLoad`, printed by
@@ -822,7 +876,7 @@ pub struct ShardStats {
     // honest about the code as written; it does not make it a *gate*,
     // because the two lines can be separated and every assertion is on
     // this side of the split. Restoring `favour: 0` at the command leaves
-    // all sixteen arithmetic gates green. These four are a **diagnostic**
+    // all sixteen arithmetic gates green. These are a **diagnostic**
     // — what a shard is doing, on `/status.json` — and the thing that
     // holds the feature is a gate on the consequence:
     // `lagcomp_measure::a_stale_aim_lands_a_swing_the_live_world_would_
@@ -848,11 +902,18 @@ pub struct ShardStats {
     /// what the client had received, so the claim was corrected down to the
     /// evidence before a favour was minted (`ShardCore::push_input`).
     ///
-    /// **The one counter here that accuses somebody**, which is why it is
-    /// the one in `anomaly::WATCHED` — the shape is a client acking
-    /// backwards to buy rewind depth it has not earned. Reordering is
-    /// absorbed by the band; see [`FAVOUR_DISAGREE_BAND_TICKS`].
+    /// **One of the two counters here that accuse somebody** (with
+    /// `favour_playout_high`), which is why both are in `anomaly::WATCHED`
+    /// — the shape is a client acking backwards to buy rewind depth it has
+    /// not earned. Reordering is absorbed by the band; see
+    /// [`FAVOUR_DISAGREE_BAND_TICKS`].
     pub favour_disagree: AtomicU64,
+    /// Frames whose minted favour was lowered by the playout bound: the
+    /// reported playout (wire v61) sat above what this connection's own ack
+    /// history supports (`ClientNetState::playout_cap`), and the cap cost
+    /// it rewind. A client asking to be rewound further than its link
+    /// explains.
+    pub favour_playout_high: AtomicU64,
 }
 
 impl ShardStats {
@@ -981,6 +1042,9 @@ impl ShardStats {
             "refused_ticket" => &self.refused_ticket,
             "refused_full" => &self.refused_full,
             "refused_banned" => &self.refused_banned,
+            "refused_in_use" => &self.refused_in_use,
+            "parked_in_use" => &self.parked_in_use,
+            "refused_per_source" => &self.refused_per_source,
             "entitle_unknown" => &self.entitle_unknown,
             "entitle_kicked" => &self.entitle_kicked,
             "skins_unknown" => &self.skins_unknown,
@@ -1006,6 +1070,8 @@ impl ShardStats {
             "chat_rate_limited" => &self.chat_rate_limited,
             "chat_ring_drops" => &self.chat_ring_drops,
             "chat_undelivered" => &self.chat_undelivered,
+            "voice_bad" => &self.voice_bad,
+            "voice_out_drops" => &self.voice_out_drops,
             "save_ring_drops" => &self.save_ring_drops,
             "saves_evicted" => &self.saves_evicted,
             "save_write_errors" => &self.save_write_errors,
@@ -1016,6 +1082,7 @@ impl ShardStats {
             "admin_refused" => &self.admin_refused,
             "aim_stale_refused" => &self.aim_stale_refused,
             "favour_disagree" => &self.favour_disagree,
+            "favour_playout_high" => &self.favour_playout_high,
             "spectate_input_refused" => &self.spectate_input_refused,
             "spectate_actions_refused" => &self.spectate_actions_refused,
             "trust_ring_drops" => &self.trust_ring_drops,

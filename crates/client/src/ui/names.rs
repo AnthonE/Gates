@@ -113,7 +113,10 @@ pub fn clear_line(
         for i in 1..=steps {
             let (x, y, z) = at(i);
             if y <= terrain::ground(seed, haven, x, z)
-                || collide::shot_blocked(seed, haven, cols, prev.0, prev.1, x, z, y, 0.0)
+                // An arrowhead's radius, not zero: the shot walk tests a
+                // floor or a roof only for a positive one, and a zero-width
+                // look saw a name through the slab above it.
+                || collide::shot_blocked(seed, haven, cols, prev.0, prev.1, x, z, y, 0.05)
                 || collide::deploy_stop(seed, haven, cols, x, z, y, 0.0).is_some()
             {
                 return false;
