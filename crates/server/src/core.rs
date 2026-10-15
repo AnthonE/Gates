@@ -1561,6 +1561,18 @@ impl ShardCore {
         key: Option<PlayerKey>,
         save: Option<PlayerSave>,
     ) -> Option<(Admitted, Option<(PlayerKey, PlayerSave)>)> {
+        // One wallet, one body. The accept loop refuses a second session
+        // for a seated key (`REFUSE_IN_USE`) before it claims a slot, so
+        // this never fires through the net path; it is here because the
+        // failure it stops — a second body seated from the record while the
+        // first still plays — is a duplication, not a glitch.
+        if let Some(k) = key {
+            if (0..MAX_PLAYERS)
+                .any(|s| s != slot && self.clients[s].connected && self.keys[s] == Some(k))
+            {
+                return None;
+            }
+        }
         // A hint from the index, verified against the world before it is
         // trusted — and against this window's own queue, because a sleeper
         // a queued `Evict` has already condemned is one this join must not
@@ -1961,6 +1973,17 @@ impl ShardCore {
     /// world is not listening. It costs no allocation, which is why the
     /// suites that drive thousands of ticks use it.
     pub fn tick_bare(&mut self, stats: &ShardStats, send: impl FnMut(Lane, usize, &[u8]) -> bool) {
+        self.tick_bare_marked(stats, send, || {});
+    }
+
+    /// [`Self::tick_bare`] with [`Self::tick_marked`]'s phase mark — the
+    /// profiler's (`bin/profile.rs`) way to time the snapshot phase apart.
+    pub fn tick_bare_marked(
+        &mut self,
+        stats: &ShardStats,
+        send: impl FnMut(Lane, usize, &[u8]) -> bool,
+        mark: impl FnOnce(),
+    ) {
         let mut log = crate::anomaly::Sink::off();
         let mut save_now = false;
         let mut ops = Ops {
@@ -1969,14 +1992,28 @@ impl ShardCore {
             admin_answers: None,
             save_now: &mut save_now,
         };
-        self.tick(stats, &mut ops, send);
+        self.tick_marked(stats, &mut ops, send, mark);
     }
 
     pub fn tick(
         &mut self,
         stats: &ShardStats,
         ops: &mut Ops<'_>,
+        send: impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        self.tick_marked(stats, ops, send, || {});
+    }
+
+    /// [`Self::tick`], calling `mark` once just before the snapshot phase.
+    /// The shard passes a no-op (inlined away); the profiler stamps a clock
+    /// there, which is the only way to split encode from the rest now that
+    /// every tick is a snapshot tick (`SNAPSHOT_INTERVAL_TICKS` = 1).
+    pub fn tick_marked(
+        &mut self,
+        stats: &ShardStats,
+        ops: &mut Ops<'_>,
         mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
+        mark: impl FnOnce(),
     ) {
         // Owned skin sets the platform answered since the last tick, queued
         // behind whatever else this window holds — so a join queued in the
@@ -2465,6 +2502,7 @@ impl ShardCore {
             }
         }
 
+        mark();
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             for slot in 0..MAX_PLAYERS {
                 if !self.clients[slot].connected {
@@ -6484,12 +6522,12 @@ impl ShardCore {
                         .world
                         .backpacks
                         .index_of_id(handle)
-                        .filter(|&i| self.world.backpacks.in_reach(i, p)),
+                        .filter(|&i| self.world.bag_reachable(i, c.own_wslot)),
                     CONT_BOX => self
                         .world
                         .deploys
                         .box_index(handle)
-                        .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                        .filter(|&i| self.world.box_reachable(i, c.own_wslot))
                         .filter(|&i| {
                             // The box's own slot, the move path's address
                             // byte for byte: free placement puts several

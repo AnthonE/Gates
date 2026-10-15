@@ -8969,6 +8969,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/ranged.rs"),
         },
         Module {
+            file: "reach.rs",
+            src: include_str!("../../sim-core/src/reach.rs"),
+        },
+        Module {
             file: "claim.rs",
             src: include_str!("../../sim-core/src/claim.rs"),
         },

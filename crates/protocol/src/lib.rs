@@ -44,8 +44,8 @@ pub mod version;
 pub mod voice;
 
 pub use auth::{
-    siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
-    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
+    siwe_message, siwe_message_for, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX,
+    NONCE_BYTES, SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
@@ -1175,6 +1175,10 @@ pub use voice::{
 /// comfort, per cent, after the hurting bit.
 /// v112 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
 /// whole °C after the comfort, and the death cause admits 9 (`DEATH_BY_HEAT`).
+/// v113 — a page's SIWE proof names the shard it dialled in its `URI:` line
+/// (`siwe_message_for`); the domain line stays the page's. No layout moved,
+/// but the signed text did, and a shard that cannot rebuild it refuses every
+/// browser sign-in — so the page and the shard turn together.
 /// v113 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
 /// frame each (`voice.rs`); the server relays a talker's frame only to
 /// players inside `VOICE_RADIUS_CM`. And far reports: `SUB_REPORT` tells a
@@ -1655,6 +1659,17 @@ pub const REFUSE_WATCH_FULL: u8 = 7;
 /// **close** code rather than as a refusal frame, the admin kick's shape: the
 /// seat was granted, and it ended.
 pub const REFUSE_WATCH_ENDED: u8 = 8;
+/// This wallet already has a body awake on this shard, on another
+/// connection. One wallet, one body: a second session seated from the
+/// store's record while the first still played was two copies of one
+/// inventory. The session already in is closed with this, and the newcomer
+/// waits for that body to fall asleep and is seated on it; a newcomer is
+/// refused with it only when the old body does not let go in time, or a
+/// second newcomer is already waiting.
+///
+/// No layout moved for this: `Refuse.code` is a full `u8` and this is the
+/// tenth of 256 values.
+pub const REFUSE_IN_USE: u8 = 9;
 
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
@@ -1684,6 +1699,10 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
         REFUSE_WATCH => "that player cannot be watched on this shard",
         REFUSE_WATCH_FULL => "too many people are watching that player — try again later",
         REFUSE_WATCH_ENDED => "the player you were watching left",
+        REFUSE_IN_USE => {
+            "this wallet signed in on another connection, and only one can play — \
+             join again to take over"
+        }
         _ => return None,
     })
 }
@@ -5445,6 +5464,7 @@ mod tests {
             (REFUSE_WATCH, "REFUSE_WATCH"),
             (REFUSE_WATCH_FULL, "REFUSE_WATCH_FULL"),
             (REFUSE_WATCH_ENDED, "REFUSE_WATCH_ENDED"),
+            (REFUSE_IN_USE, "REFUSE_IN_USE"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -5453,7 +5473,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            9,
+            10,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );

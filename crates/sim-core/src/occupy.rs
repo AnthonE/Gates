@@ -308,6 +308,14 @@ impl SlotCache {
         }
     }
 
+    /// The worldgen memo this cache owns, for callers that tap the terrain
+    /// through it (`terrain::ground_memo`). It changes no answer: the lattice
+    /// keys every entry by seed, so no reset is owed here.
+    #[inline]
+    pub(crate) fn lattice(&mut self) -> &mut terrain::Lattice {
+        &mut self.lat
+    }
+
     /// The crag spot (`gi`, `gj`) grows, resolved once per seed.
     #[inline]
     pub fn crag(&mut self, seed: u64, haven: &Haven, gi: i32, gj: i32) -> crate::cliff::Crag {
