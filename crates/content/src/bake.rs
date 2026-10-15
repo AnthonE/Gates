@@ -1272,6 +1272,37 @@ impl Content {
         ex.cold_food_pct = u16f(e.cold_food_pct, "cold_food_pct")?;
         ex.cold_water_pct = u16f(e.cold_water_pct, "cold_water_pct")?;
         ex.comfort_hp_per_min = u16f(e.comfort_hp_per_min, "comfort_hp_per_min")?;
+        // The air (climate v0). Degrees validated to ±100, so tenths fit i16.
+        let dc = |c: i32| (c * 10) as i16;
+        ex.cold_below_dc = dc(e.cold_below_c);
+        ex.cold_per_c = u16f(e.cold_per_c, "cold_per_c")?;
+        ex.hot_above_dc = dc(e.hot_above_c);
+        ex.heat_per_c = u16f(e.heat_per_c, "heat_per_c")?;
+        ex.shade_dc = dc(e.shade_c);
+        ex.wet_cool = u16f(e.wet_cool, "wet_cool")?;
+        ex.clothes_heat_pm = u16f(e.clothes_heat_pm, "clothes_heat_pm")?;
+        ex.heat_water_pct = u16f(e.heat_water_pct, "heat_water_pct")?;
+        ex.heat_hurt_at = if e.heat_per_c > 0 {
+            u16f(e.heat_hurt_at, "heat_hurt_at")?
+        } else {
+            1000
+        };
+        ex.heat_hp_per_min = u16f(e.heat_hp_per_min, "heat_hp_per_min")?;
+        let cl = &self.balance.climate;
+        ex.air = sim_core::climate::ClimateContent {
+            temperate_low_dc: dc(cl.temperate_low_c),
+            temperate_high_dc: dc(cl.temperate_high_c),
+            arid_low_dc: dc(cl.arid_low_c),
+            arid_high_dc: dc(cl.arid_high_c),
+            lapse_from_m: u16f(cl.lapse_from_m, "lapse_from_m")?,
+            lapse_m: u16f(cl.lapse_m, "lapse_m")?,
+            cloud_flatten_pm: u16f(cl.cloud_flatten_pm, "cloud_flatten_pm")?,
+            rain_cool_dc: dc(cl.rain_cool_c),
+            crop_frost_dc: dc(cl.crop_frost_c),
+            crop_warm_dc: dc(cl.crop_warm_c),
+            crop_hot_dc: dc(cl.crop_hot_c),
+            crop_scorch_dc: dc(cl.crop_scorch_c),
+        };
         for a in &self.armors {
             let idx = self
                 .item_index(&a.id)

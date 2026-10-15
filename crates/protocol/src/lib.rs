@@ -1159,7 +1159,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// one channel bit becomes two (`chat::Channel`: local, global, team).
 /// v109 — `ACT_PICKUP` carries a 32-bit stack id, the one the crosshair is
 /// on (0 for none): the sim takes it while it is in reach, else the nearest.
-pub const PROTO_VER: u16 = 109;
+/// v110 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
+/// whole °C beside wet and cold, and the death cause admits 9
+/// (`DEATH_BY_HEAT`).
+pub const PROTO_VER: u16 = 110;
 
 /// This game's slug in the elo catalog.
 ///

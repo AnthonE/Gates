@@ -5191,7 +5191,7 @@ impl ShardCore {
                 &self.world.players[wslot],
             );
             if self.world.survival.exposure.armed() && Some(expo) != self.clients[slot].last_expo {
-                match protocol::encode_event_exposure(expo.0, expo.1, expo.2, &mut self.ev_buf) {
+                match protocol::encode_event_exposure(&expo, &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].last_expo = Some(expo);

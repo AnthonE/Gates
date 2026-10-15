@@ -673,8 +673,10 @@ pub fn toggle(
 ///
 /// `open_sky` answers for a planter: is it unroofed (crops v1)? It grows
 /// only by day under open sky, and a planter in the dark, or dry, holds its
-/// beds where they are. `rain_pm` is the rain falling now (`weather::Wx`):
-/// on an open planter it banks water ([`CookContent::rain_pct`]).
+/// beds where they are. `crop_pm` is how fast the air there lets it grow,
+/// per mille (`climate::crop_pm`): a frost or a scorch holds the beds and
+/// drinks nothing. `rain_pm` is the rain falling now (`weather::Wx`): on an
+/// open planter it banks water ([`CookContent::rain_pct`]).
 #[allow(clippy::too_many_arguments)]
 pub fn sweep(
     cc: &CookContent,
@@ -683,6 +685,7 @@ pub fn sweep(
     tick: u64,
     smelt_pct: u32,
     open_sky: &dyn Fn(&crate::deploy::BoxRec) -> bool,
+    crop_pm: &dyn Fn(&crate::deploy::BoxRec) -> u16,
     night: bool,
     rain_pm: u16,
     events: &mut EventQueue,
@@ -760,7 +763,9 @@ pub fn sweep(
         // 1b. A planter grows by daylight and on water (crops v1). Asked
         //     only while a bed holds something that grows, so an idle
         //     planter drinks nothing; a dark or dry one freezes its beds
-        //     (`cook` is kept, as a snuffed fire's is).
+        //     (`cook` is kept, as a snuffed fire's is). The air sets the
+        //     pace (climate v0), and a frost or a scorch stops it.
+        let mut crop = 1000u16;
         if arch == ARCH_PLANTER {
             let growing = input.clone().any(|s| {
                 let st = boxes[i].items[s];
@@ -781,6 +786,10 @@ pub fn sweep(
                     (u32::from(ovens[i].burn) + gain).min(u32::from(cc.water_ticks)) as u16;
             }
             if !growing || night || !open {
+                continue;
+            }
+            crop = crop_pm(&boxes[i]).min(1000);
+            if u32::from(step) * u32::from(crop) < 1000 {
                 continue;
             }
             if cc.water_ticks > 0 {
@@ -819,6 +828,8 @@ pub fn sweep(
             // knob (`works::KNOB_SMELT_PCT`); everything else at its own pace.
             let cook_step = if arch == crate::deploy::ARCH_FURNACE {
                 (step as u32 * smelt_pct / 100).min(u16::MAX as u32) as u16
+            } else if arch == ARCH_PLANTER {
+                (step as u32 * crop as u32 / 1000) as u16
             } else {
                 step
             };

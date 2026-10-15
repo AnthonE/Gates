@@ -399,3 +399,137 @@ fn comfort_mends_a_warm_dry_fed_body_by_a_fire() {
     };
     assert_eq!(mended(open, &mut ev), 50, "a body in the open mended");
 }
+
+/// The air's fixture (climate v0): cold under 14 °C, hot over 30 °C.
+fn air_fixture() -> ExposureContent {
+    let mut ec = ExposureContent::probe_fixture();
+    ec.cold_below_dc = 140;
+    ec.cold_per_c = 50;
+    ec.hot_above_dc = 300;
+    ec.heat_per_c = 50;
+    ec.shade_dc = 80;
+    ec.wet_cool = 600;
+    ec.clothes_heat_pm = 500;
+    ec.heat_water_pct = 150;
+    ec.heat_hurt_at = 600;
+    ec.heat_hp_per_min = 60;
+    ec
+}
+
+/// With the air armed, the cold is the air's: every degree under
+/// `cold_below_dc`, night or day, and nothing at a mild night.
+#[test]
+fn the_air_chills_and_the_night_alone_does_not() {
+    let ec = air_fixture();
+    let p = body();
+    let frost = Inputs {
+        air_dc: 40,
+        ..Inputs::default()
+    };
+    assert_eq!(
+        exposure::target_chill(&ec, &frost, &p),
+        500,
+        "ten degrees under"
+    );
+    let mild_night = Inputs {
+        night: true,
+        air_dc: 160,
+        ..Inputs::default()
+    };
+    assert_eq!(exposure::target_chill(&ec, &mild_night, &p), 0);
+    // Rain chills a cool day in full, a warm one less, a hot one not at all.
+    let rain = |air_dc| Inputs {
+        rain: 1000,
+        air_dc,
+        ..Inputs::default()
+    };
+    assert_eq!(exposure::target_chill(&ec, &rain(140), &p), ec.rain_cold);
+    assert_eq!(
+        exposure::target_chill(&ec, &rain(220), &p),
+        ec.rain_cold / 2
+    );
+    assert_eq!(exposure::target_chill(&ec, &rain(300), &p), 0);
+}
+
+/// The desert's noon: heat over `hot_above_dc`, cut by shade and by being
+/// wet, worse in warm clothes; past `heat_hurt_at` it costs hp, and the
+/// rain and wind that would chill a cool body do not chill a hot one.
+#[test]
+fn the_heat_is_the_airs_and_shade_water_and_clothes_move_it() {
+    let ec = air_fixture();
+    let naked = body();
+    let noon = Inputs {
+        air_dc: 420,
+        wind: 1000,
+        ..Inputs::default()
+    };
+    assert_eq!(exposure::target_heat(&ec, &noon, &naked), 600);
+    assert_eq!(
+        exposure::target_chill(&ec, &noon, &naked),
+        0,
+        "a hot wind chilled"
+    );
+    let shade = Inputs {
+        roofed: true,
+        ..noon
+    };
+    assert_eq!(exposure::target_heat(&ec, &shade, &naked), 200);
+    let mut soaked = body();
+    soaked.wet = 1000;
+    assert_eq!(exposure::target_heat(&ec, &noon, &soaked), 0);
+    let mut coat = body();
+    coat.worn[1] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 100,
+        skin: 0,
+    };
+    let held = ec.warmth[0] as u16 * ec.clothes_heat_pm / 1000;
+    assert_eq!(exposure::target_heat(&ec, &noon, &coat), 600 + held);
+    assert_eq!(exposure::target_heat(&ec, &Inputs::default(), &coat), 0);
+
+    // In the coat at noon it hurts; naked at the threshold it does not.
+    let mut ev = EventQueue::default();
+    let mut p = coat;
+    for _ in 0..60 {
+        exposure::step(&ec, &noon, &mut p, &mut ev);
+    }
+    assert!(p.hp < 100, "the heat past heat_hurt_at took nothing");
+    assert_eq!(exposure::readout(&ec, &p).air_c, 42);
+    assert!(exposure::readout(&ec, &p).hurting);
+    let mut q = naked;
+    for _ in 0..60 {
+        exposure::step(&ec, &noon, &mut q, &mut ev);
+    }
+    assert_eq!(q.hp, 100);
+    assert_eq!(exposure::readout(&ec, &q).heat_pct, 60);
+}
+
+/// The heat sweats water away: `heat_water_pct` 150 at heat 600 is +90 %.
+#[test]
+fn the_heat_burns_water() {
+    let mut sc = SurvivalContent::probe_fixture();
+    sc.exposure = air_fixture();
+    let mut cool = body();
+    sim_core::survival::grant(&sc, &mut cool);
+    let mut hot = cool;
+    hot.heat = 600;
+    let mut ev = EventQueue::default();
+    for t in 0..sim_core::limits::TICK_HZ * 3 {
+        if t % sim_core::limits::TICK_HZ == 0 {
+            exposure::burn(&sc.exposure, sc.max_food, sc.max_water, &mut cool);
+            exposure::burn(&sc.exposure, sc.max_food, sc.max_water, &mut hot);
+        }
+        sim_core::survival::step(&sc, &mut cool, &mut ev);
+        sim_core::survival::step(&sc, &mut hot, &mut ev);
+    }
+    let used = |p: &Player| (sc.max_water - p.water) as i32;
+    assert!(used(&cool) > 0, "the fixture's clock never drained");
+    assert!(
+        (used(&hot) * 10 - used(&cool) * 19).abs() <= 19,
+        "hot used {} water against cool's {}",
+        used(&hot),
+        used(&cool)
+    );
+    assert_eq!(hot.food, cool.food, "the heat burned food");
+}

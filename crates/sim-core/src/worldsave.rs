@@ -1136,6 +1136,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             wet,
             chill,
             cold_acc,
+            heat: 0,
+            air_dc: 0,
             skins,
             safe: false,
             hostile: 0,

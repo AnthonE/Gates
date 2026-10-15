@@ -1933,6 +1933,10 @@ pub struct ClientCore {
     pub wet_pct: u8,
     pub cold_pct: u8,
     pub cold_hurting: bool,
+    /// The heat the owner is in, per cent, and the air they stand in, whole
+    /// °C (climate v0) — what the server's exposure step last read.
+    pub heat_pct: u8,
+    pub air_c: i8,
     /// Until when you are hostile, the low 32 bits of the server tick
     /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
     pub hostile_until: u32,
@@ -2298,6 +2302,8 @@ impl ClientCore {
             wet_pct: 0,
             cold_pct: 0,
             cold_hurting: false,
+            heat_pct: 0,
+            air_c: 0,
             hostile_until: 0,
             gate_spawn_at: 0,
             wounded_fact: None,
@@ -3701,11 +3707,15 @@ impl ClientCore {
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
+                air_c,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
                 self.cold_hurting = hurting;
+                self.heat_pct = heat_pct;
+                self.air_c = air_c;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
             EventMsg::Recovered { chance_pm, hp } => {

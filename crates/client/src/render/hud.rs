@@ -974,6 +974,8 @@ impl Vital {
 pub enum ExposureChip {
     Wet,
     Cold,
+    /// The desert's noon (climate v0): hot, and what cools you.
+    Hot,
     /// Inside THE GATE's safe zone (`sim_core::town::safe`).
     Safe,
     /// Standing in your own base: how long its hearth keeps it, or that it
@@ -1029,6 +1031,7 @@ fn safe_chip(
 const UPKEEP_CHIP: Color = Color::srgba(0.46, 0.34, 0.16, 0.85);
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
+const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 
 /// The world around the body, as the exposure chips read it: the client's
@@ -1102,6 +1105,22 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     }
 }
 
+/// What the HOT chip says (climate v0): the air, and what cools a body —
+/// shade, the water, getting wet. Heatstroke while it is taking hp.
+pub fn hot_line(hurting: bool, air_c: i8, wet_pct: u8, w: ExposureWorld) -> String {
+    let help = if w.underwater {
+        "THE WATER COOLS YOU"
+    } else if w.sheltered {
+        "SHADE HELPS"
+    } else if wet_pct >= 30 {
+        "WET HELPS"
+    } else {
+        "FIND SHADE OR WATER"
+    };
+    let what = if hurting { "HEATSTROKE" } else { "HOT" };
+    format!("{what} · {air_c}°C · {help}")
+}
+
 /// Keep the wet and cold chips on what the server last said. Hidden while
 /// there is nothing to say — dry, and warm enough not to mention. The
 /// upkeep chip likewise: shown while the shard keeps re-telling you your
@@ -1125,17 +1144,31 @@ pub fn exposure(
     if core.wet_pct > 0 || core.cold_pct >= 25 || core.cold_hurting {
         w.fire = core.near_fire();
     }
+    // One `hurting` bit answers for both; a body is never past both at once,
+    // so the larger of the two is the one hurting.
+    let hot = core.heat_pct > core.cold_pct;
+    let air = core.air_c;
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
             // The one chip that costs hp says what stops it.
-            ExposureChip::Cold if core.cold_hurting => {
-                (true, cold_line(true, core.wet_pct, w), FREEZE_CHIP)
-            }
+            ExposureChip::Cold if core.cold_hurting && !hot => (
+                true,
+                format!("{air}°C · {}", cold_line(true, core.wet_pct, w)),
+                FREEZE_CHIP,
+            ),
             ExposureChip::Cold => (
                 core.cold_pct >= 25,
-                cold_line(false, core.wet_pct, w),
+                format!("{air}°C · {}", cold_line(false, core.wet_pct, w)),
                 COLD_CHIP,
+            ),
+            ExposureChip::Hot if core.cold_hurting && hot => {
+                (true, hot_line(true, air, core.wet_pct, w), FREEZE_CHIP)
+            }
+            ExposureChip::Hot => (
+                core.heat_pct >= 25,
+                hot_line(false, air, core.wet_pct, w),
+                HOT_CHIP,
             ),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
@@ -1704,6 +1737,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Safe,
                 ExposureChip::Wet,
                 ExposureChip::Cold,
+                ExposureChip::Hot,
             ] {
                 stack.spawn((
                     chip,
@@ -4094,6 +4128,25 @@ mod tests {
             .unwrap()
             .starts_with("HIGH PING"));
         assert_eq!(conn_warning(0.0, None, None), None);
+    }
+
+    /// The HOT chip names the air and what cools you, shade first.
+    #[test]
+    fn the_hot_chip_says_what_cools_you() {
+        let open = ExposureWorld::default();
+        let shade = ExposureWorld {
+            sheltered: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            hot_line(false, 41, 0, open),
+            "HOT · 41°C · FIND SHADE OR WATER"
+        );
+        assert_eq!(
+            hot_line(true, 44, 0, shade),
+            "HEATSTROKE · 44°C · SHADE HELPS"
+        );
+        assert_eq!(hot_line(false, 38, 50, open), "HOT · 38°C · WET HELPS");
     }
 
     /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that

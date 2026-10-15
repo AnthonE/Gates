@@ -1026,8 +1026,11 @@ pub const DEATH_BY_COLD: u8 = 7;
 /// The fall (wire v97, `World::fall`): landed harder than a body takes.
 /// The first cause past three bits; the field is four now.
 pub const DEATH_BY_FALL: u8 = 8;
+/// The heat took them (climate v0, `exposure.rs`): the desert's noon in
+/// warm clothes, dry, with no shade.
+pub const DEATH_BY_HEAT: u8 = 9;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_FALL;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_HEAT;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1350,6 +1353,13 @@ pub struct Player {
     pub wet: u16,
     pub chill: u16,
     pub cold_acc: u32,
+    /// The heat the body is in, per mille, and the air it stands in,
+    /// deci-degrees (climate v0). **Derived, not state**: the exposure step
+    /// writes both each second from the air before it reads them, so like
+    /// `hostile` they are neither hashed nor saved; a restart only blanks
+    /// the HUD's reading for that second.
+    pub heat: u16,
+    pub air_dc: i16,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1453,6 +1463,8 @@ impl Default for Player {
             wet: 0,
             chill: 0,
             cold_acc: 0,
+            heat: 0,
+            air_dc: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
@@ -4273,6 +4285,8 @@ impl World {
                     wet: 0,
                     chill: 0,
                     cold_acc: 0,
+                    heat: 0,
+                    air_dc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -5679,7 +5693,8 @@ impl World {
         {
             return false;
         }
-        let inp = self.exposure_inputs(i, wx, night);
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let inp = self.exposure_inputs(i, wx, night, day_tick);
         let step = crate::exposure::step(
             &self.survival.exposure,
             &inp,
@@ -5687,8 +5702,15 @@ impl World {
             &mut self.events,
         );
         if step == survival::Step::Died {
-            let id = self.players[i].id;
-            self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            let p = &self.players[i];
+            let ec = &self.survival.exposure;
+            let cause = if p.chill <= ec.hurt_at && p.heat > ec.heat_hurt_at {
+                DEATH_BY_HEAT
+            } else {
+                DEATH_BY_COLD
+            };
+            let id = p.id;
+            self.die(i, id, cause, NO_ITEM, 0);
             return true;
         }
         crate::exposure::burn(
@@ -5727,12 +5749,13 @@ impl World {
     }
 
     /// What the world is doing to slot `i`'s body this second: the weather,
-    /// the hour, a roof, the sea at its feet, a fire, a torch.
+    /// the hour and the air, a roof, the sea at its feet, a fire, a torch.
     pub fn exposure_inputs(
         &self,
         i: usize,
         wx: &crate::weather::Wx,
         night: bool,
+        day_tick: u64,
     ) -> crate::exposure::Inputs {
         let p = &self.players[i];
         let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
@@ -5755,6 +5778,15 @@ impl World {
             torch: crate::light::is_lit(p, &self.gather),
             fed: p.food as u32 * 2 >= self.survival.max_food as u32
                 && p.water as u32 * 2 >= self.survival.max_water as u32,
+            air_dc: crate::climate::air_dc(
+                &self.survival.exposure.air,
+                self.seed,
+                x,
+                z,
+                feet - sea,
+                day_tick,
+                wx,
+            ),
         }
     }
 
@@ -6989,13 +7021,25 @@ impl World {
         // question a body asks of the rain, asked at the planter's feet.
         // The same rain waters it.
         let night = is_night(tick);
-        let rain_pm = crate::weather::now(self.seed, tick, &self.env).rain;
+        let wx = crate::weather::now(self.seed, tick, &self.env);
+        let rain_pm = wx.rain;
+        let day_tick = crate::weather::day_tick(tick, &self.env);
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let air = &self.survival.exposure.air;
+        let planter_feet = |b: &crate::deploy::BoxRec| {
+            crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
+                + crate::build::level_y(b.level)
+        };
         let open_sky = |b: &crate::deploy::BoxRec| {
             let (x, z) = b.xz();
-            let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
-                + crate::build::level_y(b.level);
-            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, feet)
+            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, planter_feet(b))
+        };
+        // The air at the planter sets its pace (climate v0).
+        let crop_pm = |b: &crate::deploy::BoxRec| {
+            let (x, z) = b.xz();
+            let alt = planter_feet(b) - crate::terrain::SEA_LEVEL;
+            let t = crate::climate::air_dc(air, seed, x, z, alt, day_tick, &wx);
+            crate::climate::crop_pm(air, t)
         };
         crate::oven::sweep(
             &self.cook,
@@ -7008,6 +7052,7 @@ impl World {
                 crate::works::KNOB_SMELT_PCT,
             ),
             &open_sky,
+            &crop_pm,
             night,
             rain_pm,
             &mut self.events,
