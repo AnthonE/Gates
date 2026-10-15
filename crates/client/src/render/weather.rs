@@ -14,6 +14,7 @@
 //! and the second (`weather::bolt`), so a flash is the same flash for
 //! everyone.
 
+use bevy::math::DVec2;
 use bevy::prelude::*;
 use sim_core::limits::TICK_HZ;
 use sim_core::weather::{self, Wx};
@@ -87,6 +88,10 @@ pub struct WeatherNow {
     /// shadows run on between the writes that re-anchor them
     /// (`cloud_shadow.rs`). Zero on a pinned sky, which holds still.
     pub drift_vel: Vec2,
+    /// [`Self::drift`] as it is summed, in f64: f32 metres a field across
+    /// wander off the wind's straight run by a metre in half a minute,
+    /// and the ground's shadows run on that straight line.
+    drift_sum: DVec2,
 }
 
 impl WeatherNow {
@@ -95,8 +100,15 @@ impl WeatherNow {
     /// is more — and thick fog, which a sun cannot shine through either:
     /// the fog preset's 900‰ puts the shadows out (`rig::day_night`).
     pub fn occlusion(&self) -> f32 {
+        self.sun_cover.max(self.occlusion_floor())
+    }
+
+    /// [`Self::occlusion`] whatever the deck over the sun's disk: a heavy
+    /// sky and the fog. Where the ground draws the deck's own shadows
+    /// (`cloud_shadow.rs`), this alone puts the sun's shadows out.
+    pub fn occlusion_floor(&self) -> f32 {
         let heavy = ((self.cloud - 0.5) / 0.5).clamp(0.0, 1.0);
-        self.sun_cover.max(heavy).max(self.fog)
+        heavy.max(self.fog)
     }
 
     /// Per-metre extinction of the weather's fog and rain on geometry —
@@ -208,16 +220,17 @@ pub fn update(
         // A probe's sky holds still and dry-or-soaked as asked.
         now.drift = Vec2::ZERO;
         now.drift_vel = Vec2::ZERO;
+        now.drift_sum = DVec2::ZERO;
         now.ground_wet = now.rain;
         now.flash = 0.0;
     } else {
         // The deck drifts downwind: a breeze at clear, a gale in a storm.
         let speed = 1.5 + 6.0 * now.wind;
-        let period = super::sky::FIELD_PERIOD as f32 * super::sky::CLOUD_SCALE_M;
+        let period = f64::from(super::sky::FIELD_PERIOD as f32 * super::sky::CLOUD_SCALE_M);
         now.drift_vel = now.wind_dir * speed;
-        now.drift += now.drift_vel * dt;
-        now.drift.x = now.drift.x.rem_euclid(period);
-        now.drift.y = now.drift.y.rem_euclid(period);
+        let sum = now.drift_sum + now.drift_vel.as_dvec2() * f64::from(dt);
+        now.drift_sum = DVec2::new(sum.x.rem_euclid(period), sum.y.rem_euclid(period));
+        now.drift = now.drift_sum.as_vec2();
         // Wet arrives in about a minute and dries over about eight.
         let tau = if now.rain > now.ground_wet {
             40.0

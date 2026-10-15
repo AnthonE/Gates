@@ -388,6 +388,21 @@ pub const FIELD_N: usize = if cfg!(target_arch = "wasm32") || cfg!(debug_asserti
 } else {
     1024
 };
+/// How soft the deck's edge is where its shadow falls, metres: the sun's
+/// own disk blurs a shadow cast from 1.4 km up by 13–40 m, and a cumulus
+/// edge is a few tens of metres more. The field's mip whose texel is
+/// nearest this ([`soft_level`]) is what the rig dims the sun by
+/// ([`SkyComposer::cover_at`]) and what the ground's cloud shadows read
+/// (`cloud_shadow.rs`), so the two agree at the eye.
+pub const SOFT_M: f32 = 60.0;
+
+/// The field's mip [`SOFT_M`] reads: 1 on a desktop release, whose texel
+/// is 28 m; 0 in a browser and a debug build, whose texel is 56 m.
+pub fn soft_level() -> u32 {
+    let texel = CLOUD_SCALE_M * FIELD_PERIOD as f32 / FIELD_N as f32;
+    (SOFT_M / texel).log2().round().max(0.0) as u32
+}
+
 /// Below this `d.y` (~2.6°) there is no deck: `1/d.y` explodes.
 pub const DECK_CUTOFF: f32 = 0.045;
 /// The last stretch above the cutoff the deck fades over.
@@ -534,30 +549,15 @@ impl CloudField {
     /// spans hundreds of texels, and a sky drawn per pixel from level 0
     /// there shimmers as the deck drifts.
     pub fn image(&self) -> Image {
-        let mut level: Vec<u8> = self
-            .data
-            .iter()
-            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-            .collect();
+        let mut level = self.bytes();
         let mut data = level.clone();
         let mut n = self.n;
         let mut levels = 1;
         while n > 1 {
-            let h = n / 2;
-            let mut next = vec![0u8; h * h];
-            for j in 0..h {
-                for i in 0..h {
-                    let at = |x: usize, y: usize| level[(y % n) * n + x % n] as u32;
-                    let sum = at(2 * i, 2 * j)
-                        + at(2 * i + 1, 2 * j)
-                        + at(2 * i, 2 * j + 1)
-                        + at(2 * i + 1, 2 * j + 1);
-                    next[j * h + i] = ((sum + 2) / 4) as u8;
-                }
-            }
+            let next = halve(&level, n);
             data.extend_from_slice(&next);
             level = next;
-            n = h;
+            n /= 2;
             levels += 1;
         }
         // `Image::new` asserts one level's worth of data; the chain follows it.
@@ -582,6 +582,101 @@ impl CloudField {
             ..default()
         });
         image
+    }
+
+    /// Level 0 as [`Self::image`] stores it, eight bits a texel.
+    fn bytes(&self) -> Vec<u8> {
+        self.data
+            .iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+            .collect()
+    }
+
+    /// Mip `level` of [`Self::image`], texel for texel: what the rig and
+    /// the ground's cloud shadows read the deck over the sun from.
+    pub fn soft(&self, level: u32) -> SoftField {
+        let mut data = self.bytes();
+        let mut n = self.n;
+        for _ in 0..level {
+            if n == 1 {
+                break;
+            }
+            data = halve(&data, n);
+            n /= 2;
+        }
+        let lod = (self.n / n).trailing_zeros();
+        SoftField {
+            n,
+            offset: 0.5 - 0.5 / (1u32 << lod) as f32,
+            data: data.into_boxed_slice(),
+        }
+    }
+}
+
+/// One mip step of the field: each texel the rounded mean of the four
+/// under it.
+fn halve(level: &[u8], n: usize) -> Vec<u8> {
+    let h = n / 2;
+    let mut next = vec![0u8; h * h];
+    for j in 0..h {
+        for i in 0..h {
+            let at = |x: usize, y: usize| level[(y % n) * n + x % n] as u32;
+            let sum = at(2 * i, 2 * j)
+                + at(2 * i + 1, 2 * j)
+                + at(2 * i, 2 * j + 1)
+                + at(2 * i + 1, 2 * j + 1);
+            next[j * h + i] = ((sum + 2) / 4) as u8;
+        }
+    }
+    next
+}
+
+/// One mip of the deck's field ([`CloudField::soft`]), read the way the
+/// ground's cloud shadows read it on the GPU (`cloud_shadow.wgsl`'s
+/// `field_at`, from these very bytes): the same texels, the same centres,
+/// the same bilinear. So the rig's sun at the eye and the shader's
+/// reference for the eye are one number, and a far hill is lit by what
+/// reaches it, not by the gap between two readings of one cloud.
+pub struct SoftField {
+    n: usize,
+    /// Level-`L` texel `i`'s centre is level-0 texel `2^L·i + (2^L − 1)/2`:
+    /// `(1 − 2^−L)/2` of its own texel on.
+    offset: f32,
+    data: Box<[u8]>,
+}
+
+impl SoftField {
+    /// Texels per side.
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    /// How far a texel's centre sits from its noise coordinate, texels.
+    pub fn offset(&self) -> f32 {
+        self.offset
+    }
+
+    /// The texels, row by row.
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Bilinear at noise-unit coordinates, wrapping.
+    pub fn at(&self, q: Vec2) -> f32 {
+        let u = q * (self.n as f32 / FIELD_PERIOD as f32) - Vec2::splat(self.offset);
+        let i = u.floor();
+        let f = u - i;
+        let n = self.n as i64;
+        let texel = |di: i64, dj: i64| {
+            let x = (i.x as i64 + di).rem_euclid(n) as usize;
+            let y = (i.y as i64 + dj).rem_euclid(n) as usize;
+            self.data[y * self.n + x] as f32 / 255.0
+        };
+        let (a, b) = (texel(0, 0), texel(1, 0));
+        let (c, d) = (texel(0, 1), texel(1, 1));
+        let top = a + (b - a) * f.x;
+        let bot = c + (d - c) * f.x;
+        top + (bot - top) * f.y
     }
 }
 
@@ -1247,6 +1342,8 @@ pub struct SkyComposer {
     field_image: Handle<Image>,
     next_at: f32,
     composing: bool,
+    /// The field at [`soft_level`]: the deck over the sun's disk.
+    soft: SoftField,
 }
 
 impl SkyComposer {
@@ -1272,9 +1369,16 @@ impl SkyComposer {
         self.shown.as_ref()
     }
 
+    /// The field at [`soft_level`] — the deck over the sun, as the rig and
+    /// the ground's cloud shadows read it.
+    pub fn soft_field(&self) -> &SoftField {
+        &self.soft
+    }
+
     /// How much deck stands in front of direction `dir` right now, `0..=1`
     /// — the sun's disk, for the rig. `drift_m` is how far the deck has
-    /// drifted downwind (`WeatherNow::drift`).
+    /// drifted downwind (`WeatherNow::drift`). Read off [`SoftField`], as
+    /// the ground's cloud shadows read the eye's (`cloud_shadow.wgsl`).
     pub fn cover_at(&self, dir: Vec3, cover: f32, drift_m: Vec2) -> f32 {
         if dir.y <= DECK_CUTOFF {
             return 0.0;
@@ -1282,7 +1386,7 @@ impl SkyComposer {
         let t = CLOUD_ALT_M / dir.y;
         let q = (Vec2::new(dir.x * t, dir.z * t) - drift_m) / CLOUD_SCALE_M;
         let fade = ((dir.y - DECK_CUTOFF) / HORIZON_FADE).clamp(0.0, 1.0);
-        let f = self.field.sample(q.x, q.y);
+        let f = self.soft.at(q);
         ((f - (1.0 - cover)) / EDGE).clamp(0.0, 1.0) * fade
     }
 }
@@ -1316,6 +1420,7 @@ pub fn setup(
             ..default()
         });
     }
+    let soft = field.soft(soft_level());
     commands.insert_resource(SkyComposer {
         field,
         geo,
@@ -1327,6 +1432,7 @@ pub fn setup(
         field_image,
         next_at: 0.0,
         composing: false,
+        soft,
     });
 }
 

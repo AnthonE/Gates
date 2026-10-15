@@ -1998,7 +1998,7 @@ impl Plugin for GatesRenderPlugin {
         // The deck's shadows on the land, off the weather they are read from
         // (`cloud_shadow.rs`). Native only, as the module is.
         #[cfg(not(target_arch = "wasm32"))]
-        app.add_systems(
+        app.add_systems(Startup, cloud_shadow::init).add_systems(
             Update,
             cloud_shadow::drive
                 .after(weather::update)

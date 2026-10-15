@@ -1,6 +1,6 @@
 // The cloud deck's shadows on the land (`render/cloud_shadow.rs`), for the
 // ground's fragment (`ground_splat.wgsl`, which imports this only under
-// `CLOUD_SHADOWS`: natively, where the bind group has room for the field).
+// `CLOUD_SHADOWS`: natively, where the bind group carries the field).
 //
 // The rig dims the one sun by the deck over its disk as the EYE sees it, so
 // this is relative to the eye: the sun's direct term at a point once more,
@@ -33,38 +33,45 @@ struct CloudShadow {
     // xyz toward the sun; w the `globals.time` the drift was taken at.
     sun: vec4<f32>,
     // x the deck over the eye, m; y noise units a metre; z one over the
-    // field's period, noise units; w the mip read.
+    // field's period, noise units; w the field's texels a side.
     deck: vec4<f32>,
     // x the horizon cutoff; y the fade above it; z the share of the sun a
-    // full deck takes; w unused.
+    // full deck takes; w how far a texel's centre sits from its noise
+    // coordinate, texels.
     fade: vec4<f32>,
 }
 
-// The deck's coverage field (`sky::CloudField::image`): the one the sky, the
-// stars, the moon and the rig's `sun_cover` read.
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var cloud_field: texture_2d<f32>;
+// The deck's coverage field at the shadows' softness (`sky::SoftField`): one
+// mip of the field the sky, the stars and the moon read, eight bits a texel
+// packed four to a word, row by row — the very bytes the rig's `sun_cover`
+// reads on the CPU. A buffer, not a texture: the stage's sampled textures
+// are spent (`ground_splat.rs`).
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var<storage, read> cloud_field: array<u32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var<uniform> cloud: CloudShadow;
 
-fn wrap_texel(i: vec2<i32>, n: vec2<i32>) -> vec2<i32> {
-    return ((i % n) + n) % n;
+// Texel `i` of the field, wrapping, `0..=1`.
+fn field_texel(i: vec2<i32>, n: i32) -> f32 {
+    let w = ((i % n) + n) % n;
+    let k = u32(w.y * n + w.x);
+    return f32((cloud_field[k >> 2u] >> ((k & 3u) * 8u)) & 0xffu) / 255.0;
 }
 
-// The field at `q`, noise units, on the mip `deck.w`, bilinear by hand:
-// `textureLoad` wants no sampler, and the stage has no room for another.
-// Texel `i` of level 0 is noise coordinate `i · period / n`, as
-// `CloudField::sample` reads it; a texel of level L is the box over 2^L of
-// those, so its centre sits `(2^L − 1) / 2` level-0 texels on.
+// The field at `q`, noise units, bilinear by hand, as `SoftField::at` reads
+// it: texel `i` of level 0 is noise coordinate `i · period / N`
+// (`CloudField::sample`); a texel of level L is the box over 2^L of those,
+// so its centre sits `fade.w` of its own texel on.
 fn field_at(q: vec2<f32>) -> f32 {
-    let lod = i32(cloud.deck.w);
-    let n = vec2<i32>(textureDimensions(cloud_field, lod));
-    let u = q * cloud.deck.z * vec2<f32>(n) - vec2(0.5 - 0.5 * exp2(-cloud.deck.w));
+    let n = i32(cloud.deck.w);
+    let u = q * cloud.deck.z * cloud.deck.w - vec2(cloud.fade.w);
     let i = vec2<i32>(floor(u));
     let f = u - floor(u);
-    let a = textureLoad(cloud_field, wrap_texel(i, n), lod).r;
-    let b = textureLoad(cloud_field, wrap_texel(i + vec2(1, 0), n), lod).r;
-    let c = textureLoad(cloud_field, wrap_texel(i + vec2(0, 1), n), lod).r;
-    let d = textureLoad(cloud_field, wrap_texel(i + vec2(1, 1), n), lod).r;
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    let a = field_texel(i, n);
+    let b = field_texel(i + vec2(1, 0), n);
+    let c = field_texel(i + vec2(0, 1), n);
+    let d = field_texel(i + vec2(1, 1), n);
+    let top = a + (b - a) * f.x;
+    let bot = c + (d - c) * f.x;
+    return top + (bot - top) * f.y;
 }
 
 // How much of the sun reaches `p` (world, m), as the rig counts it at the
@@ -111,7 +118,9 @@ fn cloud_shadow(in: PbrInput) -> vec3<f32> {
     let eye = view.world_position;
     let here = sun_through(in.world_position.xyz, eye, l, drift, fade);
     let there = sun_through(eye, eye, l, drift, fade);
-    if here == there {
+    // Under a step of the field's eight bits: nothing anyone sees, and the
+    // second look at the sun below is not free.
+    if abs(here - there) < 1.0 / 512.0 {
         return vec3(0.0);
     }
 

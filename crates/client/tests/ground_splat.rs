@@ -188,7 +188,8 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     // 2026-09-12, three `texture_2d_array`s until 2026-10-07, two since, for
     // the reason `the_ground_fits_the_fragment_texture_budget` states.)
     // The last two are the deck's shadows (`cloud_shadow.wgsl`), bound only
-    // natively — `the_ground_fits_the_fragment_texture_budget` says why.
+    // natively: its field is a storage buffer, for the reason
+    // `the_ground_fits_the_fragment_texture_budget` states.
     let want: Vec<(u32, &str)> = vec![
         (100, "splat"),
         (101, "albedo_maps"),
@@ -218,7 +219,7 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     ))
     .expect("ground_splat.rs is not where this test expects it");
     let mut rust_slots: Vec<u32> = Vec::new();
-    for attr in ["#[uniform(", "#[texture(", "#[sampler("] {
+    for attr in ["#[uniform(", "#[texture(", "#[sampler(", "#[storage("] {
         for (_, rest) in rust_src.split_once(attr).into_iter().flat_map(|_| {
             rust_src
                 .match_indices(attr)
@@ -336,35 +337,18 @@ fn the_ground_fits_the_fragment_texture_budget() {
         "/src/render/ground_splat.rs"
     ))
     .expect("ground_splat.rs is not where this test expects it");
-    // The deck's field (`cloud_shadow.rs`) is a texture the browser never
-    // binds: its field is `#[cfg(not(target_arch = "wasm32"))]`, and the
-    // shader that reads it is imported only under `CLOUD_SHADOWS`, which
-    // only that build pushes. So it is no part of the floor's count — and
-    // it may stay out of it only while both halves of that hold.
-    const NATIVE: &str = "#[cfg(not(target_arch = \"wasm32\"))]";
-    let lines: Vec<&str> = rust_src.lines().map(str::trim).collect();
-    let native_only = |i: usize| {
-        lines[..i]
-            .iter()
-            .rev()
-            .find(|l| !l.is_empty() && !l.starts_with("//"))
-            .is_some_and(|l| *l == NATIVE)
-    };
-    let (mut rust_textures, mut native_textures) = (0, 0);
-    for (i, l) in lines.iter().enumerate() {
-        if l.starts_with("#[texture(") {
-            if native_only(i) {
-                native_textures += 1;
-            } else {
-                rust_textures += 1;
-            }
-        }
-    }
+    let rust_textures = rust_src
+        .lines()
+        .filter(|l| l.trim_start().starts_with("#[texture("))
+        .count();
     assert_eq!(
         rust_textures, arrays,
-        "`GroundSplat` declares {rust_textures} textures on every target and \
-         the shader binds {arrays}"
+        "`GroundSplat` declares {rust_textures} textures and the shader binds {arrays}"
     );
+    // The deck's shadows (`cloud_shadow.wgsl`) read their field out of a
+    // storage buffer, which no sampled-texture budget counts: a texture
+    // there was a seventeenth on a native GL fallback, whose wgpu backend
+    // reports sixteen whatever the driver can do.
     let cloud = std::fs::read_to_string(CLOUD_SHADER).expect("cloud shadow shader");
     let cloud_textures = cloud
         .lines()
@@ -372,22 +356,25 @@ fn the_ground_fits_the_fragment_texture_budget() {
         .filter(|l| l.contains("@binding(") && l.contains(": texture_"))
         .count();
     assert_eq!(
-        (native_textures, cloud_textures),
-        (1, 1),
-        "the native-only textures in `GroundSplat` ({native_textures}) and in \
-         cloud_shadow.wgsl ({cloud_textures}) must be the deck's field alone"
+        cloud_textures, 0,
+        "cloud_shadow.wgsl binds {cloud_textures} textures: the deck's field \
+         is a storage buffer, so the ground stays inside the budget"
     );
+    // And it is native only: WebGPU's floor is eight storage buffers a
+    // stage, and the browser's ground was never measured against it.
+    const NATIVE: &str = "#[cfg(not(target_arch = \"wasm32\"))]";
     let pushed = format!(
         "{NATIVE}\n        if let Some(fragment) = descriptor.fragment.as_mut() {{\n            \
          fragment.shader_defs.push(\"CLOUD_SHADOWS\".into());"
     );
     assert!(
         src.contains("#ifdef CLOUD_SHADOWS\n#import \"shaders/cloud_shadow.wgsl\"")
-            && rust_src.contains(&pushed),
+            && rust_src.contains(&pushed)
+            && rust_src.contains(&format!(
+                "{NATIVE}\n    #[storage(104, read_only, visibility(fragment))]"
+            )),
         "cloud_shadow.wgsl must be imported only under `CLOUD_SHADOWS`, and \
-         only the native build may push that def: a browser that bound the \
-         deck's field would sample {} textures in a {FRAGMENT_TEXTURES} budget",
-        VIEW + ATMOSPHERE + STANDARD_MATERIAL + rust_textures as u32 + 1
+         only the native build may push that def and bind its field"
     );
 
     let total = VIEW + ATMOSPHERE + STANDARD_MATERIAL + rust_textures as u32;

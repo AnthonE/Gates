@@ -918,8 +918,19 @@ pub fn day_night(
         // clean merge that is not a correct one: whichever ran second would
         // win, and a player who turned shadows off would have them back at
         // the next sunrise.
-        d.shadows_enabled =
-            elev > SHADOW_MIN_ELEV && occ < 0.85 && super::quality::effective(settings.gfx).shadows;
+        //
+        // Where the ground draws the deck's own shadows, the deck over the
+        // EYE's sun says nothing about the hill a hundred metres off, which
+        // the ground lights back up to its own sky: only what darkens every
+        // point alike (a heavy sky, the fog) puts the shadows out there.
+        let shadow_occ = if super::quality::cloud_shadows(settings.gfx) {
+            w.occlusion_floor()
+        } else {
+            occ
+        };
+        d.shadows_enabled = elev > SHADOW_MIN_ELEV
+            && shadow_occ < 0.85
+            && super::quality::effective(settings.gfx).shadows;
         // The atmosphere draws the disk OVER the skybox, so a cloud in front
         // of the sun has to put the disk out itself.
         if let Some(mut disk) = disk {
