@@ -1300,6 +1300,7 @@ impl Content {
             1000
         };
         ex.heat_hp_per_min = u16f(e.heat_hp_per_min, "heat_hp_per_min")?;
+        ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
             temperate_low_dc: dc(cl.temperate_low_c),

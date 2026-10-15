@@ -10,6 +10,13 @@
 //!
 //! Under a roof the drops within a few metres of the eye are put out and the
 //! depth test hides the rest behind the walls; underwater there is no rain.
+//!
+//! **Snow is the same mesh** (snow v0). Where the air freezes
+//! (`WeatherNow::snow`) a drop is drawn as a soft round flake that drifts
+//! down at a walking pace, wanders on its own wobble and rides the wind,
+//! instead of a streak. Each drop has its own draw against the snow share, so
+//! the sleet between rain and snow is a mix of the two and the change comes
+//! a drop at a time.
 
 use bevy::asset::Asset;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -35,8 +42,10 @@ pub const BOX_HALF: Vec3 = Vec3::new(14.0, 9.0, 14.0);
 pub const FALL_MS: f32 = 9.0;
 /// The ground kept clear around an eye with a roof over it, metres.
 pub const SHELTER_CLEAR_M: f32 = 5.0;
+/// How fast a snowflake falls, m/s — the reference band is 1 to 1.5.
+pub const SNOW_FALL_MS: f32 = 1.2;
 
-/// The uniform, laid out to match `Rain` in the shader. 48 bytes: WebGL2
+/// The uniform, laid out to match `Rain` in the shader. 64 bytes: WebGL2
 /// wants uniforms of at least 16.
 #[derive(Clone, Copy, Default, ShaderType, Debug, PartialEq)]
 pub struct RainParams {
@@ -46,6 +55,9 @@ pub struct RainParams {
     pub box_: Vec4,
     /// rgb the streak's lit colour, w the sheltered clear radius (m).
     pub look: Vec4,
+    /// xyz a snowflake's drift velocity (m/s), w the share of drops that
+    /// fall as snow `0..1` (snow v0).
+    pub snow: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
@@ -99,7 +111,7 @@ fn hash01(i: u32, k: u32) -> f32 {
 }
 
 /// The drop mesh: `DROPS` quads, each a home in the unit box (POSITION), its
-/// corners (UV_0) and its rank and phase (COLOR).
+/// corners (UV_0) and its rank, phase and snow draw (COLOR).
 pub fn drop_mesh(drops: u32) -> Mesh {
     let n = drops as usize;
     let mut pos = Vec::with_capacity(n * 4);
@@ -112,11 +124,13 @@ pub fn drop_mesh(drops: u32) -> Mesh {
         // the intensity exactly rather than by luck.
         let rank = (i as f32 + 0.5) / drops as f32;
         let phase = hash01(i, 3);
+        // Under the snow share, a flake (snow v0).
+        let flake = hash01(i, 4);
         let base = (i * 4) as u16;
         for (x, y) in [(-1.0, 0.0), (1.0, 0.0), (1.0, 1.0), (-1.0, 1.0)] {
             pos.push(home);
             uv.push([x, y]);
-            col.push([rank, phase, 0.0, 1.0]);
+            col.push([rank, phase, flake, 1.0]);
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -140,10 +154,14 @@ pub fn params_for(w: &WeatherNow) -> RainParams {
     // a white sheet in a flash.
     let lit = (0.12 + 0.6 * w.sun_lux * (1.0 - 0.45 * w.dark)).min(0.8) + 1.5 * w.flash;
     let clear = if w.sheltered { SHELTER_CLEAR_M } else { 0.0 };
+    // A flake rides the same wind down at a walking pace, so a storm's snow
+    // drives near level.
+    let drift = Vec3::new(wind.x, -SNOW_FALL_MS, wind.y);
     RainParams {
         fall: fall.extend(0.45 + 0.3 * w.rain),
         box_: BOX_HALF.extend(intensity),
         look: Vec4::new(0.55 * lit, 0.58 * lit, 0.62 * lit, clear),
+        snow: drift.extend(w.snow.clamp(0.0, 1.0)),
     }
 }
 
@@ -169,8 +187,8 @@ pub fn setup(
     commands.insert_resource(RainHandle(material));
 }
 
-/// Move the rain and the ground's wetness with the weather. Writes only
-/// when something moved, since a write re-uploads a material.
+/// Move the rain and the ground's wetness and snow with the weather. Writes
+/// only when something moved, since a write re-uploads a material.
 pub fn drive(
     weather: Res<WeatherNow>,
     handle: Option<Res<RainHandle>>,
@@ -190,4 +208,7 @@ pub fn drive(
     // The ground in steps of 1/64: a smooth soak without a re-upload a frame.
     let wet = (weather.ground_wet * 64.0).round() / 64.0;
     ring.set_rain_wet(&mut ground, wet);
+    // The snow the same way, and its floor in whole metres.
+    let snow = (weather.ground_snow * 64.0).round() / 64.0;
+    ring.set_snow(&mut ground, snow, weather.snow_floor.round());
 }

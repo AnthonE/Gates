@@ -659,3 +659,45 @@ fn the_heat_burns_water() {
     );
     assert_eq!(hot.food, cool.food, "the heat burned food");
 }
+
+/// Snow (snow v0): where the air freezes the rain falls as snow and wets a
+/// body at `snow_wet_pm` of the rain's rate, sleet at a share of each, and
+/// a roof keeps it off the same. Without the air armed the air reads 0 °C
+/// everywhere, and that is not a winter: the rain wets as rain.
+#[test]
+fn snow_wets_less_than_rain() {
+    let mut ec = air_fixture();
+    ec.snow_wet_pm = 500;
+    let wet_after = |ec: &ExposureContent, air_dc: i16, roofed: bool| {
+        let fall = Inputs {
+            rain: 1000,
+            air_dc,
+            roofed,
+            ..Inputs::default()
+        };
+        let mut p = body();
+        let mut ev = EventQueue::default();
+        for _ in 0..2 {
+            exposure::step(ec, &fall, &mut p, &mut ev);
+        }
+        p.wet
+    };
+    let rain = wet_after(&ec, 60, false);
+    let sleet = wet_after(&ec, 5, false);
+    let snow = wet_after(&ec, -80, false);
+    assert_eq!(rain, 2 * ec.wet_rain_per_s);
+    assert_eq!(snow, rain / 2, "snow wets at half the rain's rate");
+    assert!(snow < sleet && sleet < rain, "{snow} < {sleet} < {rain}");
+    let freezing = Inputs {
+        air_dc: 0,
+        ..Inputs::default()
+    };
+    assert_eq!(exposure::snow_pm(&ec, &freezing), 1000);
+    assert_eq!(wet_after(&ec, -80, true), 0, "a roof keeps the snow off");
+    // The air unarmed: 0 °C is no say at all.
+    let flat = ExposureContent {
+        snow_wet_pm: 500,
+        ..ExposureContent::probe_fixture()
+    };
+    assert_eq!(wet_after(&flat, 0, false), 2 * flat.wet_rain_per_s);
+}

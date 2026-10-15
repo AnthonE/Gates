@@ -9,10 +9,11 @@
 //!
 //! What is local here and why: the cloud **drift** (integrated from the
 //! wind, a look nobody's gameplay reads), how **wet** the ground looks
-//! (a lagged echo of the rain), and whether the eye is **under a roof or
-//! underwater**. Lightning is not local: its bolts are drawn off the seed
-//! and the second (`weather::bolt`), so a flash is the same flash for
-//! everyone.
+//! (a lagged echo of the rain), how much of the rain is **snow** (the air
+//! the server last read at the body, the sim's own line through it), and
+//! whether the eye is **under a roof or underwater**. Lightning is not
+//! local: its bolts are drawn off the seed and the second
+//! (`weather::bolt`), so a flash is the same flash for everyone.
 
 use bevy::prelude::*;
 use sim_core::limits::TICK_HZ;
@@ -83,6 +84,19 @@ pub struct WeatherNow {
     pub thunder_n: usize,
     /// The last second whose bolt was queued, so a bolt is heard once.
     last_bolt: u64,
+    /// How much of what falls is snow, `0..=1` (snow v0): the air the
+    /// server last read at the body (`ClientCore::air_c`) through the sim's
+    /// own line (`climate::snow_pm`), eased over a few seconds so a
+    /// whole-degree step reads as a spell of sleet. Whether anything falls
+    /// at all is still `rain`.
+    pub snow: f32,
+    /// How white the ground lies, `0..=1`: falling snow settles over a few
+    /// minutes, stays while it freezes, and melts once the air is over it.
+    pub ground_snow: f32,
+    /// The lowest the eye has seen snow fall since the ground was last
+    /// bare, metres: the snow lies there and on everything higher, where
+    /// the air is colder still (`climate::air_dc_at`'s lapse).
+    pub snow_floor: f32,
 }
 
 impl WeatherNow {
@@ -107,6 +121,12 @@ impl WeatherNow {
     pub fn fog_part(&self) -> f32 {
         let f = self.fog;
         f * f * f * (3.0 / 110.0)
+    }
+
+    /// The rain that falls as rain, `0..=1` — what wets the ground and
+    /// drums on it. Snow is near silent and lies white instead.
+    pub fn falling_rain(&self) -> f32 {
+        self.rain * (1.0 - self.snow)
     }
 
     /// The rain haze's share of [`Self::fog_sigma`], per metre.
@@ -137,6 +157,19 @@ impl WeatherNow {
 fn pm(v: u16) -> f32 {
     v as f32 * 0.001
 }
+
+/// How long the snow share takes to follow the air, seconds: a whole degree
+/// is the reading's step, and this is the sleet that step crosses.
+pub const SNOW_EASE_S: f32 = 4.0;
+/// Full snow whitens the ground in about this long, seconds; a flurry takes
+/// proportionally longer. Melting, once the air is over freezing, takes
+/// [`SNOW_MELT_S`].
+pub const SNOW_SETTLE_S: f32 = 150.0;
+pub const SNOW_MELT_S: f32 = 400.0;
+/// How far under the feet that saw it fall the snow is laid, metres.
+pub const SNOW_FLOOR_SLACK_M: f32 = 3.0;
+/// Where no snow has been seen: above any ground there is.
+pub const NO_SNOW_FLOOR: f32 = 10_000.0;
 
 /// The wind's bearing (a yaw-LUT index, the sim's convention) as a unit
 /// vector in world XZ.
@@ -170,6 +203,7 @@ pub fn update(
     time: Res<Time>,
     composer: Option<Res<super::sky::SkyComposer>>,
     mut now_res: ResMut<WeatherNow>,
+    mut capture_snow: Local<Option<f32>>,
 ) {
     let now = &mut *now_res;
     let tick_est = feed.server_tick_est.max(0.0);
@@ -201,9 +235,21 @@ pub fn update(
 
     let dt = time.delta_secs();
     if pinned {
-        // A probe's sky holds still and dry-or-soaked as asked.
+        // A probe's sky holds still and dry-or-soaked as asked. Its snow is
+        // asked too (`GATES_CAPTURE_SNOW`, `0..1`: what falls, and how white
+        // the ground lies), never the capture shard's air, which is a
+        // function of the hour it booted at.
+        let snow = *capture_snow.get_or_insert_with(|| {
+            std::env::var("GATES_CAPTURE_SNOW")
+                .ok()
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .map_or(0.0, |v| v.clamp(0.0, 1.0))
+        });
         now.drift = Vec2::ZERO;
-        now.ground_wet = now.rain;
+        now.snow = snow;
+        now.ground_wet = now.falling_rain();
+        now.ground_snow = snow;
+        now.snow_floor = -NO_SNOW_FLOOR;
         now.flash = 0.0;
     } else {
         // The deck drifts downwind: a breeze at clear, a gale in a storm.
@@ -212,13 +258,35 @@ pub fn update(
         now.drift += now.wind_dir * speed * dt;
         now.drift.x = now.drift.x.rem_euclid(period);
         now.drift.y = now.drift.y.rem_euclid(period);
-        // Wet arrives in about a minute and dries over about eight.
-        let tau = if now.rain > now.ground_wet {
-            40.0
-        } else {
-            300.0
-        };
-        now.ground_wet += (now.rain - now.ground_wet) * (dt / tau).min(1.0);
+        // Snow (snow v0): the air the server read at the body, through the
+        // sim's line, eased so a whole-degree step is a spell of sleet. No
+        // reading yet (or a shard whose exposure is off) is no snow.
+        let air = net
+            .as_ref()
+            .map(|n| &n.session.core)
+            .filter(|c| c.air_read)
+            .map(|c| c.air_c);
+        let snow_want = air.map_or(0.0, |c| pm(sim_core::climate::snow_pm(i16::from(c) * 10)));
+        now.snow += (snow_want - now.snow) * (dt / SNOW_EASE_S).min(1.0);
+
+        // Wet arrives in about a minute and dries over about eight — from
+        // the rain that falls as rain; snow lies instead.
+        let wet = now.falling_rain();
+        let tau = if wet > now.ground_wet { 40.0 } else { 300.0 };
+        now.ground_wet += (wet - now.ground_wet) * (dt / tau).min(1.0);
+        // The snow settles as hard as it falls, stays while it freezes and
+        // melts as the air warms. It lies from the lowest feet that saw it
+        // fall and up; bare ground forgets the line.
+        let settle = now.rain * now.snow / SNOW_SETTLE_S;
+        let melt = (1.0 - now.snow) * now.ground_snow / SNOW_MELT_S;
+        now.ground_snow = (now.ground_snow + (settle - melt) * dt).clamp(0.0, 1.0);
+        if now.ground_snow < 0.01 {
+            now.snow_floor = NO_SNOW_FLOOR;
+        }
+        if now.rain * now.snow > 0.05 {
+            let feet = eye.pos.y - eye.height - SNOW_FLOOR_SLACK_M;
+            now.snow_floor = now.snow_floor.min(feet);
+        }
 
         // Lightning: this second's bolt and the last one's, since a bolt
         // late in a second is still flashing early in the next.

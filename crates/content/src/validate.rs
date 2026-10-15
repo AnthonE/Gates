@@ -911,6 +911,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("wet_cool", e.wet_cool),
             ("clothes_heat_pm", e.clothes_heat_pm),
             ("heat_hurt_at", e.heat_hurt_at),
+            ("snow_wet_pm", e.snow_wet_pm),
         ] {
             if v > 1000 {
                 return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));

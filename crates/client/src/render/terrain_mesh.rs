@@ -767,6 +767,23 @@ impl Ring {
             }
         }
     }
+    /// Lay snow on the island's ground (snow v0): `cover` `0..1`, on what
+    /// faces up from `floor` metres and higher — `GroundSplatParams::snow`'s
+    /// two live slots. Writes only when either moved, as above.
+    pub fn set_snow(&self, materials: &mut Assets<GroundMaterial>, cover: f32, floor: f32) {
+        for h in [&self.ground, &self.far_ground].into_iter().flatten() {
+            let changed = materials.get(h).is_some_and(|m| {
+                let s = m.extension.params.snow;
+                s.x != cover || s.y != floor
+            });
+            if changed {
+                if let Some(m) = materials.get_mut(h) {
+                    m.extension.params.snow.x = cover;
+                    m.extension.params.snow.y = floor;
+                }
+            }
+        }
+    }
     pub fn is_empty(&self) -> bool {
         self.built.is_empty()
     }

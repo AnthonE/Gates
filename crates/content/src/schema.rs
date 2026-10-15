@@ -1319,6 +1319,15 @@ pub struct Exposure {
     pub heat_hurt_at: u32,
     #[serde(default)]
     pub heat_hp_per_min: u32,
+    /// Snow (snow v0): per mille of the rain's wetting that snow does where
+    /// the air freezes. Absent, snow wets as the rain does.
+    #[serde(default = "thousand")]
+    pub snow_wet_pm: u32,
+}
+
+/// `Exposure::snow_wet_pm`'s default: all of the rain's.
+fn thousand() -> u32 {
+    1000
 }
 
 /// The air (`content/balance.toml` `[climate]`; climate v0,

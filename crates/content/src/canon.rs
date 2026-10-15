@@ -507,6 +507,7 @@ pub fn hash(c: &Content) -> u64 {
         ex.heat_water_pct,
         ex.heat_hurt_at,
         ex.heat_hp_per_min,
+        ex.snow_wet_pm,
     ] {
         h.u(v);
     }
