@@ -1167,6 +1167,21 @@ impl HeldModel {
 pub struct SkinMats {
     rows: std::collections::HashMap<(usize, u16), Handle<StandardMaterial>>,
     parts: std::collections::HashMap<(AssetId<StandardMaterial>, u16), Handle<StandardMaterial>>,
+    /// What each catalog id looks like, as `paint::paint` learned it from
+    /// the catalog. A skin not learned yet is not drawn yet: the caller
+    /// keeps the plain look and asks again, so a painted skin is never
+    /// drawn as its tint and then left that way.
+    looks: std::collections::HashMap<u16, Look>,
+}
+
+/// A skin's look (wire v110): a tint, or a picture that is on its way,
+/// here, or never coming (then its tint, its picture's average colour).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Look {
+    Tint,
+    Waiting,
+    Ready(Handle<Image>),
+    Failed,
 }
 
 /// `base` with its base colour multiplied by `tint` (sRGB factors): the
@@ -1180,6 +1195,24 @@ fn tinted(base: &StandardMaterial, tint: [f32; 3]) -> StandardMaterial {
 }
 
 impl SkinMats {
+    /// Learn what skin `skin` looks like (`paint::paint`, each frame).
+    pub fn learn(&mut self, skin: u16, look: Look) {
+        if self.looks.get(&skin) != Some(&look) {
+            self.looks.insert(skin, look);
+        }
+    }
+
+    /// The look learned for `skin`, if any.
+    pub fn look(&self, skin: u16) -> Option<&Look> {
+        self.looks.get(&skin)
+    }
+
+    /// A skin not learned yet, or a picture still on its way: draw the
+    /// plain look this frame and ask again.
+    fn wait(&self, skin: u16) -> bool {
+        matches!(self.looks.get(&skin), None | Some(Look::Waiting))
+    }
+
     /// Row `row`'s material in skin `skin`, tinted by `tint` (sRGB factors,
     /// `ui::skins::tint_of`). `None` while the row's own material has not
     /// loaded yet (a glTF row), so the caller draws the plain look this
@@ -1194,6 +1227,11 @@ impl SkinMats {
     ) -> Option<Handle<StandardMaterial>> {
         if let Some(h) = self.rows.get(&(row, skin)) {
             return Some(h.clone());
+        }
+        // A painted held skin is drawn by `Models::skinned` once its
+        // picture lands; until then, and if it never does, its tint here.
+        if self.wait(skin) {
+            return None;
         }
         let m = tinted(materials.get(base)?, tint);
         let h = materials.add(m);
@@ -1214,7 +1252,14 @@ impl SkinMats {
         if let Some(h) = self.parts.get(&(base.id(), skin)) {
             return Some(h.clone());
         }
-        let m = tinted(materials.get(base)?, tint);
+        if self.wait(skin) {
+            return None;
+        }
+        // A painted piece: its picture over the piece's own canvas UVs.
+        let m = match self.looks.get(&skin) {
+            Some(Look::Ready(img)) => super::paint::painted(materials.get(base)?, img.clone()),
+            _ => tinted(materials.get(base)?, tint),
+        };
         let h = materials.add(m);
         self.parts.insert((base.id(), skin), h.clone());
         Some(h)
@@ -2272,7 +2317,13 @@ pub struct Models {
     /// [`crate::ui::hold::SKIN_MODELS`].
     skin_mesh: Vec<Handle<Mesh>>,
     skin_mat: Vec<Handle<StandardMaterial>>,
+    /// Painted skins on a held canvas row (`paint::paint`, wire v110): the
+    /// row's tint-free mesh and a material with the picture as its colour.
+    painted: Vec<((usize, u16), Drawn)>,
 }
+
+/// A mesh and the material it is drawn in.
+type Drawn = (Handle<Mesh>, Handle<StandardMaterial>);
 
 impl Models {
     /// The geometry and the surface for one [`crate::ui::hold::HELD_MODELS`]
@@ -2296,8 +2347,31 @@ impl Models {
         row: usize,
         skin: u16,
     ) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
-        let k = crate::ui::hold::skin_model(row, skin)?;
-        Some((self.skin_mesh[k].clone(), self.skin_mat[k].clone()))
+        if let Some(k) = crate::ui::hold::skin_model(row, skin) {
+            return Some((self.skin_mesh[k].clone(), self.skin_mat[k].clone()));
+        }
+        self.painted
+            .iter()
+            .find(|(k, _)| *k == (row, skin))
+            .map(|(_, pair)| pair.clone())
+    }
+
+    /// Whether row `row` in skin `skin` has its painted model yet.
+    pub fn painted(&self, row: usize, skin: u16) -> bool {
+        self.painted.iter().any(|(k, _)| *k == (row, skin))
+    }
+
+    /// Give row `row` in painted skin `skin` its mesh and material.
+    pub fn paint(
+        &mut self,
+        row: usize,
+        skin: u16,
+        mesh: Handle<Mesh>,
+        mat: Handle<StandardMaterial>,
+    ) {
+        if !self.painted(row, skin) {
+            self.painted.push(((row, skin), (mesh, mat)));
+        }
     }
 }
 
@@ -2350,6 +2424,7 @@ pub fn load_models(
         mat,
         skin_mesh: skins.iter().map(|s| glb_mesh(s.path)).collect(),
         skin_mat: skins.iter().map(|s| glb_mat(s.path)).collect(),
+        painted: Vec::new(),
     });
     commands.insert_resource(SkinMats::default());
 }

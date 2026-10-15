@@ -464,6 +464,18 @@ pub fn bake_item_descs(content: &content::Content) -> Result<Box<protocol::ItemD
     Ok(d)
 }
 
+/// A painted skin's texture as the wire names it: the first 8 bytes of the
+/// PNG's sha256 (content validation has made it 64 lowercase hex).
+fn texture_prefix(hex: Option<&str>) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    if let Some(h) = hex.filter(|h| h.len() >= 16) {
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap_or(0);
+        }
+    }
+    out
+}
+
 /// The wire's skin catalog (skins v0), in the same row order as
 /// `Content::bake_skins`, which is the order an owned set indexes.
 pub fn bake_skin_catalog(content: &content::Content) -> Result<Box<protocol::SkinCatalog>, String> {
@@ -486,6 +498,7 @@ pub fn bake_skin_catalog(content: &content::Content) -> Result<Box<protocol::Ski
                 tint: s.tint,
                 coin,
                 price,
+                texture: texture_prefix(s.texture.as_deref()),
             },
         )
         .map_err(|_| {

@@ -171,16 +171,9 @@ pub fn load(
         .mesh()
         .build()
         .translated_by(Vec3::new(0.0, 1.94, -0.01)));
-    let tunic_top = add(lathe(
-        Vec2::new(0.0, -0.076),
-        &[(0.93, 0.19, 0.17), (1.26, 0.185, 0.165), (1.34, 0.13, 0.12)],
-        None,
-    ));
-    let tunic_skirt = add(lathe(
-        Vec2::new(0.0, -0.076),
-        &[(0.58, 0.215, 0.195), (0.97, 0.19, 0.17)],
-        None,
-    ));
+    let [top, skirt] = tunic_meshes();
+    let tunic_top = add(top);
+    let tunic_skirt = add(skirt);
     let poncho = add(lathe(
         Vec2::new(0.0, -0.076),
         &[(0.80, 0.36, 0.30), (1.30, 0.17, 0.155), (1.36, 0.12, 0.11)],
@@ -393,13 +386,29 @@ pub fn put_on(
             None => pending = true, // the catalog has not dripped this row yet
         }
     }
-    hang(commands, kit, skin, ibm, rig, &names, |slot, base| {
-        tints[slot]
-            .and_then(|t| skin_mats.for_part(want.skins[slot], t, base, materials))
-            .unwrap_or_else(|| base.clone())
-    });
+    // A skin whose material is not ready (a painted one on its way, v110)
+    // hangs plain this time and keeps the rig pending, so it is dressed
+    // again until the picture is on it.
+    let mut unready = false;
+    hang(
+        commands,
+        kit,
+        skin,
+        ibm,
+        rig,
+        &names,
+        |slot, base| match tints[slot] {
+            Some(t) => skin_mats
+                .for_part(want.skins[slot], t, base, materials)
+                .unwrap_or_else(|| {
+                    unready = true;
+                    base.clone()
+                }),
+            None => base.clone(),
+        },
+    );
     rig.shown = want;
-    rig.pending = pending;
+    rig.pending = pending || unready;
 }
 
 /// Take off whatever `rig` shows and hang the pieces named in `names` (the
@@ -457,9 +466,52 @@ type Ring = (f32, f32, f32);
 /// `profile` rings bottom to top — elliptic, so a piece can be deeper than
 /// wide like the head it covers. `window` cuts a hole facing +Z: half-width
 /// in radians and the height band it spans, for a hood's face.
+/// The Burlap Tunic: its top (Spine) and its skirt (Hips). **One painted
+/// skin covers both** (`ui::skins::CANVASES`): the top takes the image's
+/// upper half, collar at the top edge, and the skirt the lower half, hem at
+/// the bottom edge, so a design runs on across the waist. A public contract
+/// (`DECISIONS.md:432`), pinned by `tests/skin_templates.rs`.
+pub fn tunic_meshes() -> [Mesh; 2] {
+    let c = Vec2::new(0.0, -0.076);
+    let top = lathe(
+        c,
+        &[(0.93, 0.19, 0.17), (1.26, 0.185, 0.165), (1.34, 0.13, 0.12)],
+        None,
+    );
+    let skirt = lathe(c, &[(0.58, 0.215, 0.195), (0.97, 0.19, 0.17)], None);
+    [banded(top, 0.0, 0.5), banded(skirt, 0.5, 1.0)]
+}
+
+/// A lathe's V (0 at its lowest ring, 1 at its highest) moved into the band
+/// `v0..v1` of the image, upside down: the highest ring at `v0`, the top.
+fn banded(mut m: Mesh, v0: f32, v1: f32) -> Mesh {
+    if let Some(bevy::mesh::VertexAttributeValues::Float32x2(uv)) =
+        m.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+    {
+        for t in uv.iter_mut() {
+            t[1] = v0 + (v1 - v0) * (1.0 - t[1]);
+        }
+    }
+    m
+}
+
 fn lathe(c: Vec2, profile: &[Ring], window: Option<(f32, f32, f32)>) -> Mesh {
     const SEG: usize = 28;
     let rings = profile.len();
+    // V by arc length up the profile (0 at the lowest ring, 1 at the
+    // highest), so painted cloth is not squeezed at a short shoulder.
+    let mut arc = Vec::with_capacity(rings);
+    let mut run = 0.0f32;
+    for i in 0..rings {
+        if i > 0 {
+            let (y0, ax, az) = profile[i - 1];
+            let (y1, bx, bz) = profile[i];
+            let dr = (bx + bz - ax - az) * 0.5;
+            run += ((y1 - y0).powi(2) + dr * dr).sqrt();
+        }
+        arc.push(run);
+    }
+    let total = run.max(1e-6);
     let mut pos = Vec::with_capacity((SEG + 1) * rings);
     let mut nor = Vec::with_capacity(pos.capacity());
     let mut uv = Vec::with_capacity(pos.capacity());
@@ -484,7 +536,7 @@ fn lathe(c: Vec2, profile: &[Ring], window: Option<(f32, f32, f32)>) -> Mesh {
             pos.push([c.x + sx * st, y, c.y + sz * ct]);
             let n = Vec3::new(st / sx.max(1e-3) * rm * nr, ny, ct / sz.max(1e-3) * rm * nr);
             nor.push(n.normalize_or(Vec3::Y).to_array());
-            uv.push([u, i as f32 / (rings - 1).max(1) as f32]);
+            uv.push([u, arc[i] / total]);
         }
     }
     let mut idx = Vec::with_capacity(SEG * rings * 6);
@@ -545,6 +597,7 @@ mod tests {
                 tint: [255, 0, 0],
                 coin: protocol::COIN_NONE,
                 price: 0,
+                texture: [0; 8],
             },
         )
         .unwrap();

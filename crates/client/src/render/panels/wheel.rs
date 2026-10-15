@@ -45,6 +45,10 @@ use crate::ui::build::{
 use crate::ui::craft::item_label;
 use crate::ui::hammer;
 
+/// The wheel's live wedge ink: the reference build wheel's red, on a
+/// glyph, a centre label and a ring alike.
+const WHEEL_RED: Color = Color::srgb(0.82, 0.25, 0.16);
+
 /// Follow the pointer over whichever wheel is up.
 ///
 /// The shape wheel **latches** what it is over — the reference's own feel:
@@ -113,7 +117,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             // Barely there. The reference dims the world a little and blurs
             // it; we have no blur, and a heavy scrim in its place would hide
             // the base you are aiming the piece at.
-            BackgroundColor(Color::srgba(0.02, 0.02, 0.025, 0.30)),
+            BackgroundColor(Color::srgba(0.055, 0.047, 0.039, 0.30)),
         ))
         .with_children(|root| {
             // The wheel box: centred by half-percent offsets and negative
@@ -251,7 +255,7 @@ pub fn build_hammer_screen(
             },
             // The shape wheel's scrim, for the shape wheel's reason: the
             // structure this wheel acts on has to stay visible under it.
-            BackgroundColor(Color::srgba(0.02, 0.02, 0.025, 0.30)),
+            BackgroundColor(Color::srgba(0.055, 0.047, 0.039, 0.30)),
         ))
         .with_children(|root| {
             root.spawn(Node {
@@ -317,7 +321,7 @@ pub fn build_hammer_screen(
                             },
                             ImageNode {
                                 image,
-                                color: Color::srgb(0.82, 0.25, 0.16),
+                                color: WHEEL_RED,
                                 ..default()
                             },
                             Pickable::IGNORE,
@@ -487,7 +491,7 @@ fn glyph(
     } else if selected {
         Color::srgb(0.99, 0.97, 0.95)
     } else {
-        Color::srgb(0.82, 0.25, 0.16)
+        WHEEL_RED
     };
 
     let mut node = parent.spawn((
@@ -552,7 +556,7 @@ fn readout(
             },
             ImageNode {
                 image,
-                color: Color::srgb(0.82, 0.25, 0.16),
+                color: WHEEL_RED,
                 ..default()
             },
             Pickable::IGNORE,

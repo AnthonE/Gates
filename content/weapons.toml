@@ -54,6 +54,9 @@
 # best-melee anchor (`balance.rs`, the door and wall breach swings) still
 # resolves to `item.spear_metal` and no raid number moves.
 
+# A landed blow wears it, a point off its 100, as a hatchet's does (the rock
+# it replaced did not wear on a body). Trees and stone wear it too, at
+# gatherables.toml's 0.3.
 [[weapon]]
 id = "item.bat"
 kind = "melee"
@@ -63,6 +66,7 @@ headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
 range_m = 1
+condition_loss = 100
 
 # **The torch hits** — the reference's does: 5 a blow against its rock's 10,
 # plus a point of heat while it burns. Half the rock here too, and the heat

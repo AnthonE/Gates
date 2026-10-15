@@ -2605,6 +2605,7 @@ pub fn stream(
     mut skin_mats: ResMut<super::viewmodel::SkinMats>,
     mut marks: Option<ResMut<super::decal::Marks>>,
     mut sound: Option<ResMut<super::audio::Sound>>,
+    rig: Res<super::anim::Rig>,
 ) {
     // One reborrow, then field-level borrows. `ResMut`'s `DerefMut` hands out
     // a borrow of the WHOLE resource, so reading `kit` while inserting into
@@ -2831,9 +2832,60 @@ pub fn stream(
 
     // ---- backpacks ------------------------------------------------------
     // A bag never moves, so a known id is left entirely alone.
+    let mut body_waiting = false;
     for bag in core.bags.entries() {
         if let Some(live) = ring.bags.get_mut(&bag.id) {
             live.seen = gen;
+            continue;
+        }
+        // A player's corpse (v110) is the body itself, fallen: the rig in
+        // `Death01`, its root ahead of the bag so the body it lays back
+        // lies across the bag's spot, the middle the sim cuts at
+        // (`backpack::CORPSE_BACK_M`). The rig loads late on a join, so a
+        // corpse waits for it (`pending_loot`) rather than drawing a pack.
+        if bag.is_body() {
+            let Some(scene) = rig.scene.clone().filter(|_| rig.ready()) else {
+                body_waiting = true;
+                continue;
+            };
+            let mid = Vec3::new(
+                bag.qx as f32 * POS_XZ_Q,
+                bag.qy as f32 * POS_Y_Q,
+                bag.qz as f32 * POS_XZ_Q,
+            );
+            let turn = (bag.id.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
+            let facing = Quat::from_rotation_y(turn * std::f32::consts::TAU);
+            let root = mid + facing * Vec3::new(0.0, 0.0, sim_core::backpack::CORPSE_BACK_M);
+            let entity = commands
+                .spawn((
+                    super::WorldEntity,
+                    super::anim::BodyAnim {
+                        clip: Some(super::anim::Clip::Death),
+                        ..default()
+                    },
+                    super::anim::Reshade::body(),
+                    SceneRoot(scene),
+                    Transform::from_translation(root)
+                        .with_rotation(facing)
+                        .with_scale(Vec3::splat(rig.scale)),
+                ))
+                .id();
+            ring.bags.insert(
+                bag.id,
+                Live {
+                    entity,
+                    seen: gen,
+                    row: 0,
+                    open: false,
+                    locked: false,
+                    dmg: 0,
+                    own: 0,
+                    plate: 0,
+                    facing: 0,
+                    foot_drop: 0.0,
+                    base_y: 0.0,
+                },
+            );
             continue;
         }
         // The sim drops it at the body's FEET, so half its height lifts it
@@ -2913,20 +2965,21 @@ pub fn stream(
         false
     });
 
-    ring.pending_loot = sync_loot(
-        &mut commands,
-        &mut ring.gitems,
-        kit,
-        gen,
-        core.ground_items(),
-        (&core.catalog, &core.skins),
-        &models,
-        &mut skin_mats,
-        &assets,
-        &meshes,
-        &mut materials,
-        |x, z| super::loot::surface_y(seed, haven, x, z),
-    );
+    ring.pending_loot = body_waiting
+        | sync_loot(
+            &mut commands,
+            &mut ring.gitems,
+            kit,
+            gen,
+            core.ground_items(),
+            (&core.catalog, &core.skins),
+            &models,
+            &mut skin_mats,
+            &assets,
+            &meshes,
+            &mut materials,
+            |x, z| super::loot::surface_y(seed, haven, x, z),
+        );
 }
 
 /// Returns whether a fallback is waiting for a shared model to load.

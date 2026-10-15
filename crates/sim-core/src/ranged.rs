@@ -1331,6 +1331,7 @@ fn step_in(
             exit,
             qy: feet_q,
             crouched: struck_low,
+            part: lying_part,
         }) = best
         {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
@@ -1375,7 +1376,9 @@ fn step_in(
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
             // Hoisted, because the rung is now a fact the shooter is told
             // and not only a multiplier: `EV_HIT` carries it (v58).
-            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
+            let part = lying_part.unwrap_or_else(|| {
+                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low)
+            });
             let dmg = crate::combat::part_damage(a.damage, part, a.head_pct, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
             let h = crate::combat::hurt(cc, v, dmg);
@@ -1885,6 +1888,31 @@ pub struct BodyHit {
     /// reason as `qy`: a rewound hit is scored against the crouch the
     /// shooter saw, not the one the victim holds now.
     pub crouched: bool,
+    /// The part, already decided, when the body lies on the ground (a
+    /// sleeper, [`RewindPose::lying`]): head, chest or legs by where along
+    /// the body the line passed, since every altitude of a lying body is in
+    /// the standing legs band. `None` for a standing body, which
+    /// [`part_crossed`] scores.
+    pub part: Option<Part>,
+}
+
+impl BodyHit {
+    /// Which part this hit reached: [`Self::part`] for a lying body, else
+    /// [`part_crossed`] over the span clipped at `stop_t`.
+    #[inline]
+    pub fn part_of(&self, oy: f32, sy: f32, stop_t: f32) -> Part {
+        self.part.unwrap_or_else(|| {
+            let feet_mm = self.qy as f32 * (POS_Y_Q * MM_PER_M);
+            part_crossed(
+                oy,
+                sy,
+                feet_mm,
+                self.enter,
+                self.exit.min(stop_t),
+                self.crouched,
+            )
+        })
+    }
 }
 
 /// Which body part did the shot's span inside this body reach?
@@ -2016,6 +2044,9 @@ pub fn body_crossing(
     slot: usize,
     at: RewindPose,
 ) -> Option<BodyHit> {
+    if at.lying {
+        return lying_crossing(o, s, stop_t, slot, at);
+    }
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
     let planar2 = sx * sx + sz * sz;
@@ -2080,6 +2111,90 @@ pub fn body_crossing(
         exit,
         qy: at.qy,
         crouched: at.crouched,
+        part: None,
+    })
+}
+
+/// [`body_crossing`] for a body lying on its back facing `at.yaw`: a capsule
+/// of radius [`collide::LIE_R_M`] along the ground, head behind the facing
+/// and feet ahead of it, centred over `at`'s feet — the pose the client
+/// draws (`anim::root_pose`). Closest points between the segment and the
+/// body's axis (Ericson's segment–segment solve), so `t` is the closest
+/// approach as it is for a standing body; the span is the chord a
+/// perpendicular crossing would cut, which is all `enter` is used for.
+fn lying_crossing(
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+    stop_t: f32,
+    slot: usize,
+    at: RewindPose,
+) -> Option<BodyHit> {
+    let r = collide::LIE_R_M;
+    let len = collide::CAPSULE_HEIGHT_M;
+    let half = len * 0.5 - r;
+    let (fx, fz) = yaw_dir(at.yaw);
+    let (cx, cy, cz) = (
+        at.qx as f32 * POS_XZ_Q,
+        at.qy as f32 * POS_Y_Q + r,
+        at.qz as f32 * POS_XZ_Q,
+    );
+    // The axis, head end to feet end.
+    let (hx, hz) = (cx - fx * half, cz - fz * half);
+    let (ex, ez) = (fx * 2.0 * half, fz * 2.0 * half);
+    let (ax, ay, az) = (o.0 / MM_PER_M, o.1 / MM_PER_M, o.2 / MM_PER_M);
+    let (ux, uy, uz) = (s.0 / MM_PER_M, s.1 / MM_PER_M, s.2 / MM_PER_M);
+    let aa = ux * ux + uy * uy + uz * uz;
+    if aa <= 0.0 {
+        return None;
+    }
+    let ee = ex * ex + ez * ez;
+    let (rx, ry, rz) = (ax - hx, ay - cy, az - hz);
+    let c = ux * rx + uy * ry + uz * rz;
+    let f = ex * rx + ez * rz;
+    let b = ux * ex + uz * ez;
+    let denom = aa * ee - b * b;
+    let mut t = if denom > 0.0 {
+        ((b * f - c * ee) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut k = (b * t + f) / ee;
+    if k < 0.0 {
+        k = 0.0;
+        t = (-c / aa).clamp(0.0, 1.0);
+    } else if k > 1.0 {
+        k = 1.0;
+        t = ((b - c) / aa).clamp(0.0, 1.0);
+    }
+    if t > stop_t {
+        return None;
+    }
+    let (px, py, pz) = (ax + ux * t, ay + uy * t, az + uz * t);
+    let (dx, dy, dz) = (px - (hx + ex * k), py - cy, pz - (hz + ez * k));
+    let d2 = dx * dx + dy * dy + dz * dz;
+    if d2 > r * r {
+        return None;
+    }
+    let chord = (r * r - d2).max(0.0).sqrt() / aa.sqrt();
+    // Where along the body, from the crown, the line passed: the standing
+    // bands laid flat, head first.
+    let from_head =
+        ((px - (cx - fx * len * 0.5)) * fx + (pz - (cz - fz * len * 0.5)) * fz).clamp(0.0, len);
+    let part = if from_head <= HEAD_BAND_M {
+        Part::Head
+    } else if from_head >= len - collide::LIMB_BAND_M {
+        Part::Limb
+    } else {
+        Part::Chest
+    };
+    Some(BodyHit {
+        t,
+        slot,
+        enter: (t - chord).clamp(0.0, 1.0),
+        exit: (t + chord).clamp(0.0, 1.0),
+        qy: at.qy,
+        crouched: at.crouched,
+        part: Some(part),
     })
 }
 
@@ -2501,6 +2616,7 @@ fn hitscan_in(
             exit,
             qy: feet_q,
             crouched: struck_low,
+            part: lying_part,
         }) = best
         {
             let range_cm = (reach * t / 10.0) as u16;
@@ -2527,7 +2643,9 @@ fn hitscan_in(
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
             // Hoisted for the same reason as the arrow's: the rung reaches
             // the shooter's screen now, not just their damage number.
-            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
+            let part = lying_part.unwrap_or_else(|| {
+                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low)
+            });
             let dmg = crate::combat::part_damage(def.damage, part, def.head_pct, def.limb_pct);
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day

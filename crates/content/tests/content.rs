@@ -748,7 +748,7 @@ fn dollar_ticker_refused() {
 }
 
 /// One legal skin row: every required field, priced.
-const SKIN_ROW: &str = "[[skin]]\nid = \"skin.wood_gilt\"\ncatalog = 9\nname = \"Gilt Hatchet\"\n\
+const SKIN_ROW: &str = "[[skin]]\nid = \"skin.wood_gilt\"\ncatalog = 90\nname = \"Gilt Hatchet\"\n\
      covers = \"item.hatchet_stone\"\ntint = [200, 170, 60]\ncoin = \"ELO\"\nprice = 10\n\
      season = \"alpha\"\n";
 
@@ -777,7 +777,7 @@ fn an_unpriced_skin_is_legal_and_half_a_price_is_not() {
 
 #[test]
 fn a_skin_catalog_id_is_nonzero_and_unique() {
-    let err = skins_with(&SKIN_ROW.replace("catalog = 9", "catalog = 0")).expect_err("zero id");
+    let err = skins_with(&SKIN_ROW.replace("catalog = 90", "catalog = 0")).expect_err("zero id");
     assert!(err.contains("catalog 0"), "got: {err}");
     let twice = format!(
         "{SKIN_ROW}{}",
@@ -785,6 +785,26 @@ fn a_skin_catalog_id_is_nonzero_and_unique() {
     );
     let err = skins_with(&twice).expect_err("two rows on one catalog id");
     assert!(err.contains("is taken"), "got: {err}");
+}
+
+#[test]
+fn a_painted_skin_is_a_whole_hash_on_a_canvas() {
+    let hash = "ab".repeat(32);
+    let tunic = SKIN_ROW
+        .replace("item.hatchet_stone", "item.armor_burlap_body")
+        .replace(
+            "season = \"alpha\"\n",
+            &format!("season = \"alpha\"\ntexture = \"{hash}\"\n"),
+        );
+    skins_with(&tunic).expect("a painted tunic");
+    let err = skins_with(&tunic.replace(&hash, &"AB".repeat(32))).expect_err("upper hex");
+    assert!(err.contains("64 lowercase hex"), "got: {err}");
+    let err = skins_with(&tunic.replace(&hash, "abcd")).expect_err("short");
+    assert!(err.contains("64 lowercase hex"), "got: {err}");
+    // The hatchet's Meshy unwrap is not a canvas: nobody promised its UVs.
+    let err = skins_with(&tunic.replace("item.armor_burlap_body", "item.hatchet_stone"))
+        .expect_err("not a canvas");
+    assert!(err.contains("cannot be painted"), "got: {err}");
 }
 
 #[test]
@@ -3485,7 +3505,7 @@ fn the_shipped_pig_bakes() {
     let mc = c.bake_mobs().expect("the pig must bake");
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
-    assert_eq!(pig.hp, 80);
+    assert_eq!(pig.hp, 150);
     // 50% and 70% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
     assert_eq!(pig.flee_gait, 88);
@@ -3508,7 +3528,7 @@ fn the_shipped_pig_bakes() {
     assert_eq!(pig.respawn_ticks, 300 * sim_core::limits::TICK_HZ);
     // Metres → centimetres, the unit the sim compares distances in.
     assert_eq!(pig.roam_cm, 6_000);
-    assert_eq!(pig.spook_cm, 1_200);
+    assert_eq!(pig.spook_cm, 800);
     // Prey's flinch is not clock-keyed. Asserted rather than assumed
     // because the field is required on every row, so "the pig's night
     // radius" is a number somebody chose and not one the schema defaulted:
@@ -4006,7 +4026,7 @@ fn fel_tiers_bake_light_to_heavy() {
 
 #[test]
 fn mob_refusals() {
-    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
+    refuses("mobs.toml", "hp = 150", "hp = 0", "zero hp");
     refuses(
         "mobs.toml",
         "notice_pct = 50",
@@ -4025,7 +4045,7 @@ fn mob_refusals() {
         "walk_pct = 140",
         "1–100 percent",
     );
-    refuses("mobs.toml", "roam_m = 60", "roam_m = 10", "treadmill");
+    refuses("mobs.toml", "roam_m = 60", "roam_m = 5", "treadmill");
     refuses(
         "mobs.toml",
         "flee_seconds = 3",
@@ -4070,7 +4090,7 @@ fn mob_refusals() {
         "item.unobtainium",
         "is not an item",
     );
-    refuses("mobs.toml", "count = 15", "count = 0", "zero count");
+    refuses("mobs.toml", "count = 27", "count = 0", "zero count");
     // The brain's numbers (`NOW.md` §0m item 7). Every row carries the same
     // text today, so each replace lands on all three.
     refuses(

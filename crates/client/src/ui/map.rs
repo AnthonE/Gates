@@ -232,6 +232,148 @@ pub fn map_to_world(fx: f32, fy: f32) -> (f32, f32) {
     (ISLAND_SIZE * (1.0 - fx), ISLAND_SIZE * (1.0 - fy))
 }
 
+/// The map screen's camera: how far in, and which point of the island sits
+/// at the middle of the window. Everything is a fraction of the island
+/// (`world_to_map(.., 1)`) or a UI pixel, so the render layer only copies
+/// numbers onto nodes.
+///
+/// The island fits the window's short side at zoom 1, the whole of it on
+/// screen with sea either side (the reference's fully zoomed-out map), and
+/// the wheel takes it to [`ZOOM_MAX`]. Zoom is about a point: the spot under
+/// the crosshair stays under it while the island grows ([`Self::zoom_about`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapView {
+    /// The zoom drawn this frame, easing toward [`Self::target`].
+    pub zoom: f32,
+    /// Where the wheel asked the zoom to go.
+    pub target: f32,
+    /// The island fraction at the window's centre.
+    pub cx: f32,
+    pub cy: f32,
+}
+
+/// Zoomed all the way out: the island fits the window.
+pub const ZOOM_MIN: f32 = 1.0;
+/// Zoomed all the way in. The texture is 4 m a pixel ([`GRID_M`] / 64), so
+/// at 4× a 1080-line window draws about eight screen pixels to a texel,
+/// which is the most it can carry before the terrain goes to mush.
+pub const ZOOM_MAX: f32 = 4.0;
+/// One wheel notch multiplies the zoom by this.
+pub const ZOOM_STEP: f32 = 1.25;
+/// How fast the drawn zoom closes on the asked one, per second (the rate of
+/// an exponential approach: a notch is 90% done in about a sixth of a second).
+pub const ZOOM_EASE: f32 = 14.0;
+/// How near a click has to land to a mark, in UI pixels on screen: the
+/// badge's own size, whatever the zoom.
+pub const PIN_PICK_PX: f32 = 12.0;
+
+impl Default for MapView {
+    fn default() -> Self {
+        Self {
+            zoom: ZOOM_MIN,
+            target: ZOOM_MIN,
+            cx: 0.5,
+            cy: 0.5,
+        }
+    }
+}
+
+impl MapView {
+    /// The island's side on screen, UI px, in a `w × h` window.
+    pub fn side(&self, w: f32, h: f32) -> f32 {
+        w.min(h).max(1.0) * self.zoom
+    }
+
+    /// Where the island's top-left corner sits, and its side, UI px.
+    pub fn rect(&self, w: f32, h: f32) -> (f32, f32, f32) {
+        let side = self.side(w, h);
+        (w * 0.5 - self.cx * side, h * 0.5 - self.cy * side, side)
+    }
+
+    /// The island fraction under screen point `(sx, sy)`. Off the island is
+    /// outside `0..1`, and is left there for the caller to clamp.
+    pub fn to_frac(&self, w: f32, h: f32, sx: f32, sy: f32) -> (f32, f32) {
+        let (l, t, side) = self.rect(w, h);
+        ((sx - l) / side, (sy - t) / side)
+    }
+
+    /// The screen point an island fraction is drawn at.
+    pub fn to_screen(&self, w: f32, h: f32, fx: f32, fy: f32) -> (f32, f32) {
+        let (l, t, side) = self.rect(w, h);
+        (l + fx * side, t + fy * side)
+    }
+
+    /// A click's reach as an island fraction ([`Pins::hit_within`]).
+    pub fn pick_frac(&self, w: f32, h: f32) -> f32 {
+        PIN_PICK_PX / self.side(w, h)
+    }
+
+    /// Keep the island on screen: along an axis where it is wider than the
+    /// window its edge may not come inside the window's, and along one where
+    /// it is narrower it sits in the middle.
+    pub fn clamp(&mut self, w: f32, h: f32) {
+        let side = self.side(w, h);
+        let axis = |c: f32, span: f32| {
+            let half = span * 0.5 / side;
+            if half >= 0.5 {
+                0.5
+            } else {
+                c.clamp(half, 1.0 - half)
+            }
+        };
+        self.cx = axis(self.cx, w);
+        self.cy = axis(self.cy, h);
+    }
+
+    /// Set the zoom to `zoom`, keeping the island point under screen point
+    /// `(sx, sy)` where it is (then clamped, which can nudge it at an edge).
+    pub fn zoom_about(&mut self, w: f32, h: f32, sx: f32, sy: f32, zoom: f32) {
+        let (fx, fy) = self.to_frac(w, h, sx, sy);
+        self.zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        let side = self.side(w, h);
+        // The new corner puts (fx, fy) back under (sx, sy); the centre
+        // follows from the corner.
+        self.cx = (w * 0.5 - (sx - fx * side)) / side;
+        self.cy = (h * 0.5 - (sy - fy * side)) / side;
+        self.clamp(w, h);
+    }
+
+    /// `notches` of the wheel (fractional for a trackpad) on the target.
+    pub fn wheel(&mut self, notches: f32) {
+        self.target = (self.target * ZOOM_STEP.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX);
+    }
+
+    /// One frame of the ease: the drawn zoom closes on the target about
+    /// screen point `(sx, sy)`. Snaps the last hair so it settles.
+    pub fn ease(&mut self, w: f32, h: f32, sx: f32, sy: f32, dt: f32) {
+        if self.zoom == self.target {
+            return;
+        }
+        let k = 1.0 - (-ZOOM_EASE * dt.max(0.0)).exp();
+        let mut z = self.zoom + (self.target - self.zoom) * k;
+        if (z - self.target).abs() < 0.002 {
+            z = self.target;
+        }
+        self.zoom_about(w, h, sx, sy, z);
+    }
+
+    /// Slide the island by `(dx, dy)` screen px (a drag: it follows the
+    /// mouse), clamped.
+    pub fn pan_px(&mut self, w: f32, h: f32, dx: f32, dy: f32) {
+        let side = self.side(w, h);
+        self.cx -= dx / side;
+        self.cy -= dy / side;
+        self.clamp(w, h);
+    }
+
+    /// Centre on island fraction `(fx, fy)` as far as the clamp allows.
+    pub fn centre_on(&mut self, w: f32, h: f32, fx: f32, fy: f32) {
+        self.cx = fx;
+        self.cy = fy;
+        self.clamp(w, h);
+    }
+}
+
 /// How many marks a player can put on their map (Rust's five).
 pub const PINS_MAX: usize = 5;
 
@@ -377,11 +519,18 @@ impl Pins {
     /// [`PIN_PICK_FRAC`] on both axes, and the newest of a tie — it is the
     /// one drawn on top, so it is the one a click on the pile means.
     pub fn hit(&self, fx: f32, fy: f32) -> Option<usize> {
+        self.hit_within(fx, fy, PIN_PICK_FRAC)
+    }
+
+    /// [`Self::hit`] with the reach `r` given, as a map fraction: the zoomed
+    /// map keeps the reach the size of the badge ON SCREEN, so it shrinks
+    /// as the island grows ([`MapView::pick_frac`]).
+    pub fn hit_within(&self, fx: f32, fy: f32, r: f32) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, &(x, z)) in self.marks().iter().enumerate() {
             let (mx, my) = world_to_map(x, z, 1);
             let d = (mx - fx).abs().max((my - fy).abs());
-            if d < PIN_PICK_FRAC && best.is_none_or(|(_, b)| d <= b) {
+            if d < r && best.is_none_or(|(_, b)| d <= b) {
                 best = Some((i, d));
             }
         }
@@ -392,7 +541,12 @@ impl Pins {
     /// it, or put one there — dropping the oldest when all five are down.
     /// A mark's look travels with it when an older one goes.
     pub fn toggle(&mut self, fx: f32, fy: f32) {
-        if let Some(i) = self.hit(fx, fy) {
+        self.toggle_within(fx, fy, PIN_PICK_FRAC);
+    }
+
+    /// [`Self::toggle`] with the reach given ([`Self::hit_within`]).
+    pub fn toggle_within(&mut self, fx: f32, fy: f32, r: f32) {
+        if let Some(i) = self.hit_within(fx, fy, r) {
             self.at.copy_within(i + 1..self.len, i);
             self.style.copy_within(i + 1..self.len, i);
             self.len -= 1;
@@ -577,19 +731,27 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
             let dhdx = (rows[cur][i + 2] - rows[cur][i]) * inv2s;
             let dhdz = (rows[next][i + 1] - rows[prev][i + 1]) * inv2s;
 
-            let (r, g, b) = if h <= SEA_LEVEL {
-                // Water: one ramp from shelf to floor, and NO hillshade. The
-                // sea bed has relief and drawing it would put a second,
-                // competing terrain inside the shape the eye is trying to read
-                // as the coastline.
+            let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+            // The coastline, anti-aliased: how much of this pixel is land,
+            // from how far its centre stands above the waterline against the
+            // rise across one pixel. A hard `h <= SEA_LEVEL` drew the coast
+            // as a staircase of 4 m squares, and the zoomed map (up to 4×,
+            // `MapView`) blows a staircase up into steps. No extra taps: the
+            // slope is the hillshade's own.
+            let land = ((h - SEA_LEVEL) / (slope * step).max(1e-3) + 0.5).clamp(0.0, 1.0);
+            // Water: one ramp from shelf to floor, and NO hillshade. The sea
+            // bed has relief and drawing it would put a second, competing
+            // terrain inside the shape the eye is trying to read as the
+            // coastline.
+            let water = || {
                 let t = (-h / DEEP_M).clamp(0.0, 1.0);
                 (
                     SEA_SHALLOW[0] + (SEA_DEEP[0] - SEA_SHALLOW[0]) * t,
                     SEA_SHALLOW[1] + (SEA_DEEP[1] - SEA_SHALLOW[1]) * t,
                     SEA_SHALLOW[2] + (SEA_DEEP[2] - SEA_SHALLOW[2]) * t,
                 )
-            } else {
-                let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+            };
+            let mut ground = || {
                 let w = terrain::splat_from(h, terrain::moisture(seed, x, z), slope);
                 // They sum to ~255 by construction, and "~" is the splat law's
                 // own word for it — dividing by the actual sum keeps the blend
@@ -611,14 +773,31 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                 let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
                 let shade =
                     (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1);
-                let o = py * size + px;
-                shade_of[o] = shade;
-                cov[o] = match terrain::road_band(seed, haven, x, z) {
-                    terrain::RoadBand::Off => 0.0,
-                    terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
-                    terrain::RoadBand::Carriageway => 1.0,
-                };
+                // The land mask the road pass reads stays the hard line: a
+                // road never runs into a pixel whose centre is under water.
+                if h > SEA_LEVEL {
+                    let o = py * size + px;
+                    shade_of[o] = shade;
+                    cov[o] = match terrain::road_band(seed, haven, x, z) {
+                        terrain::RoadBand::Off => 0.0,
+                        terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
+                        terrain::RoadBand::Carriageway => 1.0,
+                    };
+                }
                 (mix(0) * shade, mix(1) * shade, mix(2) * shade)
+            };
+            let (r, g, b) = if land <= 0.0 {
+                water()
+            } else if land >= 1.0 {
+                ground()
+            } else {
+                let (sr, sg, sb) = water();
+                let (gr, gg, gb) = ground();
+                (
+                    sr + (gr - sr) * land,
+                    sg + (gg - sg) * land,
+                    sb + (gb - sb) * land,
+                )
             };
 
             let o = (py * size + px) * 4;
@@ -1644,6 +1823,18 @@ mod tests {
             for i in (0..size).step_by(7) {
                 let (x, z) = (half + i as f32 * step, half + j as f32 * step);
                 let h = terrain::height(seed, x, z);
+                // The coast's own pixel is shared: `paint` blends land and
+                // sea within a pixel's rise of the waterline, so a sample
+                // that close is neither and says nothing about orientation.
+                let rise = ((terrain::height(seed, x + step, z)
+                    - terrain::height(seed, x - step, z))
+                .abs()
+                .max(
+                    (terrain::height(seed, x, z + step) - terrain::height(seed, x, z - step)).abs(),
+                )) * 0.5;
+                if (h - SEA_LEVEL).abs() < rise {
+                    continue;
+                }
                 let (px, py) = world_to_map(x, z, size);
                 let o = ((py as usize).min(size - 1) * size + (px as usize).min(size - 1)) * 4;
                 let (r, g, b) = (buf[o] as f32, buf[o + 1] as f32, buf[o + 2] as f32);
@@ -2607,5 +2798,56 @@ mod tests {
         resolve_wake_marks(&mut out, &bags);
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, over);
+    }
+
+    /// The zoomed map: the spot under the crosshair stays under it, the
+    /// island never leaves the window, and the two projections invert.
+    #[test]
+    fn the_map_zooms_about_the_crosshair_and_keeps_the_island_on_screen() {
+        let (w, h) = (1920.0, 1080.0);
+        let mut v = MapView::default();
+        // Zoomed out: the island fits the short side, centred.
+        assert_eq!(v.rect(w, h), (420.0, 0.0, 1080.0));
+        let (fx, fy) = v.to_frac(w, h, 700.0, 300.0);
+        let (sx, sy) = v.to_screen(w, h, fx, fy);
+        assert!((sx - 700.0).abs() < 1e-3 && (sy - 300.0).abs() < 1e-3);
+
+        // In about a point well inside: it stays put.
+        v.zoom_about(w, h, 700.0, 300.0, 2.5);
+        let (gx, gy) = v.to_frac(w, h, 700.0, 300.0);
+        assert!((gx - fx).abs() < 1e-4 && (gy - fy).abs() < 1e-4, "{v:?}");
+
+        // Past the cap clamps; the island still covers the window.
+        v.zoom_about(w, h, 0.0, 0.0, 99.0);
+        assert_eq!(v.zoom, ZOOM_MAX);
+        let (l, t, side) = v.rect(w, h);
+        assert!(l <= 0.0 && t <= 0.0 && l + side >= w && t + side >= h);
+
+        // A drag cannot pull it off either.
+        v.pan_px(w, h, 1e6, -1e6);
+        let (l, t, side) = v.rect(w, h);
+        assert!(l <= 1e-3 && t + side >= h - 1e-3, "{v:?}");
+
+        // Back out: re-centred on the axis it no longer fills.
+        v.zoom_about(w, h, 0.0, 0.0, ZOOM_MIN);
+        assert_eq!((v.cx, v.cy), (0.5, 0.5));
+    }
+
+    /// The wheel moves the target and the ease arrives at it, about the
+    /// crosshair, and the pick reach shrinks as the island grows.
+    #[test]
+    fn the_wheel_eases_to_its_zoom() {
+        let (w, h) = (1280.0, 720.0);
+        let mut v = MapView::default();
+        v.wheel(2.0);
+        assert!((v.target - ZOOM_STEP * ZOOM_STEP).abs() < 1e-5);
+        let far = v.pick_frac(w, h);
+        for _ in 0..120 {
+            v.ease(w, h, 640.0, 360.0, 1.0 / 60.0);
+        }
+        assert_eq!(v.zoom, v.target);
+        assert!(v.pick_frac(w, h) < far);
+        v.wheel(-40.0);
+        assert_eq!(v.target, ZOOM_MIN);
     }
 }

@@ -88,6 +88,7 @@ mod tests {
                     tint: [255, 128, 0],
                     coin,
                     price,
+                    texture: [0; 8],
                 },
             )
             .unwrap();

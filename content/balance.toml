@@ -190,6 +190,15 @@ mult_common = 1
 mult_uncommon = 4
 mult_rare = 8
 mult_very_rare = 12
+# What every player body adds to its bag, carrying or not: Rust lets you
+# farm any corpse for meat, bone and fat, so a naked spawn or an
+# inhabitant's leftover sleeper still pays its killer. About a third of a
+# stag. One stack per row.
+body_drops = [
+  { item = "item.raw_meat", count = 2 },
+  { item = "item.fat", count = 3 },
+  { item = "item.bone_frags", count = 5 },
+]
 
 # The survival clock (DESIGN §2: "hunger/thirst minimal — a slow health
 # drain past a timer, food to reset it"). Two meters that only ever fall,

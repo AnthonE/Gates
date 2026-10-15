@@ -66,11 +66,12 @@ pub const NODE_STAGE_BATCH: usize = 32;
 /// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 7;
 
-/// Skin rows one skin-catalog message carries (skins v0). A row is at most
-/// 16 + 16 + 24 + 2 + 32 + 5 + 24 × 8 = 287 bits, so eight are ≈ 287 B —
-/// inside `MAX_EVENT_MSG_BYTES`, and `skin_batches_fit_the_message_cap`
-/// measures it rather than trusting this sum.
-pub const SKIN_BATCH: usize = 8;
+/// Skin rows one skin-catalog message carries. A row is at most
+/// 16 + 16 + 24 + 2 + 32 + 1 + 64 + 5 + 24 × 8 = 352 bits since a painted
+/// skin's texture hash rode along (v110), so six are ≈ 264 B — inside
+/// `MAX_EVENT_MSG_BYTES`, and `skin_batches_fit_the_message_cap` measures
+/// it rather than trusting this sum.
+pub const SKIN_BATCH: usize = 6;
 
 /// Longest work name on the wire (`SUB_WORK_DEF`).
 pub const WORK_NAME_BYTES: usize = 20;
@@ -1363,9 +1364,18 @@ pub struct SkinRow {
     pub coin: u8,
     /// Bare amount in `coin`; 0 exactly when `coin` is [`COIN_NONE`].
     pub price: u32,
+    /// A painted skin (v110): the first 8 bytes of its PNG's sha256, the
+    /// name the platform serves it by and the check the client makes on
+    /// what it downloads. All zero for a tint-only skin.
+    pub texture: [u8; 8],
 }
 
 impl SkinRow {
+    /// Whether this skin is a painted picture rather than a tint.
+    pub fn painted(&self) -> bool {
+        self.texture != [0; 8]
+    }
+
     /// A row the wire can mean: a real catalog id on a real item, and a
     /// price that is either both halves or neither.
     pub fn coherent(&self) -> bool {
@@ -1434,6 +1444,7 @@ impl SkinCatalog {
             tint: [0; 3],
             coin: 0,
             price: 0,
+            texture: [0; 8],
         }; sim_core::limits::MAX_SKINS],
         count: 0,
     };
@@ -1491,7 +1502,7 @@ pub enum EventMsg {
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
     /// The owner's wet, cold and heat, per cent, whether either is hurting
-    /// them, and the air they stand in, whole °C (`SUB_EXPOSURE`; wire v110
+    /// them, and the air they stand in, whole °C (`SUB_EXPOSURE`; wire v111
     /// added the heat and the air, climate v0).
     Exposure {
         wet_pct: u8,
@@ -3713,6 +3724,12 @@ pub fn encode_event_skins(
         if row.coin != COIN_NONE {
             w.write(row.price, 32)?;
         }
+        w.write(row.painted() as u32, 1)?;
+        if row.painted() {
+            for b in row.texture {
+                w.write(b as u32, 8)?;
+            }
+        }
         w.write(name.len() as u32, NAME_LEN_BITS)?;
         for &b in name {
             w.write(b as u32, 8)?;
@@ -4229,20 +4246,26 @@ pub struct WireBag {
     pub qy: i32,
     pub qz: i32,
     /// What the bag looks like (wire v84): [`BAG_KIND_PACK`] for a
-    /// player's or a box's, or `1 + species` for a killed animal's, which
-    /// the client draws as the carcass lying where it fell. Derived from
-    /// the bag's owner (an animal's is its tagged roster id), so the sim
-    /// stores nothing new and the owner itself still never crosses.
+    /// player's or a box's, `1 + species` for a killed animal's, which
+    /// the client draws as the carcass lying where it fell, or
+    /// [`BAG_KIND_BODY`] for a player's corpse (v110). Derived from the
+    /// bag's owner (an animal's is its tagged roster id), so the sim stores
+    /// nothing new and the owner itself still never crosses.
     pub kind: u8,
 }
 
 /// A backpack's look: a pack.
 pub const BAG_KIND_PACK: u8 = 0;
-/// The width of [`WireBag::kind`]. A pack and one kind per species; the
-/// patterns past that are forgeable and refused.
-const BAG_KIND_BITS: u32 = 2;
+/// A player's corpse (`backpack::CORPSE_OWNER`, v110): drawn as a fallen
+/// body, butchered like a carcass. Its "species" is `MOB_KINDS`, one past
+/// the animals.
+pub const BAG_KIND_BODY: u8 = 1 + sim_core::mob::MOB_KINDS as u8;
+/// The width of [`WireBag::kind`]. A pack, one kind per species and the
+/// body; the patterns past that are forgeable and refused. Three bits
+/// since v110.
+const BAG_KIND_BITS: u32 = 3;
 const _: () = assert!(
-    sim_core::mob::MOB_KINDS < (1 << BAG_KIND_BITS),
+    (BAG_KIND_BODY as u32) < (1 << BAG_KIND_BITS),
     "a new species no longer fits BAG_KIND_BITS — widen it, bump PROTO_VER \
      and regenerate the goldens in this same commit (CLAUDE.md wall 6)"
 );
@@ -4255,14 +4278,24 @@ impl WireBag {
             qx: b.qx,
             qy: b.qy,
             qz: b.qz,
-            kind: sim_core::mob::slot_of_id(b.owner)
-                .map_or(BAG_KIND_PACK, |slot| 1 + sim_core::mob::kind_of(slot)),
+            kind: if b.owner == sim_core::backpack::CORPSE_OWNER {
+                BAG_KIND_BODY
+            } else {
+                sim_core::mob::slot_of_id(b.owner)
+                    .map_or(BAG_KIND_PACK, |slot| 1 + sim_core::mob::kind_of(slot))
+            },
         }
     }
 
-    /// The species of the animal this bag is the carcass of, if any.
+    /// The species of the animal this bag is the carcass of, if any —
+    /// `MOB_KINDS` for a player's corpse ([`Self::is_body`]).
     pub fn species(&self) -> Option<u8> {
         self.kind.checked_sub(1)
+    }
+
+    /// A player's corpse ([`BAG_KIND_BODY`]).
+    pub fn is_body(&self) -> bool {
+        self.kind == BAG_KIND_BODY
     }
 }
 
@@ -4487,7 +4520,7 @@ fn write_bag(w: &mut BitWriter, b: &WireBag) -> Result<(), WireError> {
     w.write(b.qx as u32, POS_XZ_BITS)?;
     w.write((b.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
     w.write(b.qz as u32, POS_XZ_BITS)?;
-    if b.kind as usize > sim_core::mob::MOB_KINDS {
+    if b.kind > BAG_KIND_BODY {
         return Err(WireError::Range);
     }
     w.write(b.kind as u32, BAG_KIND_BITS)?;
@@ -4502,7 +4535,7 @@ fn read_bag(r: &mut BitReader) -> Result<WireBag, WireError> {
         qz: r.read(POS_XZ_BITS)? as i32,
         kind: r.read(BAG_KIND_BITS)? as u8,
     };
-    if b.kind as usize > sim_core::mob::MOB_KINDS {
+    if b.kind > BAG_KIND_BODY {
         return Err(WireError::Malformed);
     }
     Ok(b)
@@ -5956,12 +5989,23 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let tint = [r.read(8)? as u8, r.read(8)? as u8, r.read(8)? as u8];
                 let coin = r.read(COIN_BITS)? as u8;
                 let price = if coin == COIN_NONE { 0 } else { r.read(32)? };
+                let mut texture = [0u8; 8];
+                if r.read(1)? == 1 {
+                    for b in texture.iter_mut() {
+                        *b = r.read(8)? as u8;
+                    }
+                    // A painted flag over an all-zero hash names nothing.
+                    if texture == [0; 8] {
+                        return Err(WireError::Malformed);
+                    }
+                }
                 rows[i] = SkinRow {
                     catalog,
                     covers,
                     tint,
                     coin,
                     price,
+                    texture,
                 };
                 // A zero id, an item past the table, a fourth coin or a
                 // coin priced at nothing: rows no server can mean.
@@ -7270,6 +7314,8 @@ mod tests {
                 tint: [255, i as u8, 0],
                 coin: if i % 2 == 0 { COIN_ELO } else { COIN_ORBS },
                 price: u32::MAX - i as u32,
+                // Every row painted: the worst case the batch is sized for.
+                texture: [0xA5, i as u8, 1, 2, 3, 4, 5, 0xFF],
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -7315,6 +7361,7 @@ mod tests {
             tint: [1, 2, 3],
             coin: COIN_NONE,
             price: 0,
+            texture: [0; 8],
         };
         assert!(ok.coherent());
         for bad in [
@@ -7350,6 +7397,27 @@ mod tests {
             w.write(9, 8).unwrap();
         }
         w.write(COIN_NONE as u32, COIN_BITS).unwrap();
+        w.write(0, 1).unwrap(); // not painted
+        w.write(1, NAME_LEN_BITS).unwrap();
+        w.write(b'x' as u32, 8).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+        // A painted flag over an all-zero hash names no picture (v110).
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut w = begin(&mut buf, SUB_SKINS).unwrap();
+        w.write(1, SKIN_TOTAL_BITS).unwrap();
+        w.write(0, SKIN_TOTAL_BITS).unwrap();
+        w.write(1, SKIN_COUNT_BITS).unwrap();
+        w.write(4, 16).unwrap();
+        w.write(2, 16).unwrap();
+        for _ in 0..3 {
+            w.write(9, 8).unwrap();
+        }
+        w.write(COIN_NONE as u32, COIN_BITS).unwrap();
+        w.write(1, 1).unwrap();
+        for _ in 0..8 {
+            w.write(0, 8).unwrap();
+        }
         w.write(1, NAME_LEN_BITS).unwrap();
         w.write(b'x' as u32, 8).unwrap();
         let len = w.finish();
@@ -9051,7 +9119,7 @@ mod wire_domains {
             // this one through only because arrow recovery v1 spent the
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
-            // the widening to four. 9 = DEATH_BY_HEAT at v110 (climate v0).
+            // the widening to four. 9 = DEATH_BY_HEAT at v111 (climate v0).
             live_max: 9,
         },
         Domain {
@@ -9215,10 +9283,9 @@ mod wire_domains {
             // re-keyed. So this pin has now fired for real, in both of
             // its jobs — the fit assert refused the fifth kind under two
             // bits, and this `live_max` refused it under three until the
-            // widening was deliberate. Values 5..7 are forgeable and
-            // refuse at both ends, which is the posture the field lost at
-            // v37 and has back.
-            live_max: 4,
+            // widening was deliberate. v110 took 5 for `CONT_BODY` (a
+            // sleeper's pack); 6..7 are forgeable and refuse at both ends.
+            live_max: 5,
         },
         Domain {
             what: "piece shape",
@@ -9742,8 +9809,8 @@ mod wire_domains {
             // guards, and the decoder refuses past it.
             "SENTRY_BITS",
             // A bag's look (v84): `1 + species` over the count `MOB_KINDS`,
-            // which a const-assert beside the width guards, and both ends
-            // refuse past it.
+            // then the body (v110), which a const-assert beside the width
+            // guards, and both ends refuse past it.
             "BAG_KIND_BITS",
             // A per-mille chance (wounded v0): a unit, not an enumeration.
             // `wound::recover_chance_pm` tops out at 450 by arithmetic and

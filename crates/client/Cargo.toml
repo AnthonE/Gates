@@ -141,6 +141,13 @@ required-features = ["render", "native"]
 # a good picture to transparent frames, headless (lavapipe is enough), for
 # `ci/finish_icons.py` to turn into `assets/icons/`. Bevy only, like the bench.
 [[bin]]
+name = "skinkit"
+path = "src/bin/skinkit.rs"
+# Paint a skin for Gates: the UV template, the check, a preview. No window
+# and no GPU, but the canvases are the game's own meshes (`render::canvas`).
+required-features = ["render", "native"]
+
+[[bin]]
 name = "iconbake"
 path = "src/bin/iconbake.rs"
 required-features = ["render", "native"]
@@ -649,6 +656,9 @@ ktx2 = { version = "0.4", optional = true }
 ruzstd = { version = "0.8", optional = true }
 # The web asset variant's encoder. Already in the lock through `image`.
 png = { version = "0.18", optional = true }
+# Painted skins (`render/paint.rs`): the check that a downloaded picture is
+# the one its catalog row names. Already in the lock through `k256`.
+sha2 = "0.10"
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }

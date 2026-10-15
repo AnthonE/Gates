@@ -592,6 +592,12 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::BedRotorFar => render_take(Cue::BedRotor, take),
         // The heli's gun far off: the far report, by delegation.
         Cue::ShotHeliFar => render_take(Cue::ShotGunFar, take),
+        // The interface's small sounds, by delegation: a click for the
+        // symbols, the pack's rustle for the hands.
+        Cue::UiHover | Cue::MapPin => render_take(Cue::UiClick, take),
+        Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => {
+            render_take(Cue::Equip, take)
+        }
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

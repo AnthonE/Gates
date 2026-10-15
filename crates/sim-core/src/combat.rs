@@ -88,7 +88,6 @@
 use crate::collide::Part;
 use crate::gather::NO_ITEM;
 use crate::limits::{MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS};
-use crate::movement::POS_Y_Q;
 use crate::world::{EventQueue, Player, EV_HEALTH, EV_HIT, EV_HURT};
 
 /// One item's melee row. `damage == 0` ⇒ the item is not a weapon (the
@@ -1468,15 +1467,7 @@ pub fn strike_body(
     // The span inside the body, clipped against the world's stop, scored at
     // its most significant band — `hitscan`'s three lines, with the
     // rewound feet the cast carried out.
-    let feet_mm = hit.qy as f32 * (POS_Y_Q * crate::ranged::MM_PER_M);
-    let part = crate::ranged::part_crossed(
-        ray.o.1,
-        ray.s.1,
-        feet_mm,
-        hit.enter,
-        hit.exit.min(stop_t),
-        hit.crouched,
-    );
+    let part = hit.part_of(ray.o.1, ray.s.1, stop_t);
     let dmg = part_damage(def.body_damage(lit), part, def.head_pct, def.limb_pct);
     // The death screen's range: the PLANAR distance to the victim's axis at
     // the closest approach, centimetres — `Strike::Killed`'s documented
@@ -1626,6 +1617,7 @@ mod tests {
             exit: 0.7,
             qy: players[1].body.qy,
             crouched: false,
+            part: None,
         };
         assert_eq!(
             strike_body(&cc, 0, &hit, &ray, 1.0, false, &mut players, &mut ev),
@@ -1666,6 +1658,7 @@ mod tests {
             exit: 0.7,
             qy: players[1].body.qy,
             crouched: false,
+            part: None,
         };
         let mut ev = EventQueue::default();
         assert_eq!(

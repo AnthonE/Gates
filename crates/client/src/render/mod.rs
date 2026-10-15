@@ -84,6 +84,8 @@ pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
 pub mod faces;
+/// Painted skins (wire v110): fetched by hash, drawn on their canvas.
+pub mod paint;
 pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
@@ -117,6 +119,8 @@ pub mod ziggurat;
 // model is `crate::ui::hub`.
 // Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
 // rows and the viewmodel's two-primitive stand-in tool.
+/// Painted skins: the items a skin can be a picture on, and their meshes.
+pub mod canvas;
 pub mod heldgen;
 // The right hand's finger bones, closed on what it holds.
 pub mod fingers;
@@ -629,6 +633,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
+            .insert_resource(bodies::DrawWatched(filming))
             .init_resource::<mobs::Herd>()
             .init_resource::<beasts::Beasts>()
             .init_resource::<screen::Browse>()
@@ -1026,6 +1031,7 @@ impl Plugin for GatesRenderPlugin {
         app.init_resource::<map::Island>()
             .init_resource::<map::MapPins>()
             .init_resource::<map::MapCursor>()
+            .init_resource::<map::MapCamera>()
             // The mouse is the map's while it is held: the crosshair and the
             // marks, and nothing in the world sees a click (`map::aim`). The
             // keyboard is too while a mark's label is typed (`map::label`).
@@ -1046,7 +1052,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 Update,
-                (map::track, map::mates, map::keys)
+                (map::view, map::track, map::mates, map::keys)
                     .chain()
                     .run_if(in_state(Screen::Map)),
             )
@@ -1657,7 +1663,8 @@ impl Plugin for GatesRenderPlugin {
                     // The legs read the gait `mobs::stream` just advanced.
                     mobs::trot,
                     rig::follow_eye,
-                    hud::update,
+                    // The HUD's numbers, then how fast its bars move to them.
+                    (hud::update, hud::vital_motion, hud::hotbar_pop).chain(),
                     // The feedback surface. Under `world_running` rather than
                     // `InWorld`: a refusal that arrived while the Esc menu was
                     // up is still owed to the player, and a ring nobody drains
@@ -1930,7 +1937,8 @@ impl Plugin for GatesRenderPlugin {
                 // The herd's voices, off the animals `mobs::stream` just
                 // moved — a snort, a howl or a growl, by species and range.
                 audio::voices,
-                audio::ui_click,
+                // The interface: the click, the hover tick, the panels' own.
+                (audio::ui_click, audio::ui_hover, audio::panel_sounds).chain(),
                 audio::hands,
                 audio::fires,
                 audio::bed,
@@ -1967,6 +1975,7 @@ impl Plugin for GatesRenderPlugin {
             panels::register(app);
             chat::register(app);
             faces::register(app);
+            paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------
             // **Not on a capture run either**, and for the same reason one

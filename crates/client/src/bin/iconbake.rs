@@ -1,21 +1,20 @@
 //! `cargo run -p client --features render --bin iconbake -- <out_dir> [stem…]`
-//! — photograph the items that have a 3D model, for their inventory icons.
+//! — photograph every item, for its inventory icon.
 //!
 //! Rust's icons are renders of the item's own model on a transparent ground,
-//! lit from the upper left and seen from a three-quarter angle. Ours were
-//! white game-icons.net silhouettes tinted at the draw, so every cell was
-//! the same off-white. This renders the items whose model makes a good
-//! picture ([`SUBJECTS`]) the same way Rust's are, and `ci/finish_icons.py`
-//! turns the frames into `assets/icons/*.png`. Every other item keeps its
-//! silhouette, which the finisher paints.
+//! lit from the upper left and seen from a three-quarter angle. This renders
+//! every item the same way ([`SUBJECTS`]): its own model where it has one,
+//! and otherwise a prop from the icon-only kit in `iconbake/props.rs`. Then
+//! `ci/finish_icons.py` turns the frames into `assets/icons/*.png`; it paints
+//! a silhouette only for a stem with no render.
 //!
 //! Headless: no window, no winit. The camera draws into an offscreen image
 //! with a transparent clear, and the frame is read back with `Screenshot`.
 //! Runs on a GPU-less box through Mesa's lavapipe
-//! (`apt-get install mesa-vulkan-drivers`).
+//! (`apt-get install mesa-vulkan-drivers`), about a second a subject.
 //!
-//! Not a gate and not run by CI. Re-run it when a model in [`SUBJECTS`]
-//! changes, then run the finisher:
+//! Not a gate and not run by CI. Re-run it when a model or a prop changes,
+//! then run the finisher:
 //!
 //! ```text
 //! cargo run -p client --features render --bin iconbake -- ci/icons/renders
@@ -36,6 +35,9 @@ use bevy::render::view::Msaa;
 use bevy::window::ExitCondition;
 use bevy::winit::WinitPlugin;
 
+#[path = "iconbake/props.rs"]
+mod props;
+
 /// Edge of the offscreen frame, px. The finisher downsamples to the shipped
 /// 128, and four samples per output pixel on top of MSAA is what keeps a
 /// spear's thin haft from stair-stepping.
@@ -45,9 +47,19 @@ const FRAME_PX: u32 = 512;
 /// first subject also waits out shader compilation, which lavapipe does on
 /// the CPU, and a readback is asynchronous in frames.
 const SETTLE_FIRST: u32 = 120;
-const SETTLE: u32 = 30;
+const SETTLE: u32 = 12;
 /// A glTF that has not spawned a mesh by then is reported and skipped.
 const LOAD_TIMEOUT: u32 = 900;
+
+/// Where a subject's geometry comes from: a glTF under `assets/`, a mesh
+/// `render::heldgen` builds in code (the bat), or the icon-only prop kit
+/// (`props`) for the items with no model.
+#[derive(Clone, Copy)]
+enum Src {
+    Glb(&'static str),
+    Gen(&'static str),
+    Kit(&'static str),
+}
 
 /// One icon to photograph.
 #[derive(Clone, Copy)]
@@ -55,29 +67,76 @@ struct Subject {
     /// The icon's file stem — the item's display name, normalised
     /// (`ui::icons::stem`).
     stem: &'static str,
-    /// The model, under `assets/`.
-    glb: &'static str,
+    /// The model.
+    src: Src,
     /// Model rotation before framing, degrees: yaw about Y, then pitch about
     /// X, then roll about Z (`EulerRot::YXZ`). The camera never leaves its
     /// three-quarter bearing, so this is how a subject shows its best side.
     turn: [f32; 3],
+    /// Then a turn about the camera's own axis, degrees, counter-clockwise
+    /// on screen: how a long thing is laid on the frame's diagonal.
+    roll: f32,
+    /// How much thicker than its model a long thing is drawn, across its
+    /// length (model X and Z): a haft true to scale is a hairline in a 48 px
+    /// cell, and the reference's tools read because they are chunky.
+    girth: f32,
 }
 
 const fn s(stem: &'static str, glb: &'static str, turn: [f32; 3]) -> Subject {
-    Subject { stem, glb, turn }
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn,
+        roll: 0.0,
+        girth: 1.0,
+    }
 }
 
-/// The items photographed rather than painted.
+/// A long thing (a tool, a spear, a bow), authored standing: turned to show
+/// its head's broad side, thickened by `girth`, then laid on the diagonal
+/// with the head at the top right — the way Rust frames every tool.
+const fn long(stem: &'static str, src: Src, girth: f32) -> Subject {
+    Subject {
+        stem,
+        src,
+        turn: [0.0, 0.0, 0.0],
+        roll: -45.0,
+        girth,
+    }
+}
+
+/// A prop from the kit, turned.
+const fn kit(stem: &'static str, turn: [f32; 3]) -> Subject {
+    Subject {
+        stem,
+        src: Src::Kit(stem),
+        turn,
+        roll: 0.0,
+        girth: 1.0,
+    }
+}
+
+/// A long prop from the kit, on the diagonal.
+const fn kit_long(stem: &'static str, roll: f32) -> Subject {
+    Subject {
+        stem,
+        src: Src::Kit(stem),
+        turn: [0.0, 0.0, 0.0],
+        roll,
+        girth: 1.0,
+    }
+}
+
+/// Every item but the three keycards' painted cousins is photographed
+/// (2026-10): the models where an item has one, the prop kit where it does
+/// not. The finisher paints a silhouette only for a stem with no render.
 ///
-/// **Chunky things only, and that was measured rather than assumed.** Every
-/// item with a model was rendered on 2026-09-24 and each render put beside
-/// its painted silhouette at the 34 px a cell draws it: the boxes, the bag,
-/// the bench, the cupboard and the stones read better as photographs; the
-/// thin tools (spear, hatchet, pickaxe, hammer, bow) went to a hairline and
-/// read worse, and the generated torch and revolver are boxes that a
-/// silhouette beats. Those stay painted until a model is chunky enough.
-/// Framing is `ci/finish_icons.py`'s, from the pixels, so there is no size
-/// here.
+/// **Long things are thickened, and that was measured.** On 2026-09-24 the
+/// tools rendered true to scale went to a hairline at the cell's size and
+/// the painted silhouettes beat them; laid on the diagonal and drawn
+/// [`Subject::girth`] times thicker across their length they read, and
+/// they read as the reference's do — the same object, lit. Framing is the
+/// finisher's, from the pixels, so there is no size here.
 const SUBJECTS: &[Subject] = &[
     s("stone", "models/prop/node_stone.glb", [30.0, 0.0, 0.0]),
     s("metal_ore", "models/prop/node_metal.glb", [30.0, 0.0, 0.0]),
@@ -92,6 +151,171 @@ const SUBJECTS: &[Subject] = &[
     s("workbench", "models/deploy/workbench.glb", [0.0, 0.0, 0.0]),
     // The hearth is the tool cupboard, and the render is the cupboard.
     s("hearth", "models/deploy/hearth.glb", [0.0, 0.0, 0.0]),
+    // The tools and weapons with models, on the diagonal.
+    long("bat", Src::Gen("bat"), 1.0),
+    long(
+        "stone_hatchet",
+        Src::Glb("models/held/stone_hatchet.glb"),
+        1.9,
+    ),
+    long(
+        "stone_pickaxe",
+        Src::Glb("models/held/stone_pickaxe.glb"),
+        1.9,
+    ),
+    long(
+        "metal_hatchet",
+        Src::Glb("models/held/metal_hatchet.glb"),
+        1.9,
+    ),
+    long(
+        "metal_pickaxe",
+        Src::Glb("models/held/metal_pickaxe.glb"),
+        1.9,
+    ),
+    long("hammer", Src::Glb("models/held/hammer.glb"), 1.9),
+    long(
+        "wooden_spear",
+        Src::Glb("models/held/wooden_spear.glb"),
+        2.4,
+    ),
+    long("metal_spear", Src::Glb("models/held/metal_spear.glb"), 2.2),
+    // Things you hold up to use.
+    s(
+        "building_plan",
+        "models/held/building_plan.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "satchel_charge",
+        "models/held/satchel_charge.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("bandage", "models/held/bandage.glb", [0.0, 0.0, 0.0]),
+    s("medkit", "models/held/medkit.glb", [0.0, 0.0, 0.0]),
+    s("berries", "models/held/berries.glb", [0.0, 0.0, 0.0]),
+    s("mushrooms", "models/held/mushrooms.glb", [0.0, 0.0, 0.0]),
+    s("corn", "models/held/corn.glb", [0.0, 0.0, 0.0]),
+    s("raw_meat", "models/held/raw_meat.glb", [0.0, 0.0, 0.0]),
+    s(
+        "cooked_meat",
+        "models/held/cooked_meat.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("burnt_meat", "models/held/burnt_meat.glb", [0.0, 0.0, 0.0]),
+    // A card held up, tipped back and turned landscape, the reference's way.
+    Subject {
+        stem: "green_keycard",
+        src: Src::Glb("models/held/green_keycard.glb"),
+        turn: [35.0, -25.0, 0.0],
+        roll: 80.0,
+        girth: 1.0,
+    },
+    Subject {
+        stem: "blue_keycard",
+        src: Src::Glb("models/held/blue_keycard.glb"),
+        turn: [35.0, -25.0, 0.0],
+        roll: 80.0,
+        girth: 1.0,
+    },
+    Subject {
+        stem: "red_keycard",
+        src: Src::Glb("models/held/red_keycard.glb"),
+        turn: [35.0, -25.0, 0.0],
+        roll: 80.0,
+        girth: 1.0,
+    },
+    // The deployables, as they stand in the world.
+    s("furnace", "models/deploy/furnace.glb", [0.0, 0.0, 0.0]),
+    s("recycler", "models/deploy/recycler.glb", [0.0, 0.0, 0.0]),
+    s(
+        "research_table",
+        "models/deploy/research_table.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "workbench_2",
+        "models/deploy/workbench2.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "workbench_3",
+        "models/deploy/workbench3.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "wooden_barricade",
+        "models/deploy/barricade.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    // A door's face is on its X axis: a quarter turn shows it to the
+    // camera (measured against 0, 30 and 60, which went edge-on).
+    s("wooden_door", "models/deploy/door.glb", [90.0, 0.0, 0.0]),
+    s(
+        "metal_door",
+        "models/deploy/door_locked.glb",
+        [90.0, 0.0, 0.0],
+    ),
+    // The prop kit: long things on the diagonal…
+    kit_long("hunting_bow", -45.0),
+    kit_long("crossbow", -45.0),
+    kit_long("torch", -45.0),
+    kit_long("stone_spear", -45.0),
+    kit_long("wooden_arrow", -45.0),
+    kit_long("bone_arrow", -45.0),
+    kit_long("metal_arrow", -45.0),
+    kit_long("high_velocity_arrow", -45.0),
+    kit_long("fire_arrow", -45.0),
+    kit_long("metal_blade", -45.0),
+    kit_long("medical_syringe", -45.0),
+    kit_long("electric_fuse", -45.0),
+    kit_long("metal_pipe", -45.0),
+    kit_long("metal_spring", -30.0),
+    // …guns and plates side on, nudged up at the muzzle…
+    kit_long("revolver", 18.0),
+    kit_long("semi_automatic_body", 18.0),
+    kit_long("smg_body", 18.0),
+    kit_long("rifle_body", 18.0),
+    kit_long("blueprint", 20.0),
+    // …and the rest as they would sit on a table.
+    kit("wood", [0.0, 0.0, 0.0]),
+    kit("cloth", [0.0, 0.0, 0.0]),
+    kit("tarp", [0.0, 0.0, 0.0]),
+    kit("animal_fat", [0.0, 0.0, 0.0]),
+    kit("charcoal", [0.0, 0.0, 0.0]),
+    kit("metal_fragments", [0.0, 0.0, 0.0]),
+    kit("sulfur", [0.0, 0.0, 0.0]),
+    kit("gunpowder", [0.0, 0.0, 0.0]),
+    kit("low_grade_fuel", [25.0, 0.0, 0.0]),
+    kit("leather", [0.0, 0.0, 0.0]),
+    kit("bone_fragments", [0.0, 0.0, 0.0]),
+    kit("gears", [30.0, 0.0, 0.0]),
+    kit("rope", [0.0, 0.0, 0.0]),
+    kit("junk", [0.0, 0.0, 0.0]),
+    kit("empty_propane_tank", [0.0, 0.0, 0.0]),
+    kit("sewing_kit", [0.0, 0.0, 0.0]),
+    kit("sheet_metal", [0.0, 0.0, 0.0]),
+    kit("road_signs", [30.0, 0.0, 0.0]),
+    kit("tech_trash", [30.0, 30.0, 0.0]),
+    kit("key_lock", [30.0, 0.0, 0.0]),
+    kit("code_lock", [30.0, 0.0, 0.0]),
+    kit("waterskin", [30.0, 0.0, 0.0]),
+    kit("full_waterskin", [30.0, 0.0, 0.0]),
+    kit("pistol_round", [30.0, 0.0, 0.0]),
+    kit("corn_seed", [0.0, 0.0, 0.0]),
+    kit("hemp_seed", [0.0, 0.0, 0.0]),
+    kit("burlap_tunic", [30.0, 0.0, 0.0]),
+    kit("burlap_hood", [30.0, 0.0, 0.0]),
+    kit("hide_poncho", [30.0, 0.0, 0.0]),
+    kit("bone_helmet", [30.0, 0.0, 0.0]),
+    kit("roadsign_vest", [30.0, 0.0, 0.0]),
+    kit("planter_box", [0.0, 0.0, 0.0]),
+    kit("fire_pit", [0.0, 0.0, 0.0]),
+    kit("auto_turret", [30.0, 0.0, 0.0]),
+    kit("metal_window_bars", [90.0, 0.0, 0.0]),
+    kit("garage_door", [90.0, 0.0, 0.0]),
+    kit("glass_window", [90.0, 0.0, 0.0]),
+    kit("wood_shutters", [90.0, 0.0, 0.0]),
 ];
 
 /// Where the camera sits relative to the subject: right, above and in front,
@@ -128,6 +352,33 @@ struct Written(bool);
 
 #[derive(Component)]
 struct IconCam;
+
+/// The prop kit's detail maps, one per `props::Tex`.
+#[derive(Resource, Default)]
+struct Kit(Vec<(props::Tex, Handle<Image>)>);
+
+impl Kit {
+    fn material(&self, m: &props::Mat) -> StandardMaterial {
+        let tex = self
+            .0
+            .iter()
+            .find(|(t, _)| *t == m.tex)
+            .map(|(_, h)| h.clone());
+        let c = m.color();
+        // Metal is mostly diffuse here: with no environment to reflect, a
+        // fully metallic surface renders black but for its highlights. A
+        // third of it keeps the sheen and the colour both.
+        StandardMaterial {
+            base_color: c,
+            base_color_texture: tex,
+            perceptual_roughness: m.rough,
+            metallic: m.metal * 0.3,
+            reflectance: 0.5 + 0.3 * m.metal,
+            emissive: c.to_linear() * m.glow * 4.0,
+            ..default()
+        }
+    }
+}
 
 fn main() -> AppExit {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -186,10 +437,11 @@ fn main() -> AppExit {
     // the three lights below are sized against.
     app.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.92, 0.95, 1.0),
-        brightness: 90.0,
+        brightness: 150.0,
         ..default()
     });
     app.insert_resource(Written::default());
+    app.init_resource::<Kit>();
     app.insert_resource(Bake {
         out,
         queue,
@@ -204,7 +456,16 @@ fn main() -> AppExit {
 }
 
 /// The camera, its offscreen target and the studio lights.
-fn stage(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut bake: ResMut<Bake>) {
+fn stage(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut bake: ResMut<Bake>,
+    mut kit: ResMut<Kit>,
+) {
+    kit.0 = props::Tex::ALL
+        .iter()
+        .map(|t| (*t, images.add(props::texture(*t))))
+        .collect();
     let target = images.add(Image::new_target_texture(
         FRAME_PX,
         FRAME_PX,
@@ -248,7 +509,7 @@ fn stage(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut bake: Re
     // Fill from the right, cool and weak, so the shadow side keeps its form.
     commands.spawn((
         DirectionalLight {
-            illuminance: 850.0,
+            illuminance: 1_200.0,
             color: Color::srgb(0.80, 0.86, 1.0),
             shadows_enabled: false,
             ..default()
@@ -276,6 +537,9 @@ fn drive(
     children: Query<&Children>,
     bounds: Query<(&Aabb, &GlobalTransform)>,
     mut cam: Query<(&mut Transform, &mut Projection), With<IconCam>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    kit: Res<Kit>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut cur) = bake.cur.take() else {
@@ -295,13 +559,39 @@ fn drive(
             subject.turn[1].to_radians(),
             subject.turn[2].to_radians(),
         );
-        let place = Transform::from_rotation(turn);
-        let root = commands
-            .spawn((
-                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(subject.glb))),
-                place,
-            ))
-            .id();
+        let roll = Quat::from_axis_angle(VIEW_DIR.normalize(), subject.roll.to_radians());
+        let place = Transform::from_rotation(roll * turn).with_scale(Vec3::new(
+            subject.girth,
+            1.0,
+            subject.girth,
+        ));
+        let root = match subject.src {
+            Src::Glb(glb) => commands
+                .spawn((
+                    SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(glb))),
+                    place,
+                ))
+                .id(),
+            Src::Gen(name) => commands
+                .spawn((
+                    Mesh3d(meshes.add(client::render::heldgen::mesh(name))),
+                    MeshMaterial3d(mats.add(client::render::heldgen::material(name))),
+                    place,
+                ))
+                .id(),
+            Src::Kit(name) => {
+                let root = commands.spawn((place, Visibility::default())).id();
+                for part in props::parts(name).unwrap_or_default() {
+                    commands.spawn((
+                        Mesh3d(meshes.add(part.mesh)),
+                        MeshMaterial3d(mats.add(kit.material(&part.mat))),
+                        part.at,
+                        ChildOf(root),
+                    ));
+                }
+                root
+            }
+        };
         bake.cur = Some(Current {
             subject,
             root,

@@ -39,7 +39,9 @@ use sim_core::build::{damage_band, BuildContent, PieceRec};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
-use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::inventory::{
+    slots_in, CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD,
+};
 use sim_core::limits::{
     ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM,
     CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS,
@@ -6421,6 +6423,9 @@ impl ShardCore {
                         .world_conts
                         .index_of(handle)
                         .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                    // A sleeper's pack: the move verb's own resolution, so
+                    // a sleeper that woke, died or was evicted shuts it.
+                    CONT_BODY => self.world.body_loot_index(handle, c.own_wslot),
                     // **The body does not ride here any more.** It had
                     // this arm from armor v1 to 2026-08-28 and resolved
                     // to `Some(0)` — no store, no reach, no lock, the one
@@ -6548,7 +6553,7 @@ impl ShardCore {
                                     // opened nothing in the world.
                                     if opened && slot < MAX_PLAYERS {
                                         let id = c.id;
-                                        let deed = if kind == CONT_BAG {
+                                        let deed = if kind == CONT_BAG || kind == CONT_BODY {
                                             DEED_OPEN_BAG
                                         } else {
                                             DEED_OPEN_BOX

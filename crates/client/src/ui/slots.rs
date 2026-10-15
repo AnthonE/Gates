@@ -49,7 +49,7 @@ use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
 use sim_core::deploy::{box_key, holds_items, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
-    deposit_refused, is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD,
+    deposit_refused, is_own, CONT_BODY, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD,
 };
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
@@ -1071,6 +1071,7 @@ pub fn container_title(kind: u8) -> &'static str {
         // Named for the same reason, one kind later. The fallback would
         // have titled a player's own armor "BAG".
         CONT_WEAR => "WORN",
+        CONT_BODY => "SLEEPER",
         _ => "BAG",
     }
 }

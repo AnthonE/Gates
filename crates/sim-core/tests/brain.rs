@@ -10,7 +10,7 @@ use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_CROUCH, BTN_LIGHT, BTN_SPRINT};
 use sim_core::limits::{MAX_MOBS, MOB_THINK_TICKS};
-use sim_core::mob::{self, MobContent, MOB_PIG, MOB_WOLF};
+use sim_core::mob::{self, MobContent, MOB_PIG, MOB_STAG, MOB_WOLF};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::nav::yaw_toward;
 use sim_core::world::{Command, World};
@@ -44,12 +44,17 @@ fn world_with(animals: &[(usize, f32, f32)]) -> World {
 
 /// `world_with`, with the player joined at `spawn` rather than on the beach.
 fn world_at(spawn: Option<(f32, f32)>, animals: &[(usize, f32, f32)]) -> World {
+    world_in(MobContent::probe_fixture(), spawn, animals)
+}
+
+/// `world_at` on a given species table.
+fn world_in(mc: MobContent, spawn: Option<(f32, f32)>, animals: &[(usize, f32, f32)]) -> World {
     let mut w = World::new(SEED);
     // Clear skies held: these measure notice ranges, and the weather
     // schedule would otherwise put fog on some test tick (weather v0).
     w.env = sim_core::weather::Env::CLEAR;
     w.combat = CombatContent::probe_fixture();
-    w.mob = MobContent::probe_fixture();
+    w.mob = mc;
     w.gather = GatherContent::probe_fixture();
     w.dev_spawn = Some(spawn.unwrap_or_else(|| w.spawn_pos(1)));
     w.tick(&[Command::Join { id: 1 }]);
@@ -117,8 +122,8 @@ fn first(w: &World, kind: u8) -> usize {
         .expect("a live animal of that kind")
 }
 
-/// The free wolves of the first pack: guards take the first
-/// `SITE_GUARDS` predator slots, and the next `PACK_SIZE` den together.
+/// Three free wolves of the first pack: guards take the first
+/// `SITE_GUARDS` predator slots, and the next `PACK_SIZES[0]` den together.
 fn free_pack() -> [usize; 3] {
     let leader = (0..MAX_MOBS)
         .find(|&s| mob::pack_leader_of(s) == Some(s))
@@ -126,7 +131,7 @@ fn free_pack() -> [usize; 3] {
     let mates: Vec<usize> = (0..MAX_MOBS)
         .filter(|&s| mob::pack_leader_of(s) == Some(leader))
         .collect();
-    assert_eq!(mates.len(), mob::PACK_SIZE, "the first pack is whole");
+    assert_eq!(mates.len(), mob::PACK_SIZES[0], "the first pack is whole");
     [mates[0], mates[1], mates[2]]
 }
 
@@ -631,4 +636,111 @@ fn an_animal_woken_from_dormancy_does_not_stand_forever() {
         left_idle,
         "a woken pig stood in Idle for ten seconds with nobody near"
     );
+}
+
+/// **Packs and herds come in the reference's sizes**: wolves one to four to
+/// a pack, stags one to five to a herd, every member the leader's species,
+/// and both sizes actually varying across the roster.
+#[test]
+fn packs_and_herds_come_in_their_sizes() {
+    for (leader_of, kind, most) in [
+        (
+            mob::pack_leader_of as fn(usize) -> Option<usize>,
+            MOB_WOLF,
+            4,
+        ),
+        (mob::herd_leader_of, MOB_STAG, 5),
+    ] {
+        let mut sizes = Vec::new();
+        for l in (0..MAX_MOBS).filter(|&s| leader_of(s) == Some(s)) {
+            let members: Vec<usize> = (0..MAX_MOBS).filter(|&s| leader_of(s) == Some(l)).collect();
+            assert!(members.iter().all(|&s| mob::kind_of(s) == kind));
+            assert!(members.iter().all(|&s| mob::group_leader_of(s) == Some(l)));
+            sizes.push(members.len());
+        }
+        assert!(
+            sizes.iter().all(|&n| (1..=most).contains(&n)),
+            "kind {kind}: group sizes {sizes:?}"
+        );
+        assert!(sizes.contains(&most) && sizes.iter().any(|&n| n < most));
+    }
+    assert!(
+        (0..MAX_MOBS).all(|s| mob::herd_leader_of(s).is_none() || mob::pack_leader_of(s).is_none())
+    );
+}
+
+/// **A herd bolts together.** One stag notices the player and runs; its
+/// herd-mate 35 m from the player — outside its own 20 m, inside the 25 m
+/// herd call — runs from the same player, and never howls doing it. With
+/// the herd call disarmed in content the far stag keeps grazing.
+#[test]
+fn a_stag_herd_bolts_together() {
+    let mut mc = MobContent::probe_fixture();
+    let mut stag = mc.def(MOB_PIG);
+    stag.attack = 0;
+    stag.attack_range_cm = 0;
+    stag.attack_ticks = 0;
+    stag.brave_pct = 0;
+    stag.spook_cm = 2_000;
+    stag.night_spook_cm = 2_000;
+    stag.roam_cm = 8_000;
+    stag.per_km2_milli = 3_000;
+    stag.pack_cm = 2_500;
+    mc.defs[MOB_STAG as usize] = stag;
+    let leader = (0..MAX_MOBS)
+        .find(|&s| mob::herd_leader_of(s) == Some(s))
+        .expect("a stag leads a herd");
+    let mates: Vec<usize> = (0..MAX_MOBS)
+        .filter(|&s| mob::herd_leader_of(s) == Some(leader))
+        .collect();
+    let (a, b) = (mates[0], mates[1]);
+    for (armed, joins) in [(true, true), (false, false)] {
+        let mut mc = mc;
+        if !armed {
+            mc.defs[MOB_STAG as usize].pack_cm = 0;
+        }
+        let mut w = world_in(mc, None, &[(a, 12.0, 0.0), (b, 35.0, 0.0)]);
+        hold(&mut w, 0, 2 * MOB_THINK_TICKS as u32 + 1, |_| {});
+        assert_eq!(
+            w.mobs.m[a].state,
+            AiState::Flee,
+            "the near stag did not run"
+        );
+        let ran = w.mobs.m[b].state == AiState::Flee && w.mobs.m[b].target == 0;
+        assert_eq!(
+            ran, joins,
+            "herd call armed={armed}: the far stag is {:?}",
+            w.mobs.m[b].state
+        );
+        assert_eq!(
+            w.mobs.m[a].howled_at + w.mobs.m[b].howled_at,
+            0,
+            "a stag howled"
+        );
+    }
+}
+
+/// **Wolves rest between hunts.** A pack with nobody near enough to hunt
+/// lies down within a few minutes of night, the reworked wolf's idle.
+#[test]
+fn a_wolf_with_nothing_to_hunt_lies_down_at_night() {
+    let [a, _, _] = free_pack();
+    // Its own den, inland, with the player 60 m off: awake, not hunting.
+    let den = {
+        let mut w = World::new(SEED);
+        w.mob = MobContent::probe_fixture();
+        w.tick(&[]);
+        let b = w.mobs.m[a].body;
+        (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)
+    };
+    let mut w = world_at(Some((den.0 + 60.0, den.1)), &[(a, -60.0, 0.0)]);
+    w.mobs.m[a].state_until = 0;
+    w.tick = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| sim_core::world::is_night(t) && sim_core::world::is_night(t + 10_000))
+        .expect("a night");
+    let mut slept = false;
+    hold(&mut w, 0, 180 * 30, |w| {
+        slept |= w.mobs.m[a].state == AiState::Sleep;
+    });
+    assert!(slept, "the wolf never lay down");
 }

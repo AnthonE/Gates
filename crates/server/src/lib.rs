@@ -34,6 +34,8 @@ pub mod agent_demo;
 /// The append-only anomaly log — the evidence an alpha produces.
 pub mod anomaly;
 pub mod auth;
+/// The scripted policy behind another source: a body never stands still.
+pub mod autopilot;
 pub mod boot;
 pub mod botclient;
 pub mod client;
@@ -44,12 +46,16 @@ pub mod entitle;
 pub mod explorer;
 /// Bring-your-own-agent decisions over a child's stdin/stdout (`JEV.md`).
 pub mod external;
+/// `jev-bot --set-face`: an agent signs its own name and picture.
+pub mod face_set;
 pub mod faces;
 /// Skins the shard gave away (the alpha's Founder set), and who took them.
 pub mod gifts;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
 pub mod jev;
+/// `jev-bot --mcp`: any MCP harness as the bot's mind (`JEV.md`).
+pub mod mcp;
 /// The agent's goals, observation summary and decision worker (`JEV.md`).
 pub mod mind;
 pub mod net;

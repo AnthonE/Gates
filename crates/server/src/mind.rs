@@ -195,6 +195,10 @@ pub enum Goal {
     Invite,
     /// Stay with its nearest teammate, and fight whoever goes for them.
     Follow,
+    /// Its friend (`--friend`) is on the island and not on its team: walk
+    /// to THE GATE and wait there, the place they know to find it, until
+    /// they are in reach of an invite.
+    Meet,
     /// Take what the pack carries past the belt to the team's chest, and
     /// put it in.
     Deliver,
@@ -246,7 +250,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 35] = [
+    pub const FIXED: [Goal; 36] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -273,6 +277,7 @@ impl Goal {
         Goal::JoinTeam,
         Goal::Invite,
         Goal::Follow,
+        Goal::Meet,
         Goal::Deliver,
         Goal::SupplyWood,
         Goal::SupplyStone,
@@ -314,6 +319,7 @@ impl Goal {
             Goal::JoinTeam => "join_team",
             Goal::Invite => "invite",
             Goal::Follow => "follow",
+            Goal::Meet => "meet",
             Goal::Deliver => "deliver",
             Goal::SupplyWood => "supply_wood",
             Goal::SupplyStone => "supply_stone",
@@ -395,6 +401,9 @@ impl Goal {
             Goal::JoinTeam => "Accept the team invite.".into(),
             Goal::Invite => "Invite the player beside you to your team.".into(),
             Goal::Follow => "Stay with a teammate; fight their attackers.".into(),
+            Goal::Meet => {
+                "Walk to THE GATE and wait for your friend there, then team up.".into()
+            }
             Goal::Deliver => "Put the pack in the team's box.".into(),
             Goal::SupplyWood => "Chop wood, then put it in the team's box.".into(),
             Goal::SupplyStone => "Mine stone, then put it in the team's box.".into(),
@@ -640,6 +649,44 @@ impl TeamSense {
     }
 }
 
+/// Its friend (`jev-bot --friend 0x…`): the one wallet this body plays
+/// with. Whether they are on the island, on its team, in sight, in reach of
+/// an invite, or inviting it. Sent to an external source beside the
+/// observation, as `team` is ([`Summary::friend_json`]), never to Jev.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct FriendSense {
+    /// A friend is named at all.
+    pub set: bool,
+    /// Who, as a chat log names them; `id` 0 until they joined.
+    pub who: Who,
+    /// On the island now: awake on its team, or (before a team) joined or
+    /// seen recently (`explorer::FRIEND_AWAY_SECS`).
+    pub online: bool,
+    pub on_team: bool,
+    /// Where they stand, while its eyes have them.
+    pub in_sight: Sighting,
+    /// They are the person an `invite` would go to now.
+    pub reachable: bool,
+    /// The invite waiting on it is theirs.
+    pub invited_me: bool,
+}
+
+impl FriendSense {
+    pub const NONE: Self = Self {
+        set: false,
+        who: Who {
+            id: 0,
+            name: protocol::Name::EMPTY,
+            address: protocol::Address::GUEST,
+        },
+        online: false,
+        on_team: false,
+        in_sight: Sighting::NONE,
+        reachable: false,
+        invited_me: false,
+    };
+}
+
 /// Relative directions, clockwise from straight ahead.
 pub const BEARINGS: [&str; 8] = [
     "ahead",
@@ -766,6 +813,12 @@ pub struct Sighting {
 }
 
 impl Sighting {
+    pub const NONE: Self = Self {
+        count: 0,
+        nearest_m: 0,
+        bearing: 0,
+    };
+
     pub fn add(&mut self, distance_m: f32, bearing: u8) {
         let d = distance_m.clamp(0.0, 255.0) as u8;
         if self.count == 0 || d < self.nearest_m {
@@ -1171,6 +1224,8 @@ pub struct Summary {
     pub feed: bool,
     /// Its team (wire v108).
     pub team: TeamSense,
+    /// Its friend (`--friend`), if it has one.
+    pub friend: FriendSense,
     /// What the team's boxes held when their panels were last open.
     pub home_holds: [(Name, u32); SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
@@ -1337,6 +1392,7 @@ impl Summary {
             }; protocol::TEAM_MAX],
             who_len: 0,
         },
+        friend: FriendSense::NONE,
         home_holds: [(Name::EMPTY, 0); SUMMARY_HOME_HOLDS],
         home_holds_len: 0,
         gate: None,
@@ -1424,6 +1480,9 @@ impl Summary {
                         "from": l.label(),
                         "me": l.me,
                         "agent": l.agent,
+                        "friend": self.friend.set
+                            && !l.address.is_guest()
+                            && l.address == self.friend.who.address,
                         "channel": match l.channel {
                             protocol::Channel::Local => "local",
                             protocol::Channel::Global => "global",
@@ -1452,6 +1511,25 @@ impl Summary {
             },
             "locks": self.locks[..usize::from(self.locks_len)].iter().map(LockSense::json).collect::<Vec<_>>(),
             "ziggurat_doors": self.card_doors[..usize::from(self.card_doors_len)].iter().map(CardDoorSense::json).collect::<Vec<_>>(),
+        })
+    }
+
+    /// Its friend (`--friend`), by the label a chat log shows: `null` with
+    /// none named. Sent beside the observation, as `team` is. Worker only.
+    pub fn friend_json(&self) -> Value {
+        let f = &self.friend;
+        if !f.set {
+            return Value::Null;
+        }
+        let hex = f.who.address.to_hex();
+        json!({
+            "name": f.who.label(),
+            "wallet": core::str::from_utf8(&hex).unwrap_or(""),
+            "online": f.online,
+            "on_my_team": f.on_team,
+            "in_sight": f.in_sight.json(),
+            "in_invite_reach": f.reachable,
+            "invited_me": f.invited_me,
         })
     }
 
@@ -1804,6 +1882,9 @@ pub struct Mind {
     failures: u32,
     guard: SpendGuard,
     paused: bool,
+    /// Requests its source answers without a model call (the autopilot's
+    /// own turns, `autopilot.rs`): never held by the spend guard.
+    free_when: Option<fn(&Summary) -> bool>,
     pub stats: MindStats,
     /// The last accepted answer, for display.
     pub last: Option<Choice>,
@@ -1901,9 +1982,18 @@ impl Mind {
             failures: 0,
             guard: SpendGuard::new(cfg.per_hour, cfg.per_day),
             paused: false,
+            free_when: None,
             stats: MindStats::default(),
             last: None,
         }
+    }
+
+    /// Requests `rule` says cost nothing are never held by, or counted
+    /// against, the spend guard: a buddy whose friend is away plays all day
+    /// on the scripted policy without spending the day's ceiling.
+    pub fn free_when(mut self, rule: fn(&Summary) -> bool) -> Self {
+        self.free_when = Some(rule);
+        self
     }
 
     pub fn kind(&self) -> SourceKind {
@@ -1981,7 +2071,7 @@ impl Mind {
         if self.pending.is_some() || now < self.next_allowed {
             return false;
         }
-        let free = self.kind == SourceKind::Scripted;
+        let free = self.kind == SourceKind::Scripted || self.free_when.is_some_and(|f| f(summary));
         if !free && !self.guard.allow(now) {
             if !self.paused {
                 self.paused = true;
@@ -2165,6 +2255,18 @@ impl Scripted {
         // A team (wire v108): say yes, and go to them when they are set on.
         if s.offers(Goal::JoinTeam) {
             return (Goal::JoinTeam, "scripted: a team invite is waiting");
+        }
+        // Its friend (`--friend`) on the island and not on its team: an
+        // invite once they are in reach, else the walk to THE GATE, where
+        // they know to find it.
+        if s.friend.online && !s.friend.on_team {
+            if s.friend.reachable && s.offers(Goal::Invite) {
+                self.reply("invite sent: press Y");
+                return (Goal::Invite, "scripted: my friend is here");
+            }
+            if s.offers(Goal::Meet) {
+                return (Goal::Meet, "scripted: meeting my friend at THE GATE");
+            }
         }
         if std::mem::take(&mut self.asked) {
             if s.offers(Goal::Invite) {
@@ -2905,6 +3007,63 @@ mod tests {
         ask(&mut s, Some(heard(Team, "follow", false)));
         s.team.mates = 0;
         assert_eq!(ask(&mut s, None).goal, Goal::Explore);
+    }
+
+    /// Its friend (`--friend`): met at THE GATE while online and not on its
+    /// team, invited first once in reach, and named in what an external
+    /// source is sent — their lines marked as theirs.
+    #[test]
+    fn the_scripted_policy_meets_and_invites_its_friend() {
+        let friend =
+            protocol::Address::from_hex(b"0x00000000000000000000000000000000000000f1").unwrap();
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        assert_eq!(s.friend_json(), Value::Null, "no friend named");
+        s.friend = FriendSense {
+            set: true,
+            who: Who {
+                id: 7,
+                name: protocol::Name::new("Ash").unwrap(),
+                address: friend,
+            },
+            ..FriendSense::NONE
+        };
+        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Explore, "away");
+        s.friend.online = true;
+        s.offer(Goal::Meet);
+        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Meet);
+        s.friend.reachable = true;
+        s.offer(Goal::Invite);
+        let c = scripted.decide(&s).unwrap();
+        assert_eq!(
+            (c.goal, said(&c).as_deref()),
+            (Goal::Invite, Some("invite sent: press Y"))
+        );
+        s.friend.on_team = true;
+        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Explore, "teamed");
+        let j = s.friend_json();
+        assert_eq!(j["name"], "Ash");
+        assert_eq!(j["wallet"], "0x00000000000000000000000000000000000000f1");
+        assert_eq!(
+            (j["online"].clone(), j["on_my_team"].clone()),
+            (json!(true), json!(true))
+        );
+        s.heard.push(HeardLine {
+            from: 7,
+            name: protocol::Name::new("Ash").unwrap(),
+            address: friend,
+            text: protocol::ChatText::sanitize(b"hey doc").unwrap(),
+            ..HeardLine::EMPTY
+        });
+        s.heard.push(heard(protocol::Channel::Local, "hi", false));
+        let lines = s.heard_json();
+        assert_eq!(
+            (lines[0]["friend"].clone(), lines[1]["friend"].clone()),
+            (json!(true), json!(false))
+        );
     }
 
     /// A person near it asking to team up in local chat is invited when

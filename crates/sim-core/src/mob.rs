@@ -1241,8 +1241,9 @@ pub fn step(
         occ,
     };
     for slot in 0..MAX_MOBS {
-        // A pack-mate dens round its leader's home, if the leader is up.
-        let leader_home = pack_leader_of(slot)
+        // A pack- or herd-mate dens round its leader's home, if the leader
+        // is up.
+        let leader_home = group_leader_of(slot)
             .filter(|&l| l != slot && mobs.m[l].alive)
             .map(|l| (mobs.m[l].home_qx, mobs.m[l].home_qz));
         let mob = &mut mobs.m[slot];
@@ -1536,11 +1537,36 @@ pub fn hurt_slot(
     true
 }
 
-/// Free wolves den together, this many to a pack: the reference's wolves
-/// come in packs, and a pack is only a pack if its members live within
-/// call of each other (`MobDef::pack_cm`). 12 free wolves are four packs
-/// of 3 (the reference spawns none bigger than 4).
-pub const PACK_SIZE: usize = 3;
+/// Free wolves den together in packs of these sizes, in turn: the
+/// reference's reworked wolves come one to four to a pack (its 2024 rework
+/// raised the cap from 3 to 4), and a pack is only a pack if its members
+/// live within call of each other (`MobDef::pack_cm`). A stated pattern and
+/// not a hashed draw, for `WOLF_SLOT_EVERY`'s reason: a gate counts packs.
+pub const PACK_SIZES: [usize; 6] = [4, 3, 2, 4, 1, 3];
+/// Stags keep herds of one to five (the reference's deer), sized in turn.
+pub const HERD_SIZES: [usize; 5] = [4, 2, 5, 1, 3];
+
+/// The first ordinal of the group `o` falls in, groups sized `sizes` in turn.
+const fn group_start(o: usize, sizes: &[usize]) -> usize {
+    let mut cycle = 0;
+    let mut i = 0;
+    while i < sizes.len() {
+        cycle += sizes[i];
+        i += 1;
+    }
+    let base = o / cycle * cycle;
+    let r = o % cycle;
+    let mut acc = 0;
+    i = 0;
+    while i < sizes.len() {
+        if r < acc + sizes[i] {
+            return base + acc;
+        }
+        acc += sizes[i];
+        i += 1;
+    }
+    base
+}
 
 /// A pack-mate's den is drawn this far around its leader's home.
 const DEN_MIN_M: f32 = 4.0;
@@ -1551,7 +1577,7 @@ const CH_MOB_DEN: u32 = 116;
 /// for prey and for guards (whose pack is their post). Pure in the slot,
 /// like `kind_of`.
 pub const fn pack_leader_of(slot: usize) -> Option<usize> {
-    if !slot.is_multiple_of(WOLF_SLOT_EVERY) || crate::sentry::is_sentry_slot(slot) {
+    if kind_of(slot) != MOB_WOLF {
         return None;
     }
     let g = slot / WOLF_SLOT_EVERY;
@@ -1559,20 +1585,39 @@ pub const fn pack_leader_of(slot: usize) -> Option<usize> {
         return None;
     }
     let free = g - SITE_GUARDS;
-    Some((SITE_GUARDS + free - free % PACK_SIZE) * WOLF_SLOT_EVERY)
+    Some((SITE_GUARDS + group_start(free, &PACK_SIZES)) * WOLF_SLOT_EVERY)
+}
+
+/// The first slot of the herd a stag slot belongs to, or `None` for every
+/// other slot. Pure in the slot, like `kind_of`.
+pub const fn herd_leader_of(slot: usize) -> Option<usize> {
+    if slot % WOLF_SLOT_EVERY != STAG_SLOT_PHASE || kind_of(slot) != MOB_STAG {
+        return None;
+    }
+    Some(group_start(slot / WOLF_SLOT_EVERY, &HERD_SIZES) * WOLF_SLOT_EVERY + STAG_SLOT_PHASE)
+}
+
+/// The leader of whatever group a slot lives in — a wolf's pack or a
+/// stag's herd. Its members den round the leader's home and roam round
+/// the leader.
+pub const fn group_leader_of(slot: usize) -> Option<usize> {
+    match pack_leader_of(slot) {
+        Some(l) => Some(l),
+        None => herd_leader_of(slot),
+    }
 }
 
 /// Which pack a slot answers, or `None` for the solitary: a guard's pack is
-/// its post and a free predator's is its den's leader. Pure in the slot.
-/// Only a pack-mate's call is answered — the reference's howl carries to
-/// the wolf's own pack and nobody else's.
+/// its post, a free predator's is its den's leader and a stag's its herd's.
+/// Pure in the slot. Only a pack-mate's call is answered — the reference's
+/// howl carries to the wolf's own pack and nobody else's.
 pub const fn pack_of(slot: usize) -> Option<u16> {
     // Guard packs sit past every slot, so no free pack's leader can share
     // an id with a post however big the roster grows.
     if let Some(site) = guard_site_of(slot) {
         return Some((MAX_MOBS + site) as u16);
     }
-    match pack_leader_of(slot) {
+    match group_leader_of(slot) {
         Some(l) => Some(l as u16),
         None => None,
     }

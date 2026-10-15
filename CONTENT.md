@@ -150,7 +150,10 @@ properly. The short version:
 - **skin**: id, catalog (the platform's item id; nonzero, never reused),
   name, covers (one stack-1 item), tint (an sRGB multiply, v0), coin +
   price (optional together: an unpriced row ships its look off sale, and a
-  shard with `skins_origin` takes the store's prices), season. Out of the
+  shard with `skins_origin` takes the store's prices), season, and
+  optional texture (a painted skin: the sha256 of a square PNG on a frozen
+  canvas, `SKIN_CANVAS_ITEMS` only; made with `skinkit`, fetched from the
+  platform by hash, its tint the picture's average colour). Out of the
   content hash (`canon.rs`), so a new look is never a wipe
   (`content/skins.toml`)
 

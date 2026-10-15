@@ -656,14 +656,23 @@ fn the_agent_heals_after_a_fight() {
         u32::from(hp) * 100 < u32::from(a.player(ID).hp_max) * 80,
         "not hurt enough to need a bandage: {hp}"
     );
+    // Counted across the pack: the agent may move them to its belt, and
+    // the loot (the body's meat, fat and bone) fills the slot they left.
+    let left = |p: &sim_core::world::Player| -> u16 {
+        p.inv
+            .iter()
+            .filter(|s| s.item == bandages.item)
+            .map(|s| s.count)
+            .sum()
+    };
     let healed = a.until(20 * TICK_HZ, |a| {
         let p = a.player(ID);
-        p.hp > hp && p.inv[slot].count < 3
+        p.hp > hp && left(p) < 3
     });
     println!(
         "heal: {hp} hp after the fight, {} now, {} bandages left; {}",
         a.player(ID).hp,
-        a.player(ID).inv[slot].count,
+        left(a.player(ID)),
         a.explain()
     );
     assert!(healed, "no bandage after the fight: {}", a.explain());

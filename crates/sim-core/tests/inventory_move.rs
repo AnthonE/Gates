@@ -37,9 +37,9 @@
 use sim_core::backpack::BackpackContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::{
-    plan_move, resolve, MovePlan, CONT_BAG, CONT_MAX, CONT_SELF, REFUSE_M_COUNT, REFUSE_M_EMPTY,
-    REFUSE_M_MAX, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_REACH, REFUSE_M_SLOT,
-    REFUSE_M_UNSTACKABLE,
+    plan_move, resolve, MovePlan, CONT_BAG, CONT_MAX, CONT_SELF, CONT_WEAR, REFUSE_M_COUNT,
+    REFUSE_M_EMPTY, REFUSE_M_MAX, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_REACH,
+    REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE,
 };
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS};
 use sim_core::rng::Pcg32;
@@ -316,8 +316,11 @@ fn moves_conserve_every_item() {
     // fixture moves. One tick per draw, and the whole test runs in a
     // fraction of a second.
     for _ in 0..10_000 {
-        let from_kind = rng.next_bounded(CONT_MAX as u32 + 1) as u8;
-        let to_kind = rng.next_bounded(CONT_MAX as u32 + 1) as u8;
+        // Up to `CONT_WEAR`: a sleeper's pack (`CONT_BODY`) is named by a
+        // player id, not this bag's, so every draw of it refuses here and
+        // only thins the accepted moves; `container_wire` moves out of one.
+        let from_kind = rng.next_bounded(CONT_WEAR as u32 + 1) as u8;
+        let to_kind = rng.next_bounded(CONT_WEAR as u32 + 1) as u8;
         // Source drawn from an *occupied* slot seven times in eight. A
         // uniform draw lands on an empty slot most of the time and refuses
         // before it reaches any arithmetic, which is how the acceptance

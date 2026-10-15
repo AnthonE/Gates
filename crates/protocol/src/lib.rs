@@ -73,8 +73,8 @@ pub use event::{
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK,
-    BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
+    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_BODY,
+    BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH,
     DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
     MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
     RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
@@ -1159,10 +1159,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// one channel bit becomes two (`chat::Channel`: local, global, team).
 /// v109 — `ACT_PICKUP` carries a 32-bit stack id, the one the crosshair is
 /// on (0 for none): the sim takes it while it is in reach, else the nearest.
-/// v110 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
+/// v110 — container kind 5, `CONT_BODY`: a sleeper's pack, named by its
+/// player id, opened and moved like a bag. A bag's look widens to three
+/// bits for `BAG_KIND_BODY`, a player's corpse.
+/// v110 — painted skins: each `SUB_SKINS` row carries a flag and, when set,
+/// the first 8 bytes of its PNG's sha256 (`SkinRow::texture`); a message
+/// carries six rows, down from eight.
+/// v111 — climate v0: `SUB_EXPOSURE` carries the owner's heat and the air in
 /// whole °C beside wet and cold, and the death cause admits 9
 /// (`DEATH_BY_HEAT`).
-pub const PROTO_VER: u16 = 110;
+pub const PROTO_VER: u16 = 111;
 
 /// This game's slug in the elo catalog.
 ///
