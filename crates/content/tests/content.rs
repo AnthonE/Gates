@@ -3505,7 +3505,7 @@ fn the_shipped_pig_bakes() {
     let mc = c.bake_mobs().expect("the pig must bake");
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
-    assert_eq!(pig.hp, 80);
+    assert_eq!(pig.hp, 150);
     // 50% and 70% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
     assert_eq!(pig.flee_gait, 88);
@@ -3528,7 +3528,7 @@ fn the_shipped_pig_bakes() {
     assert_eq!(pig.respawn_ticks, 300 * sim_core::limits::TICK_HZ);
     // Metres → centimetres, the unit the sim compares distances in.
     assert_eq!(pig.roam_cm, 6_000);
-    assert_eq!(pig.spook_cm, 1_200);
+    assert_eq!(pig.spook_cm, 800);
     // Prey's flinch is not clock-keyed. Asserted rather than assumed
     // because the field is required on every row, so "the pig's night
     // radius" is a number somebody chose and not one the schema defaulted:
@@ -4026,7 +4026,7 @@ fn fel_tiers_bake_light_to_heavy() {
 
 #[test]
 fn mob_refusals() {
-    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
+    refuses("mobs.toml", "hp = 150", "hp = 0", "zero hp");
     refuses(
         "mobs.toml",
         "notice_pct = 50",
@@ -4045,7 +4045,7 @@ fn mob_refusals() {
         "walk_pct = 140",
         "1–100 percent",
     );
-    refuses("mobs.toml", "roam_m = 60", "roam_m = 10", "treadmill");
+    refuses("mobs.toml", "roam_m = 60", "roam_m = 5", "treadmill");
     refuses(
         "mobs.toml",
         "flee_seconds = 3",
@@ -4090,7 +4090,7 @@ fn mob_refusals() {
         "item.unobtainium",
         "is not an item",
     );
-    refuses("mobs.toml", "count = 15", "count = 0", "zero count");
+    refuses("mobs.toml", "count = 27", "count = 0", "zero count");
     // The brain's numbers (`NOW.md` §0m item 7). Every row carries the same
     // text today, so each replace lands on all three.
     refuses(

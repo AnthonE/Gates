@@ -21,46 +21,29 @@
 # reference game is the source, the reference is named — and since
 # 2026-08-11 the pig IS their boar in the one way it wasn't: it charges
 # when whole and runs when hurt.
+#
+# **2026-10-15, re-read against the live game** (operator: "make sure
+# animals are all setup just like Rust survival does it"). The hp and bite
+# figures below had been taken from a pre-2024 wiki and each carried a
+# "re-verify if egress ever opens" caveat. Egress opened: the current
+# datamines (rusthelp.com/world/<animal>, rustpedia.com/world/<animal>) and
+# the Nov–Dec 2024 wolf rework devblogs ("Armed and Animated", "Polish and
+# Progress") put the boar, the wolf and the stag at 150 hp each, the wolf's
+# bite at 30, the boar's courage at 75%, packs at one to four wolves and
+# stag herds at one to five. Speeds stay ours: theirs out-run a player (a
+# wolf 9 m/s, a stag 8.3 against a 5.5 sprint) and ours cannot exceed the
+# sprint the capsule is capped at — the per-row reasoning still holds.
 
 [[mob]]
 id = "mob.pig"
 name = "Pig"
 
-# **150 hp — the reference game's boar, and ours now too** (operator,
-# 2026-08-08: balance close to the reference so a player coming from it is
-# not lost). Six hits with the stone hatchet a fresh spawn carries, five
-# with the metal one or the bow. Measured end to end by
-# `crates/server/tests/hunt.rs`: 12.7 s from a 12 m start, chasing.
-#
-# This line has been wrong twice and both errors are kept, because both were
-# found by making something actually do it rather than by reading. It first
-# said "three hits with the stone hatchet", which was false — a hatchet had
-# **no melee row at all**, so `held_melee` returned `None` for every pocket
-# the spawn kit fills and a pig could not be hurt by anything a fresh
-# character owned. Then it said "four with the wooden spear", true but
-# pricing the animal against a *crafted* weapon, which quietly moved the
-# first kill behind a workbench walk. Tools are armed now, and the number
-# comes from the reference rather than from us (`reference/BALANCE.md`).
-#
-# ⚠ **80, not 150 — the tie is broken and the row ships one number**
-# (operator, 2026-08-10; the tiebreak ladder is `reference/BALANCE.md` §6).
-# The 2026-08-08 pass took 150 from a source that was *already* split
-# 80/150, so "150" was never the better-evidenced reading, it was the one
-# picked first. The 2026-08-09 research put the boar at ~80 inside a
-# complete roster table — chicken 25, stag ~80, wolf 100, bear 400,
-# consistent units, five species — and a complete table beats a single
-# figure quoted in prose (§6 rung 3).
-#
-# **This used to say "carry both until someone breaks the tie", and that
-# sentence is why it sat wrong for two days.** Carrying both is not
-# neutrality: with no tiebreak procedure attached, its only effect is to
-# preserve whichever guess shipped first. The procedure existed three
-# sections up in the same document the whole time — the sulfur 300/200
-# dispute was settled in one pass by scoring each source on the cells we
-# could already check. Nobody pointed it at the boar.
-#
-# Five hatchet swings instead of six at the kit's stone hatchet (25 dmg).
-hp = 80
+# **150 hp — the reference game's boar** (rusthelp/rustpedia, 2026-10-15),
+# and the pig was 150 once before (operator, 2026-08-08: balance close to the
+# reference so a player coming from it is not lost) until a stale wiki table
+# talked it down to 80. Six swings of the kit's stone hatchet (25 dmg) at
+# full strength; on wipe day the fel tier's 60% makes it 90, four swings.
+hp = 150
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
 walk_pct = 50
@@ -82,37 +65,30 @@ walk_pct = 50
 flee_pct = 70
 flee_seconds = 3
 
-# **The bite (mob attack v0, 2026-08-11).** The reference boar's shape at
-# tier 3 (search summaries — the same tier rows 1c/1d landed at): it is
-# aggressive when approached too close, and it breaks off and flees once
-# hurt past half health. That mechanism is `brave_pct = 50` — at or above
-# half of max hp a roused pig charges, below it the identical rousing is
-# the flight it always was.
-#
-# The damage number is tier 4 (recollection — no summary would commit to
-# one): 15 per bite sits under the wolf's commonly-cited 20 and prices an
-# AFK naked at ~10 bites over ~20 s. Re-verify against the page if egress
-# ever opens (`RIPLIST.md` §1e's standing caveat). 2 m reach, one bite
-# every 2 s — the cadence is phase-locked in the sim, so it costs no state.
+# **The bite.** Their boar bites 12 every 1.5 s and runs once hurt past a
+# quarter of its health — fights whole, flees at 75%. That mechanism is
+# `brave_pct = 75`: at or above it a roused pig charges, below it the same
+# rousing is the flight it always was. The cadence here is whole seconds, so
+# the bite is their 8 a second at ours: 15 every 2 s. 2 m reach.
 attack = 15
 attack_range_m = 2
 attack_seconds = 2
-brave_pct = 50
+brave_pct = 75
 
 # The leash and the fright radius, and the pair is the whole behaviour.
 # 60 m of roam keeps a pig findable near where the seed put it — the
 # reference game's own fix for animals that "ended up at the coast of the
-# island" (reference/ANIMALS.md §2) — and 12 m is close enough that a
-# player who walks a treeline sends one running before they see it.
+# island" (reference/ANIMALS.md §2). 8 m is their boar's sight: a rooting
+# boar that only notices you once you are nearly on it.
 roam_m = 60
-spook_m = 12
+spook_m = 8
 
 # Night changes nothing for prey, and that is a statement rather than a
 # placeholder. The reference game's rework was of its PREDATOR's senses and
 # said nothing about its boar's, so a nocturnal pig would be a difference
 # with no mechanism behind it — which `reference/BALANCE.md` §6.2 refuses in
 # exactly those words. Equal, until something is measured.
-night_spook_m = 12
+night_spook_m = 8
 
 # Five minutes. Long enough that clearing the pigs near your base is worth
 # doing and short enough that it is not permanent. It comes back somewhere
@@ -122,11 +98,11 @@ respawn_seconds = 300
 
 # The reference's population (operator, 2026-10-01: "lets make it just like
 # rust"): `boar.population` defaults to 5 per km², and the island's pigs are
-# that times their habitat-weighted land. Boars there are found in every
-# biome, thickest in fields and woods, so meadow and forest are whole and the
-# granite above the treeline is thin.
+# that times their habitat-weighted land. Their boar spawns in the arid and
+# temperate biomes and not the snow, so meadow and forest are whole, the
+# desert nearly so, and the granite above the treeline is thin.
 per_km2 = 5.0
-habitat = { meadow = 1.0, forest = 1.0, highland = 0.3, desert = 0.15 }
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.15, desert = 0.7 }
 # The hit volume a swing's ray must enter (melee aim v1, 2026-09-05): a
 # cylinder on the animal's feet, centimetres. Read off what the client draws
 # — a pig is 1.5 m long and 0.78 m high (`render/mobs.rs`), so the radius
@@ -194,15 +170,16 @@ hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
 # cannot eat — `cooking.toml` turns it into `item.cooked_meat` on a fire,
 # and that walk is the whole loop: kill it, carry it, light a fire, eat.
 #
-# Fat and cloth ride behind it. `item.fat` had existed since the first
-# content set with nothing in the world dropping it, and cloth is the
-# sleeping bag.
+# The rest is their boar's harvest in its own proportions — 50 bone, 40
+# fat, 20 leather, 10 cloth and 8 pork to a hatchet — at two thirds, since
+# here a blade pays more than the hand (`[butcher]`): the boar is the fat
+# animal.
 drops = [
   { item = "item.raw_meat", count = 5 },
-  { item = "item.fat", count = 15 },
-  { item = "item.cloth", count = 10 },
-  { item = "item.bone_frags", count = 20 },
-  { item = "item.leather", count = 5 },
+  { item = "item.fat", count = 27 },
+  { item = "item.cloth", count = 7 },
+  { item = "item.bone_frags", count = 33 },
+  { item = "item.leather", count = 13 },
 ]
 
 # ---------------------------------------------------------------------------
@@ -221,12 +198,10 @@ name = "Wolf"
 # a decision. It is not a harder pig — a pig answers being crowded and then
 # thinks better of it; this one notices you at range and does not stop.
 
-# **100 — the reference game's wolf**, off the same complete roster table
-# that broke the boar's 80/150 tie (chicken 25, stag ~80, wolf 100, bear
-# 400; `reference/BALANCE.md` §6 rung 3, and the pig's hp comment above is
-# the precedent). Four swings of the kit's stone hatchet at 25 damage — one
-# more than the pig, which is the right order and was not chosen for it.
-hp = 100
+# **150 — the reference game's wolf** since its 2024 rework (rusthelp /
+# rustpedia, 2026-10-15; the 100 here was the pre-rework wiki's). Six
+# swings of the kit's stone hatchet, as the boar; 90 on wipe day.
+hp = 150
 
 # 55% of WALK_SPEED = 1.64 m/s: a patrol, marginally brisker than the pig's
 # amble, so a wolf crossing a meadow reads as going somewhere.
@@ -255,22 +230,21 @@ flee_seconds = 6
 # hurt pig run makes this charge at 1 hp. It is the only field that decides
 # which way an animal points and the only place prey and hunter part.
 #
-# 30 m of notice against the pig's 12. Twelve is a flinch — close enough
+# 30 m of notice against the pig's 8. Eight is a flinch — close enough
 # that a player walking a treeline sends one running before they see it.
 # Thirty is a sight line: it starts the encounter at a distance where the
 # player still has every option, which is what makes choosing wrong cost
 # something.
 #
-# 20 damage per bite is our own tree's figure for it — the pig's row prices
-# its 15 as sitting "under the wolf's commonly-cited 20" (tier 4,
-# recollection; `RIPLIST.md` §1e's standing caveat applies and this is the
-# number to re-verify first if egress ever opens). Five bites kills a fresh
-# 100 hp spawn over ~10 s of contact, against the pig's ten over ~20.
+# 30 a bite is theirs (a lunge does 35), re-verified 2026-10-15 — the 20
+# this was carried at was the figure its caveat named first. Four bites kill
+# a fresh 100 hp spawn over ~8 s of contact; on wipe day the fel tier halves
+# it to 15.
 #
 # The 2 s cadence is the pig's, unchanged: nothing about a wolf argues for
 # a different one and differing without a mechanism is what
 # `reference/BALANCE.md` §6.2 refuses.
-attack = 20
+attack = 30
 attack_range_m = 2
 attack_seconds = 2
 brave_pct = 0
@@ -315,13 +289,14 @@ night_spook_m = 15
 respawn_seconds = 300
 
 # `wolf.population` defaults to 2 per km² in the reference, and its wolves
-# roam rocky ground and woods: forest and highland whole, open meadow thin.
+# roam the arid, temperate and snow biomes, keeping to rocky ground and
+# woods: forest and highland whole, open meadow and the desert thinner.
 # 3, not 2: the reference counts its whole map square and we count only
 # habitat-weighted land, so 2 left ~8 wolves roaming by day against 8 at the
 # sites. Now ~12 roam (four packs) and only the pad keeps any
 # (`mob::SITE_GUARDS`, on top of these).
 per_km2 = 3.0
-habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.2 }
+habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.4 }
 # The night doubles them (`NOW.md` §0pr 3): the extra wolves hatch after dusk
 # and leave at daybreak once nobody is near — a night out costs more than
 # the cold. Ours, not the reference's (its wolves keep one population).
@@ -330,14 +305,15 @@ night_extra = 1.0
 body_r_cm = 60
 body_h_cm = 85
 
-# The pig's cone: a wolf's eyes face forward, and the blind spot is the
-# same crouch-in-from-behind a hunter uses on prey.
-sight_deg = 240
+# Their reworked wolf's 200° field of view: a wider blind spot than the
+# pig's, the crouch-in-from-behind the rework was built to allow.
+sight_deg = 200
 
 # **A pack animal** (the reference's 2024 wolf). A wolf with nobody in its
 # own senses answers a pack-mate on a target inside 40 m — its howl — so a
-# pack arrives together. Free wolves den in threes (`mob::PACK_SIZE`) and
-# the guards on one post are a pack already. No more than two close in on
+# pack arrives together. Free wolves den in packs of one to four, the
+# rework's sizes (`mob::PACK_SIZES`), and the guards on one post are a pack
+# already. No more than two close in on
 # one player at a time (`pack_biters`); the rest circle at 7 m (`orbit_m`)
 # and rush the gap.
 pack_m = 40
@@ -349,8 +325,9 @@ fire_fear_m = 8
 
 # The pig's brain numbers (its row says why each is what it is). This is
 # the row that spends the first five: it waits its turn, gives up on a
-# player it cannot reach, howls and circles. Its design never beds down,
-# so `sleep_pct` is the table's.
+# player it cannot reach, howls and circles. Between hunts the pack lies
+# about its den and sleeps, as the reworked wolf does — `sleep_pct` at
+# night and a third of it by day (`brain::WOLF`).
 pack_biters = 2
 give_up_tries = 3
 heal_after_seconds = 60
@@ -360,19 +337,16 @@ orbit_m = 7
 sleep_pct = 40
 hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
 
-# **It pays less than the pig, and that is the reference's own shape** —
-# their boar is the fat-and-cloth animal and their wolf is not. The point
-# is stated by the arithmetic: you kill this because it is already killing
-# you, not because the corpse is worth the walk. No cloth at all (a wolf is
-# not where a sleeping bag comes from), and half the fat.
-#
-# Their wolf pays bone and hide: bone for the bone arrow and helmet, hide
-# (leather) for the poncho.
+# **The hide animal.** Their reworked wolf pays 75 leather, 40 bone, 35
+# cloth, 10 fat and 5 meat to a hatchet (and a skull); this is that at two
+# thirds, as the pig's row. You kill it for its pelt, or because it is
+# already killing you — not for the meal.
 drops = [
-  { item = "item.raw_meat", count = 4 },
-  { item = "item.fat", count = 8 },
-  { item = "item.bone_frags", count = 15 },
-  { item = "item.leather", count = 8 },
+  { item = "item.raw_meat", count = 3 },
+  { item = "item.fat", count = 7 },
+  { item = "item.cloth", count = 23 },
+  { item = "item.bone_frags", count = 27 },
+  { item = "item.leather", count = 50 },
 ]
 
 # ── The attack helicopter ──────────────────────────────────────────────────
@@ -414,12 +388,12 @@ spread_cm_per_10m = 18
 id = "mob.stag"
 name = "Stag"
 
-# **Prey that only runs** — Rust's deer: the easy fat, leather and meat a
-# naked spawn can go and get without being charged. `attack = 0` is the whole
+# **Prey that only runs** — Rust's deer: the leather and bone a naked spawn
+# can go and get without being charged. `attack = 0` is the whole
 # behaviour: a species with no bite has no courage to test, so every rousing
-# is a flight (`brain.rs`). 80 hp, the roster table the pig's tie was broken
-# on (`reference/BALANCE.md` §6).
-hp = 80
+# is a flight (`brain.rs`). 150 hp, their stag's (rusthelp / rustpedia,
+# 2026-10-15).
+hp = 150
 walk_pct = 50
 # Faster than the pig's run: a sprinting player gains on it slowly, so it is
 # a bow's animal more than a spear's.
@@ -434,14 +408,19 @@ roam_m = 80
 spook_m = 20
 night_spook_m = 20
 respawn_seconds = 300
-# Rust's `stag.population` is 3 per km², in meadow and woods.
+# Rust's `stag.population` is 3 per km², in the temperate, snow and jungle
+# biomes: meadow and woods, the high ground well, the desert hardly.
 per_km2 = 3.0
-habitat = { meadow = 1.0, forest = 1.0, highland = 0.3, desert = 0.1 }
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.6, desert = 0.05 }
 # 1.6 m long, 1.3 m to the top of the head (`render/mobs.rs` STAG_*).
 body_r_cm = 55
 body_h_cm = 130
 sight_deg = 240
-pack_m = 0
+# **A herd** of one to five, their deer's (`mob::HERD_SIZES`): herd-mates
+# den round a leader and graze round it, and one stag bolting from somebody
+# inside 25 m sends the rest of its herd bolting from them too
+# (`brain::pack_call` — the wolf's howl, answered by running).
+pack_m = 25
 fire_fear_m = 0
 # The pig's brain numbers: it hears, heals and beds down like one.
 pack_biters = 2
@@ -452,11 +431,14 @@ howl_seconds = 20
 orbit_m = 7
 sleep_pct = 40
 hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
+# Their stag's harvest (50 bone, 50 leather, 25 cloth, 10 fat, 4 meat) at
+# two thirds, as the pig's row.
 drops = [
-  { item = "item.raw_meat", count = 6 },
-  { item = "item.fat", count = 8 },
-  { item = "item.bone_frags", count = 15 },
-  { item = "item.leather", count = 10 },
+  { item = "item.raw_meat", count = 3 },
+  { item = "item.fat", count = 7 },
+  { item = "item.cloth", count = 17 },
+  { item = "item.bone_frags", count = 33 },
+  { item = "item.leather", count = 33 },
 ]
 
 # ---------------------------------------------------------------------------

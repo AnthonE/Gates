@@ -344,6 +344,20 @@ fn hind_z_of(slot: usize) -> f32 {
     anchors.iter().map(|a| a.0[2]).fold(0.0, f32::min)
 }
 
+/// The front and hind feet's z, metres — where the slope under the animal
+/// is read ([`ground_tilt`]). The fel models stand on the same stance.
+fn feet_z_of(slot: usize) -> [f32; 2] {
+    let anchors = match mob::kind_of(slot) {
+        mob::MOB_WOLF => WOLF_LEG_ANCHORS,
+        mob::MOB_STAG => STAG_LEG_ANCHORS,
+        _ => LEG_ANCHORS,
+    };
+    [
+        anchors.iter().map(|a| a.0[2]).fold(0.0, f32::max),
+        anchors.iter().map(|a| a.0[2]).fold(0.0, f32::min),
+    ]
+}
+
 /// The stride speed at which a slot's species reaches full swing.
 pub fn full_mps_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
@@ -521,9 +535,14 @@ pub fn stream(
     beasts: Res<super::beasts::Beasts>,
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
+    world: Option<Res<super::WorldId>>,
 ) {
     let Some(assets) = assets else {
         return; // Startup has not run yet.
+    };
+    let ground = |x: f32, z: f32| match world.as_deref() {
+        Some(w) => sim_core::terrain::ground(w.seed, &w.haven, x, z),
+        None => f32::NAN,
     };
     let core = &net.session.core;
     let at = core.render_tick();
@@ -598,6 +617,12 @@ pub fn stream(
                     if feed.howls().contains(&id) {
                         gait.howl();
                     }
+                    let heading = gait.turn(wire_yaw_to_radians(rs.yaw), dt);
+                    // Leaned with the slope it stands on, so its feet meet
+                    // the hillside rather than the level through its middle.
+                    let to = ground_tilt(ground, pos, heading, gait.feet_z);
+                    let lean = gait.lean(to, dt);
+                    let yaw = Quat::from_rotation_y(heading) * lean;
                     if skinned {
                         // The clips carry the lunge, the raised head and the
                         // lying down; the root only goes where the sim says
@@ -605,12 +630,10 @@ pub fn stream(
                         // the bite and howl clocks `beasts::drive` reads.
                         let _ = gait.pose(dt);
                         t.translation = pos;
-                        t.rotation =
-                            Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
+                        t.rotation = yaw;
                         continue;
                     }
                     let drop = gait.lie * gait.hip * LIE_DROP + (1.0 - gait.lie) * gait.bob();
-                    let yaw = Quat::from_rotation_y(gait.turn(wire_yaw_to_radians(rs.yaw), dt));
                     let pose = gait.pose(dt);
                     // Pitched about the hind hips, so the hind feet stay put
                     // and the front of the animal rises or dips; +X turns +Z
@@ -737,6 +760,13 @@ pub struct Gait {
     /// what `audio::voices` reads to keep a sleeper quiet and voice a hunt.
     pub asleep: bool,
     pub hostile: bool,
+    /// The drawn lean with the ground under it, radians: `x` the pitch
+    /// (positive raises the nose), `y` the roll (positive raises its left,
+    /// +X side). Eased toward [`ground_tilt`] at [`TILT_EASE`].
+    pub tilt: Vec2,
+    /// Its feet's z in body space, front and hind: where [`ground_tilt`]
+    /// reads the slope.
+    pub feet_z: [f32; 2],
 }
 
 /// How long a bite's lunge takes, seconds: in, snap, back.
@@ -771,6 +801,56 @@ pub const LEG_FOLD_RAD: f32 = 1.35;
 /// ground, the folded legs (which lie at the hip) just clear of it.
 pub const LIE_DROP: f32 = 0.8;
 
+/// How far either side of its middle the ground is read for an animal's
+/// roll, metres: wider than its feet, so a bump under one hoof does not rock
+/// the whole body.
+pub const TILT_SIDE_M: f32 = 0.3;
+/// The most an animal leans with the ground, radians, nose to tail and side
+/// to side. The sim walks nothing up a slope much past 1:1.
+pub const TILT_MAX_PITCH_RAD: f32 = 0.6;
+pub const TILT_MAX_ROLL_RAD: f32 = 0.35;
+/// How fast the drawn lean follows the ground, 1/s.
+pub const TILT_EASE: f32 = 8.0;
+/// Standing further than this off the terrain, metres, the animal is on
+/// something else (a foundation, a rock) and stands level.
+pub const TILT_OFF_GROUND_M: f32 = 0.25;
+
+/// The lean that puts an animal's feet on the ground under it: `x` the pitch
+/// (positive raises the nose), `y` the roll (positive raises its +X side).
+/// `ground` is the terrain height at `(x, z)`, `yaw` the drawn heading and
+/// `feet_z` its front and hind feet in body space. The sim stands the animal
+/// with its middle on the ground and draws it level, so on a hillside its
+/// downhill feet hung in the air and its uphill ones sank.
+pub fn ground_tilt(
+    ground: impl Fn(f32, f32) -> f32,
+    pos: Vec3,
+    yaw: f32,
+    feet_z: [f32; 2],
+) -> Vec2 {
+    let (s, c) = yaw.sin_cos();
+    let fwd = Vec2::new(s, c);
+    let side = Vec2::new(c, -s);
+    let at = |d: Vec2| ground(pos.x + d.x, pos.z + d.y);
+    let off = (at(Vec2::ZERO) - pos.y).abs();
+    if off.is_nan() || off > TILT_OFF_GROUND_M {
+        return Vec2::ZERO;
+    }
+    let [front, hind] = feet_z;
+    let pitch = (at(fwd * front) - at(fwd * hind)).atan2(front - hind);
+    let roll = (at(side * TILT_SIDE_M) - at(side * -TILT_SIDE_M)).atan2(2.0 * TILT_SIDE_M);
+    Vec2::new(
+        pitch.clamp(-TILT_MAX_PITCH_RAD, TILT_MAX_PITCH_RAD),
+        roll.clamp(-TILT_MAX_ROLL_RAD, TILT_MAX_ROLL_RAD),
+    )
+}
+
+/// The rotation a lean is drawn with, under the heading: a raised nose is a
+/// negative turn about x (+X turns +Z down), a raised left a positive one
+/// about z.
+pub fn tilt_quat(tilt: Vec2) -> Quat {
+    Quat::from_rotation_x(-tilt.x) * Quat::from_rotation_z(tilt.y)
+}
+
 impl Gait {
     /// The phase origin is hashed from the roster slot — the snort's own
     /// convention (`sound::voice::hash01`), and for its reason: deterministic
@@ -790,6 +870,8 @@ impl Gait {
             hind_z: hind_z_of(slot),
             asleep: false,
             hostile: false,
+            tilt: Vec2::ZERO,
+            feet_z: feet_z_of(slot),
         }
     }
 
@@ -851,6 +933,12 @@ impl Gait {
     pub fn bob(&self) -> f32 {
         let swing = leg_swing_rad(self.phase, 0.0, self.speed, self.full_mps);
         LEG_BOB * self.hip * (1.0 - swing.cos())
+    }
+
+    /// Ease the drawn lean toward the ground's.
+    pub fn lean(&mut self, to: Vec2, dt: f32) -> Quat {
+        self.tilt += (to - self.tilt) * (1.0 - (-TILT_EASE * dt).exp());
+        tilt_quat(self.tilt)
     }
 
     /// Ease toward lying down (`asleep`) or standing, over [`LIE_S`].
