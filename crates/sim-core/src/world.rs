@@ -3847,6 +3847,18 @@ impl World {
         let deaths = body.deaths.saturating_add(1);
         self.backpacks
             .drop_for(&self.backpack, &body, self.tick, &mut self.events);
+        // The corpse lies behind the feet, where the fallen body's middle
+        // is, so the backpack at the feet is its own thing to aim at. Same
+        // height as the feet: a body that fell on a floor lies on it.
+        let (fx, fz) = crate::yaw_lut::yaw_dir(body.frame.yaw);
+        let back = crate::backpack::CORPSE_BACK_M;
+        let at = (
+            movement::quant_xz(body.body.qx as f32 * POS_XZ_Q - fx * back),
+            body.body.qy,
+            movement::quant_xz(body.body.qz as f32 * POS_XZ_Q - fz * back),
+        );
+        self.backpacks
+            .drop_corpse(&self.backpack, at, self.tick, &mut self.events);
         self.players[slot] = Player {
             id: body.id,
             active: true,

@@ -649,27 +649,34 @@ pub struct CarcassHit {
 
 /// The nearest animal carcass along `ray`: a bag whose owner is a pig, wolf
 /// or stag slot (a helicopter's or a sentry's is wreckage, not meat), tested
-/// as the species' body cylinder lying down — its radius, half its height.
+/// as the species' body cylinder lying down — its radius, half its height —
+/// or a player's corpse (`backpack::CORPSE_OWNER`), at a body's size.
 pub fn carcass_cast(mc: &MobContent, bags: &Backpacks, ray: &Ray) -> Option<CarcassHit> {
     let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
     let mut best: Option<CarcassHit> = None;
     for (bag, b) in bags.entries().iter().enumerate() {
-        let Some(slot) = crate::mob::slot_of_id(b.owner) else {
-            continue;
+        // A player's corpse is cut like an animal's, at a body's size.
+        let (r_cm, h_cm) = if b.owner == crate::backpack::CORPSE_OWNER {
+            (crate::backpack::CORPSE_R_CM, crate::backpack::CORPSE_H_CM)
+        } else {
+            let Some(slot) = crate::mob::slot_of_id(b.owner) else {
+                continue;
+            };
+            let kind = crate::mob::kind_of(slot);
+            if kind as usize >= crate::mob::MOB_KINDS {
+                continue;
+            }
+            let def = mc.def(kind);
+            (def.body_r_cm, def.body_h_cm)
         };
-        let kind = crate::mob::kind_of(slot);
-        if kind as usize >= crate::mob::MOB_KINDS {
-            continue;
-        }
-        let def = mc.def(kind);
         let lying = Body {
             qx: b.qx,
             qy: b.qy,
             qz: b.qz,
             ..Body::default()
         };
-        let Some(t_in) = carcass_entry(o, u, def.body_r_cm, def.body_h_cm, &lying) else {
+        let Some(t_in) = carcass_entry(o, u, r_cm, h_cm, &lying) else {
             continue;
         };
         if best.is_none_or(|c| t_in < c.t) {

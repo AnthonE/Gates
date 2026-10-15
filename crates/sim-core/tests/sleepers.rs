@@ -275,6 +275,74 @@ fn a_sleeper_is_hit_where_it_lies() {
     );
 }
 
+/// A killed body leaves two things, as Rust's does: its pack at its feet,
+/// holding what it carried, and its corpse behind them, holding the body's
+/// share — the thing a swing finds to butcher, not the pack.
+#[test]
+fn a_killed_body_leaves_a_pack_and_a_corpse() {
+    use sim_core::backpack::{CORPSE_BACK_M, CORPSE_OWNER};
+    let mut w = duel_world();
+    w.backpack.body[0] = ItemStack {
+        item: 5,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+    let sleeper = slot_of(&w, 2);
+    let raider = slot_of(&w, 1);
+    let yaw = 0u16;
+    place_in_front(&mut w, raider, sleeper, yaw, 1.0);
+    w.tick(&[Command::Leave { id: 2 }]);
+    for seq in 0..200u16 {
+        if w.players[sleeper].dead {
+            break;
+        }
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: swing_frame(&w, raider, sleeper, seq, yaw),
+            favour: 0,
+        }]);
+    }
+    assert!(w.players[sleeper].dead, "setup: the sleeper must be dead");
+
+    let bags = w.backpacks.entries();
+    let pack = bags.iter().find(|b| b.owner == 2).expect("the pack");
+    let corpse = bags
+        .iter()
+        .find(|b| b.owner == CORPSE_OWNER)
+        .expect("the corpse");
+    assert_eq!(pack.items[0].item, SPEAR, "the pack holds what it carried");
+    assert_eq!((corpse.items[0].item, corpse.items[0].count), (5, 2));
+    assert!(corpse.items[1..].iter().all(|s| s.count == 0));
+    let feet = w.players[sleeper].body;
+    let (dx, dz) = (
+        (corpse.qx - feet.qx) as f32 * POS_XZ_Q,
+        (corpse.qz - feet.qz) as f32 * POS_XZ_Q,
+    );
+    assert!(
+        ((dx * dx + dz * dz).sqrt() - CORPSE_BACK_M).abs() < 0.05,
+        "the corpse lies behind the feet"
+    );
+
+    // A swing pitched down at the corpse meets it as a carcass.
+    let at = Body {
+        qx: corpse.qx,
+        qy: corpse.qy,
+        qz: corpse.qz,
+        ..Body::default()
+    };
+    let r = &w.players[raider];
+    let (dx, dz) = (
+        (at.qx - r.body.qx) as f32 * POS_XZ_Q,
+        (at.qz - r.body.qz) as f32 * POS_XZ_Q,
+    );
+    assert!(dz > 0.0 && dx.abs() < 0.05, "setup: the corpse lies ahead");
+    let pitch = aim_at_height(&w, raider, &at, 0.2);
+    let ray = sim_core::melee::ray(&r.body, false, yaw, pitch, 2000.0);
+    let cut = sim_core::melee::carcass_cast(&w.mob, &w.backpacks, &ray).expect("a carcass");
+    assert_eq!(w.backpacks.entries()[cut.bag].owner, CORPSE_OWNER);
+}
+
 /// **Offline raiding, as one test.** A sleeper is hit, killed, and drops
 /// its bag — which is the sentence the whole slice exists to make true.
 ///

@@ -261,6 +261,15 @@ pub fn stream(
         if !core.interp.sample(id, at, &mut rs) {
             continue;
         }
+        // A dead body is drawn as its corpse, the `BAG_KIND_BODY` bag the
+        // death laid down (`structures::stream`), which falls, is butchered
+        // and goes; the player's own record would be a second body on it.
+        if rs.dead {
+            if let Some(live) = store.live.remove(&id) {
+                commands.entity(live.entity).despawn();
+            }
+            continue;
+        }
         // **The rig's origin is its FEET, and the capsule's was its middle.**
         // The old draw added 0.9 m to the wire's y to centre a pill; a glTF
         // humanoid stands on its own origin, so adding it again floats every

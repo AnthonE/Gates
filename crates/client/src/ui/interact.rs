@@ -503,8 +503,25 @@ fn species_noun(species: u8) -> &'static str {
     match species {
         sim_core::mob::MOB_WOLF => "WOLF",
         sim_core::mob::MOB_STAG => "STAG",
+        BODY_SPECIES => "BODY",
         _ => "PIG",
     }
+}
+
+/// A player's corpse's "species" on the wire (`WireBag::species` of a
+/// `BAG_KIND_BODY`): one past the animals.
+const BODY_SPECIES: u8 = sim_core::mob::MOB_KINDS as u8;
+
+/// A carcass's swing volume by its wire species: the animal's cylinder, or
+/// a body's (`backpack::CORPSE_*_CM`).
+fn carcass_cm(species: u8) -> Option<(u16, u16)> {
+    if species == BODY_SPECIES {
+        return Some((
+            sim_core::backpack::CORPSE_R_CM,
+            sim_core::backpack::CORPSE_H_CM,
+        ));
+    }
+    MOB_SWING_BODY_CM.get(species as usize).copied()
 }
 
 /// Whether the deployable at cell (`cx`, `cz`) is one of THE GATE's own
@@ -1510,6 +1527,7 @@ impl SwingPick {
         match self.carcass {
             Some(sim_core::mob::MOB_WOLF) => "BUTCHER WOLF",
             Some(sim_core::mob::MOB_STAG) => "BUTCHER STAG",
+            Some(BODY_SPECIES) => "BUTCHER BODY",
             Some(_) => "BUTCHER PIG",
             None => swing_label(self.occupant),
         }
@@ -1870,8 +1888,7 @@ fn nearest_carcass(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::CarcassHit
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
     let mut best: Option<melee::CarcassHit> = None;
     for (bag, b) in shadows.bags.iter().enumerate() {
-        let Some(&(r_cm, h_cm)) = b.species().and_then(|k| MOB_SWING_BODY_CM.get(k as usize))
-        else {
+        let Some((r_cm, h_cm)) = b.species().and_then(carcass_cm) else {
             continue;
         };
         let lying = Body {

@@ -86,7 +86,7 @@ pub struct BackpackContent {
     /// **Zero disarms the whole module**: no bag is ever created, and
     /// death destroys the inventory as it did before this slice.
     pub base_ticks: u32,
-    /// What every player body adds to its death bag, carrying or not
+    /// What every player's **corpse** holds, carrying or not
     /// (`balance.toml` `[backpack] body_drops`): Rust lets you farm any
     /// corpse, so a naked body or a bot's leftover sleeper still pays.
     /// Count 0 is an unused row.
@@ -95,6 +95,21 @@ pub struct BackpackContent {
 
 /// Rows in [`BackpackContent::body`].
 pub const MAX_BODY_DROPS: usize = 4;
+
+/// The owner a player's corpse carries ([`Backpacks::drop_corpse`]): an
+/// animal-tagged id past the roster, so it names no species and no player.
+/// The tag is what makes it a carcass anyone may cut (`may_loot`), and the
+/// wire draws it as a body (`protocol::BAG_KIND_BODY`).
+pub const CORPSE_OWNER: u32 = crate::limits::MOB_ID_TAG | 0x7FFF_FFFF;
+/// A corpse's swing volume as `melee::carcass_entry` takes it: a body
+/// lying in any direction from its middle, so half its length as the
+/// radius, and twice the lying lift as the height it halves.
+pub const CORPSE_R_CM: u16 = 85;
+pub const CORPSE_H_CM: u16 = 92;
+/// How far behind the feet a fallen body's middle lies: `Death01` ends
+/// with the hips ~0.45 m back and the head past them. The corpse stands
+/// there, so the backpack at the feet and the corpse are two places to aim.
+pub const CORPSE_BACK_M: f32 = 0.55;
 
 impl BackpackContent {
     pub const EMPTY: Self = Self {
@@ -309,21 +324,41 @@ impl Backpacks {
         if bc.base_ticks == 0 {
             return None; // inert content: the module is disarmed
         }
-        // The body's own share, each row into an empty slot; a full pack
-        // keeps what it carried and loses the share.
-        let mut items = body.inv;
-        for d in bc.body.iter().filter(|d| d.count > 0) {
-            if let Some(s) = items.iter_mut().find(|s| s.count == 0) {
-                *s = *d;
-            }
-        }
         self.stand_up(
             bc,
             body.body.qx,
             body.body.qy + BAG_Y_OFFSET_Q,
             body.body.qz,
             body.id,
-            &items,
+            &body.inv,
+            tick,
+            events,
+        )
+    }
+
+    /// Lay a player's corpse at the quantized address `(qx, qy, qz)`:
+    /// [`BackpackContent::body`]'s share, owned by [`CORPSE_OWNER`], cut
+    /// with a blade like an animal's (`butcher`) or emptied with `E`. What
+    /// the player carried is the backpack ([`Self::drop_for`]), not this.
+    pub fn drop_corpse(
+        &mut self,
+        bc: &BackpackContent,
+        (qx, qy, qz): (i32, i32, i32),
+        tick: u64,
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        if bc.base_ticks == 0 {
+            return None;
+        }
+        let mut share = [ItemStack::default(); INV_SLOTS];
+        share[..MAX_BODY_DROPS].copy_from_slice(&bc.body);
+        self.stand_up(
+            bc,
+            qx,
+            qy + BAG_Y_OFFSET_Q,
+            qz,
+            CORPSE_OWNER,
+            &share,
             tick,
             events,
         )
@@ -828,10 +863,10 @@ mod tests {
         assert!(ev.is_empty());
     }
 
-    /// A body always pays its share (`BackpackContent::body`): a naked one
-    /// drops a bag of just that, and a full pack keeps what it carried.
+    /// A corpse holds the body's share and nothing it carried, and a
+    /// butchering cut pays out of it until it is gone.
     #[test]
-    fn a_body_always_drops_its_share() {
+    fn a_corpse_holds_the_share_and_is_cut_away() {
         let mut bc = BackpackContent::probe_fixture();
         bc.body[0] = ItemStack {
             item: 9,
@@ -841,13 +876,31 @@ mod tests {
         };
         let mut bags = Backpacks::new();
         let mut ev = EventQueue::default();
-        assert!(bags.drop_for(&bc, &body(7, &[]), 0, &mut ev).is_some());
-        assert_eq!((bags.slot(0, 0).item, bags.slot(0, 0).count), (9, 3));
+        let id = bags
+            .drop_corpse(&bc, (10, 0, 10), 0, &mut ev)
+            .expect("a corpse");
+        let i = bags.index_of_id(id).unwrap();
+        assert_eq!(bags.entries()[i].owner, CORPSE_OWNER);
+        assert_eq!((bags.slot(i, 0).item, bags.slot(i, 0).count), (9, 3));
+        assert!((1..INV_SLOTS).all(|s| bags.slot(i, s).count == 0));
 
-        let full: Vec<(u16, u16)> = (0..INV_SLOTS).map(|_| (1, 1)).collect();
-        assert!(bags.drop_for(&bc, &body(8, &full), 0, &mut ev).is_some());
-        let i = bags.len() - 1;
-        assert!((0..INV_SLOTS).all(|s| bags.slot(i, s).item == 1));
+        let mut cutter = body(7, &[]);
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        assert!(bags.butcher(
+            i,
+            &GatherContent::probe_fixture(),
+            100,
+            &mut cutter,
+            &mut spill,
+            &mut ev
+        ));
+        assert_eq!(cutter.inv.iter().map(|s| s.count).sum::<u16>(), 3);
+        assert!(bags.index_of_id(id).is_none(), "a corpse cut away is gone");
+        assert!(
+            bags.drop_corpse(&BackpackContent::probe_fixture(), (0, 0, 0), 0, &mut ev)
+                .is_none(),
+            "no share, no corpse"
+        );
     }
 
     #[test]
