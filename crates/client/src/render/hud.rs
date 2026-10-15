@@ -2673,6 +2673,7 @@ pub fn feedback(
     ghost: Option<Res<super::ghost::Ghost>>,
     mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
+    mut surge: Local<crate::ui::arc::SurgeWatch>,
 ) {
     let core = &net.session.core;
     // The sim refuses ground the world keeps for itself with the occupied
@@ -2771,6 +2772,11 @@ pub fn feedback(
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
+    }
+    // The fel tier climbed on a live work (`ui::arc::SurgeWatch`): the
+    // Verdigris jumps outward. After the work's own line, so it sits on top.
+    if surge.step(&core.arc, !feed.work_events().is_empty()) {
+        toast.warn(crate::ui::arc::SURGE_LINE);
     }
     // A lock opened somewhere (`ARC.md` F7): heard across the island.
     for &(mech, by) in feed.mech_solves() {

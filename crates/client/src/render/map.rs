@@ -232,7 +232,28 @@ pub struct Island {
     /// joining elsewhere shows the wrong coastline — and it looks plausible,
     /// which is the worst kind of wrong.
     seed: Option<u64>,
+    /// The blight overlay's per-texel terrain (`ui::map::BlightCache`), built
+    /// while the loading bar fills: the seed-only half of the overlay.
+    cache: Option<map::BlightCache>,
+    /// The spread over the island, repainted in place when its moment moves.
+    blight: Option<Handle<Image>>,
+    /// The moment `blight` was painted at.
+    blight_key: Option<BlightKey>,
 }
+
+/// What the overlay was painted for: this wipe's outbreaks, the fel tier and
+/// the arc's whole hour. An hour, because the front walks ~3 m of a 16 m
+/// texel in one and an outbreak a few; a tier climb repaints at once.
+#[derive(Clone, Copy, PartialEq)]
+struct BlightKey {
+    plan: sim_core::blight::Plan,
+    tier: u8,
+    hour: u64,
+}
+
+/// The blight overlay inside the island's frame ([`spawn_blight_layer`]).
+#[derive(Component)]
+pub struct MapBlight;
 
 impl Island {
     /// The painted island for this seed, painting it if this is the first
@@ -270,6 +291,72 @@ impl Island {
         }
         self.texture.clone().expect("painted above")
     }
+
+    /// The overlay's terrain cache for this seed: ~65 k height taps, so
+    /// built by [`prepaint`] and only ever reused after.
+    pub fn blight_cache(&mut self, seed: u64) {
+        if self.cache.as_ref().map(|c| c.seed()) != Some(seed) {
+            self.cache = Some(map::BlightCache::new(seed, map::BLIGHT_PX));
+            self.blight = None;
+            self.blight_key = None;
+        }
+    }
+
+    /// The blight overlay at this moment, repainting it in place when the
+    /// plan, the tier or the arc's hour has moved since it was last painted.
+    /// The handle stays the same across repaints, so nothing that shows it is
+    /// touched.
+    pub fn blight(
+        &mut self,
+        images: &mut Assets<Image>,
+        world: &WorldId,
+        plan: &sim_core::blight::Plan,
+        tier: u8,
+        tick: u64,
+    ) -> Handle<Image> {
+        use sim_core::blight;
+        self.blight_cache(world.seed);
+        let hour = tick / blight::TICKS_PER_HOUR;
+        let key = BlightKey {
+            plan: *plan,
+            tier,
+            hour,
+        };
+        let cache = self.cache.as_ref().expect("built above");
+        let now = blight::now(plan, &world.haven, hour * blight::TICKS_PER_HOUR, tier);
+        match self.blight.clone() {
+            Some(h) => {
+                if self.blight_key != Some(key) {
+                    if let Some(data) = images.get_mut(&h).and_then(|img| img.data.as_mut()) {
+                        map::paint_blight(cache, &now, data);
+                    }
+                    self.blight_key = Some(key);
+                }
+                h
+            }
+            None => {
+                let px = map::BLIGHT_PX;
+                let mut buf = vec![0u8; px * px * 4];
+                map::paint_blight(cache, &now, &mut buf);
+                let image = Image::new(
+                    Extent3d {
+                        width: px as u32,
+                        height: px as u32,
+                        depth_or_array_layers: 1,
+                    },
+                    TextureDimension::D2,
+                    buf,
+                    TextureFormat::Rgba8UnormSrgb,
+                    // Both worlds: the CPU copy is what a repaint writes into.
+                    RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+                );
+                let h = images.add(image);
+                self.blight = Some(h.clone());
+                self.blight_key = Some(key);
+                h
+            }
+        }
+    }
 }
 
 /// Paint the island while the LOADING screen is up, so the first `G` is free.
@@ -301,6 +388,9 @@ pub fn prepaint(
 ) {
     if let Some(world) = world {
         island.texture(&mut images, world.seed, &world.haven);
+        // And the blight overlay's terrain, ~30 ms more: its paint waits for
+        // the map, when the tier and the moment are this island's.
+        island.blight_cache(world.seed);
     }
 }
 
@@ -398,12 +488,17 @@ pub fn setup(
     mut camera: ResMut<MapCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     ui_scale: Res<UiScale>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     // Already painted by `prepaint` while the loading bar filled; this is the
     // handle clone. It still PAINTS if it has to — a shard joined without ever
     // passing through `Screen::Loading` is a state this screen should survive,
     // and a map that refused to draw would be a worse answer than a stutter.
     let texture = island.texture(&mut images, world.seed, &world.haven);
+    // The spread over it, at the arc's own hour (`render/blight.rs`).
+    let overlay = blight
+        .as_deref()
+        .map(|b| island.blight(&mut images, &world, &b.plan, b.tier, b.tick));
     let icons = icons.as_deref();
 
     let [x, _, z] = net.session.core.predict.render_position();
@@ -497,6 +592,11 @@ pub fn setup(
                 ImageNode::new(texture),
             ))
             .with_children(|frame| {
+                // The blight first: the first child draws underneath, so the
+                // grid, its labels, the marks and the arrow stay over the green.
+                if let Some(h) = overlay.clone() {
+                    spawn_blight_layer(frame, h);
+                }
                 // The grid's LINES. The labels follow, one per cell.
                 //
                 // ⚠ **This comment used to say the letters and numbers were
@@ -1412,6 +1512,36 @@ pub fn spawn_pin(
                 .with_child((ui::strong(label, SITE_LABEL_PX, fill), ui::TEXT_SHADOW));
             }
         });
+}
+
+/// The blight overlay, one bundle filling the island's frame: it zooms and
+/// pans with the frame for free. Public for the headless spawn test.
+pub fn spawn_blight_layer(frame: &mut ChildSpawnerCommands, h: Handle<Image>) {
+    frame.spawn((
+        MapBlight,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            top: Val::Px(0.0),
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
+        ImageNode::new(h),
+    ));
+}
+
+/// Keep the overlay current while the map is held open: an arc hour or a
+/// tier turning over repaints it in place. A key compare otherwise.
+pub fn blight_follow(
+    world: Res<WorldId>,
+    blight: Option<Res<super::blight::Blight>>,
+    mut island: ResMut<Island>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if let Some(b) = blight.as_deref() {
+        island.blight(&mut images, &world, &b.plan, b.tier, b.tick);
+    }
 }
 
 /// Forget the painted island when the shard goes: the next one has its own

@@ -1091,7 +1091,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 Update,
-                (map::view, map::track, map::mates, map::keys)
+                (
+                    map::view,
+                    map::track,
+                    map::mates,
+                    map::blight_follow,
+                    map::keys,
+                )
                     .chain()
                     .run_if(in_state(Screen::Map)),
             )
