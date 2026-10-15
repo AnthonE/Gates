@@ -3826,14 +3826,35 @@ impl ShardCore {
                             Err(_) => ShardStats::bump(&stats.encode_range_errors),
                         }
                     }
-                    let (cause, item, range_cm) = self
+                    // The life's length rides the same read: the corpse
+                    // keeps `born` (`World::die`), so "alive for" is the
+                    // sim's clock and not a guess the client could make.
+                    let now = self.world.tick;
+                    let (cause, item, range_cm, alive_s) = self
                         .world
                         .players
                         .iter()
                         .find(|p| p.active && p.id == ev.a)
-                        .map(|p| (p.death_cause, p.death_item, p.death_range_cm))
-                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0));
-                    match encode_event_death(ev.a, ev.b, cause, item, range_cm, &mut self.ev_buf) {
+                        .map(|p| {
+                            let ticks = now.saturating_sub(p.born);
+                            let secs = ticks / sim_core::limits::TICK_HZ as u64;
+                            (
+                                p.death_cause,
+                                p.death_item,
+                                p.death_range_cm,
+                                secs.min(u32::MAX as u64) as u32,
+                            )
+                        })
+                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0, 0));
+                    match encode_event_death(
+                        ev.a,
+                        ev.b,
+                        cause,
+                        item,
+                        range_cm,
+                        alive_s,
+                        &mut self.ev_buf,
+                    ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {

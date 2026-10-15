@@ -1933,6 +1933,9 @@ pub struct ClientCore {
     pub own_death_cause: u8,
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
+    /// How long the body that fell had been standing, in seconds (v113) —
+    /// the death screen's "alive for".
+    pub own_death_alive_s: u32,
     pub woke_on_bag: bool,
     /// **Down, not dead** (wounded v0, wire v63): set by the `Wounded`
     /// naming this body, cleared by `Recovered`, by the `Death` that ends a
@@ -1997,6 +2000,10 @@ pub struct ClientCore {
     /// the plural is the anchor, the singular is the loot.
     own_bags: [BagAnchor; BAG_CAP],
     own_bags_count: usize,
+    /// The server tick estimate the bag list landed at, so each cooling
+    /// bag's `wait_s` can be counted down without another message
+    /// (`bag_wait_left`).
+    own_bags_at: f64,
     /// The bag that stood where THIS body died — `WireBag::id`, zero for
     /// none (the store's own "no bag" sentinel). The wire deliberately
     /// carries no bag owner (`BackpackRec::owner` is sim-side only), so
@@ -2321,6 +2328,7 @@ impl ClientCore {
             own_death_cause: 0,
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
+            own_death_alive_s: 0,
             woke_on_bag: false,
             wounded: false,
             wound_ticks: 0,
@@ -2339,6 +2347,7 @@ impl ClientCore {
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
             own_bags_count: 0,
+            own_bags_at: 0.0,
             own_bag: 0,
             own_bag_pending: false,
             refusal_head: 0,
@@ -2486,6 +2495,22 @@ impl ClientCore {
     /// is the authority either way.
     pub fn any_bag_ready(&self) -> bool {
         self.own_bags().iter().any(|b| b.ready)
+    }
+
+    /// Whole seconds until own bag `i` is ready, counted down on this
+    /// client's clock from the `Bags` message that stated it (v113): 0 when
+    /// it is. The death screen's timer on a cooling bag, and advisory like
+    /// `ready` — the sim decides at the wake.
+    pub fn bag_wait_left(&self, i: usize) -> u32 {
+        let Some(b) = self.own_bags().get(i) else {
+            return 0;
+        };
+        if b.ready {
+            return 0;
+        }
+        let ticks = (self.clock.server_est - self.own_bags_at).max(0.0);
+        let since = (ticks / sim_core::limits::TICK_HZ as f64) as u32;
+        (b.wait_s as u32).saturating_sub(since)
     }
 
     /// The `APPLIED2_*` flags the last `on_stream` call set — word 1 of
@@ -3670,6 +3695,7 @@ impl ClientCore {
                 cause,
                 item,
                 range_cm,
+                alive_s,
             } => {
                 // Drop-oldest, like chat: a feed that stalls on the oldest
                 // kill is worse than one that loses it.
@@ -3696,6 +3722,7 @@ impl ClientCore {
                     self.own_death_cause = cause;
                     self.own_death_item = item;
                     self.own_death_range_cm = range_cm;
+                    self.own_death_alive_s = alive_s;
                     flags |= APPLIED_RESPAWN;
                 }
             }
@@ -3936,6 +3963,7 @@ impl ClientCore {
             EventMsg::Bags { bags, count } => {
                 self.own_bags = bags;
                 self.own_bags_count = (count as usize).min(BAG_CAP);
+                self.own_bags_at = self.clock.server_est;
                 self.applied2 |= APPLIED2_BAGS;
             }
         }
@@ -6012,7 +6040,7 @@ mod tests {
 
         // This body dies. The predicted body sits at the default origin,
         // so the death position is (0, 0).
-        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(c.dead);
 
@@ -6061,7 +6089,7 @@ mod tests {
     fn a_far_bag_does_not_spend_the_own_bag_latch() {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
 
         let far_q = (8.0 / POS_XZ_Q) as i32; // 2x the join radius

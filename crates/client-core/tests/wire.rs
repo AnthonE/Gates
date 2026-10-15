@@ -558,7 +558,7 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     assert!(!c.dead, "the screen starts closed");
 
     // A stranger's, with four values all distinct from ours.
-    let len = encode_event_death(0x2A, 0x3B, DEATH_BY_HAND, 4, 250, &mut buf).unwrap();
+    let len = encode_event_death(0x2A, 0x3B, DEATH_BY_HAND, 4, 250, 30, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_DEATH, APPLIED_DEATH);
     assert!(!c.dead, "a stranger's death opened our screen");
     assert_eq!(c.pop_death(), Some(0x2A), "the feed lost the stranger");
@@ -567,7 +567,7 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
 
     // Ours, by an arrow — the cause that has to decode rather than error,
     // and the range and weapon the screen says.
-    let len = encode_event_death(ME, 0x4C, DEATH_BY_ARROW, 6, 1_337, &mut buf).unwrap();
+    let len = encode_event_death(ME, 0x4C, DEATH_BY_ARROW, 6, 1_337, 4_321, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert!(c.dead, "our own death must raise the screen");
     assert_eq!(c.own_death_killer, 0x4C, "the screen lost who shot us");
@@ -577,15 +577,17 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     );
     assert_eq!(c.own_death_item, 6, "the screen lost the weapon");
     assert_eq!(c.own_death_range_cm, 1_337, "the screen lost the range");
+    assert_eq!(c.own_death_alive_s, 4_321, "the screen lost the life");
 
     // A stranger's death while we are down must not rewrite our screen.
-    let len = encode_event_death(0x5D, 0x6E, DEATH_BY_HAND, 1, 100, &mut buf).unwrap();
+    let len = encode_event_death(0x5D, 0x6E, DEATH_BY_HAND, 1, 100, 9, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert!(c.dead, "a stranger's death closed our screen");
     assert_eq!(
         c.own_death_killer, 0x4C,
         "a stranger's death rewrote our death screen"
     );
+    assert_eq!(c.own_death_alive_s, 4_321, "a stranger's life rewrote ours");
 
     // The wake answers it. A beach wake leaves `woke_on_bag` false, and
     // that outlives the screen on purpose — it is the only moment the

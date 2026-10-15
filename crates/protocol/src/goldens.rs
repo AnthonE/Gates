@@ -1526,18 +1526,23 @@ pub fn event_bags() -> ([BagAnchor; BAG_CAP], usize) {
         cz: 682,
         level: 0,
         ready: true,
+        wait_s: 0,
     };
+    // Cooling, with a wait past eight bits (v113), so a decoder that read
+    // the field narrower would not round-trip it.
     bags[1] = BagAnchor {
         cx: 17,
         cz: 900,
         level: 3,
         ready: false,
+        wait_s: 287,
     };
     bags[2] = BagAnchor {
         cx: 1023,
         cz: 4,
         level: 7,
         ready: true,
+        wait_s: 0,
     };
     (bags, 3)
 }
@@ -1936,8 +1941,10 @@ pub fn event_health() -> (u16, u16) {
 /// same fixture also pins the width. The weapon is a real row and the
 /// range is a real reach, both nonzero and different from each other and
 /// from every other number in the tuple.
-pub fn event_death() -> (u32, u32, u8, u16, u16) {
-    (4_242, 7, 2, 13, 187)
+pub fn event_death() -> (u32, u32, u8, u16, u16, u32) {
+    // `alive_s` past 16 bits (v113): a life of a day and change, so a
+    // decoder that read the field narrower would not round-trip it.
+    (4_242, 7, 2, 13, 187, 93_784)
 }
 
 /// A wake on the player's own bag. `true` and not `false` for the reason

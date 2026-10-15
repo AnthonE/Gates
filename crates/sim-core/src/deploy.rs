@@ -919,6 +919,10 @@ pub struct BagAnchor {
     /// A cooldown lapses on a clock nothing announces, so this is a
     /// snapshot and not a subscription — see `own_bags`.
     pub ready: bool,
+    /// Whole seconds until it is ready, rounded up, at the tick it was
+    /// read: 0 exactly when `ready`. The death screen counts it down
+    /// itself (Rust's timer on a bag that is still cooling).
+    pub wait_s: u16,
 }
 
 /// The hearth's crew list — who may build inside its claim. Named so
@@ -1761,11 +1765,14 @@ impl Deploys {
             if n == BAG_CAP {
                 break;
             }
+            let left = self.bag_ready[i].saturating_sub(tick);
+            let hz = crate::limits::TICK_HZ as u64;
             out[n] = BagAnchor {
                 cx: d.cx,
                 cz: d.cz,
                 level: d.level,
-                ready: self.bag_ready[i] <= tick,
+                ready: left == 0,
+                wait_s: left.div_ceil(hz).min(u16::MAX as u64) as u16,
             };
             n += 1;
         }

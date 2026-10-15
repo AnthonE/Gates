@@ -1397,6 +1397,11 @@ pub struct Player {
     /// (`GATE_SPAWN_COOLDOWN_TICKS` after the last use). Carried through a
     /// death; not saved.
     pub gate_spawn_at: u64,
+    /// The tick this body stood up: a fresh join, a wake, or a restore. The
+    /// corpse keeps it so the server can say on the death screen how long
+    /// the life lasted (Rust's "alive for"). Not saved: a restored body
+    /// starts its clock at the restore.
+    pub born: u64,
 }
 
 impl Player {
@@ -1483,6 +1488,7 @@ impl Default for Player {
             calm: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
+            born: 0,
         }
     }
 }
@@ -3929,6 +3935,9 @@ impl World {
             // THE GATE's respawn point and its cooldown are the person's.
             gate_spawn: body.gate_spawn,
             gate_spawn_at: body.gate_spawn_at,
+            // The corpse keeps the life's start, so the server can say how
+            // long it lasted when it encodes the death.
+            born: body.born,
             ..Player::default()
         };
         // **What it was wearing goes into the bag with what it was
@@ -4140,6 +4149,8 @@ impl World {
             } else {
                 body.gate_spawn_at
             },
+            // A new body, a new life.
+            born: self.tick,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -4244,6 +4255,7 @@ impl World {
                     body: Body::at(self.seed, &self.haven, x, z),
                     hp,
                     hp_max: hp,
+                    born: self.tick,
                     ..Player::default()
                 };
                 survival::grant(&self.survival, &mut self.players[slot]);
@@ -4376,6 +4388,8 @@ impl World {
                     calm: 0,
                     gate_spawn: false,
                     gate_spawn_at: 0,
+                    // The save does not carry it: the clock starts here.
+                    born: self.tick,
                 };
                 craft::rearm(
                     &self.craft,
@@ -7380,6 +7394,9 @@ impl World {
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact
             // about it, and everything it changes (hp) is hashed already.
+            // `born` is not hashed and not saved either: nothing in the sim
+            // reads it, it is the death screen's "alive for", and a load
+            // restarts it, so hashing it would split a save/load round trip.
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
             // shards that disagree about whether a body is standing

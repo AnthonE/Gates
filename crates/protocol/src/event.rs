@@ -331,7 +331,9 @@ const SUB_GATHER_REFUSED: u32 = 49;
 /// cooldown lapses on a clock that emits nothing. `world.rs`'s respawn is
 /// still the authority and still falls back to the beach, and the client
 /// says which anchor answered (`ui::death::woke`), so a stale bit costs a
-/// sentence rather than a wrong place to wake up.
+/// sentence rather than a wrong place to wake up. A bag that is not ready
+/// carries its seconds to go after the bit (v113, `BagAnchor::wait_s`), and
+/// the client counts them down itself: the death screen's timer.
 /// **50, not 49** — see `PROTO_VER`'s v43 note. This landed on a branch
 /// as 49 with `PROTO_VER` 42, and the gather refusal above landed on the
 /// trunk as the same two numbers. Two layouts under one version is
@@ -2179,12 +2181,18 @@ pub enum EventMsg {
     /// a kill feed reports kills nobody saw — and the extra three fields
     /// broadcast with it because they are the feed's content too: "killed
     /// you with a rock from 2 m" is the line, for everyone.
+    ///
+    /// `alive_s` (v113) is how long the victim's body had been standing, in
+    /// whole seconds — the death screen's "alive for", Rust's first field.
+    /// Server-side truth (`Player::born`), because a client that joined
+    /// onto its own sleeper cannot know when that body woke.
     Death {
         victim: u32,
         killer: u32,
         cause: u8,
         item: u16,
         range_cm: u16,
+        alive_s: u32,
     },
     /// You woke up: `on_bag` is true if one of your own sleeping bags
     /// answered, false if the beach ring did. Own-fact, and the one message
@@ -2773,10 +2781,18 @@ pub fn encode_event_bags(bags: &[BagAnchor], buf: &mut [u8]) -> Result<usize, Wi
         {
             return Err(WireError::Range);
         }
+        // `ready` and `wait_s` say one thing twice (`BagAnchor::wait_s`),
+        // and a pair that disagrees is a sim bug, refused rather than sent.
+        if b.ready != (b.wait_s == 0) {
+            return Err(WireError::Range);
+        }
         w.write(b.cx as u32, BUILD_CELL_BITS)?;
         w.write(b.cz as u32, BUILD_CELL_BITS)?;
         w.write(b.level as u32, BUILD_LEVEL_BITS)?;
         w.write_bit(b.ready)?;
+        if !b.ready {
+            w.write(b.wait_s as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -4879,6 +4895,7 @@ pub fn encode_event_death(
     cause: u8,
     item: u16,
     range_cm: u16,
+    alive_s: u32,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if cause > DEATH_CAUSE_MAX {
@@ -4890,6 +4907,7 @@ pub fn encode_event_death(
     w.write(cause as u32, DEATH_CAUSE_BITS)?;
     w.write(item as u32, 16)?;
     w.write(range_cm as u32, 16)?;
+    w.write(alive_s, 32)?;
     Ok(w.finish())
 }
 
@@ -5593,11 +5611,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut bags = [BagAnchor::default(); BAG_CAP];
             for b in bags.iter_mut().take(count) {
+                let cx = r.read(BUILD_CELL_BITS)? as u16;
+                let cz = r.read(BUILD_CELL_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                let ready = r.read_bit()?;
+                // The wait rides only on a bag that is cooling (v113), and
+                // a cooling bag with no wait is the pair the encoder refuses.
+                let wait_s = if ready { 0 } else { r.read(16)? as u16 };
+                if !ready && wait_s == 0 {
+                    return Err(WireError::Malformed);
+                }
                 *b = BagAnchor {
-                    cx: r.read(BUILD_CELL_BITS)? as u16,
-                    cz: r.read(BUILD_CELL_BITS)? as u16,
-                    level: r.read(BUILD_LEVEL_BITS)? as u8,
-                    ready: r.read_bit()?,
+                    cx,
+                    cz,
+                    level,
+                    ready,
+                    wait_s,
                 };
             }
             EventMsg::Bags {
@@ -6624,6 +6653,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 cause,
                 item: r.read(16)? as u16,
                 range_cm: r.read(16)? as u16,
+                alive_s: r.read(32)?,
             }
         }
         SUB_MOVED => {
@@ -9987,7 +10017,7 @@ mod wire_domains {
     fn the_highest_live_death_cause_encodes() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for cause in 0..=sim_core::world::DEATH_BY_MAX {
-            let n = encode_event_death(7, 9, cause, 3, 250, &mut buf).unwrap_or_else(|e| {
+            let n = encode_event_death(7, 9, cause, 3, 250, 60, &mut buf).unwrap_or_else(|e| {
                 panic!(
                     "death cause {cause} is live in the sim and the wire \
                      refused it ({e:?}). This is the 2026-08-05 failure \
@@ -10010,7 +10040,7 @@ mod wire_domains {
         let forged = sim_core::world::DEATH_BY_MAX + 1;
         if (forged as u32) < (1 << DEATH_CAUSE_BITS) {
             assert_eq!(
-                encode_event_death(7, 9, forged, 3, 250, &mut buf),
+                encode_event_death(7, 9, forged, 3, 250, 60, &mut buf),
                 Err(WireError::Range),
                 "cause {forged} is not a live death and the encoder let it \
                  through — the domain is no longer closed"

@@ -998,7 +998,14 @@ impl Plugin for GatesRenderPlugin {
             .add_systems(OnExit(Screen::Dead), death::teardown)
             .add_systems(
                 Update,
-                (death::click, death::keys, death::act, death::awaken)
+                (
+                    death::fit,
+                    death::click,
+                    death::keys,
+                    death::act,
+                    death::refresh,
+                    death::awaken,
+                )
                     .chain()
                     .run_if(in_state(Screen::Dead)),
             )
