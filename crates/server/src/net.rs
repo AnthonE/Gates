@@ -75,9 +75,16 @@ const _: () = assert!(QUIC_CONN_RWND >= QUIC_STREAM_RWND);
 /// outlives the wait on the transport's 10 s keep-alive.
 const SIGN_WAIT: Duration = Duration::from_secs(protocol::SIGN_WAIT_SECS);
 const _: () = assert!(protocol::SIGN_WAIT_SECS > HANDSHAKE_TIMEOUT.as_secs());
-/// Writer poll cadence: how often per-connection outbound rings drain.
-/// Latency floor for a snapshot, far under the 66 ms snapshot interval.
-const WRITER_POLL: Duration = Duration::from_millis(2);
+/// How often `wake_relay` looks for a published tick: the latency floor
+/// between the sim pushing a frame and its writer sending it. One task polls
+/// for every connection, where each writer used to poll its own rings every
+/// 2 ms (~100k wakeups a second at a full shard for ~30 frames each).
+const WAKE_POLL: Duration = Duration::from_millis(1);
+/// A writer wakes at least this often with no tick published: a stalled sim
+/// still has its leaves noticed and its telemetry sampled.
+const WRITER_FALLBACK: Duration = Duration::from_millis(50);
+/// How long a reader waits before it retries a full ring.
+const RING_RETRY: Duration = Duration::from_millis(2);
 /// Sim thread abandons backlog beyond this many ticks (a debugger pause,
 /// a VM freeze) instead of sprinting to catch up.
 const MAX_TICK_BACKLOG: u32 = 8;
@@ -127,12 +134,12 @@ const ADMIT_RETRY_AT: usize = 2 * MAX_PLAYERS;
 /// size again waiting, before anybody is turned away silently.
 const ADMIT_REFUSE_AT: usize = 4 * MAX_PLAYERS;
 
-/// Writer polls between transport-telemetry samples. `WRITER_POLL` is 2 ms,
-/// so this is ~1 Hz per connection — cheap enough to leave on in production
-/// and often enough to catch a congestion episode that lasts a second.
-const NET_SAMPLE_EVERY: u32 = 500;
+/// Between transport-telemetry samples, per connection: cheap enough to leave
+/// on in production and often enough to catch a congestion episode that
+/// lasts a second.
+const NET_SAMPLE_EVERY: Duration = Duration::from_secs(1);
 
-// These three are **compile-time** rather than tests, which is the stronger
+// These two are **compile-time** rather than tests, which is the stronger
 // form and is available because every term is a constant: get one wrong and
 // the shard does not build, so there is no version of the tree where the
 // admission gate is inverted and a suite is merely red.
@@ -142,12 +149,8 @@ const NET_SAMPLE_EVERY: u32 = 500;
 //    thing that separates a spoofed source from a busy one — is unreachable.
 // 2. Both must sit past a full shard, or an ordinary rush to join a popular
 //    server is answered as an attack.
-// 3. `writer_task` counts down from `NET_SAMPLE_EVERY`; at zero it
-//    underflows a `u32` on the first poll, which is a panic in every
-//    connection's writer.
 const _: () = assert!(ADMIT_RETRY_AT < ADMIT_REFUSE_AT);
 const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
-const _: () = assert!(NET_SAMPLE_EVERY > 0);
 
 /// Handshakes one source may hold at once: an IPv4 address, or an IPv6 /64
 /// (one subscriber's whole allocation, so a prefix of addresses is still one
@@ -733,6 +736,7 @@ pub async fn spawn_shard(
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     // Players, then spectator seats (`slot::MAX_CONNS`).
     let slots = Arc::new(SlotTable::new(MAX_CONNS));
+    tokio::spawn(wake_relay(slots.clone()));
 
     let (ctrl_tx, ctrl_rx) = RingBuffer::<Connect>::new(CTRL_RING_CAP);
     let (grave_tx, grave_rx) = RingBuffer::<Link>::new(GRAVEYARD_RING_CAP);
@@ -2873,6 +2877,55 @@ const DELAY_EVENTS_PER_S: usize = 8 * TICK_HZ as usize;
 /// own policy. The acks this seat sends back are `delay` stale, so the shard
 /// falls back to zero-state snapshots for it: correct, and more bytes, which
 /// is the price of the delay and one reason human feeds are off by default.
+/// A writer's wake: the sim's next published tick (`SlotTable::publish`,
+/// carried by [`wake_relay`]), or [`WRITER_FALLBACK`] with none.
+struct Wake {
+    rx: tokio::sync::watch::Receiver<u64>,
+    fallback: tokio::time::Interval,
+}
+
+impl Wake {
+    fn new(slots: &SlotTable) -> Self {
+        let mut fallback = tokio::time::interval(WRITER_FALLBACK);
+        fallback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        Self {
+            rx: slots.subscribe(),
+            fallback,
+        }
+    }
+
+    /// The first call returns at once, so a writer drains what was pushed
+    /// before it started.
+    async fn next(&mut self) {
+        tokio::select! {
+            r = self.rx.changed() => {
+                if r.is_err() {
+                    self.fallback.tick().await;
+                }
+            }
+            _ = self.fallback.tick() => {}
+        }
+        self.fallback.reset();
+    }
+}
+
+/// Carries the sim's published ticks to every writer: one task polling one
+/// atomic, so the sim thread wakes nobody itself (it takes no lock, L3) and
+/// the writers sleep until there is something to send.
+async fn wake_relay(slots: Arc<SlotTable>) {
+    let mut poll = tokio::time::interval(WAKE_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut seen = 0;
+    loop {
+        poll.tick().await;
+        let n = slots.published();
+        if n != seen {
+            seen = n;
+            slots.wake_writers(n);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn delayed_writer_task(
     connection: Connection,
@@ -2888,10 +2941,9 @@ async fn delayed_writer_task(
     let secs = delay.as_secs() as usize + 1;
     let mut snaps = DelayLine::<SnapMsg>::new(secs * DELAY_SNAPS_PER_S);
     let mut events = DelayLine::<EvMsg>::new(secs * DELAY_EVENTS_PER_S);
-    let mut poll = tokio::time::interval(WRITER_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wake = Wake::new(&slots);
     loop {
-        poll.tick().await;
+        wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return;
@@ -3239,7 +3291,7 @@ async fn action_reader_task(
                             if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
                                 return;
                             }
-                            tokio::time::sleep(WRITER_POLL).await;
+                            tokio::time::sleep(RING_RETRY).await;
                         }
                     }
                 }
@@ -3283,22 +3335,21 @@ async fn writer_task(
         });
         (ns, netsim_rng(&ns, slot ^ 0x80), tx)
     });
-    let mut poll = tokio::time::interval(WRITER_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wake = Wake::new(&slots);
     // Per-connection previous readings, so what reaches `ShardStats` is a
     // delta. Local to the task on purpose: a shared table keyed by
     // connection would be a map with a lifetime problem and a lock, to hold
     // two numbers that only this task ever reads.
-    // **One, not `NET_SAMPLE_EVERY`**: the first poll samples. Starting a
-    // full period out would mean a connection that lives under a second
+    // **Now, not `NET_SAMPLE_EVERY` out**: the first wake samples. Starting
+    // a full period out would mean a connection that lives under a second
     // contributes nothing at all — and a shard being hammered by clients
     // that connect and die is exactly when the loss counters matter most.
     // The first sample's `prev_*` are zero, so it correctly reports
     // everything since the connection opened.
-    let mut sample_in = 1u32;
+    let mut sample_at = tokio::time::Instant::now();
     let (mut prev_lost, mut prev_sent, mut prev_cong, mut prev_holes) = (0u64, 0u64, 0u64, 0u64);
     loop {
-        poll.tick().await;
+        wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return; // slot moved on; sim (or reader) already knows
@@ -3307,9 +3358,9 @@ async fn writer_task(
         // through wtransport's passthrough — no wire field, no PROTO_VER,
         // no golden: the numbers already exist and nothing was asking for
         // them.
-        sample_in -= 1;
-        if sample_in == 0 {
-            sample_in = NET_SAMPLE_EVERY;
+        let now = tokio::time::Instant::now();
+        if now >= sample_at {
+            sample_at = now + NET_SAMPLE_EVERY;
             let s = connection.quic_connection().stats();
             let p = s.path;
             // `saturating_sub` rather than `-`: these are monotonic per
@@ -3422,10 +3473,9 @@ async fn event_writer_task(
     slot: usize,
     generation: u32,
 ) {
-    let mut poll = tokio::time::interval(WRITER_POLL);
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut wake = Wake::new(&slots);
     loop {
-        poll.tick().await;
+        wake.next().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             // Sent away with a reason: post it as the session's last word,
@@ -4353,6 +4403,9 @@ fn sim_thread(
                 }
             }
         });
+        // This tick's snapshots and events, and the voice relayed above,
+        // are on the rings: wake the writers (`wake_relay`).
+        slots.publish();
         ShardStats::bump(&stats.ticks);
         // A gift given this tick: the whole ledger to the store thread, which
         // owns every write (`gifts.rs`). Room is checked before the text is

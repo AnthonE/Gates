@@ -56,6 +56,14 @@ pub fn generation_of(word: u32) -> u32 {
 /// the sim thread.
 pub struct SlotTable {
     words: Box<[AtomicU32]>,
+    /// Ticks published: bumped by the sim thread once per tick, after that
+    /// tick's snapshots, events and voice are on the rings ([`Self::publish`]).
+    /// An atomic, so the sim side stays lock-free (L3); `net.rs`'s
+    /// `wake_relay` carries it to the writer tasks over [`Self::wake`].
+    published: AtomicU64,
+    /// What the writer tasks wait on instead of each polling its rings
+    /// every 2 ms. Touched by tokio tasks only, never the sim thread.
+    wake: tokio::sync::watch::Sender<u64>,
     /// Why a slot was sent away: `generation << 9 | 0x100 | refuse code`,
     /// written before the leave (`mark_leaving_why`) and read by the event
     /// writer, which posts it as the session's last message.
@@ -70,8 +78,30 @@ impl SlotTable {
         why.resize_with(slots, || AtomicU64::new(0));
         Self {
             words: v.into_boxed_slice(),
+            published: AtomicU64::new(0),
+            wake: tokio::sync::watch::Sender::new(0),
             why: why.into_boxed_slice(),
         }
+    }
+
+    /// Sim thread only: this tick's frames are on the rings.
+    pub fn publish(&self) {
+        self.published.fetch_add(1, Ordering::Release);
+    }
+
+    /// Ticks published so far ([`Self::publish`]).
+    pub fn published(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
+    }
+
+    /// The relay's half: wake every writer for tick count `n`.
+    pub fn wake_writers(&self, n: u64) {
+        self.wake.send_replace(n);
+    }
+
+    /// A writer's half: changes each time the relay wakes the writers.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.wake.subscribe()
     }
 
     pub fn load(&self, slot: usize) -> u32 {
