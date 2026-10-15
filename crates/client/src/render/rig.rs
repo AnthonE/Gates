@@ -341,6 +341,10 @@ pub fn setup(
             Bloom::NATURAL,
             Transform::from_xyz(0.0, EYE_HEIGHT, 0.0),
         ))
+        // The HUD and the in-world screens draw on this camera. Said
+        // explicitly, because the loading overlay brings its own camera at a
+        // higher order and Bevy's fallback picks the highest one.
+        .insert(IsDefaultUiCamera)
         .id();
 
     // ⚠ **Ambient occlusion is inserted, not bundled, and on WebGL2 it is not

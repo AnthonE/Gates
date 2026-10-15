@@ -1662,6 +1662,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     // (`ui::hold::eats_on_key`), so which key is which cell
                     // is now worth a glance.
                     cell.spawn((
+                        SlotKey(i),
                         Text::new((i + 1).to_string()),
                         super::ui::font_bold(10.0),
                         TextColor(Color::srgba(0.97, 0.95, 0.88, 0.55)),
@@ -2271,6 +2272,7 @@ pub fn update(
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
+    binds: Res<super::binds::Binds>,
 ) {
     let core = &net.session.core;
 
@@ -2408,14 +2410,14 @@ pub fn update(
                     // wall the nudge is sent and ignored, and a hint about
                     // it there would teach a key that does nothing.
                     let keys = if shape == sim_core::build::SHAPE_FOUNDATION_STEPS {
-                        "(hold right · R/F rotate · Shift+R/F height)"
+                        "(hold right · [R]/[F] rotate · SHIFT+[R]/[F] height)"
                     } else if matches!(
                         shape,
                         sim_core::build::SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
                     ) {
-                        "(hold right · R/F height)"
+                        "(hold right · [R]/[F] height)"
                     } else if sim_core::circulation::is_riser(shape) {
-                        "(hold right · R/F rotate)"
+                        "(hold right · [R]/[F] rotate)"
                     } else {
                         "(hold right)"
                     };
@@ -2442,6 +2444,8 @@ pub fn update(
                 None => "BUILD  -   (hold right)".to_string(),
             }
         };
+        // Written against the default keys; the player's own go in here.
+        let out = binds.relabel(&out);
         if text.0 != out {
             text.0 = out;
         }
@@ -3271,6 +3275,34 @@ pub fn conn_warn(
     }
 }
 
+/// A belt cell's key label. Follows the player's binds (`slot_keys`).
+#[derive(Component)]
+pub struct SlotKey(usize);
+
+/// Redraw the belt's key labels when the binds change. Run in every world
+/// state; it does nothing on a frame the binds did not move.
+pub fn slot_keys(
+    binds: Res<super::binds::Binds>,
+    mut labels: Query<(&SlotKey, &mut Text)>,
+    added: Query<(), Added<SlotKey>>,
+) {
+    if !binds.is_changed() && added.is_empty() {
+        return;
+    }
+    for (slot, mut text) in labels.iter_mut() {
+        let Some(a) = super::binds::HOTBAR.get(slot.0) else {
+            continue;
+        };
+        let want = match binds.key(*a) {
+            "UNBOUND" => "",
+            k => k,
+        };
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
+    }
+}
+
 /// How often [`net_line`] rebuilds its string. The HUD's own cadence
 /// (`DECISIONS.md`, client render cosmetics: "HUD 250 ms").
 const NET_LINE_PERIOD_S: f32 = 0.25;
@@ -3295,6 +3327,7 @@ pub fn prompt(
     time: Res<Time>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
+    binds: Res<super::binds::Binds>,
 ) {
     if let Ok(mut text) = prompts.single_mut() {
         // `E` outranks the swing, and the swing is drawn only where `E` is
@@ -3387,6 +3420,9 @@ pub fn prompt(
             }
             None => want,
         };
+        // Every line above names the default keys; the player's own go in
+        // here, once, rather than at each of the places that build one.
+        let want = binds.relabel(&want);
         if text.0 != want {
             text.0 = want;
         }

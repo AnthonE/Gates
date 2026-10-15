@@ -3,7 +3,7 @@
 //!
 //! **Format: hand-rolled `key = value` TOML**, the shape
 //! `server/src/config.rs` already parses for `shard.toml` and for the same
-//! stated reason — eight keys don't earn a serde dependency, and the client
+//! stated reason — a flat list of keys doesn't earn a serde dependency, and the client
 //! links no TOML parser today (check `Cargo.toml` before this claim rots).
 //! One deliberate difference from the server's parser: `shard.toml` REFUSES
 //! an unknown key, because an operator's typo silently running defaults is
@@ -255,6 +255,10 @@ pub struct Loaded {
     /// (`crate::ui::servers::Favourites::from_disk`) for the same reason the
     /// numeric clamps live beside the steppers — two sanitizers drift.
     pub favourites: Vec<String>,
+    /// The `bind.<action> = "..."` lines, as (action, value) in file order.
+    /// What the tokens mean is `render/binds.rs`'s; this module only carries
+    /// them, so it stays free of Bevy's key type.
+    pub binds: Vec<(String, String)>,
 }
 
 /// Parse settings text over `defaults`. Never fails: a line that does not
@@ -281,6 +285,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
     };
     let mut version = SETTINGS_VERSION;
     let mut favourites: Vec<String> = Vec::new();
+    let mut binds: Vec<(String, String)> = Vec::new();
     // (key, full line) so a duplicated unknown key keeps only its last value
     // — the same last-wins the known keys get from being plain assignments.
     let mut unknown: Vec<(String, String)> = Vec::new();
@@ -357,6 +362,13 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
                     .map(str::to_string)
                     .collect();
             }
+            _ if key.starts_with("bind.") => {
+                let action = &key["bind.".len()..];
+                if key_shaped(action) {
+                    binds.retain(|(k, _)| k != action);
+                    binds.push((action.to_string(), value.to_string()));
+                }
+            }
             _ => {
                 if key_shaped(key) {
                     unknown.retain(|(k, _)| k != key);
@@ -370,6 +382,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
         version,
         unknown: unknown.into_iter().map(|(_, line)| line).collect(),
         favourites,
+        binds,
     }
 }
 
@@ -445,7 +458,13 @@ fn key_shaped(key: &str) -> bool {
 /// whichever of that and `SETTINGS_VERSION` is higher, so saving from an
 /// older build under a newer file never claims the preserved keys are older
 /// than they are.
-pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[String]) -> String {
+pub fn serialize(
+    v: &Persisted,
+    version: u32,
+    favourites: &[String],
+    binds: &[(String, String)],
+    unknown: &[String],
+) -> String {
     let mut s = String::with_capacity(512);
     s.push_str("# gates client settings. Written by the game on every change;\n");
     s.push_str("# hand edits are read at the next launch. A key this build does\n");
@@ -508,6 +527,9 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     // list is empty would leave the previous file's line in place on a
     // rewrite, and the star would come back at the next launch.
     s.push_str(&format!("favourites = \"{}\"\n", favourites.join(",")));
+    for (action, value) in binds {
+        s.push_str(&format!("bind.{action} = \"{value}\"\n"));
+    }
     for line in unknown {
         s.push_str(line);
         s.push('\n');
@@ -526,6 +548,7 @@ pub fn load(path: &Path, defaults: Persisted) -> Loaded {
             version: SETTINGS_VERSION,
             unknown: Vec::new(),
             favourites: Vec::new(),
+            binds: Vec::new(),
         },
     }
 }
@@ -658,7 +681,7 @@ mod tests {
         for q in Quality::LADDER {
             let mut want = defaults();
             want.quality = q;
-            let text = serialize(&want, SETTINGS_VERSION, &[], &[]);
+            let text = serialize(&want, SETTINGS_VERSION, &[], &[], &[]);
             assert!(
                 text.contains(&format!("quality = \"{}\"", q.name())),
                 "a settings file must spell the tier out; {q:?} wrote:\n{text}"
@@ -683,7 +706,7 @@ mod tests {
     #[test]
     fn a_round_trip_is_identity() {
         let unknown = vec!["future_knob = 3".to_string()];
-        let text = serialize(&changed(), SETTINGS_VERSION, &[], &unknown);
+        let text = serialize(&changed(), SETTINGS_VERSION, &[], &[], &unknown);
         let back = parse(&text, defaults());
         assert_eq!(back.values, changed());
         assert_eq!(back.version, SETTINGS_VERSION);
@@ -770,7 +793,7 @@ mod tests {
             shadow_cascades: Some(2),
             ..GfxFile::default()
         };
-        let text = serialize(&v, SETTINGS_VERSION, &[], &[]);
+        let text = serialize(&v, SETTINGS_VERSION, &[], &[], &[]);
         assert!(text.contains("quality = \"high\""), "{text}");
         assert!(text.contains("shadow_m = 90"), "{text}");
         assert!(text.contains("shadow_cascades = 2"), "{text}");
@@ -809,7 +832,7 @@ mod tests {
         for a in Ao::LADDER {
             let mut want = defaults();
             want.gfx.ao = Some(a);
-            let text = serialize(&want, SETTINGS_VERSION, &[], &[]);
+            let text = serialize(&want, SETTINGS_VERSION, &[], &[], &[]);
             assert!(text.contains(&format!("ao = \"{}\"", a.name())), "{text}");
             assert_eq!(parse(&text, defaults()).values.gfx.ao, Some(a));
         }
@@ -875,9 +898,39 @@ mod tests {
         let text = "vol_game = 0.5\nfuture_knob = 3\n# a comment\nnot a line\nfuture_knob = 4\n";
         let got = parse(text, defaults());
         assert_eq!(got.unknown, vec!["future_knob = 4".to_string()]);
-        let out = serialize(&got.values, got.version, &got.favourites, &got.unknown);
+        let out = serialize(
+            &got.values,
+            got.version,
+            &got.favourites,
+            &got.binds,
+            &got.unknown,
+        );
         assert!(out.contains("future_knob = 4"), "{out}");
         assert!(!out.contains("not a line"), "{out}");
+    }
+
+    #[test]
+    fn bind_lines_round_trip_and_stay_out_of_unknown() {
+        let text = "bind.interact = \"KeyF none\"\nbind.crouch = \"ControlLeft KeyZ\"\n\
+                    bind.interact = \"KeyG none\"\nbind.bad key = \"x\"\n";
+        let got = parse(text, defaults());
+        // Last wins, like every other key, and a malformed action is dropped.
+        assert_eq!(
+            got.binds,
+            vec![
+                ("crouch".to_string(), "ControlLeft KeyZ".to_string()),
+                ("interact".to_string(), "KeyG none".to_string()),
+            ]
+        );
+        assert!(got.unknown.is_empty(), "{:?}", got.unknown);
+        let out = serialize(
+            &got.values,
+            got.version,
+            &got.favourites,
+            &got.binds,
+            &got.unknown,
+        );
+        assert_eq!(parse(&out, defaults()).binds, got.binds, "{out}");
     }
 
     #[test]
@@ -888,7 +941,13 @@ mod tests {
         let got = parse(text, defaults());
         assert_eq!(got.version, 9);
         assert_eq!(got.values.fov_deg, 80.0);
-        let out = serialize(&got.values, got.version, &got.favourites, &got.unknown);
+        let out = serialize(
+            &got.values,
+            got.version,
+            &got.favourites,
+            &got.binds,
+            &got.unknown,
+        );
         assert!(out.contains("version = 9"), "{out}");
     }
 
@@ -899,7 +958,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gates-settings-test-{}", std::process::id()));
         let path = dir.join("deeper").join("settings.toml");
         assert_eq!(load(&path, defaults()).values, defaults());
-        save(&path, &serialize(&changed(), SETTINGS_VERSION, &[], &[])).expect("save");
+        save(
+            &path,
+            &serialize(&changed(), SETTINGS_VERSION, &[], &[], &[]),
+        )
+        .expect("save");
         assert_eq!(load(&path, defaults()).values, changed());
         std::fs::remove_dir_all(&dir).ok();
     }

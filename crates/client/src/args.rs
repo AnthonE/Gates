@@ -336,12 +336,12 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     }
 
     // Refused rather than ignored, for the same reason `--no-hud` is, and
-    // with a sharper edge: only the straight-in connect reads the pin, so a
+    // with a sharper edge: the pin belongs to one address, so a
     // `--cert-hash` without a `--server` would be a player believing they had
     // pinned a certificate while the menu dialled a shard with the flag
     // nowhere in the path. That is the one failure mode a security flag may
-    // not have. `render::menu` therefore passes `None` and is *correct* to,
-    // because this line makes the pairing unreachable.
+    // not have. `render::menu::begin_connect` applies it to the `--server`
+    // address only (`render::screen::Pin`).
     let cert_hash = cert_hash
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());

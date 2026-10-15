@@ -31,6 +31,7 @@ use crate::look::{pitch_u8, yaw_u16};
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
 use crate::ui::structure::{self, Store, Target};
 
+use super::binds::{Action, Binds, HOTBAR};
 use super::hud::Toast;
 use super::input::Look;
 use super::panels::{Panel, Ui};
@@ -539,10 +540,12 @@ pub fn keys(
     // the swing button, so nothing else moves it.
     mut motion: ResMut<super::viewmodel::Motion>,
     mut give: ResMut<Give>,
+    binds: Res<Binds>,
 ) {
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
-    if keys.just_released(KeyCode::KeyE) {
+    let on = |a: Action| binds.just_pressed(a, &keys, &mouse);
+    if binds.just_released(Action::Interact, &keys, &mouse) {
         send(&net, &mut toast, "release help", |buf| {
             protocol::encode_action_assist(0, buf)
         });
@@ -572,23 +575,23 @@ pub fn keys(
         pad.0.close();
         hearth.0 = None;
         give.hold.cancel();
-        const HAND_KEYS: [KeyCode; 12] = [
-            KeyCode::KeyB,
-            KeyCode::KeyE,
-            KeyCode::KeyL,
-            KeyCode::KeyK,
-            KeyCode::KeyU,
-            KeyCode::KeyR,
-            KeyCode::KeyX,
-            KeyCode::KeyC,
-            KeyCode::KeyJ,
-            KeyCode::KeyV,
-            KeyCode::KeyH,
-            KeyCode::Backspace,
+        const HAND_KEYS: [Action; 12] = [
+            Action::Give,
+            Action::Interact,
+            Action::CrewJoin,
+            Action::CrewLeave,
+            Action::Upgrade,
+            Action::Reload,
+            Action::ThrowCharge,
+            Action::SwitchOn,
+            Action::Eat,
+            Action::PickUp,
+            Action::Drink,
+            Action::Demolish,
         ];
-        if keys.just_pressed(KeyCode::KeyE) && crate::ui::wounded::allows(aimed.0.verb) {
+        if on(Action::Interact) && crate::ui::wounded::allows(aimed.0.verb) {
             use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
-        } else if HAND_KEYS.iter().any(|&k| keys.just_pressed(k))
+        } else if HAND_KEYS.iter().any(|&a| on(a))
             // The left click too: it places, eats, reads and repairs, and
             // the sim drops every one of those from a downed body unsaid.
             || mouse.just_pressed(MouseButton::Left)
@@ -612,8 +615,11 @@ pub fn keys(
         give.hold.cancel();
     } else {
         let pick = give.pick;
-        let b = keys.just_pressed(KeyCode::KeyB);
-        if let Some(p) = give.hold.step(b, keys.pressed(KeyCode::KeyB), pick, now) {
+        let b = on(Action::Give);
+        if let Some(p) = give
+            .hold
+            .step(b, binds.pressed(Action::Give, &keys, &mouse), pick, now)
+        {
             send(&net, &mut toast, "give", |buf| {
                 protocol::encode_action_give(p.slot, p.count, p.target, buf)
             });
@@ -631,7 +637,7 @@ pub fn keys(
     // your team, making one if you have none; `Y` says yes to the invite
     // waiting on you. Leave, kick and promote are `/team` lines in chat.
     // Whether any of it happens is the shard's verdict, said in chat.
-    if keys.just_pressed(KeyCode::KeyN) && !pad.0.is_open() {
+    if on(Action::TeamInvite) && !pad.0.is_open() {
         match give.invite {
             Some(target) => {
                 send(&net, &mut toast, "team", |buf| {
@@ -641,7 +647,7 @@ pub fn keys(
             None => toast.warn("look at a player within reach to invite them to your team"),
         }
     }
-    if keys.just_pressed(KeyCode::KeyY) && !pad.0.is_open() {
+    if on(Action::TeamAccept) && !pad.0.is_open() {
         let team = *net.session.core.team();
         if team.invite != 0 && team.count == 0 {
             send(&net, &mut toast, "team", |buf| {
@@ -649,7 +655,7 @@ pub fn keys(
             });
         }
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if on(Action::Interact) {
         // A second `E` closes the hearth's panel rather than feeding again.
         if hearth.0.is_some() {
             hearth.0 = None;
@@ -678,7 +684,7 @@ pub fn keys(
     {
         let rows = (net.session.core.stock_count as usize).min(sim_core::limits::HEARTH_STOCK_ROWS);
         let mut took = false;
-        for (i, k) in super::input::HOTBAR_KEYS.iter().enumerate().take(rows) {
+        for (i, k) in super::ui::DIGITS.iter().enumerate().take(rows) {
             if keys.just_pressed(*k) {
                 let (cx, cz, level) = at;
                 send(&net, &mut toast, "take", |buf| {
@@ -696,25 +702,25 @@ pub fn keys(
     // (`hold::eats_on_key`). Below the keypad's claim, so a code typed into
     // a door never eats the mushrooms in slot 3.
     if !net.session.core.wounded {
-        for (i, k) in super::input::HOTBAR_KEYS.iter().enumerate() {
+        for (i, a) in HOTBAR.iter().enumerate() {
             let core = &net.session.core;
             let food = core
                 .inv
                 .get(i)
                 .is_some_and(|&s| crate::ui::hold::eats_on_key(&core.catalog, s));
-            if keys.just_pressed(*k) && food {
+            if on(*a) && food {
                 use_slot(&net, &mut toast, &mut bite, now, i as u8);
             }
         }
     }
-    if keys.just_pressed(KeyCode::KeyL) {
+    if on(Action::CrewJoin) {
         access_aimed(&net, &aimed.0, &mut pad, &mut toast, Access::Join);
     }
     // `K` is the crew's leave and `Shift+K` its clear, and both are only
     // hearth keys: at a door the same letter is the keypad's LOCK, which is
     // why `access_aimed` takes the ask rather than this reading the pick
     // twice.
-    if keys.just_pressed(KeyCode::KeyK) {
+    if on(Action::CrewLeave) {
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         let now = time.elapsed_secs_f64();
         let ask = if !shift {
@@ -735,7 +741,7 @@ pub fn keys(
             access_aimed(&net, &aimed.0, &mut pad, &mut toast, ask);
         }
     }
-    if keys.just_pressed(KeyCode::KeyU) {
+    if on(Action::Upgrade) {
         upgrade_near(&net, &near.0, &mut toast);
     }
     // **`R` is modal on the hand since reload v1: hammer repairs, anything
@@ -765,7 +771,7 @@ pub fn keys(
             held,
         ) == crate::ui::hold::Click::Deploy
     };
-    if !wheel_up && !hand.places() && !deploying && keys.just_pressed(KeyCode::KeyR) {
+    if !wheel_up && !hand.places() && !deploying && on(Action::Reload) {
         if hand.repairs() {
             if repair_near(&net, &near.0, &mut toast) {
                 motion.strike();
@@ -832,20 +838,20 @@ pub fn keys(
             use_slot(&net, &mut toast, &mut bite, now, net.sel);
         }
     }
-    if keys.just_pressed(KeyCode::KeyX) {
+    if on(Action::ThrowCharge) {
         throw_near(&net, &near.0, &mut toast);
     }
-    if keys.just_pressed(KeyCode::KeyC) {
+    if on(Action::SwitchOn) {
         light_aimed(&net, &aimed.0, &mut toast);
     }
     // `Backspace` — take the nearest structure back down. A destructive
     // verb gets a key nothing else is near, and one a hand resting on WASD
     // cannot reach by accident: the sim gates it on a ten-minute window
     // and a claim, but a misfire inside both is still a foundation gone.
-    if keys.just_pressed(KeyCode::Backspace) {
+    if on(Action::Demolish) {
         demolish_near(&net, &near.0, &mut toast);
     }
-    if keys.just_pressed(KeyCode::KeyJ) {
+    if on(Action::Eat) {
         // Eat what is in the selected hotbar slot — the keyboard twin of the
         // left click above, kept because it works with anything in the slot
         // and says why when that is not food. Whether the slot holds food is
@@ -862,7 +868,7 @@ pub fn keys(
         // right-click makes, so the key and the click cannot disagree.
         use_slot(&net, &mut toast, &mut bite, now, net.sel);
     }
-    if keys.just_pressed(KeyCode::KeyV) {
+    if on(Action::PickUp) {
         // Take a loose stack in reach — the one `E`'s prompt names when it
         // names one, else the nearest — landed arrows included
         // (`sim-core/spent.rs`), on a key the hand reaches without leaving
@@ -886,7 +892,7 @@ pub fn keys(
             });
         }
     }
-    if keys.just_pressed(KeyCode::KeyH) {
+    if on(Action::Drink) {
         // Drink from the water at your feet. `H` because `J` is the eat and
         // the two are one gesture from the player's side — adjacent keys, one
         // hand. Payload-free: the sim reads the heightfield under the body,

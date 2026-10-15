@@ -44,8 +44,8 @@
 //!   here (`CLAUDE.md` §vendored). It is `cfg`'d off wasm at its `mod`
 //!   declaration in `elo.rs`, not in the file, so a scan of the file alone
 //!   cannot see its guard.
-//! - `src/main.rs` and `src/bin/` carry `required-features = ["native"]` and
-//!   are never compiled for wasm32 by anything. That is a manifest fact this
+//! - `src/bin/` carries `required-features = ["native"]` and is never
+//!   compiled for wasm32 by anything. That is a manifest fact this
 //!   test re-reads rather than remembers.
 //!
 //! **Four mutants run, four caught** (2026-09-10):
@@ -109,10 +109,6 @@ const EXEMPT: &[(&str, &str)] = &[
         "vendored from AnthonE/scry-forge and unpatchable here (CLAUDE.md §vendored). \
          Its guard is the `#[cfg(not(target_arch = \"wasm32\"))]` on the `#[path] mod` \
          in elo.rs, which a scan of this file cannot see.",
-    ),
-    (
-        "src/main.rs",
-        "the `client` binary, `required-features = [\"native\"]` — never built for wasm32.",
     ),
     (
         "src/render/music_out.rs",

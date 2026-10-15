@@ -1083,7 +1083,23 @@ window.gatesPanic = (msg) => {
   const renderer = /bevy_render[^\n]*renderer|Unable to find a GPU|wgpu surface|request_device/.test(m);
   if (window.gatesGfx === "webgpu" && renderer && playStarted && performance.now() - playStarted < 30000) {
     gpuFallBack("WebGPU did not start in this browser");
+    return;
   }
+  /* Any other panic stops the game for good. If the handoff is still up,
+     say so on it rather than leave its bar sweeping over a dead canvas. */
+  const h = $("handoff");
+  if (!h.hidden && !h.classList.contains("gone")) {
+    h.classList.add("failed");
+    $("handoff-line").textContent = "The game stopped while starting. Reload the page to try again.";
+  }
+};
+/* The game has drawn its own loading screen (`client::render::web::reveal`):
+   fade the handoff out from over it. */
+window.gatesShown = () => {
+  const h = $("handoff");
+  if (h.hidden || h.classList.contains("failed")) return;
+  h.classList.add("gone");
+  setTimeout(() => { h.hidden = true; }, 400);
 };
 
 async function load(gfx, sizes) {
@@ -1354,11 +1370,16 @@ async function join(kind, audio, identity) {
       /* Address and signer together or neither — `Gates.join` refuses the odd
          pair rather than dropping half of it. */
       g = await Gates.join(server, hash, identity ?? undefined, identity
-        ? (text) => {
+        ? async (text) => {
           walletAsked = true;
           busy = { label: "Signing in", sub: "approve the sign-in in your wallet" };
           paintGo();
-          return wallet.sign(text, identity);
+          const signature = await wallet.sign(text, identity);
+          /* Signed: the rest is the server checking it and the world
+             arriving, so stop asking the player to look at their wallet. */
+          busy = { label: "Joining", sub: "the server is letting you in" };
+          paintGo();
+          return signature;
         }
         : undefined);
     }
@@ -1424,6 +1445,9 @@ async function enter(g, audio, row) {
   /* `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
      loop to requestAnimationFrame and `run()` does not come back. */
   playStarted = performance.now();
+  /* Safety net: the game calls `gatesShown` once it has drawn. A module
+     that never does (an older build) must not leave this over the canvas. */
+  setTimeout(() => window.gatesShown(), 45000);
   g.play("#gates");
 }
 
