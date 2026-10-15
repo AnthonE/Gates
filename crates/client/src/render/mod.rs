@@ -633,6 +633,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
+            .insert_resource(bodies::DrawWatched(filming))
             .init_resource::<mobs::Herd>()
             .init_resource::<beasts::Beasts>()
             .init_resource::<screen::Browse>()

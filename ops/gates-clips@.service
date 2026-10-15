@@ -1,0 +1,58 @@
+# A buddy's short videos (`ops/buddy/clips.py`): this unit tapes him while he
+# plays with his friend, and `gates-clips-make@` cuts drafts from the tapes.
+# The instance name is the buddy's (`doctor-wood`), as in gates-buddy@.
+#
+# Once, as master: a checkout of its own (the main one changes branch under
+# the loop) and the Python the pipeline uses.
+#
+#   git clone https://github.com/AnthonE/Gates ~/gates-clips/Gates
+#   python3 -m venv ~/gates-clips/venv && ~/gates-clips/venv/bin/pip install anthropic Pillow
+#
+# Then as root: the film's tools (`ci/film.sh`), and the environment file
+# (0600, outside the repo).
+#
+#   apt-get install ffmpeg xvfb mesa-vulkan-drivers libwayland-dev \
+#       libasound2-dev libudev-dev libxkbcommon-x11-0
+#   /etc/gates-clips/doctor-wood.env
+#     CLIPS_WALLET=0x...                 # his address (`jev-bot --new-key` printed it)
+#     ANTHROPIC_API_KEY=sk-ant-...       # `make` picks moments and writes captions
+#     CLIPS_DISCORD_WEBHOOK_URL=...      # optional: each draft to a channel
+#
+#   sudo cp ops/gates-clips@.service ops/gates-clips-make@.service \
+#       ops/gates-clips-make@.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gates-clips@doctor-wood gates-clips-make@doctor-wood.timer
+#   journalctl -u gates-clips@doctor-wood -u gates-clips-make@doctor-wood -f
+#
+# Drafts land in ~/gates-clips/drafts/<tape>-<n>-<slug>/: clip.mp4 (9:16) and
+# post.txt (caption and hashtags). Posting is a person's.
+#
+# Every tape starts with a pull of main, so the recorder speaks the shard's
+# wire after a deploy: one on an old wire is refused, exits, and comes back
+# through the pull.
+
+[Unit]
+Description=Tape Gates buddy %i for short videos
+Documentation=https://github.com/AnthonE/Gates/blob/main/ops/buddy/clips.py
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-clips/Gates
+EnvironmentFile=/etc/gates-clips/%i.env
+Environment=CLIPS_DIR=/home/master/gates-clips
+Environment=CLIPS_JOURNAL=/var/lib/gates-buddy/%i/journal.jsonl
+Environment=PATH=/home/master/gates-clips/venv/bin:/home/master/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=-/usr/bin/git pull --ff-only --quiet
+ExecStart=/home/master/gates-clips/venv/bin/python ops/buddy/clips.py tape --wait --minutes 20
+Restart=always
+RestartSec=60
+Nice=10
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

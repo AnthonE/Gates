@@ -1,5 +1,9 @@
-//! `record <host:port> <out.rec> <seconds> [--walk x,z]` — tape a live
-//! session for a trailer (`ci/film.sh`, `crate::film`).
+//! `record <host:port> <out.rec> <seconds> [--walk x,z | --spectate TARGET]`
+//! — tape a live session for a trailer (`ci/film.sh`, `crate::film`).
+//!
+//! `--spectate 0xWALLET` (or `any`) takes a read-only seat watching that
+//! agent instead of joining as a guest, so the tape holds whatever is around
+//! it wherever it goes, and a film can follow it (`ops/buddy/clips.py`).
 //!
 //! `record --scan <tape.rec> [every_s]` — play a tape back with no window and
 //! print what is in it: where every body and animal is, how many pieces
@@ -38,8 +42,8 @@ async fn main() {
         );
         return;
     }
-    let (server, out, secs, walk) = match args.as_slice() {
-        [server, out, secs] => (server, out, secs, None),
+    let (server, out, secs, walk, spectate) = match args.as_slice() {
+        [server, out, secs] => (server, out, secs, None, None),
         [server, out, secs, flag, at] if flag == "--walk" => {
             let xz: Vec<f32> = at
                 .split(',')
@@ -48,10 +52,25 @@ async fn main() {
             let [x, z] = xz[..] else {
                 die(format!("--walk wants x,z, not `{at}`"));
             };
-            (server, out, secs, Some((x, z)))
+            (server, out, secs, Some((x, z)), None)
+        }
+        [server, out, secs, flag, target] if flag == "--spectate" => {
+            let target = if target.eq_ignore_ascii_case("any") {
+                protocol::Address::GUEST
+            } else {
+                match protocol::Address::from_hex(target.as_bytes()) {
+                    Some(a) if !a.is_guest() => a,
+                    _ => die(format!(
+                        "--spectate `{target}` is neither `any` nor a wallet address"
+                    )),
+                }
+            };
+            (server, out, secs, None, Some(target))
         }
         _ => {
-            eprintln!("usage: record <host:port> <out.rec> <seconds> [--walk x,z]");
+            eprintln!(
+                "usage: record <host:port> <out.rec> <seconds> [--walk x,z | --spectate 0xWALLET|any]"
+            );
             std::process::exit(2);
         }
     };
@@ -60,18 +79,29 @@ async fn main() {
         .unwrap_or_else(|_| die(format!("`{secs}` is not a number of seconds")));
 
     let endpoint = client_endpoint(server, None).unwrap_or_else(|e| die(e));
-    let mut session = Session::connect(&endpoint, server, protocol::Address::GUEST, |_, _, _| None)
-        .await
-        .unwrap_or_else(|e| die(e));
+    let joined = match spectate {
+        Some(target) => Session::watch(&endpoint, server, target).await,
+        None => Session::connect(&endpoint, server, protocol::Address::GUEST, |_, _, _| None).await,
+    };
+    let mut session = joined.unwrap_or_else(|e| die(e));
     let w = session.welcome;
-    println!(
-        "record: in the world — player {} seed {} tick {}",
-        w.player_id, w.seed, w.tick
-    );
+    match &session.watching {
+        Some(watch) => println!(
+            "record: watching {} (player {}) — seed {} tick {}",
+            watch.name.as_str(),
+            w.player_id,
+            w.seed,
+            w.tick
+        ),
+        None => println!(
+            "record: in the world — player {} seed {} tick {}",
+            w.player_id, w.seed, w.tick
+        ),
+    }
 
     let file = std::fs::File::create(out).unwrap_or_else(|e| die(format!("{out}: {e}")));
     let mut file = BufWriter::new(file);
-    film::write_header(&mut file, &w).unwrap_or_else(|e| die(e));
+    film::write_header(&mut file, &w, session.watching.as_ref()).unwrap_or_else(|e| die(e));
 
     let taken: Taken = Arc::default();
     let sink = taken.clone();
@@ -126,10 +156,15 @@ async fn main() {
             reported = now;
             let [x, y, z] = session.core.eye_position();
             println!(
-                "record: {:>4.0} s · {} snapshots · {} events · standing at {x:.0},{y:.0},{z:.0}",
+                "record: {:>4.0} s · {} snapshots · {} events · {} at {x:.0},{y:.0},{z:.0}",
                 clock_ms / 1000.0,
                 counts[0],
-                counts[1]
+                counts[1],
+                if spectate.is_some() {
+                    "watching"
+                } else {
+                    "standing"
+                }
             );
         }
     }
@@ -221,6 +256,11 @@ fn scan(path: &str, every: f64) {
                 }
             }
             let [ex, _, ez] = core.eye_position();
+            let eye = if core.spectating() {
+                "watched"
+            } else {
+                "recorder"
+            };
             // How tall the bases are: the highest storey a piece stands on
             // (0 is the ground; a half-storey socket counts as the one under).
             let top = core
@@ -231,7 +271,7 @@ fn scan(path: &str, every: f64) {
                 .max()
                 .unwrap_or(0);
             println!(
-                "{t:7.1}  pieces {:3} (top storey {top}) · animals {animals} · recorder {ex:.0},{ez:.0} · {}",
+                "{t:7.1}  pieces {:3} (top storey {top}) · animals {animals} · {eye} {ex:.0},{ez:.0} · {}",
                 core.pieces.len(),
                 people.join(" ")
             );

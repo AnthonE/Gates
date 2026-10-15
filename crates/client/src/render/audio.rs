@@ -1273,7 +1273,12 @@ pub fn shots(
         let at = if shooter == core.player_id {
             let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
             cue = projectile_cue(&core.catalog, cue, (s.count > 0).then_some(s.item));
-            let p = core.predict.position();
+            // A spectator predicts nothing: the watched body is where it is.
+            let p = if core.spectating() {
+                core.eye_position()
+            } else {
+                core.predict.position()
+            };
             [p[0], p[1], p[2]]
         } else if let Some(t) = bodies
             .iter()

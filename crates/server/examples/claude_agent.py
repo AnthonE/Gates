@@ -33,6 +33,10 @@ Under jev-watch, GATES_FRAME_URL names the body's rendered view and each
 decision shows it to Claude. With DISCORD_WEBHOOK_URL set too, Claude may
 post a moment worth sharing (a frame and a caption) to that channel, at most
 once every SHARE_EVERY_S seconds.
+
+GATES_JOURNAL names a file each decision is appended to as one JSON line
+(the time, the goal, the reason, what it said and heard, a few observation
+fields): what `ops/buddy/clips.py` reads to find a buddy's moments.
 """
 import base64
 import collections
@@ -61,6 +65,11 @@ CHAT_LOG_LINES = 20
 FRAME_URL = os.environ.get("GATES_FRAME_URL", "")
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SHARE_EVERY_S = float(os.environ.get("SHARE_EVERY_S", "300"))
+JOURNAL = os.environ.get("GATES_JOURNAL", "")
+# The observation fields a journal line keeps: enough to tell a fight, a
+# death or a haul from a walk, and small enough to write every turn.
+JOURNAL_OBS = ("hp", "hp_max", "food", "water", "threats", "last_fight", "last",
+               "current", "players", "deaths")
 # Models that take the server-side refusal fallback (API route only).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 
@@ -308,6 +317,29 @@ def post_share(caption, jpeg):
         return r.status
 
 
+def journal(request, goal, reason, say, to):
+    """One line in GATES_JOURNAL. A journal that cannot be written costs a log
+    line, never a decision."""
+    obs = request.get("observation") or {}
+    row = {
+        "t": round(time.time(), 2),
+        "goal": goal,
+        "reason": reason,
+        "say": say,
+        "to": to,
+        "heard": [{"from": h["from"], "friend": h.get("friend", False),
+                   "channel": h.get("channel", "local"), "text": h["text"]}
+                  for h in request.get("heard", []) if not h.get("me")],
+        "friend": request.get("friend"),
+        "obs": {k: obs[k] for k in JOURNAL_OBS if k in obs},
+    }
+    try:
+        with open(JOURNAL, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError as e:
+        print(f"journal: {e}", file=sys.stderr)
+
+
 def main():
     via = "api"
     persona = os.environ.get("GATES_PERSONA", "")
@@ -372,6 +404,8 @@ def main():
             print(json.dumps({"id": request["id"], "error": str(e)[:200]}), flush=True)
             continue
         recent.append({"goal": goal, "said": say, "to": to})
+        if JOURNAL:
+            journal(request, goal, reason, say, to)
         print(f"{goal}: {reason}" + (f' / says to {to} "{say}"' if say else ""), file=sys.stderr)
         reply = {"id": request["id"], "goal": goal, "reason": reason}
         if say:

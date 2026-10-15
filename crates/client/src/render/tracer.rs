@@ -267,8 +267,9 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
         // predictor — the interpolator does not hold you — and everyone
         // else's off the same sample `bodies::stream` draws them at, so a
         // tracer leaves the bow the player can actually see rather than the
-        // server's older copy of it.
-        let (feet, crouched) = if shooter == core.player_id {
+        // server's older copy of it. A spectator predicts nothing, so the
+        // body it watches is on the interpolator like everyone else's.
+        let (feet, crouched) = if shooter == core.player_id && !core.spectating() {
             (core.predict.position(), core.crouched())
         } else if core.interp.sample(shooter, at, &mut rs) {
             ([rs.x, rs.y, rs.z], rs.crouched)

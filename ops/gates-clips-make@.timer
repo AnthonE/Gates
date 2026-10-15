@@ -1,0 +1,12 @@
+# Hourly drafts from a buddy's tapes (gates-clips@.service has the setup).
+
+[Unit]
+Description=Cut new short videos of Gates buddy %i, hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

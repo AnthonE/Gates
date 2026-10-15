@@ -188,6 +188,12 @@ fn grip(row: Option<usize>, scale: f32) -> Transform {
     g
 }
 
+/// Draw the body a spectator watches. Off for a live watcher, whose eye is
+/// that body's; on for a film of a spectator's tape (`record --spectate`),
+/// whose camera rides behind it (`render::film`).
+#[derive(Resource, Default)]
+pub struct DrawWatched(pub bool);
+
 #[derive(Resource, Default)]
 pub struct Bodies {
     live: HashMap<u32, Live>,
@@ -214,6 +220,7 @@ pub fn stream(
     feed: Res<super::feed::Feed>,
     mut skin_mats: ResMut<super::viewmodel::SkinMats>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    draw_watched: Res<DrawWatched>,
 ) {
     // Nothing is drawn until the rig has loaded. A body spawned before it
     // would get no scene and no player, and the bind below only ever runs on
@@ -231,7 +238,7 @@ pub fn stream(
     let gen = store.gen;
 
     for id in core.interp.ids() {
-        if id == core.player_id {
+        if id == core.player_id && !(core.spectating() && draw_watched.0) {
             continue;
         }
         // **Animals are on this lane too, and they are not people.** An
