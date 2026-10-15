@@ -4152,6 +4152,10 @@ fn sim_thread(
     // A cancelled startup has no accept loop and must not leave a sim alive.
     // The ready signal carries the blight salt to the accept loop, which
     // writes it into every welcome.
+    // The welcome's tick reads this: a loaded world set it above, and a
+    // `dev_arc_hour` world starts late, so both are mirrored before anyone
+    // is admitted.
+    ShardStats::set(&stats.current_tick, core.world.tick);
     if ready.send(core.world.blight_salt).is_err() {
         return;
     }

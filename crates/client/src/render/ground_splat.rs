@@ -155,7 +155,9 @@ pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadCoverage", 0x726f6164, VertexFormat::Float32x2);
 
 /// The two zones the ground under a vertex is in: x how arid, 0..1
-/// (`terrain::aridity`); y the Verdigris' edge noise, within ±1
+/// (`terrain::aridity`), or on a rock the NEGATED metres it stands above the
+/// ground (`RockSoup::mesh`), which the shader clamps out of the desert and
+/// takes off the height the spread reads; y the Verdigris' edge noise, within ±1
 /// (`terrain::fel_wander`), from which the shader rebuilds the heart and the
 /// live spread (`blight_at`, `sim_core::blight`). The desert's warm sand and
 /// the Verdigris' ash and obsidian are tints on the four identities, not

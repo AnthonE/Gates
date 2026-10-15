@@ -33,7 +33,8 @@ pub struct Blight {
     pub plan: spread::Plan,
     /// The island's fel tier, held over a join's partial drip.
     pub tier: u8,
-    /// The arc tick [`Blight::now`] was read at, a multiple of [`STEP_TICKS`].
+    /// The arc tick this frame, quantised to [`STEP_TICKS`]: what
+    /// [`Blight::now`] was read at, or a later step that read the same.
     pub tick: u64,
     /// The spread at `tick`; `None` off a world.
     pub now: Option<spread::Now>,
@@ -70,21 +71,26 @@ pub fn update(
     mut b: ResMut<Blight>,
 ) {
     let Some(world) = world else {
-        if b.now.is_some() {
-            *b = Blight::default();
-        }
         return;
     };
+    // A new island or a new wipe starts over: its own outbreaks, tier A until
+    // its works have synced, its own clock. Only `gen` carries on, so a cache
+    // holding the last world's never matches this one's.
     let key = (world.seed, world.blight_salt);
     if b.key != Some(key) {
-        b.plan = spread::Plan::new(world.seed, world.blight_salt, &world.haven);
-        b.key = Some(key);
-        b.now = None;
+        let gen = b.gen.wrapping_add(1);
+        *b = Blight {
+            key: Some(key),
+            plan: spread::Plan::new(world.seed, world.blight_salt, &world.haven),
+            gen,
+            ..Blight::default()
+        };
     }
     // The raw arc clock: `DayPin` pins a capture's hour of the day, and the
-    // blight must read the wipe's age.
+    // blight must read the wipe's age. Held monotone: the estimate is nudged
+    // back under a step by snapshot jitter, and the spread only grows.
     let tick = feed.server_tick_est.max(0.0) as u64;
-    let tick = tick - tick % STEP_TICKS;
+    let tick = (tick - tick % STEP_TICKS).max(b.tick);
     if let Some(net) = net {
         let arc = &net.session.core.arc;
         if arc.synced() {
@@ -92,9 +98,9 @@ pub fn update(
         }
     }
     let now = spread::now(&b.plan, &world.haven, tick, b.tier);
+    b.tick = tick;
     if b.now != Some(now) {
         b.now = Some(now);
-        b.tick = tick;
         b.gen = b.gen.wrapping_add(1);
     }
     if let Some(ring) = ring {

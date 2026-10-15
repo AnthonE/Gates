@@ -901,8 +901,11 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // ash goes over the sand there.
     let dry = clamp(zone.x, 0.0, 1.0);
     // `zone.y` is the heart's edge noise, signed: the depth is rebuilt from
-    // it and the moment the client last read (`blight_at`).
-    let green = blight_at(wp, clamp(zone.y, -1.0, 1.0));
+    // it and the moment the client last read (`blight_at`), at the GROUND's
+    // height — a rock carries its rise above it as a negative `zone.x`
+    // (`RockSoup::mesh`), and the heightfield carries none.
+    let ground_wp = vec3<f32>(wp.x, wp.y + min(zone.x, 0.0), wp.z);
+    let green = blight_at(ground_wp, clamp(zone.y, -1.0, 1.0));
     let fel = max(green.fel, green.hot);
     var ident = array<vec3<f32>, 4>(
         mix(mix(splat.identity[0].xyz, splat.desert.xyz, dry), splat.fel_ash.xyz, fel),
@@ -957,7 +960,9 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         let heart = smoothstep(0.25, 0.85, fel);
         // The spread's advancing edge burns brighter, so the creep reads as
         // moving; nothing on wipe day (`FRONT_RIM_ONSET`).
-        let edge_k = green.front * splat.blight_now.z;
+        // The rim fades in with the depth, as `heart` does, so it never
+        // stops dead at this block's gate where the coast thins the creep.
+        let edge_k = green.front * splat.blight_now.z * smoothstep(0.02, 0.08, fel);
         let lit_k = max(heart, min(edge_k, 1.0));
         let cell_m = splat.fel_dead.w;
         // The plates lie on the ground: a fissure is cut into what faces the

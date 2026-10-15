@@ -363,12 +363,19 @@ impl RockSoup {
         let n = self.pos.len();
         // The heart's edge noise, as the ground carries it: the shader
         // rebuilds the live spread from it, so the rock in the green and the
-        // ground under it are the same green.
+        // ground under it are the same green. And how far the vertex stands
+        // above the ground, as a NEGATIVE desert share: the spread's coast
+        // and ridge read the ground's height, never the rock's, or a beach
+        // boulder would go green over clean sand (the shader clamps the
+        // share at 0, so the desert never sees it).
         let mut lat = terrain::Lattice::new();
         let zone: Vec<[f32; 2]> = self
             .pos
             .iter()
-            .map(|p| [0.0, terrain::fel_wander_memo(&mut lat, seed, p[0], p[2])])
+            .map(|p| {
+                let rise = (p[1] - terrain::height_memo(&mut lat, seed, p[0], p[2])).max(0.0);
+                [-rise, terrain::fel_wander_memo(&mut lat, seed, p[0], p[2])]
+            })
             .collect();
         let uv: Vec<[f32; 2]> = self
             .pos
