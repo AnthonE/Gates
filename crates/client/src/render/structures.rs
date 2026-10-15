@@ -2253,8 +2253,12 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None,                                     // 15 shutters — shared insert geometry
     Some("models/deploy/barricade.glb"),      // 16 barricade
     None,                                     // 17 planter — the cuboid until a model
-    None, // 18 turret base — the cuboid; the gun is `sentry.rs`'s
+    Some(TURRET_BASE_GLB),                    // 18 turret base; the gun is `sentry.rs`'s
 ];
+
+/// The auto turret's steel base, which the town's sentries stand on too
+/// (`render/sentry.rs`).
+pub const TURRET_BASE_GLB: &str = "models/deploy/turret_base.glb";
 
 /// How many looks one (tier, damage band) is drawn in. Four materials where
 /// there was one: a base's pieces split four ways between batches, which is

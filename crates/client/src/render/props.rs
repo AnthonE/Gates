@@ -1494,10 +1494,12 @@ pub const TIER_CRATE_GLB: [&str; 3] = [
     "models/prop/crate_elite.glb",
 ];
 
-/// The roadside junk, built by `ci/prop_kit.py` and kept out of
-/// [`prop_models`] for the keycard crates' reason: painted, not
-/// photogrammetry. The barrel, box and tyres are centred like their massing;
-/// the sign and the wreck stand on 0 over their sim box tables.
+/// The roadside junk, kept out of [`prop_models`] for the keycard crates'
+/// reason: its gates are for the scatter's baked photogrammetry. The drum,
+/// box and sign are `ci/prop_kit.py`'s; the wreck and the tyres are Meshy's
+/// (`assets/models/MANIFEST.md` §Roadside and monuments). The barrel, box and tyres are
+/// centred like their massing; the sign and the wreck stand on 0 over their
+/// sim box tables.
 pub const ROADSIDE_GLB: [(Occupant, &str); 5] = [
     (Occupant::OilBarrel, "models/prop/oil_barrel.glb"),
     (Occupant::RoadSign, "models/prop/road_sign.glb"),
