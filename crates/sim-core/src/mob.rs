@@ -68,7 +68,7 @@ use crate::combat::{held_item, CombatContent};
 use crate::gather::{ItemStack, NO_ITEM};
 use crate::input::{InputFrame, BTN_SPRINT};
 use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS};
-use crate::movement::{self, Body, POS_XZ_Q};
+use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav::{self, Ground, Nav, NavPath};
 use crate::noise::Hearing;
 use crate::occupy::Occupants;
@@ -363,6 +363,10 @@ pub struct MobDef {
     /// this number and by how far away they notice you, and by nothing in
     /// this file.
     pub brave_pct: u8,
+    /// Per mille of the bitten body's corruption meter one bite adds while
+    /// the animal is turned ([`Mob::turned`]), before the body's ward
+    /// (`exposure::infect`). Zero is a bite that only hurts.
+    pub fel_bite: u16,
     /// Leash: planar centimetres from where it last spawned. Past it the
     /// animal heads home instead of wandering — the reference game's own
     /// fix for animals that "ended up at the coast of the island"
@@ -502,6 +506,7 @@ impl MobDef {
         howl_ticks: 0,
         orbit_cm: 0,
         sleep_pct: 0,
+        fel_bite: 0,
         hear: Hearing::DEAF,
         loot: [ItemStack {
             item: NO_ITEM,
@@ -736,6 +741,7 @@ impl MobContent {
             howl_ticks: 600,
             orbit_cm: 700,
             sleep_pct: 40,
+            fel_bite: 0,
             hear: Self::FIXTURE_EARS,
             loot: [ItemStack {
                 item: NO_ITEM,
@@ -772,6 +778,7 @@ impl MobContent {
             howl_ticks: 600,
             orbit_cm: 700,
             sleep_pct: 40,
+            fel_bite: 0,
             hear: Self::FIXTURE_EARS,
             loot: [ItemStack {
                 item: NO_ITEM,
@@ -883,6 +890,10 @@ pub struct Mob {
     /// Awake, as of the last think tick. Recomputed there and not per
     /// tick, so a dormant animal costs one comparison a tick.
     pub awake: bool,
+    /// Turned: standing in the green as of the last think
+    /// (`blight::turns`). It fights from the top fel tier's row, its bite
+    /// corrupts, and the wire sends it as the animal's `lit`.
+    pub turned: bool,
     /// Home, in position quanta — the leash's centre and the hatch point.
     pub home_qx: i32,
     pub home_qz: i32,
@@ -1101,6 +1112,9 @@ pub struct Bite {
     pub victim: u8,
     pub damage: u16,
     pub range_cm: u16,
+    /// Per mille of corruption the bite carries (`MobDef::fel_bite`, when
+    /// turned), before the victim's ward.
+    pub fel: u16,
 }
 
 /// The tick's bites, bounded (wall 4). The cap is generous by construction:
@@ -1126,6 +1140,7 @@ impl Bites {
                 victim: 0,
                 damage: 0,
                 range_cm: 0,
+                fel: 0,
             }; crate::limits::MAX_MOB_BITES_PER_TICK],
             len: 0,
         }
@@ -1217,6 +1232,8 @@ pub fn step(
     day_tick: u64,
     sense_pm: u32,
     mc: &MobContent,
+    fel_mc: &MobContent,
+    blight: &crate::blight::Now,
     cols: &ColIndex,
     occ: &mut Occupants,
     mobs: &mut Mobs,
@@ -1250,7 +1267,10 @@ pub fn step(
         if !mob.homed {
             continue;
         }
-        let def = mc.def(mob.kind);
+        // The island's row, and the row it fights from while turned.
+        let island = mc.def(mob.kind);
+        let fel = fel_mc.def(mob.kind);
+        let mut def = if mob.turned { fel } else { island };
         // The night's extra animals (`MobDef::night_extra_pct`) keep the
         // dark's hours: they hatch only after dusk, and at daybreak one
         // nobody is near simply goes — dormant, so no player sees it vanish.
@@ -1260,8 +1280,9 @@ pub fn step(
             // cheap, it is off a tick comparison, and an animal that only
             // came back when somebody was standing there to watch would be
             // a shard whose population depends on who logged in.
-            if def.hp > 0 && tick >= mob.respawn_at && !day {
-                hatch(seed, haven, tick, slot, mob, &def, leader_home);
+            // Always as the island's animal: the next think turns it.
+            if island.hp > 0 && tick >= mob.respawn_at && !day {
+                hatch(seed, haven, tick, slot, mob, &island, leader_home);
             }
             continue;
         }
@@ -1274,6 +1295,10 @@ pub fn step(
         // The think tick, phase-offset by slot: `MAX_MOBS / MOB_THINK_TICKS`
         // animals decide on any given tick and the rest only walk.
         if tick % MOB_THINK_TICKS == (slot as u64) % MOB_THINK_TICKS {
+            // Turned or not, before it decides: the think reads the row it
+            // now fights from.
+            turn(seed, blight, mob, &island, &fel);
+            def = if mob.turned { fel } else { island };
             let mut ctx = brain::Ctx {
                 tick,
                 day_tick,
@@ -1295,6 +1320,40 @@ pub fn step(
         let frame = drive(mob, &def);
         movement::step(seed, haven, cols, ground.occ, &mut mob.body, &frame);
     }
+}
+
+/// `hp` carried from a row of max `from` to one of max `to`, the same share
+/// of it. Integer, and rounded up, so a turn never kills a 1-hp animal; the
+/// identity when the two rows agree.
+pub fn rescale_hp(hp: u16, from: u16, to: u16) -> u16 {
+    if from == to {
+        return hp;
+    }
+    if from == 0 || to == 0 {
+        return hp.min(to);
+    }
+    (u32::from(hp) * u32::from(to))
+        .div_ceil(u32::from(from))
+        .clamp(1, u32::from(to)) as u16
+}
+
+/// Whether the animal turns this think (`blight::turns` on the depth at its
+/// feet), carrying its wounds across the edge into the other row's scale.
+fn turn(seed: u64, now: &crate::blight::Now, mob: &mut Mob, island: &MobDef, fel: &MobDef) {
+    let x = mob.body.qx as f32 * POS_XZ_Q;
+    let z = mob.body.qz as f32 * POS_XZ_Q;
+    let feet = mob.body.qy as f32 * POS_Y_Q;
+    let d = crate::blight::depth(now, seed, x, z, feet).any();
+    let want = crate::blight::turns(mob.turned, d);
+    if want == mob.turned {
+        return;
+    }
+    mob.hp = if want {
+        rescale_hp(mob.hp, island.hp, fel.hp)
+    } else {
+        rescale_hp(mob.hp, fel.hp, island.hp)
+    };
+    mob.turned = want;
 }
 
 /// The body's input for this tick: the route's next corner (or the brain's
@@ -1373,6 +1432,7 @@ fn hatch(
     let z = mob.home_qz as f32 * POS_XZ_Q;
     mob.body = Body::at(seed, haven, x, z);
     mob.hp = def.hp;
+    mob.turned = false;
     mob.alive = true;
     mob.gait = 0;
     mob.roused_until = 0;

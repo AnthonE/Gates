@@ -793,6 +793,11 @@ pub struct Mob {
     /// roused animal charges its tormentor, below it the same rousing is
     /// a flight. The reference boar's rule — fights whole, flees hurt.
     pub brave_pct: u32,
+    /// Per mille of the bitten body's corruption meter one bite adds while
+    /// the animal stands turned in the Verdigris, before the body's ward.
+    /// Absent is a bite that only hurts.
+    #[serde(default)]
+    pub fel_bite: u32,
     /// Leash radius from the home the seed chose.
     pub roam_m: u32,
     /// A player closer than this starts a flight — in daylight.

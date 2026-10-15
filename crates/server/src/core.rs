@@ -7353,13 +7353,14 @@ impl ShardCore {
             ),
             yaw: m.yaw,
             pitch: 0,
-            // Six of twelve now. A pig has no hotbar, so the hand is
-            // empty and the flame is off — and unlike the four above,
-            // these two would be *wrong* rather than merely meaningless
-            // if they were ever filled: `held` is an index into the item
-            // catalog and a mob has no inventory to index it from.
+            // A pig has no hotbar, so the hand is empty — and `held` would
+            // be *wrong* rather than merely meaningless if it were ever
+            // filled: it is an index into the item catalog and a mob has no
+            // inventory to index it from.
             held: None,
-            lit: false,
+            // An animal's flame is the Verdigris in it: turned
+            // (`Mob::turned`), it burns as the top tier's does.
+            lit: m.turned,
             held_skin: 0,
         }
     }

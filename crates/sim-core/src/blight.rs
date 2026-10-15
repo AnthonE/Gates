@@ -113,6 +113,21 @@ pub const HOT_WANDER: f32 = 0.15;
 /// A disc's soft edge, a share of its radius.
 pub const OUTBREAK_BAND: f32 = 0.3;
 
+/// An animal standing this deep in the green turns (`mob::Mob::turned`), and
+/// one turned recovers below [`TURN_OFF`]: the gap keeps an animal on the
+/// front's edge from flipping every think.
+pub const TURN_ON: f32 = 0.55;
+pub const TURN_OFF: f32 = 0.45;
+
+/// Whether an animal that `was` turned is turned at `depth`.
+pub fn turns(was: bool, depth: f32) -> bool {
+    if was {
+        depth > TURN_OFF
+    } else {
+        depth >= TURN_ON
+    }
+}
+
 /// Every disc a moment can hold: the outbreaks, then the hot spots.
 pub const MAX_DISCS: usize = OUTBREAKS + 2 + MINOR_SITES;
 

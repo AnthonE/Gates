@@ -2565,6 +2565,7 @@ impl Content {
                 )?,
                 // Validate bounded it to 0..=100; the cast cannot truncate.
                 brave_pct: m.brave_pct as u8,
+                fel_bite: small(m.fel_bite, "fel_bite")?,
                 roam_cm: m.roam_m as i64 * 100,
                 spook_cm: m.spook_m as i64 * 100,
                 night_spook_cm: m.night_spook_m as i64 * 100,

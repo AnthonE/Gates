@@ -6994,13 +6994,21 @@ impl World {
             core::array::from_fn(|i| crate::light::is_lit(&self.players[i], &self.gather));
         // The hour and the air an animal reads: the day clock under any
         // `/time`, and how far this weather lets it see.
+        // The island's tier, the top tier a turned animal fights from, and
+        // the spread it turns in: all on the stack (wall 2).
+        let tier = self.works.fel_tier(&self.works_def);
+        let mc = self.mob.at_tier(tier);
+        let fel_mc = self.mob.at_tier((mob::FEL_TIERS - 1) as u8);
+        let blight = crate::blight::now(&self.blight, &self.haven, tick, tier);
         mob::step(
             seed,
             &self.haven,
             tick,
             day_tick,
             crate::weather::sense_pm(&wx),
-            &self.mob_now(),
+            &mc,
+            &fel_mc,
+            &blight,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,
@@ -7061,6 +7069,11 @@ impl World {
             // The funnel, reduced: a bite is a hit.
             let crate::combat::Hurt { left, died, .. } =
                 crate::combat::hurt(&self.combat, v, b.damage);
+            // A turned animal's bite carries the green, warded by the worn
+            // set; a bite that downed the body leaves the meter alone.
+            if b.fel > 0 && !died {
+                crate::exposure::infect(&self.survival.exposure, v, b.fel);
+            }
             let victim_id = v.id;
             self.events
                 .push(EV_HURT, victim_id, sector as u32, b.damage as u32);
@@ -7940,6 +7953,9 @@ impl World {
             b[41] = m.path.next;
             b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
             b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
+            // Turned (`blight::turns`): zero for an animal in clean ground,
+            // so a roster that never turns hashes as it always did.
+            b[45] = m.turned as u8;
             h.update(&b);
             let mut poi = [0u8; 24];
             poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());

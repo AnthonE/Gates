@@ -177,3 +177,162 @@ fn the_island_greens_as_the_wipe_ages() {
         );
     }
 }
+
+// ---- turned animals ------------------------------------------------------
+
+use sim_core::combat::CombatContent;
+use sim_core::exposure::ExposureContent;
+use sim_core::gather::ItemStack;
+use sim_core::input::InputFrame;
+use sim_core::mob::{self, MobContent, MOB_PIG, MOB_WOLF};
+use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::world::{Command, World};
+
+#[test]
+fn an_animal_turns_across_a_gap() {
+    assert!(!blight::turns(false, blight::TURN_ON - 0.01));
+    assert!(blight::turns(false, blight::TURN_ON));
+    // Between the two, it stays what it was.
+    let mid = (blight::TURN_ON + blight::TURN_OFF) * 0.5;
+    assert!(blight::turns(true, mid));
+    assert!(!blight::turns(false, mid));
+    assert!(!blight::turns(true, blight::TURN_OFF));
+}
+
+#[test]
+fn a_turn_carries_its_wounds_into_the_new_scale() {
+    assert_eq!(mob::rescale_hp(40, 100, 100), 40, "the same row");
+    assert_eq!(mob::rescale_hp(30, 60, 150), 75, "half of A is half of C");
+    assert_eq!(mob::rescale_hp(75, 150, 60), 30);
+    assert_eq!(mob::rescale_hp(1, 150, 60), 1, "a turn never kills");
+    assert_eq!(mob::rescale_hp(150, 150, 60), 60, "never past the new max");
+    assert_eq!(mob::rescale_hp(9, 0, 60), 9);
+}
+
+const BITE_SEED: u64 = 11;
+
+/// Somewhere deep in the heart with clean footing for a body and an animal
+/// two metres east of it.
+fn deep_in_the_heart(seed: u64) -> (f32, f32) {
+    let (hx, hz) = terrain::FEL_HEART;
+    for r in 0..40 {
+        for k in 0..16 {
+            let (dx, dz) = [
+                (1, 0),
+                (0, 1),
+                (-1, 0),
+                (0, -1),
+                (1, 1),
+                (-1, 1),
+                (1, -1),
+                (-1, -1),
+            ][k % 8];
+            let s = (r * 6 + (k / 8) * 3) as f32;
+            let (x, z) = (hx + dx as f32 * s, hz + dz as f32 * s);
+            let ok = |x: f32, z: f32| {
+                terrain::fel(seed, x, z) >= 0.9
+                    && terrain::height(seed, x, z) > terrain::BEACH_MAX_H + blight::COAST_M
+            };
+            if ok(x, z) && ok(x + 2.0, z) {
+                return (x, z);
+            }
+        }
+    }
+    panic!("no footing in the heart");
+}
+
+/// A world with a pig two metres from a joined body at `at`, the meter
+/// armed slowly (so only the bite can jump it) and the pig's bite carrying
+/// `fel_bite`; the body wears a piece warding `ward` per mille.
+fn bitten(at: (f32, f32), fel_bite: u16, ward: u16) -> World {
+    let mut w = World::new(BITE_SEED);
+    w.combat = CombatContent::probe_fixture();
+    let mut mc = MobContent::probe_fixture();
+    mc.defs[MOB_PIG as usize].fel_bite = fel_bite;
+    // No wolves: they den in the heart, and their bite is not this test's.
+    mc.defs[MOB_WOLF as usize].hp = 0;
+    w.mob = mc;
+    let mut ec = ExposureContent::EMPTY;
+    ec.fel_rise_per_s = 1;
+    ec.fel_ward_max = 900;
+    ec.ward[7] = ward;
+    w.survival.exposure = ec;
+    w.dev_spawn = Some(at);
+    w.tick(&[Command::Join { id: 1 }]);
+    w.players[0].worn[0] = ItemStack {
+        item: 7,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let slot = w
+        .mobs
+        .m
+        .iter()
+        .position(|m| m.alive && m.kind == MOB_PIG)
+        .expect("a live pig");
+    let b = w.players[0].body;
+    let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    let haven = terrain::haven(BITE_SEED);
+    w.mobs.m[slot].body = Body::at(BITE_SEED, &haven, ax + 2.0, az);
+    w
+}
+
+fn step(w: &mut World, seq: u16) {
+    w.tick(&[Command::Input {
+        id: 1,
+        frame: InputFrame {
+            seq,
+            ..InputFrame::default()
+        },
+        favour: 0,
+    }]);
+}
+
+/// The load-bearing rule of turned animals: in the green a bite carries the
+/// corruption, less the body's ward, and out of it the same bite only hurts.
+#[test]
+fn a_turned_bite_corrupts_through_the_ward_and_a_clean_one_does_not() {
+    let heart = deep_in_the_heart(BITE_SEED);
+    for (ward, gain) in [(0u16, 60u16), (500, 30)] {
+        // The same world twice, once with a bite that carries nothing: the
+        // meter's own slow rise is the same in both, so the gap is the bite.
+        let mut a = bitten(heart, 60, ward);
+        let mut b = bitten(heart, 0, ward);
+        let full = a.players[0].hp;
+        let mut seq = 0u16;
+        while a.players[0].hp == full {
+            step(&mut a, seq);
+            step(&mut b, seq);
+            seq += 1;
+            assert!(seq < 600, "no bite landed in the heart");
+        }
+        assert!(a
+            .mobs
+            .m
+            .iter()
+            .any(|m| m.alive && m.kind == MOB_PIG && m.turned));
+        assert_eq!(a.players[0].hp, b.players[0].hp, "the bite hurt the same");
+        assert_eq!(
+            a.players[0].fel - b.players[0].fel,
+            gain,
+            "ward {ward}: a turned bite's corruption"
+        );
+    }
+
+    // Out of the green, the same pig is the island's and so is its bite.
+    let clean = World::new(BITE_SEED).spawn_pos(1);
+    let mut w = bitten(clean, 60, 0);
+    let full = w.players[0].hp;
+    let mut seq = 0u16;
+    while w.players[0].hp == full {
+        step(&mut w, seq);
+        seq += 1;
+        assert!(seq < 600, "no bite landed on the beach");
+    }
+    assert!(
+        !w.mobs.m.iter().any(|m| m.alive && m.turned),
+        "nothing turns on clean ground"
+    );
+    assert_eq!(w.players[0].fel, 0, "a clean bite carried the green");
+}

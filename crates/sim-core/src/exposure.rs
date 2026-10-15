@@ -520,6 +520,17 @@ pub(crate) fn worn_ward(ec: &ExposureContent, p: &Player) -> u32 {
     ward.min(ec.fel_ward_max as u32).min(1000)
 }
 
+/// A turned animal's bite (`mob::Bite::fel`): `fel_pm` of the meter at
+/// once, less what the worn set wards off. Armor does not blunt it. Nothing
+/// on a world whose meter is off, which would never drain it again.
+pub fn infect(ec: &ExposureContent, p: &mut Player, fel_pm: u16) {
+    if ec.fel_rise_per_s == 0 || fel_pm == 0 {
+        return;
+    }
+    let gain = (u32::from(fel_pm) * (1000 - worn_ward(ec, p))).div_ceil(1000);
+    p.fel = (u32::from(p.fel) + gain).min(1000) as u16;
+}
+
 /// One second of the Verdigris for one body: its meter rises by how deep it
 /// stands (rounded up, so the edge still creeps), plus a vent's fire, plus a
 /// hot spot's burn at its own rate, less what it wears wards off; anywhere the Verdigris does not reach it falls.

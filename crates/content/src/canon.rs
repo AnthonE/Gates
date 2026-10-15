@@ -270,6 +270,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.attack_range_m);
         h.u(m.attack_seconds);
         h.u(m.brave_pct);
+        h.u(m.fel_bite);
         h.u(m.roam_m);
         h.u(m.spook_m);
         h.u(m.night_spook_m);

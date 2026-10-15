@@ -105,6 +105,16 @@ pub fn tier_of(arc: &ArcView) -> usize {
     arc.fel_tier() as usize
 }
 
+/// The tier an animal wears: the top one while it stands turned in the
+/// green (the wire's `lit`, `Mob::turned`), else the island's.
+pub fn tier_for(island: usize, turned: bool) -> usize {
+    if turned {
+        TIERS - 1
+    } else {
+        island
+    }
+}
+
 /// The clips `ci/rig_beast.py` authors, resolved by NAME (`anim.rs` says why
 /// an index is a trap).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -270,6 +280,9 @@ pub struct Beasts {
     rigs: [[BeastRig; TIERS]; FEL_SPECIES],
     /// Names the files did not have, reported once per model.
     reported: [[bool; TIERS]; FEL_SPECIES],
+    /// A turned animal has been seen (`mobs::stream`), so the top tier is
+    /// wanted whatever the island's: fetched only once one turns.
+    pub want_top: bool,
 }
 
 impl Beasts {
@@ -288,9 +301,10 @@ pub struct Skinned {
     pub tier: usize,
 }
 
-/// Request the island's current tier, then build each model's graph once its
-/// glTF and clips are in. Lazy so a client never downloads a tier the shard
-/// has not reached: on the web every model is a fetch.
+/// Request the island's current tier (and the top one once an animal has
+/// turned), then build each model's graph once its glTF and clips are in.
+/// Lazy so a client never downloads a tier it has not seen: on the web every
+/// model is a fetch.
 pub fn build(
     mut beasts: ResMut<Beasts>,
     assets: Res<AssetServer>,
@@ -301,11 +315,18 @@ pub fn build(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let tier = tier_of(&net.session.core.arc);
-    let Beasts { rigs, reported } = &mut *beasts;
+    let Beasts {
+        rigs,
+        reported,
+        want_top,
+    } = &mut *beasts;
+    let top = if *want_top { TIERS - 1 } else { tier };
     for (sp, row) in rigs.iter_mut().enumerate() {
-        let rig = &mut row[tier];
-        if rig.gltf.is_none() {
-            rig.gltf = Some(assets.load(BEAST_GLB[sp][tier]));
+        for t in [tier, top] {
+            let rig = &mut row[t];
+            if rig.gltf.is_none() {
+                rig.gltf = Some(assets.load(BEAST_GLB[sp][t]));
+            }
         }
     }
     for (sp, row) in rigs.iter_mut().enumerate() {

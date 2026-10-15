@@ -74,6 +74,9 @@ attack = 15
 attack_range_m = 2
 attack_seconds = 2
 brave_pct = 75
+# Turned in the Verdigris (`sim_core::blight::TURN_ON`), a bite also puts 6%
+# on the corruption meter, less what the bitten body's mask and suit ward.
+fel_bite = 60
 
 # The leash and the fright radius, and the pair is the whole behaviour.
 # 60 m of roam keeps a pig findable near where the seed put it — the
@@ -249,6 +252,8 @@ attack = 30
 attack_range_m = 2
 attack_seconds = 2
 brave_pct = 0
+# Turned, a wolf's bite puts 8% on the corruption meter, before the ward.
+fel_bite = 80
 
 # A wider territory than the pig's 60, for the reason the animal exists:
 # a predator you only ever meet in one clearing is a hazard sign, not a

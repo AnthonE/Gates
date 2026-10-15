@@ -1695,7 +1695,8 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // this block exists for (a biter with zero reach never lands one;
         // zero seconds is a bite every tick).
         if m.attack == 0 {
-            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 {
+            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 || m.fel_bite != 0
+            {
                 return Err(format!(
                     "mob `{}`: attack fields set on a species with zero attack",
                     m.id
@@ -1712,6 +1713,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 return Err(format!(
                     "mob `{}`: brave_pct is a percent of max hp, 0–100",
                     m.id
+                ));
+            }
+            if m.fel_bite > 1000 {
+                return Err(format!(
+                    "mob `{}`: fel_bite {} is per mille of the meter, 0–1000",
+                    m.id, m.fel_bite
                 ));
             }
             // A bite from further than the spook radius would be an animal
