@@ -95,6 +95,7 @@ fn boot(state: Screen, entries: Vec<Entry>, with_world: bool) -> (App, Replay) {
             tick: 0,
             dev: true,
         },
+        watch: None,
         entries,
     });
     // `menu::poll_connect`'s own two inserts.
