@@ -1149,6 +1149,23 @@ pub fn remote_heard(
     }
 }
 
+/// Gunshots and blasts from past the interest set (wire v112, `SUB_REPORT`):
+/// the shard sends no body for them, only what went off and where, out to
+/// `GUN_REPORT_CM` and `BLAST_REPORT_CM`. A gun is its far layer at the
+/// place, a blast is a blast; the falloff and the distance low-pass make
+/// them the dull far crack and rumble they should be.
+pub fn far_reports(feed: Res<super::feed::Feed>, mut sound: ResMut<Sound>) {
+    for &(kind, x, y, z) in feed.reports() {
+        let cue = match kind {
+            protocol::REPORT_GUN => Cue::ShotGunFar,
+            protocol::REPORT_BLAST => Cue::Blast,
+            _ => continue,
+        };
+        let at = [x as f32, y as f32 + REMOTE_HANDS_H_M, z as f32];
+        sound.play(Request::at(cue, at));
+    }
+}
+
 /// Where another body's hands are heard from, above its feet.
 const REMOTE_HANDS_H_M: f32 = 1.1;
 /// Time in the air before coming down is heard: a jump is ~0.7 s, and a

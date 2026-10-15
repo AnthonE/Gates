@@ -458,10 +458,26 @@ pub const CHAT_LOCAL_CM: i64 = 2_000;
 
 /// Proximity voice's radius, centimetres, 3D (wire v111). The server relays
 /// a talker's frames to nobody farther (`reference/VOICE.md` §9.1: the cull
-/// is the server's or it is a wallhack). Rust's relation, not its number
-/// (§9.4): well past local chat, well short of a rifle, and inside the AOI
-/// enter radius, so whoever hears you is already an entity you can see.
-pub const VOICE_RADIUS_CM: i64 = 5_000;
+/// is the server's or it is a wallhack). **The reference's own number**: its
+/// server sends a voice packet to every connection within 100 m of the
+/// speaker (`BasePlayer`'s voice relay, read in its decompiled server), and
+/// the client's falloff is what makes 40 m clear and 90 m a murmur
+/// (`render/voice.rs`). Inside the AOI enter radius, so whoever hears you
+/// is already an entity you can see.
+pub const VOICE_RADIUS_CM: i64 = 10_000;
+
+/// How far a gunshot is reported past the interest set, centimetres
+/// (`EventMsg::Report`, v112). Inside it the shot rides `EV_SHOT` and its
+/// body; past it, out to here, the client is told only that a gun went off
+/// and where. The reference's pistol class carries 400 m (rifles 500,
+/// heavy guns 600; its Sept 2025 maintenance devblog), and the revolver is
+/// the only gun on the island.
+pub const GUN_REPORT_CM: i64 = 40_000;
+
+/// How far a blast is reported past the interest set, centimetres (v112).
+/// The reference sends every explosion to every client; 1500 m on a 4 km
+/// island is a raid heard from most of it.
+pub const BLAST_REPORT_CM: i64 = 150_000;
 
 /// Per-connection inbound ring of a talker's voice frames. Overflow policy:
 /// **drop newest**, counted — the reader rate-limits ahead of it, and a

@@ -435,7 +435,7 @@ him on the public island, and its header is the runbook.
 ## Voice
 
 **`--voice`** gives an external or MCP mind ears and a voice (proximity
-voice, wire v111, `agent_voice.rs`). What players within 50 m say out loud
+voice, wire v111, `agent_voice.rs`). What players within 100 m say out loud
 is transcribed and arrives in `heard` as a line with `"voice": true`, the
 speaker's `friend` flag included, so its friend's spoken words are known as
 theirs. Requests carry `"voice": true`, and a reply's `speak` (up to 240

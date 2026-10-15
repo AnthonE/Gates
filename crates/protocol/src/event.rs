@@ -558,7 +558,12 @@ const SUB_AGENT: u32 = 96;
 /// on the receiver. Own-fact: sent when it changes and, while anyone is on
 /// it, as its members move.
 const SUB_TEAM: u32 = 97;
-const SUB_MAX: u32 = SUB_TEAM;
+/// A gunshot or a blast heard from past the receiver's interest set (wire
+/// v112): what it was and where, to the metre, and nothing about who. The
+/// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
+/// shot rides `EV_SHOT` on its body and the blast its impact.
+const SUB_REPORT: u32 = 98;
+const SUB_MAX: u32 = SUB_REPORT;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -1946,6 +1951,9 @@ pub enum EventMsg {
     /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
     /// for a meal the item. A sound and nothing else.
     Heard { body: u32, deed: u8, item: u16 },
+    /// A gunshot or a blast from far off (wire v112): `REPORT_*`, and where
+    /// in whole metres. A sound and nothing else.
+    Report { kind: u8, x: u16, y: i16, z: u16 },
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
@@ -3883,6 +3891,45 @@ pub fn encode_event_heard(
     w.write(body, 32)?;
     w.write(deed as u32, DEED_BITS)?;
     w.write(item as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A [`SUB_REPORT`]'s gunshot.
+pub const REPORT_GUN: u8 = 0;
+/// A [`SUB_REPORT`]'s blast.
+pub const REPORT_BLAST: u8 = 1;
+/// The last report kind the wire knows; a higher one is refused at both ends.
+pub const REPORT_MAX: u8 = REPORT_BLAST;
+const REPORT_BITS: u32 = 2;
+const REPORT_XZ_BITS: u32 = 13;
+const REPORT_Y_BITS: u32 = 10;
+/// `y` rides biased: −128..=895 m.
+const REPORT_Y_BIAS: i32 = 128;
+const _: () = assert!((REPORT_MAX as u32) < (1 << REPORT_BITS));
+const _: () = assert!(sim_core::terrain::ISLAND_SIZE as u32 <= (1 << REPORT_XZ_BITS));
+
+/// A far gunshot or blast at `(x, y, z)` metres. Refuses a kind past
+/// [`REPORT_MAX`] and a place the fields cannot carry.
+pub fn encode_event_report(
+    kind: u8,
+    x: u16,
+    y: i16,
+    z: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let yb = y as i32 + REPORT_Y_BIAS;
+    if kind > REPORT_MAX
+        || x as u32 >= 1 << REPORT_XZ_BITS
+        || z as u32 >= 1 << REPORT_XZ_BITS
+        || !(0..1 << REPORT_Y_BITS).contains(&yb)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_REPORT)?;
+    w.write(kind as u32, REPORT_BITS)?;
+    w.write(x as u32, REPORT_XZ_BITS)?;
+    w.write(yb as u32, REPORT_Y_BITS)?;
+    w.write(z as u32, REPORT_XZ_BITS)?;
     Ok(w.finish())
 }
 
@@ -6128,6 +6175,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
         },
+        SUB_REPORT => {
+            let kind = r.read(REPORT_BITS)? as u8;
+            if kind > REPORT_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Report {
+                kind,
+                x: r.read(REPORT_XZ_BITS)? as u16,
+                y: (r.read(REPORT_Y_BITS)? as i32 - REPORT_Y_BIAS) as i16,
+                z: r.read(REPORT_XZ_BITS)? as u16,
+            }
+        }
         SUB_FIRE => EventMsg::Fire {
             qx: r.read(POS_XZ_BITS)? as i32,
             qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
@@ -9786,6 +9845,13 @@ mod wire_domains {
             "TEAM_COUNT_BITS",
             "TEAM_STATE_BITS",
             "TEAM_POS_BITS",
+            // A far report (v112): the wire's own two kinds, refused past
+            // `REPORT_MAX` at both ends (const-asserted beside the width);
+            // and a whole-metre place, the island's side const-asserted
+            // inside the x/z width, y refused outside its biased range.
+            "REPORT_BITS",
+            "REPORT_XZ_BITS",
+            "REPORT_Y_BITS",
             // An item description's length (v103): bounded by
             // `MAX_ITEM_DESC_BYTES`, const-asserted beside the width.
             "DESC_LEN_BITS",

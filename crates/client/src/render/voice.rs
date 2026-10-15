@@ -325,10 +325,15 @@ pub fn hear(
 /// listener's right vector `(rx, rz)`: full inside [`NEAR_M`], down to
 /// nothing at the shard's radius, and an equal-power pan that never takes
 /// a voice wholly out of one ear.
+///
+/// **Cubed, over the reference's 100 m**: −7 dB at 25 m, −14 dB at 40 m,
+/// −23 dB at 60 m, −35 dB at 80 m. Clear across a compound, a murmur from
+/// the next ridge — the reference's players put plain speech at 20–40 m,
+/// and its server still sends the packet to 100 m.
 pub fn ears(to: Vec3, rx: f32, rz: f32) -> (f32, f32) {
     let d = to.length();
     let g = (1.0 - (d - NEAR_M).max(0.0) / (RADIUS_M - NEAR_M)).clamp(0.0, 1.0);
-    let g = g * g;
+    let g = g * g * g;
     let flat = Vec2::new(to.x, to.z);
     let side = if flat.length() > 0.01 {
         flat.normalize().dot(Vec2::new(rx, rz))
@@ -647,8 +652,10 @@ mod tests {
         assert!(r > l * 2.0, "{l} {r}");
         let (l2, r2) = ears(Vec3::new(0.0, 0.0, -1.0), 1.0, 0.0);
         assert!((l2 - r2).abs() < 1e-4 && (l2 - 1.0).abs() < 1e-3);
-        let (fl, fr) = ears(Vec3::new(0.0, 0.0, -30.0), 1.0, 0.0);
-        assert!(fl < 0.3 && fl > 0.0, "{fl} {fr}");
+        let (fl, fr) = ears(Vec3::new(0.0, 0.0, -40.0), 1.0, 0.0);
+        assert!(fl < 0.25 && fl > 0.15, "40 m is -14 dB: {fl} {fr}");
+        let (fl, _) = ears(Vec3::new(0.0, 0.0, -80.0), 1.0, 0.0);
+        assert!(fl < 0.03 && fl > 0.0, "80 m is a murmur: {fl}");
         assert_eq!(ears(Vec3::new(0.0, 0.0, -RADIUS_M), 1.0, 0.0), (0.0, 0.0));
     }
 

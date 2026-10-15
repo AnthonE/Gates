@@ -42,7 +42,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 168] = [
+pub const FIXTURES: [&str; 169] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -303,6 +303,8 @@ pub const FIXTURES: [&str; 168] = [
     // Proximity voice (v111): the talker's frame, and its relay.
     "voice_up.bin",
     "voice.bin",
+    // A far report (v112): a blast, below sea level and far from the origin.
+    "event_report.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1908,6 +1910,13 @@ pub fn voice() -> crate::VoiceFrame {
     let mut f = voice_up();
     f.from = 0x0102_0307;
     f
+}
+
+/// A blast heard from far off (v112): the kind that is not zero, an x near
+/// the top of its field, a y under the bias's zero, so a narrowed field or a
+/// dropped bias moves a byte.
+pub fn event_report() -> (u8, u16, i16, u16) {
+    (crate::REPORT_BLAST, 4_095, -12, 1_337)
 }
 
 /// A landed shot: 25 on another player, on the **head** (v58).

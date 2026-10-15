@@ -1927,6 +1927,7 @@ impl Plugin for GatesRenderPlugin {
                 // a lid), and what the snapshot already says their hands and
                 // feet did (a draw, a landing).
                 audio::remote_heard,
+                audio::far_reports,
                 audio::remote_hands,
                 // …and every shot in earshot, at the shooter. Same slice,
                 // and after it for the same reason: the transform this

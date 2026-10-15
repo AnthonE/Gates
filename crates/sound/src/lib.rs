@@ -920,13 +920,20 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 48.0, 0.60,  30, 4, true),   // bullet, metal
     row(GAME, 56.0, 0.84,  90, 3, true),   // ricochet
     row(GAME, 30.0, 0.70,  30, 5, true),   // flesh hit
-    // The far report: past `ShotGun`'s radius the near layer is gone and
-    // this is what is left of a gunshot. Twice the reach, dark, and at a
-    // gain that meets the near layer where `render/audio.rs` switches.
-    row(GAME, 200.0, 0.75,  60, 6, true),  // gun fired, far
+    // The far report: past the switch (`render/audio.rs`, 45 m) this is
+    // what is left of a gunshot. The reference hears a pistol 400 m off, a
+    // rifle 500 and a heavy gun 600 (its Sept 2025 maintenance devblog), so
+    // the row carries 600 and the shard sends the report only as far as the
+    // gun reaches (`GUN_REPORT_CM`): a revolver at 400 m is faint, not gone.
+    // The gain meets the near layer's level at the switch:
+    // 0.85·(1 − 45/100)² = 0.30·(1 − 45/600)².
+    row(GAME, 600.0, 0.30,  60, 6, true),  // gun fired, far
     // A charge is the loudest thing on the island and the one sound a
-    // whole server should know the place of.
-    row(GAME, 200.0, 1.00,   0, 7, true),  // blast
+    // whole server should know the place of: the reference sends every
+    // explosion to every client. 1500 m on a 4 km island (`BLAST_REPORT_CM`)
+    // is a raid heard from most of it, a dull far rumble under the falloff
+    // and the distance low-pass.
+    row(GAME, 1500.0, 1.00,  0, 7, true),  // blast
     row(GAME, 60.0, 0.80,  80, 5, true),   // collapse
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock
     // Your own hands, so non-positional; the cooldown is what keeps a
@@ -1032,8 +1039,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME,  0.0, 0.60,   0, 0, false),  // rotor, far
     // The heli's gun from far off: a machine gun's reach in the reference
     // (600 m, its far tier), which the heli is subscribed past. The gain
-    // meets the near round's at the switch (`render/audio.rs`).
-    row(GAME, 600.0, 0.32,  60, 6, true),  // heli gun, far
+    // meets the near round's at the switch (`render/audio.rs`, 60 m):
+    // 0.80·(1 − 60/200)² = 0.48·(1 − 60/600)².
+    row(GAME, 600.0, 0.48,  60, 6, true),  // heli gun, far
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1078,9 +1086,15 @@ const RSWING: CueDef = CueDef {
 };
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
+///
+/// **40 m, not the 24 it opened at**: the reference's client spawns another
+/// player's footstep out to 75 m from the camera (`BaseFootstepEffect`, its
+/// hard cull), so a step is a sound you hear coming, not one that arrives
+/// with the swing. Under `(1 - d/R)²` a step at 20 m is a quarter of one at
+/// your feet; crouching halves it again (`render/audio.rs`).
 const STEP: CueDef = CueDef {
     bus: Bus::Game,
-    radius_m: 24.0,
+    radius_m: 40.0,
     gain: 0.35,
     cooldown_ms: 90,
     priority: 1,
@@ -1114,15 +1128,14 @@ const RSTEP: CueDef = CueDef {
 /// (It also used to derive `render/audio.rs`'s spatial scale for rodio's
 /// clamp; the engine pans now and that half is gone.)
 ///
-/// **Set by [`Cue::ShotHeliFar`]**, at 600 m: the heli is subscribed far
-/// past the shard's 208 m interest radius (`heli::HELI_AOI_SCALE`), so its
-/// gun's events arrive from that far. Every other cue is still inside
-/// 208 m, where [`Cue::ShotGunFar`] and [`Cue::Blast`] held the ceiling at
-/// 200 m (an event from further never arrives). It is a derived number and
-/// not a taste one — it is the maximum of the table, and the test that
-/// asserts so is what makes raising a radius force this line rather than
-/// silently invert a cue's falloff.
-pub const MAX_AUDIBLE_M: f32 = 600.0;
+/// **Set by [`Cue::Blast`]**, at 1500 m: a blast and a far gunshot reach a
+/// client past the shard's 208 m interest radius as a report
+/// (`EventMsg::Report`, v112), and the heli is subscribed past it too
+/// (`heli::HELI_AOI_SCALE`). It is a derived number and not a taste one —
+/// it is the maximum of the table, and the test that asserts so is what
+/// makes raising a radius force this line rather than silently invert a
+/// cue's falloff.
+pub const MAX_AUDIBLE_M: f32 = 1500.0;
 
 /// How many voices may sound at once.
 ///

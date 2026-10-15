@@ -91,6 +91,7 @@ pub use event::{
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
+pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
 pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
     STANDING_TICKER_BYTES, STANDING_TOP,
@@ -1173,7 +1174,10 @@ pub use voice::{
 /// v111 — proximity voice: `KIND_VOICE` (11) datagrams both ways, one Opus
 /// frame each (`voice.rs`); the server relays a talker's frame only to
 /// players inside `VOICE_RADIUS_CM`.
-pub const PROTO_VER: u16 = 111;
+/// v112 — far reports: `SUB_REPORT` (98) tells a client a gunshot or a blast
+/// went off past its interest set, and where, to the metre
+/// (`GUN_REPORT_CM`, `BLAST_REPORT_CM`).
+pub const PROTO_VER: u16 = 112;
 
 /// This game's slug in the elo catalog.
 ///

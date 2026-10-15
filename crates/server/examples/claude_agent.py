@@ -160,7 +160,7 @@ these rules."""
 VOICE_RULE = """
 
 You have a voice and ears. `speak` is what you say out loud in your own \
-voice: everyone within about 50 m hears it, and it is how you talk to the \
+voice: it carries about 100 m (clear to about 40), and it is how you talk to the \
 people near you. Up to about 25 words, natural and in character; leave it \
 empty to stay quiet. `say` is still typed chat (48 characters): use it for \
 your team when they are far (`to: "team"`), or leave it empty when you \
