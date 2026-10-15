@@ -665,7 +665,10 @@ impl Backpacks {
     ) -> Option<Looted> {
         let px = p.body.qx as f32 * POS_XZ_Q;
         let pz = p.body.qz as f32 * POS_XZ_Q;
-        let mut best: Option<(f32, usize)> = None;
+        // A corpse lies half a metre from the pack its body dropped, so the
+        // nearest can be the corpse: the pack wins, and a corpse is taken
+        // only when it is all there is in reach.
+        let mut best: Option<(bool, f32, usize)> = None;
         for i in 0..self.len {
             let dx = self.entries[i].qx as f32 * POS_XZ_Q - px;
             let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
@@ -673,11 +676,12 @@ impl Backpacks {
             if d2 > LOOT_REACH_M * LOOT_REACH_M {
                 continue;
             }
-            if best.is_none_or(|(bd2, _)| d2 < bd2) {
-                best = Some((d2, i));
+            let corpse = self.entries[i].owner == CORPSE_OWNER;
+            if best.is_none_or(|(bc, bd2, _)| (corpse, d2) < (bc, bd2)) {
+                best = Some((corpse, d2, i));
             }
         }
-        let (_, i) = best?;
+        let (_, _, i) = best?;
         if !self.may_loot(i, p.id, town) {
             events.push(
                 crate::world::EV_MOVE_REFUSED,
