@@ -877,14 +877,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
             k = mix(k, (core + 0.35 * line) * lit * pulse, resolved);
         }
         // Pools: on flat ground at the heart, where a slow field clears its
-        // line — black glass, lit at the shore and faintly in the deep.
+        // line — green fire under black glass, brightest at the shore. Lit
+        // from within rather than by the sky: a glossy pool by day was the
+        // sky's own grey-green, a pond of mint.
         let pf = value3(q / splat.fel_shape.w) * 0.7
             + value3(q / (splat.fel_shape.w * 0.43) + vec3<f32>(0.0, 17.0, 0.0)) * 0.3;
         let flat = smoothstep(0.93, 0.975, wn.y);
         pool = smoothstep(splat.fel_shape.z, splat.fel_shape.z + 0.015, pf)
             * smoothstep(0.62, 0.9, fel) * flat * ground;
         let shore = pool * (1.0 - smoothstep(splat.fel_shape.z + 0.015, splat.fel_shape.z + 0.05, pf));
-        emit = splat.fel_glow.rgb * (k * heart * ground * flat_k * (1.0 - pool) + pool * 0.45 + shore * 0.9);
+        emit = splat.fel_glow.rgb * (k * heart * ground * flat_k * (1.0 - pool) + pool * 0.9 + shore * 0.9);
         // The rock's own cracks, where the rock is.
         emit = emit + splat.fel_glow.rgb * rock_crack * terrain_bw.w * ground * heart * 0.8;
         // Scorched dark along the fissures, and the liquid black-green.
@@ -988,7 +990,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // Obsidian is glass, and a pool is liquid.
     if fel > 0.0 {
         let glassy = mix(1.0, splat.fel_rock.w, fel * bw.w);
-        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness * glassy, 0.25, pool);
+        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness * glassy, 0.5, pool);
     }
 
     // The relief, blended as gradients. The planar taps' share is applied on

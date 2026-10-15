@@ -180,6 +180,7 @@ pub mod mipmap;
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod embers;
 pub mod fel_rim;
+pub mod fel_vents;
 pub mod panels;
 pub mod pause;
 pub mod prewarm;
@@ -1407,6 +1408,15 @@ impl Plugin for GatesRenderPlugin {
             )
                 .run_if(world_running),
         )
+        // The Verdigris' vents: green fire where the sim's vents are.
+        .add_systems(
+            Update,
+            fel_vents::drive
+                .after(rig::day_night)
+                .before(fx::world::fires)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
         // What other players wear (wire v98), hung on their bones.
         .add_systems(
             Update,
@@ -1476,6 +1486,7 @@ impl Plugin for GatesRenderPlugin {
         // The rain follows the camera too (weather v0).
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
         .add_systems(OnEnter(Screen::Loading), embers::setup.after(rain::setup))
+        .add_systems(OnEnter(Screen::Loading), fel_vents::setup)
         // After the deck: the stars hide behind its field.
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
         .add_systems(
