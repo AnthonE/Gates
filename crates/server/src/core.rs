@@ -6426,7 +6426,8 @@ impl ShardCore {
                 .iter()
                 .enumerate()
             {
-                batch[i] = WireGItem::of(g);
+                let toss = self.world.ground_items.toss_of(g.id, self.world.tick);
+                batch[i] = WireGItem::of(g).tossed(toss);
             }
             match encode_event_gitem_sync(c.gitem_sync_reset, &batch[..n], &mut self.ev_buf) {
                 Ok(len) => {

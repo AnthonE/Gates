@@ -127,6 +127,7 @@ pub mod ziggurat;
 /// Painted skins: the items a skin can be a picture on, and their meshes.
 pub mod canvas;
 pub mod heldgen;
+pub mod heldkit;
 // The right hand's finger bones, closed on what it holds.
 pub mod fingers;
 // **Desktop only.** This module reaches a local elo launcher over a unix
@@ -1909,6 +1910,9 @@ impl Plugin for GatesRenderPlugin {
                 viewmodel::torch_watch.after(feed::drain),
                 // A deployable's damage band, drawn on its material.
                 structures::deploy_hurt.after(structures::stream),
+                // A dropped stack flying out of a hand (v114), on the
+                // clock the drain just read, spawned by `stream`.
+                loot::fly.after(structures::stream).after(feed::drain),
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a
                 // respawned trunk up — before it, a sapling would stand one

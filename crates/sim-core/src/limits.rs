@@ -766,6 +766,14 @@ pub const MAX_BACKPACKS: usize = 256;
 /// one with the barrels.
 pub const MAX_GROUND_ITEMS: usize = 512;
 
+/// Stacks in the air at once (`grounditem::Tosses`): a `Command::Drop` throws
+/// its stack out of the hand, and the throw is remembered only while it
+/// flies (two thirds of a second off a standing hand on level ground).
+/// **Overflow forgets the oldest throw**, and that stack simply lies where
+/// it landed on every screen that had not seen it fly — the record is the
+/// truth either way, the throw is only its picture.
+pub const MAX_TOSSES: usize = 32;
+
 /// Line-of-sight walks one take, loot or pull may spend finding the nearest
 /// thing in reach (`reach::nearest_clear`), nearest first. Bounds a command
 /// against a pile of stacks heaped behind a wall: past this many blocked

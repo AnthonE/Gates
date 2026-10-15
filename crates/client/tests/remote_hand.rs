@@ -77,7 +77,9 @@ fn row(key: &str) -> usize {
 /// wire distinguishes and the drawing has to.
 #[test]
 fn the_hand_reads_the_two_fields_and_the_corpse_bit() {
-    let c = catalog(&["Torch", "Stone Hatchet", "Cloth"]);
+    // Every item in content has a model since the prop kit, so the
+    // modelless case is a name this client has never heard of.
+    let c = catalog(&["Torch", "Stone Hatchet", "Pocket Sundial"]);
 
     // Empty hand: nothing drawn, nothing lit. The commonest state in the
     // game, and it must not fall back to a stand-in — a tool that appears

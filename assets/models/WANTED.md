@@ -417,3 +417,130 @@ stand-in is:
 
 Everything in §5's food and utility block is small, cheap, and rarely the
 thing on screen; do it last.
+
+---
+
+## 12 · The prop kit, version 2 — 55 items
+
+Since 2026-10-15 every item has a held model. The 55 below had one only
+because `render/heldkit.rs` builds it out of code primitives (twenty have
+since landed as files, marked below): correct size,
+correct colours, edges chamfered and crevices shaded, and still **cartoon**,
+because it has flat colours where the world has photographs, perfect
+cylinders where the world has dents, and saturated paint where the world
+has sun-faded, dirty paint. Version 2 replaces them with realistic files.
+The hand, the ground and the icon all draw the same mesh, so one file fixes
+all three.
+
+**Routes.** Pick per item, and default to the free one:
+
+- **Blender** (`ci/prop_kit.py`, free, CC0 photographs baked in, edge wear and
+  crease dirt): anything manufactured, thin, or exact. A recipe's geometry
+  is as exact as the code kit's, so thin shafts, coils and anything that has
+  to match another model stay clean. The metal tools, medkit and food already
+  came this way.
+- **Meshy** (`ci/meshy_gen.py`, 24 credits; `--multiview` 48): anything organic
+  or broken, where a recipe can only fake irregularity: rock, ore, bone,
+  fat, hide, cloth, garments, scrap heaps, dented cans. Prompt rules from
+  `MANIFEST.md` §held: say **exactly one**, name what not to draw (no hand,
+  no second copy, no stand), describe the object and never the reference
+  game. An irregular natural object needs `--multiview`; one view of a rock
+  is a slab (`meshy_gen.py`'s header).
+- **Reuse**: something the world already draws.
+
+**Landing one** (each row's box is the code kit's bake, i.e. what
+`HELD_MODELS` already declares, so the grip and scale carry over):
+`meshy_gen.py` or `prop_kit.py gen` → `measure_glb.py --size` → look at it
+(`iconbake --look <dir> <file.glb…>`) → `flatten_charts.py` if that helps it →
+`import_meshy.py <in> <out> S S S`, a cube the size of the item's longest side
+so it keeps its own proportions → `stand_grip.py` if a hand closes on it →
+`ktx_pack.py --size 512` (these are hand-sized, and the browser downloads every
+one) → flip the row in `ui/hold.rs` from `kit(…)`/`kit_borne(…)` to
+`upright(…)`/`borne(…)` with the path and the height the import printed → `cargo test -p client --features render --test held_assets` (it
+re-measures the height) → `iconbake --hand` to re-judge the grip →
+`iconbake ci/icons/renders <stem>` + `finish_icons.py <stem>` → a `MANIFEST.md`
+row. The kit entry can stay as the fallback, or go.
+
+### 12.1 · Meshy — 23 items and one reuse, ~620 credits (~750 with a regeneration in five)
+
+| # | item | box W×H×D (m) | look | notes |
+|---|---|---|---|---|
+| 12.1 | Wood | 0.47×0.24×0.38 | an armful of split firewood, four or five pieces, bark on the outside, pale split faces, chopped ends | **landed 2026-10-15**, `held/wood.glb` |
+| 12.2 | Stone | 0.24×0.12×0.22 | three fist-sized broken grey stones, fresh fracture faces, dust | **landed 2026-10-15**, `held/stone.glb` |
+| 12.3 | Metal Ore | 0.23×0.13×0.23 | fist-sized chunks of dark iron-bearing rock, rust-red veins, a few metallic glints | **landed 2026-10-15**, `held/metal_ore.glb` |
+| 12.4 | Sulfur Ore | 0.23×0.14×0.23 | grey rock lumps crusted with pale yellow sulfur crystals | **landed 2026-10-15**, `held/sulfur_ore.glb` |
+| 12.5 | Charcoal | 0.27×0.15×0.25 | a small heap of lump charcoal, matte black, cracked wood grain still visible | **landed 2026-10-15**, `held/charcoal.glb` |
+| 12.6 | Metal Fragments | 0.21×0.10×0.25 | a handful of torn scrap steel shards, bent, rusty with bright fresh cuts | **landed 2026-10-15**, `held/metal_fragments.glb` |
+| 12.7 | Sulfur | 0.34×0.17×0.34 | a low heap of yellow sulfur powder with a few crumbly lumps | **landed 2026-10-15**, `held/sulfur.glb` |
+| 12.8 | Gunpowder | 0.34×0.16×0.34 | a low heap of grey-black gunpowder, fine grain | not glossy; it is a powder. **Landed 2026-10-15**, `held/gunpowder.glb` |
+| 12.9 | Animal Fat | 0.26×0.17×0.20 | a slab of raw white animal fat, waxy, faintly yellow, irregular | **landed 2026-10-15**, `held/animal_fat.glb` |
+| 12.10 | Bone Fragments | 0.23×0.09×0.27 | two broken animal leg bones and a few splinters, weathered off-white | **landed 2026-10-15**, `held/bone_fragments.glb` |
+| 12.11 | Leather | 0.34×0.13×0.15 | a rolled tanned hide tied with two cords, rough brown leather | **landed 2026-10-15**, `held/leather.glb` |
+| 12.12 | Cloth | 0.30×0.14×0.22 | a folded stack of rough undyed cloth, frayed edges | **landed 2026-10-15**, `held/cloth.glb` |
+| 12.13 | Tarp | 0.36×0.10×0.26 | a folded olive canvas tarpaulin with brass grommets, dirty | **landed 2026-10-15**, `held/tarp.glb` |
+| 12.14 | Junk | 0.34×0.21×0.27 | a small heap of rusty scrap: a big hex nut, a bolt, a broken cog | **landed 2026-10-15**, `held/junk.glb` |
+| 12.15 | Tech Trash | 0.24×0.04×0.16 | a broken circuit board, chips and capacitors, a scorched corner, bent pins | thin: may need `--multiview` |
+| 12.16 | Low Grade Fuel | 0.22×0.33×0.10 | a dented steel jerry can, red paint chipped to bare metal, rust at the seams | **landed 2026-10-15**, `held/low_grade_fuel.glb` |
+| 12.17 | Empty Propane Tank | 0.20×0.37×0.20 | a small dented propane cylinder, faded white paint, brass valve, rust streaks | |
+| 12.18 | Waterskin | 0.18×0.31×0.09 | an empty leather waterskin, slack and creased, wooden stopper, cord tie | **landed 2026-10-15**, `held/waterskin.glb` |
+| 12.19 | Full Waterskin | 0.20×0.32×0.15 | the same skin full and taut, darker where it is wet | same prompt plus "full", so they pair. **Landed 2026-10-15**, `held/full_waterskin.glb` |
+| 12.20 | Semi Automatic Body | 0.38×0.14×0.08 | a bare rifle receiver with a pistol grip, no stock, no barrel, no magazine, worn black finish | gun parts must look like parts, not guns. **Landed 2026-10-15**, `held/semi_automatic_body.glb` |
+| 12.21 | SMG Body | 0.32×0.17×0.04 | a bare compact submachine-gun receiver with a magazine well and pistol grip, no stock, no barrel | **landed 2026-10-15**, `held/smg_body.glb` (second roll: name the shape, not the part) |
+| 12.22 | Rifle Body | 0.46×0.14×0.04 | a long bolt-action receiver with its bolt handle, no stock, no barrel | **landed 2026-10-15**, `held/rifle_body.glb` |
+| 12.23 | Auto Turret | 0.26×0.27×0.41 | a small improvised sentry gun on a tripod base, sheet-metal housing, one barrel | the world draws it as boxes too (`sentry.rs`, `DEPLOY` 18): one model could replace both, a bigger job |
+| 12.24 | Camp Fire | 0.52×0.19×0.53 | — | **Reuse first**: `deploy/fire.glb` with its emissive stripped is the cold campfire for free; Meshy only if that reads wrong |
+
+### 12.2 · Garments — 5 items, Meshy, ~120 credits, and worth more than the rest
+
+These are code-built on the body too (`render/worn.rs`: lathes and boxes).
+One file per garment that the body WEARS and the hand holds is worth doing
+together, or the hood a player picks up will not match the hood they put
+on. The box is the held one; the worn fit is `worn.rs`'s.
+
+| # | item | box W×H×D (m) | look |
+|---|---|---|---|
+| 12.25 | Burlap Tunic | 0.48×0.45×0.11 | a crude sleeveless tunic sewn from burlap sacks, rough stitching, frayed hem |
+| 12.26 | Burlap Hood | 0.26×0.25×0.26 | a burlap sack hood with cut eye holes, tied at the neck with twine |
+| 12.27 | Hide Poncho | 0.52×0.40×0.10 | a poncho of rough animal hide, fur left on at the edges, neck hole |
+| 12.28 | Bone Helmet | 0.45×0.30×0.28 | a helmet built from an animal skull and bone plates, leather straps |
+| 12.29 | Roadsign Vest | 0.32×0.45×0.11 | body armour cut from flattened metal road signs, faded yellow and red paint, bolted plates, leather straps |
+
+### 12.3 · Blender — 22 items, free
+
+| # | item | box W×H×D (m) | look | notes |
+|---|---|---|---|---|
+| 12.30–34 | Wooden / Bone / Metal / High Velocity / Fire Arrow | 0.09×0.79–0.86×0.10 | one wooden shaft with real fletching and five heads: fire-hardened, bone, steel broadhead, steel needle, oil-soaked rag | should also become the arrow the bow nocks (`heldgen::arrow_mesh`) and the stuck one on the ground |
+| 12.35 | Medical Syringe | 0.06×0.28×0.03 | a glass syringe with red fluid, steel needle, scuffed plunger | |
+| 12.36 | Electric Fuse | 0.05×0.16×0.05 | a ceramic and glass cartridge fuse, brass end caps | |
+| 12.37 | Metal Pipe | 0.10×0.43×0.10 | a length of rusty steel pipe, threaded coupling at one end | `rust_coarse_01` |
+| 12.38 | Metal Spring | 0.11×0.26×0.11 | a heavy coil spring, oily, rust in the gaps | a sweep, which a generator cannot do cleanly |
+| 12.39 | Metal Blade | 0.07×0.42×0.03 | a blade ground from scrap steel, file marks, cloth-wrapped tang | |
+| 12.40 | Sheet Metal | 0.36×0.04×0.28 | three sheets of galvanised steel, scratched, one corner bent | |
+| 12.41 | Road Signs | 0.35×0.26×0.03 | two bent road-sign plates, faded paint, bolt holes, rust | `PaintedMetal004` |
+| 12.42 | Blueprint | 0.41×0.10×0.10 | a rolled sheet of blueprint paper, tied with string | `Paper001`; the colour is muted blue, not bright |
+| 12.43 | Key Lock | 0.11×0.14×0.04 | a worn brass padlock, steel shackle, keyhole | |
+| 12.44 | Code Lock | 0.12×0.17×0.05 | a steel keypad lock, rubber buttons, a dull LED | the LED is paint; nothing held glows |
+| 12.45 | Pistol Round | 0.09×0.08×0.04 | three revolver cartridges, brass cases, copper bullets | |
+| 12.46 | Rope | 0.25×0.14×0.25 | a coil of rough hemp rope, one loose end | `Rope001` on a helix sweep |
+| 12.47 | Sewing Kit | 0.21×0.11×0.17 | two wooden thread spools and a steel needle | |
+| 12.48 | Planter Box | 0.41×0.25×0.21 | a box of old planks, soil, seedlings | the world's planter is still a cuboid (`DEPLOY` 17): build it at the world's size and the hand reuses it scaled |
+| 12.49 | Gears | 0.34×0.26×0.06 | two cast steel gears, one large and one small, machined teeth, oily, a little rust | `Metal009` |
+| 12.50 | Corn Seed | 0.13×0.03×0.14 | a small heap of dried corn kernels | rarely seen; last |
+| 12.51 | Hemp Seed | 0.09×0.02×0.11 | a small heap of small brown seeds | rarely seen; last |
+
+### 12.4 · Keep — 4 items
+
+Metal Window Bars, Garage Door, Glass Window, Wood Shutters: the held token is
+the world's own insert, built from the sim's solids (`structures::insert_mesh`)
+so it cannot drift from what blocks a player. Their v2 is a better
+**material** on the world's inserts (photographs, wear), and the token
+follows for free. (Wooden Barricade already uses the world's model.)
+
+**Batch 1 landed 2026-10-15**: wood, stone, metal ore, sulfur ore, cloth,
+metal fragments, charcoal, low grade fuel, junk, leather. Ten items, 275
+credits, every one kept on its first roll; `MANIFEST.md` §held (batch 1) has
+the task ids, prompts and what the batch taught about the pipeline. **Next by
+how often each is in a hand**: sulfur, gunpowder, animal fat, bone fragments,
+tarp, the waterskins and the three gun bodies (Meshy, ~260 credits), then the
+garments together with their worn versions. The Blender rows cost nothing
+but a session.

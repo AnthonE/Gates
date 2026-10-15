@@ -167,6 +167,78 @@ def vecs(gltf, blob, acc_i, want):
     ).reshape(n, want)
 
 
+def prune(gltf, blob):
+    """Drop the textures, images and buffer views no material reads, and
+    return the compacted buffer.
+
+    The emissive strip below leaves its map behind: still an image, still in
+    the buffer, and `ci/ktx_pack.py` packs every image it finds. Measured on
+    the held items shipped before this existed: four images where three are
+    read. Small on disk (a stripped emissive is mostly black: 0.8-44 KB
+    packed), but a texture in the file that nothing samples, and a multi-image
+    delivery's is a full-size map. Accessor and image indices are remapped;
+    nothing that is read moves."""
+    slots = ("normalTexture", "occlusionTexture", "emissiveTexture")
+    pbr_slots = ("baseColorTexture", "metallicRoughnessTexture")
+    used_tex = set()
+    for m in gltf.get("materials", []):
+        for k in slots:
+            if k in m:
+                used_tex.add(m[k]["index"])
+        for k in pbr_slots:
+            t = m.get("pbrMetallicRoughness", {}).get(k)
+            if t is not None:
+                used_tex.add(t["index"])
+    textures = gltf.get("textures", [])
+    keep_tex = [i for i in range(len(textures)) if i in used_tex]
+    tex_map = {old: new for new, old in enumerate(keep_tex)}
+    used_img = {textures[i].get("source") for i in keep_tex} - {None}
+    images = gltf.get("images", [])
+    keep_img = [i for i in range(len(images)) if i in used_img]
+    img_map = {old: new for new, old in enumerate(keep_img)}
+    used_bv = {a["bufferView"] for a in gltf.get("accessors", []) if "bufferView" in a}
+    used_bv |= {images[i]["bufferView"] for i in keep_img if "bufferView" in images[i]}
+    views = gltf.get("bufferViews", [])
+    keep_bv = [i for i in range(len(views)) if i in used_bv]
+    bv_map = {old: new for new, old in enumerate(keep_bv)}
+    if len(keep_tex) == len(textures) and len(keep_img) == len(images) and len(keep_bv) == len(views):
+        return blob
+    for m in gltf.get("materials", []):
+        for k in slots:
+            if k in m:
+                m[k]["index"] = tex_map[m[k]["index"]]
+        for k in pbr_slots:
+            t = m.get("pbrMetallicRoughness", {}).get(k)
+            if t is not None:
+                t["index"] = tex_map[t["index"]]
+    gltf["textures"] = [dict(textures[i], source=img_map[textures[i]["source"]])
+                        if "source" in textures[i] else textures[i] for i in keep_tex]
+    gltf["images"] = [images[i] for i in keep_img]
+    for im in gltf["images"]:
+        if "bufferView" in im:
+            im["bufferView"] = bv_map[im["bufferView"]]
+    for a in gltf.get("accessors", []):
+        if "bufferView" in a:
+            a["bufferView"] = bv_map[a["bufferView"]]
+    out = bytearray()
+    new_views = []
+    for i in keep_bv:
+        bv = dict(views[i])
+        st = bv.get("byteOffset", 0)
+        data = blob[st:st + bv["byteLength"]]
+        out += b"\0" * (-len(out) % 4)
+        bv["byteOffset"] = len(out)
+        out += data
+        new_views.append(bv)
+    gltf["bufferViews"] = new_views
+    gltf["buffers"][0]["byteLength"] = len(out)
+    if not gltf["textures"]:
+        gltf.pop("textures")
+    if not gltf["images"]:
+        gltf.pop("images")
+    return out
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     keep_emissive = "--emissive" in sys.argv
@@ -268,6 +340,7 @@ def main():
             continue
         m.pop("emissiveTexture", None)
         m["emissiveFactor"] = [0.0, 0.0, 0.0]
+    blob = prune(gltf, blob)
 
     write_glb(dst, gltf, blob)
     out = size * k
