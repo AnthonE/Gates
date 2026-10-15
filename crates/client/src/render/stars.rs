@@ -38,12 +38,17 @@ pub const SHADER: &str = "shaders/stars.wgsl";
 pub const STARS: u32 = if cfg!(webgl2) { 1_200 } else { 2_400 };
 /// A star's quad at its brightest, pixels across.
 pub const STAR_PX: f32 = 3.0;
+/// The share of the starfield a full moon washes out of the sky, faintest
+/// first: a moonless night shows every star, a full moon the brightest
+/// quarter of them.
+pub const MOON_WASH: f32 = 0.75;
 
 /// The uniform, laid out to match `Stars` in the shader.
 #[derive(Clone, Copy, Default, ShaderType, Debug, PartialEq)]
 pub struct StarParams {
     /// x: how much of the starfield shows, `0..=1`; y: the quad's size in
-    /// pixels; zw unused.
+    /// pixels; z: the share the moon washes out, faintest first
+    /// ([`washed`]); w unused.
     pub look: Vec4,
     /// The deck's shape: x its altitude over its noise scale (so a ray's
     /// `xz / y` times this is noise units), y the horizon cutoff, z the fade
@@ -55,6 +60,10 @@ pub struct StarParams {
     /// The field texture: x one over its period (noise units), y half a
     /// texel (uv); zw unused.
     pub field: Vec4,
+    /// The moon in front of them: xyz toward it, w the cosine of its
+    /// disk's radius. The moon adds to the sky (`moon.rs`), so the stars
+    /// leave out the ones it passes over themselves.
+    pub moon: Vec4,
 }
 
 #[derive(Asset, AsBindGroup, TypePath, Clone, Debug)]
@@ -116,8 +125,9 @@ fn hash01(i: u32, k: u32) -> f32 {
 }
 
 /// The starfield mesh: `n` quads, each its star's direction (POSITION, unit,
-/// above the horizon), its corners (UV_0), and its brightness, twinkle phase
-/// and warmth (COLOR).
+/// above the horizon), its corners (UV_0), and its brightness, twinkle phase,
+/// warmth and rank (COLOR) — the rank uniform over the field and brighter
+/// higher, so the moon can wash out a share of the stars faintest first.
 pub fn star_mesh(n: u32) -> Mesh {
     let count = n as usize;
     let mut pos = Vec::with_capacity(count * 4);
@@ -132,14 +142,15 @@ pub fn star_mesh(n: u32) -> Mesh {
         let dir = [r * a.cos(), y, r * a.sin()];
         // Mostly faint, a few bright: the twelfth power leaves about one
         // star in fifteen over half brightness.
-        let bright = 0.12 + 0.88 * hash01(i, 2).powi(12);
+        let rank = hash01(i, 2);
+        let bright = 0.12 + 0.88 * rank.powi(12);
         let phase = hash01(i, 3);
         let warmth = hash01(i, 4);
         let base = (i * 4) as u16;
         for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
             pos.push(dir);
             uv.push(corner);
-            col.push([bright, phase, warmth, 1.0]);
+            col.push([bright, phase, warmth, rank]);
         }
         idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -164,11 +175,19 @@ pub fn showing(w: &WeatherNow) -> f32 {
     ((w.night * (1.0 - w.fog)).clamp(0.0, 1.0) * 64.0).round() / 64.0
 }
 
+/// How much of the starfield the moon washes out, faintest first: a moonlit
+/// sky is too bright behind them to see the faint ones. None at new moon,
+/// so a moonless night shows more stars than any other. In 1/64 steps, as
+/// [`showing`] is.
+pub fn washed(w: &WeatherNow) -> f32 {
+    ((MOON_WASH * w.moonlight).clamp(0.0, 1.0) * 64.0).round() / 64.0
+}
+
 /// The uniform for this frame, behind the deck `shown` — this frame's,
 /// since every target draws its deck per pixel (`deck.rs`).
 pub fn params_for(w: &WeatherNow, shown: &sky::ComposeParams) -> StarParams {
     StarParams {
-        look: Vec4::new(showing(w), STAR_PX, 0.0, 0.0),
+        look: Vec4::new(showing(w), STAR_PX, washed(w), 0.0),
         deck: Vec4::new(
             sky::CLOUD_ALT_M / sky::CLOUD_SCALE_M,
             sky::DECK_CUTOFF,
@@ -182,6 +201,7 @@ pub fn params_for(w: &WeatherNow, shown: &sky::ComposeParams) -> StarParams {
             0.0,
             0.0,
         ),
+        moon: shown.moon.normalize_or(Vec3::Y).extend(sky::MOON_R.cos()),
     }
 }
 

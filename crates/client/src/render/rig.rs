@@ -597,7 +597,24 @@ pub const NIGHT_DIP: f32 = 0.35;
 /// [`flame_gain`] instead, the eye's adaptation applied to the lights that
 /// matter at night; this term carries the night's look and is not part of
 /// that.
+///
+/// **It is a full moon's night.** Every night was drawn under a full disk
+/// until the moon had phases (`moon.rs`), so this is the night the number
+/// was tuned under; a thinner moon, or none, takes it down toward
+/// [`NEW_MOON_SHARE`] ([`night_light`]).
 pub const NIGHT_AMBIENT_LUX: f32 = 60.0;
+
+/// How much of [`NIGHT_AMBIENT_LUX`] a moonless night keeps: starlight and
+/// the air's own glow. Low enough that a new moon is the night a torch is
+/// for; not zero, so it is the darkest the tuned night goes rather than a
+/// black frame.
+pub const NEW_MOON_SHARE: f32 = 0.35;
+
+/// The night's light as a share of a full moon's, for `moonlight` of the
+/// moon (`moon::shine`): never under [`NEW_MOON_SHARE`].
+pub fn night_light(moonlight: f32) -> f32 {
+    NEW_MOON_SHARE + (1.0 - NEW_MOON_SHARE) * moonlight.clamp(0.0, 1.0)
+}
 
 /// The sun's elevation at a point in the cycle: a sine arch over the day
 /// portion peaking at `RIG_SUN_ELEVATION`, a shallower inverted arch
@@ -652,6 +669,22 @@ pub fn sun_azimuth(frac: f32) -> f32 {
     } else {
         RIG_SUN_AZIMUTH - RIG_SUN_ARC * 0.5 - (TAU - RIG_SUN_ARC) * ((frac - day) / (1.0 - day))
     }
+}
+
+/// Toward the sun on the day's own arc at `frac`, which may run on past
+/// dusk (over `DAY_PORTION`) or back before dawn (under 0): the day
+/// branches of [`sun_elevation`] and [`sun_azimuth`], carried on under the
+/// horizon at the day's pace. Equal to [`to_sun`] over the day. At night
+/// the real sun leaves this path and sweeps the rest of the turn under the
+/// world seven times as fast; this is the slow sun a night's moon is lit
+/// by (`moon::lighting_sun`).
+pub fn day_arc(frac: f32) -> Vec3 {
+    use std::f32::consts::PI;
+    let day = sim_core::limits::DAY_PORTION;
+    to_sun_at(
+        (PI * frac / day).sin() * RIG_SUN_ELEVATION,
+        RIG_SUN_AZIMUTH + RIG_SUN_ARC * (0.5 - frac / day),
+    )
 }
 
 /// How much of full daylight the frame gets, `0..=1`: the sun's height as
@@ -892,7 +925,8 @@ pub fn day_night(
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
     mut cam: Query<CamLight, With<EyeCam>>,
 ) {
-    let frac = sim_core::world::day_frac(pin.day_tick(feed.server_tick_est, &feed.env));
+    let day_tick = pin.day_tick(feed.server_tick_est, &feed.env);
+    let frac = sim_core::world::day_frac(day_tick);
     let light = daylight(frac);
     let lux_share = sun_lux(frac);
     let elev = sun_elevation(frac);
@@ -973,9 +1007,13 @@ pub fn day_night(
         // flash lifts the uniform term for a fifth of a second.
         // Under a roof the flash is what the doorway lets in, not the whole
         // sky: the uniform term lit a closed room as bright as open ground.
+        // The night term is the moon's: off the clock, as the sun is, not
+        // off the weather, which a fixture may not have.
         let flash = w.flash * if w.sheltered { SHELTERED_FLASH } else { 1.0 };
+        let moon = super::moon::shine(frac, sim_core::world::moon_phase(day_tick));
         amb.brightness =
-            NIGHT_AMBIENT_LUX * (1.0 - light) * (1.0 - 0.3 * w.dark) + FLASH_LUX * flash;
+            NIGHT_AMBIENT_LUX * night_light(moon) * (1.0 - light) * (1.0 - 0.3 * w.dark)
+                + FLASH_LUX * flash;
         env.intensity = super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark);
         // Weather fog on both targets: nothing in clear weather on the
         // desktop, the island's own air in a browser, and the weather's

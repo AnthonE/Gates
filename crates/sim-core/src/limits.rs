@@ -1340,6 +1340,13 @@ pub const DAY_PHASE_TICKS: u64 = 31_500;
 /// its darkness taken away, and none of that was re-derived here.
 pub const DAY_PORTION: f32 = 0.875;
 
+/// The moon's month, in days of [`DAY_TICKS`]: full moon to full moon
+/// (`world::moon_phase`). Eight days is under eleven hours of play, so a
+/// wipe sees the whole calendar many times over and two nights running
+/// never wear the same moon. Only the renderer reads it, so it is a code
+/// constant and not a balance number.
+pub const MOON_DAYS: u64 = 8;
+
 /// The most bites one tick can land across the whole roster (mob.rs
 /// `Bites`). Derived, generously: only a *thinking* animal can bite, so
 /// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 17 plus

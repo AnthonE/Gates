@@ -9,10 +9,20 @@
 //! this frame's weather, since every target draws its sky per pixel
 //! (`deck.rs`), with the fine detail the flat deck shares (`deck.wgsl`).
 //!
-//! **Over the cube's own moon natively.** The cube keeps a small soft one
-//! for the sea to reflect (`sky::MOON_R`), and the atmosphere draws it, so
-//! there the disk covers what is behind it rather than adding to it. A
-//! browser's sky has no disk, and there it adds.
+//! **It adds to the sky, on every target.** The air's glow and the moon's
+//! halo lie in front of it, and a crescent's dark side shows them; the
+//! stars are behind it, and the starfield leaves out the ones its disk
+//! passes over (`stars.wgsl`). No sky under it draws a disk of its own: a
+//! round one there would show through a crescent's dark side. Only the
+//! cube keeps one, a soft blob for the sea to reflect (`sky::MOON_RGB`).
+//!
+//! **It keeps a calendar** (`sim_core::world::moon_phase`, a month of
+//! `MOON_DAYS`). The disk is shaded for its phase, a terminator facing the
+//! sun it is lit by ([`lighting_sun`]) and the dark limb faintly lit by the
+//! earth, and the light it gives the night ([`shine`]) is its lit fraction
+//! while it is up: the ambient's share past the floor (`rig::night_light`),
+//! the deck's underside, its halo, the sea's reflection of it, and how many
+//! stars it washes out.
 
 use bevy::asset::Asset;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -35,6 +45,95 @@ pub const SHADER: &str = "shaders/moon.wgsl";
 /// The quad over the disk, so the antialiased rim has room.
 const QUAD_OVER: f32 = 1.1;
 
+/// How bright the earth lights the moon's dark side, as a share of the
+/// sunlit disk, at new moon — the earth is full from there, and wanes as
+/// the moon waxes. Far over the real ~1/1000, so a crescent holds the rest
+/// of its disk ashen, the way a person remembers it.
+pub const EARTHSHINE: f32 = 0.03;
+
+/// The share of the disk the sun lights at `phase` of the month
+/// (`sim_core::world::moon_phase`): 0 new, 1 full.
+pub fn lit_fraction(phase: f32) -> f32 {
+    0.5 - 0.5 * (std::f32::consts::TAU * phase).cos()
+}
+
+/// Toward the moon at `frac` of the day, `phase` through its month.
+///
+/// **On the sun's own path, `phase` of a day behind it**, not opposite the
+/// sun, where it rode before it had phases: a moon opposite the sun is full
+/// by geometry, and a crescent there would face away from the light it is
+/// lit by. Behind the sun on its path, a full moon is where the noon sun
+/// was, up all night at the noon sun's height; a crescent hangs low over
+/// the sunset it follows or the sunrise it leads; a new moon is under the
+/// horizon with the sun, which is what makes its night moonless. The night
+/// is an eighth of the day, so every moon but the few round new is up for
+/// all of it.
+pub fn toward(frac: f32, phase: f32) -> Vec3 {
+    super::rig::to_sun((frac - phase).rem_euclid(1.0))
+}
+
+/// How much of the moon is over the horizon, `0..=1`: a setting moon takes
+/// its light with it over a few degrees rather than at once.
+pub fn above(moon: Vec3) -> f32 {
+    let t = ((moon.y + 0.02) / 0.08).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// What the moon gives the night at `frac` of the day, `phase` through its
+/// month, `0..=1`: its lit fraction, while it is up.
+pub fn shine(frac: f32, phase: f32) -> f32 {
+    lit_fraction(phase) * above(toward(frac, phase))
+}
+
+/// Toward the sun the moon is lit by at `frac` of the day, `phase` through
+/// its month: the side its terminator faces ([`sunlight_on_disk`]).
+///
+/// **The sun on the day's slow arc (`rig::day_arc`), not where it is.** By
+/// night the real sun sweeps half the sky's bearing under the world in an
+/// eighth of a day, and from first quarter to last it passes nearly behind
+/// the moon; a terminator that faced it turned across the disk like a clock
+/// hand, a half moon's lit side through 130° in ninety seconds of dusk. On
+/// the day's arc the sun keeps its daytime pace, and the lit side turns
+/// ten degrees or so in a night. It is the sky's own sun where the two
+/// should meet: at the sunset a waxing moon follows, and at the sunrise a
+/// waning one leads.
+///
+/// The moon is `phase` of a day behind the sun on that arc ([`toward`]),
+/// and the sun is taken the near way round, as the real one is round the
+/// ecliptic: `phase` ahead of the moon while it waxes, `1 - phase` behind
+/// while it wanes. The flip at full is not seen, since a full disk has no
+/// terminator. The moon's place on the arc is counted from the path's
+/// midnight, so a moon that has just set is past dusk on it and one about
+/// to rise is before dawn.
+pub fn lighting_sun(frac: f32, phase: f32) -> Vec3 {
+    let half_night = 0.5 * (1.0 - sim_core::limits::DAY_PORTION);
+    let at = (frac - phase + half_night).rem_euclid(1.0) - half_night;
+    let ahead = if phase < 0.5 { phase } else { phase - 1.0 };
+    super::rig::day_arc(at + ahead)
+}
+
+/// The sun's light on the disk, in the frame the vertex stage builds (x
+/// right and y up as the eye sees it, z toward the eye), for a disk `lit`
+/// of the way full, lit from toward `sun` ([`lighting_sun`]). The side it
+/// comes from is the geometry's, so the terminator faces that sun; its
+/// angle is the calendar's, since on this sky's stylised paths the two only
+/// roughly agree.
+pub fn sunlight_on_disk(moon: Vec3, sun: Vec3, lit: f32) -> Vec3 {
+    let d = moon.normalize_or(Vec3::Y);
+    let c = d.cross(Vec3::Y);
+    let right = if c.length_squared() > 1e-6 {
+        c.normalize()
+    } else {
+        Vec3::X
+    };
+    let up = right.cross(d);
+    let side = Vec2::new(sun.dot(right), sun.dot(up)).normalize_or(Vec2::X);
+    // The phase angle's cosine: 1 full, -1 new.
+    let cos_a = 2.0 * lit.clamp(0.0, 1.0) - 1.0;
+    let sin_a = (1.0 - cos_a * cos_a).max(0.0).sqrt();
+    (side * sin_a).extend(cos_a)
+}
+
 /// The uniform, laid out to match `Moon` in the shader.
 #[derive(Clone, Copy, Default, ShaderType, Debug, PartialEq)]
 pub struct MoonParams {
@@ -43,11 +142,12 @@ pub struct MoonParams {
     pub deck: Vec4,
     pub cloud: Vec4,
     pub field: Vec4,
+    pub lit: Vec4,
 }
 
 impl MoonParams {
     /// The moon toward `moon`, `night` of the way into the night, behind
-    /// the deck `shown`.
+    /// the deck `shown`, lit as `shown` says (its sun and its phase).
     pub fn new(moon: Vec3, night: f32, shown: &ComposeParams) -> Self {
         let nits = sky::CLOUD_NITS;
         let rgb = Vec3::from_array(sky::MOON_RGB) * nits;
@@ -55,7 +155,7 @@ impl MoonParams {
             dir: moon
                 .normalize_or(Vec3::Y)
                 .extend((sky::MOON_R * QUAD_OVER).tan()),
-            light: rgb.extend(night.clamp(0.0, 1.0)),
+            light: rgb.extend(night.clamp(0.0, 1.0) * above(moon)),
             deck: Vec4::new(
                 sky::CLOUD_ALT_M / sky::CLOUD_SCALE_M,
                 sky::DECK_CUTOFF,
@@ -66,9 +166,11 @@ impl MoonParams {
             field: Vec4::new(
                 1.0 / sky::FIELD_PERIOD as f32,
                 0.5 / sky::FIELD_N as f32,
-                if sky::BAKE_BACKDROP { 0.0 } else { 1.0 },
+                0.0,
                 QUAD_OVER,
             ),
+            lit: sunlight_on_disk(moon, shown.moon_sun, shown.moon_lit)
+                .extend(EARTHSHINE * (1.0 - shown.moon_lit)),
         }
     }
 }
@@ -91,7 +193,7 @@ impl Material for MoonMaterial {
         SHADER.into()
     }
 
-    /// Premultiplied: the shader's alpha says whether the disk covers or adds.
+    /// Premultiplied, and the shader's alpha is 0: the disk adds.
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Premultiplied
     }

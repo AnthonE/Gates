@@ -1085,6 +1085,30 @@ pub fn is_night(tick: u64) -> bool {
     day_frac(tick) >= crate::limits::DAY_PORTION
 }
 
+/// How far through its month (`limits::MOON_DAYS`) the moon is at
+/// `day_tick` (the day clock, `weather::day_tick`), `0.0..1.0`: 0 is new,
+/// ½ full. One modulo and one division, like [`day_frac`], so a campfire
+/// sees one moon without a byte on the wire.
+///
+/// It runs on with the clock rather than stepping once a day: a step at
+/// dawn would jump the night's light while the sun is still under the
+/// horizon, and a night only moves it a sixty-fourth of the month.
+///
+/// Day 0's midnight is the full moon. Every night was drawn under a full
+/// disk before the moon had phases, so a fresh world's first night, and
+/// every capture pinned to day 0, keep the moon the night was tuned under.
+pub fn moon_phase(day_tick: u64) -> f32 {
+    use crate::limits::{DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS, MOON_DAYS};
+    const MONTH: u64 = DAY_TICKS * MOON_DAYS;
+    // Dawn to midnight, halfway through the night.
+    const MIDNIGHT: u64 = (DAY_TICKS as f32 * (1.0 + DAY_PORTION) * 0.5) as u64;
+    let t = day_tick
+        .wrapping_add(DAY_PHASE_TICKS)
+        .wrapping_add(MONTH + MONTH / 2 - MIDNIGHT)
+        % MONTH;
+    t as f32 / MONTH as f32
+}
+
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
 /// 8-bit fields below it, so bit 24 is the first free one.

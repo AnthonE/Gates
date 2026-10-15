@@ -9,7 +9,8 @@
 }
 
 struct Stars {
-    // x: how much of the starfield shows. y: a quad's size, pixels.
+    // x: how much of the starfield shows. y: a quad's size, pixels. z: the
+    // share the moon washes out, faintest first.
     look: vec4<f32>,
     // x: the deck's altitude over its noise scale. y: the horizon cutoff
     // (a ray's y). z: the fade above the cutoff.
@@ -18,6 +19,8 @@ struct Stars {
     cloud: vec4<f32>,
     // x: one over the field's period, noise units. y: half a texel, uv.
     field: vec4<f32>,
+    // xyz: toward the moon. w: the cosine of its disk's radius.
+    moon: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> stars: Stars;
@@ -29,7 +32,8 @@ struct VertexIn {
     @location(0) position: vec3<f32>,
     // The quad corner, -1..1 both ways.
     @location(2) uv: vec2<f32>,
-    // x: brightness. y: twinkle phase. z: warmth.
+    // x: brightness. y: twinkle phase. z: warmth. w: rank, 0..1, brighter
+    // higher.
     @location(5) color: vec4<f32>,
 }
 
@@ -54,11 +58,16 @@ fn vertex(in: VertexIn) -> VertexOut {
     // Low stars sit in thicker air: dimmer, and twinkling harder.
     let tw = 1.0 + 0.3 * (1.2 - d.y) * sin(globals.time * (1.3 + 3.0 * in.color.y) + in.color.y * 40.0);
     let low = smoothstep(0.02, 0.22, d.y);
+    // Under a moon the faint ones go first, over a few percent of the rank.
+    let seen = clamp((in.color.w - stars.look.z) / 0.04 + 1.0, 0.0, 1.0);
+    // Behind the moon's disk, none: the moon adds to the sky (`moon.wgsl`)
+    // rather than covering it, so it cannot hide them itself.
+    let unhidden = select(1.0, 0.0, dot(d, stars.moon.xyz) > stars.moon.w);
     let rgb = mix(vec3(0.78, 0.86, 1.0), vec3(1.0, 0.9, 0.74), in.color.z);
     out.clip = clip;
     out.uv = in.uv;
     out.dir = d;
-    out.light = rgb * in.color.x * tw * low * stars.look.x;
+    out.light = rgb * in.color.x * tw * low * seen * unhidden * stars.look.x;
     return out;
 }
 

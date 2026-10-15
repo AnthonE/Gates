@@ -59,7 +59,8 @@ pub const DETAIL: f32 = 0.06;
 
 /// Draw order in the transparent pass, as `Material::depth_bias` (more
 /// negative draws first): the sky, then the stars over it, then the moon,
-/// whose disk covers any star behind it. Each far past any real depth.
+/// added over them (the stars behind its disk are left out where they are
+/// drawn, `stars.wgsl`). Each far past any real depth.
 pub const DECK_ORDER: f32 = -3.0e8;
 pub const STARS_ORDER: f32 = -2.0e8;
 pub const MOON_ORDER: f32 = -1.0e8;
@@ -140,7 +141,7 @@ impl DeckParams {
             glow: (v3(sky::DUSK_GLOW) * l.glow * (1.0 - 0.7 * p.dark)).extend(0.0),
             sun: Vec4::new(l.sun_h.x, l.sun_h.y, l.toward.x, l.toward.y),
             moon: p.moon.extend(sky::HALO_COS),
-            halo: (v3(sky::HALO_RGB) * night).extend(sky::MOON_SCATTER_COS),
+            halo: (v3(sky::HALO_RGB) * night * p.moonlight).extend(sky::MOON_SCATTER_COS),
             scatter: v3(l.scatter).extend(0.0),
             top: v3(l.top).extend(l.thresh),
             base: v3(l.base).extend(sky::EDGE),
@@ -212,8 +213,6 @@ pub struct CloudParams {
     pub moon: Vec4,
     pub halo: Vec4,
     pub scatter: Vec4,
-    pub disk_rgb: Vec4,
-    pub disk: Vec4,
     pub shape: Vec4,
     pub drift: Vec4,
     pub shade: Vec4,
@@ -252,10 +251,8 @@ impl CloudParams {
             light: toward.extend(0.0),
             sun: Vec4::new(l.sun_h.x, l.sun_h.y, l.toward.x, l.toward.y),
             moon: p.moon.extend(sky::HALO_COS),
-            halo: (v3(sky::HALO_RGB) * p.night).extend(sky::MOON_SCATTER_COS),
+            halo: (v3(sky::HALO_RGB) * p.night * p.moonlight).extend(sky::MOON_SCATTER_COS),
             scatter: v3(l.scatter).extend(0.0),
-            disk_rgb: (v3(sky::MOON_RGB) * p.night).extend(0.0),
-            disk: Vec4::new(sky::MOON_COS_IN, sky::MOON_COS_OUT, 0.0, 0.0),
             shape: Vec4::new(
                 sky::CLOUD_ALT_M / sky::CLOUD_SCALE_M,
                 sky::DECK_CUTOFF,

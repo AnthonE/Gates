@@ -19,9 +19,12 @@ struct Moon {
     deck: vec4<f32>,
     // xy the deck's drift, noise units; z the field threshold; w the edge.
     cloud: vec4<f32>,
-    // x one over the field's period; y half a texel, uv; z 1 where the disk
-    // covers what is behind it, 0 where it adds; w the quad over the disk.
+    // x one over the field's period; y half a texel, uv; z unused; w the
+    // quad over the disk.
     field: vec4<f32>,
+    // xyz toward the sun in the disk's frame (x right, y up, z toward the
+    // eye), at the phase angle; w the earthshine on the dark side.
+    lit: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> moon: Moon;
@@ -107,6 +110,15 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let z = sqrt(max(1.0 - r * r, 0.0));
     albedo *= 0.84 + 0.16 * sqrt(z);
 
+    // The phase: the sun on this point of the ball, Lommel–Seeliger, which
+    // is flat at full and brightest toward the limb it lights — so the
+    // terminator falls off to nothing smoothly and needs no antialiasing.
+    // The floor under `z` softens the horns where it meets the rim. The
+    // earth lights the rest, ashen, and shows the seas there too.
+    let mu = max(dot(vec3(p, z), moon.lit.xyz), 0.0);
+    let sunlit = min(2.0 * mu / (mu + max(z, 0.08)), 1.25);
+    albedo *= sunlit + moon.lit.w;
+
     // Behind the deck: where this pixel's ray meets it, is there cloud?
     let d = normalize(in.dir);
     let q = deck_point(d, moon.deck.x, moon.deck.y) + moon.cloud.xy;
@@ -116,6 +128,9 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let f = f0 + moon.deck.w * deck_detail(q, foot);
     let cov = clamp((f - moon.cloud.z) / moon.cloud.w, 0.0, 1.0) * deck_fade(d.y, moon.deck.y, moon.deck.z);
 
+    // Added, not laid over: the air's glow and the halo are in front of
+    // the moon and show on its dark side; the stars behind it are left out
+    // where they are drawn (`stars.wgsl`).
     let k = a * (1.0 - cov) * moon.light.w;
-    return vec4(moon.light.rgb * albedo * k * view.exposure, k * moon.field.z);
+    return vec4(moon.light.rgb * albedo * k * view.exposure, 0.0);
 }
