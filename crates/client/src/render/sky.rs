@@ -846,6 +846,16 @@ fn airmass(y: f32) -> f32 {
     1.0 / (y + 0.505_72 * (deg + 6.079_95).powf(-1.636_4))
 }
 
+/// What reaches the ground of a sun `y` above the horizon through the
+/// island's air, per channel: the transmittance `render_sky`'s LUT hands
+/// every sunlit surface and Bevy's volumetric fog (`shafts.rs`), on the same
+/// air mass [`deck_hue_for`] undoes.
+pub fn sun_transmittance(y: f32) -> [f32; 3] {
+    let tau = column_depth();
+    let m = airmass(y);
+    core::array::from_fn(|c| (-tau[c] * m).exp())
+}
+
 /// [`zenith_depth`] of the island's air, worked out once: what the per-pixel
 /// deck (`cloud.wgsl`) undoes the atmosphere's hue with, as [`deck_hue`]'s
 /// table does here.

@@ -8,8 +8,9 @@
 //! map after the main pass (`EndMainPass → VolumetricFog →
 //! StartMainPassPostProcessing`), so it lands over the atmosphere's sky, the
 //! sky fog layer and everything transparent, and composites as
-//! `src + (1 − α)·dst`. It cannot be the whole fog, for two reasons it does
-//! not advertise:
+//! `src + (1 − α)·dst`. Its march ends at the OPAQUE depth, so a flame, a
+//! spark or a rain streak is fogged as though it stood on what is behind it.
+//! It cannot be the whole fog, for two reasons it does not advertise:
 //!
 //!   * **It is dark past the shadow map.** In-scatter is the shadow lookup,
 //!     and outside the last cascade that lookup answers zero, so a volume
@@ -24,11 +25,23 @@
 //! (`DistanceFog`, `sky_fog.wgsl`) keep the rest. Where the volume is lit it
 //! is normalised to the flat fog's own colour seen side-on ([`volume`]), so a
 //! lit view reads as the fog it was; in a shadow it adds nothing and absorbs
-//! its share, and that difference is the shaft. The extinction is conserved where it is
-//! seen ([`split`]): the box is shorter than the fog's sight line, and the
-//! flat part is thickened by what the box does not reach, so a hill at the
-//! visibility distance is exactly as fogged as before and the horizon seam
-//! the sky fog closes (`sky::SkyFog`) stays closed.
+//! its share, and that difference is the shaft. Because the volume lies IN
+//! FRONT of the flat fog rather than mixed through it, a shadowed ray reads
+//! darker than the same fog without its sunlit share would — the shafts'
+//! shadows are deeper than a mixed fog's, and that stays. The extinction is
+//! conserved where it is seen ([`split`]): the box is shorter than the fog's
+//! sight line, and the flat part is thickened by what the box does not
+//! reach, so a hill at the visibility distance straight ahead is exactly as
+//! fogged as before and the horizon seam the sky fog closes (`sky::SkyFog`)
+//! stays closed.
+//!
+//! **It fades, it never pops.** Every switch that takes the pass away — the
+//! sun dropping to `rig::SHADOW_MIN_ELEV`, cloud over it reaching
+//! `rig::SHADOW_MAX_VEIL`, the fog thinning to [`SHAFT_MIN_DEPTH`] — is met
+//! by [`fade`] at zero first, so the volume is already empty and the flat
+//! fog whole when the pass goes. A lightning flash takes it at once (the
+//! bolt's light takes the volume's one light slot) behind a flash that hides
+//! the change, and it comes back over [`SHAFT_FLASH_RECOVER_S`].
 //!
 //! **Where it runs:** wherever the atmosphere draws (desktop, the browser's
 //! WebGPU module) and the CLOUDS row is at its top rung — the same family of
@@ -36,18 +49,24 @@
 //! no storage buffers, no atmosphere, and `effective` already holds that
 //! target's clouds flat.
 //!
-//! **Cost, read off the shader:** one fullscreen pass of [`SHAFT_STEPS`]
-//! shadow-map and transmittance samples per pixel, run only while the sun
-//! casts through a fog thick enough to show ([`SHAFT_MIN_DEPTH`]); otherwise
-//! the sun carries no `VolumetricLight`, Bevy's extract drops the view's fog
-//! and the pass is not recorded at all.
+//! **Cost, read off the shader, not measured:** one fullscreen pass of up to
+//! [`SHAFT_STEPS`] shadow-map and transmittance samples per pixel
+//! ([`steps`]), run only while the sun casts through a fog thick enough to
+//! show ([`SHAFT_MIN_DEPTH`]); otherwise the sun carries no
+//! `VolumetricLight`, Bevy's extract drops the view's fog and the pass is not
+//! recorded at all.
 //!
-//! **One flaw that is Bevy's and stays:** the march length is the hit's view
-//! DEPTH, not its distance (`volumetric_fog.wgsl`: `ray_length_view` is a
-//! difference of `z`s, stepped along a unit ray), so off the view axis the
-//! volume is short by `cos θ` — 41% at the frame's side edges at this FOV.
-//! Where the lit volume matches the flat fog (side-on) that is invisible;
-//! into or away from the sun it is a soft vignette of a few levels.
+//! **Flaws that are Bevy's, or the box's, and stay:** the march length is the
+//! hit's view DEPTH, not its distance (`volumetric_fog.wgsl`:
+//! `ray_length_view` is a difference of `z`s, stepped along a unit ray), so
+//! off the view axis the volume is short by `cos θ` — 41% at the frame's side
+//! edges at this FOV — and its extinction with it: a hill at the sight line
+//! there keeps 2.7 to 3 of its 3 optical depths, and the shortfall turns
+//! with the camera. Looking down from more than [`FOG_LAYER_M`] above the
+//! ground, the box's floor ends the volume before the ground does, and the
+//! valley floor is short by what the box would have carried below it.
+//! [`split`] is exact on the view axis, level, and only there
+//! (`tests/shafts.rs` bounds the frame's edge).
 
 use bevy::camera::Exposure;
 use bevy::ecs::system::SystemParam;
@@ -66,18 +85,44 @@ use super::Eye;
 /// strongest where they are looked for, and a fog bank is not a lamp.
 pub const SHAFT_G: f32 = 0.3;
 
-/// Raymarch steps per pixel: Bevy's default. The ray is at most
+/// Raymarch steps per pixel at most: Bevy's default. The ray is at most
 /// `rig`'s shadow distance long, so ~3 m a step at HIGH.
 pub const SHAFT_STEPS: u32 = 64;
+
+/// The step the march aims for, metres: a shorter shadow distance marches
+/// a smaller box in fewer steps ([`steps`]).
+pub const SHAFT_STEP_M: f32 = 3.0;
 
 /// How far each pixel's march start is jittered, metres, under TAA — about
 /// a step, so the history resolves the stepping into a smooth beam. Zero
 /// without TAA, where per-frame noise would shimmer instead.
 pub const SHAFT_JITTER_M: f32 = 2.0;
 
-/// The thinnest volume worth a pass: its optical depth across the box. Two
-/// percent of contrast between a beam and its shadow is below what reads.
-pub const SHAFT_MIN_DEPTH: f32 = 0.02;
+/// The thinnest volume worth a pass: its optical depth from the eye to the
+/// box's wall. Five percent of contrast between a beam and its shadow is at
+/// the edge of what reads; [`fade`] brings the shafts in from here.
+pub const SHAFT_MIN_DEPTH: f32 = 0.05;
+/// The optical depth at which the shafts carry their whole share.
+pub const SHAFT_FULL_DEPTH: f32 = 0.15;
+
+/// The sun's elevation, radians, at which the shafts carry their whole
+/// share (~6°): they fade in from `rig::SHADOW_MIN_ELEV`, where its
+/// shadows start.
+pub const SHAFT_FULL_ELEV: f32 = 0.10;
+
+/// The cloud over the sun (`WeatherNow::cloud_occlusion`) at which the
+/// shafts start to fade; they are gone at `rig::SHADOW_MAX_VEIL`, where its
+/// shadows go.
+pub const SHAFT_VEIL_FADE: f32 = 0.6;
+
+/// How long the shafts take to come back after a lightning flash, seconds.
+pub const SHAFT_FLASH_RECOVER_S: f32 = 1.0;
+
+/// The least of the air's transmittance toward the sun the volume's colour
+/// is lifted against ([`volume`]): blue's, under ~4° of sun, where the air
+/// mass is too uncertain to lift against and the sun's share of the fog is a
+/// few percent of a faded volume.
+pub const SHAFT_MIN_T: f32 = 1e-3;
 
 /// The narrowest box worth a pass, metres. The shadow distances under ~80 m
 /// (`quality::SHADOW_M_LADDER`) leave no room beside the fog layer's height.
@@ -102,11 +147,36 @@ pub fn reach_m(shadow_m: f32) -> f32 {
     ((shadow_m * shadow_m - FOG_LAYER_M * FOG_LAYER_M).max(0.0) * 0.5).sqrt()
 }
 
+/// March steps for a shadow distance of `shadow_m`: the longest march is
+/// the eye to the box's far corner, which [`reach_m`] keeps inside it.
+pub fn steps(shadow_m: f32) -> u32 {
+    ((shadow_m / SHAFT_STEP_M).ceil() as u32).clamp(16, SHAFT_STEPS)
+}
+
+fn smooth(lo: f32, hi: f32, x: f32) -> f32 {
+    let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How much of its share the volume carries, `0..=1`, for a sun `elev`
+/// radians up under `veil` of cloud (`WeatherNow::cloud_occlusion`), and a
+/// volume of optical depth `depth` from the eye to the box's wall at its full
+/// share. Zero at and past every edge where the pass switches off — the sun
+/// too low or too veiled to cast, the fog too thin to show — so the switch
+/// happens with the volume already empty.
+pub fn fade(elev: f32, veil: f32, depth: f32) -> f32 {
+    let rise = smooth(super::rig::SHADOW_MIN_ELEV, SHAFT_FULL_ELEV, elev);
+    let clear = 1.0 - smooth(SHAFT_VEIL_FADE, super::rig::SHADOW_MAX_VEIL, veil);
+    let thick = smooth(SHAFT_MIN_DEPTH, SHAFT_FULL_DEPTH, depth);
+    rise * clear * thick
+}
+
 /// The sun's share of the light a droplet receives, `0..=1`: its direct
-/// illuminance against the scalar irradiance of the hemisphere fill around it
-/// (twice each half's irradiance on a facing surface, `fill.rs`), at
-/// `fill` of the fill's noon strength. ~0.7 at a clear noon, ~0.35 in the
-/// fog preset, whose sun is a fifth of itself.
+/// illuminance at the ground (`sun_lux`, after the air's transmittance, as
+/// the ground is lit) against the scalar irradiance of the hemisphere fill
+/// around it (twice each half's irradiance on a facing surface, `fill.rs`),
+/// at `fill` of the fill's noon strength. ~0.55 at a clear noon, ~0.2 in
+/// the fog preset, whose sun is a fifth of itself.
 pub fn sun_share(sun_lux: f32, fill: f32) -> f32 {
     let lum = super::fill::luminance;
     let around = 2.0 * (lum(super::fill::sky_lux()) + lum(super::fill::bounce_lux())) * fill;
@@ -155,13 +225,17 @@ pub fn volume_transform(eye: Vec3, reach: f32) -> Transform {
 
 /// The volume for a box of `scale`, extinction `sigma` per metre, lit to the
 /// flat fog's colour `rgb` (exposed linear, `sky::fog_rgb`) by a sun of
-/// `sun_lux` seen at `exposure`.
+/// `sun_lux` seen at `exposure`, `t_sun` of which the air lets through
+/// (`sky::sun_transmittance`).
 ///
-/// The shader's in-scatter is `fog_color · light_intensity · exposure ·
-/// sun · HG(θ) · e^(−σR)` per unit of optical depth (and the atmosphere's
-/// transmittance, which it shares with the ground's sunlight), so
-/// `1 / (exposure · sun · HG(90°))` makes a lit volume seen SIDE-ON read as
-/// the flat fog, brighter looking into the light and darker with it behind.
+/// The shader's in-scatter is `fog_color · light_tint · light_intensity ·
+/// exposure · sun · HG(θ) · e^(−σR) · T` per unit of optical depth — `T` the
+/// atmosphere's transmittance toward the sun (`#ifdef ATMOSPHERE`), which
+/// reddens and dims it as it does the ground's sunlight. The flat fog's
+/// colour has no `T` in it, so the tint is `1 / T` and the intensity
+/// `1 / (exposure · sun · HG(90°))`: a lit volume seen SIDE-ON reads as the
+/// flat fog at every hour, brighter looking into the light and darker with
+/// it behind.
 ///
 /// **Side-on, not the sphere's mean, and that was measured.** Normalised to
 /// the mean at g 0.4, an A/B against the flat fog alone (fog preset, sun 35°
@@ -172,8 +246,16 @@ pub fn volume_transform(eye: Vec3, reach: f32) -> Transform {
 /// `e^(−σR)` is Bevy dimming the sun as though it crossed the whole box (`R`
 /// its bounding radius) to reach every point; the sun this rig hands it is
 /// already dimmed by the fog (`WeatherNow::occlusion`), so that is undone.
-pub fn volume(rgb: [f32; 3], sigma: f32, scale: Vec3, sun_lux: f32, exposure: f32) -> FogVolume {
+pub fn volume(
+    rgb: [f32; 3],
+    sigma: f32,
+    scale: Vec3,
+    sun_lux: f32,
+    exposure: f32,
+    t_sun: [f32; 3],
+) -> FogVolume {
     let radius = 0.5 * scale.length();
+    let lift = t_sun.map(|t| 1.0 / t.max(SHAFT_MIN_T));
     let g2 = SHAFT_G * SHAFT_G;
     let side = (1.0 - g2) / (4.0 * std::f32::consts::PI * (1.0 + g2) * (1.0 + g2).sqrt());
     let per_lux = 1.0 / (sun_lux * exposure * side).max(1e-9);
@@ -186,7 +268,7 @@ pub fn volume(rgb: [f32; 3], sigma: f32, scale: Vec3, sun_lux: f32, exposure: f3
         absorption: 0.0,
         scattering: 1.0,
         scattering_asymmetry: SHAFT_G,
-        light_tint: Color::WHITE,
+        light_tint: Color::linear_rgb(lift[0], lift[1], lift[2]),
         light_intensity: per_lux * (sigma * radius).exp(),
     }
 }
@@ -202,13 +284,14 @@ pub fn idle_volume() -> FogVolume {
 }
 
 /// The camera's half, inserted by `quality::apply` on the tier that draws
-/// shafts. No ambient (see the header), and jitter only where TAA resolves it.
-pub fn camera_fog(temporal: bool) -> VolumetricFog {
+/// shafts at a shadow distance of `shadow_m`. No ambient (see the header),
+/// and jitter only where TAA resolves it.
+pub fn camera_fog(temporal: bool, shadow_m: f32) -> VolumetricFog {
     VolumetricFog {
         ambient_color: Color::WHITE,
         ambient_intensity: 0.0,
         jitter: if temporal { SHAFT_JITTER_M } else { 0.0 },
-        step_count: SHAFT_STEPS,
+        step_count: steps(shadow_m),
     }
 }
 
@@ -219,6 +302,8 @@ pub struct SunNow {
     pub lux: f32,
     /// Whether it casts this frame.
     pub casts: bool,
+    /// The sun's elevation, radians (`rig::sun_elevation`).
+    pub elev: f32,
     /// The camera's exposure, ev100.
     pub ev100: f32,
     /// `rig::sun_lux` — what the flat fog's colour is lit by.
@@ -241,6 +326,17 @@ pub struct ShaftRig<'w, 's> {
     sun: Query<'w, 's, (Entity, Has<VolumetricLight>), With<Sun>>,
     bolt: Query<'w, 's, &'static mut Visibility, With<BoltLight>>,
     volume: Query<'w, 's, Volume, (Without<Sun>, Without<BoltLight>)>,
+    time: Option<Res<'w, Time>>,
+    calm: Local<'s, SinceFlash>,
+}
+
+/// Seconds since the last lightning flash, for the shafts' way back.
+pub struct SinceFlash(f32);
+
+impl Default for SinceFlash {
+    fn default() -> Self {
+        Self(SHAFT_FLASH_RECOVER_S)
+    }
 }
 
 /// The volume's two fields `drive` writes. Named for clippy's
@@ -275,16 +371,32 @@ impl ShaftRig<'_, '_> {
             }
         }
 
+        let calm = if flash {
+            0.0
+        } else {
+            let dt = self.time.as_ref().map_or(0.0, |t| t.delta_secs());
+            (self.calm.0 + dt).min(SHAFT_FLASH_RECOVER_S)
+        };
+        self.calm.0 = calm;
+
         let reach = reach_m(sun.shadow_m);
-        let share = sun_share(sun.lux, sun.fill);
+        let t_sun = super::sky::sun_transmittance(sun.elev.sin());
+        let share = sun_share(sun.lux * super::fill::luminance(t_sun), sun.fill);
+        let full = w.fog_part() * share * reach;
+        let share = share
+            * fade(sun.elev, w.cloud_occlusion(), full)
+            * smooth(0.0, SHAFT_FLASH_RECOVER_S, calm);
         let cut = split(w.fog_part(), w.rain_part(), share, reach);
         let eye = self.eye.as_ref().map(|e| e.pos);
+        // `fade` is zero wherever `casts` goes false, so this only flips
+        // with the volume already empty — a flash, the tier and the sea
+        // excepted, each of which changes the whole frame anyway.
         let on = self.tier()
             && sun.casts
             && !flash
             && !w.underwater
             && reach >= SHAFT_MIN_REACH_M
-            && cut.volume * reach >= SHAFT_MIN_DEPTH
+            && cut.volume > 0.0
             && eye.is_some()
             && !self.volume.is_empty();
         let cut = if on {
@@ -311,7 +423,7 @@ impl ShaftRig<'_, '_> {
             let rgb = super::sky::fog_rgb(sun.lux_share, w.dark, grey);
             let exposure = Exposure { ev100: sun.ev100 }.exposure();
             *t = box_t;
-            *v = volume(rgb, cut.volume, box_t.scale, sun.lux, exposure);
+            *v = volume(rgb, cut.volume, box_t.scale, sun.lux, exposure, t_sun);
         }
         if let Some(state) = self.state.as_mut() {
             if **state != cut {

@@ -61,6 +61,7 @@ use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityL
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::camera::{MipBias, TemporalJitter};
+use bevy::render::render_resource::TextureUsages;
 
 use crate::config::{Ao, Clouds, Quality};
 
@@ -525,7 +526,8 @@ pub struct Tier {
     pub tree_lod_swap_m: f32,
     /// Light shafts through the weather's fog (`shafts.rs`): the CLOUDS
     /// row's top rung, the same family of raymarched air, and only where the
-    /// sun casts. Never under WebGL2, whose clouds `effective` holds flat.
+    /// sun casts far enough to hold the box. Never under WebGL2, whose
+    /// clouds `effective` holds flat.
     pub shafts: bool,
 }
 
@@ -547,7 +549,9 @@ pub fn components(g: Gfx) -> Tier {
         shadow_m: g.shadow_m,
         shadow_map_px: g.shadow_map_px,
         tree_lod_swap_m: g.tree_lod_swap_m,
-        shafts: g.clouds == Clouds::High && g.shadows,
+        shafts: g.clouds == Clouds::High
+            && g.shadows
+            && super::shafts::reach_m(g.shadow_m) >= super::shafts::SHAFT_MIN_REACH_M,
     }
 }
 
@@ -678,7 +682,7 @@ pub fn apply(
     // `Ref` rather than a second `Added<EyeCam>` query: the marker's own
     // change ticks answer "did this camera just appear" without a parameter,
     // and this system is already at clippy's argument ceiling.
-    cam: Query<(Entity, Ref<EyeCam>)>,
+    mut cam: Query<(Entity, Ref<EyeCam>, Option<&mut Camera3d>)>,
     sun: Query<Entity, With<Sun>>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut lod: ResMut<TreeLod>,
@@ -686,7 +690,7 @@ pub fn apply(
     capture: Option<Res<super::capture::Capture>>,
 ) {
     let capturing = capture.is_some();
-    let fresh = cam.iter().any(|(_, marker)| marker.is_added());
+    let fresh = cam.iter().any(|(_, marker, _)| marker.is_added());
     let want = effective(settings.gfx);
     let moved = *last != Some(want);
     if !moved && !fresh {
@@ -695,7 +699,7 @@ pub fn apply(
     *last = Some(want);
     let t = components(want);
 
-    if let Ok((cam, _)) = cam.single() {
+    if let Ok((cam, _, cam3d)) = cam.single_mut() {
         let mut e = commands.entity(cam);
         match t.ssao {
             Some(quality_level) => e.insert(ScreenSpaceAmbientOcclusion {
@@ -734,7 +738,16 @@ pub fn apply(
         // while the weather has a fog for them. No mesh pipeline keys on this
         // component, so the tier moving it re-specializes nothing.
         if t.shafts {
-            e.insert(super::shafts::camera_fog(t.taa && !capturing));
+            e.insert(super::shafts::camera_fog(t.taa && !capturing, t.shadow_m));
+            // The march samples the main depth texture, and Bevy flags it
+            // sampleable only on frames the pass runs — a new descriptor, so
+            // a new full-size target, at every switch. Flagged for good here.
+            if let Some(mut c) = cam3d {
+                let usage = TextureUsages::from(c.depth_texture_usages);
+                if !usage.contains(TextureUsages::TEXTURE_BINDING) {
+                    c.depth_texture_usages = (usage | TextureUsages::TEXTURE_BINDING).into();
+                }
+            }
         } else {
             e.remove::<VolumetricFog>();
         }

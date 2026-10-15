@@ -680,6 +680,9 @@ pub const TWILIGHT_DEPTH: f32 = 0.10;
 pub const TWILIGHT_MIN_ELEV: f32 = 0.009;
 /// Below this the sun casts no shadow (2°): shadows that long are noise.
 pub const SHADOW_MIN_ELEV: f32 = 0.035;
+/// At this much cloud over the sun it casts no shadow either
+/// (`WeatherNow::occlusion`; the shafts fade out before it, `shafts.rs`).
+pub const SHADOW_MAX_VEIL: f32 = 0.85;
 /// `SunDisk::intensity` at full visibility.
 pub const SUN_DISK_INTENSITY: f32 = 1.6;
 /// The brightest the disk is drawn, linear after exposure and before the
@@ -934,7 +937,8 @@ pub fn day_night(
         // clean merge that is not a correct one: whichever ran second would
         // win, and a player who turned shadows off would have them back at
         // the next sunrise.
-        d.shadows_enabled = elev > SHADOW_MIN_ELEV && shadow_veil < 0.85 && effective.shadows;
+        d.shadows_enabled =
+            elev > SHADOW_MIN_ELEV && shadow_veil < SHADOW_MAX_VEIL && effective.shadows;
         sun_now = (d.illuminance, d.shadows_enabled);
         // The atmosphere draws the disk OVER the skybox, so a cloud in front
         // of the sun has to put the disk out itself.
@@ -967,6 +971,7 @@ pub fn day_night(
         super::shafts::SunNow {
             lux: sun_now.0,
             casts: sun_now.1,
+            elev,
             ev100: exposure_ev100(frac),
             lux_share,
             fill: light * (1.0 - 0.35 * w.dark),
