@@ -149,6 +149,7 @@ fn stage(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dress(
     mut commands: Commands,
     kit: Option<Res<WornKit>>,
