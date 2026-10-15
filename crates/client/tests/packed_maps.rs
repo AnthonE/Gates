@@ -124,6 +124,9 @@ fn packed_models() -> Vec<&'static str> {
     for p in client::render::props::TIER_CRATE_GLB {
         set.insert(p);
     }
+    for p in client::render::boulders::SPIRE_GLB {
+        set.insert(p);
+    }
     for (_, p) in client::render::props::ROADSIDE_GLB {
         set.insert(p);
     }
@@ -131,6 +134,9 @@ fn packed_models() -> Vec<&'static str> {
         if let HeldSrc::Glb(p) = &m.src {
             set.insert(*p);
         }
+    }
+    for s in client::ui::hold::SKIN_MODELS.iter() {
+        set.insert(s.path);
     }
     set.into_iter().collect()
 }

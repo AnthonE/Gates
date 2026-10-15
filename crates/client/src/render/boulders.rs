@@ -18,16 +18,22 @@
 //! out to [`ROCK_RING`] cells — rocks are landmarks, so they are drawn far
 //! beyond the prop rings. [`rock_block`] is public because the landmark kits
 //! draw their rock parts with it (`landmarks.rs`).
+//!
+//! The Verdigris' spires (`boulder::BLOCK_SPIRE`) are the one block kind not
+//! built into the formation's mesh: each is a generated model of black glass
+//! with its own lit veins ([`SPIRE_GLB`]), stood in its block's box and hung
+//! off the formation's entity, so it streams and despawns with the rest.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use sim_core::boulder::{self, BOULDER_CELL_M, ON_GROUND};
+use sim_core::boulder::{self, BLOCK_SPIRE, BOULDER_CELL_M, ON_GROUND};
 use sim_core::terrain;
 
 use super::ground_splat::{ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD, ATTRIBUTE_ZONE};
 use super::terrain_mesh::{Ring, UV_PER_M};
+use super::weather::WeatherNow;
 use super::{Eye, WorldEntity, WorldId};
 
 /// Formation cells drawn either side of the eye's: ~900 m.
@@ -65,10 +71,62 @@ const SEG_M: f32 = 1.6;
 /// Vertical size of one side segment, metres — finer, so the strata show.
 const SEG_V_M: f32 = 0.9;
 
+/// The Verdigris' spires: black glass with green veins
+/// (`assets/models/MANIFEST.md`), each fitted to a unit box standing on its
+/// base at the origin, so a block's box is its scale. Two tall shards and two
+/// stout ones; [`spire_model`] picks.
+pub const SPIRE_GLB: [&str; 4] = [
+    "models/prop/fel/spire_a.glb",
+    "models/prop/fel/spire_b.glb",
+    "models/prop/fel/spire_c.glb",
+    "models/prop/fel/spire_d.glb",
+];
+/// How bright a spire's veins burn, linear multiplier on its emissive map
+/// (the veins' own albedo, `ci/fel_veins.py`): the fel beasts' cracks by
+/// night, a third of that under the sun. **(knob)**
+pub const SPIRE_GLOW_NIGHT: f32 = super::beasts::FEL_GLOW;
+pub const SPIRE_GLOW_DAY: f32 = 1.0;
+/// How far a spire's base is drawn under the lowest ground at its corners,
+/// metres, so no slope shows it hanging.
+pub const SPIRE_SINK_M: f32 = 0.3;
+
 #[derive(Resource, Default)]
 pub struct RockRing {
     seed: Option<u64>,
     built: HashMap<(i32, i32), Option<Entity>>,
+    spires: Option<SpireModels>,
+}
+
+/// The spire models' one primitive and one material each, loaded on first
+/// use and kept across worlds.
+struct SpireModels {
+    mesh: [Handle<Mesh>; 4],
+    mat: [Handle<StandardMaterial>; 4],
+}
+
+impl SpireModels {
+    fn load(server: &AssetServer) -> Self {
+        SpireModels {
+            mesh: SPIRE_GLB.map(|path| {
+                server.load(
+                    GltfAssetLabel::Primitive {
+                        mesh: 0,
+                        primitive: 0,
+                    }
+                    .from_asset(path),
+                )
+            }),
+            mat: SPIRE_GLB.map(|path| {
+                server.load(
+                    GltfAssetLabel::Material {
+                        index: 0,
+                        is_scale_inverted: false,
+                    }
+                    .from_asset(path),
+                )
+            }),
+        }
+    }
 }
 
 impl RockRing {
@@ -87,12 +145,17 @@ pub fn stream(
     mut rocks: ResMut<RockRing>,
     mut meshes: ResMut<Assets<Mesh>>,
     ground: Res<Ring>,
+    server: Res<AssetServer>,
     world: Res<WorldId>,
     eye: Res<Eye>,
 ) {
     let Some(material) = ground.ground_material() else {
         return;
     };
+    let rocks = &mut *rocks;
+    let spires = rocks
+        .spires
+        .get_or_insert_with(|| SpireModels::load(&server));
     if rocks.seed != Some(world.seed) {
         for (_, e) in rocks.built.drain() {
             if let Some(e) = e {
@@ -129,16 +192,19 @@ pub fn stream(
                     rocks.built.insert(key, None);
                     continue;
                 }
-                let mesh = formation_mesh(world.seed, &f);
-                let e = commands
-                    .spawn((
-                        WorldEntity,
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(material.clone()),
-                        Transform::IDENTITY,
-                    ))
-                    .id();
-                rocks.built.insert(key, Some(e));
+                let mut cell = commands.spawn((WorldEntity, Transform::IDENTITY));
+                if let Some(mesh) = formation_mesh(world.seed, &f) {
+                    cell.insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone())));
+                }
+                for b in f.iter().filter(|b| b.kind == BLOCK_SPIRE) {
+                    let k = spire_model(b.shape);
+                    cell.with_child((
+                        Mesh3d(spires.mesh[k].clone()),
+                        MeshMaterial3d(spires.mat[k].clone()),
+                        spire_transform(world.seed, &world.haven, b),
+                    ));
+                }
+                rocks.built.insert(key, Some(cell.id()));
                 budget -= 1;
                 if budget == 0 {
                     return;
@@ -149,8 +215,70 @@ pub fn stream(
 }
 
 /// A new world: forget the formations (their entities are `WorldEntity`).
+/// The spire models stay loaded.
 pub fn teardown(mut rocks: ResMut<RockRing>) {
-    *rocks = RockRing::default();
+    rocks.seed = None;
+    rocks.built.clear();
+}
+
+/// Which of [`SPIRE_GLB`] a spire wears. Its `shape` byte set its height
+/// (`boulder::strays`), so the upper half of the byte stands the tall shards
+/// (a, c) and the lower half the stout ones (b, d); the low bit picks
+/// between the two.
+pub fn spire_model(shape: u8) -> usize {
+    match (shape >= 128, shape & 1) {
+        (true, 0) => 0,
+        (true, _) => 2,
+        (false, 0) => 1,
+        (false, _) => 3,
+    }
+}
+
+/// A spire's model stood in its block's box: its base just under the lowest
+/// ground at its corners, its top at the block's.
+fn spire_transform(seed: u64, haven: &terrain::Haven, b: &boulder::Block) -> Transform {
+    let (s, c) = sim_core::yaw_dir(b.yaw);
+    let mut yaw = s.atan2(c);
+    let (mut wx, mut wz) = (2.0 * b.hx, 2.0 * b.hz);
+    // Every model is wider across its own x than its z, so a block longer
+    // in z turns it a quarter so the long sides agree.
+    if b.hz > b.hx {
+        yaw += std::f32::consts::FRAC_PI_2;
+        std::mem::swap(&mut wx, &mut wz);
+    }
+    let mut lo = terrain::ground(seed, haven, b.x, b.z);
+    for (lx, lz) in [(b.hx, b.hz), (b.hx, -b.hz), (-b.hx, b.hz), (-b.hx, -b.hz)] {
+        let (x, z) = b.to_world(lx, lz);
+        lo = lo.min(terrain::ground(seed, haven, x, z));
+    }
+    let base = lo - SPIRE_SINK_M;
+    Transform {
+        translation: Vec3::new(b.x, base, b.z),
+        rotation: Quat::from_rotation_y(yaw),
+        scale: Vec3::new(wx, (b.y1 - base).max(1.0), wz),
+    }
+}
+
+/// Burn the spires' veins by the hour: brighter in the dark, in steps of
+/// 1/32 of the day, since a write re-uploads the material.
+pub fn spire_glow(
+    weather: Res<WeatherNow>,
+    rocks: Res<RockRing>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(spires) = rocks.spires.as_ref() else {
+        return;
+    };
+    let day = (weather.sun_lux.clamp(0.0, 1.0) * 32.0).round() / 32.0;
+    let k = SPIRE_GLOW_NIGHT + (SPIRE_GLOW_DAY - SPIRE_GLOW_NIGHT) * day;
+    let want = LinearRgba::rgb(k, k, k);
+    for h in &spires.mat {
+        if materials.get(h).is_some_and(|m| m.emissive != want) {
+            if let Some(m) = materials.get_mut(h) {
+                m.emissive = want;
+            }
+        }
+    }
 }
 
 /// Integer hash to [0, 1).
@@ -583,10 +711,11 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
     }
 }
 
-/// Every block of a formation, and the loose stones round it, as one mesh.
-pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
+/// Every block of a formation, and the loose stones round it, as one mesh:
+/// `None` when the formation is all spires, which are models of their own.
+pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Option<Mesh> {
     let mut soup = RockSoup::default();
-    for b in f.iter() {
+    for b in f.iter().filter(|b| b.kind != BLOCK_SPIRE) {
         // Moss where the ground around is green: not on a beach, not above
         // the treeline.
         let h0 = terrain::height(seed, b.x, b.z);
@@ -604,5 +733,5 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
             rock_block(&mut soup, &r);
         }
     }
-    soup.mesh(seed)
+    (!soup.is_empty()).then(|| soup.mesh(seed))
 }

@@ -1864,6 +1864,7 @@ impl Plugin for GatesRenderPlugin {
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
                 embers::drive.after(weather::update),
+                boulders::spire_glow.after(weather::update),
                 stars::drive.after(sky::compose),
                 underwater::drive.after(rig::day_night),
                 hud::exposure,

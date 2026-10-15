@@ -45,7 +45,8 @@ serially if the per-asset figure matters, or record the total and say so.
 
 Usage:
   ci/meshy_gen.py <slug> --image-prompt "..." --mesh-prompt "..." --out DIR
-  ci/meshy_gen.py --resume <image_task> <mesh_task> --out DIR   (poll only)
+  ci/meshy_gen.py <slug> ... --resume-image ID --resume-mesh ID   (poll only;
+      both prompts and --out are still required, and --multiview if it was)
 """
 import argparse
 import datetime
@@ -186,9 +187,13 @@ def main():
             # `meshy-7.1`, not `meshy-7`: same parameters and credits, more
             # geometry detail, and 7 is deprecated (Meshy changelog
             # 2026-09-18).
+            # `target_polycount` is only honoured with `should_remesh` on this
+            # path: without it the 2026-10-15 spires came back at 213k
+            # triangles against a 1,400 ask (`ci/meshy_beast.py` passes both).
             mesh_id = call("POST", "/openapi/v1/multi-image-to-3d", {
                 "image_urls": urls[:4],
                 "ai_model": "meshy-7.1",
+                **({"should_remesh": True, "topology": "triangle"} if a.tris else {}),
                 **common,
             })["result"]
             mesh_ep = "/openapi/v1/multi-image-to-3d"
@@ -201,7 +206,10 @@ def main():
             })["result"]
             mesh_ep = "/openapi/v1/image-to-3d"
     if a.resume_mesh:
-        mesh_ep = "/openapi/v1/image-to-3d"
+        # The endpoint the mesh was made on: a multiview roll's task lives on
+        # `multi-image-to-3d`, and polling it on `image-to-3d` is a 404.
+        mesh_ep = ("/openapi/v1/multi-image-to-3d" if a.multiview
+                   else "/openapi/v1/image-to-3d")
     mesh = wait(mesh_ep, mesh_id, "mesh ")
 
     glb = os.path.join(a.out, a.slug + "_raw.glb")
