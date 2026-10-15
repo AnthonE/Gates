@@ -287,7 +287,10 @@ impl Gates {
         // `OnEnter(Screen::Loading)` runs before `Startup`, and `sky::setup`
         // takes a non-optional `Res<WorldId>` — so a `WorldId` inserted later
         // does not arrive late, it makes that system silently not run.
-        app.insert_resource(WorldId::with_haven(seed, *session.core.haven()));
+        app.insert_resource(WorldId {
+            blight_salt: session.welcome.blight_salt,
+            ..WorldId::with_haven(seed, *session.core.haven())
+        });
         // The element winit draws into, for `web::follow_viewport`'s stretch.
         app.insert_resource(client::render::web::Canvas(canvas.clone()));
         app.insert_non_send_resource(Net {

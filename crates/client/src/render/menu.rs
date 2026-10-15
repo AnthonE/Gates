@@ -1592,10 +1592,10 @@ pub fn poll_connect(
                 "gates: in the world — player {} seed {} tick {}",
                 session.welcome.player_id, session.welcome.seed, session.welcome.tick
             );
-            commands.insert_resource(super::WorldId::with_haven(
-                session.welcome.seed,
-                *session.core.haven(),
-            ));
+            commands.insert_resource(super::WorldId {
+                blight_salt: session.welcome.blight_salt,
+                ..super::WorldId::with_haven(session.welcome.seed, *session.core.haven())
+            });
             // `Commands` has no `insert_non_send_resource`, so this goes
             // through the world directly. `Net` is non-send because the
             // session owns tokio channel receivers (`render::mod`).

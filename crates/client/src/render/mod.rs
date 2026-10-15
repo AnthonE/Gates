@@ -314,6 +314,9 @@ pub struct WorldId {
     pub seed: u64,
     pub haven: Haven,
     pub table: ScatterTable,
+    /// This wipe's blight salt from the welcome (`sim_core::blight`): where
+    /// its outbreaks erupt. 0 off a session (the menu, the probes).
+    pub blight_salt: u32,
 }
 
 impl WorldId {
@@ -328,6 +331,7 @@ impl WorldId {
             seed,
             haven,
             table: ScatterTable::alpha_default(),
+            blight_salt: 0,
         }
     }
 }

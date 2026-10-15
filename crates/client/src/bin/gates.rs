@@ -240,10 +240,10 @@ fn main() -> AppExit {
     app.insert_non_send_resource(Rt(rt));
 
     if let Some(session) = session {
-        app.insert_resource(WorldId::with_haven(
-            session.welcome.seed,
-            *session.core.haven(),
-        ));
+        app.insert_resource(WorldId {
+            blight_salt: session.welcome.blight_salt,
+            ..WorldId::with_haven(session.welcome.seed, *session.core.haven())
+        });
         app.insert_non_send_resource(Net {
             session,
             sel: 0,

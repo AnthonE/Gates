@@ -1009,6 +1009,7 @@ pub fn welcome() -> Welcome {
         seed: 0x0047_4154_4553_2121,
         tick: 654_321,
         dev: true,
+        blight_salt: 0x5EED_B11D,
     }
 }
 

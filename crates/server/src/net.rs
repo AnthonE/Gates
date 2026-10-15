@@ -898,7 +898,7 @@ pub async fn spawn_shard(
 
     // The control ring bounds arrivals between ticks, not arrivals during
     // world construction. Do not admit clients until its consumer is ready.
-    ready_rx
+    let blight_salt = ready_rx
         .await
         .map_err(|_| "sim thread stopped during initialization".to_owned())?;
 
@@ -906,6 +906,7 @@ pub async fn spawn_shard(
         endpoint,
         ShardFacts {
             seed: cfg.seed,
+            blight_salt,
             // A shard running a dev override is a dev shard, and says so
             // in every welcome — that bit is the client's only dev gate.
             // A shard with a fake network is a dev shard as surely as one
@@ -956,6 +957,8 @@ pub async fn spawn_shard(
 #[derive(Clone)]
 struct ShardFacts {
     seed: u64,
+    /// This wipe's blight salt, as the sim thread drew or loaded it.
+    blight_salt: u32,
     dev: bool,
     /// `shard.toml require_auth`. See `config.rs` for why it is a knob.
     require_auth: bool,
@@ -2490,6 +2493,7 @@ async fn install(
         seed: facts.seed,
         tick: ShardStats::get(&stats.current_tick) as u32,
         dev: facts.dev,
+        blight_salt: facts.blight_salt,
     };
     let _ = write_welcome(&mut send, &welcome).await;
 
@@ -2718,6 +2722,7 @@ async fn install_spectator(
         seed: facts.seed,
         tick: ShardStats::get(&stats.current_tick) as u32,
         dev: facts.dev,
+        blight_salt: facts.blight_salt,
     };
     let _ = write_welcome(&mut send, &welcome).await;
     let watch = protocol::Watch {
@@ -3972,7 +3977,7 @@ fn sim_thread(
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
-    ready: tokio::sync::oneshot::Sender<()>,
+    ready: tokio::sync::oneshot::Sender<u32>,
 ) {
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
@@ -4099,6 +4104,12 @@ fn sim_thread(
     if core.world.arc.salt == 0 {
         core.world.arc.salt = fresh_salt();
     }
+    // And its blight salt (`sim_core::blight`), on the same terms: a fresh
+    // world draws where this wipe's outbreaks erupt. Public, unlike the arc's
+    // — every welcome carries it, because every client draws the outbreaks.
+    if core.world.blight_salt == 0 {
+        core.world.set_blight_salt((fresh_salt() >> 32) as u32 | 1);
+    }
     // The town's public stations (`World::seed_authored`), after the load and
     // before the first tick: a saved world already holds them and this is a
     // no-op there.
@@ -4130,7 +4141,9 @@ fn sim_thread(
 
     // Startup-only notification: no channel wake or drop enters the tick.
     // A cancelled startup has no accept loop and must not leave a sim alive.
-    if ready.send(()).is_err() {
+    // The ready signal carries the blight salt to the accept loop, which
+    // writes it into every welcome.
+    if ready.send(core.world.blight_salt).is_err() {
         return;
     }
     let tick_dur = Duration::from_nanos(1_000_000_000 / TICK_HZ as u64);

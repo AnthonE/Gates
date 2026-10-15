@@ -9126,6 +9126,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/bots.rs"),
         },
         Module {
+            file: "blight.rs",
+            src: include_str!("../../sim-core/src/blight.rs"),
+        },
+        Module {
             file: "boulder.rs",
             src: include_str!("../../sim-core/src/boulder.rs"),
         },

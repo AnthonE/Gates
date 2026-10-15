@@ -219,10 +219,15 @@ use crate::worldcont::WorldContRec;
 /// so a body's stride is unchanged and its order is not.
 /// **24 — the Verdigris** (`exposure::corrode`): each body's meter and the
 /// partial hp it is owed, after the cold's (+6).
-pub const WORLD_SAVE_FORMAT: u16 = 24;
+/// **25 — the Verdigris spreads** (`blight.rs`): the wipe's blight salt after
+/// the arc block (+4 in the head).
+pub const WORLD_SAVE_FORMAT: u16 = 25;
 
 /// The head's arc block: the salt, then every mechanism slot.
 pub const ARC_SAVE_BYTES: usize = 8 + crate::limits::MAX_MECHS * crate::mech::MECH_BYTES;
+
+/// The head's blight block: the salt that draws this wipe's outbreaks.
+pub const BLIGHT_SAVE_BYTES: usize = 4;
 
 /// The head's works block: every slot, written whether or not content
 /// names a work there, so the head stays a fixed size.
@@ -244,8 +249,17 @@ pub const ENV_BYTES: usize = 1 + 8 + 6 * 2 + 1 + 4;
 /// with anything about the head. A hand-copied offset is a silent
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
-pub const HEAD_BYTES: usize =
-    2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + WORKS_SAVE_BYTES + ARC_SAVE_BYTES + SECTION_COUNTS;
+pub const HEAD_BYTES: usize = 2
+    + 8
+    + 4 * 3
+    + 8
+    + 4
+    + 4
+    + ENV_BYTES
+    + WORKS_SAVE_BYTES
+    + ARC_SAVE_BYTES
+    + BLIGHT_SAVE_BYTES
+    + SECTION_COUNTS;
 /// Twelve `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
@@ -592,6 +606,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     for m in w.arc.mechs.iter() {
         o.bytes(&m.to_bytes());
     }
+    o.u32(w.blight_salt);
 
     // Bodies. Everyone in the file is written as a sleeper *by the loader*,
     // not here — see `decode_into`. What is written is who was in the world.
@@ -1027,6 +1042,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             return Err(WorldSaveError::BadWork);
         }
     }
+    let blight_salt = r.u32()?;
 
     let n_players = r.count(MAX_PLAYERS)?;
     let n_pieces = r.count(MAX_PIECES)?;
@@ -1817,6 +1833,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     *w.works = works;
     w.works.refresh(&w.works_def);
     *w.arc = arc;
+    w.set_blight_salt(blight_salt);
     w.players = players;
     w.pieces
         .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
@@ -1946,7 +1963,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 1_516                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22)
+        let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
             + 100 * 499                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
@@ -1977,7 +1994,8 @@ mod tests {
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
-        assert_eq!(HEAD_BYTES, 1_516);
+        // 1516 -> 1520 at format 25: the blight's salt.
+        assert_eq!(HEAD_BYTES, 1_520);
         // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
         assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
@@ -2072,8 +2090,9 @@ mod tests {
         // 21: the works block in the head, 8 × 161. 3_560_128 at format 22:
         // the salt and the mechanisms (136) and a glyph mask on 100 bodies.
         // 3_560_728 at format 24: the Verdigris, six bytes on 100 bodies.
+        // 3_560_732 at format 25: the blight's salt in the head.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_560_728,
+            WORLD_SAVE_MAX_BYTES, 3_560_732,
             "the world save ceiling moved"
         );
     }

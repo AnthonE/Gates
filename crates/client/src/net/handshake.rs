@@ -900,6 +900,7 @@ mod tests {
             player_id: 7,
             tick: 42,
             dev: false,
+            blight_salt: 0,
         };
         let mut b = [0u8; MAX_STREAM_MSG_BYTES];
         let n = encode_welcome(&w, &mut b).expect("encode");
