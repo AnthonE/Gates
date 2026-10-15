@@ -319,10 +319,8 @@ fn a_killed_body_leaves_a_pack_and_a_corpse() {
         (corpse.qx - feet.qx) as f32 * POS_XZ_Q,
         (corpse.qz - feet.qz) as f32 * POS_XZ_Q,
     );
-    assert!(
-        ((dx * dx + dz * dz).sqrt() - CORPSE_BACK_M).abs() < 0.05,
-        "the corpse lies behind the feet"
-    );
+    let off = (dx * dx + dz * dz).sqrt() - CORPSE_BACK_M;
+    assert!(off > -0.05 && off < 0.05, "the corpse lies behind the feet");
 
     // A swing pitched down at the corpse meets it as a carcass.
     let at = Body {
@@ -336,7 +334,10 @@ fn a_killed_body_leaves_a_pack_and_a_corpse() {
         (at.qx - r.body.qx) as f32 * POS_XZ_Q,
         (at.qz - r.body.qz) as f32 * POS_XZ_Q,
     );
-    assert!(dz > 0.0 && dx.abs() < 0.05, "setup: the corpse lies ahead");
+    assert!(
+        dz > 0.0 && dx > -0.05 && dx < 0.05,
+        "setup: the corpse lies ahead"
+    );
     let pitch = aim_at_height(&w, raider, &at, 0.2);
     let ray = sim_core::melee::ray(&r.body, false, yaw, pitch, 2000.0);
     let cut = sim_core::melee::carcass_cast(&w.mob, &w.backpacks, &ray).expect("a carcass");
