@@ -1,14 +1,21 @@
 // Frost on the frame while the cold bites (`frost.rs`): ice that grows in
 // from the edges, the corners first and deepest, a milky rime at the rim
 // and crystals running ahead of it grain by grain. Procedural, so it is
-// sharp at any resolution and costs nothing on disk; every pixel short of
-// the crystals' reach leaves at the first test, so the clear middle of the
-// frame pays one division.
+// sharp at any resolution and costs nothing on disk.
+//
+// What it costs: a pixel past the farthest the front can reach leaves at
+// the first test, but a full frost reaches most of a wide frame, and every
+// pixel short of that pays the front's noise (16 hashes), every one the
+// crystals could reach two grain searches (9 hashes each), and only then,
+// where a grain or the rime has really arrived, the needles and the rime's
+// noise. `frost.rs` draws it on the eye's target, so the render scale cuts
+// this with the world's own cost.
 #import bevy_ui::ui_vertex_output::UiVertexOutput
 
 // Field for field `frost::FrostMaterial::params`: x how far the frost has
-// crept in, 0..1; y its brightness (dimmer at night); z and w unused — one
-// whole vec4 because WebGL2 wants a uniform of at least 16 bytes.
+// crept in, 0..1; y its brightness (the light on the world); z and w
+// unused — one whole vec4 because WebGL2 wants a uniform of at least 16
+// bytes.
 @group(1) @binding(0) var<uniform> frost: vec4<f32>;
 
 // How far in the rime reaches at full strength, in the rim measure below
@@ -112,6 +119,13 @@ fn grain_at(q: vec2<f32>) -> Grain {
 fn crystals(p: vec2<f32>, cells: f32, stretch: f32, edge_w: f32, facet: f32, ahead: f32) -> f32 {
     let q = p * cells;
     let g = grain_at(q);
+    // A grain the front has not reached yet shows nothing: leave before the
+    // needles are worked out.
+    let wait = hash21(g.cell + vec2<f32>(5.1, 7.7)) * GRAIN_SPREAD;
+    let shown = smoothstep(0.0, 0.12, ahead - wait);
+    if (shown <= 0.0) {
+        return 0.0;
+    }
     let th = hash21(g.cell + vec2<f32>(31.7, 11.3)) * PI;
     let c = cos(th);
     let s = sin(th);
@@ -119,8 +133,7 @@ fn crystals(p: vec2<f32>, cells: f32, stretch: f32, edge_w: f32, facet: f32, ahe
     let n = value_noise(vec2<f32>(a.x * 1.5 + g.cell.x * 7.0, a.y * stretch + g.cell.y * 3.0));
     let needles = smoothstep(0.55, 0.85, n) * 0.85;
     let edges = (1.0 - smoothstep(0.0, edge_w, g.next - g.near)) * facet;
-    let wait = hash21(g.cell + vec2<f32>(5.1, 7.7)) * GRAIN_SPREAD;
-    return smoothstep(0.0, 0.12, ahead - wait) * max(needles, edges);
+    return shown * max(needles, edges);
 }
 
 @fragment
@@ -156,8 +169,12 @@ fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     let coarse = crystals(p, 9.0, 14.0, 0.04, 0.25, ahead) * 0.9;
     let fine = crystals(p, 21.0, 14.0, 0.05, 0.45, ahead) * 0.8;
     let crystal = clamp(max(coarse, fine), 0.0, 1.0);
-    // Under them a milky rime, thickest at the very rim.
-    let rime = cover * sqrt(cover) * (0.5 + 0.5 * fbm(p * 11.0));
+    // Under them a milky rime, thickest at the very rim; its noise only
+    // where the rime has arrived.
+    var rime = 0.0;
+    if (cover > 0.0) {
+        rime = cover * sqrt(cover) * (0.5 + 0.5 * fbm(p * 11.0));
+    }
 
     var alpha = max(rime * RIME_ALPHA, crystal * CRYSTAL_ALPHA) + crystal * rime * 0.25;
     // Faint while it is only starting, fuller as it bites.

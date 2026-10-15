@@ -6,26 +6,31 @@
 //! clothes, the wet and the fire already in it — not the air, which a
 //! jacket or a fire makes a different story. Nothing starts under
 //! [`FROST_FROM_PCT`], a little past the COLD chip, so the chip warns first
-//! and the frost is the cold arriving; it is strongest while the cold costs
-//! hp. A fire's warmth thaws it in a few seconds, ahead of the meter, which
-//! falls only 2 % a second — unless the cold is still taking hp at the fire,
-//! the one case the FREEZING chip also refuses to call won.
+//! and the frost is the cold arriving; it grows with the meter to where the
+//! cold starts costing hp ([`FROST_HURT_PCT`]), and on past that only while
+//! it does. A fire's warmth thaws it in a few seconds, ahead of the meter,
+//! which falls only 2 % a second — unless the cold is still taking hp at
+//! the fire, the one case the FREEZING chip also refuses to call won.
 //!
 //! **A UI material** (`frost.wgsl`), because UI materials draw on every
 //! target this client ships — WebGL2 included — and the crystals are
 //! procedural, so there is no texture to ship. Spawned when the frost
 //! starts and despawned when it has thawed, so a warm body pays nothing.
-//! Under the HUD with the hurt rim and the wounded vignette (`ZIndex(-1)`),
-//! hidden off the world screen (the Esc menu, the map, the death wash), and
-//! not spawned on a plate run or a film, which have no HUD to be under.
+//! Drawn on the eye's own target, so a lowered render scale lowers its cost
+//! with the world's. Under the HUD with the hurt rim and the wounded
+//! vignette (`ZIndex(-1)`), hidden off the world screen (the Esc menu, the
+//! map, the death wash), and not spawned on a plate run or a film, which
+//! have no HUD to be under.
 //!
 //! **What this file does not do is decide anything**: the cold is the
-//! server's, the fire is `ClientCore::near_fire`, the hour is the sky's.
+//! server's, the fire is `ClientCore::near_fire`, the light is the rig's.
 
+use bevy::camera::Exposure;
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
+use super::rig::{EyeCam, DAY_EV100};
 use super::weather::WeatherNow;
 use super::{Net, Screen, WorldEntity};
 
@@ -34,41 +39,50 @@ pub const SHADER: &str = "shaders/frost.wgsl";
 /// No frost at or under this cold, per cent of a full chill. Past the COLD
 /// chip's 25, so the chip says it first.
 pub const FROST_FROM_PCT: u8 = 30;
-/// Points past [`FROST_FROM_PCT`] to the cold's full frost short of hurting,
-/// [`FROST_COLD_MAX`].
-pub const FROST_RAMP_PCT: u8 = 40;
+/// Where the cold starts costing hp, per cent: `content/balance.toml`'s
+/// `[exposure] hurt_at` over ten, the way the server rounds its meter
+/// (`tests/frost.rs` holds the two together). A cold short of hurting
+/// ramps from [`FROST_FROM_PCT`] to [`FROST_COLD_MAX`] by here, and only a
+/// hurting one goes on past it, so the step into hp loss is not a jump.
+pub const FROST_HURT_PCT: u8 = 60;
 pub const FROST_COLD_MAX: f32 = 0.6;
-/// While the cold is taking hp the frost is never under this, and the rest
-/// of the way to 1 follows the meter — always past anything a cold that is
-/// not yet hurting shows.
-pub const FROST_HURT_MIN: f32 = 0.75;
 /// How fast the frost creeps in and thaws, level a second: in over five
 /// seconds, out over three.
 pub const FROST_RISE_PER_S: f32 = 0.2;
 pub const FROST_FALL_PER_S: f32 = 0.35;
-/// The frost's brightness deep in the night against the day's: it is lit
-/// by what lights the world, and a white rim glowing at midnight would read
-/// as a light, not as ice.
-pub const FROST_NIGHT_LUM: f32 = 0.45;
-/// The uniform's level steps: fine enough that the front moves a pixel at
-/// a time, coarse enough that a creeping frost re-uploads its material a
-/// few dozen times a second rather than every frame.
-const LEVEL_STEPS: f32 = 128.0;
+/// The frost's brightness with no sun on the world, against noon's. The UI
+/// draws after the tone map, so the scene's exposure does not dim it, and
+/// the night's ground is near black: a pale rim any brighter reads as a
+/// light, not as ice.
+pub const FROST_NIGHT_LUM: f32 = 0.12;
+/// The uniform's steps, for the level and the brightness alike: fine enough
+/// that the front moves a pixel at a time, coarse enough that a creeping
+/// frost or a setting sun re-uploads the material a few dozen times a
+/// second rather than every frame.
+const STEPS: f32 = 128.0;
 
 /// How much frost a body's cold asks for, `0..=1`: none at
-/// [`FROST_FROM_PCT`] and under, then up with the cold, and never less than
-/// [`FROST_HURT_MIN`] while it is `hurting`. Beside a lit fire (`fire`) the
-/// frost that is not costing hp thaws.
+/// [`FROST_FROM_PCT`] and under, up with the cold to [`FROST_COLD_MAX`] at
+/// [`FROST_HURT_PCT`], then on to 1 at a full meter — that last stretch
+/// only while it is `hurting`, which never shows less than the ramp's top.
+/// Beside a lit fire (`fire`) the frost that is not costing hp thaws.
 pub fn target(cold_pct: u8, hurting: bool, fire: bool) -> f32 {
-    let past = cold_pct.saturating_sub(FROST_FROM_PCT) as f32;
-    if hurting {
-        let deep = (past / (100 - FROST_FROM_PCT) as f32).min(1.0);
-        return FROST_HURT_MIN + (1.0 - FROST_HURT_MIN) * deep;
-    }
-    if fire {
+    if fire && !hurting {
         return 0.0;
     }
-    (past / FROST_RAMP_PCT as f32).min(1.0) * FROST_COLD_MAX
+    let pct = f32::from(cold_pct.min(100));
+    let from = f32::from(FROST_FROM_PCT);
+    let at = f32::from(FROST_HURT_PCT);
+    let curve = if pct <= at {
+        ((pct - from) / (at - from)).max(0.0) * FROST_COLD_MAX
+    } else {
+        FROST_COLD_MAX + (1.0 - FROST_COLD_MAX) * (pct - at) / (100.0 - at)
+    };
+    if hurting {
+        curve.max(FROST_COLD_MAX)
+    } else {
+        curve.min(FROST_COLD_MAX)
+    }
 }
 
 /// One frame of the frost moving toward `want`: creeping in at
@@ -81,9 +95,29 @@ pub fn step(level: f32, want: f32, dt: f32) -> f32 {
     }
 }
 
-/// The frost's brightness for how far into the night the sky is.
-pub fn lum(night: f32) -> f32 {
-    1.0 - (1.0 - FROST_NIGHT_LUM) * night.clamp(0.0, 1.0)
+/// The light on the world as the camera sees it, against a clear noon's,
+/// `0..=1`: the sun's share of full daylight (`WeatherNow::sun_lux`, the
+/// twilight tail included) through however far the rig has opened the
+/// exposure (`ev100` under [`DAY_EV100`]), so a sunset the eye has opened
+/// to does not dim the frost as if it were night.
+pub fn seen_light(sun_lux: f32, ev100: f32) -> f32 {
+    (sun_lux * (DAY_EV100 - ev100).max(0.0).exp2()).clamp(0.0, 1.0)
+}
+
+/// The frost's brightness for a [`seen_light`]: 1 at noon,
+/// [`FROST_NIGHT_LUM`] with no sun at all, and between by the light's
+/// square root — about how a lit white surface falls off through the tone
+/// map and the screen.
+pub fn lum(light: f32) -> f32 {
+    FROST_NIGHT_LUM + (1.0 - FROST_NIGHT_LUM) * light.clamp(0.0, 1.0).sqrt()
+}
+
+/// The uniform for a level and a [`seen_light`], both rounded to [`STEPS`],
+/// so a frost that is not moving under a sky that is barely moving leaves
+/// its material alone.
+pub fn params(level: f32, light: f32) -> Vec4 {
+    let q = |v: f32| (v * STEPS).round() / STEPS;
+    Vec4::new(q(level.clamp(0.0, 1.0)), q(lum(light)), 0.0, 0.0)
 }
 
 /// The frost's one uniform (`frost.wgsl`).
@@ -131,6 +165,7 @@ pub fn drive(
     state: Res<State<Screen>>,
     sky: Option<Res<WeatherNow>>,
     time: Res<Time>,
+    eye: Query<(Entity, Option<&Exposure>), With<EyeCam>>,
     mut level: Local<f32>,
     mut materials: ResMut<Assets<FrostMaterial>>,
     mut lens: Query<(Entity, &MaterialNode<FrostMaterial>, &mut Visibility), With<FrostLens>>,
@@ -142,21 +177,21 @@ pub fn drive(
     // The lit-set walk only while there is frost a fire could thaw.
     let fire = !hurting && core.cold_pct > FROST_FROM_PCT && core.near_fire();
     let want = target(core.cold_pct, hurting, fire);
-    let on_screen = *state.get() == Screen::InWorld;
-    // Off the world screen nobody sees it move, so it is wherever the cold
-    // is when they come back: a respawn does not wear the last life's frost.
-    *level = if on_screen {
-        step(*level, want, time.delta_secs())
-    } else {
+    let screen = state.get();
+    let on_screen = *screen == Screen::InWorld;
+    // Under the death wash and the load the body is changing hands, so the
+    // frost is wherever the cold is when the world comes back: a respawn
+    // does not wear the last life's frost. Behind the map or the Esc menu
+    // it keeps moving, so it has crept or thawed as far as it would have.
+    *level = if matches!(screen, Screen::Dead | Screen::Loading) {
         want
+    } else {
+        step(*level, want, time.delta_secs())
     };
-    let night = sky.map_or(0.0, |s| s.night);
-    let params = Vec4::new(
-        (*level * LEVEL_STEPS).round() / LEVEL_STEPS,
-        lum(night),
-        0.0,
-        0.0,
-    );
+    let eye = eye.single().ok();
+    let ev100 = eye.and_then(|(_, ex)| ex).map_or(DAY_EV100, |ex| ex.ev100);
+    let light = sky.map_or(1.0, |s| seen_light(s.sun_lux, ev100));
+    let params = params(*level, light);
     let vis = if on_screen {
         Visibility::Inherited
     } else {
@@ -176,7 +211,14 @@ pub fn drive(
             }
         }
         (true, None) => {
-            commands.spawn((bundle(materials.add(FrostMaterial { params })), vis));
+            let mut node = commands.spawn((bundle(materials.add(FrostMaterial { params })), vis));
+            // On the eye's own target rather than the HUD's camera: the
+            // same window at full render scale, and below it the world's
+            // smaller image (`render_scale.rs`), where the frost costs what
+            // the world does and still lands under every HUD node.
+            if let Some((eye, _)) = eye {
+                node.insert(UiTargetCamera(eye));
+            }
         }
     }
 }
