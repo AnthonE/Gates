@@ -35,7 +35,11 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::time::Duration;
 
 use bevy::animation::AnimationTargetId;
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::NoAutoAabb;
 use bevy::gltf::{Gltf, GltfNode};
+use bevy::math::Vec3A;
+use bevy::mesh::skinning::SkinnedMesh;
 use bevy::prelude::*;
 use sim_core::movement::{SPRINT_SPEED, WADE_SPEED_MULT, WALK_SPEED};
 
@@ -48,10 +52,8 @@ use sim_core::movement::{SPRINT_SPEED, WADE_SPEED_MULT, WALK_SPEED};
 /// `ci/retarget_anim.py` moved all 46 onto the new skeleton and the alias was
 /// deleted. Neither change touched a variant.
 ///
-/// **One alias is left and it is a design choice, not a gap.** `Sleep` plays
-/// the idle: a sleeper stands, because the sim hits it with the standing
-/// capsule, and there is no pose that would be more honest than a person
-/// standing still.
+/// **One alias is left.** `Sleep` plays the idle: there is no lying clip, so
+/// a sleeper is the idle tipped onto its back (`root_pose`).
 ///
 /// An unmatched name is not a silent fallback — `nodes[slot]` would stay
 /// `AnimationNodeIndex::default()`, that index is the graph ROOT, and playing
@@ -65,11 +67,8 @@ pub enum Clip {
     Walk,
     Jog,
     Sprint,
-    /// A sleeper. Stands — `NOW.md` §0y item 1 — because the sim hits it with
-    /// the standing capsule `combat.rs` uses for everyone, so laying the mesh
-    /// down would draw a body outside the volume the server shoots at.
-    /// `bodies.rs` already argues this for the sleeper's colour and the same
-    /// reasoning binds harder for a pose.
+    /// A sleeper: the idle, laid on its back by `root_pose`, where the sim's
+    /// lying capsule is.
     Sleep,
     /// **The one-shot, and the only clip here that is not a loop.** A remote
     /// body swinging drew nothing before wire v47 — the one thing a fight
@@ -478,13 +477,14 @@ pub const ANIM_BODY_H_M: f32 = sim_core::collide::CAPSULE_HEIGHT_M;
 
 /// How far a sleeper's root is raised when it is laid on its back: the
 /// mesh's half-depth (`stumpy.glb` spans ±0.228 m front to back), so the
-/// back rests on the ground instead of in it.
-pub const SLEEP_LIFT_M: f32 = 0.23;
+/// back rests on the ground instead of in it. The sim's lying hit capsule
+/// has this radius, so it is the sim's number.
+pub const SLEEP_LIFT_M: f32 = sim_core::collide::LIE_R_M;
 
 /// Where a body's root is drawn and how it is turned. Awake: standing on the
 /// wire's feet. Asleep: tipped onto its back, face up, head behind where it
-/// faced, and centred over the feet — the sim still tests the standing
-/// cylinder there, so the torso is what a shot at a sleeper connects with.
+/// faced, and centred over the feet — the capsule the sim hits a sleeper
+/// with (`ranged::body_crossing`), so what you aim at is what you hit.
 pub fn root_pose(pos: Vec3, facing: Quat, asleep: bool) -> (Vec3, Quat) {
     if !asleep {
         return (pos, facing);
@@ -1233,13 +1233,28 @@ impl Reshade {
     }
 }
 
+/// Half the side of the box a skinned body mesh is culled against, in mesh
+/// units. The mesh hangs under `stumpy.glb`'s `target_character` (scale
+/// 0.01), so this is ~2 m around the body's root: room for it standing,
+/// lying on its back (`root_pose`, which puts the root at the feet) or
+/// fallen (`Death01`).
+const BODY_CULL_HALF: f32 = 200.0;
+
 /// Paint our materials onto a scene's meshes. Runs only for bodies carrying
 /// [`Reshade`] — at spawn — so the descendant
 /// walk is not a per-frame cost.
+///
+/// **And give each skinned body mesh a box that fits any pose.** Bevy culls
+/// a skinned mesh by its BIND box in mesh space, under the 0.01 armature,
+/// which is a ~2 cm blob at the root; the GPU skins the vertices a body
+/// away from it. A sleeper's root is its feet, so the whole sleeper
+/// vanished whenever its feet left the screen (`viewmodel.rs` hit the same
+/// blob for the arms). `NoAutoAabb` keeps `calculate_bounds` off it.
 pub fn reshade(
     mut commands: Commands,
     children: Query<&Children>,
     has_mesh: Query<(), With<Mesh3d>>,
+    skinned: Query<(), With<SkinnedMesh>>,
     keep: Query<(), With<super::worn::KeepLook>>,
     pending: Query<(Entity, &Reshade)>,
     waking: Res<BodyShades>,
@@ -1265,7 +1280,17 @@ pub fn reshade(
                 continue;
             }
             if has_mesh.get(e).is_ok() {
-                commands.entity(e).insert(MeshMaterial3d(mat.clone()));
+                let mut ec = commands.entity(e);
+                ec.insert(MeshMaterial3d(mat.clone()));
+                if skinned.get(e).is_ok() {
+                    ec.insert((
+                        Aabb {
+                            center: Vec3A::ZERO,
+                            half_extents: Vec3A::splat(BODY_CULL_HALF),
+                        },
+                        NoAutoAabb,
+                    ));
+                }
                 painted += 1;
             }
             if let Ok(kids) = children.get(e) {

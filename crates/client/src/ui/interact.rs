@@ -141,6 +141,10 @@ pub enum Verb {
     /// A mechanism's dial (`sim_core::mech`): `handle` is mechanism << 8 |
     /// dial, `item` the notch it shows. By nearness, at the sim's dial reach.
     Turn,
+    /// A sleeping player (`Player::sleeping`): `E` opens their pack
+    /// (`inventory::CONT_BODY`), as Rust lets you loot a sleeper where it
+    /// lies. `handle` is their id. Aimed, by [`resolve_sleeper`].
+    Sleeper,
 }
 
 impl Verb {
@@ -192,6 +196,7 @@ impl Verb {
             Verb::Read => 17,
             Verb::Turn => 18,
             Verb::Planter => 19,
+            Verb::Sleeper => 20,
         }
     }
 
@@ -223,6 +228,7 @@ impl Verb {
             Verb::Read => "INSCRIPTION",
             Verb::Turn => "DIAL",
             Verb::Planter => "PLANTER",
+            Verb::Sleeper => "SLEEPING PLAYER",
         }
     }
 }
@@ -443,6 +449,7 @@ impl Pick {
             }
             .to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
+            Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => "[E] TALK".to_string(),
             Verb::Read => "[E] READ THE STONE".to_string(),
@@ -496,8 +503,25 @@ fn species_noun(species: u8) -> &'static str {
     match species {
         sim_core::mob::MOB_WOLF => "WOLF",
         sim_core::mob::MOB_STAG => "STAG",
+        BODY_SPECIES => "BODY",
         _ => "PIG",
     }
+}
+
+/// A player's corpse's "species" on the wire (`WireBag::species` of a
+/// `BAG_KIND_BODY`): one past the animals.
+const BODY_SPECIES: u8 = sim_core::mob::MOB_KINDS as u8;
+
+/// A carcass's swing volume by its wire species: the animal's cylinder, or
+/// a body's (`backpack::CORPSE_*_CM`).
+fn carcass_cm(species: u8) -> Option<(u16, u16)> {
+    if species == BODY_SPECIES {
+        return Some((
+            sim_core::backpack::CORPSE_R_CM,
+            sim_core::backpack::CORPSE_H_CM,
+        ));
+    }
+    MOB_SWING_BODY_CM.get(species as usize).copied()
 }
 
 /// Whether the deployable at cell (`cx`, `cz`) is one of THE GATE's own
@@ -1503,6 +1527,7 @@ impl SwingPick {
         match self.carcass {
             Some(sim_core::mob::MOB_WOLF) => "BUTCHER WOLF",
             Some(sim_core::mob::MOB_STAG) => "BUTCHER STAG",
+            Some(BODY_SPECIES) => "BUTCHER BODY",
             Some(_) => "BUTCHER PIG",
             None => swing_label(self.occupant),
         }
@@ -1863,8 +1888,7 @@ fn nearest_carcass(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::CarcassHit
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
     let mut best: Option<melee::CarcassHit> = None;
     for (bag, b) in shadows.bags.iter().enumerate() {
-        let Some(&(r_cm, h_cm)) = b.species().and_then(|k| MOB_SWING_BODY_CM.get(k as usize))
-        else {
+        let Some((r_cm, h_cm)) = b.species().and_then(carcass_cm) else {
             continue;
         };
         let lying = Body {
@@ -1898,6 +1922,8 @@ fn nearest_body(ray: &Ray, shadows: &Shadows<'_>) -> Option<sim_core::ranged::Bo
             qy: e.qy,
             qz: e.qz,
             crouched: e.crouched,
+            lying: e.sleeping && !e.wounded,
+            yaw: e.yaw,
         };
         let Some(hit) = sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, i, pose) else {
             continue;
@@ -2099,6 +2125,64 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
     best
 }
 
+/// A sleeper is an aimed `E` target: the body the crosshair is on, lying
+/// where the sim's lying capsule is (`ranged::body_crossing`), inside the
+/// help-up ray's reach. The server proves the reach again every tick
+/// (`World::body_loot_index`).
+pub fn resolve_sleeper(aim: SwingAim, own: u32, entities: &[(u32, protocol::EntityState)]) -> Pick {
+    let body = Body {
+        qx: quant_xz(aim.x),
+        qy: quant_y(aim.y),
+        qz: quant_xz(aim.z),
+        ..Default::default()
+    };
+    let ray = sim_core::assist::ray(
+        &body,
+        &sim_core::input::InputFrame {
+            yaw: aim.yaw,
+            pitch: aim.pitch,
+            ..Default::default()
+        },
+        aim.crouched,
+    );
+    let mut best = Pick::default();
+    let mut distance = f32::MAX;
+    for (i, &(id, e)) in entities.iter().enumerate() {
+        if id == own
+            || !e.sleeping
+            || e.wounded
+            || e.dead
+            || sim_core::mob::slot_of_id(id).is_some()
+        {
+            continue;
+        }
+        let pose = sim_core::rewind::RewindPose {
+            id,
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            crouched: false,
+            lying: true,
+            yaw: e.yaw,
+        };
+        let Some(hit) = sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, i, pose) else {
+            continue;
+        };
+        let t = hit.enter;
+        if t < distance || (t == distance && id < best.handle) {
+            distance = t;
+            best = Pick {
+                verb: Verb::Sleeper,
+                handle: id,
+                aimed: true,
+                d2: (t * sim_core::assist::ASSIST_REACH_M).powi(2),
+                ..Default::default()
+            };
+        }
+    }
+    best
+}
+
 /// What the give key would hand over this frame (`Command::Give`, `NOW.md`
 /// §5d): the whole stack in the selected hotbar slot, to the standing player
 /// the crosshair is on in hand reach.
@@ -2287,6 +2371,8 @@ pub type NametagHit = (u32, (f32, f32, f32), (f32, f32, f32));
 /// ray enters within `ui::names::NAMETAG_REACH_M` (aim-only, `DECISIONS.md`),
 /// skipping yourself, the dead, animals and anyone the shard has neither
 /// tagged nor marked as an agent (a guest agent is named; a guest is not).
+/// A sleeper is aimed at where it lies, its capsule along the ground
+/// (`ranged::body_crossing`), as a swing and the loot prompt aim at it.
 /// Returns the id, the eye the ray leaves from and the head it reaches —
 /// the two ends a caller checks for a clear line before drawing a name.
 pub fn resolve_nametag(
@@ -2302,19 +2388,41 @@ pub fn resolve_nametag(
         if id == own || e.dead || id & sim_core::limits::MOB_ID_TAG != 0 || !tagged(id) {
             continue;
         }
-        let target = Body {
-            qx: e.qx,
-            qy: e.qy,
-            qz: e.qz,
-            ..Default::default()
+        let lying = e.sleeping && !e.wounded;
+        let t = if lying {
+            let pose = sim_core::rewind::RewindPose {
+                id,
+                qx: e.qx,
+                qy: e.qy,
+                qz: e.qz,
+                crouched: false,
+                lying: true,
+                yaw: e.yaw,
+            };
+            sim_core::ranged::body_crossing(ray.o, ray.s, 1.0, 0, pose).map(|h| h.enter)
+        } else {
+            let target = Body {
+                qx: e.qx,
+                qy: e.qy,
+                qz: e.qz,
+                ..Default::default()
+            };
+            sim_core::assist::aimed(&ray, &target)
         };
-        let Some(t) = sim_core::assist::aimed(&ray, &target) else {
+        let Some(t) = t else {
             continue;
         };
         if best.is_none_or(|(bt, bid, _)| t < bt || (t == bt && id < bid)) {
+            // The clear line runs to the head, or to the top of a body
+            // lying on the ground.
+            let up = if lying {
+                sim_core::collide::LIE_R_M * 2.0
+            } else {
+                sim_core::collide::CAPSULE_HEIGHT_M * 0.9
+            };
             let head = (
                 e.qx as f32 * POS_XZ_Q,
-                e.qy as f32 * POS_Y_Q + sim_core::collide::CAPSULE_HEIGHT_M * 0.9,
+                e.qy as f32 * POS_Y_Q + up,
                 e.qz as f32 * POS_XZ_Q,
             );
             best = Some((t, id, head));
@@ -2327,6 +2435,55 @@ pub fn resolve_nametag(
 mod assist_tests {
     use super::*;
     use sim_core::movement::{quant_xz, quant_y};
+
+    /// The pitch byte nearest the look from `(0, 1.6)` at `(run, rise)`.
+    fn pitch_toward(run: f32, rise: f32) -> u8 {
+        let len = (run * run + rise * rise).sqrt();
+        (0..=255u8)
+            .max_by(|&a, &b| {
+                let dot = |p: u8| {
+                    let (c, s) = sim_core::pitch_dir(p);
+                    (c * run + s * rise) / len
+                };
+                dot(a).total_cmp(&dot(b))
+            })
+            .unwrap()
+    }
+
+    /// A sleeper lying crosswise, aimed at its head end on the ground: the
+    /// standing cylinder over its feet is 0.7 m to the side, so the name
+    /// only shows if the tag aims at the body where it lies.
+    #[test]
+    fn a_sleeper_is_named_where_it_lies() {
+        let run = 2.5;
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: pitch_toward(run, sim_core::collide::LIE_R_M - 1.6),
+            crouched: false,
+        };
+        // Facing +X, so the head lies toward -X, under the aim at x = 10.
+        let sleeper = protocol::EntityState {
+            qx: quant_xz(10.7),
+            qy: quant_y(0.0),
+            qz: quant_xz(10.0 + run),
+            yaw: 16384,
+            sleeping: true,
+            ..Default::default()
+        };
+        let named = resolve_nametag(aim, 1, &[(2, sleeper)], |_| true);
+        assert_eq!(named.map(|(id, _, _)| id), Some(2));
+        let awake = protocol::EntityState {
+            sleeping: false,
+            ..sleeper
+        };
+        assert!(
+            resolve_nametag(aim, 1, &[(2, awake)], |_| true).is_none(),
+            "a standing body 0.7 m off the aim is not aimed at"
+        );
+    }
 
     #[test]
     fn hand_help_requires_aim_and_live_wounded_presence() {

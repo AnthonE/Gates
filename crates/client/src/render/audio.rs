@@ -1364,7 +1364,9 @@ pub fn feed(
     // which is the server answering the open, not the key.
     let open = (net.session.core.cont_kind, net.session.core.cont_handle);
     if open != *cont && open.0 != sim_core::inventory::CONT_SELF {
-        let cue = if open.0 == sim_core::inventory::CONT_BAG {
+        let cue = if open.0 == sim_core::inventory::CONT_BAG
+            || open.0 == sim_core::inventory::CONT_BODY
+        {
             Cue::Equip
         } else {
             Cue::ContainerOpen

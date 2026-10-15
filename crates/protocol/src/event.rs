@@ -4243,20 +4243,26 @@ pub struct WireBag {
     pub qy: i32,
     pub qz: i32,
     /// What the bag looks like (wire v84): [`BAG_KIND_PACK`] for a
-    /// player's or a box's, or `1 + species` for a killed animal's, which
-    /// the client draws as the carcass lying where it fell. Derived from
-    /// the bag's owner (an animal's is its tagged roster id), so the sim
-    /// stores nothing new and the owner itself still never crosses.
+    /// player's or a box's, `1 + species` for a killed animal's, which
+    /// the client draws as the carcass lying where it fell, or
+    /// [`BAG_KIND_BODY`] for a player's corpse (v110). Derived from the
+    /// bag's owner (an animal's is its tagged roster id), so the sim stores
+    /// nothing new and the owner itself still never crosses.
     pub kind: u8,
 }
 
 /// A backpack's look: a pack.
 pub const BAG_KIND_PACK: u8 = 0;
-/// The width of [`WireBag::kind`]. A pack and one kind per species; the
-/// patterns past that are forgeable and refused.
-const BAG_KIND_BITS: u32 = 2;
+/// A player's corpse (`backpack::CORPSE_OWNER`, v110): drawn as a fallen
+/// body, butchered like a carcass. Its "species" is `MOB_KINDS`, one past
+/// the animals.
+pub const BAG_KIND_BODY: u8 = 1 + sim_core::mob::MOB_KINDS as u8;
+/// The width of [`WireBag::kind`]. A pack, one kind per species and the
+/// body; the patterns past that are forgeable and refused. Three bits
+/// since v110.
+const BAG_KIND_BITS: u32 = 3;
 const _: () = assert!(
-    sim_core::mob::MOB_KINDS < (1 << BAG_KIND_BITS),
+    (BAG_KIND_BODY as u32) < (1 << BAG_KIND_BITS),
     "a new species no longer fits BAG_KIND_BITS — widen it, bump PROTO_VER \
      and regenerate the goldens in this same commit (CLAUDE.md wall 6)"
 );
@@ -4269,14 +4275,24 @@ impl WireBag {
             qx: b.qx,
             qy: b.qy,
             qz: b.qz,
-            kind: sim_core::mob::slot_of_id(b.owner)
-                .map_or(BAG_KIND_PACK, |slot| 1 + sim_core::mob::kind_of(slot)),
+            kind: if b.owner == sim_core::backpack::CORPSE_OWNER {
+                BAG_KIND_BODY
+            } else {
+                sim_core::mob::slot_of_id(b.owner)
+                    .map_or(BAG_KIND_PACK, |slot| 1 + sim_core::mob::kind_of(slot))
+            },
         }
     }
 
-    /// The species of the animal this bag is the carcass of, if any.
+    /// The species of the animal this bag is the carcass of, if any —
+    /// `MOB_KINDS` for a player's corpse ([`Self::is_body`]).
     pub fn species(&self) -> Option<u8> {
         self.kind.checked_sub(1)
+    }
+
+    /// A player's corpse ([`BAG_KIND_BODY`]).
+    pub fn is_body(&self) -> bool {
+        self.kind == BAG_KIND_BODY
     }
 }
 
@@ -4501,7 +4517,7 @@ fn write_bag(w: &mut BitWriter, b: &WireBag) -> Result<(), WireError> {
     w.write(b.qx as u32, POS_XZ_BITS)?;
     w.write((b.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
     w.write(b.qz as u32, POS_XZ_BITS)?;
-    if b.kind as usize > sim_core::mob::MOB_KINDS {
+    if b.kind > BAG_KIND_BODY {
         return Err(WireError::Range);
     }
     w.write(b.kind as u32, BAG_KIND_BITS)?;
@@ -4516,7 +4532,7 @@ fn read_bag(r: &mut BitReader) -> Result<WireBag, WireError> {
         qz: r.read(POS_XZ_BITS)? as i32,
         kind: r.read(BAG_KIND_BITS)? as u8,
     };
-    if b.kind as usize > sim_core::mob::MOB_KINDS {
+    if b.kind > BAG_KIND_BODY {
         return Err(WireError::Malformed);
     }
     Ok(b)
@@ -9256,10 +9272,9 @@ mod wire_domains {
             // re-keyed. So this pin has now fired for real, in both of
             // its jobs — the fit assert refused the fifth kind under two
             // bits, and this `live_max` refused it under three until the
-            // widening was deliberate. Values 5..7 are forgeable and
-            // refuse at both ends, which is the posture the field lost at
-            // v37 and has back.
-            live_max: 4,
+            // widening was deliberate. v110 took 5 for `CONT_BODY` (a
+            // sleeper's pack); 6..7 are forgeable and refuse at both ends.
+            live_max: 5,
         },
         Domain {
             what: "piece shape",
@@ -9783,8 +9798,8 @@ mod wire_domains {
             // guards, and the decoder refuses past it.
             "SENTRY_BITS",
             // A bag's look (v84): `1 + species` over the count `MOB_KINDS`,
-            // which a const-assert beside the width guards, and both ends
-            // refuse past it.
+            // then the body (v110), which a const-assert beside the width
+            // guards, and both ends refuse past it.
             "BAG_KIND_BITS",
             // A per-mille chance (wounded v0): a unit, not an enumeration.
             // `wound::recover_chance_pm` tops out at 450 by arithmetic and

@@ -25,7 +25,7 @@
 //! world that rarely moves between the two.
 
 use bevy::prelude::*;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
+use sim_core::inventory::{CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WORLD};
 
 use crate::look::{pitch_u8, yaw_u16};
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
@@ -344,6 +344,21 @@ pub fn resolve(
         );
         if !help.is_none() && (aimed.0.is_none() || help.d2 < aimed.0.d2) {
             aimed.0 = help;
+        }
+        let sleeper = interact::resolve_sleeper(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+                crouched,
+            },
+            core.player_id,
+            &core.view.entities,
+        );
+        if !sleeper.is_none() && (aimed.0.is_none() || sleeper.d2 < aimed.0.d2) {
+            aimed.0 = sleeper;
         }
     }
     // The give key's target, on the same aim (`B`, never `E`). A downed or
@@ -952,6 +967,15 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             let handle = pick.handle;
             if send(net, toast, "open", |buf| {
                 protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
+        // A sleeper's pack opens like a bag; the server proves the reach.
+        Verb::Sleeper => {
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BODY, handle, buf)
             }) {
                 open_panel(ui);
             }

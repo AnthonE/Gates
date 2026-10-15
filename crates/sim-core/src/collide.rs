@@ -60,6 +60,12 @@ pub const PIECE_LIFT_M: f32 = 0.3;
 /// v0; the render capsule is 0.4 m, the eye 1.6 m).
 pub const CAPSULE_RADIUS_M: f32 = 0.4;
 pub const CAPSULE_HEIGHT_M: f32 = 1.7;
+/// A sleeper's hit radius: it lies on its back, head behind its facing and
+/// feet ahead, centred over the feet it stood on, as a capsule
+/// [`CAPSULE_HEIGHT_M`] long whose axis is this far off the ground. The
+/// client lifts the drawn body by the same amount (`anim::SLEEP_LIFT_M`),
+/// the mesh's half-depth, so its back rests on the ground.
+pub const LIE_R_M: f32 = 0.23;
 /// The head, as a band off the **top** of that same cylinder: a hit whose
 /// line crosses `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above
 /// the feet is worth the weapon's `head_pct` (`DECISIONS.md` §open,

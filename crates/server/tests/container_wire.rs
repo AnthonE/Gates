@@ -49,7 +49,7 @@ use sim_core::combat::CombatContent;
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{cell_key, GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::inventory::{CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, WEAR_SLOTS};
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CRATE};
 use sim_core::movement::Body;
@@ -1958,9 +1958,106 @@ fn crate_fixture() -> LootContent {
 /// Do not "fix" a failure here by bumping the literal. The failure is the
 /// notice.
 const _: () = assert!(
-    sim_core::inventory::CONT_MAX == CONT_WEAR,
+    sim_core::inventory::CONT_MAX == CONT_BODY,
     "a container kind was added without a container_wire test that opens it"
 );
+
+/// A sleeper is looted where it lies: the panel carries the **sleeper's**
+/// pack, not the looter's own (`cont_slot`'s `_` arm is the looter's
+/// `inv`, the plausible wrong store again), and a take moves the stack out
+/// of the body into the looter's pack. A sleeper out of reach shows
+/// nothing.
+#[test]
+fn a_sleeper_is_looted_from_its_own_pack() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    let mut clients = two_clients(&mut core, &stats);
+    let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
+    core.world.players[w0].inv = [ItemStack::default(); INV_SLOTS];
+    core.world.players[w0].inv[SLOT_A] = ItemStack {
+        item: OTHER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w1].inv = [ItemStack::default(); INV_SLOTS];
+    core.world.players[w1].inv[SLOT_A] = ItemStack {
+        item: FILLER,
+        count: COUNT_A,
+        cond: 0,
+        skin: 0,
+    };
+    // Slot 1 leaves; its body stays as a sleeper.
+    let _ = core.disconnect(1);
+    clients.truncate(1);
+    let mut seen = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut seen);
+    assert!(core.world.is_sleeper(id_of(1)), "setup: slot 1 sleeps");
+
+    ask(&mut core, 0, CONT_BODY, id_of(1));
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    let got = syncs(&seen);
+    assert_eq!(got.len(), 1, "one open, one payment: {got:?}");
+    let (slot, kind, handle, reset, rows) = &got[0];
+    assert_eq!(
+        (*slot, *kind, *handle, *reset),
+        (0, CONT_BODY, id_of(1), true)
+    );
+    assert_eq!(
+        rows,
+        &vec![(SLOT_A as u8, core.world.players[w1].inv[SLOT_A])],
+        "the panel must carry the sleeper's pack, not the looter's"
+    );
+
+    // Take it: the sleeper's slot into an empty slot of the looter's pack.
+    let to = SLOT_B as u8;
+    let mut buf = [0u8; 32];
+    let n = protocol::encode_action_move(
+        id_of(1),
+        CONT_BODY,
+        SLOT_A as u8,
+        CONT_SELF,
+        to,
+        COUNT_A,
+        &mut buf,
+    )
+    .expect("a shape the wire takes");
+    core.push_action(0, protocol::decode_action(&buf[..n]).expect("round trips"));
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert_eq!(core.world.players[w1].inv[SLOT_A], ItemStack::default());
+    assert_eq!(
+        (
+            core.world.players[w0].inv[SLOT_B].item,
+            core.world.players[w0].inv[SLOT_B].count
+        ),
+        (FILLER, COUNT_A),
+        "the stack must land in the looter's pack"
+    );
+
+    // Walk out of reach: the panel is shut, not starved.
+    let far = core.world.players[w1].body;
+    core.world.players[w0].body = Body::at(
+        SEED,
+        hv(SEED),
+        far.qx as f32 * sim_core::movement::POS_XZ_Q + 20.0,
+        far.qz as f32 * sim_core::movement::POS_XZ_Q,
+    );
+    seen.clear();
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert!(
+        syncs(&seen)
+            .iter()
+            .any(|(s, k, _, reset, _)| *s == 0 && *k == CONT_SELF && *reset),
+        "a sleeper out of reach must close the panel: {:?}",
+        syncs(&seen)
+    );
+}
 
 /// A body's wear panel carries the *body's* contents, not its backpack's.
 ///

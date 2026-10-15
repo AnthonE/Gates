@@ -272,6 +272,18 @@ impl Reaches {
         r
     }
 
+    /// The reach to the body `hit`: [`Self::body`], or for a body lying on
+    /// the ground (a sleeper, `BodyHit::part` decided) at least
+    /// [`Self::node`], the reach everything else on the ground is swung at.
+    /// A 1 m bat from a 1.6 m eye never meets the ground.
+    pub fn to_body(&self, hit: &crate::ranged::BodyHit) -> f32 {
+        if hit.part.is_some() && self.body > 0.0 {
+            self.body.max(self.node)
+        } else {
+            self.body
+        }
+    }
+
     /// How long the ray has to be to find everything any kind can reach.
     pub fn longest(&self) -> f32 {
         self.node
@@ -637,27 +649,34 @@ pub struct CarcassHit {
 
 /// The nearest animal carcass along `ray`: a bag whose owner is a pig, wolf
 /// or stag slot (a helicopter's or a sentry's is wreckage, not meat), tested
-/// as the species' body cylinder lying down — its radius, half its height.
+/// as the species' body cylinder lying down — its radius, half its height —
+/// or a player's corpse (`backpack::CORPSE_OWNER`), at a body's size.
 pub fn carcass_cast(mc: &MobContent, bags: &Backpacks, ray: &Ray) -> Option<CarcassHit> {
     let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
     let mut best: Option<CarcassHit> = None;
     for (bag, b) in bags.entries().iter().enumerate() {
-        let Some(slot) = crate::mob::slot_of_id(b.owner) else {
-            continue;
+        // A player's corpse is cut like an animal's, at a body's size.
+        let (r_cm, h_cm) = if b.owner == crate::backpack::CORPSE_OWNER {
+            (crate::backpack::CORPSE_R_CM, crate::backpack::CORPSE_H_CM)
+        } else {
+            let Some(slot) = crate::mob::slot_of_id(b.owner) else {
+                continue;
+            };
+            let kind = crate::mob::kind_of(slot);
+            if kind as usize >= crate::mob::MOB_KINDS {
+                continue;
+            }
+            let def = mc.def(kind);
+            (def.body_r_cm, def.body_h_cm)
         };
-        let kind = crate::mob::kind_of(slot);
-        if kind as usize >= crate::mob::MOB_KINDS {
-            continue;
-        }
-        let def = mc.def(kind);
         let lying = Body {
             qx: b.qx,
             qy: b.qy,
             qz: b.qz,
             ..Body::default()
         };
-        let Some(t_in) = carcass_entry(o, u, def.body_r_cm, def.body_h_cm, &lying) else {
+        let Some(t_in) = carcass_entry(o, u, r_cm, h_cm, &lying) else {
             continue;
         };
         if best.is_none_or(|c| t_in < c.t) {
@@ -868,7 +887,7 @@ pub fn nearest(entered: &Entered, ray: &Ray, reaches: &Reaches) -> Reached {
     let within = |t: f32, reach_mm: f32| t * ray.len_mm <= reach_mm;
     match best {
         Reached::Node(nh) if !within(nh.t, reaches.node) => Reached::Nothing,
-        Reached::Body { hit, .. } if !within(hit.enter, reaches.body) => Reached::Nothing,
+        Reached::Body { hit, .. } if !within(hit.enter, reaches.to_body(&hit)) => Reached::Nothing,
         Reached::Mob(m) if !within(m.t, reaches.body) => Reached::Nothing,
         Reached::Carcass(c) if !within(c.t, reaches.carcass) => Reached::Nothing,
         // A wall the hand cannot damage is still a wall the swing stopped

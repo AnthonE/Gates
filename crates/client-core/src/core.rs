@@ -3143,7 +3143,8 @@ impl ClientCore {
                 // predicted body is the death position, and the server
                 // stands the bag at the body it killed, so the first drop
                 // since this death that lands beside it is this body's.
-                if self.own_bag_pending && self.dead {
+                // The corpse (`BAG_KIND_BODY`) drops beside it and is not it.
+                if self.own_bag_pending && self.dead && kind != protocol::BAG_KIND_BODY {
                     let dx = (qx - self.predict.body.qx) as f32 * POS_XZ_Q;
                     let dz = (qz - self.predict.body.qz) as f32 * POS_XZ_Q;
                     if dx * dx + dz * dz <= OWN_BAG_NEAR_M * OWN_BAG_NEAR_M {
