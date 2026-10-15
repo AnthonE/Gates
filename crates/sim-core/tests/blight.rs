@@ -244,7 +244,7 @@ fn deep_in_the_heart(seed: u64) -> (f32, f32) {
 /// A world with a pig two metres from a joined body at `at`, the meter
 /// armed slowly (so only the bite can jump it) and the pig's bite carrying
 /// `fel_bite`; the body wears a piece warding `ward` per mille.
-fn bitten(at: (f32, f32), fel_bite: u16, ward: u16) -> World {
+fn bitten(at: (f32, f32), fel_bite: u16, ward: u16) -> (World, usize) {
     let mut w = World::new(BITE_SEED);
     w.combat = CombatContent::probe_fixture();
     let mut mc = MobContent::probe_fixture();
@@ -275,7 +275,7 @@ fn bitten(at: (f32, f32), fel_bite: u16, ward: u16) -> World {
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
     let haven = terrain::haven(BITE_SEED);
     w.mobs.m[slot].body = Body::at(BITE_SEED, &haven, ax + 2.0, az);
-    w
+    (w, slot)
 }
 
 fn step(w: &mut World, seq: u16) {
@@ -297,8 +297,8 @@ fn a_turned_bite_corrupts_through_the_ward_and_a_clean_one_does_not() {
     for (ward, gain) in [(0u16, 60u16), (500, 30)] {
         // The same world twice, once with a bite that carries nothing: the
         // meter's own slow rise is the same in both, so the gap is the bite.
-        let mut a = bitten(heart, 60, ward);
-        let mut b = bitten(heart, 0, ward);
+        let (mut a, pig) = bitten(heart, 60, ward);
+        let (mut b, _) = bitten(heart, 0, ward);
         let full = a.players[0].hp;
         let mut seq = 0u16;
         while a.players[0].hp == full {
@@ -307,11 +307,7 @@ fn a_turned_bite_corrupts_through_the_ward_and_a_clean_one_does_not() {
             seq += 1;
             assert!(seq < 600, "no bite landed in the heart");
         }
-        assert!(a
-            .mobs
-            .m
-            .iter()
-            .any(|m| m.alive && m.kind == MOB_PIG && m.turned));
+        assert!(a.mobs.m[pig].turned, "the pig in the heart did not turn");
         assert_eq!(a.players[0].hp, b.players[0].hp, "the bite hurt the same");
         assert_eq!(
             a.players[0].fel - b.players[0].fel,
@@ -322,7 +318,7 @@ fn a_turned_bite_corrupts_through_the_ward_and_a_clean_one_does_not() {
 
     // Out of the green, the same pig is the island's and so is its bite.
     let clean = World::new(BITE_SEED).spawn_pos(1);
-    let mut w = bitten(clean, 60, 0);
+    let (mut w, pig) = bitten(clean, 60, 0);
     let full = w.players[0].hp;
     let mut seq = 0u16;
     while w.players[0].hp == full {
@@ -330,9 +326,6 @@ fn a_turned_bite_corrupts_through_the_ward_and_a_clean_one_does_not() {
         seq += 1;
         assert!(seq < 600, "no bite landed on the beach");
     }
-    assert!(
-        !w.mobs.m.iter().any(|m| m.alive && m.turned),
-        "nothing turns on clean ground"
-    );
+    assert!(!w.mobs.m[pig].turned, "the pig turned on clean ground");
     assert_eq!(w.players[0].fel, 0, "a clean bite carried the green");
 }

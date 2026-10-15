@@ -3938,10 +3938,12 @@ fn every_consumable_the_content_ships_is_reachable() {
     g.1 = g.1.replace(patch, "\n");
     strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
+    // The Charcoal Tonic is steeped from mushrooms, so it goes with them.
     assert_eq!(
         unreachable_consumables(&mutant),
-        vec!["item.mushrooms".to_string()],
-        "deleting the tree's mushroom secondary must strand exactly the mushrooms"
+        vec!["item.charcoal_tonic".to_string(), "item.mushrooms".to_string()],
+        "deleting the tree's mushroom secondary must strand exactly the mushrooms \
+         and what is made of them"
     );
 
     let mut srcs = sources();
