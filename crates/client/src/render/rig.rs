@@ -898,15 +898,16 @@ pub const FEL_GRADE_SAT: f32 = 1.10;
 /// the fog and the exposure. The weather (weather v0) arrives as one more input:
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
-// Nine, which clippy counts: the flame gain is the ninth, and it is written
-// here for the reason the sun is — this is the one owner of the hour.
+// Ten, which clippy counts: the flame gain is the ninth, and it is written
+// here for the reason the sun is — this is the one owner of the hour. The
+// film, the tenth, owns the grade while it rolls; it is native only.
 #[allow(clippy::too_many_arguments)]
 pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
-    film: Option<Res<super::film::Film>>,
+    #[cfg(not(target_arch = "wasm32"))] film: Option<Res<super::film::Film>>,
     mut gain: ResMut<FlameGain>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
@@ -1028,7 +1029,11 @@ pub fn day_night(
         }
         // The Verdigris' grade, a little darker and greener-lit. A film owns
         // the grade while it rolls (`film::lens`).
-        if let (Some(mut g), None) = (grading, film) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let filming = film.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let filming = false;
+        if let (Some(mut g), false) = (grading, filming) {
             let ev = FEL_GRADE_EV * w.fel;
             let sat = 1.0 + (FEL_GRADE_SAT - 1.0) * w.fel;
             if g.global.exposure != ev || g.global.post_saturation != sat {
