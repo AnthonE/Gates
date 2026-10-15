@@ -102,6 +102,40 @@ impl Quality {
     pub const LADDER: [Quality; 3] = [Quality::Low, Quality::Medium, Quality::High];
 }
 
+/// How the cloud deck is drawn where the atmosphere draws it
+/// (`render/deck.rs`): LOW is the flat deck shaded per pixel, MEDIUM and
+/// HIGH a raymarched slab of cloud at two step counts. A name in the file,
+/// for [`Ao`]'s reason.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Clouds {
+    Low,
+    Medium,
+    High,
+}
+
+impl Clouds {
+    pub fn name(self) -> &'static str {
+        match self {
+            Clouds::Low => "low",
+            Clouds::Medium => "medium",
+            Clouds::High => "high",
+        }
+    }
+
+    /// The inverse; `None` for anything else, as [`Ao::from_name`].
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Clouds::Low),
+            "medium" => Some(Clouds::Medium),
+            "high" => Some(Clouds::High),
+            _ => None,
+        }
+    }
+
+    /// Cheapest first, for the stepper.
+    pub const LADDER: [Clouds; 3] = [Clouds::Low, Clouds::Medium, Clouds::High];
+}
+
 /// How much ambient occlusion, as a name a settings file can carry.
 ///
 /// **A name and not a number, for [`Quality`]'s reason exactly**: the file is
@@ -185,6 +219,7 @@ pub struct GfxFile {
     pub tree_lod_m: Option<f32>,
     /// Percentage of the window resolution used for the world image.
     pub render_scale: Option<u8>,
+    pub clouds: Option<Clouds>,
 }
 
 /// The values that survive a restart. A plain struct rather than the
@@ -339,6 +374,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             // keeps the default (here, the preset's value) and is not
             // preserved, because the next save rewrites it.
             "ao" => v.gfx.ao = Ao::from_name(value).or(v.gfx.ao),
+            "clouds" => v.gfx.clouds = Clouds::from_name(value).or(v.gfx.clouds),
             "smaa" => opt_flag(&mut v.gfx.smaa, value),
             "taa" => opt_flag(&mut v.gfx.taa, value),
             "bloom" => opt_flag(&mut v.gfx.bloom, value),
@@ -511,6 +547,9 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     if let Some(n) = v.gfx.tree_lod_m {
         s.push_str(&format!("tree_lod_m = {n}\n"));
     }
+    if let Some(c) = v.gfx.clouds {
+        s.push_str(&format!("clouds = \"{}\"\n", c.name()));
+    }
     // Written unconditionally, empty list included: a `favourites = ""` line
     // is how un-starring the last shard *sticks*. Omitting the key when the
     // list is empty would leave the previous file's line in place on a
@@ -658,6 +697,7 @@ mod tests {
                 shadow_map_px: Some(4096),
                 tree_lod_m: Some(55.0),
                 render_scale: Some(75),
+                clouds: Some(Clouds::Medium),
             },
         }
     }
@@ -752,6 +792,7 @@ mod tests {
                 shadow_map_px: Some(2048),
                 tree_lod_m: Some(80.0),
                 render_scale: Some(100),
+                clouds: Some(Clouds::High),
             },
             ..defaults()
         };

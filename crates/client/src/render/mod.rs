@@ -607,9 +607,13 @@ impl Plugin for GatesRenderPlugin {
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
-        // The moon (`moon.rs`), and a browser's sky drawn per pixel (`deck.rs`).
+        // The moon (`moon.rs`), and the sky's clouds drawn per pixel
+        // (`deck.rs`): the browser's WebGL2 deck, and the cloud deck
+        // everywhere the atmosphere draws.
         app.add_plugins(MaterialPlugin::<moon::MoonMaterial>::default());
         app.add_plugins(MaterialPlugin::<deck::DeckMaterial>::default());
+        app.add_plugins(MaterialPlugin::<deck::CloudMaterial>::default());
+        app.add_plugins(MaterialPlugin::<deck::SkyFogMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         // The portrait's layer reaches every node its scene spawns, before
         // visibility is worked out (`portrait.rs`).

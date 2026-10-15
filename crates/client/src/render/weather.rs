@@ -100,9 +100,19 @@ impl WeatherNow {
     /// the atmosphere stays the only haze until the weather adds one.
     /// ~150 m sight in the fog preset, ~500 m in a storm.
     pub fn fog_sigma(&self) -> f32 {
+        self.fog_part() + self.rain_part()
+    }
+
+    /// The ground fog's share of [`Self::fog_sigma`], per metre.
+    pub fn fog_part(&self) -> f32 {
         let f = self.fog;
+        f * f * f * (3.0 / 110.0)
+    }
+
+    /// The rain haze's share of [`Self::fog_sigma`], per metre.
+    pub fn rain_part(&self) -> f32 {
         let r = self.rain;
-        f * f * f * (3.0 / 110.0) + r * r * (3.0 / 600.0)
+        r * r * (3.0 / 600.0)
     }
 
     /// Queue a thunderclap, dropping it if the queue is full (a storm is

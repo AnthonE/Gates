@@ -164,8 +164,8 @@ pub fn showing(w: &WeatherNow) -> f32 {
     ((w.night * (1.0 - w.fog)).clamp(0.0, 1.0) * 64.0).round() / 64.0
 }
 
-/// The uniform for this frame, the deck at `shown` (the composer's last
-/// published deck — what is on screen).
+/// The uniform for this frame, behind the deck `shown` — this frame's,
+/// since every target draws its deck per pixel (`deck.rs`).
 pub fn params_for(w: &WeatherNow, shown: &sky::ComposeParams) -> StarParams {
     StarParams {
         look: Vec4::new(showing(w), STAR_PX, 0.0, 0.0),
@@ -215,9 +215,9 @@ pub fn setup(
 }
 
 /// Show the stars at night, behind the deck on screen. Writes the material
-/// only when something moved, since a write rebuilds its bind group — a
-/// clear night's deck drifts, and the composer republishes it about twice
-/// a second natively, so that is the rate this writes at.
+/// only when something moved, since a write rebuilds its bind group — and
+/// a night's deck drifts, so on a clear night that is every frame, as the
+/// deck's own material is.
 pub fn drive(
     weather: Res<WeatherNow>,
     composer: Option<Res<sky::SkyComposer>>,
@@ -236,16 +236,13 @@ pub fn drive(
             *v = want;
         }
     }
-    let (Some(handle), Some(composer)) = (handle, composer) else {
-        return;
-    };
-    let Some(shown) = composer.shown() else {
+    let (Some(handle), Some(_)) = (handle, composer) else {
         return;
     };
     if !show {
         return;
     }
-    let want = params_for(&weather, shown);
+    let want = params_for(&weather, &sky::ComposeParams::from_weather(&weather));
     let stale = materials.get(&handle.0).is_some_and(|m| m.params != want);
     if stale {
         if let Some(m) = materials.get_mut(&handle.0) {

@@ -11,6 +11,16 @@ fn deck_point(d: vec3<f32>, alt: f32, cutoff: f32) -> vec2<f32> {
     return d.xz * (alt / max(d.y, cutoff));
 }
 
+// How much of the sky a ray `y` above the horizon loses to the weather's
+// fog, `0..=1`: `sky::SkyFog::band`, line for line. `air` is `SkyFog::lanes`
+// — the ground fog and the rain haze, each straight up and level across
+// the island.
+fn deck_fog(y: f32, air: vec4<f32>) -> f32 {
+    let s = max(y + 0.02, 1e-3);
+    let tau = min(air.x / s, air.z) + min(air.y / s, air.w);
+    return 1.0 - exp(-tau);
+}
+
 // How much of the deck stands in front, by the ray's height: none under
 // the cutoff, all of it `fade` above.
 fn deck_fade(y: f32, cutoff: f32, fade: f32) -> f32 {

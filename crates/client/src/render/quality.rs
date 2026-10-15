@@ -60,7 +60,7 @@ use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::camera::{MipBias, TemporalJitter};
 
-use crate::config::{Ao, Quality};
+use crate::config::{Ao, Clouds, Quality};
 
 use super::props::Fellable;
 use super::rig::{EyeCam, Sun};
@@ -103,6 +103,9 @@ pub struct Gfx {
     pub tree_lod_swap_m: f32,
     /// Percentage of each world-image dimension; the HUD stays at window size.
     pub render_scale: u8,
+    /// How the cloud deck is drawn (`deck.rs`): flat, or raymarched at one
+    /// of two step counts.
+    pub clouds: Clouds,
 }
 
 /// The shadow distances the screen offers, metres, ascending.
@@ -304,6 +307,13 @@ pub fn preset(q: Quality) -> Gfx {
             shadow_m: 200.0,
             shadow_map_px: 2048,
             tree_lod_swap_m: super::tree::TREE_LOD_SWAP_M,
+            // A browser's top rung marches half the steps: the same slab,
+            // grainier, on the integrated GPU most pages run on.
+            clouds: if cfg!(target_arch = "wasm32") {
+                Clouds::Medium
+            } else {
+                Clouds::High
+            },
         },
         Quality::Medium => Gfx {
             render_scale: super::render_scale::RENDER_SCALE_MAX,
@@ -319,6 +329,7 @@ pub fn preset(q: Quality) -> Gfx {
             shadow_m: 140.0,
             shadow_map_px: 2048,
             tree_lod_swap_m: MEDIUM_TREE_LOD_SWAP_M,
+            clouds: Clouds::Medium,
         },
         Quality::Low => Gfx {
             render_scale: super::render_scale::RENDER_SCALE_MAX,
@@ -351,6 +362,7 @@ pub fn preset(q: Quality) -> Gfx {
             #[cfg(not(webgl2))]
             shadow_map_px: 1024,
             tree_lod_swap_m: 35.0,
+            clouds: Clouds::Low,
         },
     }
 }
@@ -449,11 +461,15 @@ pub fn effective(g: Gfx) -> Gfx {
     //
     // All three are WebGL2's walls, not the browser's: the WebGPU module has
     // storage buffers and compute and takes every one of them.
+    // The raymarched deck is drawn where the atmosphere composites it
+    // (`deck.rs`); WebGL2 has none, and draws its own flat deck whatever
+    // this row says.
     #[cfg(webgl2)]
     let g = Gfx {
         ao: Ao::Off,
         taa: false,
         bloom: false,
+        clouds: Clouds::Low,
         ..g
     };
     #[cfg(target_arch = "wasm32")]

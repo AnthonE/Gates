@@ -41,6 +41,12 @@
 //!     `AtmosphereNode` lives in a private `mod node;` in `bevy_pbr` and is
 //!     never re-exported, so there is no edge to add.
 //!
+//! **What the eye sees of it is drawn per pixel since 2026-10-15**
+//! (`deck.rs`): wherever the atmosphere draws, a fullscreen triangle at depth
+//! 0 in the opaque pass takes the `Skybox`'s place — the same compositing,
+//! by the same owner, so everything below still holds — and the cube is what
+//! the sea reflects. Under WebGL2 the `Skybox` stays, under a per-pixel deck.
+//!
 //! The cubemap is generated from the world seed. No asset, no shader, no
 //! download. **Since weather v0 it is composed, not baked once**: a tileable
 //! noise field is built at boot, and [`compose`] re-projects the deck from it
@@ -409,8 +415,8 @@ pub const SIDE_VIEW_Y: f32 = 0.34;
 /// the sea to reflect, wholly inside the quad's so it never shows round it.
 pub const MOON_R: f32 = 0.03;
 /// The cube's disk, as cosines of its radius (~0.7°) and soft edge (~1.1°).
-const MOON_COS_IN: f32 = 0.999_93;
-const MOON_COS_OUT: f32 = 0.999_8;
+pub const MOON_COS_IN: f32 = 0.999_93;
+pub const MOON_COS_OUT: f32 = 0.999_8;
 /// The halo (~8.6°).
 pub const HALO_COS: f32 = 0.988_77;
 pub const MOON_RGB: [f32; 3] = [0.78, 0.8, 0.84];
@@ -662,7 +668,9 @@ pub struct ComposeParams {
     pub cover: f32,
     /// How heavy the cloud is: greyer bases, dimmer tops.
     pub dark: f32,
-    /// How far the deck has drifted downwind, noise units.
+    /// The field's offset, noise units: the deck is read at `plane +
+    /// drift`, so this is MINUS how far it has drifted downwind — a cloud
+    /// moves the way the rain slants (`rain::params_for`), not against it.
     pub drift: Vec2,
     /// Toward the sun, unit.
     pub sun: Vec3,
@@ -672,8 +680,8 @@ pub struct ComposeParams {
     pub night: f32,
     /// Toward the moon, unit.
     pub moon: Vec3,
-    /// The fog band at the horizon, `0..=1`.
-    pub fog: f32,
+    /// The weather's air over the sky ([`SkyFog`]).
+    pub fog: SkyFog,
     /// Compose a clear sky behind the cloud (a browser).
     pub backdrop: bool,
 }
@@ -690,7 +698,7 @@ impl ComposeParams {
             light: 1.0,
             night: 0.0,
             moon: Vec3::Y,
-            fog: 0.0,
+            fog: SkyFog::CLEAR,
             backdrop,
         }
     }
@@ -700,14 +708,77 @@ impl ComposeParams {
         Self {
             cover: deck_cover(w.cloud),
             dark: w.dark,
-            drift: w.drift / CLOUD_SCALE_M,
+            drift: -w.drift / CLOUD_SCALE_M,
             sun: w.sun,
             light: w.sun_lux,
             night: w.night,
             moon: w.moon,
-            fog: (w.fog_sigma() * 100.0).clamp(0.0, 1.0),
+            fog: SkyFog::new(w.fog_part(), w.rain_part()),
             backdrop: BAKE_BACKDROP,
         }
+    }
+}
+
+/// How deep the ground fog lies, metres: a valley fog, so overhead the sky
+/// still shows through it faintly while the horizon is gone.
+pub const FOG_LAYER_M: f32 = 60.0;
+/// How deep the rain's haze reads, metres: the rain falls from the cloud
+/// base, but past this the deck above it still shows its shapes.
+pub const RAIN_LAYER_M: f32 = 150.0;
+
+/// The weather's fog over the sky, as optical depths: straight up through
+/// each layer, and level across the farthest land the eye can see
+/// (`rig::FAR_M`). A sky ray `y` above the horizon crosses `up / y` of a
+/// layer, never more than the level reach — so the sky at the horizon is
+/// fogged exactly as much as the island's far edge below it, and the seam
+/// the old hand-set band left there is closed by construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkyFog {
+    /// `σ × depth` of the ground fog and of the rain haze.
+    pub up_fog: f32,
+    pub up_rain: f32,
+    /// `σ × rig::FAR_M` of each.
+    pub far_fog: f32,
+    pub far_rain: f32,
+}
+
+impl SkyFog {
+    pub const CLEAR: Self = Self {
+        up_fog: 0.0,
+        up_rain: 0.0,
+        far_fog: 0.0,
+        far_rain: 0.0,
+    };
+
+    /// The sky's fog for extinctions per metre `fog` and `rain`
+    /// (`WeatherNow::fog_part`, `rain_part`).
+    pub fn new(fog: f32, rain: f32) -> Self {
+        let far = super::rig::FAR_M;
+        Self {
+            up_fog: fog * FOG_LAYER_M,
+            up_rain: rain * RAIN_LAYER_M,
+            far_fog: fog * far,
+            far_rain: rain * far,
+        }
+    }
+
+    /// The four as the shaders take them.
+    pub fn lanes(&self) -> Vec4 {
+        Vec4::new(self.up_fog, self.up_rain, self.far_fog, self.far_rain)
+    }
+
+    /// How much of a sky ray `y` above the horizon the fog takes, `0..=1`.
+    /// `deck.wgsl`'s `deck_fog` is this, line for line.
+    pub fn band(&self, y: f32) -> f32 {
+        let s = (y + 0.02).max(1e-3);
+        let tau = (self.up_fog / s).min(self.far_fog) + (self.up_rain / s).min(self.far_rain);
+        1.0 - (-tau).exp()
+    }
+
+    /// The whole extinction per metre — what the ground's fog is greyed by
+    /// ([`fog_color`]), so the sky's band is the same colour.
+    pub fn sigma(&self) -> f32 {
+        (self.far_fog + self.far_rain) / super::rig::FAR_M
     }
 }
 
@@ -773,6 +844,21 @@ fn airmass(y: f32) -> f32 {
     let y = y.clamp(0.0, 1.0);
     let deg = y.asin().to_degrees();
     1.0 / (y + 0.505_72 * (deg + 6.079_95).powf(-1.636_4))
+}
+
+/// [`zenith_depth`] of the island's air, worked out once: what the per-pixel
+/// deck (`cloud.wgsl`) undoes the atmosphere's hue with, as [`deck_hue`]'s
+/// table does here.
+pub fn column_depth() -> [f32; 3] {
+    static TAU: std::sync::OnceLock<[f32; 3]> = std::sync::OnceLock::new();
+    *TAU.get_or_init(|| zenith_depth(&super::rig::island_medium()))
+}
+
+/// What one deck unit is drawn at, cd/m²: [`CLOUD_NITS`], and four times
+/// that at a lightning flash's peak. The rig's `Skybox` brightness is this
+/// times [`DECK_GAIN`]; the per-pixel decks draw at this.
+pub fn deck_nits(flash: f32) -> f32 {
+    CLOUD_NITS * (1.0 + 3.0 * flash)
 }
 
 /// The medium's optical depth from the ground straight up, per channel —
@@ -860,7 +946,7 @@ impl DeckLight {
                 MOON_SCATTER * MOONLIT[c] * p.night * (1.0 - 0.7 * p.dark)
             }),
             gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
-            fog_rgb: fog_rgb(p.light, p.dark, 1.0),
+            fog_rgb: fog_rgb(p.light, p.dark, fog_grey(p.fog.sigma())),
             thresh: 1.0 - p.cover,
         }
     }
@@ -964,10 +1050,11 @@ pub fn compose_range(
         let mut rgb: [f32; 3] =
             core::array::from_fn(|c| (cloud[c] * cov + sky[c] * (1.0 - cov)) * gain);
 
-        // Fog lies between the eye and everything: a band at the horizon
-        // the colour the ground's fog fades to, so the seam is one colour.
-        if p.fog > 0.0 {
-            let band = p.fog * (1.0 - (d.y + 0.02) / 0.25).clamp(0.0, 1.0);
+        // Fog lies between the eye and everything: as much of the sky as
+        // the weather's air takes along this ray, the colour the ground's
+        // fog fades to, so the seam is one colour.
+        let band = p.fog.band(d.y);
+        if band > 0.0 {
             for c in 0..3 {
                 rgb[c] += (fog_rgb[c] * gain - rgb[c]) * band;
             }
@@ -1011,11 +1098,38 @@ pub fn fog_rgb(light: f32, dark: f32, grey: f32) -> [f32; 3] {
     core::array::from_fn(|c| (h[c] + (lum - h[c]) * grey) * dim + NIGHT_FOG[c] * (1.0 - light))
 }
 
-/// [`fog_rgb`] for a fog of extinction `sigma`: thin weather keeps the
-/// sky's blue, thick fog is neutral.
+/// How grey a fog of extinction `sigma` is, `0..=1`: thin weather keeps
+/// the sky's blue, thick fog is neutral.
+pub fn fog_grey(sigma: f32) -> f32 {
+    (sigma * 400.0).clamp(0.0, 1.0)
+}
+
+/// [`fog_rgb`] for a fog of extinction `sigma`.
 pub fn fog_color(light: f32, dark: f32, sigma: f32) -> Color {
-    let c = fog_rgb(light, dark, (sigma * 400.0).clamp(0.0, 1.0));
+    let c = fog_rgb(light, dark, fog_grey(sigma));
     Color::linear_rgb(c[0], c[1], c[2])
+}
+
+/// How much of the sun a fog throws forward toward the eye, as Bevy's
+/// `DistanceFog::directional_light_color` alpha: droplets scatter mostly
+/// forward, so a fog bank with the sun behind it glows. Bevy weighs it by
+/// each directional light's own illuminance and its shadow at the fogged
+/// point, so it is nothing at night, a sheet toward a lightning bolt, and
+/// dark where the trees shade the fog.
+pub const FOG_SUN_GLOW: f32 = 0.05;
+/// How tight the glow is round the sun (`directional_light_exponent`).
+pub const FOG_SUN_EXPONENT: f32 = 10.0;
+
+/// The warm white of sunlight through droplets — wherever the weather's fog
+/// is its own `DistanceFog`. Not under WebGL2, where that component is the
+/// island's clear air all day (`browser_haze`) and a glow would brighten
+/// every hill toward the sun in fine weather.
+pub fn fog_glow() -> Color {
+    if BAKE_BACKDROP {
+        Color::NONE
+    } else {
+        Color::linear_rgba(1.0, 0.95, 0.85, FOG_SUN_GLOW)
+    }
 }
 
 /// The weather fog's falloff at extinction `sigma` per metre. On the
@@ -1068,7 +1182,8 @@ pub fn weather_fog(light: f32, dark: f32, sigma: f32) -> DistanceFog {
     DistanceFog {
         color: fog_color(light, dark, sigma),
         falloff: fog_falloff(sigma),
-        ..default()
+        directional_light_color: fog_glow(),
+        directional_light_exponent: FOG_SUN_EXPONENT,
     }
 }
 
@@ -1140,8 +1255,13 @@ impl SkyComposer {
         &self.field
     }
 
+    /// The cube the composer keeps current — what the sea reflects.
+    pub fn cube(&self) -> &Handle<Image> {
+        &self.handle
+    }
+
     /// The same noise on the GPU ([`CloudField::image`]), one upload shared
-    /// by the stars, the moon and a browser's per-pixel sky.
+    /// by the stars, the moon and the per-pixel decks.
     pub fn field_image(&self) -> &Handle<Image> {
         &self.field_image
     }
@@ -1153,13 +1273,14 @@ impl SkyComposer {
     }
 
     /// How much deck stands in front of direction `dir` right now, `0..=1`
-    /// — the sun's disk, for the rig.
+    /// — the sun's disk, for the rig. `drift_m` is how far the deck has
+    /// drifted downwind (`WeatherNow::drift`).
     pub fn cover_at(&self, dir: Vec3, cover: f32, drift_m: Vec2) -> f32 {
         if dir.y <= DECK_CUTOFF {
             return 0.0;
         }
         let t = CLOUD_ALT_M / dir.y;
-        let q = (Vec2::new(dir.x * t, dir.z * t) + drift_m) / CLOUD_SCALE_M;
+        let q = (Vec2::new(dir.x * t, dir.z * t) - drift_m) / CLOUD_SCALE_M;
         let fade = ((dir.y - DECK_CUTOFF) / HORIZON_FADE).clamp(0.0, 1.0);
         let f = self.field.sample(q.x, q.y);
         ((f - (1.0 - cover)) / EDGE).clamp(0.0, 1.0) * fade
@@ -1186,11 +1307,15 @@ pub fn setup(
     compose_range(&field, &geo, &params, 0..geo.len(), &mut scratch);
     let handle = images.add(cube_image(scratch.clone()));
     let field_image = images.add(field.image());
-    commands.entity(cam).insert(Skybox {
-        image: handle.clone(),
-        brightness: CLOUD_NITS * DECK_GAIN,
-        ..default()
-    });
+    // Only where the deck is not drawn at depth 0 itself (`deck.rs`): the
+    // `Skybox` draws after every opaque item and would paint over it.
+    if BAKE_BACKDROP {
+        commands.entity(cam).insert(Skybox {
+            image: handle.clone(),
+            brightness: CLOUD_NITS * DECK_GAIN,
+            ..default()
+        });
+    }
     commands.insert_resource(SkyComposer {
         field,
         geo,

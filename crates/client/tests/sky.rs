@@ -411,3 +411,76 @@ fn a_grey_composite_gets_a_grey_lift() {
         );
     }
 }
+
+/// The sky's fog and the ground's are one air: level with the horizon a sky
+/// ray is fogged exactly as much as the island's far edge (`rig::FAR_M`
+/// through the same extinction), straight up it crosses only the layer's
+/// depth, and in clear weather there is none.
+#[test]
+fn the_sky_fog_meets_the_ground_fog_at_the_horizon() {
+    use client::render::rig::FAR_M;
+    use client::render::sky::{SkyFog, FOG_LAYER_M};
+    assert_eq!(SkyFog::CLEAR.band(0.0), 0.0);
+    // The fog preset's ground fog, and a storm's rain haze.
+    for (fog, rain) in [(0.0199, 0.0), (0.0, 0.005), (0.0007, 0.005)] {
+        let air = SkyFog::new(fog, rain);
+        let far = 1.0 - (-(fog + rain) * FAR_M).exp();
+        assert!(
+            (air.band(-0.02) - far).abs() < 1e-5,
+            "the horizon read {} where the far land reads {far}",
+            air.band(-0.02)
+        );
+        let mut last = 1.0;
+        for i in 0..=50 {
+            let b = air.band(i as f32 / 50.0);
+            assert!(b <= last + 1e-6, "the fog thickened going up at {i}");
+            last = b;
+        }
+    }
+    let ground = SkyFog::new(0.02, 0.0);
+    let up = 1.0 - (-(0.02 * FOG_LAYER_M) / 1.02f32).exp();
+    assert!((ground.band(1.0) - up).abs() < 1e-5);
+}
+
+/// The deck drifts the way the wind blows — the way the rain slants
+/// (`rain::params_for` throws drops along `wind_dir`). It is read at
+/// `plane + drift`, so its offset runs against the distance travelled.
+#[test]
+fn the_deck_drifts_downwind() {
+    use bevy::math::Vec2;
+    use client::render::sky::ComposeParams;
+    use client::render::weather::WeatherNow;
+    // A private field: built and then moved, not by struct update.
+    let mut w = WeatherNow::default();
+    w.drift = Vec2::new(900.0, -450.0);
+    let p = ComposeParams::from_weather(&w);
+    assert!(p.drift.x < 0.0 && p.drift.y > 0.0, "{:?}", p.drift);
+}
+
+/// The detail noise rides the deck's drift and the clock's rise, and both
+/// wrap: the drift at the field's period, `Time::elapsed_secs_wrapped` at
+/// Bevy's hour. A tile that did not divide both would jump at each wrap.
+#[test]
+fn the_cloud_detail_wraps_where_the_deck_does() {
+    use client::render::deck::{detail_noise, BOIL_MS, DETAIL_TILE_M};
+    use client::render::sky::{CLOUD_SCALE_M, FIELD_PERIOD};
+    let field_m = FIELD_PERIOD as f32 * CLOUD_SCALE_M;
+    assert_eq!((field_m / DETAIL_TILE_M).fract(), 0.0);
+    assert_eq!((3600.0 * BOIL_MS / DETAIL_TILE_M).fract(), 0.0);
+    // And the volume itself tiles: across its seam it steps no more than
+    // between any two neighbours inside it.
+    let n = 16;
+    let v = detail_noise(SEED, n);
+    let at = |x: usize, y: usize, z: usize| v[(z * n + y) * n + x];
+    let (mut seam, mut inside) = (0.0f32, 0.0f32);
+    for z in 0..n {
+        for y in 0..n {
+            seam = seam.max((at(n - 1, y, z) - at(0, y, z)).abs());
+            for x in 1..n {
+                inside = inside.max((at(x, y, z) - at(x - 1, y, z)).abs());
+            }
+        }
+    }
+    assert!(seam <= inside + 1e-6, "seam {seam} against {inside} inside");
+    assert!(v.iter().all(|x| (0.0..=1.0).contains(x)));
+}

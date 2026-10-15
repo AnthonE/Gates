@@ -971,17 +971,21 @@ pub fn day_night(
                 let (color, falloff) = super::sky::underwater_fog(lux_share, w.dark);
                 fog.color = color;
                 fog.falloff = falloff;
+                // The sea has no sun to glow toward: its light comes down
+                // through the surface, which the shell draws (`underwater.rs`).
+                fog.directional_light_color = Color::NONE;
             } else {
                 let sigma = w.fog_sigma();
                 fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
                 fog.falloff = super::sky::fog_falloff(sigma);
+                fog.directional_light_color = super::sky::fog_glow();
             }
         }
         if let Some(mut sky) = sky {
             // The composer bakes the hour and the weather into the deck's
             // texels (`sky.rs`), so the brightness is the deck's physical
             // unit, lifted only by a flash.
-            sky.brightness = super::sky::CLOUD_NITS * super::sky::DECK_GAIN * (1.0 + 3.0 * w.flash);
+            sky.brightness = super::sky::deck_nits(w.flash) * super::sky::DECK_GAIN;
             sky.rotation = Quat::IDENTITY;
         }
     }

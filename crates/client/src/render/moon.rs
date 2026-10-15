@@ -6,9 +6,8 @@
 //! quad far out along its direction, its rim cut per pixel.
 //!
 //! **Behind the deck, off the deck's own field**, at the deck on screen:
-//! the composer's last cube natively, this frame's weather in a browser,
-//! whose sky is drawn per pixel (`deck.rs`) with the fine detail this
-//! shares (`deck.wgsl`).
+//! this frame's weather, since every target draws its sky per pixel
+//! (`deck.rs`), with the fine detail the flat deck shares (`deck.wgsl`).
 //!
 //! **Over the cube's own moon natively.** The cube keeps a small soft one
 //! for the sea to reflect (`sky::MOON_R`), and the atmosphere draws it, so
@@ -61,13 +60,13 @@ impl MoonParams {
                 sky::CLOUD_ALT_M / sky::CLOUD_SCALE_M,
                 sky::DECK_CUTOFF,
                 sky::HORIZON_FADE,
-                if deck::PER_PIXEL { deck::DETAIL } else { 0.0 },
+                deck::DETAIL,
             ),
             cloud: Vec4::new(shown.drift.x, shown.drift.y, 1.0 - shown.cover, sky::EDGE),
             field: Vec4::new(
                 1.0 / sky::FIELD_PERIOD as f32,
                 0.5 / sky::FIELD_N as f32,
-                if deck::PER_PIXEL { 0.0 } else { 1.0 },
+                if sky::BAKE_BACKDROP { 0.0 } else { 1.0 },
                 QUAD_OVER,
             ),
         }
@@ -176,16 +175,11 @@ pub fn drive(
     handle: Option<Res<MoonHandle>>,
     mut materials: ResMut<Assets<MoonMaterial>>,
 ) {
-    let (Some(handle), Some(composer)) = (handle, composer) else {
+    let (Some(handle), Some(_)) = (handle, composer) else {
         return;
     };
     let live = ComposeParams::from_weather(&weather);
-    let shown = if deck::PER_PIXEL {
-        live
-    } else {
-        composer.shown().copied().unwrap_or(live)
-    };
-    let want = MoonParams::new(weather.moon, weather.night, &shown);
+    let want = MoonParams::new(weather.moon, weather.night, &live);
     let stale = materials.get(&handle.0).is_some_and(|m| m.params != want);
     if stale {
         if let Some(m) = materials.get_mut(&handle.0) {
