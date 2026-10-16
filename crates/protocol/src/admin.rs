@@ -136,6 +136,13 @@ pub enum AdminCmd {
     WipeCancel,
     /// Bare `/wipe`: anyone may ask when the next one is.
     WipeWhen,
+    /// `/restart <minutes>|now`: stop the shard `minutes` from now, with a
+    /// countdown in chat, the world and every player flushed; the supervisor
+    /// starts it again, on whatever build was staged meanwhile. A deploy that
+    /// warns the island instead of dropping it (`server::wipe::Restart`).
+    Restart { minutes: u16 },
+    /// `/restart cancel`: drop a pending restart.
+    RestartCancel,
     /// Not an admin verb: anyone may file one. The tick and the filer's
     /// position are stamped by the server, so the note is all a player
     /// has to type (`ALPHA.md` §4).
@@ -256,6 +263,18 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
                 })
             }
         },
+        "restart" => match parts.next()? {
+            "cancel" => (parts.next().is_none()).then_some(AdminCmd::RestartCancel),
+            when => {
+                // An hour out at most: a restart is a deploy's minutes, and
+                // anything longer is a wipe's schedule or a mistake.
+                let minutes: u16 = match when {
+                    "now" => 0,
+                    m => m.parse().ok().filter(|&m| m <= 60)?,
+                };
+                (parts.next().is_none()).then_some(AdminCmd::Restart { minutes })
+            }
+        },
         "weather" => {
             use sim_core::weather::*;
             let mode = match parts.next()? {
@@ -309,6 +328,25 @@ mod tests {
 
     fn text(s: &str) -> ChatText {
         ChatText::sanitize(s.as_bytes()).expect("a legal chat line")
+    }
+
+    #[test]
+    fn restart_parses() {
+        assert_eq!(
+            parse(&text("/restart 2")),
+            Some(AdminCmd::Restart { minutes: 2 })
+        );
+        assert_eq!(
+            parse(&text("/restart now")),
+            Some(AdminCmd::Restart { minutes: 0 })
+        );
+        assert_eq!(
+            parse(&text("/restart cancel")),
+            Some(AdminCmd::RestartCancel)
+        );
+        for bad in ["/restart", "/restart 61", "/restart soon", "/restart 2 now"] {
+            assert_eq!(parse(&text(bad)), None, "{bad}");
+        }
     }
 
     #[test]

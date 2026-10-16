@@ -4,6 +4,7 @@
 #   ./ci/deploy_shard.sh          # show what would happen, change nothing
 #   ./ci/deploy_shard.sh --go     # actually deploy
 #   ./ci/deploy_shard.sh --go --strand-clients   # deploy a wire published clients cannot speak
+#   ./ci/deploy_shard.sh --go --warn   # the island hears the /restart countdown first
 #
 # **This is an OPERATOR ACT** (`CLAUDE.md`: "deploying to the public shard").
 # It is a dry run by default for the same reason `ci/publish.sh` is — the
@@ -44,9 +45,9 @@ UNIT=gates-shard.service
 CFG=shard-public.toml
 HOOK=/etc/letsencrypt/renewal-hooks/deploy/copy-gates-cert.sh
 
-GO=0; STRAND=0
+GO=0; STRAND=0; WARN=0
 for a in "$@"; do
-  case "$a" in --go) GO=1 ;; --strand-clients) STRAND=1 ;; esac
+  case "$a" in --go) GO=1 ;; --strand-clients) STRAND=1 ;; --warn) WARN=1 ;; esac
 done
 run() { if [ "$GO" = 1 ]; then echo "+ $*"; "$@" || exit 1; else echo "  would run: $*"; fi; }
 
@@ -115,6 +116,25 @@ BIN=target/release/shard
 [ "$GO" = 1 ] && { [ -x "$BIN" ] || { echo "  !! no $BIN after the build"; exit 1; }; }
 
 echo
+echo "== 1b. does this build load the live saves =="
+# `shard --check-saves` (read-only, the boot's own header checks): a build
+# that cannot is a wipe, and restarting onto it is a shard that refuses to
+# boot with the island down. After `ci/release.sh --wipe` moved them aside
+# they read as none, and a scheduled wipe that is due ends the world first.
+if [ "$GO" = 1 ]; then
+  "$BIN" --check-saves "$CFG" 2>&1 | sed 's/^/  /'
+  case "${PIPESTATUS[0]}" in
+    0) ;;
+    3) echo "  !! this build cannot load the live saves: deploying it is a wipe."
+       echo "     Hold it for the scheduled wipe, or ship it with ./ci/release.sh --go --wipe"
+       exit 1 ;;
+    *) echo "  !! the save check could not run (above)"; exit 1 ;;
+  esac
+else
+  echo "  would run: $BIN --check-saves $CFG"
+fi
+
+echo
 echo "== 2. stage =="
 run mkdir -p "$DEPLOY" "$DATA"
 run cp -f "$BIN" "$DEPLOY/shard.new"
@@ -150,8 +170,39 @@ echo "== 4. restart =="
 # `restart` and not `stop; start`: systemd sends SIGTERM and WAITS for the
 # flush (TimeoutStopSec=120) before it starts the new one, which is the whole
 # reason the unit sets KillSignal.
-run sudo systemctl enable --now "$UNIT"
-run sudo systemctl restart "$UNIT"
+#
+# --warn: SIGUSR1 is the shard's "restart in two minutes" (`bin/shard.rs`),
+# the same countdown an admin's /restart gives the island, after which the
+# shard flushes and exits and systemd starts the binary staged above. Only
+# for a shard that says it has the handler (`restart_at` in status.json):
+# SIGUSR1's default is to kill, so to an older shard it is a crash, not a
+# warning.
+OLD_PID=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null)
+if [ "$WARN" = 1 ] && systemctl is-active --quiet "$UNIT" \
+   && curl -fsS -m 3 http://127.0.0.1:8431/status.json 2>/dev/null | grep -q '"restart_at"'; then
+  run sudo systemctl kill -s SIGUSR1 --kill-whom=main "$UNIT"
+  if [ "$GO" = 1 ]; then
+    echo "  the island is counting down; waiting for the supervisor to start the new build"
+    swapped=0
+    for _ in $(seq 1 600); do
+      now_pid=$(systemctl show -p MainPID --value "$UNIT" 2>/dev/null)
+      if [ -n "$now_pid" ] && [ "$now_pid" != 0 ] && [ "$now_pid" != "$OLD_PID" ]; then
+        swapped=1; break
+      fi
+      sleep 1
+    done
+    if [ "$swapped" = 0 ]; then
+      echo "  !! still the old process after 10 min; restarting it now"
+      sudo systemctl restart "$UNIT" || exit 1
+    fi
+  fi
+else
+  if [ "$WARN" = 1 ] && systemctl is-active --quiet "$UNIT"; then
+    echo "  the running shard has no countdown (no restart_at in status.json): restarting without one"
+  fi
+  run sudo systemctl enable --now "$UNIT"
+  run sudo systemctl restart "$UNIT"
+fi
 
 echo
 echo "== 5. verify =="

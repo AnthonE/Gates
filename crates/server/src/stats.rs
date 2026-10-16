@@ -685,6 +685,18 @@ pub struct ShardStats {
     pub wipe_due: AtomicBool,
     /// The wipe that came due takes the blueprints.
     pub wipe_blueprints: AtomicBool,
+    /// The restart clock reached zero (`wipe::Restart`): like `wipe_due`, the
+    /// sim thread raised the shutdown flag, and `bin/shard.rs` exits once the
+    /// flush is down for the supervisor to start the shard again.
+    pub restart_due: AtomicBool,
+    /// A restart asked for from outside the game (SIGUSR1, `bin/shard.rs`):
+    /// its minutes plus one, 0 for none. The sim thread takes it on its
+    /// once-a-second poll.
+    pub restart_asked: AtomicU64,
+    /// When a pending restart stops the shard, unix seconds, 0 for none. A
+    /// gauge for `status.json`, whose `restart_at` key also tells a deploy
+    /// that this shard takes SIGUSR1 as a countdown (`ci/deploy_shard.sh`).
+    pub restart_at: AtomicU64,
     /// When the next wipe is, unix seconds, 0 for none. A gauge the sim
     /// thread mirrors off its clock, for `status.json`.
     pub next_wipe: AtomicU64,
