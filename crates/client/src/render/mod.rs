@@ -37,6 +37,9 @@ pub mod music_out;
 #[cfg(target_arch = "wasm32")]
 pub mod audio_web;
 pub mod bodies;
+// The Verdigris as drawn: this wipe's outbreaks and the spread at the arc's
+// tick, read once a frame for the ground, the weather and the map.
+pub mod blight;
 // Rebindable keys: the action table, the defaults, and the settings file's
 // `bind.*` lines.
 pub mod binds;
@@ -190,6 +193,9 @@ pub mod mipmap;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
+pub mod embers;
+pub mod fel_rim;
+pub mod fel_vents;
 pub mod panels;
 pub mod pause;
 // How many render pipelines are still compiling, for the loading gate.
@@ -321,6 +327,9 @@ pub struct WorldId {
     pub seed: u64,
     pub haven: Haven,
     pub table: ScatterTable,
+    /// This wipe's blight salt from the welcome (`sim_core::blight`): where
+    /// its outbreaks erupt. 0 off a session (the menu, the probes).
+    pub blight_salt: u32,
 }
 
 impl WorldId {
@@ -335,6 +344,7 @@ impl WorldId {
             seed,
             haven,
             table: ScatterTable::alpha_default(),
+            blight_salt: 0,
         }
     }
 }
@@ -656,6 +666,8 @@ impl Plugin for GatesRenderPlugin {
             .insert_resource(weather_pin)
             .init_resource::<rig::FlameGain>()
             .init_resource::<weather::WeatherNow>()
+            .init_resource::<blight::Blight>()
+            .init_resource::<hud::Surge>()
             .init_resource::<shafts::Shafts>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
@@ -1109,7 +1121,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 Update,
-                (map::view, map::track, map::mates, map::keys)
+                (
+                    map::view,
+                    map::track,
+                    map::mates,
+                    map::blight_follow,
+                    map::keys,
+                )
                     .chain()
                     .run_if(in_state(Screen::Map)),
             )
@@ -1240,6 +1258,11 @@ impl Plugin for GatesRenderPlugin {
         // streamers to have somewhere to put chunks, and the 3D pass has to
         // be running for the pipelines to specialize before the player is
         // looking at the result.
+        // The surge toast and the blight's moment start every session over.
+        app.add_systems(
+            OnEnter(Screen::Loading),
+            (hud::forget_surge, blight::forget),
+        );
         app.add_systems(
             OnEnter(Screen::Loading),
             // The sea replaced `terrain_mesh::setup_water` here: it builds one
@@ -1468,6 +1491,15 @@ impl Plugin for GatesRenderPlugin {
             )
                 .run_if(world_running),
         )
+        // The Verdigris' vents: green fire where the sim's vents are.
+        .add_systems(
+            Update,
+            fel_vents::drive
+                .after(rig::day_night)
+                .before(fx::world::fires)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
         // What other players wear (wire v98), hung on their bones.
         .add_systems(
             Update,
@@ -1536,6 +1568,8 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The rain follows the camera too (weather v0).
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
+        .add_systems(OnEnter(Screen::Loading), embers::setup.after(rain::setup))
+        .add_systems(OnEnter(Screen::Loading), fel_vents::setup)
         // After the deck: the stars hide behind its field.
         .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
         .add_systems(
@@ -1699,8 +1733,13 @@ impl Plugin for GatesRenderPlugin {
                     // linear-scan membership test, so it runs on the frames
                     // the wire moved the set; `harvest_new` is the half a
                     // bit cannot cover, and costs an empty query otherwise.
-                    props::harvest.run_if(props::harvest_changed),
-                    props::harvest_new,
+                    // `harvest_new` first: a part that ARRIVES felled lies
+                    // where it fell (`props::apply_fell_added`), and the sweep
+                    // must not see it first and topple it again.
+                    props::harvest
+                        .run_if(props::harvest_changed)
+                        .after(props::harvest_new),
+                    props::harvest_new.after(props::stream),
                     // After `harvest`, which owns the discrete transition and
                     // arms the topple this integrates. Reversed, a tree would
                     // spend one frame at the pose the previous chop left it.
@@ -1910,6 +1949,13 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !filming),
         )
+        .add_systems(
+            Update,
+            fel_rim::rim_drive
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !filming),
+        )
         // The cold's frost on the frame (`frost.rs`). HUD, so not on a plate
         // run or a film.
         .add_systems(
@@ -1933,6 +1979,17 @@ impl Plugin for GatesRenderPlugin {
             )
                 .run_if(world_running),
         )
+        // The blight's moment (`render/blight.rs`): after the drain, for the
+        // tick it reads, and before the weather and the streamers, which read
+        // the depth.
+        .add_systems(
+            Update,
+            blight::update
+                .after(feed::drain)
+                .before(weather::update)
+                .before(Stream)
+                .run_if(world_running),
+        )
         // The rainbow, off this frame's sun and rain.
         .add_systems(
             Update,
@@ -1946,6 +2003,8 @@ impl Plugin for GatesRenderPlugin {
                 weather::update.after(feed::drain).before(rig::day_night),
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
+                embers::drive.after(weather::update),
+                boulders::spire_glow.after(weather::update),
                 stars::drive.after(sky::compose),
                 underwater::drive.after(rig::day_night),
                 hud::exposure,
@@ -2029,7 +2088,9 @@ impl Plugin for GatesRenderPlugin {
                 // The interface: the click, the hover tick, the panels' own.
                 (audio::ui_click, audio::ui_hover, audio::panel_sounds).chain(),
                 audio::hands,
-                audio::fires,
+                // The counter after the blight's moment is read, beside the
+                // fires (the tuple is at Bevy's limit).
+                (audio::fires, audio::geiger.after(blight::update)).chain(),
                 audio::bed,
                 audio::pump,
             )

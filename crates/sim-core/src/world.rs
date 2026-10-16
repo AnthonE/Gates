@@ -1029,8 +1029,11 @@ pub const DEATH_BY_FALL: u8 = 8;
 /// The heat took them (climate v0, `exposure.rs`): the desert's noon in
 /// warm clothes, dry, with no shade.
 pub const DEATH_BY_HEAT: u8 = 9;
+/// The Verdigris took them (`exposure::corrode`): they stood in the
+/// corruption until it ate through them.
+pub const DEATH_BY_FEL: u8 = 10;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_HEAT;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_FEL;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1385,6 +1388,11 @@ pub struct Player {
     /// up front (`seed_air`), since the client draws snow off it.
     pub heat: u16,
     pub air_dc: i16,
+    /// The Verdigris' meter, per mille, and the partial hp it is owed
+    /// (`exposure::corrode`). Hashed and kept by the world save like the
+    /// cold's; a body restored from the player store comes back clean.
+    pub fel: u16,
+    pub fel_acc: u32,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1529,6 +1537,8 @@ impl Default for Player {
             cold_acc: 0,
             heat: 0,
             air_dc: 0,
+            fel: 0,
+            fel_acc: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
@@ -2390,11 +2400,20 @@ pub struct World {
     /// when the WAL file format lands, it pins into the header beside the
     /// seed so replays reproduce the spawns they were played under.
     pub dev_spawn: Option<(f32, f32)>,
+    /// This wipe's blight salt (`blight.rs`): drawn by the server for each
+    /// new world like `arc.salt`, but public — it only says where this
+    /// wipe's outbreaks erupt, and every client draws them from it. 0 until
+    /// the server draws one.
+    pub blight_salt: u32,
+    /// The outbreaks that salt draws ([`crate::blight::Plan`]): derived,
+    /// rebuilt by [`World::set_blight_salt`], never saved or hashed.
+    pub blight: crate::blight::Plan,
 }
 
 impl World {
     pub fn new(seed: u64) -> Self {
         let haven = terrain::haven(seed);
+        let blight = crate::blight::Plan::new(seed, 0, &haven);
         Self {
             seed,
             tick: 0,
@@ -2455,6 +2474,8 @@ impl World {
             trust: TrustLedger::new(),
             last_hash: 0,
             dev_spawn: None,
+            blight_salt: 0,
+            blight,
         }
     }
 
@@ -2532,6 +2553,11 @@ impl World {
             let z = c + dz * lo;
             let hy = terrain::height(self.seed, x, z);
             if hy >= terrain::BEACH_MAX_H || terrain::slope(self.seed, x, z) >= SPAWN_MAX_SLOPE {
+                continue;
+            }
+            // Nobody wakes up in the Verdigris: where it reaches the sea,
+            // that stretch of beach is not a spawn.
+            if terrain::fel(self.seed, x, z) > 0.0 {
                 continue;
             }
             if relaxed.is_none() {
@@ -3582,6 +3608,23 @@ impl World {
         }
     }
 
+    /// Seat this wipe's blight salt and redraw its outbreaks from it.
+    pub fn set_blight_salt(&mut self, salt: u32) {
+        self.blight_salt = salt;
+        self.blight = crate::blight::Plan::new(self.seed, salt, &self.haven);
+    }
+
+    /// The spread right now (`blight.rs`): the heart's front for this hour
+    /// and tier, every outbreak alive and every hot spot burning.
+    pub fn blight_now(&self) -> crate::blight::Now {
+        crate::blight::now(
+            &self.blight,
+            &self.haven,
+            self.tick,
+            self.works.fel_tier(&self.works_def),
+        )
+    }
+
     /// The species table in the island's current fel tier (`mob::FelTier`,
     /// `works::fel_tier_of`): what every bite, blow and think reads, so an
     /// animal hatched on wipe day is weak and wary and the same species is
@@ -4572,6 +4615,8 @@ impl World {
                     cold_acc: 0,
                     heat: 0,
                     air_dc: 0,
+                    fel: 0,
+                    fel_acc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -6126,6 +6171,19 @@ impl World {
         }
         let day_tick = crate::weather::day_tick(tick, &self.env);
         let inp = self.exposure_inputs(i, wx, night, day_tick);
+        // The Verdigris first, on its own accumulator: a body can be cold and
+        // corroded in one second, and either can kill it.
+        let corroded = crate::exposure::corrode(
+            &self.survival.exposure,
+            &inp,
+            &mut self.players[i],
+            &mut self.events,
+        );
+        if corroded == survival::Step::Died {
+            let id = self.players[i].id;
+            self.die(i, id, DEATH_BY_FEL, NO_ITEM, 0);
+            return true;
+        }
         let step = crate::exposure::step(
             &self.survival.exposure,
             &inp,
@@ -6224,6 +6282,30 @@ impl World {
         };
         let ec = &self.survival.exposure;
         let fire = self.near_fire(x, z, feet);
+        // The Verdigris at the feet, none on the beach: the coast is
+        // survivable even where the corruption reaches the sea. Read only
+        // when the meter is armed, so a world without it pays nothing.
+        // The heart, the creep and the outbreaks fill it at one rate and the
+        // hot spots at their own (`blight.rs`); the vents are the heart's.
+        let (fel_pm, hot_pm) = if ec.fel_rise_per_s == 0 || feet < crate::terrain::BEACH_MAX_H {
+            (0, 0)
+        } else {
+            // Read at the ground, not the feet: the coast's fade and the
+            // ridges' hold are the terrain's, as the client draws them, so a
+            // second storey on a beach or a tower in the front's path is in
+            // the same green as the ground under it.
+            let now = self.blight_now();
+            if crate::blight::within_reach(&now, x, z) {
+                let ground = crate::terrain::ground(self.seed, &self.haven, x, z);
+                let d = crate::blight::depth(&now, self.seed, x, z, ground);
+                ((d.fel * 1000.0) as u16, (d.hot * 1000.0) as u16)
+            } else {
+                (0, 0)
+            }
+        };
+        let vent = fel_pm >= (crate::terrain::FEL_VENT_AT * 1000.0) as u16
+            && crate::terrain::fel(self.seed, x, z) >= crate::terrain::FEL_VENT_AT
+            && crate::terrain::fel_vent_near(self.seed, x, z);
         let comfort = match fire {
             Some(at) if ec.fire_comfort > 0 => {
                 let (awake, asleep) = self.company_at(i, at);
@@ -6251,6 +6333,9 @@ impl World {
                 day_tick,
                 wx,
             ),
+            fel_pm,
+            vent,
+            hot_pm,
         }
     }
 
@@ -7078,13 +7163,21 @@ impl World {
             core::array::from_fn(|i| crate::light::is_lit(&self.players[i], &self.gather));
         // The hour and the air an animal reads: the day clock under any
         // `/time`, and how far this weather lets it see.
+        // The island's tier, the top tier a turned animal fights from, and
+        // the spread it turns in: all on the stack (wall 2).
+        let tier = self.works.fel_tier(&self.works_def);
+        let mc = self.mob.at_tier(tier);
+        let fel_mc = self.mob.at_tier((mob::FEL_TIERS - 1) as u8);
+        let blight = crate::blight::now(&self.blight, &self.haven, tick, tier);
         mob::step(
             seed,
             &self.haven,
             tick,
             day_tick,
             crate::weather::sense_pm(&wx),
-            &self.mob_now(),
+            &mc,
+            &fel_mc,
+            &blight,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,
@@ -7145,6 +7238,11 @@ impl World {
             // The funnel, reduced: a bite is a hit.
             let crate::combat::Hurt { left, died, .. } =
                 crate::combat::hurt(&self.combat, v, b.damage);
+            // A turned animal's bite carries the green, warded by the worn
+            // set; a bite that downed the body leaves the meter alone.
+            if b.fel > 0 && !died {
+                crate::exposure::infect(&self.survival.exposure, v, b.fel);
+            }
             let victim_id = v.id;
             self.events
                 .push(EV_HURT, victim_id, sector as u32, b.damage as u32);
@@ -7763,6 +7861,14 @@ impl World {
                 xb[4..8].copy_from_slice(&p.cold_acc.to_le_bytes());
                 h.update(&xb);
             }
+            // The Verdigris, the same way: a world nobody walked into hashes
+            // as it did before it existed.
+            if p.fel != 0 || p.fel_acc != 0 {
+                let mut fb = [0u8; 6];
+                fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
+                fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
+                h.update(&fb);
+            }
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact
             // about it, and everything it changes (hp) is hashed already.
@@ -8021,6 +8127,9 @@ impl World {
             b[41] = m.path.next;
             b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
             b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
+            // Turned (`blight::turns`): zero for an animal in clean ground,
+            // so a roster that never turns hashes as it always did.
+            b[45] = m.turned as u8;
             h.update(&b);
             let mut poi = [0u8; 24];
             poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());
@@ -8346,6 +8455,12 @@ impl World {
                 h.update(&m.to_bytes());
             }
         }
+        // The blight's salt (`blight.rs`), only once one is drawn, so a world
+        // without one hashes as it always did. The outbreaks it draws are
+        // derived from it and the seed, and are not folded twice.
+        if self.blight_salt != 0 {
+            h.update(&self.blight_salt.to_le_bytes());
+        }
         // The glyphs each player reads (`lore.rs`), only where there are
         // any, so a world nobody has read in hashes as it always did.
         for p in self.players.iter().filter(|p| p.active && p.glyphs != 0) {
@@ -8553,9 +8668,8 @@ mod tests {
             for id in 1..=64u32 {
                 let (x, z) = w.spawn_pos(id);
                 let h = terrain::height(seed, x, z);
-                let m = terrain::moisture(seed, x, z);
                 assert_eq!(
-                    terrain::biome(h, m),
+                    terrain::biome_at(seed, h, x, z),
                     terrain::Biome::Beach,
                     "seed {seed} id {id}: spawn ({x},{z}) height {h} is not beach"
                 );

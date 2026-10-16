@@ -419,8 +419,8 @@ impl ShaftRig<'_, '_> {
         }
         if let (true, Some(eye), Ok((mut t, mut v))) = (on, eye, self.volume.single_mut()) {
             let box_t = volume_transform(eye, reach);
-            let grey = super::sky::fog_grey(w.fog_sigma());
-            let rgb = super::sky::fog_rgb(sun.lux_share, w.dark, grey);
+            let sigma = w.fog_sigma() + super::sky::FEL_FOG_SIGMA * w.fel;
+            let rgb = super::sky::fog_rgb_fel(sun.lux_share, w.dark, sigma, 0.0, w.fel);
             let exposure = Exposure { ev100: sun.ev100 }.exposure();
             *t = box_t;
             *v = volume(rgb, cut.volume, box_t.scale, sun.lux, exposure, t_sun);

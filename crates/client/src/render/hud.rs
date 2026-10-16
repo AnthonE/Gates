@@ -1083,6 +1083,9 @@ pub enum ExposureChip {
     /// Rust's COMFORT chip: shown while a fire (and company at it) gives
     /// any, because comfort is what makes the body mend past 60 %.
     Comfort,
+    /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
+    /// red while it is costing hp, saying what stops it.
+    Verdigris,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1136,6 +1139,17 @@ const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
 const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
+const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+
+/// What the Verdigris chip says: the meter, and while it hurts, the way out.
+/// The player-facing name only — never the code's `fel`.
+pub fn fel_line(pct: u8, hurting: bool) -> String {
+    if hurting {
+        format!("VERDIGRIS {pct}% · GET OUT OF THE GREEN")
+    } else {
+        format!("VERDIGRIS {pct}%")
+    }
+}
 
 /// What the COMFORT chip says: Rust's `COMFORT 50%`.
 pub fn comfort_line(comfort_pct: u8) -> String {
@@ -1313,6 +1327,15 @@ pub fn exposure(
                     None => (false, String::new(), SAFE_CHIP),
                 }
             }
+            ExposureChip::Verdigris => (
+                core.fel_pct > 0,
+                fel_line(core.fel_pct, core.fel_hurting),
+                if core.fel_hurting {
+                    FREEZE_CHIP
+                } else {
+                    FEL_CHIP
+                },
+            ),
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1888,6 +1911,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Wet,
                 ExposureChip::Cold,
                 ExposureChip::Hot,
+                ExposureChip::Verdigris,
                 ExposureChip::Comfort,
             ] {
                 stack.spawn((
@@ -2748,6 +2772,17 @@ pub fn gate_watch(
 /// A ring is drained to EMPTY each frame rather than one entry per frame:
 /// they are small (`TOAST_RING`) and a backlog drip-fed at frame rate would
 /// still be showing the first refusal after the tenth.
+/// The surge toast's watch (`ui::arc::SurgeWatch`): a resource rather than a
+/// `Local`, so every session starts it over ([`forget_surge`]) and a rejoin
+/// whose arc is synced before the HUD's first frame is not heard as a surge.
+#[derive(Resource, Default)]
+pub struct Surge(pub crate::ui::arc::SurgeWatch);
+
+/// A new session: no baseline, nothing armed.
+pub fn forget_surge(mut surge: ResMut<Surge>) {
+    surge.0 = Default::default();
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn feedback(
     net: NonSend<Net>,
@@ -2758,6 +2793,7 @@ pub fn feedback(
     ghost: Option<Res<super::ghost::Ghost>>,
     mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
+    mut surge: ResMut<Surge>,
 ) {
     let core = &net.session.core;
     // The sim refuses ground the world keeps for itself with the occupied
@@ -2856,6 +2892,11 @@ pub fn feedback(
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
+    }
+    // The fel tier climbed on a live work (`ui::arc::SurgeWatch`): the
+    // Verdigris jumps outward. After the work's own line, so it sits on top.
+    if surge.0.step(&core.arc, !feed.work_events().is_empty()) {
+        toast.warn(crate::ui::arc::SURGE_LINE);
     }
     // A lock opened somewhere (`ARC.md` F7): heard across the island.
     for &(mech, by) in feed.mech_solves() {

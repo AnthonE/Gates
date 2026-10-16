@@ -231,6 +231,11 @@ pub struct FarForest {
     /// The tile being carded and how far into its cells.
     current: Option<TileBuild>,
     tiles: HashMap<(i32, i32), Entity>,
+    /// Every tile's trees as they were carded (`props::TreeTap`), so a
+    /// moment of the blight that kills one re-cards only its tile.
+    taps: HashMap<(i32, i32), Vec<props::TreeTap>>,
+    /// The blight's moment the tiles were last checked against.
+    seen: Option<sim_core::blight::Now>,
     /// The mask's window and bits as last written to the island material.
     masked: Option<(IVec4, UVec4)>,
 }
@@ -253,6 +258,7 @@ struct TileBuild {
     uv: Vec<[f32; 2]>,
     uv_b: Vec<[f32; 2]>,
     color: Vec<[f32; 4]>,
+    taps: Vec<props::TreeTap>,
 }
 
 impl TileBuild {
@@ -265,6 +271,7 @@ impl TileBuild {
             uv: Vec::new(),
             uv_b: Vec::new(),
             color: Vec::new(),
+            taps: Vec::new(),
         }
     }
 }
@@ -292,6 +299,7 @@ pub fn stream(
     eye: Res<Eye>,
     ring: Res<PropRing>,
     cards: Option<Res<TreeCards>>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     let Some(cards) = cards else {
         return;
@@ -304,6 +312,8 @@ pub fn stream(
         forest.seed = Some(world.seed);
         forest.current = None;
         forest.masked = None;
+        forest.taps.clear();
+        forest.seen = None;
         // Nearest last, so `pop` takes the nearest.
         let n = tiles_per_side();
         let (ex, ez) = (eye.pos.x, eye.pos.z);
@@ -319,13 +329,43 @@ pub fn stream(
     // The mask: every chunk a ring has trees standing in, over the window the
     // rings stream in. Written into the material, so it is re-prepared with
     // the bits rather than sampling a texture it bound once.
-    let now = ring_mask(&eye, ring.chunks());
-    if forest.masked != Some(now) {
+    let mask = ring_mask(&eye, ring.chunks());
+    if forest.masked != Some(mask) {
         if let Some(m) = materials.get_mut(&cards.island_material) {
-            m.extension.card.window = now.0;
-            m.extension.card.bits = now.1;
+            m.extension.card.window = mask.0;
+            m.extension.card.bits = mask.1;
         }
-        forest.masked = Some(now);
+        forest.masked = Some(mask);
+    }
+
+    // The spread moved (`render/blight.rs`): re-card the tiles holding a
+    // tree it has since killed, nearest first. A tile mid-card started over,
+    // since its early cells asked the old moment.
+    let live = blight.as_deref().and_then(|b| b.now);
+    if forest.seen != live {
+        forest.seen = live;
+        if let Some(b) = forest.current.take() {
+            forest.queue.push(b.key);
+        }
+        let mut flipped: Vec<(i32, i32)> = forest
+            .taps
+            .iter()
+            .filter(|(_, taps)| {
+                taps.iter()
+                    .any(|t| props::snag_of(live.as_ref(), t) != t.snag)
+            })
+            .map(|(k, _)| *k)
+            .filter(|k| !forest.queue.contains(k))
+            .collect();
+        let (ex, ez) = (eye.pos.x, eye.pos.z);
+        let d2 = |t: &(i32, i32)| {
+            let cx = (t.0 as f32 + 0.5) * TILE_M - ex;
+            let cz = (t.1 as f32 + 0.5) * TILE_M - ez;
+            cx * cx + cz * cz
+        };
+        // Far first, so `pop` takes the nearest next.
+        flipped.sort_by(|a, b| d2(b).total_cmp(&d2(a)));
+        forest.queue.extend(flipped);
     }
 
     // The carding.
@@ -355,6 +395,23 @@ pub fn stream(
         if slot.occupant != Occupant::Tree {
             continue;
         }
+        // A tree in the Verdigris is a bare snag (`props::spawn_slot`), and a
+        // card is a crown: at this range it is not drawn at all. The spread
+        // as it stands now, and the tree's tap kept to ask again.
+        let n = terrain::fel_wander_memo(&mut build.lat, world.seed, slot.x, slot.z);
+        let mut tap = props::TreeTap {
+            x: slot.x,
+            z: slot.z,
+            y: slot.y,
+            n,
+            shrub: false,
+            snag: false,
+        };
+        tap.snag = props::snag_of(live.as_ref(), &tap);
+        build.taps.push(tap);
+        if tap.snag {
+            continue;
+        }
         let key = cell_key(cell_x as u16, cell_z as u16);
         push_card(&mut build, &cards.dims, &slot, key, &world);
     }
@@ -363,10 +420,20 @@ pub fn stream(
         forest.current = Some(build);
         return;
     }
+    let key = build.key;
+    let taps = std::mem::take(&mut build.taps);
+    if taps.is_empty() {
+        forest.taps.remove(&key);
+    } else {
+        forest.taps.insert(key, taps);
+    }
     if build.pos.is_empty() {
+        // Re-carded to nothing (every tree a snag now): the old cards go.
+        if let Some(old) = forest.tiles.remove(&key) {
+            commands.entity(old).despawn();
+        }
         return;
     }
-    let key = build.key;
     let mesh = tile_mesh(build);
     let material = cards.island_material.clone();
     let e = commands
@@ -379,7 +446,9 @@ pub fn stream(
             NotShadowReceiver,
         ))
         .id();
-    forest.tiles.insert(key, e);
+    if let Some(old) = forest.tiles.insert(key, e) {
+        commands.entity(old).despawn();
+    }
 }
 
 /// The ring mask for an eye: the window of [`MASK_SIDE`]² chunks centred on

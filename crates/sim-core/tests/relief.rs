@@ -156,7 +156,9 @@ fn the_alpine_ramp_is_centred_on_the_biome_classifier_edge() {
     // The classifier's edge, measured rather than quoted — a literal copied
     // out of `biome()` into this file would be a second copy of the number the
     // test exists to hold equal.
-    let edge = bisect(4.0, SUMMIT, |h| terrain::biome(h, 0.0) == Biome::Highland);
+    let edge = bisect(4.0, SUMMIT, |h| {
+        terrain::biome(h, 0.0, 0.0) == Biome::Highland
+    });
 
     const TOL: f32 = 0.25;
     assert!(
@@ -475,7 +477,7 @@ fn the_island_has_a_beach_to_walk_up() {
                     continue;
                 }
                 land += 1;
-                if terrain::biome(h, terrain::moisture(seed, x, z)) == terrain::Biome::Beach {
+                if terrain::biome_at(seed, h, x, z) == terrain::Biome::Beach {
                     beach += 1;
                 }
             }

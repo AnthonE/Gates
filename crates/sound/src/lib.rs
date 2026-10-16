@@ -49,6 +49,9 @@ pub mod birds;
 // on both targets, and it is here rather than in `render/` so that the
 // arithmetic a player actually hears is gated headless like the rest.
 pub mod engine;
+// The Verdigris counter: when it clicks, from how deep the green is where you
+// stand. Pure cadence, like the voices; `render/audio.rs` plays the click.
+pub mod geiger;
 // What the mixer is told when the health bar moves. Pure, and deliberately
 // takes the *fall* as well as the event: three of the sim's seven damage
 // routes announce nothing, on purpose, and a mixer fed only `EV_HURT` goes
@@ -426,11 +429,13 @@ pub enum Cue {
     CraftStart,
     /// A mark put on, or taken off, the map.
     MapPin,
+    /// The Verdigris counter: one tube click, yours, so not positional.
+    Geiger,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 101;
+pub const CUE_COUNT: usize = 102;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -540,6 +545,7 @@ impl Cue {
         Cue::ItemDrop,
         Cue::CraftStart,
         Cue::MapPin,
+        Cue::Geiger,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -686,6 +692,9 @@ impl Cue {
             Cue::Fuse => 0.04,
             // A hiss is noise: a nudge keeps two in a row from matching.
             Cue::TorchOut => 0.06,
+            // A click retriggered up to fourteen times a second is the
+            // machine-gun tell this knob exists for.
+            Cue::Geiger => 0.05,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -1082,6 +1091,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME,  0.0, 0.52, 120, 3, false),  // item dropped
     row(GAME,  0.0, 0.50, 120, 3, false),  // craft started
     row(GAME,  0.0, 0.45,  80, 2, false),  // map pin
+    // The counter: a hazard reading, so the game bus (turning the scenery
+    // down must not mute it); a cooldown under a frame, so clicks on
+    // consecutive frames both land; ducked under a near shot.
+    row(GAME,  0.0, 0.36,   8, 2, false),  // geiger click
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

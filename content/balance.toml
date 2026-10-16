@@ -326,6 +326,28 @@ clothes_heat_pm = 750
 heat_water_pct = 300
 heat_hurt_at = 600
 heat_hp_per_min = 6
+# The Verdigris (`exposure::corrode`): Rust's radiation for our corrupted
+# zone, in its meter's per mille. A second at the heart adds 6 (about three
+# minutes to fill, unwarded), a vent's green fire 60 more (a quarter of a
+# minute standing in it), a second out of it takes 5 away. Past 450 it costs
+# hp, 20 a minute at a full meter — the five-minute floor the validator holds
+# every exposure to — so a body walking the heart starts to hurt after about
+# 75 s. Over 200 nothing mends, and no worn set wards off more than 90%: the
+# heart is never free.
+fel_rise_per_s = 6
+fel_vent_per_s = 60
+fel_fall_per_s = 5
+fel_hurt_at = 450
+fel_hp_per_min = 20
+fel_regen_max = 200
+fel_ward_max = 900
+# The hot spots (`sim_core::blight`): the haven pad, the ziggurat and the
+# lesser sites burn from act II, faster than the heart. 20 a second at a
+# core: at a tier-C haven pad (0.75 deep) a bare body starts to hurt after
+# about half a minute, a masked one after a minute and a quarter, and one in
+# the mask and the Ash Suit (the 90% cap, 2 a second rounded up) after nearly
+# four.
+fel_pocket_per_s = 20
 # Snow (snow v0): where the air is at or under 0 °C the rain falls as snow,
 # sleet through the degree above (`climate::snow_pm`), and snow wets a body
 # at half the rain's rate — the reference's `weather.wetness_snow` 0.2 against

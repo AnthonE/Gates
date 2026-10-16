@@ -700,6 +700,16 @@ slot = "hand"
 class = "medical"
 description = "Heals a little, fast, and brings a downed player back up."
 
+[[item]]
+id = "item.charcoal_tonic"
+name = "Charcoal Tonic"
+stack = 5
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "medical"
+description = "Charcoal and mushroom steeped in water. Draws the Verdigris out of the blood."
+
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
 # Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): berry 20,
 # mushroom 10, corn 20 — and the meats' 20 was already a match. Note the
@@ -974,6 +984,26 @@ slot = "head"
 class = "clothing"
 condition_max = 10000
 description = "A helmet of bone and leather. Solid protection for the head."
+
+[[item]]
+id = "item.armor_ash_mask"
+name = "Ash Mask"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "head"
+class = "clothing"
+description = "Charcoal in cloth over mouth and nose. Keeps the Verdigris out of your lungs."
+
+[[item]]
+id = "item.armor_ash_suit"
+name = "Ash Suit"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "body"
+class = "clothing"
+description = "A long coat of blacked cloth and tarp, sealed at the seams against the Verdigris."
 
 # What a carcass pays besides meat and fat — Rust's bone fragments, the
 # bone arrow's point. Stack 1000, a resource's.

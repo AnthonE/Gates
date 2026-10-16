@@ -3342,3 +3342,136 @@ fn a_charging_pig_snorts_fast_and_the_hunt_is_an_edge() {
     assert!(s.rouse(pig, true), "the charge's start went unvoiced");
     assert!(!s.rouse(pig, true), "a held charge announced twice");
 }
+
+// ---- the Verdigris counter (`sound::geiger`) --------------------------------
+
+mod geiger {
+    use client::sound::geiger::{self, Geiger, BURST_CLICKS, FLOOR, FULL_HZ};
+    use sim_core::blight::{self, Plan};
+    use sim_core::terrain;
+
+    const DT: f32 = 1.0 / 60.0;
+
+    fn clicks(g: &mut Geiger, depth: f32, secs: f32) -> Vec<f32> {
+        let mut at = Vec::new();
+        let frames = (secs / DT) as usize;
+        for i in 0..frames {
+            if g.due(depth, DT) {
+                at.push(i as f32 * DT);
+            }
+        }
+        at
+    }
+
+    /// The rate follows the field, and nothing ticks out of it.
+    #[test]
+    fn the_counter_counts_the_field() {
+        let full = clicks(&mut Geiger::default(), 1.0, 60.0).len() as f32;
+        let expect = FULL_HZ * 60.0;
+        assert!(
+            (full - expect).abs() < expect * 0.15,
+            "{full} clicks a minute at full"
+        );
+        let half = clicks(&mut Geiger::default(), 0.5, 60.0).len() as f32;
+        assert!(
+            (half / full - 0.5).abs() < 0.12,
+            "half the depth, half the clicks"
+        );
+        assert!(clicks(&mut Geiger::default(), 0.0, 60.0).is_empty());
+        assert!(clicks(&mut Geiger::default(), FLOOR * 0.5, 60.0).is_empty());
+    }
+
+    /// Poisson, not a metronome: the gaps vary as much as they are long.
+    #[test]
+    fn the_counter_is_not_a_metronome() {
+        let at = clicks(&mut Geiger::default(), 0.3, 120.0);
+        let gaps: Vec<f32> = at.windows(2).map(|w| w[1] - w[0]).collect();
+        let mean = gaps.iter().sum::<f32>() / gaps.len() as f32;
+        let var = gaps.iter().map(|g| (g - mean) * (g - mean)).sum::<f32>() / gaps.len() as f32;
+        assert!(var.sqrt() / mean > 0.6, "the gaps are too regular");
+    }
+
+    /// A dose that jumps with a hit bursts; the first reading only primes; a
+    /// jump with no hit (a vent's second), a drink that lowers it, or a
+    /// reset, does not.
+    #[test]
+    fn a_dose_bursts_and_the_first_reading_primes() {
+        let mut g = Geiger::default();
+        g.hurt();
+        g.dose(40);
+        assert!(
+            clicks(&mut g, 0.0, 0.5).is_empty(),
+            "the first reading primed"
+        );
+        g.hurt();
+        g.dose(42);
+        assert!(clicks(&mut g, 0.0, 0.5).is_empty(), "a creep is not a bite");
+        g.dose(49);
+        assert!(
+            clicks(&mut g, 0.0, 0.5).is_empty(),
+            "a vent's rise is not a bite"
+        );
+        g.hurt();
+        g.dose(55);
+        assert_eq!(
+            clicks(&mut g, 0.0, 0.5).len(),
+            BURST_CLICKS as usize,
+            "a bite bursts"
+        );
+        g.hurt();
+        g.dose(10);
+        assert!(clicks(&mut g, 0.0, 0.5).is_empty(), "the tonic is quiet");
+        g.reset();
+        g.hurt();
+        g.dose(80);
+        assert!(clicks(&mut g, 0.0, 0.5).is_empty(), "a rejoin primes again");
+    }
+
+    /// A hitch does not buy a volley.
+    #[test]
+    fn a_hitch_does_not_buy_a_burst() {
+        let mut g = Geiger::default();
+        g.due(1.0, 5.0);
+        // No backlog carried out of the hitch: the next tenth of a second
+        // clicks as a tenth of a second at full depth does (1.4 expected).
+        assert!(
+            clicks(&mut g, 1.0, 0.1).len() <= 4,
+            "a hitch carried a backlog"
+        );
+    }
+
+    /// The counter reads the field as the meter does: nothing on the beach,
+    /// nothing in the town, and the heart loud.
+    #[test]
+    fn the_counter_is_quiet_on_the_beach_and_in_town() {
+        let seed = 20260731;
+        let haven = terrain::haven(seed);
+        let plan = Plan::new(seed, 3, &haven);
+        let now = blight::now(&plan, &haven, 168 * blight::TICKS_PER_HOUR, 2);
+        let (tx, tz) = blight::ward_centre(&haven);
+        let step = 48.0;
+        let n = (terrain::ISLAND_SIZE / step) as i32;
+        for iz in 0..n {
+            for ix in 0..n {
+                let (x, z) = ((ix as f32 + 0.5) * step, (iz as f32 + 0.5) * step);
+                let feet = terrain::ground(seed, &haven, x, z);
+                let town = (x - tx).hypot(z - tz) < blight::WARD_IN_M;
+                if feet < terrain::BEACH_MAX_H || town {
+                    assert_eq!(
+                        geiger::field(&now, seed, &haven, x, z, feet),
+                        0.0,
+                        "the counter ticks at ({x},{z}) (town {town})"
+                    );
+                }
+            }
+        }
+        let (hx, hz) = terrain::FEL_HEART;
+        let feet = terrain::ground(seed, &haven, hx, hz);
+        if feet >= terrain::BEACH_MAX_H {
+            assert!(
+                geiger::field(&now, seed, &haven, hx, hz, feet) > 0.9,
+                "the heart is loud"
+            );
+        }
+    }
+}

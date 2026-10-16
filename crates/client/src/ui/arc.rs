@@ -144,6 +144,53 @@ pub fn event_line(arc: &ArcView, index: u8, what: u8, who: Option<&str>) -> Opti
     })
 }
 
+/// What the island hears when its fel tier climbs (`sim_core::blight::SURGE`):
+/// the front jumps outward at once.
+pub const SURGE_LINE: &str = "THE VERDIGRIS SURGES";
+
+/// When to say [`SURGE_LINE`]: a climb in the fel tier that a live work
+/// event caused, never the climb a join's drip reads as the states land.
+#[derive(Default)]
+pub struct SurgeWatch {
+    tier: Option<u8>,
+    /// Frames left in which a climb counts as this event's.
+    armed: u8,
+}
+
+/// Frames a work event keeps [`SurgeWatch`] armed: the event and the state
+/// that climbs the tier ride one lane, but may land a frame or two apart.
+pub const SURGE_ARM_FRAMES: u8 = 30;
+
+impl SurgeWatch {
+    /// One frame: whether the surge is news. `work_event` is whether a work
+    /// changed this frame. Until every row has had its state the watch holds
+    /// no baseline (and forgets one across a rejoin); the first whole reading
+    /// is taken silently.
+    pub fn step(&mut self, arc: &ArcView, work_event: bool) -> bool {
+        if !arc.synced() {
+            *self = Self::default();
+            return false;
+        }
+        let t = arc.fel_tier();
+        let Some(prev) = self.tier else {
+            self.tier = Some(t);
+            self.armed = 0;
+            return false;
+        };
+        if work_event {
+            self.armed = SURGE_ARM_FRAMES;
+        }
+        let rose = t > prev && self.armed > 0;
+        self.armed = if t > prev {
+            0
+        } else {
+            self.armed.saturating_sub(1)
+        };
+        self.tier = Some(t);
+        rose
+    }
+}
+
 /// What a recipe or an offer waiting on unlock `u` says: which work must
 /// burn, or a plain line before its row has arrived.
 pub fn locked_line(arc: &ArcView, u: u8) -> Option<String> {

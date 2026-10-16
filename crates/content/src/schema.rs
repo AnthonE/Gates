@@ -526,6 +526,10 @@ pub struct Armor {
     /// zero: a piece that says nothing about the cold does nothing for it.
     #[serde(default)]
     pub cold_pct: i32,
+    /// The share of the Verdigris it wards off, per cent — the reference's
+    /// Radiation column, our corruption (`exposure::corrode`).
+    #[serde(default)]
+    pub fel_pct: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -542,6 +546,10 @@ pub struct Consumable {
     /// Used on a downed body in reach (`Command::Treat`), stand it up.
     #[serde(default)]
     pub revive: bool,
+    /// Per mille of the Verdigris meter it moves, at once; negative draws
+    /// the corruption out. ±1000.
+    #[serde(default)]
+    pub fel: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -789,6 +797,11 @@ pub struct Mob {
     /// roused animal charges its tormentor, below it the same rousing is
     /// a flight. The reference boar's rule — fights whole, flees hurt.
     pub brave_pct: u32,
+    /// Per mille of the bitten body's corruption meter one bite adds while
+    /// the animal stands turned in the Verdigris, before the body's ward.
+    /// Absent is a bite that only hurts.
+    #[serde(default)]
+    pub fel_bite: u32,
     /// Leash radius from the home the seed chose.
     pub roam_m: u32,
     /// A player closer than this starts a flight — in daylight.
@@ -890,6 +903,9 @@ pub struct Habitat {
     /// The arid north. Optional: a row that does not say lives nowhere there.
     #[serde(default)]
     pub desert: f32,
+    /// The Verdigris. Optional, the desert's way.
+    #[serde(default)]
+    pub fel: f32,
 }
 
 /// THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost
@@ -1319,6 +1335,31 @@ pub struct Exposure {
     pub heat_hurt_at: u32,
     #[serde(default)]
     pub heat_hp_per_min: u32,
+    /// The Verdigris' meter (`sim_core::exposure::corrode`), per mille: what
+    /// a second at its heart adds, what a vent's fire adds on top, what a
+    /// second out of it takes away; past `fel_hurt_at` it costs
+    /// `fel_hp_per_min` at a full meter; over `fel_regen_max` nothing mends;
+    /// no worn set wards off more than `fel_ward_max`. All optional: absent
+    /// is a Verdigris that only looks the part.
+    #[serde(default)]
+    pub fel_rise_per_s: u32,
+    #[serde(default)]
+    pub fel_vent_per_s: u32,
+    #[serde(default)]
+    pub fel_fall_per_s: u32,
+    #[serde(default)]
+    pub fel_hurt_at: u32,
+    #[serde(default)]
+    pub fel_hp_per_min: u32,
+    #[serde(default)]
+    pub fel_regen_max: u32,
+    #[serde(default)]
+    pub fel_ward_max: u32,
+    /// What a second at a hot spot's core adds (`sim_core::blight`: the loot
+    /// sites burning from act II), per mille. Optional; absent is hot spots
+    /// that only look the part.
+    #[serde(default)]
+    pub fel_pocket_per_s: u32,
     /// Snow (snow v0): per mille of the rain's wetting that snow does where
     /// the air freezes. Absent, snow wets as the rain does.
     #[serde(default = "thousand")]

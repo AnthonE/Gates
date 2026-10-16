@@ -1205,7 +1205,9 @@ impl ItemRow {
     }
 
     /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
-    /// on the same three numbers.
+    /// on the same three numbers — less its `fel`, which the catalog does not
+    /// carry; the content refuses a fel-only row, so the two agree on every
+    /// row that ships.
     pub fn eats(&self) -> bool {
         self.food > 0 || self.water > 0 || self.health > 0
     }
@@ -1538,6 +1540,10 @@ pub enum EventMsg {
         hurting: bool,
         comfort_pct: u8,
         air_c: i8,
+        /// The Verdigris' meter, per cent, and whether it is costing hp
+        /// (wire v113, `exposure::corrode`).
+        fel_pct: u8,
+        fel_hurting: bool,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -5186,7 +5192,12 @@ pub fn encode_event_exposure(
     x: &sim_core::exposure::Readout,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if x.wet_pct > 100 || x.cold_pct > 100 || x.comfort_pct > 100 || x.heat_pct > 100 {
+    if x.wet_pct > 100
+        || x.cold_pct > 100
+        || x.comfort_pct > 100
+        || x.heat_pct > 100
+        || x.fel_pct > 100
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_EXPOSURE)?;
@@ -5196,6 +5207,8 @@ pub fn encode_event_exposure(
     w.write(x.comfort_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write(x.heat_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write(x.air_c as u8 as u32, 8)?;
+    w.write(x.fel_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(x.fel_hurting)?;
     Ok(w.finish())
 }
 
@@ -6971,7 +6984,14 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let comfort_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let heat_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let air_c = r.read(8)? as u8 as i8;
-            if wet_pct > 100 || cold_pct > 100 || comfort_pct > 100 || heat_pct > 100 {
+            let fel_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let fel_hurting = r.read_bit()?;
+            if wet_pct > 100
+                || cold_pct > 100
+                || comfort_pct > 100
+                || heat_pct > 100
+                || fel_pct > 100
+            {
                 return Err(WireError::Malformed);
             }
             EventMsg::Exposure {
@@ -6981,6 +7001,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 hurting,
                 comfort_pct,
                 air_c,
+                fel_pct,
+                fel_hurting,
             }
         }
         SUB_ENV => {
@@ -9236,6 +9258,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/bots.rs"),
         },
         Module {
+            file: "blight.rs",
+            src: include_str!("../../sim-core/src/blight.rs"),
+        },
+        Module {
             file: "boulder.rs",
             src: include_str!("../../sim-core/src/boulder.rs"),
         },
@@ -9507,7 +9533,8 @@ mod wire_domains {
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
-            live_max: 9,
+            // 10 = DEATH_BY_FEL at v113 (the Verdigris).
+            live_max: 10,
         },
         Domain {
             what: "move refusal",

@@ -68,12 +68,13 @@ fn main() {
 
             let m = terrain::moisture(seed, x, z);
             let sl = terrain::ground_slope(seed, &haven, x, z);
-            let c = match terrain::biome(h, m) {
+            let c = match terrain::biome(h, m, terrain::fel(seed, x, z)) {
                 Biome::Beach => [230u8, 214, 150],
                 Biome::Meadow => [124, 168, 82],
                 Biome::Forest => [34, 84, 44],
                 Biome::Highland => [150, 146, 140],
                 Biome::Desert => [214, 170, 104],
+                Biome::Fel => [46, 74, 40],
             };
             biome_img[i..i + 3].copy_from_slice(&c);
 
@@ -195,7 +196,7 @@ fn main() {
                 continue;
             }
             land += 1;
-            let b = terrain::biome(h, terrain::moisture(seed, x, z));
+            let b = terrain::biome_at(seed, h, x, z);
             per_biome[b as usize] += 1;
             if b == Biome::Forest {
                 is_forest[(cz * CELLS_PER_SIDE + cx) as usize] = true;
@@ -236,7 +237,7 @@ fn main() {
         land as f32 * ha
     );
     println!(
-        "  beach {} ({:.1}%)  meadow {} ({:.1}%)  forest {} ({:.1}%)  highland {} ({:.1}%)  desert {} ({:.1}%)",
+        "  beach {} ({:.1}%)  meadow {} ({:.1}%)  forest {} ({:.1}%)  highland {} ({:.1}%)  desert {} ({:.1}%)  verdigris {} ({:.1}%)",
         per_biome[0],
         per_biome[0] as f32 * 100.0 / land as f32,
         per_biome[1],
@@ -247,6 +248,8 @@ fn main() {
         per_biome[3] as f32 * 100.0 / land as f32,
         per_biome[4],
         per_biome[4] as f32 * 100.0 / land as f32,
+        per_biome[5],
+        per_biome[5] as f32 * 100.0 / land as f32,
     );
     println!(
         "  forest patches {} — largest {} cells ({:.0} ha, {:.0}% of all forest), top 8 {:?}",
@@ -434,7 +437,8 @@ fn main() {
                         _ => {}
                     }
                 }
-                if s.occupant == Occupant::Tree {
+                // The painted pair only: a palm is the desert's, not a draw.
+                if s.occupant == Occupant::Tree && usize::from(s.species) < sp_lo.len() {
                     let share = terrain::species_share(seed, x, z);
                     if share < 0.15 {
                         sp_lo[s.species as usize] += 1;

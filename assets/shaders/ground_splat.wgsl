@@ -141,6 +141,37 @@ struct GroundSplat {
     // x..y = the band of aridity it lies on, z = how far past either end it
     // fades out (aridity), w reserved and zero.
     snow_band: vec4<f32>,
+    // The Verdigris (`ground_splat::FEL_*`), by the vertex's corruption:
+    // xyz the ash sand and litter go to; w the share of a fissure cell's
+    // edges that glow at the heart.
+    fel_ash: vec4<f32>,
+    // xyz the dead turf grass goes to; w the fissure cell (m).
+    fel_dead: vec4<f32>,
+    // xyz the obsidian rock goes to; w what its roughness is multiplied by.
+    fel_rock: vec4<f32>,
+    // rgb the glow at this hour (`Ring::set_fel_glow`, from `rig::day_night`);
+    // w the pulse's rate (cycles a second).
+    fel_glow: vec4<f32>,
+    // x = a fissure's half-width (cells), y = its dark rim (cells), z = the
+    // pool field's threshold, w = the pool field's wavelength (m).
+    fel_shape: vec4<f32>,
+    // The Verdigris' spread (`sim_core::blight`), every number from its
+    // consts: the heart (xy, 1/CONTINENT_RADIUS, wander); the heart's edges,
+    // the beach's top and the coast's fade; the creep's band, depth, ridge
+    // hold and ward; the ridge ramp and the ward's radii; the discs' wander
+    // and bands; the front rim's window.
+    blight_heart: vec4<f32>,
+    blight_fel: vec4<f32>,
+    blight_creep: vec4<f32>,
+    blight_ridge: vec4<f32>,
+    blight_disc: vec4<f32>,
+    blight_rim: vec4<f32>,
+    // Live (`render::blight`): the front, the disc count, the rim's gain;
+    // the ward's centre; each disc (x, z, radius, depth; a hot spot's
+    // negative). The array closes the struct, as on the Rust side.
+    blight_now: vec4<f32>,
+    blight_ward: vec4<f32>,
+    blight_discs: array<vec4<f32>, 12>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -443,8 +474,146 @@ fn wall_tap(wall: Wall, layer: i32, tile: f32) -> WallTap {
     return t;
 }
 
+// --- The Verdigris: the fissure network ------------------------------------
+//
+// The ash crust cracked into plates the way a burnt crust dries: a 2D cellular
+// field over the ground's own xz, where the distance to the bisector between
+// the two nearest feature points is the distance to a crack. Each PAIR of
+// plates draws whether its crack glows — the rock face's rule — so a lit
+// fissure runs the length of the edge it chose and stops.
+struct FelCell {
+    // Distance to the nearest plate boundary, in cell units.
+    edge: f32,
+    // A key for the pair of plates either side of it.
+    pair: u32,
+}
+
+fn fel_cell(p: vec2<f32>) -> FelCell {
+    let base = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    var d1 = 1e9;
+    var d2 = 1e9;
+    var f1 = vec2<f32>(0.0);
+    var f2 = vec2<f32>(0.0);
+    var k1 = 0u;
+    var k2 = 0u;
+    for (var j: i32 = -1; j <= 1; j = j + 1) {
+        for (var i: i32 = -1; i <= 1; i = i + 1) {
+            let o = vec2<i32>(i, j);
+            let key = cell_key(vec3<i32>(base + o, 20973));
+            let pt = vec2<f32>(o) + vec2<f32>(0.15) + draw3(key).xy * 0.7;
+            let d = dot(pt - f, pt - f);
+            if d < d1 {
+                d2 = d1;
+                f2 = f1;
+                k2 = k1;
+                d1 = d;
+                f1 = pt;
+                k1 = key;
+            } else if d < d2 {
+                d2 = d;
+                f2 = pt;
+                k2 = key;
+            }
+        }
+    }
+    let n = normalize(f2 - f1);
+    var out: FelCell;
+    out.edge = max(-dot(f - 0.5 * (f1 + f2), n), 0.0);
+    out.pair = cell_key(vec3<i32>(bitcast<i32>(min(k1, k2)), bitcast<i32>(max(k1, k2)), 11));
+    return out;
+}
+
+// --- The Verdigris spreads (`sim_core::blight`) -----------------------------
+//
+// The heart and the live spread, rebuilt per pixel from the heart's edge
+// noise the vertex carries (`zone.y`, `terrain::fel_wander`) and the moment
+// the client last read (`render::blight`, the `blight_*` slots). Every number
+// arrives through the uniform from sim-core's own consts, so the ash drawn is
+// the meter's depth: the same quintic fade, the same ward, ridge and coast.
+// Pure arithmetic — no derivative, no texture tap — so it may sit under any
+// branch.
+
+/// `fmath::fade`, the quintic the sim fades by. Not `smoothstep`, which is
+/// cubic and would draw an edge the meter does not read.
+fn quintic(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+struct Blight {
+    // The heart, the creep and the outbreaks.
+    fel: f32,
+    // The hot spots.
+    hot: f32,
+    // How near the creep's advancing edge this point is, 0..1: the rim.
+    front: f32,
+}
+
+fn blight_at(wp: vec3<f32>, n: f32) -> Blight {
+    var out: Blight;
+    out.fel = 0.0;
+    out.hot = 0.0;
+    out.front = 0.0;
+    let heart = splat.blight_heart;
+    let fr = splat.blight_fel;
+    let creep = splat.blight_creep;
+    let ridge = splat.blight_ridge;
+    let now = splat.blight_now;
+    let rel = (wp.xz - heart.xy) * heart.z;
+    let d2 = dot(rel, rel);
+    let dh = sqrt(d2);
+    let s = dh + n * heart.w;
+    // The heart, `terrain::fel_of`.
+    let reach = fr.y + heart.w;
+    if d2 < reach * reach {
+        out.fel = max(1.0 - quintic(clamp((s - fr.x) / (fr.y - fr.x), 0.0, 1.0)), 0.0);
+    }
+    let coast = clamp((wp.y - fr.z) / fr.w, 0.0, 1.0);
+    // The creep: inside the front's reach only (`blight::within_reach`).
+    if coast > 0.0 && dh < now.x + heart.w {
+        let r = creep.z * clamp((wp.y - ridge.x) / (ridge.y - ridge.x), 0.0, 1.0);
+        let wd = distance(wp.xz, splat.blight_ward.xy);
+        let ward = creep.w * (1.0 - quintic(clamp((wd - ridge.z) / (ridge.w - ridge.z), 0.0, 1.0)));
+        let p = s + r + ward;
+        let t = clamp((p - (now.x - creep.x)) / creep.x, 0.0, 1.0);
+        out.fel = max(out.fel, creep.y * (1.0 - quintic(t)) * coast);
+        let rim = splat.blight_rim;
+        out.front = smoothstep(rim.x, rim.y, t) * (1.0 - smoothstep(rim.z, rim.w, t)) * coast;
+    }
+    // The discs: outbreaks (positive depth) and hot spots (negative).
+    let count = u32(now.y);
+    let disc = splat.blight_disc;
+    for (var i = 0u; i < 12u; i = i + 1u) {
+        if i >= count {
+            break;
+        }
+        let d = splat.blight_discs[i];
+        let hot = d.w < 0.0;
+        let depth = abs(d.w);
+        var wander = disc.x;
+        var band = disc.y;
+        if hot {
+            wander = disc.z;
+            band = disc.w;
+        }
+        let dd = distance(wp.xz, d.xy);
+        if d.z <= 0.0 || dd >= d.z * (1.0 + wander) {
+            continue;
+        }
+        let edge = dd + n * wander * d.z;
+        let w = band * d.z;
+        let v = depth * (1.0 - quintic(clamp((edge - d.z + w) / w, 0.0, 1.0)));
+        if hot {
+            out.hot = max(out.hot, v * coast);
+        } else {
+            out.fel = max(out.fel, v * coast);
+        }
+    }
+    return out;
+}
+
 @fragment
-fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) arid: f32, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) zone: vec2<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Keep the standard view vector, flags and material coverage. The splat
     // assigns its surface colour below.
     // COLOR.a is the rock weight, not opacity. Only the material's resident
@@ -659,6 +828,9 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let near_fine = 1.0 - smoothstep(0.05, 0.25, fine_px);
     var rock_shade = 1.0;
     var rock_tilt = vec3<f32>(0.0);
+    // How much of this texel is one of the rock's cracks, for the Verdigris
+    // to light (below): the same line the face darkens.
+    var rock_crack = 0.0;
     if w.w > 0.002 {
         var shade = 1.0;
         var t_big = vec3<f32>(0.0);
@@ -680,6 +852,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
                 let crack_px = splat.rock_c.y / max(big_px, 1e-5);
                 let on = smoothstep(0.5, 1.5, crack_px);
                 shade = shade * (1.0 - splat.rock_c.z * on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)));
+                rock_crack = on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)) * near_big;
             }
             t_big = (draw3(big.key ^ 0x68e31da4u) * 2.0 - 1.0) * (splat.rock_a.z * near_big);
         }
@@ -733,13 +906,23 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let road_weight = paving + dirt * splat.blend.w;
 
     // The authored colour, per pixel rather than per vertex — with the sand
-    // warmed and the grass dried toward the desert.
-    let dry = clamp(arid, 0.0, 1.0);
+    // warmed and the grass dried toward the desert, and every identity gone
+    // to ash, dead turf and obsidian in the Verdigris. The heart never meets
+    // the desert (`terrain::fel`'s const block); an outbreak may, and the
+    // ash goes over the sand there.
+    let dry = clamp(zone.x, 0.0, 1.0);
+    // `zone.y` is the heart's edge noise, signed: the depth is rebuilt from
+    // it and the moment the client last read (`blight_at`), at the GROUND's
+    // height — a rock carries its rise above it as a negative `zone.x`
+    // (`RockSoup::mesh`), and the heightfield carries none.
+    let ground_wp = vec3<f32>(wp.x, wp.y + min(zone.x, 0.0), wp.z);
+    let green = blight_at(ground_wp, clamp(zone.y, -1.0, 1.0));
+    let fel = max(green.fel, green.hot);
     var ident = array<vec3<f32>, 4>(
-        mix(splat.identity[0].xyz, splat.desert.xyz, dry),
-        mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w),
-        splat.identity[2].xyz,
-        splat.identity[3].xyz,
+        mix(mix(splat.identity[0].xyz, splat.desert.xyz, dry), splat.fel_ash.xyz, fel),
+        mix(mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w), splat.fel_dead.xyz, fel),
+        mix(splat.identity[2].xyz, splat.fel_ash.xyz, fel),
+        mix(splat.identity[3].xyz, splat.fel_rock.xyz, fel),
     );
     var base = vec3(0.0);
     for (var i = 0u; i < 4u; i = i + 1u) {
@@ -775,6 +958,74 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let worn_paint = paving * paint_valid * clamp(road_grain, 0.0, 1.0);
     base = mix(base, splat.paint_yellow.xyz, center_paint * worn_paint * splat.paint_yellow.w);
     base = mix(base, splat.paint_white.xyz, edge_paint * worn_paint * splat.paint_white.w);
+
+    // --- The Verdigris: fissures, pools and the glow ------------------------
+    //
+    // Emission rides `pbr_input.material.emissive` at an exposure weight of
+    // 0, the convention every glow in this client keeps (`beasts::FEL_GLOW`,
+    // the town's lapis), so it reads without bloom — which Low and WebGL2 do
+    // not have. `splat.fel_glow` is the hour's colour (`rig::day_night`).
+    var emit = vec3<f32>(0.0);
+    var pool = 0.0;
+    if fel > 0.02 {
+        let heart = smoothstep(0.25, 0.85, fel);
+        // The spread's advancing edge burns brighter, so the creep reads as
+        // moving; nothing on wipe day (`FRONT_RIM_ONSET`).
+        // The rim fades in with the depth, as `heart` does, so it never
+        // stops dead at this block's gate where the coast thins the creep.
+        let edge_k = green.front * splat.blight_now.z * smoothstep(0.02, 0.08, fel);
+        let lit_k = max(heart, min(edge_k, 1.0));
+        let cell_m = splat.fel_dead.w;
+        // The plates lie on the ground: a fissure is cut into what faces the
+        // sky, and a steep face is the rock's, whose own cracks light below.
+        let flat_k = smoothstep(0.72, 0.9, wn.y);
+        // Warped, so a fissure wanders like a crack and never runs as a ruled
+        // line; its width breathes along it; and it is lit in runs, with dark
+        // gaps, rather than end to end.
+        let q = vec3<f32>(wp.x, 0.0, wp.z);
+        let warp = vec2<f32>(value3(q / (cell_m * 0.55)), value3(q / (cell_m * 0.55) + vec3<f32>(41.3, 0.0, 17.9))) - vec2<f32>(0.5);
+        let crack_w = splat.fel_shape.x * (0.35 + 0.9 * value3(q / 2.3 + vec3<f32>(0.0, 7.0, 0.0)));
+        let run = smoothstep(0.32, 0.55, value3(q / 3.7 + vec3<f32>(0.0, 13.0, 0.0)));
+        // A fissure narrower than a pixel is drawn as its mean, not as a line
+        // that crawls: the plates resolve near and become a glow far.
+        let width_px = 2.0 * splat.fel_shape.x / max(fp_m / cell_m, 1e-5);
+        let resolved = smoothstep(0.5, 1.5, width_px);
+        let share = splat.fel_ash.w * lit_k;
+        // About 3.7 × the half-width of a unit-area cellular field lies within
+        // that half-width of an edge; `share` of those edges glow, in runs.
+        var k = 3.7 * splat.fel_shape.x * share * 0.45;
+        var rim = 0.0;
+        if resolved > 0.0 {
+            let c = fel_cell(wp.xz / cell_m + warp * 0.45);
+            let lit = step(unit_of(c.pair), share) * run;
+            // A white-hot core inside a softer green halo.
+            let line = 1.0 - smoothstep(0.0, crack_w, c.edge);
+            let core = line * line * line;
+            rim = (1.0 - smoothstep(crack_w, crack_w + splat.fel_shape.y, c.edge)) * resolved;
+            let pulse = 0.72 + 0.28 * sin(globals.time * 6.2831853 * splat.fel_glow.w + unit_of(c.pair ^ 0x2545f491u) * 6.2831853);
+            k = mix(k, (core + 0.35 * line) * lit * pulse, resolved);
+        }
+        // Pools: on flat ground at the heart, where a slow field clears its
+        // line — green fire under black glass, brightest at the shore. Lit
+        // from within rather than by the sky: a glossy pool by day was the
+        // sky's own grey-green, a pond of mint.
+        let pf = value3(q / splat.fel_shape.w) * 0.7
+            + value3(q / (splat.fel_shape.w * 0.43) + vec3<f32>(0.0, 17.0, 0.0)) * 0.3;
+        let flat = smoothstep(0.93, 0.975, wn.y);
+        pool = smoothstep(splat.fel_shape.z, splat.fel_shape.z + 0.015, pf)
+            * smoothstep(0.62, 0.9, fel) * flat * ground;
+        let shore = pool * (1.0 - smoothstep(splat.fel_shape.z + 0.015, splat.fel_shape.z + 0.05, pf));
+        // The deep breathes on the slow field, so a pool is not one flat
+        // sheet of light, and the shore burns over it.
+        let deep = 0.2 + 0.3 * value3(q / 5.0 + vec3<f32>(0.0, 29.0, 0.0));
+        emit = splat.fel_glow.rgb * (k * lit_k * (1.0 + edge_k) * ground * flat_k * (1.0 - pool) + pool * deep + shore * 1.1);
+        // The rock's own cracks, where the rock is.
+        emit = emit + splat.fel_glow.rgb * rock_crack * terrain_bw.w * ground * heart * 0.8;
+        // Scorched dark along the fissures, and the liquid black-green.
+        base = base * (1.0 - 0.65 * rim * lit_k * ground * flat_k);
+        base = mix(base, vec3<f32>(0.010, 0.040, 0.012), pool);
+    }
+
     // The macro break-up, then the waterline — in that order, so a wet vertex
     // keeps its own grain instead of having it multiplied back in at full dry
     // strength. `terrain_mesh::vertex_color` states why.
@@ -790,14 +1041,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // axis), on what faces the sky and never under the water. A colour set
     // BEFORE the photograph multiplies, so the relief's light and shade
     // survive it (`ART.md`: a modifier that sets a colour keeps the mean-1
-    // field).
+    // field). Never on the Verdigris' hot ground, whose fissures glow and
+    // pools lie flat: from the fel block's own gate it stays bare.
     let band = splat.snow_band;
     let snow = splat.snow.x
         * smoothstep(splat.snow.y - splat.snow.w, splat.snow.y, wp.y)
-        * smoothstep(band.x - band.z, band.x, arid)
-        * (1.0 - smoothstep(band.y, band.y + band.z, arid))
+        * smoothstep(band.x - band.z, band.x, dry)
+        * (1.0 - smoothstep(band.y, band.y + band.z, dry))
         * smoothstep(0.55, 0.85, in.world_normal.y)
-        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y);
+        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)
+        * (1.0 - smoothstep(0.02, 0.25, fel));
     base = mix(base, vec3(splat.snow.z), snow);
 
     // The photograph, last: a scalar field with a mean of 1, so it contributes
@@ -882,6 +1135,11 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // clear of it instead, which is the half that IS ours.
     let wet_keep = 1.0 - wet * (1.0 - splat.blend.z);
     pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_ra.r) * wet_keep;
+    // Obsidian is glass, and a pool is liquid.
+    if fel > 0.0 {
+        let glassy = mix(1.0, splat.fel_rock.w, fel * bw.w);
+        pbr_input.material.perceptual_roughness = mix(pbr_input.material.perceptual_roughness * glassy, 0.5, pool);
+    }
 
     // The relief, blended as gradients. The planar taps' share is applied on
     // the mesh's own written tangent frame; each wall tap's is already a world
@@ -907,6 +1165,12 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let n0 = pbr_input.N;
     let lean = (rock_tilt - dot(rock_tilt, n0) * n0) * bw.w;
     pbr_input.N = normalize(n0 + lean);
+    // A pool is level.
+    pbr_input.N = normalize(mix(pbr_input.N, wn, pool));
+    // The Verdigris' glow, never under water.
+    if under <= 0.0 {
+        pbr_input.material.emissive = vec4<f32>(emit, 0.0);
+    }
 
     var out: FragmentOutput;
     // ── Ambient occlusion, blended by the same weights ──────────────────

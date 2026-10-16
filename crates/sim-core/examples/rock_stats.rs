@@ -48,7 +48,7 @@ fn main() {
             let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
             let h = terrain::height(seed, x, z);
             if h >= terrain::LAND_MIN_H {
-                biome[i] = terrain::biome(h, terrain::moisture(seed, x, z)) as u8;
+                biome[i] = terrain::biome_at(seed, h, x, z) as u8;
                 let sl = terrain::ground_slope(seed, &haven, x, z);
                 cliff[i] = u8::from(sl > terrain::CLIFF_SLOPE_RATIO);
             }

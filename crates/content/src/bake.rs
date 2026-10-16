@@ -1300,6 +1300,24 @@ impl Content {
             1000
         };
         ex.heat_hp_per_min = u16f(e.heat_hp_per_min, "heat_hp_per_min")?;
+        // The Verdigris. A line nothing reaches when it is not armed.
+        ex.fel_rise_per_s = u16f(e.fel_rise_per_s, "fel_rise_per_s")?;
+        ex.fel_vent_per_s = u16f(e.fel_vent_per_s, "fel_vent_per_s")?;
+        ex.fel_fall_per_s = u16f(e.fel_fall_per_s, "fel_fall_per_s")?;
+        let armed = e.fel_rise_per_s > 0;
+        ex.fel_hurt_at = if armed {
+            u16f(e.fel_hurt_at, "fel_hurt_at")?
+        } else {
+            1000
+        };
+        ex.fel_hp_per_min = u16f(e.fel_hp_per_min, "fel_hp_per_min")?;
+        ex.fel_regen_max = if armed {
+            u16f(e.fel_regen_max, "fel_regen_max")?
+        } else {
+            1000
+        };
+        ex.fel_ward_max = u16f(e.fel_ward_max, "fel_ward_max")?;
+        ex.fel_pocket_per_s = u16f(e.fel_pocket_per_s, "fel_pocket_per_s")?;
         ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
@@ -1321,8 +1339,9 @@ impl Content {
                 .item_index(&a.id)
                 .ok_or_else(|| format!("bake: armor `{}` names no item", a.id))?
                 as usize;
-            // Per cent to per mille of chill kept out.
+            // Per cent to per mille of chill kept out, and of the Verdigris.
             ex.warmth[idx] = (a.cold_pct * 10) as i16;
+            ex.ward[idx] = (a.fel_pct * 10) as u16;
         }
         for con in &self.consumables {
             let idx = self
@@ -1350,11 +1369,21 @@ impl Content {
             (seconds as u32).checked_mul(TICK_HZ).ok_or_else(|| {
                 format!("bake: consumable `{}` span {seconds} s overflows", con.id)
             })?;
+            let fel = i16::try_from(con.fel)
+                .ok()
+                .filter(|v| (-1000..=1000).contains(v))
+                .ok_or_else(|| {
+                    format!(
+                        "bake: consumable `{}` fel {} outside ±1000",
+                        con.id, con.fel
+                    )
+                })?;
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
                 water: u16f(con.water, "water")?,
                 seconds,
+                fel,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;
@@ -2547,6 +2576,7 @@ impl Content {
                 )?,
                 // Validate bounded it to 0..=100; the cast cannot truncate.
                 brave_pct: m.brave_pct as u8,
+                fel_bite: small(m.fel_bite, "fel_bite")?,
                 roam_cm: m.roam_m as i64 * 100,
                 spook_cm: m.spook_m as i64 * 100,
                 night_spook_cm: m.night_spook_m as i64 * 100,
@@ -2556,7 +2586,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
                 // Thousandths per km², and per mille per biome in
                 // `terrain::Biome` order (beach, meadow, forest, highland,
-                // desert).
+                // desert, the Verdigris).
                 // Validate bounded every value, so the casts cannot wrap.
                 per_km2_milli: (m.per_km2 * 1000.0).round() as u32,
                 night_extra_pct: (m.night_extra * 100.0).round() as u16,
@@ -2566,6 +2596,7 @@ impl Content {
                     (m.habitat.forest * 1000.0).round() as u16,
                     (m.habitat.highland * 1000.0).round() as u16,
                     (m.habitat.desert * 1000.0).round() as u16,
+                    (m.habitat.fel * 1000.0).round() as u16,
                 ],
                 // Centimetres straight through: the hit volume a swing's ray
                 // is tested against (`melee::mob_cast`). Validate bounded

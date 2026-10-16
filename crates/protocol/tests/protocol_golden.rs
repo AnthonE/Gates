@@ -1868,6 +1868,8 @@ fn golden_event(fixture: &[u8], name: &str) {
                     hurting: true,
                     comfort_pct: 50,
                     air_c: -7,
+                    fel_pct: 40,
+                    fel_hurting: false,
                 }
             );
             protocol::encode_event_exposure(&protocol::goldens::exposure(), &mut buf).unwrap()

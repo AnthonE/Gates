@@ -396,7 +396,8 @@ pub const APPLIED2_LODGED: u32 = 1 << 11;
 pub const APPLIED2_ENV: u32 = 1 << 7;
 
 /// The owner's wet/cold readout changed (`EventMsg::Exposure`, weather
-/// v0) — re-read `wet_pct`, `cold_pct`, `cold_hurting` and `comfort_pct`.
+/// v0) — re-read `wet_pct`, `cold_pct`, `cold_hurting`, `comfort_pct`, and
+/// the Verdigris' `fel_pct` and `fel_hurting`.
 pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
 
 /// A structure hit landed that was THIS player's blow (wire v77): the
@@ -1983,6 +1984,10 @@ pub struct ClientCore {
     /// °C (climate v0) — what the server's exposure step last read.
     pub heat_pct: u8,
     pub air_c: i8,
+    /// The Verdigris' meter on the owner, per cent, and whether it is
+    /// costing hp (wire v113).
+    pub fel_pct: u8,
+    pub fel_hurting: bool,
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2365,6 +2370,8 @@ impl ClientCore {
             comfort_pct: 0,
             heat_pct: 0,
             air_c: 0,
+            fel_pct: 0,
+            fel_hurting: false,
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -2844,6 +2851,7 @@ impl ClientCore {
                     w.fuel = fuel;
                     w.got = got;
                     w.mine = mine;
+                    w.synced = true;
                 }
                 self.arc.unlocks = unlocks;
                 self.arc.gen = self.arc.gen.wrapping_add(1);
@@ -3822,6 +3830,8 @@ impl ClientCore {
                 hurting,
                 comfort_pct,
                 air_c,
+                fel_pct,
+                fel_hurting,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -3829,6 +3839,8 @@ impl ClientCore {
                 self.comfort_pct = comfort_pct;
                 self.heat_pct = heat_pct;
                 self.air_c = air_c;
+                self.fel_pct = fel_pct;
+                self.fel_hurting = fel_hurting;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }

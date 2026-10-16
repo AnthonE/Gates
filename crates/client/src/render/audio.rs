@@ -440,6 +440,8 @@ pub struct Sound {
     /// The forest layer's clock (`sound::birds`), driven by [`bed`], which
     /// already has the cover score and the props to perch on.
     pub birds: Birds,
+    /// The Verdigris counter's clock (`sound::geiger`), driven by [`geiger`].
+    pub geiger: crate::sound::geiger::Geiger,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -667,6 +669,9 @@ pub fn teardown(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>, mut last_h
     // is the same rule and the same reason.
     sound.voices.reset();
     sound.birds.reset();
+    // And the counter's: a dose carried over would read the next island's
+    // first reading as a bite and burst on the join.
+    sound.geiger.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
     // The waterline and the snapshot go with it, and the second one is the
@@ -694,6 +699,7 @@ pub fn steps(
     mut sound: ResMut<Sound>,
     time: Res<Time>,
     fx: Option<ResMut<super::fx::Fx>>,
+    blight: Option<Res<super::blight::Blight>>,
     mut air: Local<Air>,
 ) {
     let mut fx = fx;
@@ -737,7 +743,8 @@ pub fn steps(
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
     let core = &net.session.core;
-    if let Some(depth) = in_leaves(&world, pos, |key| plant_size(core, key)) {
+    let now = blight.as_deref().and_then(|b| b.now.as_ref());
+    if let Some(depth) = in_leaves_at(&world, pos, |key| plant_size(core, key), now) {
         sound.play(Request::own(Cue::Brush).with_gain(step.gain * brush_gain(depth)));
     }
     if let Some(mut fx) = fx {
@@ -761,6 +768,17 @@ fn brush_gain(depth: f32) -> f32 {
 /// `pos`, since a plant near a cell's edge reaches into its neighbour.
 /// `size` is a plant's drawn size by cell key: 0 picked, 1 grown.
 pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -> Option<f32> {
+    in_leaves_at(w, pos, size, None)
+}
+
+/// [`in_leaves`] in the spread as it stands (`render::blight`): a shrub the
+/// green has killed is dead scrub, drawn and heard alike.
+pub fn in_leaves_at(
+    w: &super::WorldId,
+    pos: [f32; 3],
+    size: impl Fn(u32) -> f32,
+    now: Option<&sim_core::blight::Now>,
+) -> Option<f32> {
     use sim_core::terrain::{scatter, CELLS_PER_SIDE, CELL_SIZE};
     let cell = |v: f32| (v / CELL_SIZE).floor() as i32;
     let (cx, cz) = (cell(pos[0]), cell(pos[2]));
@@ -775,7 +793,17 @@ pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -
             if !slot.occupant.is_plant() {
                 continue;
             }
-            let scenery = super::plants::scenery(w.seed, &slot, key);
+            let fel = match now {
+                Some(n) if !sim_core::blight::within_reach(n, slot.x, slot.z) => 0.0,
+                _ => super::blight::live_fel(
+                    now,
+                    slot.x,
+                    slot.z,
+                    slot.y,
+                    sim_core::terrain::fel_wander(w.seed, slot.x, slot.z),
+                ),
+            };
+            let scenery = super::plants::scenery_with(w.seed, &slot, key, fel);
             let Some(r) = super::plants::leaf_reach(slot.occupant, key, scenery) else {
                 continue;
             };
@@ -870,6 +898,42 @@ pub fn fires(
     next.0 = 0.45 + 0.75 * r;
 }
 
+/// The Verdigris counter in your ear: clicks at the rate of the green where
+/// you stand (`sound::geiger`), and a burst when your dose jumps. Quiet on
+/// the beach, out of the green, and when you are dead.
+pub fn geiger(
+    net: NonSend<Net>,
+    world: Res<super::WorldId>,
+    feed: Res<super::feed::Feed>,
+    blight: Option<Res<super::blight::Blight>>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+) {
+    let core = &net.session.core;
+    if core.dead {
+        sound.geiger.reset();
+        return;
+    }
+    // A hit this frame, then the meter's reading: a jump beside a hit is a
+    // bite heard.
+    if !feed.hurt_from().is_empty() {
+        sound.geiger.hurt();
+    }
+    if feed.applied2 & client_core::core::APPLIED2_EXPOSURE != 0 {
+        sound.geiger.dose(core.fel_pct);
+    }
+    let [x, feet, z] = core.predict.render_position();
+    let depth = blight
+        .as_deref()
+        .and_then(|b| b.now.as_ref())
+        .map_or(0.0, |now| {
+            crate::sound::geiger::field(now, world.seed, &world.haven, x, z, feet)
+        });
+    if sound.geiger.due(depth, time.delta_secs()) {
+        sound.play(Request::own(Cue::Geiger));
+    }
+}
+
 /// One remote body's step odometer — the same `sound::steps::Steps` the
 /// local player runs, one per drawn body, carried as a component so it dies
 /// with the entity and a body that leaves AOI and returns starts fresh (no
@@ -903,8 +967,10 @@ pub fn remote_steps(
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
     mut fx: Option<ResMut<super::fx::Fx>>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     let dt = time.delta_secs();
+    let now = blight.as_deref().and_then(|b| b.now.as_ref());
     for (t, mut steps, anim) in bodies.iter_mut() {
         let pos = [t.translation.x, t.translation.y, t.translation.z];
         // Spaced as the drawn feet are spaced (`Rig::step_m`), so a remote's
@@ -929,7 +995,7 @@ pub fn remote_steps(
                 net.as_deref()
                     .map_or(1.0, |n| plant_size(&n.session.core, key))
             };
-            if let Some(depth) = in_leaves(&world, pos, size) {
+            if let Some(depth) = in_leaves_at(&world, pos, size, now) {
                 let gain = step.gain * brush_gain(depth);
                 sound.play(Request::at(Cue::RemoteBrush, pos).with_gain(gain));
             }

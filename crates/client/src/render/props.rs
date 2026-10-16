@@ -278,6 +278,8 @@ pub struct PropAssets {
     bark: [Handle<StandardMaterial>; TINT_POOL],
     /// The broadleaf trunk's bark: a birch photograph (`textures::PropMaps`).
     birch: [Handle<StandardMaterial>; TINT_POOL],
+    /// A tree in the Verdigris: the pine's bark, burnt (`spawn_slot`'s snag).
+    charred: [Handle<StandardMaterial>; TINT_POOL],
     rock: [Handle<StandardMaterial>; TINT_POOL],
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
@@ -525,8 +527,63 @@ pub const OUTER_RADIUS: i32 = 4;
 /// What the scatter ring has spawned, one parent entity per chunk.
 #[derive(Resource, Default)]
 pub struct PropRing {
-    built: HashMap<(i32, i32), Entity>,
-    outer: HashMap<(i32, i32), Entity>,
+    built: HashMap<(i32, i32), Chunk>,
+    outer: HashMap<(i32, i32), Chunk>,
+    /// The blight's moment the rings last withered against
+    /// (`render::blight::Blight::now`).
+    seen: Option<sim_core::blight::Now>,
+}
+
+/// One chunk a ring has standing: its parent, every tree in it as it was
+/// drawn, and whether the spread has since turned one of them.
+struct Chunk {
+    e: Entity,
+    taps: Vec<TreeTap>,
+    /// Built again on the ring's next free frame; until then it stands as it
+    /// is, so the ring never shows bare ground (`PropRing::wither`).
+    stale: bool,
+}
+
+/// A tree or a shrub as its chunk drew it: where, the ground under it, the
+/// heart's edge noise there (`terrain::fel_wander`), and whether it stood
+/// dead. Enough to ask again, exactly as the spawn asked, whether it would
+/// now.
+#[derive(Clone, Copy, Debug)]
+pub struct TreeTap {
+    pub x: f32,
+    pub z: f32,
+    pub y: f32,
+    pub n: f32,
+    /// A shrub, which dies by the Verdigris' biome line rather than the snag
+    /// line (`plants::scenery_with`).
+    pub shrub: bool,
+    /// Drawn dead: a snag, or a shrub gone to dead scrub.
+    pub snag: bool,
+}
+
+impl TreeTap {
+    fn of(slot: &terrain::Slot, n: f32, fel: f32) -> Self {
+        let shrub = slot.occupant == Occupant::Shrub;
+        TreeTap {
+            x: slot.x,
+            z: slot.z,
+            y: slot.y,
+            n,
+            shrub,
+            snag: dead_at(shrub, slot.y, fel),
+        }
+    }
+}
+
+/// Whether a tree (or a shrub) standing on ground `y` is drawn dead in
+/// Verdigris `fel` deep: a tree at [`FEL_SNAG_AT`], a shrub where its biome
+/// turns to the Verdigris' (`terrain::biome`).
+fn dead_at(shrub: bool, y: f32, fel: f32) -> bool {
+    if shrub {
+        y >= terrain::BEACH_MAX_H && fel >= terrain::FEL_BIOME_AT
+    } else {
+        fel >= FEL_SNAG_AT
+    }
 }
 
 impl PropRing {
@@ -572,6 +629,34 @@ impl PropRing {
     /// Is this chunk key in the outer ring?
     pub fn outer_holds(&self, key: (i32, i32)) -> bool {
         self.outer.contains_key(&key)
+    }
+    /// The parent a near chunk's trees stand under.
+    pub fn chunk_entity(&self, key: (i32, i32)) -> Option<Entity> {
+        self.built.get(&key).map(|c| c.e)
+    }
+
+    /// Mark every chunk with a tree whose snag answer `live_snag` changes for
+    /// rebuilding; how many it marked. It despawns nothing: a marked chunk
+    /// keeps its key and its trees until [`stream`] builds its replacement,
+    /// and the two swap in one command flush — a pop, never a gap.
+    pub fn wither(&mut self, mut live_snag: impl FnMut(&TreeTap) -> bool) -> usize {
+        let mut marked = 0;
+        for c in self.built.values_mut().chain(self.outer.values_mut()) {
+            if !c.stale && c.taps.iter().any(|t| live_snag(t) != t.snag) {
+                c.stale = true;
+                marked += 1;
+            }
+        }
+        marked
+    }
+
+    /// Chunks waiting to be built again after a wither.
+    pub fn stale_len(&self) -> usize {
+        self.built
+            .values()
+            .chain(self.outer.values())
+            .filter(|c| c.stale)
+            .count()
     }
 }
 
@@ -2330,8 +2415,41 @@ pub fn assets(
         // Birch bark is papery and has a dull sheen where pine's is all
         // fissure, so it is a touch less rough.
         birch: photo_pool(&maps.birch, 0.80, fresnel::DIELECTRIC, materials),
+        // Burnt: the pine's photograph at a fraction of its value with a cold
+        // green-black cast, and the dull sheen of char.
+        charred: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v * FEL_CHAR[0], v * FEL_CHAR[1], v * FEL_CHAR[2]),
+                base_color_texture: Some(maps.bark.albedo.clone()),
+                normal_map_texture: Some(maps.bark.normal.clone()),
+                occlusion_texture: maps.bark.ao.clone(),
+                perceptual_roughness: 0.95,
+                reflectance: fresnel::DIELECTRIC,
+                ..default()
+            })
+        }),
     }
 }
+
+/// Corruption at which a tree is a snag: bark burnt black and no crown at all
+/// (`spawn_slot`, and the far cards leave it out). The sim's tree is the same
+/// tree — the same trunk it blocks and the same wood it pays. **(knob)**
+pub const FEL_SNAG_AT: f32 = 0.45;
+
+/// Whether the tree (or shrub) at `t` stands dead in the spread `now`: the
+/// one question the spawn, the ring's wither and the far cards all ask, so
+/// the same moment always gives the same answer and nothing churns.
+pub fn snag_of(now: Option<&sim_core::blight::Now>, t: &TreeTap) -> bool {
+    dead_at(
+        t.shrub,
+        t.y,
+        super::blight::live_fel(now, t.x, t.z, t.y, t.n),
+    )
+}
+
+/// What a snag's bark is multiplied by, linear: burnt nearly black, a green
+/// cast where the Verdigris' glow has been on it. **(knob)**
+const FEL_CHAR: [f32; 3] = [0.30, 0.33, 0.30];
 
 /// Spawn the scatter for the near ring, one chunk per frame.
 #[allow(clippy::too_many_arguments)]
@@ -2349,6 +2467,7 @@ pub fn stream(
     lod: Res<tree::TreeLod>,
     cards: Option<Res<super::far_trees::TreeCards>>,
     foliage: Option<ResMut<super::foliage::Foliages>>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     let fresh = store.is_none();
     let a = store.get_or_insert_with(|| {
@@ -2403,20 +2522,28 @@ pub fn stream(
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
 
+    // The spread moved (`render/blight.rs`): every chunk holding a tree it
+    // has since killed is built again, in the ring's own one-a-frame budget.
+    let now = blight.as_deref().and_then(|b| b.now);
+    if ring.seen != now {
+        ring.seen = now;
+        ring.wither(|t| snag_of(now.as_ref(), t));
+    }
+
     let mut dropped = 0usize;
-    ring.built.retain(|(bx, bz), e| {
+    ring.built.retain(|(bx, bz), c| {
         if dropped >= 1 || ((*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS) {
             return true;
         }
         dropped += 1;
-        commands.entity(*e).despawn();
+        commands.entity(c.e).despawn();
         false
     });
 
     for dz in -NEAR_RADIUS..=NEAR_RADIUS {
         for dx in -NEAR_RADIUS..=NEAR_RADIUS {
             let key = (cx + dx, cz + dz);
-            if ring.built.contains_key(&key) {
+            if ring.built.get(&key).is_some_and(|c| !c.stale) {
                 continue;
             }
             // **The hand-off.** A chunk the player has walked into may still
@@ -2431,7 +2558,7 @@ pub fn stream(
             // frame with both; one despawn beside one build is inside the
             // budget the ground pays every frame.
             if let Some(hulls) = ring.outer.remove(&key) {
-                commands.entity(hulls).despawn();
+                commands.entity(hulls.e).despawn();
             }
             let parent = commands
                 .spawn((
@@ -2447,6 +2574,7 @@ pub fn stream(
             // Bit-identical — `sim-core/tests/lattice.rs` holds the two forms
             // of `scatter` equal field for field.
             let mut lat = terrain::Lattice::new();
+            let mut taps = Vec::new();
             for iz in 0..cells {
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
@@ -2462,14 +2590,32 @@ pub fn stream(
                     if slot.occupant == Occupant::None {
                         continue;
                     }
+                    // How deep the spread stands at a tree or a shrub now:
+                    // what kills the one and dries the other. Each keeps its
+                    // tap, so the next moment can ask again.
+                    let mut fel = 0.0;
+                    if matches!(slot.occupant, Occupant::Tree | Occupant::Shrub) {
+                        let n = terrain::fel_wander_memo(&mut lat, world.seed, slot.x, slot.z);
+                        fel = super::blight::live_fel(now.as_ref(), slot.x, slot.z, slot.y, n);
+                        taps.push(TreeTap::of(&slot, n, fel));
+                    }
                     // `cell_key` is `sim_core::gather`'s own, not a second
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
                     let key = cell_key(cell_x as u16, cell_z as u16);
-                    spawn_slot(&mut commands, parent, a, world.seed, &slot, key, &lod);
+                    spawn_slot(&mut commands, parent, a, world.seed, &slot, key, &lod, fel);
                 }
             }
-            ring.built.insert(key, parent);
+            // A withered chunk's old trees go in the flush that stands the
+            // new ones up.
+            let built = Chunk {
+                e: parent,
+                taps,
+                stale: false,
+            };
+            if let Some(old) = ring.built.insert(key, built) {
+                commands.entity(old.e).despawn();
+            }
             // One chunk of scatter per frame, same budget as the ground.
             return;
         }
@@ -2483,7 +2629,7 @@ pub fn stream(
     // and a horizon that arrives a second late is a horizon nobody watched
     // arrive.
     let mut dropped_outer = 0usize;
-    ring.outer.retain(|(bx, bz), e| {
+    ring.outer.retain(|(bx, bz), c| {
         let dx = (*bx - cx).abs();
         let dz = (*bz - cz).abs();
         // Two questions, not one. Until 2026-09-13 this asked only *is the
@@ -2499,7 +2645,7 @@ pub fn stream(
             return true;
         }
         dropped_outer += 1;
-        commands.entity(*e).despawn();
+        commands.entity(c.e).despawn();
         false
     });
     if dropped_outer > 0 {
@@ -2516,7 +2662,7 @@ pub fn stream(
                 continue;
             }
             let key = (cx + dx, cz + dz);
-            if ring.outer.contains_key(&key) {
+            if ring.outer.get(&key).is_some_and(|c| !c.stale) {
                 continue;
             }
             let parent = commands
@@ -2528,6 +2674,7 @@ pub fn stream(
                 .id();
             let cells = (CHUNK_M / terrain::CELL_SIZE) as i32;
             let mut lat = terrain::Lattice::new();
+            let mut taps = Vec::new();
             for iz in 0..cells {
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
@@ -2547,11 +2694,27 @@ pub fn stream(
                     if slot.occupant != Occupant::Tree {
                         continue;
                     }
+                    // A snag out here is a few pixels of black twig; its card
+                    // would be a crown. It draws nothing, but keeps its tap.
+                    let n = terrain::fel_wander_memo(&mut lat, world.seed, slot.x, slot.z);
+                    let fel = super::blight::live_fel(now.as_ref(), slot.x, slot.z, slot.y, n);
+                    let tap = TreeTap::of(&slot, n, fel);
+                    taps.push(tap);
+                    if tap.snag {
+                        continue;
+                    }
                     let key = cell_key(cell_x as u16, cell_z as u16);
                     spawn_outer_tree(&mut commands, parent, a, &slot, key, &world);
                 }
             }
-            ring.outer.insert(key, parent);
+            let built = Chunk {
+                e: parent,
+                taps,
+                stale: false,
+            };
+            if let Some(old) = ring.outer.insert(key, built) {
+                commands.entity(old.e).despawn();
+            }
             return;
         }
     }
@@ -2697,6 +2860,7 @@ pub fn spawn_outer_tree(
 /// only way to assert what actually reaches the ECS. `CLAUDE.md`'s trap list
 /// says it in one line: a spawn is not type-checked, so a bundle is a claim
 /// you have to run.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_slot(
     commands: &mut Commands,
     parent: Entity,
@@ -2705,6 +2869,7 @@ pub fn spawn_slot(
     slot: &terrain::Slot,
     key: u32,
     lod: &tree::TreeLod,
+    fel: f32,
 ) {
     let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
     // Which value-tint this slot draws. Off the CELL KEY so two players in one
@@ -2722,13 +2887,21 @@ pub fn spawn_slot(
     // hand-sized model (`PICKUP_GLB`).
     let mut grow = 1.0;
     // What a shrub cell grows, off its biome (`plants::scenery`).
-    let scenery = plants::scenery(seed, slot, key);
+    // `fel` is the spread's depth at the slot now (the caller's,
+    // `render::blight::live_fel`), not the wipe-day heart.
+    let scenery = plants::scenery_with(seed, slot, key, fel);
+    // A tree in the Verdigris is dead: charred bark and no crown.
+    let snag = slot.occupant == Occupant::Tree && fel >= FEL_SNAG_AT;
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = species_variant(slot, a.pines.len());
             (
                 a.pines[variant].clone(),
-                a.trunk_material(variant, key).clone(),
+                if snag {
+                    a.charred[tint].clone()
+                } else {
+                    a.trunk_material(variant, key).clone()
+                },
             )
         }
         // Each node takes its own model where one exists and the shared blob
@@ -3054,7 +3227,7 @@ pub fn spawn_slot(
     // What makes two independent entities agree is that neither stores the
     // bearing: both derive it from the cell key (`fell_bearing`), which is
     // also what makes two CLIENTS agree.
-    if is_tree {
+    if is_tree && !snag {
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
@@ -3083,8 +3256,19 @@ pub fn spawn_slot(
     // material at six meshes. The bush already banks on that shader path.
     if is_tree {
         // The card where the client has one (`far_trees`); the lathed hull in
-        // the headless tier.
-        if let Some((meshes, mats)) = &a.cards {
+        // the headless tier. A snag has no crown for either to stand in for:
+        // its far half is its own charred trunk.
+        if snag {
+            e.with_child((
+                fellable(FellPart::Far),
+                Topple { t: -1.0 },
+                Grow::tree(slot.scale),
+                Mesh3d(a.pines[variant].clone()),
+                MeshMaterial3d(a.charred[tint].clone()),
+                tree::lod_band(&lod.far),
+                transform,
+            ));
+        } else if let Some((meshes, mats)) = &a.cards {
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
@@ -3346,7 +3530,7 @@ pub fn apply_fell(
     )>,
     harvested: &dyn Fn(u32) -> (bool, bool),
 ) {
-    apply_fell_in(q, harvested, &mut |_, _| {});
+    apply_fell_in(q, harvested, &mut |_, _| {}, false);
 }
 
 /// [`apply_fell`], told where a vanished part stood and how big it was, so
@@ -3362,7 +3546,7 @@ pub fn apply_fell_forgetting(
     harvested: &dyn Fn(u32) -> (bool, bool),
     forget: &mut dyn FnMut(Vec3, f32),
 ) {
-    apply_fell_in(q, harvested, forget);
+    apply_fell_in(q, harvested, forget, false);
 }
 
 /// [`apply_fell`] over the `Added<Fellable>` query — same body, one filter.
@@ -3378,7 +3562,10 @@ pub fn apply_fell_added(
     >,
     harvested: &dyn Fn(u32) -> (bool, bool),
 ) {
-    apply_fell_in(q, harvested, &mut |_, _| {});
+    // A part that ARRIVES felled — streamed in, or its chunk rebuilt when the
+    // blight withered it — was felled long ago: it lies where it fell rather
+    // than toppling again, shake and dust and all.
+    apply_fell_in(q, harvested, &mut |_, _| {}, true);
 }
 
 fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
@@ -3393,6 +3580,7 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
     >,
     harvested: &dyn Fn(u32) -> (bool, bool),
     forget: &mut dyn FnMut(Vec3, f32),
+    arrived: bool,
 ) {
     for (mut f, top, mut t, mut vis) in q.iter_mut() {
         let (felled, grubbed) = harvested(f.key);
@@ -3449,7 +3637,12 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
                 // A missing one is a spawn-site bug rather than a state to
                 // handle, so it leaves the pose alone instead of guessing.
                 let Some(mut top) = top else { continue };
-                if felled {
+                if felled && arrived {
+                    // Already down: the topple's last pose, which `fall`
+                    // leaves alone.
+                    top.t = FELL_FALL_S;
+                    t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), FELL_FALL_S);
+                } else if felled {
                     // Start the topple. `fall` owns the pose from here.
                     top.t = 0.0;
                 } else {

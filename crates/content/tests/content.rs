@@ -3938,10 +3938,15 @@ fn every_consumable_the_content_ships_is_reachable() {
     g.1 = g.1.replace(patch, "\n");
     strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
+    // The Charcoal Tonic is steeped from mushrooms, so it goes with them.
     assert_eq!(
         unreachable_consumables(&mutant),
-        vec!["item.mushrooms".to_string()],
-        "deleting the tree's mushroom secondary must strand exactly the mushrooms"
+        vec![
+            "item.charcoal_tonic".to_string(),
+            "item.mushrooms".to_string()
+        ],
+        "deleting the tree's mushroom secondary must strand exactly the mushrooms \
+         and what is made of them"
     );
 
     let mut srcs = sources();
@@ -4978,5 +4983,32 @@ fn the_arc_refuses_what_it_cannot_resolve() {
         "teaches = \"0123456789\"",
         "teaches = \"0123456789!\"",
         "not in the alphabet",
+    );
+}
+
+/// The radiation kit (`sim_core::blight`): the Ash Mask and the Ash Suit each
+/// ward off part of the Verdigris, together they reach the ceiling, and the
+/// tonic draws the meter down without being refused at full.
+#[test]
+fn the_ash_mask_and_suit_reach_the_ward_cap_and_the_tonic_draws() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let sc = c.bake_survival().expect("survival bakes");
+    let ex = &sc.exposure;
+    let ward = |id: &str| ex.ward[c.item_index(id).expect(id) as usize];
+    let (mask, suit) = (ward("item.armor_ash_mask"), ward("item.armor_ash_suit"));
+    assert!(
+        mask < ex.fel_ward_max && suit < ex.fel_ward_max,
+        "one piece is not the cap"
+    );
+    assert!(
+        mask + suit >= ex.fel_ward_max,
+        "mask and suit together reach the cap"
+    );
+    let tonic = sc.consumable[c.item_index("item.charcoal_tonic").expect("tonic") as usize];
+    assert!(tonic.fel < 0, "the tonic draws the green out");
+    assert!(tonic.health > 0 || tonic.water > 0, "the eat verb takes it");
+    assert_eq!(
+        tonic.health, 0,
+        "a heal would slow a medkit drunk beside it"
     );
 }

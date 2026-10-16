@@ -100,7 +100,16 @@ fn spawned(app: &mut App, a: &PropAssets, s: &Slot) -> (Entity, Vec<Entity>) {
         .id();
     {
         let mut commands = app.world_mut().commands();
-        spawn_slot(&mut commands, parent, a, 7, s, KEY, &TreeLod::default());
+        spawn_slot(
+            &mut commands,
+            parent,
+            a,
+            7,
+            s,
+            KEY,
+            &TreeLod::default(),
+            0.0,
+        );
     }
     app.world_mut().flush();
     let kids = app

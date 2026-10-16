@@ -128,6 +128,9 @@ fn packed_models() -> Vec<&'static str> {
     for p in client::render::props::TIER_CRATE_GLB {
         set.insert(p);
     }
+    for p in client::render::boulders::SPIRE_GLB {
+        set.insert(p);
+    }
     for (_, p) in client::render::props::ROADSIDE_GLB {
         set.insert(p);
     }

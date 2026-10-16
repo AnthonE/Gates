@@ -866,7 +866,22 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ));
         }
         if con.health == 0 && con.food == 0 && con.water == 0 {
+            // A row that only moves the Verdigris would work in the sim and
+            // never be eaten: the client's eat verb reads the catalog's
+            // food, water and health (`ItemRow::eats`), which carry no fel.
+            if con.fel != 0 {
+                return Err(format!(
+                    "consumable `{}`: a fel-only row is never eaten — give it some health, food or water",
+                    con.id
+                ));
+            }
             return Err(format!("consumable `{}`: does nothing", con.id));
+        }
+        if !(-1000..=1000).contains(&con.fel) {
+            return Err(format!(
+                "consumable `{}`: fel {} outside ±1000 per mille",
+                con.id, con.fel
+            ));
         }
         // A heal with no span would be an instant heal, and the sim's ramp
         // divides by the span — refuse the row rather than let a division
@@ -911,6 +926,13 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("wet_cool", e.wet_cool),
             ("clothes_heat_pm", e.clothes_heat_pm),
             ("heat_hurt_at", e.heat_hurt_at),
+            ("fel_rise_per_s", e.fel_rise_per_s),
+            ("fel_vent_per_s", e.fel_vent_per_s),
+            ("fel_fall_per_s", e.fel_fall_per_s),
+            ("fel_hurt_at", e.fel_hurt_at),
+            ("fel_regen_max", e.fel_regen_max),
+            ("fel_ward_max", e.fel_ward_max),
+            ("fel_pocket_per_s", e.fel_pocket_per_s),
             ("snow_wet_pm", e.snow_wet_pm),
         ] {
             if v > 1000 {
@@ -958,7 +980,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
             cl.arid_low_c,
             cl.arid_high_c,
         ] == [0; 4];
-        if e.chill_rise_per_s > 0 && no_air {
+        if (e.chill_rise_per_s > 0 || e.fel_rise_per_s > 0) && no_air {
             return Err(
                 "[exposure] is armed with no [climate]: the air would read 0 °C \
                  everywhere and every rain would fall as snow"
@@ -979,6 +1001,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         if e.heat_water_pct > 300 {
             return Err("[exposure]: the heat burns at most 300% more water".into());
+        }
+        if e.fel_rise_per_s > 0 && e.fel_fall_per_s == 0 {
+            return Err("exposure: a Verdigris that never falls would never leave you".into());
+        }
+        if e.fel_rise_per_s > 0 && e.fel_regen_max > e.fel_hurt_at {
+            return Err("exposure: a body may not mend while the Verdigris hurts it".into());
+        }
+        if e.fel_hp_per_min > 0 && hp / e.fel_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: a full Verdigris kills {hp} hp in under 5 min ({} hp/min)",
+                e.fel_hp_per_min
+            ));
         }
         if e.heat_hp_per_min > 0 && hp / e.heat_hp_per_min < 5 {
             return Err(format!(
@@ -1659,7 +1693,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // live. Zero density is legal (a wolf row can arm only the site
         // guards); a density with nowhere to live is a row that cannot be.
         let h = &m.habitat;
-        let weights = [h.meadow, h.forest, h.highland, h.desert];
+        let weights = [h.meadow, h.forest, h.highland, h.desert, h.fel];
         if !(0.0..=50.0).contains(&m.per_km2) || weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
             return Err(format!(
                 "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",
@@ -1693,7 +1727,8 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // this block exists for (a biter with zero reach never lands one;
         // zero seconds is a bite every tick).
         if m.attack == 0 {
-            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 {
+            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 || m.fel_bite != 0
+            {
                 return Err(format!(
                     "mob `{}`: attack fields set on a species with zero attack",
                     m.id
@@ -1710,6 +1745,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 return Err(format!(
                     "mob `{}`: brave_pct is a percent of max hp, 0–100",
                     m.id
+                ));
+            }
+            if m.fel_bite > 1000 {
+                return Err(format!(
+                    "mob `{}`: fel_bite {} is per mille of the meter, 0–1000",
+                    m.id, m.fel_bite
                 ));
             }
             // A bite from further than the spook radius would be an animal

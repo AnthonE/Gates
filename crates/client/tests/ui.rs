@@ -7317,3 +7317,94 @@ fn the_way_out_says_whether_anything_can_leave() {
         "an island that pays, seen by a guest"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §W · the surge toast — "THE VERDIGRIS SURGES" when a live work climbs the
+// island's fel tier, and never for the climb a join's drip reads.
+
+mod surge {
+    use client::ui::arc::SurgeWatch;
+    use client_core::arc::ArcView;
+    use sim_core::works::{WORK_LIT, WORK_OPEN, WORK_SEALED};
+
+    /// An island of one act-I and two act-II works, every row arrived, each
+    /// in `states`, and `synced` as given.
+    fn arc(states: [u8; 3], synced: bool) -> ArcView {
+        let mut a = ArcView {
+            count: 3,
+            ..ArcView::default()
+        };
+        for (i, (w, s)) in a.works.iter_mut().zip(states).enumerate() {
+            w.known = true;
+            w.def.act = if i == 0 { 1 } else { 2 };
+            w.state = s;
+            w.synced = synced;
+        }
+        a
+    }
+
+    const A: [u8; 3] = [WORK_SEALED, WORK_SEALED, WORK_SEALED];
+    const B: [u8; 3] = [WORK_LIT, WORK_OPEN, WORK_SEALED];
+    const C: [u8; 3] = [WORK_LIT, WORK_LIT, WORK_LIT];
+
+    #[test]
+    fn a_join_never_surges() {
+        let mut w = SurgeWatch::default();
+        // The rows drip in sealed, an event lands mid-drip, the states land
+        // at tier B: the island was already there.
+        assert!(!w.step(&arc(A, false), false));
+        assert!(!w.step(&arc(B, false), true));
+        assert!(!w.step(&arc(B, true), true));
+        assert!(!w.step(&arc(B, true), false));
+    }
+
+    #[test]
+    fn a_live_work_surges_once() {
+        let mut w = SurgeWatch::default();
+        assert!(!w.step(&arc(A, true), false), "the baseline is silent");
+        assert!(w.step(&arc(B, true), true), "A to B on a work event");
+        assert!(!w.step(&arc(B, true), false), "once");
+        assert!(w.step(&arc(C, true), true), "B to C surges again");
+    }
+
+    #[test]
+    fn the_event_may_land_a_frame_before_the_state() {
+        let mut w = SurgeWatch::default();
+        assert!(!w.step(&arc(A, true), false));
+        assert!(
+            !w.step(&arc(A, true), true),
+            "the event, the tier not yet moved"
+        );
+        assert!(w.step(&arc(B, true), false), "the state a frame later");
+    }
+
+    #[test]
+    fn a_rise_with_no_event_is_adopted_silently() {
+        let mut w = SurgeWatch::default();
+        assert!(!w.step(&arc(A, true), false));
+        assert!(!w.step(&arc(B, true), false), "no work event behind it");
+        assert!(!w.step(&arc(B, true), true), "an event with no rise");
+    }
+
+    /// An event long past does not arm a later climb.
+    #[test]
+    fn an_old_event_does_not_arm_a_later_climb() {
+        let mut w = SurgeWatch::default();
+        assert!(!w.step(&arc(A, true), false));
+        assert!(!w.step(&arc(A, true), true));
+        for _ in 0..client::ui::arc::SURGE_ARM_FRAMES {
+            assert!(!w.step(&arc(A, true), false));
+        }
+        assert!(!w.step(&arc(B, true), false), "the arm had run out");
+    }
+
+    #[test]
+    fn a_rejoin_takes_a_fresh_baseline() {
+        let mut w = SurgeWatch::default();
+        assert!(!w.step(&arc(A, true), false));
+        // Disconnected: the arc is gone, then a new shard syncs at tier C.
+        assert!(!w.step(&ArcView::default(), false));
+        assert!(!w.step(&arc(C, false), true));
+        assert!(!w.step(&arc(C, true), true));
+    }
+}

@@ -100,7 +100,13 @@ impl Travel {
     /// `dt` seconds of the streaks falling at `fall` and the flakes
     /// drifting at `drift`, m/s.
     pub fn advance(&mut self, fall: Vec3, drift: Vec3, dt: f32) {
-        let wrap = 2.0 * BOX_HALF * SPEED_STEPS;
+        self.advance_in(BOX_HALF, fall, drift, dt);
+    }
+
+    /// The same in a box of half extents `half` (the embers' own), so the
+    /// wrap stays a whole number of its boxes.
+    pub fn advance_in(&mut self, half: Vec3, fall: Vec3, drift: Vec3, dt: f32) {
+        let wrap = 2.0 * half * SPEED_STEPS;
         self.drops = (self.drops + fall * dt).rem_euclid(wrap);
         self.flakes = (self.flakes + drift * dt).rem_euclid(wrap);
         self.wobble = (self.wobble + dt).rem_euclid(WOBBLE_PERIOD_S);
@@ -282,6 +288,14 @@ pub fn drive(
     // The ground in steps of 1/64: a smooth soak without a re-upload a frame.
     let wet = (weather.ground_wet * 64.0).round() / 64.0;
     ring.set_rain_wet(&mut ground, wet);
+    // The Verdigris' fissures by the hour: dimmer under the sun, brighter in
+    // the dark, in steps of 1/32 of the day for the same reason.
+    let day = (weather.sun_lux.clamp(0.0, 1.0) * 32.0).round() / 32.0;
+    let (lo, hi) = (
+        Vec3::from_array(super::ground_splat::FEL_GLOW_NIGHT),
+        Vec3::from_array(super::ground_splat::FEL_GLOW_DAY),
+    );
+    ring.set_fel_glow(&mut ground, lo + (hi - lo) * day);
     // The snow the same way, its floor in whole metres and its band of
     // aridity widened to steps of 1/32.
     let snow = (weather.ground_snow * 64.0).round() / 64.0;

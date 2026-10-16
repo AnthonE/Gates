@@ -218,6 +218,13 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "terrain.rs",
+        "fel_vent",
+        "locator: decides where a vent of the Verdigris burns — on land and \
+         not on a cliff — the way a boulder is seated; the fire is drawn on \
+         `ground` (`render/fel_vents.rs`).",
+    ),
+    (
+        "terrain.rs",
         "waystation_canopy_bearing",
         "locator: chooses the canopy's bearing.",
     ),

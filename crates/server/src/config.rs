@@ -118,6 +118,11 @@ pub struct ShardConfig {
     /// at the top of the arc at once: guns unlocked, and the animals at fel
     /// tier C, which is otherwise days of play away. Default `false`.
     pub dev_works_lit: bool,
+    /// Dev-only: `dev_arc_hour = 120` starts a FRESH world's arc clock at
+    /// that hour of the wipe, before the first tick, so the works sweep and
+    /// the blight (`sim_core::blight`) find the island as it would stand
+    /// then. A loaded world keeps its own clock. Default `None`, hour 0.
+    pub dev_arc_hour: Option<u32>,
     /// Where `content/*.toml` lives (CLAUDE.md wall 7). Default `content`
     /// resolves against the CWD, which the repo commands make the repo
     /// root. The shard binary refuses to boot on invalid content.
@@ -413,6 +418,7 @@ impl ShardConfig {
             require_auth: false,
             dev_heli: true,
             dev_works_lit: false,
+            dev_arc_hour: None,
             content_dir: "content".into(),
             save_file: None,
             world_file: None,
@@ -546,6 +552,10 @@ pub fn parse_min_client(s: &str) -> Result<u32, String> {
     Ok(protocol::version::pack(got[0], got[1], got[2]))
 }
 
+/// The latest hour `dev_arc_hour` may start a world at: three months of
+/// wipe, far past anything the arc or the blight still changes.
+pub const DEV_ARC_HOUR_MAX: u32 = 24 * 90;
+
 /// `dev_env`'s value: comma parts, each a `/weather` or a `/time` word, read
 /// by the admin lane's own parser so the two cannot spell a sky twice.
 fn parse_dev_env(value: &str) -> Option<(u8, u16)> {
@@ -597,6 +607,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut require_auth: Option<bool> = None;
     let mut dev_heli: Option<bool> = None;
     let mut dev_works_lit: Option<bool> = None;
+    let mut dev_arc_hour: Option<u32> = None;
     let mut cert_pem: Option<String> = None;
     let mut key_pem: Option<String> = None;
     let mut save_file: Option<String> = None;
@@ -819,6 +830,21 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ))
                 }
             },
+            "dev_arc_hour" => {
+                dev_arc_hour = Some(
+                    value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|h| *h <= DEV_ARC_HOUR_MAX)
+                        .ok_or_else(|| {
+                            format!(
+                                "shard.toml line {}: dev_arc_hour must be a whole hour \
+                                 from 0 to {DEV_ARC_HOUR_MAX}",
+                                n + 1
+                            )
+                        })?,
+                );
+            }
             "require_auth" => match value {
                 "true" => require_auth = Some(true),
                 "false" => require_auth = Some(false),
@@ -1426,6 +1452,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         require_auth: require_auth.unwrap_or(false),
         dev_heli: dev_heli.unwrap_or(true),
         dev_works_lit: dev_works_lit.unwrap_or(false),
+        dev_arc_hour,
         content_dir: content_dir.unwrap_or_else(|| "content".into()),
         save_file,
         world_file,
@@ -1933,6 +1960,22 @@ mod auth_cfg_tests {
 
     /// The spectator door is shut unless the operator opens it, and opening
     /// it takes every default at once (`NETCODE.md` §2.3).
+    #[test]
+    fn dev_arc_hour_is_off_by_default_and_refuses_a_bad_hour() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert_eq!(parse_shard_toml(base).unwrap().dev_arc_hour, None);
+        let late = parse_shard_toml(&format!("{base}dev_arc_hour = 120\n")).unwrap();
+        assert_eq!(late.dev_arc_hour, Some(120));
+        for bad in [
+            "dev_arc_hour = -1\n",
+            "dev_arc_hour = 2161\n",
+            "dev_arc_hour = noon\n",
+        ] {
+            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
+            assert!(err.contains("dev_arc_hour"), "{err}");
+        }
+    }
+
     #[test]
     fn team_max_defaults_to_rusts_eight_and_holds_to_the_wire() {
         let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";

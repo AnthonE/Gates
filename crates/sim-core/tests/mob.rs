@@ -108,7 +108,7 @@ fn every_home_is_on_walkable_inland_ground() {
             assert!(terrain::slope(seed, x, z) < 1.0);
             assert!(!terrain::in_haven(&w.haven, x, z));
             assert!(!terrain::in_waystation(&w.haven, x, z));
-            let biome = terrain::biome(terrain::height(seed, x, z), terrain::moisture(seed, x, z));
+            let biome = terrain::biome_at(seed, terrain::height(seed, x, z), x, z);
             assert!(
                 w.mob.def(m.kind).habitat_pm[biome as usize] > 0,
                 "seed {seed}: slot {slot} lives in {biome:?}, which its species avoids"
@@ -193,10 +193,10 @@ fn the_roster_is_density_times_habitat() {
     assert_eq!(doubled[MOB_WOLF as usize], base[MOB_WOLF as usize]);
     // A species that only lives in highland is a fraction of one that
     // lives everywhere.
-    mc.defs[MOB_PIG as usize].habitat_pm = [0, 0, 0, 1_000, 0];
+    mc.defs[MOB_PIG as usize].habitat_pm = [0, 0, 0, 1_000, 0, 0];
     assert!(mob::targets(&mc, &survey, false)[MOB_PIG as usize] < doubled[MOB_PIG as usize] / 3);
     mc.defs[MOB_PIG as usize].per_km2_milli = 1_000_000;
-    mc.defs[MOB_PIG as usize].habitat_pm = [0, 1_000, 1_000, 1_000, 1_000];
+    mc.defs[MOB_PIG as usize].habitat_pm = [0, 1_000, 1_000, 1_000, 1_000, 1_000];
     assert_eq!(
         mob::targets(&mc, &survey, false)[MOB_PIG as usize],
         mob::capacity(MOB_PIG)

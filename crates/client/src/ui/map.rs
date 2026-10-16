@@ -53,6 +53,17 @@ pub const SAND: [f32; 3] = [203.0, 185.0, 148.0];
 /// The desert's sand, warmer: what [`SAND`] goes to as the ground dries
 /// (`terrain::aridity`), as the world's own sand does (`ground_splat`).
 pub const DESERT: [f32; 3] = [214.0, 170.0, 104.0];
+/// The Verdigris: ash and dead ground, a dark green-black — what every
+/// identity goes to by the ground's corruption (`terrain::fel`), as the
+/// world's own ground does (`ground_splat`).
+pub const FEL_GROUND: [f32; 3] = [46.0, 70.0, 42.0];
+/// How far a fully corrupted pixel goes toward [`FEL_GROUND`]: the base map's
+/// heart and the spread's overlay ([`paint_blight`]) share it, so the two
+/// cannot drift apart.
+pub const FEL_MIX: f32 = 0.85;
+/// The hot spots on the overlay: a brighter, sicker green than the ash, so a
+/// burning haven pad reads apart from the creep around it.
+pub const FEL_HOT: [f32; 3] = [86.0, 132.0, 46.0];
 /// Open meadow.
 pub const GRASS: [f32; 3] = [109.0, 140.0, 74.0];
 /// Forest litter: the same green, darker — how the reference separates wooded
@@ -758,21 +769,17 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
                 // a true average whatever the rounding did.
                 let sum = (w[0] as f32 + w[1] as f32 + w[2] as f32 + w[3] as f32).max(1.0);
                 let arid = terrain::aridity(seed, x, z);
+                let fel = terrain::fel(seed, x, z) * FEL_MIX;
                 let sand = |c: usize| SAND[c] + (DESERT[c] - SAND[c]) * arid;
                 let mix = |c: usize| {
-                    (sand(c) * w[0] as f32
+                    let g = (sand(c) * w[0] as f32
                         + GRASS[c] * w[1] as f32
                         + LITTER[c] * w[2] as f32
                         + ROCK[c] * w[3] as f32)
-                        / sum
+                        / sum;
+                    g + (FEL_GROUND[c] - g) * fel
                 };
-                // Hillshade. A heightfield's normal is `(-dh/dx, 1, -dh/dz)`
-                // before normalising; the lambert term against `LIGHT` becomes
-                // a multiplier, so the biome tint survives it as a tint.
-                let inv = 1.0 / (dhdx * dhdx + 1.0 + dhdz * dhdz).sqrt();
-                let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
-                let shade =
-                    (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1);
+                let shade = hillshade(dhdx, dhdz);
                 // The land mask the road pass reads stays the hard line: a
                 // road never runs into a pixel whose centre is under water.
                 if h > SEA_LEVEL {
@@ -867,6 +874,134 @@ fn paint_roads(size: usize, cov: &[f32], shade: &[f32], out: &mut [u8]) {
                 v += (ROAD[c] * s - v) * core;
                 out[p + c] = v.clamp(0.0, 255.0) as u8;
             }
+        }
+    }
+}
+
+/// Hillshade. A heightfield's normal is `(-dh/dx, 1, -dh/dz)` before
+/// normalising; the lambert term against [`LIGHT`] becomes a multiplier, so
+/// the biome tint survives it as a tint. Shared by [`paint`] and the blight
+/// overlay's cache, which must light the green as the base lit the ground.
+pub fn hillshade(dhdx: f32, dhdz: f32) -> f32 {
+    let inv = 1.0 / (dhdx * dhdx + 1.0 + dhdz * dhdz).sqrt();
+    let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
+    (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1)
+}
+
+// ---------------------------------------------------------------------------
+// The blight over the map (`sim_core::blight`): the Verdigris as it has
+// spread, laid over the painted island as a second image.
+//
+// The base map is painted once a seed and already carries the wipe-day heart
+// (`FEL_MIX`). What spreads after is an overlay, so a front that walks a few
+// metres an hour costs a 256² repaint from a cache, never the base's 263 ms.
+
+/// The overlay's side, texels: 16 m each over the island.
+pub const BLIGHT_PX: usize = 256;
+
+/// What the overlay paints from: per texel, the height and the heart's wander
+/// noise (`terrain::fel_wander`), and the hillshade the base map lit it by.
+/// Seed-only, so built once while the loading bar fills; `shade` 0 is water.
+pub struct BlightCache {
+    seed: u64,
+    size: usize,
+    h: Vec<f32>,
+    n: Vec<f32>,
+    shade: Vec<f32>,
+}
+
+impl BlightCache {
+    /// The cache for `seed`, at the carved ground the sim reads the spread
+    /// at (`terrain::ground`), not the raw surface the base map shades.
+    pub fn new(seed: u64, haven: &Haven, size: usize) -> Self {
+        let step = ISLAND_SIZE / size as f32;
+        let half = step * 0.5;
+        let mut lat = terrain::Lattice::new();
+        let mut h = vec![0.0f32; size * size];
+        let mut n = vec![0.0f32; size * size];
+        for j in 0..size {
+            let z = half + j as f32 * step;
+            for i in 0..size {
+                let x = half + i as f32 * step;
+                let k = j * size + i;
+                h[k] = terrain::ground_memo(&mut lat, seed, haven, x, z);
+                if h[k] > SEA_LEVEL {
+                    n[k] = terrain::fel_wander_memo(&mut lat, seed, x, z);
+                }
+            }
+        }
+        let inv2s = 1.0 / (2.0 * step);
+        let at = |i: usize, j: usize| h[j.min(size - 1) * size + i.min(size - 1)];
+        let mut shade = vec![0.0f32; size * size];
+        for j in 0..size {
+            for i in 0..size {
+                let k = j * size + i;
+                if h[k] <= SEA_LEVEL {
+                    continue;
+                }
+                let dhdx = (at(i + 1, j) - at(i.saturating_sub(1), j)) * inv2s;
+                let dhdz = (at(i, j + 1) - at(i, j.saturating_sub(1))) * inv2s;
+                shade[k] = hillshade(dhdx, dhdz);
+            }
+        }
+        BlightCache {
+            seed,
+            size,
+            h,
+            n,
+            shade,
+        }
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+/// Paint the spread at `now` over the base map, RGBA: transparent where the
+/// ground is no greener than the base already drew it, and only the
+/// increment where it is — the base mixes the wipe-day heart in, and a full
+/// overlay would darken the heart twice. Wipe day is clear everywhere.
+///
+/// Every land texel carries the green's colour, alpha 0 included, so a
+/// stretched, filtered overlay fades at its edge instead of fringing black.
+pub fn paint_blight(cache: &BlightCache, now: &sim_core::blight::Now, out: &mut [u8]) {
+    use sim_core::blight;
+    let size = cache.size;
+    assert!(
+        out.len() >= size * size * 4,
+        "buffer too small for the overlay"
+    );
+    let step = ISLAND_SIZE / size as f32;
+    let half = step * 0.5;
+    for j in 0..size {
+        let z = half + j as f32 * step;
+        let py = size - 1 - j;
+        for i in 0..size {
+            let x = half + i as f32 * step;
+            let px = size - 1 - i;
+            let k = j * size + i;
+            let o = (py * size + px) * 4;
+            let s = cache.shade[k];
+            let (mut tint, mut a) = (FEL_GROUND, 0.0f32);
+            if s > 0.0 && blight::within_reach(now, x, z) {
+                let d = blight::depth_n(now, x, z, cache.h[k], cache.n[k]);
+                let f1 = FEL_MIX * d.any();
+                let f0 = FEL_MIX * terrain::fel_of(terrain::fel_d2(x, z), cache.n[k]).max(0.0);
+                a = ((f1 - f0) / (1.0 - f0).max(1e-3)).clamp(0.0, 1.0);
+                if d.hot > d.fel {
+                    tint = FEL_HOT;
+                }
+            }
+            let s = if s > 0.0 { s } else { 1.0 };
+            out[o] = (tint[0] * s).clamp(0.0, 255.0) as u8;
+            out[o + 1] = (tint[1] * s).clamp(0.0, 255.0) as u8;
+            out[o + 2] = (tint[2] * s).clamp(0.0, 255.0) as u8;
+            out[o + 3] = (a * 255.0).round() as u8;
         }
     }
 }
@@ -1866,6 +2001,109 @@ mod tests {
         }
     }
 
+    // ---- the blight overlay ---------------------------------------------
+
+    use sim_core::blight::{self, Plan};
+
+    const BLIGHT_SEED: u64 = 20260731;
+
+    fn overlay(cache: &BlightCache, now: &blight::Now) -> Vec<u8> {
+        let mut out = vec![0u8; cache.size() * cache.size() * 4];
+        paint_blight(cache, now, &mut out);
+        out
+    }
+
+    fn opaque(buf: &[u8]) -> usize {
+        buf.chunks_exact(4).filter(|p| p[3] > 0).count()
+    }
+
+    /// Wipe day IS the heart, and the base map already drew the heart: the
+    /// overlay adds nothing anywhere.
+    #[test]
+    fn the_blight_overlay_is_clear_on_wipe_day() {
+        let haven = terrain::haven(BLIGHT_SEED);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, 64);
+        let now = blight::now(&Plan::new(BLIGHT_SEED, 9, &haven), &haven, 0, 0);
+        assert_eq!(opaque(&overlay(&cache, &now)), 0);
+    }
+
+    /// The green grows on the map as the wipe ages, and never reaches the sea.
+    #[test]
+    fn the_overlay_grows_with_the_wipe_and_never_paints_the_sea() {
+        let haven = terrain::haven(BLIGHT_SEED);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, 64);
+        let plan = Plan::new(BLIGHT_SEED, 9, &haven);
+        let early = overlay(&cache, &blight::now(&plan, &haven, 0, 0));
+        let late = overlay(
+            &cache,
+            &blight::now(&plan, &haven, 168 * blight::TICKS_PER_HOUR, 2),
+        );
+        assert!(
+            opaque(&late) > opaque(&early) + 20,
+            "the overlay did not grow"
+        );
+        let size = cache.size();
+        for j in 0..size {
+            for i in 0..size {
+                if cache.h[j * size + i] > SEA_LEVEL {
+                    continue;
+                }
+                let o = ((size - 1 - j) * size + (size - 1 - i)) * 4;
+                assert_eq!(late[o + 3], 0, "the overlay painted the sea at ({i},{j})");
+            }
+        }
+    }
+
+    /// The overlay lands where `world_to_map` puts the world, with the base
+    /// map's own flips: an outbreak on known land shows on its own texel and
+    /// not on the mirrored or the flipped one.
+    #[test]
+    fn the_blight_overlay_lands_where_world_to_map_says() {
+        let haven = terrain::haven(BLIGHT_SEED);
+        let size = 64;
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, size);
+        let step = ISLAND_SIZE / size as f32;
+        // The highest texel well clear of the heart, and of both centre
+        // lines, so its mirror and its flip are other ground.
+        let off_centre = |k: usize| (2 * k as i64 - size as i64 + 1).abs() > 12;
+        let (mut best, mut at) = (f32::MIN, (0usize, 0usize));
+        for j in (size / 8..7 * size / 8).filter(|j| off_centre(*j)) {
+            for i in (size / 8..7 * size / 8).filter(|i| off_centre(*i)) {
+                let (x, z) = (step * 0.5 + i as f32 * step, step * 0.5 + j as f32 * step);
+                let (dx, dz) = (x - terrain::FEL_HEART.0, z - terrain::FEL_HEART.1);
+                let h = cache.h[j * size + i];
+                if dx * dx + dz * dz > 1_000.0 * 1_000.0 && h > best {
+                    best = h;
+                    at = (i, j);
+                }
+            }
+        }
+        assert!(
+            best > terrain::BEACH_MAX_H + blight::COAST_M,
+            "no inland texel"
+        );
+        let (x, z) = (
+            step * 0.5 + at.0 as f32 * step,
+            step * 0.5 + at.1 as f32 * step,
+        );
+        let mut now = blight::now(&Plan::new(BLIGHT_SEED, 9, &haven), &haven, 0, 0);
+        now.n = 1;
+        now.discs[0] = blight::Disc {
+            x,
+            z,
+            r: 3.0 * step,
+            depth: 0.8,
+            hot: false,
+        };
+        let buf = overlay(&cache, &now);
+        let (fx, fy) = world_to_map(x, z, size);
+        let (px, py) = (fx as usize, fy as usize);
+        let alpha = |px: usize, py: usize| buf[(py * size + px) * 4 + 3];
+        assert!(alpha(px, py) > 0, "the outbreak is not on its own texel");
+        assert_eq!(alpha(size - 1 - px, py), 0, "the overlay is mirrored");
+        assert_eq!(alpha(px, size - 1 - py), 0, "the overlay is flipped");
+    }
+
     // ---- the markers ----------------------------------------------------
 
     use sim_core::deploy::{DeployDef, ARCH_BOX, ARCH_DOOR, ARCH_FIRE};
@@ -2438,7 +2676,17 @@ mod tests {
     /// rule is per-channel and written down rather than re-derived.
     #[test]
     fn marker_fills_are_not_the_ground_palette() {
-        let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP, ROAD];
+        let grounds = [
+            SAND,
+            GRASS,
+            LITTER,
+            ROCK,
+            FEL_GROUND,
+            FEL_HOT,
+            SEA_SHALLOW,
+            SEA_DEEP,
+            ROAD,
+        ];
         for kind in [
             MarkKind::Haven,
             MarkKind::Town,

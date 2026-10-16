@@ -101,6 +101,8 @@ fn a_client_beside_an_animal_receives_it() {
             // about a pig looks up.
             assert!(!e.sleeping);
             assert_eq!(e.pitch, 0);
+            // An animal's flame is the green in it (`Mob::turned`).
+            assert_eq!(e.lit, m.turned);
         }
     }
     assert!(seen, "a pig 30 m away never reached the client");

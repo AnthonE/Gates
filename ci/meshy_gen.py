@@ -45,7 +45,8 @@ serially if the per-asset figure matters, or record the total and say so.
 
 Usage:
   ci/meshy_gen.py <slug> --image-prompt "..." --mesh-prompt "..." --out DIR
-  ci/meshy_gen.py --resume <image_task> <mesh_task> --out DIR   (poll only)
+  ci/meshy_gen.py <slug> ... --resume-image ID --resume-mesh ID   (poll only;
+      both prompts and --out are still required, and --multiview if it was)
 """
 import argparse
 import datetime
@@ -207,7 +208,10 @@ def main():
             })["result"]
             mesh_ep = "/openapi/v1/image-to-3d"
     if a.resume_mesh:
-        mesh_ep = "/openapi/v1/image-to-3d"
+        # The endpoint the mesh was made on: a multiview roll's task lives on
+        # `multi-image-to-3d`, and polling it on `image-to-3d` is a 404.
+        mesh_ep = ("/openapi/v1/multi-image-to-3d" if a.multiview
+                   else "/openapi/v1/image-to-3d")
     mesh = wait(mesh_ep, mesh_id, "mesh ")
 
     glb = os.path.join(a.out, a.slug + "_raw.glb")

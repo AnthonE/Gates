@@ -505,6 +505,7 @@ impl Harness {
             player_id: ID,
             tick: 0,
             dev: true,
+            blight_salt: 0,
         });
         Self {
             shard: shard(&content, at, wildlife),

@@ -295,3 +295,31 @@ fn every_pin_look_spawns_and_draws_what_it_says() {
         }
     }
 }
+
+#[derive(Resource, Default)]
+struct Layer(Option<Entity>);
+
+fn layer_system(mut commands: Commands, mut out: ResMut<Layer>) {
+    let e = commands
+        .spawn(Node::default())
+        .with_children(|frame| client::render::map::spawn_blight_layer(frame, Handle::default()))
+        .id();
+    out.0 = Some(e);
+}
+
+/// The blight overlay is one bundle inside the frame, and it spawns.
+#[test]
+fn the_blight_layer_spawns_without_a_duplicate_component() {
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+    app.init_asset::<Image>();
+    app.init_resource::<Layer>();
+    app.add_systems(Update, layer_system);
+    app.update();
+    let parent = app.world().resource::<Layer>().0.expect("the layer drew");
+    let kids = children(&app, parent);
+    assert_eq!(kids.len(), 1, "one overlay");
+    let e = app.world().entity(kids[0]);
+    assert!(e.contains::<client::render::map::MapBlight>());
+    assert!(e.contains::<ImageNode>() && e.contains::<Node>());
+}

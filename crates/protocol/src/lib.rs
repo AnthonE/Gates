@@ -1196,7 +1196,12 @@ pub use voice::{
 /// player where their body last fell, ahead of their `Death` and at every
 /// join (Rust's death marker), and `SUB_DEAD` (99) says the death screen
 /// again to an owner who comes back to a body that is already dead.
-pub const PROTO_VER: u16 = 116;
+/// v117 — the Verdigris: `SUB_EXPOSURE` carries the owner's corruption, per
+/// cent, and whether it is hurting, after the air; the death cause admits 10
+/// (`DEATH_BY_FEL`); and it spreads: `Welcome` carries the wipe's blight salt
+/// after the dev bit, and `MAX_ITEM_DEFS` is 112 (the held field's seven bits
+/// still hold it beside `HELD_NONE`).
+pub const PROTO_VER: u16 = 117;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1583,6 +1588,9 @@ pub struct Welcome {
     pub seed: u64,
     pub tick: u32,
     pub dev: bool,
+    /// This wipe's blight salt (`sim_core::blight`): where its outbreaks
+    /// erupt. Public by design — unlike the arc's salt, it answers no puzzle.
+    pub blight_salt: u32,
 }
 
 /// S→C: refusal with a posted reason — a shard at cap refuses at hello,
@@ -1846,6 +1854,7 @@ pub fn encode_welcome(msg: &Welcome, buf: &mut [u8]) -> Result<usize, WireError>
     w.write((msg.seed >> 32) as u32, 32)?;
     w.write(msg.tick, 32)?;
     w.write(msg.dev as u32, 1)?;
+    w.write(msg.blight_salt, 32)?;
     Ok(w.finish())
 }
 
@@ -1859,12 +1868,14 @@ pub fn decode_welcome(buf: &[u8]) -> Result<Welcome, WireError> {
     let hi = r.read(32)? as u64;
     let tick = r.read(32)?;
     let dev = r.read(1)? != 0;
+    let blight_salt = r.read(32)?;
     expect_zero_padding(&mut r)?;
     Ok(Welcome {
         player_id,
         seed: lo | (hi << 32),
         tick,
         dev,
+        blight_salt,
     })
 }
 

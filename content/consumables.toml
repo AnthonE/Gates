@@ -30,6 +30,20 @@ water = 0
 seconds = 2
 revive = true
 
+# The Charcoal Tonic: Rust's anti-rad pills, ours. Charcoal steeped with
+# mushroom draws 40% of the Verdigris meter out at once. It heals nothing: a
+# heal would fold a bandage's or a medkit's ramp into its own, slower one
+# (`survival::start_heal`). The water is what the eat verb reads
+# (`ItemRow::eats`), and it is drunk at full water while there is green in
+# the blood to draw.
+[[consumable]]
+id = "item.charcoal_tonic"
+health = 0
+food = 0
+water = 5
+seconds = 0
+fel = -400
+
 # Hydrating and calorie-poor, which is the reference's own split: meat
 # feeds and barely wets, forage wets and barely feeds, and a player who
 # eats only one of them dies of the other.

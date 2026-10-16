@@ -1114,6 +1114,42 @@ three days, which is how the first boar and wolf were lost).
 The stag's rack is cut out of the weight proxy (`rig_beast.py` `heat`):
 whole, it failed bone heat on two of three stags, and a rack does not bend.
 
+## `prop/fel/` — the Verdigris' obsidian spires, generated (2026-10-15)
+
+Meshy, paid plan, so private ownership with no attribution owed (the
+`deploy/` rail's terms). `ci/meshy_gen.py --multiview --tris 1400`
+(nano-banana-pro image and two more views, then multi-image-to-3d). The
+multi-view stage ignored the triangle target until `meshy_gen.py` passed it
+`should_remesh` (213k triangles on the first roll), so `spire_a` and
+`spire_b` went through Meshy's remesh separately. Then `ci/fel_veins.py --lift 0.05`
+(emissive map from the green veins, albedo lifted off pure black),
+`ci/flatten_charts.py --luma-only --strength 0.8`,
+`ci/import_meshy.py … 1 1 1 --fit-axes --emissive` (a unit box standing on
+its base: `render/boulders.rs` stretches it to the sim block's box) and
+`ci/ktx_pack.py --size 1024`. 166 credits for the four, remeshes included.
+
+Each image prompt is the object sentence below followed by: *"Surface: glossy
+jet-black obsidian volcanic glass with sharp conchoidal ridges and flat
+fractured facets, and a few thin bright emerald-green mineral veins running
+along the cracks and facet edges. The base is rough, matte and charcoal
+grey. Alone on a plain white background, three-quarter view from slightly
+above, soft studio light, neutral grey shadow. No ground plane, no moss, no
+lichen, no grass, no plants, no people, no other objects, no text."* The
+texture prompt: *"glossy jet-black obsidian volcanic glass with sharp
+fractured facets; thin bright emerald-green mineral veins only along cracks
+and facet edges; rough matte charcoal base; no moss, no lichen, no brown, no
+grey stone"*.
+
+| file | tris | object sentence | image | mesh | remesh |
+|---|---|---|---|---|---|
+| `spire_a` | 1,421 | "EXACTLY ONE tall standing shard of black volcanic glass. It is about 1 metre wide, 1 metre deep and 5 metres tall: as deep as it is wide, five times taller than wide. Six to eight flat fractured facets run the full height; the lower two thirds have nearly straight vertical sides, and only the top fifth narrows to a broken, chipped point." | `01a13e89-6e1d-7710-b71f-842527e4da6d` | `01a13e89-f32d-7249-8669-ca2718401c6e` | `01a13e8f-861e-76a8-b583-92dee95c9f65` |
+| `spire_b` | 1,413 | "EXACTLY ONE pair of black volcanic glass shards fused at a shared base and leaning slightly apart, like a split fang. Together they are about 1.3 metres wide, 1 metre deep and 4.5 metres tall; the taller shard reaches the full height and the shorter one stops at two thirds of it. Each shard has flat fractured facets and a chipped point." | `01a13e8e-919b-7036-b8be-ef0e3b56dbd0` | `01a13e8f-3e0c-751b-8d33-2fed98665578` | `01a13e95-c1f0-71da-835d-381781f3632f` |
+| `spire_c` | 1,418 | "EXACTLY ONE stout column of black volcanic glass whose top is split into three jagged broken points, like a cracked crown. It is about 1.3 metres wide, 1.1 metres deep and 3.5 metres tall, with straight faceted sides for the lower two thirds." | `01a13e94-e2e4-753d-b746-dfbd2e8c86d0` | `01a13e95-6527-7671-9e9a-ed211d9d09b1` | — |
+| `spire_d` | 1,439 | "EXACTLY ONE cluster of five black volcanic glass crystals growing from one rough base, of different heights: the tallest about 3 metres, the others between 1 and 2.2 metres, leaning outward a little. The whole cluster is about 1.5 metres wide and 1.5 metres deep. Each crystal is a faceted prism ending in a sharp broken point." | `01a13e97-a010-7234-970b-a5268eccee73` | `01a13e98-4c13-731b-b31f-66ba64c27c76` | — |
+
+The client lights the veins by the hour (`boulders::SPIRE_GLOW_NIGHT`,
+`SPIRE_GLOW_DAY`); the files carry `emissiveFactor` 1. They are not in
+`props::prop_models`, whose gate holds every prop dark.
 ## Roadside and monuments — Meshy, 2026-10-15
 
 The roadside junk and the monuments' parts that were code primitives or box

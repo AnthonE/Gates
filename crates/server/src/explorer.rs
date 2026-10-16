@@ -7157,6 +7157,7 @@ mod tests {
             player_id: 1,
             tick: 0,
             dev: true,
+            blight_salt: 0,
         });
         let core = bot.core.as_mut().unwrap();
         core.catalog.count = 10;

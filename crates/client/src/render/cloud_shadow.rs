@@ -283,7 +283,7 @@ pub fn drive(
         track.floor.track(t, weather.occlusion_floor());
         track
             .threshold
-            .track(t, 1.0 - sky::deck_cover(weather.cloud));
+            .track(t, 1.0 - sky::cover_for(weather.cloud, weather.fel));
         let id = composer.field_image().id();
         if track.field.as_ref().is_none_or(|(made, _)| *made != id) {
             let words = field_words(composer.soft_field());
