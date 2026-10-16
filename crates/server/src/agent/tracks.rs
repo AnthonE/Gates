@@ -267,6 +267,10 @@ pub struct TrackStats {
     pub heard: u64,
 }
 
+/// Bodies a track list spares at once: a full team, and a friend, a crew
+/// and a guild beside it (`agent::society`).
+pub const FRIEND_SLOTS: usize = 2 * protocol::TEAM_MAX + crate::agent::society::MAX_ALLIES;
+
 pub struct Tracks {
     interp: Interp,
     rows: [Option<Row>; TRACK_ROWS],
@@ -282,9 +286,10 @@ pub struct Tracks {
     stepped: Option<u32>,
     playout: u8,
     rng: Pcg32,
-    /// Its teammates (wire v108), as its client was last told: never a
-    /// threat, a quarry or a rival, but still a body to keep a swing off.
-    friends: [u32; protocol::TEAM_MAX],
+    /// Its teammates (wire v108), as its client was last told, and whoever
+    /// else it spares (its friend, its crew and guild): never a threat, a
+    /// quarry or a rival, but still a body to keep a swing off.
+    friends: [u32; FRIEND_SLOTS],
     pub stats: TrackStats,
 }
 
@@ -308,7 +313,7 @@ impl Tracks {
             stepped: None,
             playout: INTERP_DELAY_TICKS,
             rng: Pcg32::new(0, 0),
-            friends: [0; protocol::TEAM_MAX],
+            friends: [0; FRIEND_SLOTS],
             stats: TrackStats::default(),
         }
     }
@@ -320,7 +325,7 @@ impl Tracks {
         self.fed = None;
         self.me = player;
         self.rng = Pcg32::new(seed, u64::from(player));
-        self.friends = [0; protocol::TEAM_MAX];
+        self.friends = [0; FRIEND_SLOTS];
         self.forget();
     }
 
@@ -693,7 +698,7 @@ impl Tracks {
 
     /// Who its team is, from what its client was told (`EventMsg::Team`).
     pub fn befriend(&mut self, team: &protocol::TeamView) {
-        self.friends = [0; protocol::TEAM_MAX];
+        self.friends = [0; FRIEND_SLOTS];
         for (out, m) in self.friends.iter_mut().zip(team.members()) {
             if m.id != self.me {
                 *out = m.id;
@@ -702,8 +707,8 @@ impl Tracks {
     }
 
     /// Spare `id` as a teammate is spared, team or not: its friend
-    /// (`--friend`) is never a quarry. A team of eight leaves its own slot
-    /// free, so there is always room for one more.
+    /// (`--friend`), its crew and its guild (`agent::society`) are never a
+    /// quarry. Past the team's own eight there is room for all of them.
     pub fn spare(&mut self, id: u32) {
         if id == 0 || id == self.me || self.friend(id) {
             return;

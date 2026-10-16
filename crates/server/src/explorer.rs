@@ -42,6 +42,7 @@ use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
+use crate::agent::society::{self, Kinship, Patrol, Society};
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
 use crate::agent::supply::{self, Deliver, HomeJob, TeamHome, Trip, WANT_ROWS};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
@@ -317,6 +318,8 @@ pub enum Phase {
     Trading,
     /// At a stone, a lock or a card door (`agent::lore`).
     Ancients,
+    /// Round the ring of posts about home (`agent::society`).
+    Patrolling,
     LoggingOff,
 }
 
@@ -359,6 +362,7 @@ impl Phase {
             Phase::Delivering => "Seeing to the team's boxes",
             Phase::Trading => "At the gate or a work",
             Phase::Ancients => "At a stone, a lock or a card door",
+            Phase::Patrolling => "Walking the ring round home",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -475,6 +479,10 @@ pub struct Senses {
     /// Its friend (`--friend`), and where its eyes have them.
     pub friend: crate::mind::FriendSense,
     pub friend_at: Option<[f32; 2]>,
+    /// Its society (`agent::society`), and whether a walk to THE GATE to
+    /// bring its crew together is worth offering.
+    pub society: crate::mind::SocietySense,
+    pub society_meet: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -537,6 +545,8 @@ pub struct Memory {
     /// Its temperament raids; a raid came to nothing a moment ago.
     pub raids: bool,
     pub raid_held: bool,
+    /// It knows a home to walk a patrol round (`agent::society`).
+    pub patrol_home: bool,
     /// A blow, blast or shot at the base fresh enough to call it back
     /// (`defend::DEFEND_ALARM_TICKS`).
     pub alarm: bool,
@@ -649,6 +659,9 @@ pub struct SurvivorOpts {
     /// The one wallet it plays with (`--friend`): invited first, never
     /// fought, met at THE GATE (`Goal::Meet`).
     pub friend: Option<protocol::Address>,
+    /// The clan it lives in (`jev-bot --society`, `agent::society`): its
+    /// job, its crew and its guild.
+    pub society: Option<Society>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -954,6 +967,13 @@ pub struct Survivor {
     friend_id: u32,
     friend_since: u32,
     friend_seen: u32,
+    /// Its society (`agent::society`): who it is in it, who the rest are
+    /// on this island, the nearest crewmate in sight not yet on its team
+    /// (id, where, how far), and the patrol under way.
+    society: Option<Society>,
+    kin: Kinship,
+    crew_near: Option<(u32, [f32; 2], f32)>,
+    patrol: Patrol,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1089,6 +1109,10 @@ impl Survivor {
             friend_id: 0,
             friend_since: 0,
             friend_seen: 0,
+            society: opts.society,
+            kin: Kinship::default(),
+            crew_near: None,
+            patrol: Patrol::default(),
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -1193,6 +1217,19 @@ impl Survivor {
         self.deadline = ticks.zip(self.welcomed).map(|(t, w)| w.saturating_add(t));
     }
 
+    /// A new shift (`jev-bot --shift`): the next session ends `ticks` after
+    /// its own welcome, not the first one's, and this body goes home for it
+    /// the way it does at a run's end.
+    pub fn new_shift(&mut self, ticks: u32) {
+        self.welcomed = None;
+        self.set_deadline(Some(ticks));
+    }
+
+    /// Its society's job, if it is in one.
+    pub fn role(&self) -> Option<society::Role> {
+        self.society.map(|s| s.role)
+    }
+
     /// Sample other bodies this many ticks behind the newest snapshot: the
     /// session's playout delay, where one runs (`sim_core::limits::
     /// INTERP_DELAY_TICKS` until told).
@@ -1283,12 +1320,13 @@ impl Survivor {
                 && self.raid_job.at_checkpoint())
     }
 
-    /// The session's end is near and there is a home to sleep in.
+    /// The session's end is near and there is a home to sleep in: its
+    /// own, or (in a society) the crew's base it lives in.
     fn log_off_due(&self, core: &ClientCore, tick: u32) -> bool {
         self.deadline
             .is_some_and(|end| tick.saturating_add(LOG_OFF_SECS * TICK_HZ) >= end)
-            && self.builder.survey().hearth
-            && self.builder.walled(core)
+            && ((self.builder.survey().hearth && self.builder.walled(core))
+                || (self.society.is_some() && self.shared_home()))
     }
 
     /// The log-off: the goal in hand ends at its next checkpoint (a walk
@@ -1302,6 +1340,19 @@ impl Survivor {
             }
             Some(_) => self.end_goal(tick, Outcome::Interrupted(Why::LogOff)),
             None => {}
+        }
+        // A crewmate sleeps in the crew's base, by its first box.
+        if self.shared_home() {
+            let at_home = self.shared.anchor().is_some_and(|[hx, hz]| {
+                let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                (hx - x).hypot(hz - z) <= supply::STAY_NEAR_M + 1.5
+            });
+            if at_home || self.home_held(tick) {
+                self.stats.phase = Phase::LoggingOff;
+                return Intent::IDLE;
+            }
+            self.begin(Goal::GoHome, tick);
+            return self.run_goal(core, body, tick);
         }
         // The walk home came to nothing a moment ago: the session ends
         // where it stands rather than at a door that will not open.
@@ -2047,6 +2098,7 @@ impl Survivor {
             | Goal::Raid
             | Goal::Follow
             | Goal::Meet
+            | Goal::Patrol
             | Goal::Deliver
             | Goal::SupplyWood
             | Goal::SupplyStone
@@ -2253,6 +2305,11 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Meet => self.meet(core, body, tick),
+            Goal::Patrol if elapsed >= society::PATROL_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Goal::Patrol => self.patrol(core, body, tick),
             Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
                 self.deliver_over(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
@@ -2289,11 +2346,60 @@ impl Survivor {
     /// Meet (`--friend`): to THE GATE, and wait there until its friend is
     /// in reach of an invite or on its team; then it is done, and the next
     /// decision can invite them. Gone from the island, the meet is over.
+    ///
+    /// A society's meet (`agent::society`) is its crew coming together
+    /// there: the founder waits until a crewmate is in reach of its invite
+    /// or the whole crew is on its team; a crewmate walks up to its founder
+    /// once it sees them, and is done when the invite comes.
     fn meet(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
-        let f = self.senses.friend;
-        if !f.online || f.on_team || f.reachable || f.invited_me {
-            self.end_goal(tick, Outcome::Done);
-            return Intent::IDLE;
+        if let Some(soc) = self.society {
+            let sense = self.senses.society;
+            let over = if soc.founder() {
+                sense.crew_missing == 0 || sense.crew_reachable
+            } else {
+                sense.founded || sense.crew_invited_me
+            };
+            if over {
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
+            if !soc.founder() {
+                let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                // Its founder: in sight, else where its founder last said
+                // it is (a crewmate come late finds the crew at work).
+                let founder = self
+                    .tracks
+                    .get(self.kin.founder())
+                    .filter(|t| t.visible && t.active())
+                    .map(|t| [t.pos[0], t.pos[2]])
+                    .filter(|at| (at[0] - x).hypot(at[1] - z) <= society::GATHER_M)
+                    .or_else(|| soc.board.and_then(|b| b.founder(soc.crew_no)));
+                if let Some(at) = founder {
+                    self.stats.phase = Phase::Approaching;
+                    return match self
+                        .route
+                        .to(core, body, at, society::GATHER_STOP_M, false, tick)
+                    {
+                        step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                        // No plan yet this frame: straight at them meanwhile,
+                        // as the walk to THE GATE does.
+                        Step::Wait => Intent::walk(yaw_toward(at[0] - x, at[1] - z)),
+                        Step::Arrived | Step::Blocked => {
+                            let y = body.qy as f32 * POS_Y_Q + tracks::eye_m(false);
+                            Intent {
+                                look: Look::Point([at[0], y, at[1]]),
+                                ..Intent::IDLE
+                            }
+                        }
+                    };
+                }
+            }
+        } else {
+            let f = self.senses.friend;
+            if !f.online || f.on_team || f.reachable || f.invited_me {
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
         }
         match crate::agent::gate::approach(core, body, &mut self.route, MEET_STOP_M, tick) {
             Some(Ok(intent)) => {
@@ -2345,6 +2451,262 @@ impl Survivor {
         }
     }
 
+    /// Its society (`agent::society`) as its eyes and the team view have
+    /// it: the nearest crewmate in sight not yet on its team, the walk to
+    /// THE GATE that would bring the crew together, who is in the ward at
+    /// home, and — for a founder with room on its team — who an invite
+    /// goes to: a crewmate in reach first, else an ally. Allocation-free.
+    fn sense_society(
+        &mut self,
+        body: &EntityState,
+        team: &protocol::TeamView,
+        room: bool,
+        tick: u32,
+    ) -> Option<u32> {
+        let Some(soc) = self.society else {
+            self.crew_near = None;
+            self.senses.society = crate::mind::SocietySense::NONE;
+            self.senses.society_meet = false;
+            return None;
+        };
+        let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mut crew_near: Option<(u32, [f32; 2], f32)> = None;
+        let mut invite: Option<(bool, f32, u32)> = None;
+        let mut allies_in_sight = Sighting::default();
+        for t in self.tracks.all() {
+            if t.species != Species::Player || !t.visible || !t.active() {
+                continue;
+            }
+            let crew = self.kin.is_crew(t.id);
+            if !crew && !self.kin.is_ally(t.id) {
+                continue;
+            }
+            let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
+            if !crew {
+                let (_, b) = relative(body, t.pos[0], t.pos[2]);
+                allies_in_sight.add(d, b);
+            }
+            if team.has(t.id) || t.wounded {
+                continue;
+            }
+            if crew && d <= society::GATHER_M && crew_near.is_none_or(|c| d < c.2) {
+                crew_near = Some((t.id, [t.pos[0], t.pos[2]], d));
+            }
+            if soc.founder()
+                && room
+                && d <= INVITE_REACH_M
+                && invite.is_none_or(|(c, near, _)| (crew && !c) || (crew == c && d < near))
+            {
+                invite = Some((crew, d, t.id));
+            }
+        }
+        self.crew_near = crew_near;
+        let me = usize::from(soc.me);
+        let (mut on_team, mut missing) = (0u8, 0u8);
+        for (i, &id) in self.kin.crew[..usize::from(soc.crew_len)]
+            .iter()
+            .enumerate()
+        {
+            if i == me || id == 0 {
+                continue;
+            }
+            if team.has(id) {
+                on_team += 1;
+            } else {
+                missing += 1;
+            }
+        }
+        let founded = if soc.founder() {
+            on_team > 0
+        } else {
+            self.kin.founder() != 0 && team.has(self.kin.founder())
+        };
+        let invited_me = team.count == 0 && team.invite != 0 && self.kin.is_crew(team.invite);
+        let founding = soc.founder()
+            && self
+                .welcomed
+                .is_some_and(|w| tick.wrapping_sub(w) < society::FOUNDING_SECS * TICK_HZ);
+        let mut near = Sighting::default();
+        if let Some((_, [x, z], _)) = crew_near {
+            let (d, b) = relative(body, x, z);
+            near.add(d, b);
+        }
+        let mut intruders = Sighting::default();
+        if let Some(centre) = self.patrol_centre() {
+            for t in self.tracks.seen() {
+                if society::intruder(t, centre, self.armed_track(t), tick) {
+                    let (d, b) = relative(body, t.pos[0], t.pos[2]);
+                    intruders.add(d, b);
+                }
+            }
+        }
+        self.senses.society = crate::mind::SocietySense {
+            set: true,
+            role: soc.role,
+            crew: soc.crew_len.saturating_sub(1),
+            crew_on_team: on_team,
+            crew_missing: missing,
+            crew_near: near,
+            crew_reachable: invite.is_some_and(|(crew, ..)| crew),
+            crew_invited_me: invited_me,
+            founded,
+            founding,
+            allies: soc.allies_len,
+            allies_in_sight,
+            intruders,
+        };
+        // The walk to THE GATE: a founder while some of its crew is not on
+        // its team and it is still founding (later a crewmate walks to
+        // where it says it is), a crewmate until its founder's invite comes.
+        self.senses.society_meet = if soc.founder() {
+            missing > 0 && founding
+        } else {
+            !founded && !invited_me
+        };
+        invite.map(|(_, _, id)| id)
+    }
+
+    /// What a body in sight is holding, as a guard sizes up a visitor: a
+    /// weapon (melee, a bow or a gun, a satchel), not a tool.
+    fn armed_track(&self, t: &crate::agent::tracks::Track) -> bool {
+        matches!(
+            t.held.map(|h| self.book.page(h).class),
+            Some(Class::Melee | Class::Ranged | Class::Throw)
+        )
+    }
+
+    /// Home's middle, for a patrol and its ward: the team's base it lives
+    /// in, else its own once a cupboard stands there.
+    fn patrol_centre(&self) -> Option<[f32; 2]> {
+        if self.shared_home() {
+            return self.shared.anchor();
+        }
+        self.builder
+            .stand()
+            .filter(|_| self.builder.survey().hearth)
+    }
+
+    /// The nearest intruder in the ward round `centre` the fight reflex has
+    /// not just let go (`society::intruder`).
+    fn intruder(&self, body: &EntityState, centre: [f32; 2], tick: u32) -> Option<u32> {
+        let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mut nearest: Option<(f32, u32)> = None;
+        for t in self.tracks.seen() {
+            if !society::intruder(t, centre, self.armed_track(t), tick)
+                || self.combat.shuns(t.id, tick)
+            {
+                continue;
+            }
+            let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
+            if nearest.is_none_or(|n| d < n.0) {
+                nearest = Some((d, t.id));
+            }
+        }
+        nearest.map(|(_, id)| id)
+    }
+
+    /// The guild's board (`society::Board`), once a second. Every member
+    /// says which body is its own; a founder says where it is and which box
+    /// is its crew's; the senior founder says
+    /// where its base stands, and every other founder chooses its plot a
+    /// step from there, so the guild's bases stand together. A crewmate on
+    /// its founder's team takes its word for which box is home.
+    fn post_board(&mut self, core: &ClientCore, body: &EntityState) {
+        let Some(soc) = self.society else {
+            return;
+        };
+        let Some(board) = soc.board else {
+            return;
+        };
+        board.set_member(soc.post(), core.player_id);
+        if soc.founder() {
+            board.set_founder(
+                soc.crew_no,
+                [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q],
+            );
+            board.set_chest(soc.crew_no, self.builder.box_addr(core));
+            if soc.senior() {
+                if let Some(at) = self.builder.stand() {
+                    board.set_seat(at);
+                }
+            } else {
+                self.builder.set_seat(
+                    board
+                        .seat()
+                        .map(|seat| society::seat_for(soc.crew_no, seat)),
+                );
+            }
+        } else if self.senses.society.founded {
+            if let Some(at) = board.chest(soc.crew_no) {
+                self.shared.tell(core, at);
+            }
+        }
+    }
+
+    /// Patrol (`agent::society`): round the ring of posts about home, a
+    /// stand at each looking out, and whoever comes into the ward armed or
+    /// fighting is taken on — the fight reflex runs it, and the walk goes
+    /// on when it is over. A visitor with empty hands is let be.
+    fn patrol(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let Some(centre) = self.patrol_centre() else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        if let Some(id) = self.intruder(body, centre, tick) {
+            if self.loadout.on_belt(core, Role::Melee).is_some() || self.shooter(core).0.is_some() {
+                self.combat.command(id, tick);
+            }
+        }
+        self.stats.phase = Phase::Patrolling;
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let k = match self.patrol.post {
+            Some(k) => usize::from(k),
+            None => {
+                let k = society::nearest_post(centre, [x, z]);
+                self.patrol.post = Some(k as u8);
+                k
+            }
+        };
+        let at = society::post(centre, k);
+        if let Some(from) = self.patrol.dwell_from {
+            if tick.wrapping_sub(from) >= society::PATROL_DWELL_TICKS {
+                self.patrol.next();
+                return Intent::IDLE;
+            }
+            // At the post, eyes out past it: the way somebody comes from.
+            let out = [2.0 * at[0] - centre[0], 2.0 * at[1] - centre[1]];
+            let y = body.qy as f32 * POS_Y_Q + tracks::eye_m(false);
+            return Intent {
+                look: Look::Point([out[0], y, out[1]]),
+                ..Intent::IDLE
+            };
+        }
+        match self
+            .route
+            .to(core, body, at, society::PATROL_STOP_M, false, tick)
+        {
+            step @ Step::Walk { yaw, .. } => {
+                self.heading = Some(yaw);
+                step.walk().unwrap_or(Intent::walk(yaw))
+            }
+            Step::Arrived => {
+                self.patrol.misses = 0;
+                self.patrol.dwell_from = Some(tick);
+                Intent::IDLE
+            }
+            Step::Wait => Intent::IDLE,
+            Step::Blocked => {
+                self.patrol.misses += 1;
+                if usize::from(self.patrol.misses) >= society::PATROL_POSTS.len() {
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                } else {
+                    self.patrol.next();
+                }
+                Intent::IDLE
+            }
+        }
+    }
+
     /// Follow: stay within reach of the nearest awake teammate (the leader
     /// first), running to catch up, and fight whoever is going for them.
     /// Where they are comes from what its client was sent: its own eyes
@@ -2380,6 +2742,13 @@ impl Survivor {
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
         };
+        // A crewmate (`agent::society`) only keeps up: within a stone's throw
+        // of its founder it goes back to work, rather than standing on the
+        // ground the base is going up on.
+        if self.society.is_some() && d <= society::KEEP_UP_M && self.guard.is_none() {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        }
         // Someone is going for them: the fight reflex takes it from here,
         // and the goal resumes when it is over.
         // One it just let go is left alone, as the fight goal leaves it.
@@ -5148,6 +5517,14 @@ impl Survivor {
         // shooting near one of them is who `follow` goes for.
         let team = *core.team();
         self.tracks.befriend(&team);
+        // Its society: who its crew and guild are on this island, by their
+        // nametags; never a quarry, whatever team they are on.
+        if let Some(soc) = self.society {
+            self.kin.refresh(&soc, core, tick);
+            for id in self.kin.ids() {
+                self.tracks.spare(id);
+            }
+        }
         let mut guard: Option<(f32, u32)> = None;
         let recall = GUARD_RECALL_SECS * TICK_HZ;
         for m in team.members() {
@@ -5195,7 +5572,8 @@ impl Survivor {
             self.tracks.spare(id);
         }
         let mut invitee: Option<(f32, u32)> = None;
-        if let (true, Some(own)) = (room, self.tracks.own()) {
+        // A society invites its own crew and guild, never a passer-by.
+        if let (true, Some(own)) = (room && self.society.is_none(), self.tracks.own()) {
             for t in self.tracks.recent(tick, TICK_HZ) {
                 if t.species != Species::Player
                     || !t.visible
@@ -5228,6 +5606,9 @@ impl Survivor {
                     invitee = Some((0.0, t.id));
                 }
             }
+        }
+        if let Some(id) = self.sense_society(body, &team, room, tick) {
+            invitee = Some((0.0, id));
         }
         self.invitee = invitee.map(|(_, id)| id);
         self.senses.invitee = self.invitee.is_some();
@@ -5268,8 +5649,9 @@ impl Survivor {
         {
             self.memory.base.ready = false;
         }
-        // Living in the team's base, it builds none of its own.
-        if self.shared_home() {
+        // Living in the team's base, it builds none of its own; nor does a
+        // crewmate who is not its crew's founder, before it is shown home.
+        if self.shared_home() || self.society.is_some_and(|soc| !soc.founder()) {
             self.memory.base.ready = false;
         }
         self.home.set_base(self.builder.stand());
@@ -5332,7 +5714,11 @@ impl Survivor {
                 .is_some_and(|at| tick.wrapping_sub(at) < defend::DEFEND_RETRY_TICKS);
             self.memory.alarm = self.home.alarmed(tick, defend::DEFEND_ALARM_TICKS);
             let temperament = self.combat.temperament();
-            self.memory.raids = matches!(temperament, Temperament::Opportunist | Temperament::Kos);
+            // A society keeps the peace it asks of others: it raids nobody.
+            self.memory.raids = self.society.is_none()
+                && matches!(temperament, Temperament::Opportunist | Temperament::Kos);
+            self.memory.patrol_home = self.patrol_centre().is_some();
+            self.post_board(core, body);
             self.memory.raid_held = self
                 .raid_failed
                 .is_some_and(|at| tick.wrapping_sub(at) < RAID_HELD_TICKS);
@@ -6018,7 +6404,16 @@ impl BotDriver for Survivor {
         self.home_alarm = None;
         self.leave = Leave::default();
         self.deliver_failed = None;
-        self.team_code = None;
+        // A crewmate lives behind its founder's doors: the crew's code is
+        // what its clan would have told it, never printed.
+        self.team_code = self
+            .society
+            .filter(|soc| !soc.founder())
+            .and_then(|soc| soc.code)
+            .map(|code| code.code(welcome.seed));
+        self.kin.clear();
+        self.crew_near = None;
+        self.patrol = Patrol::default();
         self.shot_at = None;
         self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
@@ -6585,6 +6980,7 @@ pub fn observe(
         }
     }
     s.friend = senses.friend;
+    s.society = senses.society;
     if let (Some(b), Some([fx, fz])) = (body, senses.friend_at) {
         let (d, bearing) = relative(b, fx, fz);
         s.friend.in_sight.add(d, bearing);
@@ -6832,7 +7228,8 @@ pub fn observe(
     {
         s.offer(Goal::Raid);
     }
-    if s.team.invited {
+    // In a society only a crewmate's invite is said yes to.
+    if s.team.invited && (!s.society.set || s.society.crew_invited_me) {
         s.offer(Goal::JoinTeam);
     }
     if senses.invitee {
@@ -6852,6 +7249,15 @@ pub fn observe(
         && !senses.hostile
     {
         s.offer(Goal::Meet);
+    }
+    // Its society's crew, coming together there (`agent::society`).
+    if senses.society_meet && s.gate.is_some() && !senses.hostile {
+        s.offer(Goal::Meet);
+    }
+    // A home to walk a ring round, and something in hand to meet an
+    // intruder with.
+    if armed && memory.patrol_home {
+        s.offer(Goal::Patrol);
     }
     // The team's base, seen with a teammate at one of its boxes: a trip
     // there to stock it and take what the pack lacks, or a supply run for

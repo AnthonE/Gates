@@ -1206,6 +1206,12 @@ impl ClientCore {
             .max_by_key(|t| t.id >> 8)
     }
 
+    /// Every nametag the shard has sent, by player. A tag outlives its
+    /// player's connection, as [`Self::tag_of_address`] says.
+    pub fn tags(&self) -> impl Iterator<Item = &Tag> + '_ {
+        self.tags.iter().filter(|t| t.id != 0)
+    }
+
     /// Whether player `id` declared itself an agent (`EventMsg::Agent`).
     /// Self-declared: a program that never said so reads `false`.
     pub fn is_agent(&self, id: u32) -> bool {

@@ -887,11 +887,16 @@ impl ShardCore {
 
     /// How much JUNK `slot`'s wallet may still put through the exchange this
     /// wipe: the shard's cap, raised while the exchange burns, less what it
-    /// already took. Zero for a guest.
+    /// already took. Zero for a guest, and for a declared agent unless the
+    /// shard pays agents (`prize_agents`): a crew of programs that never
+    /// sleeps would otherwise be a wallet-sized tap per body.
     fn extract_allowance(&self, slot: usize) -> u32 {
         let Some(key) = self.key_str(slot) else {
             return 0;
         };
+        if self.standings_agent[slot] && !self.standings.prizes.agents {
+            return 0;
+        }
         let pct = sim_core::works::knob_pct(
             &self.world.works_def,
             self.world.works.unlocks,

@@ -1861,6 +1861,9 @@ pub struct Builder {
     /// The last move asked for a door's use.
     use_out: bool,
     survey: Survey,
+    /// Where its guild builds (`agent::society::Board`): a plot is chosen
+    /// near here before near where it stands.
+    seat: Option<[f32; 2]>,
     pub stats: BuildStats,
 }
 
@@ -1893,6 +1896,7 @@ impl Builder {
             began: None,
             passage: Passage::IDLE,
             use_out: false,
+            seat: None,
             survey: Survey {
                 milestone: Milestone::Shell,
                 needs: [(0, 0); NEED_ROWS],
@@ -2998,9 +3002,14 @@ impl Builder {
         self.stats.abandoned += 1;
     }
 
-    /// Choose a plot near here: the site rules, clear of its own bags,
-    /// of what it has seen others build, of trees and rocks, and of plots
-    /// that were refused.
+    /// Where its guild builds, if it belongs to one (`agent::society`).
+    pub fn set_seat(&mut self, seat: Option<[f32; 2]>) {
+        self.seat = seat;
+    }
+
+    /// Choose a plot near its guild's seat, else near here: the site
+    /// rules, clear of its own bags, of what it has seen others build, of
+    /// trees and rocks, and of plots that were refused.
     #[allow(clippy::too_many_arguments)]
     fn choose(
         &mut self,
@@ -3023,7 +3032,10 @@ impl Builder {
                 || scatter_in(seed, table, haven, cx, cz)
                 || !yard_goes(seed, haven, cx, cz)
         };
-        let (cx, cz) = site::pick_plot(seed, haven, seen, from, wood, stone, avoid)?;
+        let (cx, cz) = self
+            .seat
+            .and_then(|seat| site::pick_plot(seed, haven, seen, seat, wood, stone, avoid))
+            .or_else(|| site::pick_plot(seed, haven, seen, from, wood, stone, avoid))?;
         self.stats.sites += 1;
         Some(BasePlan::new(0, cx, cz))
     }

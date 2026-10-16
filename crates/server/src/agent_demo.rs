@@ -369,6 +369,7 @@ impl MindArgs {
             temperament: self.temperament,
             lock: None,
             friend: self.friend,
+            society: None,
         }
     }
 

@@ -1,5 +1,6 @@
 //! One local agent player. See crates/server/JEV.md for running it.
 
+use server::agent::society::{self, Board, Kin, Role, Society};
 use server::agent_demo::{bot_name, check_page, Door, MindArgs, Source, AGENT_NAME, MIND_USAGE};
 use server::explorer::Survivor;
 use sim_core::limits::TICK_HZ;
@@ -30,10 +31,19 @@ macro_rules! out {
 }
 /// Most bots one run may start on one island. Plumbing bound.
 const MAX_BOTS: usize = 8;
+/// A society may run two full crews: a guild of sixteen.
+const MAX_SOCIETY_BOTS: usize = 2 * protocol::TEAM_MAX;
+/// A shift is long enough to do something between log-offs (the walk home
+/// starts `explorer::LOG_OFF_SECS` before its end), and a log-off is long
+/// enough to be one.
+const MIN_SHIFT_ON_S: u64 = 300;
+const MIN_SHIFT_OFF_S: u64 = 60;
+
+const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S] [--agent-keys DIR]\n--society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE, brings back tools and junk); the default is farmer, guard, farmer, runner, guard, farmer. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
 fn usage() -> String {
     format!(
-        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
+        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {SOCIETY_USAGE} {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
     )
 }
 
@@ -53,6 +63,12 @@ struct Options {
     face_pic: Option<PathBuf>,
     origin: String,
     seconds_given: bool,
+    society: bool,
+    crews: Option<usize>,
+    roles: Vec<Role>,
+    allies: Vec<Kin>,
+    shift: Option<(Duration, Duration)>,
+    agent_keys: Option<PathBuf>,
 }
 
 impl Options {
@@ -73,6 +89,12 @@ impl Options {
             face_pic: None,
             origin: FACE_ORIGIN.into(),
             seconds_given: false,
+            society: false,
+            crews: None,
+            roles: Vec::new(),
+            allies: Vec::new(),
+            shift: None,
+            agent_keys: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -121,9 +143,61 @@ impl Options {
                         .ok_or("--bots needs a count")?
                         .parse()
                         .map_err(|_| "invalid bot count")?;
-                    if !(1..=MAX_BOTS).contains(&options.bots) {
-                        return Err(format!("--bots must be 1..{MAX_BOTS}"));
+                    if !(1..=MAX_SOCIETY_BOTS).contains(&options.bots) {
+                        return Err(format!(
+                            "--bots must be 1..{MAX_BOTS} (..{MAX_SOCIETY_BOTS} with --society)"
+                        ));
                     }
+                }
+                "--society" => options.society = true,
+                "--crews" => {
+                    let n: usize = args
+                        .next()
+                        .ok_or("--crews needs a count")?
+                        .parse()
+                        .map_err(|_| "invalid crew count")?;
+                    if !(1..=society::MAX_CREWS).contains(&n) {
+                        return Err(format!("--crews must be 1..{}", society::MAX_CREWS));
+                    }
+                    options.crews = Some(n);
+                }
+                "--roles" => {
+                    let list = args.next().ok_or("--roles needs a list")?;
+                    for name in list.split(',') {
+                        let role = Role::parse(name.trim())
+                            .filter(|r| *r != Role::Founder)
+                            .ok_or("--roles takes farmer, guard and runner (the founder is each crew's first bot)")?;
+                        options.roles.push(role);
+                    }
+                }
+                "--allies" => {
+                    let list = args.next().ok_or("--allies needs a list")?;
+                    for who in list.split(',') {
+                        options.allies.push(
+                            Kin::parse(who)
+                                .ok_or("--allies takes names and 0x wallets, comma-separated")?,
+                        );
+                    }
+                }
+                "--shift" => {
+                    let spec = args.next().ok_or("--shift needs ON_S,OFF_S")?;
+                    let (on, off) = spec
+                        .split_once(',')
+                        .and_then(|(a, b)| {
+                            Some((a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?))
+                        })
+                        .ok_or("--shift needs ON_S,OFF_S in seconds")?;
+                    if on < MIN_SHIFT_ON_S || off < MIN_SHIFT_OFF_S {
+                        return Err(format!(
+                            "--shift: on at least {MIN_SHIFT_ON_S} s, off at least {MIN_SHIFT_OFF_S} s"
+                        ));
+                    }
+                    options.shift = Some((Duration::from_secs(on), Duration::from_secs(off)));
+                }
+                "--agent-keys" => {
+                    options.agent_keys = Some(PathBuf::from(
+                        args.next().ok_or("--agent-keys needs a directory")?,
+                    ))
                 }
                 "--seconds" => {
                     let value: u64 = args
@@ -181,13 +255,136 @@ impl Options {
             }
         }
         if options.bots > 1 && options.agent_key.is_some() {
-            return Err("one --agent-key is one body; --bots above 1 runs guest agents".into());
+            return Err("one --agent-key is one body; --bots above 1 runs guest agents, or --agent-keys DIR".into());
+        }
+        if options.agent_keys.is_some() && options.agent_key.is_some() {
+            return Err("choose one of --agent-key and --agent-keys".into());
+        }
+        if options.bots > MAX_BOTS && !options.society {
+            return Err(format!("--bots above {MAX_BOTS} is a guild: add --society"));
+        }
+        let society_flags =
+            options.crews.is_some() || !options.roles.is_empty() || !options.allies.is_empty();
+        if society_flags && !options.society {
+            return Err("--crews, --roles and --allies shape a --society".into());
+        }
+        if options.society {
+            if options.bots < 2 {
+                return Err("--society needs a fleet: --bots 2..16".into());
+            }
+            let crews = crew_count(&options);
+            if options.bots.div_ceil(crews) > protocol::TEAM_MAX {
+                return Err(format!(
+                    "{} bots in {crews} crews is over the team cap of {}: add --crews",
+                    options.bots,
+                    protocol::TEAM_MAX
+                ));
+            }
+            if crews > options.bots {
+                return Err("--crews is more than the bots to found them".into());
+            }
         }
         for i in 0..options.bots {
             bot_name(&options.agent_name, i, options.bots)?;
         }
         Ok(Some(options))
     }
+}
+
+/// How many crews a society's fleet makes: as asked, else as few as the
+/// team cap allows.
+fn crew_count(options: &Options) -> usize {
+    options
+        .crews
+        .unwrap_or_else(|| options.bots.div_ceil(protocol::TEAM_MAX))
+}
+
+/// Which crew bot `i` is in, and its place there: crews are contiguous runs
+/// of the fleet, as even as they go.
+fn crew_of(options: &Options, i: usize) -> (usize, usize) {
+    let per = options.bots.div_ceil(crew_count(options));
+    (i / per, i % per)
+}
+
+/// Each bot's place in the society (`agent::society`): its job, its crew
+/// by name and wallet with the founder first, the guild beyond it, and
+/// the founder's lock secret, which is the code on the crew's doors.
+fn plan_society(
+    options: &Options,
+    names: &[protocol::Name],
+    wallets: &[Option<protocol::Address>],
+    locks: &[Option<server::agent::lock::LockSecret>],
+    board: &'static Board,
+) -> Result<Vec<Society>, String> {
+    let n = options.bots;
+    let mut plans = Vec::with_capacity(n);
+    for i in 0..n {
+        let (crew_no, me) = crew_of(options, i);
+        let mut soc = Society {
+            role: match me {
+                0 => Role::Founder,
+                j if options.roles.is_empty() => Role::nth(j),
+                j => options.roles[(j - 1) % options.roles.len()],
+            },
+            me: me as u8,
+            crew: [Kin::NONE; protocol::TEAM_MAX],
+            crew_len: 0,
+            allies: [Kin::NONE; society::MAX_ALLIES],
+            allies_len: 0,
+            code: None,
+            crew_no: crew_no as u8,
+            board: Some(board),
+        };
+        for j in 0..n {
+            let (their_crew, their_place) = crew_of(options, j);
+            let kin = Kin::member(names[j], wallets[j], their_crew as u8, their_place as u8);
+            if their_crew == crew_no {
+                soc.crew[usize::from(soc.crew_len)] = kin;
+                soc.crew_len += 1;
+                if their_place == 0 {
+                    soc.code = locks[j];
+                }
+            } else {
+                if usize::from(soc.allies_len) >= society::MAX_ALLIES {
+                    return Err(format!(
+                        "a guild member spares at most {} others",
+                        society::MAX_ALLIES
+                    ));
+                }
+                soc.allies[usize::from(soc.allies_len)] = kin;
+                soc.allies_len += 1;
+            }
+        }
+        for kin in &options.allies {
+            if usize::from(soc.allies_len) >= society::MAX_ALLIES {
+                return Err(format!(
+                    "--allies: a guild member spares at most {} others, its other crews included",
+                    society::MAX_ALLIES
+                ));
+            }
+            soc.allies[usize::from(soc.allies_len)] = *kin;
+            soc.allies_len += 1;
+        }
+        plans.push(soc);
+    }
+    Ok(plans)
+}
+
+/// `--agent-keys DIR`: bot `name`'s own wallet, made there owner-only the
+/// first time.
+fn bot_key(dir: &std::path::Path, name: &str) -> Result<agentkey::AgentKey, String> {
+    let path = dir.join(format!("{name}.key"));
+    if path.exists() {
+        return Door::load_key(&path);
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let key = agentkey::AgentKey::create(&path).map_err(|e| e.to_string())?;
+    out!(
+        "new agent key for {name} in {} (owner-only): {}",
+        path.display(),
+        String::from_utf8_lossy(&key.address().to_checksum_hex())
+    );
+    Ok(key)
 }
 
 /// `--set-face`: this key's name and picture on its Elo Pros profile,
@@ -361,29 +558,107 @@ async fn run(options: Options) -> Result<(), String> {
     }
     out!("  or the desktop client: {}", door.desktop_command());
     let endpoint = Arc::new(door.endpoint()?);
+    // Every bot's name, door and lock: one wallet each with --agent-keys,
+    // else the run's one door.
+    let mut names = Vec::with_capacity(options.bots);
+    for i in 0..options.bots {
+        names.push(bot_name(&options.agent_name, i, options.bots)?);
+    }
     let door = Arc::new(door);
+    let mut doors = Vec::with_capacity(options.bots);
+    for name in &names {
+        doors.push(match &options.agent_keys {
+            Some(dir) => Arc::new(Door::new(
+                door.server.clone(),
+                door.cert_hash.clone(),
+                Some(bot_key(dir, name.as_str())?),
+            )?),
+            None => door.clone(),
+        });
+    }
+    let locks: Vec<_> = names
+        .iter()
+        .zip(&doors)
+        .map(|(name, d)| {
+            server::agent_demo::lock_secret(
+                d.key.as_ref(),
+                name.as_str(),
+                &server::agent_demo::guest_secret_path(),
+            )
+        })
+        .collect();
+    let plans = if options.society {
+        let wallets: Vec<_> = doors
+            .iter()
+            .map(|d| d.key.as_ref().map(|k| k.address()))
+            .collect();
+        let board: &'static Board = Box::leak(Box::new(Board::new()));
+        let plans = plan_society(&options, &names, &wallets, &locks, board)?;
+        for c in 0..crew_count(&options) {
+            let crew: Vec<String> = plans
+                .iter()
+                .zip(&names)
+                .filter(|(p, _)| usize::from(p.crew_no) == c)
+                .map(|(p, n)| format!("{} {}", n.as_str(), p.role.name()))
+                .collect();
+            if !crew.is_empty() {
+                out!("society: crew {} — {}", c + 1, crew.join(", "));
+            }
+        }
+        plans.into_iter().map(Some).collect()
+    } else {
+        vec![None; options.bots]
+    };
+    if let Some((on, off)) = options.shift {
+        out!(
+            "shifts: {} s on, {} s off{}",
+            on.as_secs(),
+            off.as_secs(),
+            if options.agent_keys.is_none() && door.key.is_none() {
+                " (guests come back as new bodies; --agent-keys DIR keeps them)"
+            } else {
+                ""
+            }
+        );
+    }
     let mut fleet = tokio::task::JoinSet::new();
     for (i, mind) in minds.into_iter().enumerate() {
         let endpoint = endpoint.clone();
-        let door = door.clone();
+        let door = doors[i].clone();
         let duration = options.duration;
-        let name = bot_name(&options.agent_name, i, options.bots)?;
+        let shift = options.shift;
+        let name = names[i];
         let mut opts = options.mind.opts();
-        opts.lock = server::agent_demo::lock_secret(
-            door.key.as_ref(),
-            name.as_str(),
-            &server::agent_demo::guest_secret_path(),
-        );
+        opts.lock = locks[i];
+        opts.society = plans[i];
+        if let Some(soc) = plans[i] {
+            opts.temperament = soc.role.temperament();
+        }
         let voice = if i == 0 { voice.take() } else { None };
         fleet.spawn(async move {
             let mut survivor = Survivor::with(mind, opts);
             survivor.voice = voice;
-            // The run's end, so the body is home with its doors shut when
-            // it comes: counted in the shard's ticks from the welcome.
-            let ticks = duration.as_secs().saturating_mul(u64::from(TICK_HZ));
-            survivor.set_deadline(Some(ticks.min(u64::from(u32::MAX)) as u32));
-            let result = door.play(&endpoint, name, duration, &mut survivor).await;
-            (i, survivor, result)
+            // The run in shifts (`--shift`), else one: each session's end
+            // has the body home with its doors shut when it comes, counted
+            // in the shard's ticks from that session's welcome.
+            let mut left = duration;
+            loop {
+                let on = shift.map_or(left, |(on, _)| on.min(left));
+                let ticks = on.as_secs().saturating_mul(u64::from(TICK_HZ));
+                survivor.new_shift(ticks.min(u64::from(u32::MAX)) as u32);
+                let result = door.play(&endpoint, name, on, &mut survivor).await;
+                left = left.saturating_sub(on);
+                let off = match shift {
+                    Some((_, off)) if result.is_ok() && !left.is_zero() => off.min(left),
+                    _ => return (i, survivor, result),
+                };
+                out!("{}: off shift for {} s", name.as_str(), off.as_secs());
+                tokio::time::sleep(off).await;
+                left = left.saturating_sub(off);
+                if left.is_zero() {
+                    return (i, survivor, result);
+                }
+            }
         });
     }
     let mut outcomes = Vec::with_capacity(options.bots);
