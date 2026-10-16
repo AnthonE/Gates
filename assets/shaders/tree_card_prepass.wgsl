@@ -1,6 +1,7 @@
 // The far treeline's card in the depth prepass (`render/far_trees.rs`): the
 // same turn to the camera as `tree_card.wgsl`, so the card lands in the depth
-// buffer where the main pass draws it.
+// buffer where the main pass draws it, and the same atlas read
+// (`alpha_cut`), so it lands only where the main pass draws it.
 //
 // **Why the prepass at all.** With a depth prepass on the camera, the main
 // pass writes no depth for opaque and masked meshes — the prepass already
@@ -9,10 +10,16 @@
 // a tree) and cards could not even hide each other.
 #import bevy_pbr::{
     mesh_functions,
+    prepass_io,
     prepass_io::{Vertex, VertexOutput},
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
+    pbr_bindings,
+    pbr_functions,
+    pbr_prepass_functions,
+    pbr_types,
 }
+#import "shaders/alpha_cut.wgsl"::{cut_read, cut_uv}
 
 // `far_trees::CardParams`. params: x = prop chunk edge (m), y = 1 on a ring
 // card (its entity is the ring's own tree, so it ignores the mask). window:
@@ -117,3 +124,78 @@ fn vertex(in: Vertex) -> VertexOutput {
 #endif
     return out;
 }
+
+// The atlas UV, through the material's transform.
+fn card_uv(in: VertexOutput) -> vec2<f32> {
+#ifdef VERTEX_UVS
+    return cut_uv(in.uv);
+#else
+    return vec2<f32>(0.0);
+#endif
+}
+
+// The masked card's cut: the base colour exactly as `tree_card.wgsl` builds
+// it, read through `alpha_cut` at the gradients the caller took first thing
+// (`duv` of `uv`).
+fn card_cut(in: VertexOutput, uv: vec2<f32>, duv: vec4<f32>) {
+#ifdef MAY_DISCARD
+    var c = pbr_bindings::material.base_color;
+#ifdef VERTEX_COLORS
+    c *= in.color;
+#endif
+#ifdef VERTEX_UVS
+    if (pbr_bindings::material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
+        c *= cut_read(uv, duv);
+    }
+#endif
+    if c.a < pbr_bindings::material.alpha_cutoff {
+        discard;
+    }
+#endif
+}
+
+// `bevy_pbr`'s `pbr_prepass.wgsl` fragment (forward, non-bindless,
+// non-meshlet, and no normal map: the card has none) with `card_cut` for its
+// alpha test. The crossfade cuts between the gradients and the read: the read
+// needs no live neighbour and nothing else here takes a derivative, so a
+// pixel the crossfade removes skips it.
+#ifdef PREPASS_FRAGMENT
+@fragment
+fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> prepass_io::FragmentOutput {
+    let uv = card_uv(in);
+    let duv = vec4(dpdx(uv), dpdy(uv));
+#ifdef VISIBILITY_RANGE_DITHER
+    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+    card_cut(in, uv, duv);
+
+    var out: prepass_io::FragmentOutput;
+#ifdef UNCLIPPED_DEPTH_ORTHO_EMULATION
+    out.frag_depth = in.unclipped_depth;
+#endif
+#ifdef NORMAL_PREPASS
+    let flags = pbr_bindings::material.flags;
+    if (flags & pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT) == 0u {
+        let double_sided = (flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u;
+        let normal = pbr_functions::prepare_world_normal(in.world_normal, double_sided, is_front);
+        out.normal = vec4(normal * 0.5 + vec3(0.5), 1.0);
+    } else {
+        out.normal = vec4(in.world_normal * 0.5 + vec3(0.5), 1.0);
+    }
+#endif
+#ifdef MOTION_VECTOR_PREPASS
+    out.motion_vector = pbr_prepass_functions::calculate_motion_vector(in.world_position, in.previous_world_position);
+#endif
+    return out;
+}
+#else
+@fragment
+fn fragment(in: VertexOutput) {
+    let uv = card_uv(in);
+    let duv = vec4(dpdx(uv), dpdy(uv));
+#ifdef VISIBILITY_RANGE_DITHER
+    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+    card_cut(in, uv, duv);
+}
+#endif

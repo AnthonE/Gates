@@ -526,6 +526,10 @@ pub struct Armor {
     /// zero: a piece that says nothing about the cold does nothing for it.
     #[serde(default)]
     pub cold_pct: i32,
+    /// The share of the Verdigris it wards off, per cent — the reference's
+    /// Radiation column, our corruption (`exposure::corrode`).
+    #[serde(default)]
+    pub fel_pct: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -542,6 +546,10 @@ pub struct Consumable {
     /// Used on a downed body in reach (`Command::Treat`), stand it up.
     #[serde(default)]
     pub revive: bool,
+    /// Per mille of the Verdigris meter it moves, at once; negative draws
+    /// the corruption out. ±1000.
+    #[serde(default)]
+    pub fel: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -789,6 +797,11 @@ pub struct Mob {
     /// roused animal charges its tormentor, below it the same rousing is
     /// a flight. The reference boar's rule — fights whole, flees hurt.
     pub brave_pct: u32,
+    /// Per mille of the bitten body's corruption meter one bite adds while
+    /// the animal stands turned in the Verdigris, before the body's ward.
+    /// Absent is a bite that only hurts.
+    #[serde(default)]
+    pub fel_bite: u32,
     /// Leash radius from the home the seed chose.
     pub roam_m: u32,
     /// A player closer than this starts a flight — in daylight.
@@ -890,6 +903,9 @@ pub struct Habitat {
     /// The arid north. Optional: a row that does not say lives nowhere there.
     #[serde(default)]
     pub desert: f32,
+    /// The Verdigris. Optional, the desert's way.
+    #[serde(default)]
+    pub fel: f32,
 }
 
 /// THE GATE's sentry guns (`sim-core/src/sentry.rs`): Rust's Outpost
@@ -1233,7 +1249,9 @@ pub struct Exposure {
     /// Standing in water this deep soaks you through, cm.
     pub soak_depth_cm: u32,
     /// The chill the night, the heaviest rain, the strongest wind and being
-    /// soaked through each add.
+    /// soaked through each add. The night's only counts with `cold_per_c` 0
+    /// (no air): with the air armed, the night's cold is its temperature.
+    #[serde(default)]
     pub night_cold: u32,
     pub rain_cold: u32,
     pub wind_cold: u32,
@@ -1255,10 +1273,136 @@ pub struct Exposure {
     pub cold_food_pct: u32,
     #[serde(default)]
     pub cold_water_pct: u32,
-    /// Comfort: hit points a minute a warm, dry, fed body gets back by a fire
-    /// or under a roof.
+    /// Comfort (Rust's), per mille: a lit fire's, each other body's at it,
+    /// and how far the meter moves a second.
     #[serde(default)]
-    pub comfort_hp_per_min: u32,
+    pub fire_comfort: u32,
+    #[serde(default)]
+    pub company_comfort: u32,
+    #[serde(default)]
+    pub comfort_per_s: u32,
+    /// Natural regen (Rust's metabolism): hp a minute at an empty stomach
+    /// and no comfort; what a full stomach and full comfort add, per cent;
+    /// how far it mends with no comfort, per cent of max hp.
+    #[serde(default)]
+    pub regen_hp_per_min: u32,
+    #[serde(default)]
+    pub regen_fed_pct: u32,
+    #[serde(default)]
+    pub regen_comfort_pct: u32,
+    #[serde(default)]
+    pub regen_cap_pct: u32,
+    /// What regen asks: more food and water than these, no more chill than
+    /// this, and this many seconds unhurt.
+    #[serde(default)]
+    pub regen_food_min: u32,
+    #[serde(default)]
+    pub regen_water_min: u32,
+    #[serde(default)]
+    pub regen_chill_max: u32,
+    #[serde(default)]
+    pub regen_calm_s: u32,
+    /// What regen costs: percent of the normal food and water drain added.
+    #[serde(default)]
+    pub regen_food_pct: u32,
+    #[serde(default)]
+    pub regen_water_pct: u32,
+    /// The air (climate v0): under `cold_below_c` it chills, `cold_per_c`
+    /// per mille a degree, in place of `night_cold` (0 keeps the night's
+    /// flat cold). Over `hot_above_c` it heats, `heat_per_c` a degree.
+    #[serde(default)]
+    pub cold_below_c: i32,
+    #[serde(default)]
+    pub cold_per_c: u32,
+    #[serde(default)]
+    pub hot_above_c: i32,
+    #[serde(default)]
+    pub heat_per_c: u32,
+    /// Degrees a roof's shade takes off the heat.
+    #[serde(default)]
+    pub shade_c: i32,
+    /// Heat being soaked through takes away, per mille.
+    #[serde(default)]
+    pub wet_cool: u32,
+    /// Per mille of worn warmth that holds heat in when it is hot.
+    #[serde(default)]
+    pub clothes_heat_pm: u32,
+    /// Percent of the normal water drain added at full heat.
+    #[serde(default)]
+    pub heat_water_pct: u32,
+    /// Past this heat it costs hp; this many a minute at full heat.
+    #[serde(default)]
+    pub heat_hurt_at: u32,
+    #[serde(default)]
+    pub heat_hp_per_min: u32,
+    /// The Verdigris' meter (`sim_core::exposure::corrode`), per mille: what
+    /// a second at its heart adds, what a vent's fire adds on top, what a
+    /// second out of it takes away; past `fel_hurt_at` it costs
+    /// `fel_hp_per_min` at a full meter; over `fel_regen_max` nothing mends;
+    /// no worn set wards off more than `fel_ward_max`. All optional: absent
+    /// is a Verdigris that only looks the part.
+    #[serde(default)]
+    pub fel_rise_per_s: u32,
+    #[serde(default)]
+    pub fel_vent_per_s: u32,
+    #[serde(default)]
+    pub fel_fall_per_s: u32,
+    #[serde(default)]
+    pub fel_hurt_at: u32,
+    #[serde(default)]
+    pub fel_hp_per_min: u32,
+    #[serde(default)]
+    pub fel_regen_max: u32,
+    #[serde(default)]
+    pub fel_ward_max: u32,
+    /// What a second at a hot spot's core adds (`sim_core::blight`: the loot
+    /// sites burning from act II), per mille. Optional; absent is hot spots
+    /// that only look the part.
+    #[serde(default)]
+    pub fel_pocket_per_s: u32,
+    /// Snow (snow v0): per mille of the rain's wetting that snow does where
+    /// the air freezes. Absent, snow wets as the rain does.
+    #[serde(default = "thousand")]
+    pub snow_wet_pm: u32,
+}
+
+/// `Exposure::snow_wet_pm`'s default: all of the rain's.
+fn thousand() -> u32 {
+    1000
+}
+
+/// The air (`content/balance.toml` `[climate]`; climate v0,
+/// `sim_core::climate`): whole degrees Celsius by the hour, the biome, the height
+/// and the weather. Absent is 0 °C everywhere, which nothing reads unless
+/// `[exposure]` asks for the air — and an armed `[exposure]` always does,
+/// for whether the rain falls as snow (snow v0), so it needs one.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Climate {
+    /// Temperate ground at dawn and at the warmest hour.
+    pub temperate_low_c: i32,
+    pub temperate_high_c: i32,
+    /// The arid north's.
+    pub arid_low_c: i32,
+    pub arid_high_c: i32,
+    /// Above this height the air cools a degree every `lapse_m`.
+    pub lapse_from_m: u32,
+    pub lapse_m: u32,
+    /// How much of the day's swing full cloud takes away, per mille.
+    pub cloud_flatten_pm: u32,
+    /// How much colder the heaviest rain makes the air.
+    pub rain_cool_c: i32,
+    /// Crops grow at full pace from `crop_warm_c` to `crop_hot_c`, slower
+    /// toward `crop_frost_c` and `crop_scorch_c`, not at all past either.
+    /// All four 0: crops ignore the air.
+    #[serde(default)]
+    pub crop_frost_c: i32,
+    #[serde(default)]
+    pub crop_warm_c: i32,
+    #[serde(default)]
+    pub crop_hot_c: i32,
+    #[serde(default)]
+    pub crop_scorch_c: i32,
 }
 
 /// The declared bands + globals the anchors compute against
@@ -1275,6 +1419,9 @@ pub struct Balance {
     /// Wet and cold (weather v0). Defaulted: content without it plays dry.
     #[serde(default)]
     pub exposure: Exposure,
+    /// The air (climate v0). Defaulted with `exposure`.
+    #[serde(default)]
+    pub climate: Climate,
     /// What a fresh character spawns holding (`[[spawn_kit]]`).
     ///
     /// **Defaulted, because a naked spawn is the game.** Content that

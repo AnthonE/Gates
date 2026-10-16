@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 
 use client::render::beasts::{
-    gait_for, rate_of, tier_of, wants, BeastClip, BEAST_CARCASS_GLB, BEAST_GLB, BEAST_RATE_MAX,
-    CLIP_MPS, FEL_PIG, FEL_STAG, FEL_WOLF,
+    gait_for, rate_of, tier_for, tier_of, wants, BeastClip, BEAST_CARCASS_GLB, BEAST_GLB,
+    BEAST_RATE_MAX, CLIP_MPS, FEL_PIG, FEL_STAG, FEL_WOLF,
 };
 use client::render::mobs::{Gait, PIG_H_M, WOLF_H_M};
 
@@ -75,6 +75,16 @@ fn the_tier_climbs_with_the_arc() {
     assert_eq!(tier_of(&arc(&[(2, WORK_LIT), (2, WORK_LIT)])), 2);
     // Act III is heavy whatever act II looks like.
     assert_eq!(tier_of(&arc(&[(2, WORK_OPEN), (3, WORK_OPEN)])), 2);
+}
+
+/// A turned animal wears the top tier whatever the island's; one that is not
+/// wears the island's.
+#[test]
+fn a_turned_animal_wears_the_top_tier() {
+    for island in 0..3 {
+        assert_eq!(tier_for(island, true), 2);
+        assert_eq!(tier_for(island, false), island);
+    }
 }
 
 #[test]

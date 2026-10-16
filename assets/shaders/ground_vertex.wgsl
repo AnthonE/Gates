@@ -22,11 +22,13 @@ struct GroundVertexOutput {
 #endif
     @location(8) road: vec2<f32>,
     @location(9) markings: vec4<f32>,
-    @location(10) arid: f32,
+    // x = aridity (`terrain::aridity`), y = the Verdigris' edge noise
+    // (`terrain::fel_wander`, ±1), which the fragment rebuilds the spread from.
+    @location(10) zone: vec2<f32>,
 }
 
 @vertex
-fn vertex(in: Vertex, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) arid: f32) -> GroundVertexOutput {
+fn vertex(in: Vertex, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @location(10) zone: vec2<f32>) -> GroundVertexOutput {
     var out: GroundVertexOutput;
     let world_from_local = mesh_functions::get_world_from_local(in.instance_index);
     out.world_position = mesh_functions::mesh_position_local_to_world(
@@ -47,6 +49,6 @@ fn vertex(in: Vertex, @location(8) road: vec2<f32>, @location(9) markings: vec4<
 #endif
     out.road = road;
     out.markings = markings;
-    out.arid = arid;
+    out.zone = zone;
     return out;
 }

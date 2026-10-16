@@ -39,6 +39,7 @@ pub fn screen(commands: &mut Commands, width: f32, body: impl FnOnce(&mut ChildS
         ))
         .with_children(|root| {
             root.spawn((
+                super::PanelBody,
                 Node {
                     width: Val::Px(width),
                     max_height: Val::Percent(88.0),
@@ -72,7 +73,7 @@ pub fn header(p: &mut ChildSpawnerCommands, title: &str, right: Option<&str>, st
         }
     });
     if !status.is_empty() {
-        p.spawn((Text::new(status), font(12.0), TextColor(LINE_HOT)));
+        p.spawn((Text::new(status), font(12.0), TextColor(super::STATUS)));
     }
 }
 
@@ -185,7 +186,13 @@ pub fn hint(p: &mut ChildSpawnerCommands, text: &str) {
         Pickable::IGNORE,
     ))
     .with_children(|h| {
-        h.spawn((Text::new(text), font(11.0), TextColor(TEXT_DIM)));
+        h.spawn((
+            Text::new(text),
+            font(11.0),
+            TextColor(TEXT_DIM),
+            // Hints name keys; they follow the player's binds.
+            crate::render::binds::Keyed(text.to_string()),
+        ));
     });
 }
 

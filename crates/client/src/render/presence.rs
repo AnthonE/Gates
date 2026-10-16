@@ -40,6 +40,7 @@ use sim_core::terrain;
 
 use crate::discord::{self, Activity, Addr, Link, Place, ShardName, State};
 
+use super::blight::Blight;
 use super::screen::{Connecting, Menu, Screen};
 use super::settings::Settings;
 use super::{Eye, WorldId};
@@ -103,7 +104,12 @@ fn state_for(screen: &Screen, back: &Screen) -> State {
 /// and before that `Eye::pos` is the **world origin**, which is a real place
 /// on this island — so a presence built from it would confidently name the
 /// wrong biome (`Eye`'s own doc says why that flag is not an `Option`).
-fn place_for(state: State, eye: &Eye, world: Option<&WorldId>) -> Option<Place> {
+fn place_for(
+    state: State,
+    eye: &Eye,
+    world: Option<&WorldId>,
+    blight: Option<&Blight>,
+) -> Option<Place> {
     if !state.in_session() || !eye.placed {
         return None;
     }
@@ -114,8 +120,13 @@ fn place_for(state: State, eye: &Eye, world: Option<&WorldId>) -> Option<Place> 
     // — so a raw read would have presence naming the terrain that used to be
     // under the pad, at exactly the place players spend their time.
     let h = terrain::ground(world.seed, &world.haven, eye.pos.x, eye.pos.z);
+    // The Verdigris as it has spread, not as it stood on wipe day.
+    let fel = match blight {
+        Some(b) => b.at(world, eye.pos.x, eye.pos.z).any(),
+        None => terrain::fel(world.seed, eye.pos.x, eye.pos.z),
+    };
     let moist = terrain::moisture(world.seed, eye.pos.x, eye.pos.z);
-    Some(Place::of(terrain::biome(h, moist)))
+    Some(Place::of(terrain::biome(h, moist, fel)))
 }
 
 /// The shard's published name, when this address is one we can name.
@@ -130,12 +141,14 @@ fn shard_name(addr: &str, menu: &Menu) -> Option<ShardName> {
         .map(|r| ShardName::new(&r.name))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pump(
     mut link: NonSendMut<Presence>,
     screen: Res<State_>,
     settings: Res<Settings>,
     eye: Res<Eye>,
     world: Option<Res<WorldId>>,
+    blight: Option<Res<Blight>>,
     menu: Res<Menu>,
     connecting: NonSend<Connecting>,
 ) {
@@ -149,7 +162,7 @@ fn pump(
     let state = state_for(screen.get(), &settings.back);
     let mut activity = Activity {
         state,
-        place: place_for(state, &eye, world.as_deref()),
+        place: place_for(state, &eye, world.as_deref(), blight.as_deref()),
         ..Default::default()
     };
     if settings.discord_share_server && state.in_session() {
@@ -258,17 +271,20 @@ mod tests {
             placed: false,
             ..Default::default()
         };
-        assert_eq!(place_for(State::InWorld, &unplaced, Some(&world)), None);
+        assert_eq!(
+            place_for(State::InWorld, &unplaced, Some(&world), None),
+            None
+        );
         let placed = Eye {
             placed: true,
             ..Default::default()
         };
         // Placed, in a session, with a world: now there is something to say.
-        assert!(place_for(State::InWorld, &placed, Some(&world)).is_some());
+        assert!(place_for(State::InWorld, &placed, Some(&world), None).is_some());
         // …and never outside a session, however placed the body is.
-        assert_eq!(place_for(State::Menu, &placed, Some(&world)), None);
+        assert_eq!(place_for(State::Menu, &placed, Some(&world), None), None);
         // …and never without a world to resolve the biome against.
-        assert_eq!(place_for(State::InWorld, &placed, None), None);
+        assert_eq!(place_for(State::InWorld, &placed, None, None), None);
     }
 
     /// A `Link` sends on change and stays quiet otherwise — the property the

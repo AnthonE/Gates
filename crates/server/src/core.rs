@@ -14,13 +14,14 @@ use protocol::{
     encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
     encode_event_catalog, encode_event_charge_placed, encode_event_chat,
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_fire,
-    encode_event_gather, encode_event_gather_refused, encode_event_gitem_sync, encode_event_health,
-    encode_event_heard, encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_lodged_sync, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_dead,
+    encode_event_death, encode_event_death_mark, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_fire, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
+    encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_lodged_sync, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
     encode_event_research, encode_event_research_refused, encode_event_research_rows,
@@ -31,6 +32,7 @@ use protocol::{
     WireLodged, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
     LODGED_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
+use protocol::{encode_event_report, REPORT_BLAST, REPORT_GUN};
 use protocol::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX, DEED_RELOAD,
 };
@@ -43,10 +45,10 @@ use sim_core::inventory::{
     slots_in, CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD,
 };
 use sim_core::limits::{
-    ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM,
-    CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS,
-    MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, MAX_SPECTATORS,
-    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
+    ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, BLAST_REPORT_CM,
+    CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, GUN_REPORT_CM, HEARTH_STOCK_ROWS,
+    HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
+    MAX_SPECTATORS, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -502,6 +504,10 @@ impl SleeperIndex {
     }
 }
 
+/// One eviction record: whose, the record, the put's stamp, and the id the
+/// evicted body wore.
+type EvictRow = (PlayerKey, PlayerSave, u64, u32);
+
 /// The sim's own copy of every eviction record it has handed out, by key
 /// (NOW §0y 2). `connect_as` reads it ahead of the record a joiner brings.
 ///
@@ -524,8 +530,13 @@ impl SleeperIndex {
 /// table drops its oldest put, which costs that one victim only the hole
 /// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
 /// allocates.
+///
+/// It also keeps the id the evicted body wore: the victim's bags, locks and
+/// cupboards are still filed under it, and the rejoin moves them to the new
+/// body (`Command::Rekey`). A restart forgets this, and those things stay
+/// with the old id, which `SlotTable::start_past` keeps anyone from wearing.
 struct EvictMemo {
-    entries: Box<[Option<(PlayerKey, PlayerSave, u64)>]>,
+    entries: Box<[Option<EvictRow>]>,
     /// The next put's stamp: oldest-first replacement with no ties when one
     /// window evicts more than once.
     next: u64,
@@ -539,34 +550,36 @@ impl EvictMemo {
         }
     }
 
-    fn find(&self, key: &PlayerKey) -> Option<PlayerSave> {
+    /// The record filed for `key` and the id its body wore.
+    fn find(&self, key: &PlayerKey) -> Option<(PlayerSave, u32)> {
         self.entries
             .iter()
             .flatten()
-            .find(|(k, _, _)| k == key)
-            .map(|(_, s, _)| *s)
+            .find(|(k, _, _, _)| k == key)
+            .map(|(_, s, _, id)| (*s, *id))
     }
 
     fn forget(&mut self, key: &PlayerKey) {
         for e in self.entries.iter_mut() {
-            if e.map(|(k, _, _)| k == *key).unwrap_or(false) {
+            if e.map(|(k, _, _, _)| k == *key).unwrap_or(false) {
                 *e = None;
             }
         }
     }
 
-    /// File `save` under `key`, replacing any earlier one for the same key,
-    /// else into a free row, else over the oldest put.
-    fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
+    /// File `save` and the evicted body's `id` under `key`, replacing any
+    /// earlier one for the same key, else into a free row, else over the
+    /// oldest put.
+    fn put(&mut self, key: &PlayerKey, save: PlayerSave, id: u32) {
         self.forget(key);
-        let stamp = |e: &Option<(PlayerKey, PlayerSave, u64)>| e.map_or(0, |(_, _, n)| n);
+        let stamp = |e: &Option<EvictRow>| e.map_or(0, |(_, _, n, _)| n);
         let row = self
             .entries
             .iter()
             .position(|e| e.is_none())
             .or_else(|| (0..self.entries.len()).min_by_key(|&i| stamp(&self.entries[i])));
         if let Some(i) = row {
-            self.entries[i] = Some((*key, save, self.next));
+            self.entries[i] = Some((*key, save, self.next, id));
             self.next += 1;
         }
     }
@@ -1560,6 +1573,18 @@ impl ShardCore {
         key: Option<PlayerKey>,
         save: Option<PlayerSave>,
     ) -> Option<(Admitted, Option<(PlayerKey, PlayerSave)>)> {
+        // One wallet, one body. The accept loop refuses a second session
+        // for a seated key (`REFUSE_IN_USE`) before it claims a slot, so
+        // this never fires through the net path; it is here because the
+        // failure it stops — a second body seated from the record while the
+        // first still plays — is a duplication, not a glitch.
+        if let Some(k) = key {
+            if (0..MAX_PLAYERS)
+                .any(|s| s != slot && self.clients[s].connected && self.keys[s] == Some(k))
+            {
+                return None;
+            }
+        }
         // A hint from the index, verified against the world before it is
         // trusted — and against this window's own queue, because a sleeper
         // a queued `Evict` has already condemned is one this join must not
@@ -1570,11 +1595,15 @@ impl ShardCore {
             .filter(|&s| !self.spoken_for(s));
         // No body, so a record: this shard's own eviction record first, the
         // store's (as the accept loop read it) only if it has none. Peeked,
-        // not taken — it is spent below only once the join is queued.
-        let save = match key {
-            Some(k) if sleeper.is_none() => self.evicted.find(&k).or(save),
-            _ => save,
-        };
+        // not taken — it is spent below only once the join is queued. The
+        // eviction record also names the id the evicted body wore, which
+        // still owns its bags, locks and cupboards: they follow the wallet
+        // to the new body (`Command::Rekey`, after the join).
+        let memo = key
+            .filter(|_| sleeper.is_none())
+            .and_then(|k| self.evicted.find(&k));
+        let save = memo.map(|(s, _)| s).or(save);
+        let former = memo.map(|(_, was)| was).filter(|&was| was != id);
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
@@ -1586,10 +1615,11 @@ impl ShardCore {
         let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
             match self.evict_victim() {
                 Some(victim) => {
-                    // Room for both commands or neither: an `Evict` whose
+                    // Room for every command or none: an `Evict` whose
                     // join was then refused by a full queue would delete a
                     // body and seat nobody in its place.
-                    if self.queued_len + 2 > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
+                    let n = 2 + usize::from(former.is_some());
+                    if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
                         return None;
                     }
                     // The record comes off the live body NOW — the current
@@ -1604,9 +1634,10 @@ impl ShardCore {
                     if let Some((k, s)) = record.as_ref() {
                         // The arrow points at a body the command below is
                         // about to remove. The record is kept for the
-                        // victim's return, which may beat the store to it.
+                        // victim's return, which may beat the store to it,
+                        // with the id their things are filed under.
                         self.sleepers.forget(k);
-                        self.evicted.put(k, *s);
+                        self.evicted.put(k, *s, victim);
                     }
                     let roomed = self.queue(Command::Evict { id: victim });
                     debug_assert!(roomed, "room for two was checked above");
@@ -1622,11 +1653,19 @@ impl ShardCore {
         } else {
             None
         };
-        if !self.queue(cmd) {
+        // The join and the move of what the evicted body owned go together
+        // or not at all: a join without it would seat the wallet with
+        // nothing it built.
+        let n = 1 + usize::from(former.is_some());
+        if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS || !self.queue(cmd) {
             return None;
         }
-        // A woken body takes this connection's id (`World::take_over`); its
-        // team seat goes with it.
+        if let Some(was) = former {
+            let roomed = self.queue(Command::Rekey { from: was, to: id });
+            debug_assert!(roomed, "room for both was checked above");
+        }
+        // A woken body takes this connection's id (`World::take_over`), and
+        // what it owns goes with it there; its team seat goes with it here.
         if let Some(sleeper) = sleeper {
             self.teams.rekey(sleeper, id);
         }
@@ -1852,6 +1891,7 @@ impl ShardCore {
         // Read before the client is borrowed: `world` and `clients` are two
         // fields of one `self`, the `tick` loop's problem one method over.
         let now = self.world.tick as u16;
+        let tick = self.world.tick; // the playout bound's decay clock, full width
         let c = &mut self.clients[slot];
         if !c.connected {
             return;
@@ -1888,7 +1928,8 @@ impl ShardCore {
         });
         // The playout report is a level, not an edge: latest datagram
         // wins, exactly as the nudge and the gauges are levels in every
-        // header going the other way. Clamped at the favour mint, not
+        // header going the other way. Clamped to the rails and capped at
+        // the measured bound at the favour mint (`priced_playout`), not
         // here — the mint is the one place the claim buys anything.
         c.reported_playout = dg.playout_ticks;
         // A spectator's datagram is its acks and nothing else. The net side
@@ -1899,9 +1940,19 @@ impl ShardCore {
         if slot >= MAX_PLAYERS {
             return;
         }
+        // Frames this datagram delivered for the first time: a client whose
+        // render frame spans several ticks sends them together, and that
+        // burst is jitter its own estimator reads (`note_ack_age`).
+        let mut fresh = 0;
         for f in dg.frames() {
-            c.push_frame(*f, view);
+            if c.push_frame(*f, view) {
+                fresh += 1;
+            }
         }
+        // The playout bound, read off the same `view` the frames were just
+        // stamped with, so the bound and the favour are two readings of one
+        // number. After the spectator return: a seat never mints.
+        c.note_ack_age(tick, view.map(|v| now.wrapping_sub(v)), fresh);
     }
 
     /// Whether this client can accept another C→S action this tick — the
@@ -1960,6 +2011,17 @@ impl ShardCore {
     /// world is not listening. It costs no allocation, which is why the
     /// suites that drive thousands of ticks use it.
     pub fn tick_bare(&mut self, stats: &ShardStats, send: impl FnMut(Lane, usize, &[u8]) -> bool) {
+        self.tick_bare_marked(stats, send, || {});
+    }
+
+    /// [`Self::tick_bare`] with [`Self::tick_marked`]'s phase mark — the
+    /// profiler's (`bin/profile.rs`) way to time the snapshot phase apart.
+    pub fn tick_bare_marked(
+        &mut self,
+        stats: &ShardStats,
+        send: impl FnMut(Lane, usize, &[u8]) -> bool,
+        mark: impl FnOnce(),
+    ) {
         let mut log = crate::anomaly::Sink::off();
         let mut save_now = false;
         let mut ops = Ops {
@@ -1968,14 +2030,28 @@ impl ShardCore {
             admin_answers: None,
             save_now: &mut save_now,
         };
-        self.tick(stats, &mut ops, send);
+        self.tick_marked(stats, &mut ops, send, mark);
     }
 
     pub fn tick(
         &mut self,
         stats: &ShardStats,
         ops: &mut Ops<'_>,
+        send: impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        self.tick_marked(stats, ops, send, || {});
+    }
+
+    /// [`Self::tick`], calling `mark` once just before the snapshot phase.
+    /// The shard passes a no-op (inlined away); the profiler stamps a clock
+    /// there, which is the only way to split encode from the rest now that
+    /// every tick is a snapshot tick (`SNAPSHOT_INTERVAL_TICKS` = 1).
+    pub fn tick_marked(
+        &mut self,
+        stats: &ShardStats,
+        ops: &mut Ops<'_>,
         mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
+        mark: impl FnOnce(),
     ) {
         // Owned skin sets the platform answered since the last tick, queued
         // behind whatever else this window holds — so a join queued in the
@@ -2042,7 +2118,16 @@ impl ShardCore {
                     // staleness above it: a frame the buffer had no room
                     // for spends no favour, and counting one would report
                     // help nobody received.
-                    let favour = stats::favour_for(now, view, c.reported_playout);
+                    // The claim, capped at what this connection's own ack
+                    // history supports (`priced_playout`). Counted only
+                    // where the cap cost something: favour 0 is no
+                    // measurable aim, and the ceiling would have bought
+                    // the claim no more.
+                    let (playout, capped) = c.priced_playout();
+                    let favour = stats::favour_for(now, view, playout);
+                    if capped && favour > 0 && favour < sim_core::limits::REWIND_MAX_TICKS {
+                        ShardStats::bump(&stats.favour_playout_high);
+                    }
                     stats.record_favour(favour);
                     // A throttle tick carries BOTH consumed frames — the
                     // older must still move the body (`InputPair`'s doc:
@@ -2464,6 +2549,7 @@ impl ShardCore {
             }
         }
 
+        mark();
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             for slot in 0..MAX_PLAYERS {
                 if !self.clients[slot].connected {
@@ -2674,6 +2760,50 @@ impl ShardCore {
         }
         let p = &self.world.players[w];
         (p.active && p.id == c.id).then_some(w)
+    }
+
+    /// Who hears `from_slot` talk (proximity voice, v113): every other
+    /// connected player whose body is within `VOICE_RADIUS_CM` of the
+    /// talker's, and every seat watching an agent among them (an agent's
+    /// feed is live, so its watchers hear what it hears; a human's feed is
+    /// delayed, and a live voice beside it would give away where they are).
+    /// `None` when the talker has no living body to speak from (dead,
+    /// asleep, not in yet); otherwise the talker's player id.
+    ///
+    /// Voice is relayed, never simulated: this reads positions and writes
+    /// nothing, and no frame reaches the world or the WAL.
+    pub fn voice_reach(&self, from_slot: usize, hears: &mut [bool; MAX_CONNS]) -> Option<u32> {
+        hears.fill(false);
+        let from_w = self.live_wslot(from_slot)?;
+        let talker = &self.world.players[from_w];
+        if talker.dead || talker.sleeping {
+            return None;
+        }
+        let own = talker.body;
+        let r2 = sim_core::limits::VOICE_RADIUS_CM * sim_core::limits::VOICE_RADIUS_CM;
+        for (to, hears) in hears.iter_mut().enumerate().take(MAX_PLAYERS) {
+            if to == from_slot || !self.clients[to].connected {
+                continue;
+            }
+            let Some(to_w) = self.live_wslot(to) else {
+                continue;
+            };
+            let p = self.world.players[to_w].body;
+            let dx = (p.qx - own.qx) as i64 * 3;
+            let dy = (p.qy - own.qy) as i64;
+            let dz = (p.qz - own.qz) as i64 * 3;
+            *hears = dx * dx + dy * dy + dz * dz <= r2;
+        }
+        for (i, seat) in self.watching.iter().enumerate() {
+            let Some(seat) = seat else {
+                continue;
+            };
+            let t = seat.target;
+            if self.standings_agent[t] && (t == from_slot || hears[t]) {
+                hears[MAX_PLAYERS + i] = true;
+            }
+        }
+        Some(self.clients[from_slot].id)
     }
 
     /// Install the admin allowlist. Boot-only, beside the content tables,
@@ -3826,14 +3956,54 @@ impl ShardCore {
                             Err(_) => ShardStats::bump(&stats.encode_range_errors),
                         }
                     }
-                    let (cause, item, range_cm) = self
+                    // The life's length rides the same read: the corpse
+                    // keeps `born` and `died` (`World::die`), so "alive for"
+                    // is the sim's clock and not a guess the client could
+                    // make.
+                    let corpse = self
                         .world
                         .players
                         .iter()
                         .find(|p| p.active && p.id == ev.a)
-                        .map(|p| (p.death_cause, p.death_item, p.death_range_cm))
-                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0));
-                    match encode_event_death(ev.a, ev.b, cause, item, range_cm, &mut self.ev_buf) {
+                        .copied();
+                    let (cause, item, range_cm, alive_s) = corpse
+                        .map(|p| {
+                            (
+                                p.death_cause,
+                                p.death_item,
+                                p.death_range_cm,
+                                p.alive_s().unwrap_or(0),
+                            )
+                        })
+                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0, 0));
+                    // **Where it fell goes to the victim alone, ahead of the
+                    // broadcast** (v116): the death screen centres its map
+                    // on it the frame `Death` raises the screen, for the
+                    // bags' reason above. The kill feed never carries it.
+                    // Seats watching the victim hear it from the drip.
+                    if let (Some(slot), Some(p)) = (self.client_slot_of(ev.a), corpse) {
+                        match encode_event_death_mark(p.death_at, &mut self.ev_buf) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    self.clients[slot].last_death_mark = Some(p.death_at);
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
+                    match encode_event_death(
+                        ev.a,
+                        ev.b,
+                        cause,
+                        item,
+                        range_cm,
+                        alive_s,
+                        &mut self.ev_buf,
+                    ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -4159,13 +4329,10 @@ impl ShardCore {
                 EV_OVEN => {
                     // A lit fire is a world fact and is visible from
                     // outside the base it is in, so it broadcasts exactly
-                    // as a door's state does — with the same consequence
-                    // when a client misses one, except that no sync
-                    // record carries the bit yet: the deploy walk mirrors
-                    // `DeployRec`, and the burn state deliberately does
-                    // not ride on it (`oven.rs`). A client that missed
-                    // this hears the next toggle, or the snuff when the
-                    // fuel runs out, which is at most one fuel unit away.
+                    // as a door's state does. The burn state does not ride
+                    // on `DeployRec` (`oven.rs`), so the deploy walk sends
+                    // an `EV_OVEN` after each batch for every fire in it
+                    // that burns: a joiner or a resync sees it lit.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
                     let loc = (ev.b >> 8) as u8;
@@ -4248,6 +4415,16 @@ impl ShardCore {
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
                     let sh = Self::world_slot_of(&self.world, ev.a);
+                    // A gun is heard past the interest set (v113): out to
+                    // `GUN_REPORT_CM` a client that holds no body for the
+                    // shooter is told a gun went off, and where.
+                    let report = match sh {
+                        Some(w) if protocol::shot_is_instant(speed) => {
+                            let b = self.world.players[w].body;
+                            Self::report(REPORT_GUN, b.qx, b.qy, b.qz)
+                        }
+                        _ => None,
+                    };
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -4256,6 +4433,13 @@ impl ShardCore {
                                 }
                                 if !self.body_event_visible(slot, ev.a, sh) {
                                     ShardStats::bump(&stats.ev_interest_skipped);
+                                    if let Some((at, buf, n)) = report.as_ref() {
+                                        if self.within_cm(slot, *at, GUN_REPORT_CM)
+                                            && send(Lane::Event, slot, &buf[..*n])
+                                        {
+                                            ShardStats::bump(&stats.ev_sent);
+                                        }
+                                    }
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -4416,6 +4600,12 @@ impl ShardCore {
                     // the band takes a slot from a mark at the player's
                     // feet.
                     let at = interest::body_cm(qx, qz);
+                    // A blast is heard far past the interest set (v113),
+                    // the reference's map-wide explosion at this island's
+                    // scale: out to `BLAST_REPORT_CM`.
+                    let report = (kind == sim_core::ranged::IMPACT_BLAST)
+                        .then(|| Self::report(REPORT_BLAST, qx, qy, qz))
+                        .flatten();
                     match encode_event_impact(qx, qy, qz, surf, kind, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -4424,6 +4614,13 @@ impl ShardCore {
                                 }
                                 if !self.point_event_visible(slot, at) {
                                     ShardStats::bump(&stats.ev_interest_skipped);
+                                    if let Some((at, buf, n)) = report.as_ref() {
+                                        if self.within_cm(slot, *at, BLAST_REPORT_CM)
+                                            && send(Lane::Event, slot, &buf[..*n])
+                                        {
+                                            ShardStats::bump(&stats.ev_sent);
+                                        }
+                                    }
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -5193,7 +5390,7 @@ impl ShardCore {
                 &self.world.players[wslot],
             );
             if self.world.survival.exposure.armed() && Some(expo) != self.clients[slot].last_expo {
-                match protocol::encode_event_exposure(expo.0, expo.1, expo.2, &mut self.ev_buf) {
+                match protocol::encode_event_exposure(&expo, &mut self.ev_buf) {
                     Ok(len) => {
                         if send(Lane::Event, slot, &self.ev_buf[..len]) {
                             self.clients[slot].last_expo = Some(expo);
@@ -5321,6 +5518,52 @@ impl ShardCore {
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
             self.clients[slot].bags_owed = false;
+        }
+
+        // The death screen on the server (v116), after the bags it is built
+        // around. The marker whenever it is not what this client last heard
+        // (a join, a resync; a death sends it itself, ahead of the
+        // broadcast). The screen itself once per join or resync, and only
+        // for a body that is already dead — logged off on it, or killed
+        // asleep (`World::take_over`); a death while connected is the
+        // broadcast's. A join still queued has no body yet and owes on.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let p = self.world.players[wslot];
+            if self.clients[slot].last_death_mark != Some(p.death_at) {
+                match encode_event_death_mark(p.death_at, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_death_mark = Some(p.death_at);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+            if self.clients[slot].dead_owed {
+                if p.dead {
+                    match encode_event_dead(
+                        p.death_by,
+                        p.death_cause,
+                        p.death_item,
+                        p.death_range_cm,
+                        p.alive_s(),
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                self.clients[slot].dead_owed = false;
+            }
         }
 
         // The crew HUD vital (NOW §0up 3): a body standing in a claim it is
@@ -6123,6 +6366,11 @@ impl ShardCore {
             let window = PIECE_SCAN_BATCH.min(owed);
             // The band, filled at the boundary — `PieceRec::dmg`'s note.
             let mut wire = [DeployRec::default(); DEPLOY_SYNC_BATCH];
+            // Which of them burn right now. The lit bit is broadcast only
+            // when it changes (`EV_OVEN`), so a fire lit before this client
+            // joined (or resynced) would stay dark and cold on its screen
+            // until someone toggled it. Sent after the batch it rides with.
+            let mut lit = [false; DEPLOY_SYNC_BATCH];
             let mut n = 0usize;
             let mut scanned = 0usize;
             for src in deploys[owed - window..owed].iter().rev() {
@@ -6133,22 +6381,25 @@ impl ShardCore {
                 let dst = &mut wire[n];
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
-                // A planter's beds (crops v1), off the oven row's mirror.
-                dst.grow = self
+                let oven = self
                     .world
                     .deploys
                     .oven_index(sim_core::deploy::box_key(
                         src.cx, src.cz, src.level, src.loc,
                     ))
-                    .map(|i| self.world.deploys.oven_states()[i])
+                    .map(|i| self.world.deploys.oven_states()[i]);
+                // A planter's beds (crops v1), off the oven row's mirror.
+                dst.grow = oven
                     .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
                     .map_or(0, |o| o.bank as u8);
+                lit[n] = oven.is_some_and(|o| o.is_converter() && o.lit);
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
                     break;
                 }
             }
             wire[..n].reverse();
+            lit[..n].reverse();
             let rest = owed - scanned;
             let done = |c: &mut ClientNetState| {
                 c.deploy_sync_reset = false;
@@ -6169,6 +6420,21 @@ impl ShardCore {
                         }
                     }
                     Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+                for (d, _) in wire[..n].iter().zip(&lit[..n]).filter(|(_, &l)| l) {
+                    let Ok(len) =
+                        encode_event_oven(d.cx, d.cz, d.level, d.loc, true, 0, &mut self.ev_buf)
+                    else {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    };
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        self.clients[slot].ev_resync();
+                        ShardStats::bump(&stats.ev_resyncs);
+                        return;
+                    }
                 }
             } else {
                 done(&mut self.clients[slot]);
@@ -6272,7 +6538,8 @@ impl ShardCore {
                 .iter()
                 .enumerate()
             {
-                batch[i] = WireGItem::of(g);
+                let toss = self.world.ground_items.toss_of(g.id, self.world.tick);
+                batch[i] = WireGItem::of(g).tossed(toss);
             }
             match encode_event_gitem_sync(c.gitem_sync_reset, &batch[..n], &mut self.ev_buf) {
                 Ok(len) => {
@@ -6389,12 +6656,12 @@ impl ShardCore {
                         .world
                         .backpacks
                         .index_of_id(handle)
-                        .filter(|&i| self.world.backpacks.in_reach(i, p)),
+                        .filter(|&i| self.world.bag_reachable(i, c.own_wslot)),
                     CONT_BOX => self
                         .world
                         .deploys
                         .box_index(handle)
-                        .filter(|&i| self.world.deploys.box_in_reach(i, p))
+                        .filter(|&i| self.world.box_reachable(i, c.own_wslot))
                         .filter(|&i| {
                             // The box's own slot, the move path's address
                             // byte for byte: free placement puts several
@@ -6415,14 +6682,16 @@ impl ShardCore {
                     // it again here would be ~60 `noise2` evaluations per
                     // open panel per tick — the cold-scatter spike
                     // `occupy.rs` exists to refuse, in the one loop that
-                    // runs for every connected client. An unopened cell
+                    // runs for every connected client. It kept the floor
+                    // the crate stands on (`qy`), so the storey and the
+                    // line are asked here without paying it again. An unopened cell
                     // resolves to nothing, which is correct: there is no
                     // container there yet.
                     CONT_WORLD => self
                         .world
                         .world_conts
                         .index_of(handle)
-                        .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                        .filter(|&i| self.world.world_cont_reachable(i, c.own_wslot)),
                     // A sleeper's pack: the move verb's own resolution, so
                     // a sleeper that woke, died or was evicted shuts it.
                     CONT_BODY => self.world.body_loot_index(handle, c.own_wslot),
@@ -6842,6 +7111,30 @@ impl ShardCore {
     /// the player's feet for one that is sub-pixel**. That eviction is the
     /// thing this removes; the visible cost is a 0.22 m quad past 208 m,
     /// which is under a pixel at any sane field of view.
+    /// A far report (v113) of `kind` at body quanta `(qx, qy, qz)`: where
+    /// it was in planar centimetres, and the encoded event. `None` for a
+    /// place the report's whole-metre fields cannot carry.
+    fn report(kind: u8, qx: i32, qy: i32, qz: i32) -> Option<((i64, i64), [u8; 16], usize)> {
+        let at = interest::body_cm(qx, qz);
+        let m = |cm: i64| u16::try_from(cm / 100).ok();
+        let y = i16::try_from(qy as i64 / 100).ok()?;
+        let mut buf = [0u8; 16];
+        let n = encode_event_report(kind, m(at.0)?, y, m(at.1)?, &mut buf).ok()?;
+        Some((at, buf, n))
+    }
+
+    /// Is `slot`'s body within `reach_cm` of `at` (planar centimetres)?
+    /// A client with no body in the world hears nothing from afar.
+    fn within_cm(&self, slot: usize, at: (i64, i64), reach_cm: i64) -> bool {
+        let Some(w) = self.live_wslot(slot) else {
+            return false;
+        };
+        let b = self.world.players[w].body;
+        let (x, z) = interest::body_cm(b.qx, b.qz);
+        let (dx, dz) = (x - at.0, z - at.1);
+        dx * dx + dz * dz <= reach_cm * reach_cm
+    }
+
     fn point_event_visible(&self, slot: usize, at_cm: (i64, i64)) -> bool {
         let c = &self.clients[slot];
         !c.piece_anchor_valid || interest::point_in_interest(c.piece_anchor_cm, at_cm)
@@ -7172,13 +7465,14 @@ impl ShardCore {
             ),
             yaw: m.yaw,
             pitch: 0,
-            // Six of twelve now. A pig has no hotbar, so the hand is
-            // empty and the flame is off — and unlike the four above,
-            // these two would be *wrong* rather than merely meaningless
-            // if they were ever filled: `held` is an index into the item
-            // catalog and a mob has no inventory to index it from.
+            // A pig has no hotbar, so the hand is empty — and `held` would
+            // be *wrong* rather than merely meaningless if it were ever
+            // filled: it is an index into the item catalog and a mob has no
+            // inventory to index it from.
             held: None,
-            lit: false,
+            // An animal's flame is the Verdigris in it: turned
+            // (`Mob::turned`), it burns as the top tier's does.
+            lit: m.turned,
             held_skin: 0,
         }
     }
@@ -7442,6 +7736,75 @@ mod tests {
             true
         });
         out
+    }
+
+    /// Far reports (v113): a gunshot and a blast past the interest set
+    /// reach a listener as a report out to their reach, and no further; a
+    /// listener inside the set gets the shot and the impact instead.
+    #[test]
+    fn a_gunshot_and_a_blast_carry_past_the_interest_set_as_reports() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        let ids = [PLAYER, (1 << 8) | 1, (1 << 8) | 2];
+        for (slot, &id) in ids.iter().enumerate() {
+            assert!(core.connect(slot, id), "connect {slot}");
+        }
+        core.tick_bare(&stats, |_, _, _| true);
+        let w: Vec<usize> = (0..3)
+            .map(|s| core.live_wslot(s).expect("joined"))
+            .collect();
+        let me = core.world.players[w[0]].body;
+        // 300 m and 600 m off: past the 208 m interest radius both; inside
+        // a gun's 400 m one of them; inside a blast's 1500 m both.
+        for (i, m) in [(1, 300), (2, 600)] {
+            core.world.players[w[i]].body.qx = me.qx;
+            core.world.players[w[i]].body.qz = me.qz + m * 100 / 3;
+        }
+        for _ in 0..3 {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        core.world.tick(&[]);
+        let blast = sim_core::world::impact_a(0, sim_core::ranged::IMPACT_BLAST, me.qx);
+        core.world
+            .events
+            .push(EV_IMPACT, blast, me.qz as u32, me.qy as u32);
+        // A revolver: instantaneous (speed 0), its 50 m reach in decimetres.
+        core.world.events.push(EV_SHOT, PLAYER, 0, 500);
+        let mut sent: Vec<(usize, EventMsg)> = Vec::new();
+        core.pump_events(&stats, &mut |lane, slot, bytes: &[u8]| {
+            if lane == Lane::Event {
+                if let Ok(msg) = decode_event(bytes) {
+                    sent.push((slot, msg));
+                }
+            }
+            true
+        });
+        let reports = |slot: usize| -> Vec<u8> {
+            sent.iter()
+                .filter_map(|(s, m)| match m {
+                    EventMsg::Report { kind, x, z, .. } if *s == slot => {
+                        assert_eq!(*x as i64, me.qx as i64 * 3 / 100);
+                        assert_eq!(*z as i64, me.qz as i64 * 3 / 100);
+                        Some(*kind)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let near = |slot: usize| {
+            sent.iter()
+                .filter(|(s, m)| {
+                    *s == slot && matches!(m, EventMsg::Shot { .. } | EventMsg::Impact { .. })
+                })
+                .count()
+        };
+        assert_eq!(near(0), 2, "the shooter hears it at hand");
+        assert!(reports(0).is_empty());
+        let mut at300 = reports(1);
+        at300.sort();
+        assert_eq!(at300, [protocol::REPORT_GUN, protocol::REPORT_BLAST]);
+        assert_eq!(near(1), 0);
+        assert_eq!(reports(2), [protocol::REPORT_BLAST], "a gun stops at 400 m");
     }
 
     /// A core with one connected client, its join landed, and the event
@@ -8413,16 +8776,18 @@ mod tests {
             hp: n as u16,
             ..PlayerSave::EMPTY
         };
+        // The id the evicted body wore rides with its record.
+        let rec = |n: usize| Some((save(n), n as u32 + 1));
         let mut memo = EvictMemo::new();
         for n in 0..MAX_PLAYERS {
-            memo.put(&key(n), save(n));
+            memo.put(&key(n), save(n), n as u32 + 1);
         }
-        memo.put(&key(3), save(1000));
-        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
-        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
+        memo.put(&key(3), save(1000), 1001);
+        assert_eq!(memo.find(&key(3)), rec(1000), "re-filed in place");
+        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS), MAX_PLAYERS as u32 + 1);
         assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
-        assert_eq!(memo.find(&key(1)), Some(save(1)));
-        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
+        assert_eq!(memo.find(&key(1)), rec(1));
+        assert_eq!(memo.find(&key(MAX_PLAYERS)), rec(MAX_PLAYERS));
         memo.forget(&key(1));
         assert_eq!(memo.find(&key(1)), None);
     }

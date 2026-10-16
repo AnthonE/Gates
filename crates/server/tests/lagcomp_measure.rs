@@ -39,7 +39,8 @@ use sim_core::combat::CombatContent;
 use sim_core::gather::ItemStack;
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{
-    INTERP_DELAY_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SNAPSHOT_INTERVAL_TICKS,
+    INTERP_DELAY_TICKS, PLAYOUT_MIN_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS,
+    SNAPSHOT_INTERVAL_TICKS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::yaw_dir;
@@ -111,6 +112,17 @@ fn advance_to_snapshot(core: &mut ShardCore, stats: &ShardStats) -> u64 {
 /// recorded for it: ack a snapshot, let `age` ticks pass, then hand the
 /// shard one input frame and tick once so it executes.
 fn measure_one(core: &mut ShardCore, stats: &ShardStats, seq: u16, age: u64) -> u64 {
+    measure_one_claiming(core, stats, seq, age, 4)
+}
+
+/// [`measure_one`] with the datagram reporting `playout` ticks of delay.
+fn measure_one_claiming(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    seq: u16,
+    age: u64,
+    playout: u8,
+) -> u64 {
     let s = advance_to_snapshot(core, stats);
     for _ in 0..age {
         tick(core, stats);
@@ -120,7 +132,7 @@ fn measure_one(core: &mut ShardCore, stats: &ShardStats, seq: u16, age: u64) -> 
         s + age,
         "the fixture lost count of its own ticks"
     );
-    let mut dg = InputDatagram::new(s as u16, 0, 4);
+    let mut dg = InputDatagram::new(s as u16, 0, playout);
     dg.push(frame(seq)).expect("one frame fits");
     core.push_input(0, &dg);
     let before = ShardStats::get(&stats.aim_stale_sum);
@@ -556,6 +568,40 @@ fn the_shard_mints_a_favour_through_the_real_path() {
         (3, 18, 1, 0),
         "a 9-tick-old aim either got more than REWIND_MAX_TICKS or was not counted as clamped"
     );
+}
+
+/// **The playout claim is bounded by the link's own acks.** A forged
+/// ceiling (15) on a clean link buys the shipped delay and is counted; a
+/// claim inside the bound is priced as claimed and is not; a cap that
+/// changes nothing (the favour is at the rewind ceiling either way) accuses
+/// nobody.
+#[test]
+fn a_playout_claim_past_the_measured_bound_buys_only_the_bound() {
+    let (mut core, stats) = shard();
+    let high = |s: &ShardStats| ShardStats::get(&s.favour_playout_high);
+    assert_eq!(measure_one_claiming(&mut core, &stats, 1, 1, 15), 1);
+    assert_eq!(core.clients[0].playout_cap, INTERP_DELAY_TICKS);
+    assert_eq!(
+        favour_reading(&stats),
+        (1, 5, 0, 0),
+        "raw 1 + the bound, not the claim's 7"
+    );
+    assert_eq!(high(&stats), 1);
+
+    assert_eq!(
+        measure_one_claiming(&mut core, &stats, 2, 1, PLAYOUT_MIN_TICKS),
+        1
+    );
+    assert_eq!(
+        favour_reading(&stats),
+        (2, 8, 0, 0),
+        "a low claim is priced as claimed"
+    );
+    assert_eq!(high(&stats), 1);
+
+    assert_eq!(measure_one_claiming(&mut core, &stats, 3, 5, 15), 5);
+    assert_eq!(favour_reading(&stats).1, 15, "7 either way");
+    assert_eq!(high(&stats), 1, "a cap that cost nothing accuses nobody");
 }
 
 /// **6b · A client that has never acked executes its frames and buys

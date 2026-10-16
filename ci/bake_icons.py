@@ -128,7 +128,8 @@ VERBS = {
 
 # Every item in `content/items.toml`, by its id minus the `item.` prefix.
 ITEMS = {
-    "wood": "delapouite/log",
+    # A pile of logs, Rust's own picture of wood, not one log (2026-10).
+    "wood": "delapouite/wood-pile",
     "stone": "delapouite/stone-pile",
     "metal_ore": "delapouite/gold-nuggets",
     "sulfur_ore": "lorc/crystal-cluster",
@@ -207,6 +208,8 @@ ITEMS = {
     "armor_burlap_body": "lorc/leather-vest",
     "armor_hide_body": "delapouite/poncho",
     "armor_bone_head": "lorc/horned-helm",
+    "armor_ash_mask": "lorc/gas-mask",
+    "armor_ash_suit": "delapouite/hazmat-suit",
     "leather": "delapouite/animal-hide",
     "arrow_metal": "lorc/broadhead-arrow",
     "crossbow": "carl-olsen/crossbow",
@@ -221,6 +224,7 @@ ITEMS = {
     "armor_roadsign_body": "lorc/armor-vest",
     "medkit": "delapouite/first-aid-kit",
     "syringe": "lorc/syringe",
+    "charcoal_tonic": "lorc/standing-potion",
     "berries": "delapouite/berries-bowl",
     "mushrooms": "delapouite/mushrooms",
     "corn": "delapouite/corn",
@@ -318,6 +322,10 @@ MAP = {
     # colour is mud, so the map has its own glyphs now.
     "map_bed": "delapouite/sleeping-bag",
     "map_hearth": "delapouite/fireplace",
+    # Where you died, on the death screen's map: Rust's skull pin. The mask
+    # rather than the crossed bones because the skull fills the frame, and
+    # at a marker's 14 px the bones' skull is four pixels.
+    "map_death": "lorc/skull-mask",
 }
 
 # Glyphs the panels draw OVER an item picture. Not items, so not `ITEMS`.
@@ -331,6 +339,10 @@ UI = {
     # the clock beside a craft time — both Rust's.
     "ui_star": "delapouite/round-star",
     "ui_clock": "lorc/stopwatch",
+    # The death screen's two: the pin beside a bag's grid square and the
+    # turn on RANDOM RESPAWN — Rust's own marks for both.
+    "ui_pin": "delapouite/position-marker",
+    "ui_respawn": "delapouite/clockwise-rotation",
 }
 
 VITALS = {

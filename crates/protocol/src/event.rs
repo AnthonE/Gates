@@ -94,10 +94,10 @@ pub const VEND_BATCH: usize = 8;
 pub const VENDOR_NAME_BYTES: usize = 16;
 
 /// Loose ground stacks one sync message carries (ground items v0).
-/// A lying stack is 117 bits; the widest record — an arrow stuck where it
-/// went in, carrying a condition and a skin (v94, v102) — is 173, so
-/// fourteen of those are 305 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were,
-/// until the skin took 17 bits a record): the assert at
+/// A lying stack is 118 bits; the widest record — a stack still flying,
+/// carrying a condition and a skin (v114) — is 190, so thirteen of those
+/// are 311 B, inside `MAX_EVENT_MSG_BYTES` (sixteen were, until the skin
+/// took 17 bits a record, and fourteen until the throw took 41): the assert at
 /// `GITEM_SYNC_COUNT_BITS` and `gitem_sync_widest_batch_fits_the_cap`
 /// hold it there. Overflow policy: the next message
 /// continues the walk, exactly as the bag walk does — and the walk
@@ -105,7 +105,7 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// batch much larger than this would spend a tick's lane on a set the
 /// next barrel invalidates. Proposed default, DECISIONS.md §open (ground
 /// items v0).
-pub const GITEM_SYNC_BATCH: usize = 14;
+pub const GITEM_SYNC_BATCH: usize = 13;
 
 /// Arrows in bodies one sync message carries (wire v94): the body, the
 /// round, where in it the arrow went in and which way. Fifteen bytes a
@@ -331,7 +331,9 @@ const SUB_GATHER_REFUSED: u32 = 49;
 /// cooldown lapses on a clock that emits nothing. `world.rs`'s respawn is
 /// still the authority and still falls back to the beach, and the client
 /// says which anchor answered (`ui::death::woke`), so a stale bit costs a
-/// sentence rather than a wrong place to wake up.
+/// sentence rather than a wrong place to wake up. A bag that is not ready
+/// carries its seconds to go after the bit (v115, `BagAnchor::wait_s`), and
+/// the client counts them down itself: the death screen's timer.
 /// **50, not 49** — see `PROTO_VER`'s v43 note. This landed on a branch
 /// as 49 with `PROTO_VER` 42, and the gather refusal above landed on the
 /// trunk as the same two numbers. Two layouts under one version is
@@ -558,7 +560,18 @@ const SUB_AGENT: u32 = 96;
 /// on the receiver. Own-fact: sent when it changes and, while anyone is on
 /// it, as its members move.
 const SUB_TEAM: u32 = 97;
-const SUB_MAX: u32 = SUB_TEAM;
+/// A gunshot or a blast heard from past the receiver's interest set (wire
+/// v113): what it was and where, to the metre, and nothing about who. The
+/// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
+/// shot rides `EV_SHOT` on its body and the blast its impact.
+const SUB_REPORT: u32 = 98;
+/// You are dead, and were before this connection reached the body (wire
+/// v116): the death screen again, for its owner only. See `EventMsg::Dead`.
+const SUB_DEAD: u32 = 99;
+/// Where your body last fell (wire v116): Rust's death marker. Own-fact. See
+/// `EventMsg::DeathMark`.
+const SUB_DEATH_MARK: u32 = 100;
+const SUB_MAX: u32 = SUB_DEATH_MARK;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -999,9 +1012,22 @@ const GITEM_SYNC_COUNT_BITS: u32 = 5;
 const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
 /// The widest loose-stack record `write_gitem` can put down: id, the three
 /// position quanta, item and count, then the stuck direction, the
-/// condition and the skin, each behind its own bit.
-const GITEM_REC_MAX_BITS: usize =
-    32 + 2 * POS_XZ_BITS as usize + POS_Y_BITS as usize + 16 + 16 + (1 + 24) + (1 + 16) + (1 + 16);
+/// condition, the skin and the throw, each behind its own bit — and the
+/// direction and the throw never both (`write_gitem` refuses it), so only
+/// the wider of the two is counted.
+const GITEM_REC_MAX_BITS: usize = 32
+    + 2 * POS_XZ_BITS as usize
+    + POS_Y_BITS as usize
+    + 16
+    + 16
+    + 2
+    + if 24 > TOSS_BITS as usize {
+        24
+    } else {
+        TOSS_BITS as usize
+    }
+    + (1 + 16)
+    + (1 + 16);
 // A full batch of the widest records still fits one message (v102's skin
 // shrank it 16 → 14, leaving fifteen bytes): a field added to the record
 // must shrink the batch first.
@@ -1179,7 +1205,9 @@ impl ItemRow {
     }
 
     /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
-    /// on the same three numbers.
+    /// on the same three numbers — less its `fel`, which the catalog does not
+    /// carry; the content refuses a fel-only row, so the two agree on every
+    /// row that ships.
     pub fn eats(&self) -> bool {
         self.food > 0 || self.water > 0 || self.health > 0
     }
@@ -1501,12 +1529,21 @@ pub enum EventMsg {
     /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
-    /// The owner's wet and cold, per cent, and whether the cold is hurting
-    /// them (`SUB_EXPOSURE`).
+    /// The owner's wet, cold and heat, per cent, whether either is hurting
+    /// them, their comfort, per cent, and the air they stand in, whole °C
+    /// (`SUB_EXPOSURE`; comfort wire v111, the heat and the air v112,
+    /// climate v0).
     Exposure {
         wet_pct: u8,
         cold_pct: u8,
+        heat_pct: u8,
         hurting: bool,
+        comfort_pct: u8,
+        air_c: i8,
+        /// The Verdigris' meter, per cent, and whether it is costing hp
+        /// (wire v113, `exposure::corrode`).
+        fel_pct: u8,
+        fel_hurting: bool,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -1946,6 +1983,9 @@ pub enum EventMsg {
     /// Another body's hands, heard (wire v93): who, what (`DEED_*`), and
     /// for a meal the item. A sound and nothing else.
     Heard { body: u32, deed: u8, item: u16 },
+    /// A gunshot or a blast from far off (wire v113): `REPORT_*`, and where
+    /// in whole metres. A sound and nothing else.
+    Report { kind: u8, x: u16, y: i16, z: u16 },
     /// Which arrow your bow looses (wire v94): the weapon it is for and the
     /// round, `NO_ITEM` when you carry none of its kinds.
     Ammo { weapon: u16, round: u16 },
@@ -2164,23 +2204,49 @@ pub enum EventMsg {
     /// Widened in v16 to carry what the death screen is made of:
     /// `cause` is a `sim_core::world::DEATH_BY_*` code, `item` the weapon
     /// in the killer's hand (`NO_ITEM` when the world did it), `range_cm`
-    /// how far the blow landed from. **Still no position** — that is not an
-    /// omission but the rule ALPHA.md §1 states outright ("no map
-    /// position"): a death that told you where you fell would hand every
-    /// raider a map pin to the base they just cleared, and hand the corpse
-    /// one back. Who, with what, from how far. Never where.
+    /// how far the blow landed from. **Still no position**: a death that
+    /// told everyone where it happened would hand every raider a map pin to
+    /// the base they just cleared. Who, with what, from how far. The victim
+    /// alone is told where, by `DeathMark` (v116), ahead of this.
     ///
     /// Broadcast rather than own-fact for the same reason it always was —
     /// a kill feed reports kills nobody saw — and the extra three fields
     /// broadcast with it because they are the feed's content too: "killed
     /// you with a rock from 2 m" is the line, for everyone.
+    ///
+    /// `alive_s` (v115) is how long the victim's body had been standing, in
+    /// whole seconds — the death screen's "alive for", Rust's first field.
+    /// Server-side truth (`Player::born`), because a client that joined
+    /// onto its own sleeper cannot know when that body woke.
     Death {
         victim: u32,
         killer: u32,
         cause: u8,
         item: u16,
         range_cm: u16,
+        alive_s: u32,
     },
+    /// You are dead, and were before this connection reached the body (v116):
+    /// you logged off on the death screen, or were killed asleep. `Death`'s
+    /// facts for the death screen, said again to its owner alone at a join
+    /// and after a resync, never to the kill feed: re-announcing `Death`
+    /// would tell the whole shard about a killing that happened while its
+    /// victim was away. `alive_s` is `None` when the server did not time
+    /// that life (a corpse restored from disk keeps neither clock).
+    Dead {
+        killer: u32,
+        cause: u8,
+        item: u16,
+        range_cm: u16,
+        alive_s: Option<u32>,
+    },
+    /// Where your body last fell (v116), in body quanta (`SUB_FIRE`'s
+    /// absolute x and z): Rust's death marker, which the death screen pins
+    /// and the compass and the map keep showing after the respawn, until the
+    /// next death moves it. Own-fact: sent ahead of your `Death`, at a join
+    /// and after a resync. `None` when the server has no death of yours on
+    /// record.
+    DeathMark { at: Option<(i32, i32)> },
     /// You woke up: `on_bag` is true if one of your own sleeping bags
     /// answered, false if the beach ring did. Own-fact, and the one message
     /// that closes the death screen.
@@ -2768,10 +2834,18 @@ pub fn encode_event_bags(bags: &[BagAnchor], buf: &mut [u8]) -> Result<usize, Wi
         {
             return Err(WireError::Range);
         }
+        // `ready` and `wait_s` say one thing twice (`BagAnchor::wait_s`),
+        // and a pair that disagrees is a sim bug, refused rather than sent.
+        if b.ready != (b.wait_s == 0) {
+            return Err(WireError::Range);
+        }
         w.write(b.cx as u32, BUILD_CELL_BITS)?;
         w.write(b.cz as u32, BUILD_CELL_BITS)?;
         w.write(b.level as u32, BUILD_LEVEL_BITS)?;
         w.write_bit(b.ready)?;
+        if !b.ready {
+            w.write(b.wait_s as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -3886,6 +3960,45 @@ pub fn encode_event_heard(
     Ok(w.finish())
 }
 
+/// A [`SUB_REPORT`]'s gunshot.
+pub const REPORT_GUN: u8 = 0;
+/// A [`SUB_REPORT`]'s blast.
+pub const REPORT_BLAST: u8 = 1;
+/// The last report kind the wire knows; a higher one is refused at both ends.
+pub const REPORT_MAX: u8 = REPORT_BLAST;
+const REPORT_BITS: u32 = 2;
+const REPORT_XZ_BITS: u32 = 13;
+const REPORT_Y_BITS: u32 = 10;
+/// `y` rides biased: −128..=895 m.
+const REPORT_Y_BIAS: i32 = 128;
+const _: () = assert!((REPORT_MAX as u32) < (1 << REPORT_BITS));
+const _: () = assert!(sim_core::terrain::ISLAND_SIZE as u32 <= (1 << REPORT_XZ_BITS));
+
+/// A far gunshot or blast at `(x, y, z)` metres. Refuses a kind past
+/// [`REPORT_MAX`] and a place the fields cannot carry.
+pub fn encode_event_report(
+    kind: u8,
+    x: u16,
+    y: i16,
+    z: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let yb = y as i32 + REPORT_Y_BIAS;
+    if kind > REPORT_MAX
+        || x as u32 >= 1 << REPORT_XZ_BITS
+        || z as u32 >= 1 << REPORT_XZ_BITS
+        || !(0..1 << REPORT_Y_BITS).contains(&yb)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_REPORT)?;
+    w.write(kind as u32, REPORT_BITS)?;
+    w.write(x as u32, REPORT_XZ_BITS)?;
+    w.write(yb as u32, REPORT_Y_BITS)?;
+    w.write(z as u32, REPORT_XZ_BITS)?;
+    Ok(w.finish())
+}
+
 /// Which arrow your bow looses — see `EventMsg::Ammo`.
 pub fn encode_event_ammo(weapon: u16, round: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_AMMO)?;
@@ -4330,7 +4443,40 @@ pub struct WireGItem {
     /// zero for none (one bit on the wire). The client draws it if its skin
     /// catalog knows it (`ui::skins::tint_of`), else plain.
     pub skin: u16,
+    /// The throw it is still flying on (wire v114): a dropped stack leaves
+    /// the hand and lands where this record says, and a client draws the
+    /// flight between (`sim_core::grounditem::toss_at`). Sent only while it
+    /// flies, one bit otherwise, and never with a stuck arrow's `dir`.
+    pub toss: Option<WireToss>,
 }
+
+/// A throw in flight on the wire: the low byte of the tick it left the hand
+/// (a client puts it back beside its own clock — a flight is under three
+/// seconds and the byte wraps at eight and a half) and where the hand was
+/// relative to the landing, in body quanta (`sim_core::grounditem::Toss`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireToss {
+    pub born_lo: u8,
+    pub from: [i16; 3],
+}
+
+impl WireToss {
+    pub fn of(t: &sim_core::grounditem::Toss) -> Self {
+        Self {
+            born_lo: t.born as u8,
+            from: t.from,
+        }
+    }
+}
+
+/// The toss block's widths: a byte of tick, then the hand's offset across,
+/// up and across, signed. Tied to the sim's own limits on what it keeps.
+const TOSS_BORN_BITS: u32 = 8;
+const TOSS_XZ_BITS: u32 = 10;
+const TOSS_Y_BITS: u32 = 12;
+const TOSS_BITS: u32 = TOSS_BORN_BITS + 2 * TOSS_XZ_BITS + TOSS_Y_BITS;
+const _: () = assert!((1i32 << (TOSS_XZ_BITS - 1)) - 1 == sim_core::grounditem::TOSS_XZ_MAX_Q);
+const _: () = assert!((1i32 << (TOSS_Y_BITS - 1)) - 1 == sim_core::grounditem::TOSS_Y_MAX_Q);
 
 impl WireGItem {
     pub fn of(g: &sim_core::grounditem::GroundItemRec) -> Self {
@@ -4344,7 +4490,15 @@ impl WireGItem {
             dir: g.dir,
             cond: g.stack.cond,
             skin: g.stack.skin,
+            toss: None,
         }
+    }
+
+    /// The same record with the throw it is flying on, if any
+    /// (`GroundItems::toss_of`).
+    pub fn tossed(mut self, t: Option<sim_core::grounditem::Toss>) -> Self {
+        self.toss = t.as_ref().map(WireToss::of);
+        self
     }
 
     /// Whether this is an arrow stuck where it went in.
@@ -4457,6 +4611,30 @@ fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
     if g.skin != 0 {
         w.write(g.skin as u32, 16)?;
     }
+    // The throw (v114), the same shape once more, and never beside a stuck
+    // arrow's angle: a thing thrown lies, and the batch's room is sized on
+    // the two being exclusive (`GITEM_REC_MAX_BITS`).
+    w.write_bit(g.toss.is_some())?;
+    if let Some(t) = g.toss {
+        let in_range = |v: i16, bits: u32| {
+            let half = 1i32 << (bits - 1);
+            (-(half - 1)..half).contains(&(v as i32))
+        };
+        if g.stuck()
+            || !in_range(t.from[0], TOSS_XZ_BITS)
+            || !in_range(t.from[1], TOSS_Y_BITS)
+            || !in_range(t.from[2], TOSS_XZ_BITS)
+        {
+            return Err(WireError::Range);
+        }
+        w.write(t.born_lo as u32, TOSS_BORN_BITS)?;
+        let signed = |w: &mut BitWriter, v: i16, bits: u32| {
+            w.write((v as i32 + (1 << (bits - 1))) as u32, bits)
+        };
+        signed(w, t.from[0], TOSS_XZ_BITS)?;
+        signed(w, t.from[1], TOSS_Y_BITS)?;
+        signed(w, t.from[2], TOSS_XZ_BITS)?;
+    }
     Ok(())
 }
 
@@ -4471,6 +4649,7 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         dir: [0; 3],
         cond: 0,
         skin: 0,
+        toss: None,
     };
     if r.read_bit()? {
         for d in g.dir.iter_mut() {
@@ -4494,6 +4673,22 @@ fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
         if g.skin == 0 {
             return Err(WireError::Malformed);
         }
+    }
+    if r.read_bit()? {
+        // A stuck arrow is not flying: the encoder refuses both.
+        if g.stuck() {
+            return Err(WireError::Malformed);
+        }
+        let born_lo = r.read(TOSS_BORN_BITS)? as u8;
+        let mut signed = |bits: u32| -> Result<i16, WireError> {
+            Ok((r.read(bits)? as i32 - (1 << (bits - 1))) as i16)
+        };
+        let from = [
+            signed(TOSS_XZ_BITS)?,
+            signed(TOSS_Y_BITS)?,
+            signed(TOSS_XZ_BITS)?,
+        ];
+        g.toss = Some(WireToss { born_lo, from });
     }
     // The client's own door: a zero count would draw a picture of nothing
     // and offer a prompt that takes nothing.
@@ -4874,6 +5069,7 @@ pub fn encode_event_death(
     cause: u8,
     item: u16,
     range_cm: u16,
+    alive_s: u32,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if cause > DEATH_CAUSE_MAX {
@@ -4885,6 +5081,50 @@ pub fn encode_event_death(
     w.write(cause as u32, DEATH_CAUSE_BITS)?;
     w.write(item as u32, 16)?;
     w.write(range_cm as u32, 16)?;
+    w.write(alive_s, 32)?;
+    Ok(w.finish())
+}
+
+/// The death screen said again to its owner, own-fact — see
+/// `EventMsg::Dead`. `Death`'s fields and range check, without the victim
+/// (it is the receiver) and with the life's length behind a bit.
+pub fn encode_event_dead(
+    killer: u32,
+    cause: u8,
+    item: u16,
+    range_cm: u16,
+    alive_s: Option<u32>,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cause > DEATH_CAUSE_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DEAD)?;
+    w.write(killer, 32)?;
+    w.write(cause as u32, DEATH_CAUSE_BITS)?;
+    w.write(item as u32, 16)?;
+    w.write(range_cm as u32, 16)?;
+    w.write_bit(alive_s.is_some())?;
+    if let Some(s) = alive_s {
+        w.write(s, 32)?;
+    }
+    Ok(w.finish())
+}
+
+/// Where the receiver last fell, own-fact — see `EventMsg::DeathMark`. A
+/// position off the entity lane's window is refused, `SUB_IMPACT`'s check.
+pub fn encode_event_death_mark(at: Option<(i32, i32)>, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_DEATH_MARK)?;
+    w.write_bit(at.is_some())?;
+    if let Some((qx, qz)) = at {
+        if !(0..(1i64 << POS_XZ_BITS)).contains(&(qx as i64))
+            || !(0..(1i64 << POS_XZ_BITS)).contains(&(qz as i64))
+        {
+            return Err(WireError::Range);
+        }
+        w.write(qx as u32, POS_XZ_BITS)?;
+        w.write(qz as u32, POS_XZ_BITS)?;
+    }
     Ok(w.finish())
 }
 
@@ -4947,20 +5187,28 @@ pub fn encode_event_env(env: &sim_core::weather::Env, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
-/// The owner's wet and cold — see `EventMsg::Exposure`.
+/// The owner's wet, cold, heat and air — see `EventMsg::Exposure`.
 pub fn encode_event_exposure(
-    wet_pct: u8,
-    cold_pct: u8,
-    hurting: bool,
+    x: &sim_core::exposure::Readout,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if wet_pct > 100 || cold_pct > 100 {
+    if x.wet_pct > 100
+        || x.cold_pct > 100
+        || x.comfort_pct > 100
+        || x.heat_pct > 100
+        || x.fel_pct > 100
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_EXPOSURE)?;
-    w.write(wet_pct as u32, EXPOSURE_PCT_BITS)?;
-    w.write(cold_pct as u32, EXPOSURE_PCT_BITS)?;
-    w.write_bit(hurting)?;
+    w.write(x.wet_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.cold_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(x.hurting)?;
+    w.write(x.comfort_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.heat_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(x.air_c as u8 as u32, 8)?;
+    w.write(x.fel_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(x.fel_hurting)?;
     Ok(w.finish())
 }
 
@@ -5587,11 +5835,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut bags = [BagAnchor::default(); BAG_CAP];
             for b in bags.iter_mut().take(count) {
+                let cx = r.read(BUILD_CELL_BITS)? as u16;
+                let cz = r.read(BUILD_CELL_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                let ready = r.read_bit()?;
+                // The wait rides only on a bag that is cooling (v115), and
+                // a cooling bag with no wait is the pair the encoder refuses.
+                let wait_s = if ready { 0 } else { r.read(16)? as u16 };
+                if !ready && wait_s == 0 {
+                    return Err(WireError::Malformed);
+                }
                 *b = BagAnchor {
-                    cx: r.read(BUILD_CELL_BITS)? as u16,
-                    cz: r.read(BUILD_CELL_BITS)? as u16,
-                    level: r.read(BUILD_LEVEL_BITS)? as u8,
-                    ready: r.read_bit()?,
+                    cx,
+                    cz,
+                    level,
+                    ready,
+                    wait_s,
                 };
             }
             EventMsg::Bags {
@@ -6128,6 +6387,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             weapon: r.read(16)? as u16,
             round: r.read(16)? as u16,
         },
+        SUB_REPORT => {
+            let kind = r.read(REPORT_BITS)? as u8;
+            if kind > REPORT_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Report {
+                kind,
+                x: r.read(REPORT_XZ_BITS)? as u16,
+                y: (r.read(REPORT_Y_BITS)? as i32 - REPORT_Y_BIAS) as i16,
+                z: r.read(REPORT_XZ_BITS)? as u16,
+            }
+        }
         SUB_FIRE => EventMsg::Fire {
             qx: r.read(POS_XZ_BITS)? as i32,
             qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
@@ -6618,7 +6889,39 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 cause,
                 item: r.read(16)? as u16,
                 range_cm: r.read(16)? as u16,
+                alive_s: r.read(32)?,
             }
+        }
+        SUB_DEAD => {
+            let killer = r.read(32)?;
+            let cause = r.read(DEATH_CAUSE_BITS)? as u8;
+            if cause > DEATH_CAUSE_MAX {
+                return Err(WireError::Malformed);
+            }
+            let item = r.read(16)? as u16;
+            let range_cm = r.read(16)? as u16;
+            let alive_s = if r.read_bit()? {
+                Some(r.read(32)?)
+            } else {
+                None
+            };
+            EventMsg::Dead {
+                killer,
+                cause,
+                item,
+                range_cm,
+                alive_s,
+            }
+        }
+        SUB_DEATH_MARK => {
+            let at = if r.read_bit()? {
+                let qx = r.read(POS_XZ_BITS)? as i32;
+                let qz = r.read(POS_XZ_BITS)? as i32;
+                Some((qx, qz))
+            } else {
+                None
+            };
+            EventMsg::DeathMark { at }
         }
         SUB_MOVED => {
             let from_kind = r.read(CONT_KIND_BITS)? as u8;
@@ -6678,13 +6981,28 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let wet_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let cold_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let hurting = r.read_bit()?;
-            if wet_pct > 100 || cold_pct > 100 {
+            let comfort_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let heat_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let air_c = r.read(8)? as u8 as i8;
+            let fel_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let fel_hurting = r.read_bit()?;
+            if wet_pct > 100
+                || cold_pct > 100
+                || comfort_pct > 100
+                || heat_pct > 100
+                || fel_pct > 100
+            {
                 return Err(WireError::Malformed);
             }
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
+                comfort_pct,
+                air_c,
+                fel_pct,
+                fel_hurting,
             }
         }
         SUB_ENV => {
@@ -7772,38 +8090,54 @@ mod tests {
         );
     }
 
-    /// The loose-stack batch at its widest (v102): every record an arrow
-    /// stuck where it went in AND carrying a condition, every field at the
-    /// top of its range. It must encode inside the message cap and come
-    /// back whole — the const assert beside `GITEM_SYNC_COUNT_BITS` sums
-    /// the widths, this measures the bytes.
+    /// The loose-stack batch at its widest (v114): every record a stack
+    /// still flying AND carrying a condition and a skin, every field at the
+    /// top of its range — and the same batch as arrows stuck where they
+    /// went in, the throw's narrower twin. Both must encode inside the
+    /// message cap and come back whole — the const assert beside
+    /// `GITEM_SYNC_COUNT_BITS` sums the widths, this measures the bytes.
     #[test]
     fn gitem_sync_widest_batch_fits_the_cap() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let recs: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
+        let flying: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
             id: u32::MAX - i as u32,
             qx: (1 << POS_XZ_BITS) - 1,
             qy: (1 << POS_Y_BITS) - 1 - POS_Y_BIAS,
             qz: (1 << POS_XZ_BITS) - 1 - i as i32,
             item: (MAX_ITEM_DEFS - 1 - i) as u16,
             count: u16::MAX,
-            dir: [-128, 127, -(i as i8) - 1],
+            dir: [0; 3],
             cond: u16::MAX - i as u16,
             skin: u16::MAX - 2 * i as u16,
+            toss: Some(WireToss {
+                born_lo: u8::MAX - i as u8,
+                from: [
+                    -(sim_core::grounditem::TOSS_XZ_MAX_Q as i16),
+                    sim_core::grounditem::TOSS_Y_MAX_Q as i16 - i as i16,
+                    sim_core::grounditem::TOSS_XZ_MAX_Q as i16,
+                ],
+            }),
         });
-        let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
-        assert!(len <= MAX_EVENT_MSG_BYTES);
-        match decode_event(&buf[..len]).unwrap() {
-            EventMsg::GItemSync {
-                reset,
-                recs: got,
-                count,
-            } => {
-                assert!(reset);
-                assert_eq!(count as usize, GITEM_SYNC_BATCH);
-                assert_eq!(got, recs);
+        let stuck: [WireGItem; GITEM_SYNC_BATCH] = core::array::from_fn(|i| WireGItem {
+            dir: [-128, 127, -(i as i8) - 1],
+            toss: None,
+            ..flying[i]
+        });
+        for recs in [flying, stuck] {
+            let len = encode_event_gitem_sync(true, &recs, &mut buf).unwrap();
+            assert!(len <= MAX_EVENT_MSG_BYTES);
+            match decode_event(&buf[..len]).unwrap() {
+                EventMsg::GItemSync {
+                    reset,
+                    recs: got,
+                    count,
+                } => {
+                    assert!(reset);
+                    assert_eq!(count as usize, GITEM_SYNC_BATCH);
+                    assert_eq!(got, recs);
+                }
+                other => panic!("wrong variant: {other:?}"),
             }
-            other => panic!("wrong variant: {other:?}"),
         }
 
         // Litter pays one bit for the condition it does not have, and a
@@ -7887,6 +8221,84 @@ mod tests {
         w.write_bit(false).unwrap();
         w.write_bit(true).unwrap();
         w.write(0, 16).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
+    /// The throw (v114) crosses whole with every sign and costs a lying
+    /// stack one bit, and neither end holds one beside a stuck arrow's
+    /// angle or with the hand further off than the sim keeps.
+    #[test]
+    fn gitem_toss_roundtrips_and_refuses_a_bad_shape() {
+        use sim_core::grounditem::{TOSS_XZ_MAX_Q as XZ, TOSS_Y_MAX_Q as Y};
+        let (xz, y) = (XZ as i16, Y as i16);
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let lying = WireGItem {
+            id: 9,
+            qx: 100,
+            qz: 200,
+            item: 3,
+            count: 1,
+            ..WireGItem::default()
+        };
+        let bare = encode_event_gitem_sync(false, &[lying], &mut buf).unwrap();
+        for from in [[-xz, -y, xz], [xz, y, -xz], [0, -1, 0], [-1, 0, 1]] {
+            let rec = WireGItem {
+                toss: Some(WireToss {
+                    born_lo: 0xA5,
+                    from,
+                }),
+                ..lying
+            };
+            let with = encode_event_gitem_sync(false, &[rec], &mut buf).unwrap();
+            assert!(with > bare, "the throw took no room");
+            match decode_event(&buf[..with]).unwrap() {
+                EventMsg::GItemSync { recs, count, .. } => {
+                    assert_eq!(count, 1);
+                    assert_eq!(recs[0], rec);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+        }
+        let thrown = |from| WireGItem {
+            toss: Some(WireToss { born_lo: 1, from }),
+            ..lying
+        };
+        for from in [[xz + 1, 0, 0], [0, -y - 1, 0], [0, 0, -xz - 1]] {
+            let far = encode_event_gitem_sync(false, &[thrown(from)], &mut buf);
+            assert_eq!(far, Err(WireError::Range), "{from:?}");
+        }
+        let stuck = WireGItem {
+            dir: [0, -1, 127],
+            ..thrown([0; 3])
+        };
+        assert_eq!(
+            encode_event_gitem_sync(false, &[stuck], &mut buf),
+            Err(WireError::Range)
+        );
+        // Forged by hand: a stuck arrow's angle with the throw's bit after.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_GITEM_SYNC, SUB_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(1, GITEM_SYNC_COUNT_BITS).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(100, POS_XZ_BITS).unwrap();
+        w.write(POS_Y_BIAS as u32, POS_Y_BITS).unwrap();
+        w.write(200, POS_XZ_BITS).unwrap();
+        w.write(3, 16).unwrap();
+        w.write(1, 16).unwrap();
+        w.write_bit(true).unwrap();
+        for d in [0u32, 0xFF, 0x7F] {
+            w.write(d, 8).unwrap();
+        }
+        w.write_bit(false).unwrap();
+        w.write_bit(false).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(1, TOSS_BORN_BITS).unwrap();
+        for bits in [TOSS_XZ_BITS, TOSS_Y_BITS, TOSS_XZ_BITS] {
+            w.write(1 << (bits - 1), bits).unwrap();
+        }
         let len = w.finish();
         assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
     }
@@ -8846,6 +9258,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/bots.rs"),
         },
         Module {
+            file: "blight.rs",
+            src: include_str!("../../sim-core/src/blight.rs"),
+        },
+        Module {
             file: "boulder.rs",
             src: include_str!("../../sim-core/src/boulder.rs"),
         },
@@ -8898,8 +9314,16 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/ranged.rs"),
         },
         Module {
+            file: "reach.rs",
+            src: include_str!("../../sim-core/src/reach.rs"),
+        },
+        Module {
             file: "claim.rs",
             src: include_str!("../../sim-core/src/claim.rs"),
+        },
+        Module {
+            file: "climate.rs",
+            src: include_str!("../../sim-core/src/climate.rs"),
         },
         Module {
             file: "circulation.rs",
@@ -9108,8 +9532,9 @@ mod wire_domains {
             // this one through only because arrow recovery v1 spent the
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
-            // the widening to four.
-            live_max: 8,
+            // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
+            // 10 = DEATH_BY_FEL at v113 (the Verdigris).
+            live_max: 10,
         },
         Domain {
             what: "move refusal",
@@ -9786,6 +10211,13 @@ mod wire_domains {
             "TEAM_COUNT_BITS",
             "TEAM_STATE_BITS",
             "TEAM_POS_BITS",
+            // A far report (v113): the wire's own two kinds, refused past
+            // `REPORT_MAX` at both ends (const-asserted beside the width);
+            // and a whole-metre place, the island's side const-asserted
+            // inside the x/z width, y refused outside its biased range.
+            "REPORT_BITS",
+            "REPORT_XZ_BITS",
+            "REPORT_Y_BITS",
             // An item description's length (v103): bounded by
             // `MAX_ITEM_DESC_BYTES`, const-asserted beside the width.
             "DESC_LEN_BITS",
@@ -9891,6 +10323,15 @@ mod wire_domains {
             // converter added to `ROLE_ARCHES` widens the field with it;
             // `ItemRow::coherent` refuses a value past it at both ends.
             "OVEN_ROLE_BITS",
+            // The throw (v114): a tick's low byte, which wraps by design
+            // (a flight is shorter than the byte's span), and the hand's
+            // offset, bounded by `grounditem::TOSS_XZ_MAX_Q`/`TOSS_Y_MAX_Q`,
+            // sim-core *caps* tied by compile-time asserts at the
+            // declaration; `TOSS_BITS` is their sum.
+            "TOSS_BORN_BITS",
+            "TOSS_XZ_BITS",
+            "TOSS_Y_BITS",
+            "TOSS_BITS",
         ];
 
         let mut widths = Vec::new();
@@ -9971,7 +10412,7 @@ mod wire_domains {
     fn the_highest_live_death_cause_encodes() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for cause in 0..=sim_core::world::DEATH_BY_MAX {
-            let n = encode_event_death(7, 9, cause, 3, 250, &mut buf).unwrap_or_else(|e| {
+            let n = encode_event_death(7, 9, cause, 3, 250, 60, &mut buf).unwrap_or_else(|e| {
                 panic!(
                     "death cause {cause} is live in the sim and the wire \
                      refused it ({e:?}). This is the 2026-08-05 failure \
@@ -9994,7 +10435,7 @@ mod wire_domains {
         let forged = sim_core::world::DEATH_BY_MAX + 1;
         if (forged as u32) < (1 << DEATH_CAUSE_BITS) {
             assert_eq!(
-                encode_event_death(7, 9, forged, 3, 250, &mut buf),
+                encode_event_death(7, 9, forged, 3, 250, 60, &mut buf),
                 Err(WireError::Range),
                 "cause {forged} is not a live death and the encoder let it \
                  through — the domain is no longer closed"

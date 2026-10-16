@@ -56,10 +56,14 @@
 //! Neither is measurable on this box: `PipelineCache::pipelines()` is public, but it lives in the render
 //! world and needs a GPU to say anything, and no GPU has ever run this client.
 
+use std::hash::{Hash, Hasher};
+
+use bevy::camera::primitives::MeshAabb;
 use bevy::prelude::*;
 
 use super::props::Soup;
 use super::rig::EyeCam;
+use super::weathering::MonumentMaterial;
 
 /// Frames a warm entity stays alive — long enough for a pipeline queued on
 /// its first draw to specialize before the entity goes.
@@ -215,6 +219,75 @@ pub fn warm_models(
             ));
             done.1 = true;
         }
+    }
+}
+
+/// Where a warm draw of a mesh `size` metres across at its widest, its
+/// bounds centred on `center`, sits under the camera: that centre on the
+/// warm point and the whole mesh [`WARM_SIZE_M`] across at most, so a
+/// sixty-metre wall is the same speck the shared triangle is.
+pub fn warm_transform(center: Vec3, size: f32) -> Transform {
+    let s = WARM_SIZE_M / size.max(1.0);
+    Transform::from_translation(Vec3::new(0.0, 0.0, -WARM_AHEAD_M) - center * s)
+        .with_scale(Vec3::splat(s))
+}
+
+/// A mesh's vertex layout as a pipeline key sees it, or 0 for a mesh whose
+/// data went to the render world (warmed once per material, then).
+fn layout_key(mesh: &Mesh) -> u64 {
+    let Ok(attributes) = mesh.try_attributes() else {
+        return 0;
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    mesh.primitive_topology().hash(&mut h);
+    for (a, _) in attributes {
+        a.id.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Warm the dressed sites' weathered stone (`town.rs`, `ziggurat.rs`,
+/// `landmarks.rs`, `depot.rs`) against the sites' own meshes, which
+/// [`warm`] cannot: a `MonumentMaterial` is not a `StandardMaterial`, and a
+/// glTF's vertex layout is not the shared triangle's.
+///
+/// Cold, the site was a black cut-out the first time it came into view.
+/// Its depth prepass is the base material's and was already built; the
+/// weathering pass (`weathering.wgsl`, noise per pixel) was still
+/// compiling, so its depth landed and its colour did not, and the air's
+/// haze over the clear colour made it a black silhouette, unfogged in a
+/// fog or a dust storm. Once per material and vertex layout.
+pub fn warm_sites(
+    mut commands: Commands,
+    mut seen: Local<Vec<(AssetId<MonumentMaterial>, u64)>>,
+    added: Query<
+        (&Mesh3d, &MeshMaterial3d<MonumentMaterial>),
+        Added<MeshMaterial3d<MonumentMaterial>>,
+    >,
+    meshes: Res<Assets<Mesh>>,
+    cam: Query<Entity, With<EyeCam>>,
+) {
+    let Ok(cam) = cam.single() else {
+        return;
+    };
+    for (mesh, mat) in added.iter() {
+        let Some(m) = meshes.get(&mesh.0) else {
+            continue;
+        };
+        let key = (mat.0.id(), layout_key(m));
+        if seen.contains(&key) {
+            continue;
+        }
+        let Some(aabb) = m.compute_aabb() else {
+            continue;
+        };
+        seen.push(key);
+        commands.entity(cam).with_child((
+            Warming(WARM_FRAMES),
+            Mesh3d(mesh.0.clone()),
+            MeshMaterial3d(mat.0.clone()),
+            warm_transform(aabb.center.into(), 2.0 * aabb.half_extents.max_element()),
+        ));
     }
 }
 

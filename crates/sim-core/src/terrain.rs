@@ -78,7 +78,7 @@ const COAST_WOBBLE: f32 = 380.0;
 /// scales be priced separately, which is what they are.
 const COAST_BAY_FREQ: f32 = 1.0 / 380.0;
 const COAST_BAY_WOBBLE: f32 = 120.0;
-const CONTINENT_RADIUS: f32 = 1720.0;
+pub const CONTINENT_RADIUS: f32 = 1720.0;
 const COAST_EDGE_WIDTH: f32 = 240.0;
 const SEA_FLOOR_DEPTH: f32 = 12.0;
 
@@ -1623,6 +1623,200 @@ fn dune_of(moist: f32) -> f32 {
     )
 }
 
+// --- The Verdigris (the corruption) -----------------------------------------
+//
+// The island's first break from Rust: a wasteland where the ancients' alloy
+// rotted green. Players call it the Verdigris (`WORLD.md` §1.1); code says
+// `fel`, the word the beasts already wear. Ash and obsidian underfoot, green
+// fissures, dead trees, black spires (`boulder.rs`), a green sky (client) and
+// a meter that eats you while you stand in it (`exposure::corrode`).
+//
+// **A blob, not a band**: one heart east-south-east of the centre and an edge
+// that wanders, so it reads as a place you walk into rather than a climate.
+// ESE because everything else is spoken for: the desert holds the north, the
+// fixtures the south and south-west (`ci/scene.sh`, the server tests' scans),
+// the town and the golden window the centre, and `shore()` walks +x at the
+// centre's z. The const block below holds all four.
+//
+// **Not folded into moisture.** Landmark kinds read moisture (`try_site`) and
+// the works' terminals stand at landmarks, so a fold would move the arc. It is
+// a third input to `biome()` instead, and the scatter row blends toward its
+// own by `fel_share`. The splat is untouched: the client paints the ash and
+// obsidian over whatever identity the ground already has.
+//
+// Pure in the point and O(1), like `aridity`: outside its reach one compare.
+
+/// The heart's bearing from the island centre, a unit vector in (x east,
+/// z north): 125°, east-south-east. **(knob)**
+const FEL_DIR: (f32, f32) = (0.819_152, -0.573_576);
+/// How far out the heart stands, in units of `CONTINENT_RADIUS`. **(knob)**
+const FEL_OUT: f32 = 0.76;
+/// Where the corruption is whole and where it ends, as a distance from the
+/// heart in units of `CONTINENT_RADIUS`, before the edge wanders. **(knob)**
+pub const FEL_R: (f32, f32) = (0.15, 0.30);
+/// How far the edge wanders in and out, same units. **(knob)**
+pub const FEL_WANDER: f32 = 0.10;
+const FEL_WANDER_FREQ: f32 = 1.0 / 420.0;
+/// The edge's noise is gained before it is clamped back to ±1, so the edge
+/// spends its time near the full wander rather than near zero (raw `fbm`
+/// sits mostly within ±0.4) — lobes and bays instead of a circle — while
+/// [`FEL_REACH_M`] stays a hard bound.
+const FEL_WANDER_GAIN: f32 = 2.2;
+const CH_FEL: u32 = 232; // +octave index, 3 octaves
+/// Ground at least this corrupted is [`Biome::Fel`]. **(knob)**
+pub const FEL_BIOME_AT: f32 = 0.5;
+/// The scatter row's soft edge: below the first the row is the ground's own,
+/// above the second it is the Verdigris row whole.
+const FEL_ROW_BAND: (f32, f32) = (0.35, 0.65);
+/// The heart, world metres.
+pub const FEL_HEART: (f32, f32) = (
+    ISLAND_SIZE * 0.5 + FEL_DIR.0 * FEL_OUT * CONTINENT_RADIUS,
+    ISLAND_SIZE * 0.5 + FEL_DIR.1 * FEL_OUT * CONTINENT_RADIUS,
+);
+/// The farthest any corruption reaches from the heart, metres.
+pub const FEL_REACH_M: f32 = (FEL_R.1 + FEL_WANDER) * CONTINENT_RADIUS;
+
+const _: () = {
+    let reach = FEL_R.1 + FEL_WANDER;
+    // Clear of the town and the ground it blends, with room to spare.
+    assert!(
+        (FEL_OUT - reach) * CONTINENT_RADIUS
+            > crate::town::TOWN_R_MAX + crate::town::TOWN_FOOTPRINT.blend_m + 20.0
+    );
+    // Wholly south of the centre's z, so clear of `shore()`'s +x ray and of
+    // the desert's nearest possible reach.
+    assert!(FEL_OUT * FEL_DIR.1 + reach < 0.0);
+    assert!(FEL_OUT * FEL_DIR.1 + reach < DESERT_LAT.0 - DESERT_WANDER);
+    // Inside the map.
+    assert!(ISLAND_SIZE * 0.5 + (FEL_OUT * FEL_DIR.0 + reach) * CONTINENT_RADIUS < ISLAND_SIZE);
+    assert!(ISLAND_SIZE * 0.5 + (FEL_OUT * FEL_DIR.1 - reach) * CONTINENT_RADIUS > 0.0);
+    assert!(FEL_R.0 < FEL_R.1);
+    assert!(FEL_ROW_BAND.0 < FEL_BIOME_AT && FEL_BIOME_AT < FEL_ROW_BAND.1);
+};
+
+/// How corrupted a point is, 0..1: 1 across the heart, 0 everywhere past
+/// [`FEL_REACH_M`] — which is most of the island.
+pub fn fel(seed: u64, x: f32, z: f32) -> f32 {
+    fel_in(&mut Direct, seed, x, z)
+}
+
+/// [`fel`] against a caller-owned [`Lattice`].
+pub fn fel_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    fel_in(lat, seed, x, z)
+}
+
+fn fel_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let d2 = fel_d2(x, z);
+    // `fbm` is within ±1, so nothing past this can be touched: the island
+    // outside pays one compare and no noise tap.
+    let reach = FEL_R.1 + FEL_WANDER;
+    if d2 >= reach * reach {
+        return 0.0;
+    }
+    fel_of(d2, fel_wander_in(c, seed, x, z))
+}
+
+/// The squared distance from the heart, in units of `CONTINENT_RADIUS`:
+/// [`fel`]'s first half, shared with the spread (`blight.rs`) so the two
+/// agree to the bit.
+pub fn fel_d2(x: f32, z: f32) -> f32 {
+    let dx = (x - FEL_HEART.0) * (1.0 / CONTINENT_RADIUS);
+    let dz = (z - FEL_HEART.1) * (1.0 / CONTINENT_RADIUS);
+    dx * dx + dz * dz
+}
+
+/// The heart's profile at squared distance `d2` with wander `n`
+/// ([`fel_wander`]): [`fel`]'s second half.
+pub fn fel_of(d2: f32, n: f32) -> f32 {
+    let reach = FEL_R.1 + FEL_WANDER;
+    if d2 >= reach * reach {
+        return 0.0;
+    }
+    let s = d2.sqrt() + n * FEL_WANDER;
+    1.0 - fade(((s - FEL_R.0) / (FEL_R.1 - FEL_R.0)).clamp(0.0, 1.0))
+}
+
+/// The heart's edge noise at a point, within ±1: what the spread's front,
+/// its outbreaks and the client's ground all wander by, everywhere on the
+/// island (the heart itself only reads it inside its reach).
+pub fn fel_wander(seed: u64, x: f32, z: f32) -> f32 {
+    fel_wander_in(&mut Direct, seed, x, z)
+}
+
+/// [`fel_wander`] against a caller-owned [`Lattice`].
+pub fn fel_wander_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    fel_wander_in(lat, seed, x, z)
+}
+
+fn fel_wander_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    (fbm(c, seed, CH_FEL, x, z, FEL_WANDER_FREQ, 3) * FEL_WANDER_GAIN).clamp(-1.0, 1.0)
+}
+
+// --- The Verdigris' vents: green fire out of the ground ----------------------
+//
+// One chance per `FEL_VENT_CELL_M` cell, at a jittered point kept
+// `FEL_VENT_INSET_M` inside it — farther than a vent's reach, so a body only
+// ever has its own cell's vent to ask about. Pure in the cell, so the sim
+// (the meter's spike, `exposure::corrode`) and the client (the fire,
+// `render/fel.rs`) read the same vents.
+
+/// A vent cell's edge, metres. **(knob)**
+pub const FEL_VENT_CELL_M: f32 = 48.0;
+/// Corruption a vent's point must have: the heart only. **(knob)**
+pub const FEL_VENT_AT: f32 = 0.6;
+/// The share of the heart's cells that hold one. **(knob)**
+const FEL_VENT_PM: u64 = 400;
+/// How close a body must stand to be in its fire, metres. **(knob)**
+pub const FEL_VENT_REACH_M: f32 = 3.0;
+/// How far inside its cell a vent is kept, metres.
+const FEL_VENT_INSET_M: f32 = 8.0;
+const CH_FEL_VENT: u32 = 236;
+
+const _: () = assert!(FEL_VENT_INSET_M > FEL_VENT_REACH_M);
+
+/// The vent in cell (`vx`, `vz`) of the vent grid, if it has one: its point.
+/// On land, not steep, and at the Verdigris' heart.
+pub fn fel_vent(seed: u64, vx: i32, vz: i32) -> Option<(f32, f32)> {
+    let h = cell_hash(seed, vx, vz, CH_FEL_VENT);
+    if h % 1000 >= FEL_VENT_PM {
+        return None;
+    }
+    let span = FEL_VENT_CELL_M - 2.0 * FEL_VENT_INSET_M;
+    let u = ((h >> 16) & 0xFFFF) as f32 * (1.0 / 65_536.0);
+    let v = ((h >> 32) & 0xFFFF) as f32 * (1.0 / 65_536.0);
+    let x = vx as f32 * FEL_VENT_CELL_M + FEL_VENT_INSET_M + u * span;
+    let z = vz as f32 * FEL_VENT_CELL_M + FEL_VENT_INSET_M + v * span;
+    if fel(seed, x, z) < FEL_VENT_AT
+        || height(seed, x, z) < LAND_MIN_H + 1.0
+        || slope(seed, x, z) > 0.6
+    {
+        return None;
+    }
+    Some((x, z))
+}
+
+/// Whether a body at (`x`, `z`) stands in a vent's fire.
+pub fn fel_vent_near(seed: u64, x: f32, z: f32) -> bool {
+    let vx = floor_i32(x / FEL_VENT_CELL_M);
+    let vz = floor_i32(z / FEL_VENT_CELL_M);
+    match fel_vent(seed, vx, vz) {
+        Some((px, pz)) => {
+            let (dx, dz) = (x - px, z - pz);
+            dx * dx + dz * dz < FEL_VENT_REACH_M * FEL_VENT_REACH_M
+        }
+        None => false,
+    }
+}
+
+/// How much of the scatter row at this corruption is the Verdigris row, 0..1
+/// — the soft edge of [`Biome::Fel`] (`biome()` is its hard one).
+pub fn fel_share(fel: f32) -> f32 {
+    if fel <= 0.0 {
+        return 0.0;
+    }
+    ramp(FEL_ROW_BAND.0, FEL_ROW_BAND.1, fel)
+}
+
 /// The grove/clearing field: a multiplier on the scatter weight row, mean 1
 /// over the island (TERRAIN.md §1 stage 9, `reference/SPAWN.md` §9.3).
 ///
@@ -1698,10 +1892,14 @@ pub enum Biome {
     /// scattered palms and ore. Its ground is the sand identity, so the splat
     /// stays four channels; the scatter row is its own.
     Desert = 4,
+    /// The Verdigris (see the block above `FEL_DIR`): ash, obsidian, dead
+    /// trees and sulfur. Its ground keeps whatever identity it had and the
+    /// client paints it; the scatter row is its own, blended by `fel_share`.
+    Fel = 5,
 }
 
 /// How many biomes there are — the length of every per-biome table.
-pub const BIOMES: usize = 5;
+pub const BIOMES: usize = 6;
 
 /// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
 /// level. One definition — `biome` classifies by it and `World::spawn_pos`
@@ -1730,9 +1928,14 @@ pub const LAND_MIN_H: f32 = SEA_LEVEL + 0.6;
 /// heights outside the ranges' window. **(knob)**
 pub const TREELINE_H: f32 = 68.0;
 
-pub fn biome(h: f32, moist: f32) -> Biome {
+/// The biome at a point, from its height, its moisture and its corruption.
+/// The beach comes first, so the coast stays a coast even where the
+/// Verdigris reaches the sea; then the Verdigris, whatever it stands on.
+pub fn biome(h: f32, moist: f32, fel: f32) -> Biome {
     if h < BEACH_MAX_H {
         Biome::Beach
+    } else if fel >= FEL_BIOME_AT {
+        Biome::Fel
     } else if h > TREELINE_H {
         Biome::Highland
     } else if moist < DESERT_MOIST {
@@ -1742,6 +1945,12 @@ pub fn biome(h: f32, moist: f32) -> Biome {
     } else {
         Biome::Meadow
     }
+}
+
+/// [`biome`] at a world point whose height is known: reads the moisture and
+/// the corruption there.
+pub fn biome_at(seed: u64, h: f32, x: f32, z: f32) -> Biome {
+    biome(h, moisture(seed, x, z), fel(seed, x, z))
 }
 
 // --- The coast road (TERRAIN.md §1 stage 7) -------------------------------
@@ -6912,6 +7121,7 @@ pub const PLANT_SHARES: [[u16; 2]; BIOMES] = [
     [140, 70],  // Forest
     [40, 20],   // Highland
     [0, 30],    // Desert — no berries; the rest is cactus and dry scrub
+    [0, 0],     // Fel — nothing grows that pays; charred scrub only
 ];
 
 const _: () = {
@@ -6965,7 +7175,7 @@ pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, b: Biome) -> Occupant {
 /// Lowered with the bush column's rise (2026-10-14), with the plant shares
 /// above, so the pickables grow by about a quarter and the rest of the rise
 /// is scenery scrub.
-pub const PICKUP_SHARES: [u16; BIOMES] = [75, 60, 75, 50, 140];
+pub const PICKUP_SHARES: [u16; BIOMES] = [75, 60, 75, 50, 140, 120];
 
 /// Which pickup, per biome, percent: `[stone, wood, metal, sulfur,
 /// mushrooms]`. Driftwood and stone on the beach, mushrooms under the trees,
@@ -6976,6 +7186,7 @@ pub const PICKUP_KINDS: [[u8; 5]; BIOMES] = [
     [20, 35, 10, 0, 35],  // Forest
     [40, 0, 30, 30, 0],   // Highland
     [45, 10, 25, 20, 0],  // Desert — loose ore in the sand, little wood
+    [40, 10, 20, 30, 0],  // Fel — stone and sulfur in the ash, charred wood
 ];
 
 const _: () = {
@@ -7082,6 +7293,12 @@ impl ScatterTable {
                 // budget scales metal and sulfur island-wide, so this row
                 // moves where ore stands, not how much an island has.
                 [26, 33, 6, 6, 130, 0, 0],
+                // The Verdigris: ash and dead wood. Sparse snags (the client
+                // draws a tree here charred and bare), charred scrub, stone,
+                // and ore leaning to sulfur — fire's mineral. Kept low for
+                // the desert's reason: the budget rescales ore island-wide,
+                // and a heavy row here starves the highland's.
+                [30, 22, 6, 10, 70, 0, 0],
             ],
             clump_cap: [
                 f32::INFINITY,
@@ -7089,8 +7306,9 @@ impl ScatterTable {
                 FOREST_CLUMP_CAP,
                 f32::INFINITY,
                 f32::INFINITY,
+                f32::INFINITY,
             ],
-            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0, 1.0],
+            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0, 1.0, 1.0],
         }
     }
 }
@@ -7232,6 +7450,7 @@ fn ore_budget(seed: u64, haven: &Haven) -> [u16; 2] {
                 hy,
                 moisture_in(&mut lat, seed, x, z),
                 sl,
+                fel_in(&mut lat, seed, x, z),
                 clump_in(&mut lat, seed, x, z),
             );
             sum[0] += u32::from(row[2]);
@@ -7262,7 +7481,8 @@ pub struct Slot {
     pub y: f32,
     pub z: f32,
     pub yaw: u8,
-    /// Visual scale in [0.9, 1.1].
+    /// Visual scale: a tree's size class, small [0.6, 0.78] or large
+    /// [0.95, 1.1] ([`slot_scale`]); anything else in [0.9, 1.1].
     pub scale: f32,
     /// Which species this slot is, in `0..SLOT_SPECIES` — a tree's kind of
     /// tree, a rock's kind of rock. **Drawn from the cell hash against
@@ -7628,6 +7848,9 @@ fn scatter_in<C: Corners>(
         }
     }
 
+    // The Verdigris at this cell: the row leans toward its own, and a tree in
+    // it is no palm. Outside its reach this is one compare.
+    let fel = fel_in(c, seed, x, z);
     if occupant == Occupant::None {
         // The grove/clearing field scales the whole row, not the tree entry
         // alone: a clearing is a clearing, not a clearing with the rocks
@@ -7649,7 +7872,7 @@ fn scatter_in<C: Corners>(
         let moist = moisture_in(c, seed, x, z);
         // And the island's ore budget over the row, so an island's metal and
         // sulfur follow `ORE_TARGET` rather than its rock area.
-        let row = ore_budgeted(scatter_draw_row(table, hy, moist, sl, g), haven);
+        let row = ore_budgeted(scatter_draw_row(table, hy, moist, sl, fel, g), haven);
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {
@@ -7660,7 +7883,7 @@ fn scatter_in<C: Corners>(
                     1 => Occupant::StoneNode,
                     2 => Occupant::MetalNode,
                     3 => Occupant::SulfurNode,
-                    4 => plant_of(seed, cell_x, cell_z, biome(hy, moist)),
+                    4 => plant_of(seed, cell_x, cell_z, biome(hy, moist, fel)),
                     5 => Occupant::Rock,
                     _ => Occupant::BarrelSlot,
                 };
@@ -7672,7 +7895,7 @@ fn scatter_in<C: Corners>(
         return none;
     }
 
-    let scale = 0.9 + ((h >> 36) & 0xFF) as f32 * (0.2 / 255.0);
+    let scale = slot_scale(occupant, ((h >> 36) & 0xFF) as u8);
     // Clearing anchors alone leaves shoulder rocks and trunks protruding
     // into the road. Reserve the actual scaled collision volume, with a
     // cheap segment bounding-box reject before the distance calculation.
@@ -7725,7 +7948,7 @@ fn scatter_in<C: Corners>(
         // because three cells in four are empty and owe nothing.
         // A tree in the desert is a palm, whatever the painted field says.
         species: if occupant == Occupant::Tree
-            && biome(hy, moisture_in(c, seed, x, z)) == Biome::Desert
+            && biome(hy, moisture_in(c, seed, x, z), fel) == Biome::Desert
         {
             PALM_SPECIES
         } else {
@@ -8039,13 +8262,30 @@ fn splat_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> [u8; 4] {
 /// `scatter_draw_row` at `g = 1`: a capped biome's factor at the field's
 /// mean is `clump_cap_norm`, above 1, because its cap has moved density
 /// from the field's peak into the rest of the biome.
-pub fn scatter_row(table: &ScatterTable, h: f32, moist: f32, sl: f32) -> [u16; OCCUPANT_KINDS] {
+pub fn scatter_row(
+    table: &ScatterTable,
+    h: f32,
+    moist: f32,
+    sl: f32,
+    fel: f32,
+) -> [u16; OCCUPANT_KINDS] {
     blend_rows(
         table,
         splat_from(h, moist, sl),
         desert_share(h, moist),
+        fel_share_on(h, fel),
         [1.0; BIOMES],
     )
+}
+
+/// [`fel_share`] on ground of height `h`: none on the beach, which stays the
+/// beach's row (`biome()` puts the beach first for the same reason).
+fn fel_share_on(h: f32, fel: f32) -> f32 {
+    if h < BEACH_MAX_H {
+        0.0
+    } else {
+        fel_share(fel)
+    }
 }
 
 /// How much of the sand channel at a point is DESERT rather than beach, 0..1.
@@ -8119,14 +8359,19 @@ fn edge_factor(w: [u8; 4]) -> f32 {
 /// The splat-weighted blend of the biome rows, each scaled by its own factor
 /// — the one arithmetic both [`scatter_row`] and [`scatter_draw_row`] are.
 /// The sand channel is split between the beach row and the desert row by
-/// `desert` ([`desert_share`]).
+/// `desert` ([`desert_share`]), and the whole blend then leans toward the
+/// Verdigris row by `fel` ([`fel_share`]) — a convex mix again, so the
+/// saturation argument still holds, and outside the Verdigris (`fel` 0) the
+/// row is bit for bit what it was.
 fn blend_rows(
     table: &ScatterTable,
     w: [u8; 4],
     desert: f32,
+    fel: f32,
     gb: [f32; BIOMES],
 ) -> [u16; OCCUPANT_KINDS] {
     let d = Biome::Desert as usize;
+    let f = Biome::Fel as usize;
     let mut row = [0u16; OCCUPANT_KINDS];
     for (i, out) in row.iter_mut().enumerate() {
         let mut acc = 0.0f32;
@@ -8139,6 +8384,9 @@ fn blend_rows(
             }
             acc += table.weights[b][i] as f32 * gb[b] * *ch as f32;
         }
+        if fel > 0.0 {
+            acc = acc * (1.0 - fel) + table.weights[f][i] as f32 * gb[f] * 255.0 * fel;
+        }
         // `splat_from` rounds to bytes summing to ~255, so dividing by 255
         // inverts its own normalization to within that rounding.
         *out = floor_i32(acc * (1.0 / 255.0) + 0.5).clamp(0, 1000) as u16;
@@ -8147,8 +8395,14 @@ fn blend_rows(
     // so the mix a cell DRAWS against and the mix `scatter_row` REPORTS carry
     // the edge or neither does. Two definitions of where a forest stops is
     // the drift this whole function exists to have retired.
-    let moved = floor_i32(row[ROW_TREE] as f32 * EDGE_TREE_TO_BUSH * edge_factor(w) + 0.5)
-        .clamp(0, 1000) as u16;
+    // No treeline inside the Verdigris: what stands there is dead wood.
+    let edge = if fel > 0.0 {
+        edge_factor(w) * (1.0 - fel)
+    } else {
+        edge_factor(w)
+    };
+    let moved =
+        floor_i32(row[ROW_TREE] as f32 * EDGE_TREE_TO_BUSH * edge + 0.5).clamp(0, 1000) as u16;
     row[ROW_TREE] -= moved;
     row[ROW_BUSH] += moved;
     row
@@ -8178,13 +8432,20 @@ pub fn scatter_draw_row(
     h: f32,
     moist: f32,
     sl: f32,
+    fel: f32,
     g: f32,
 ) -> [u16; OCCUPANT_KINDS] {
     let mut gb = [0.0f32; BIOMES];
     for (b, out) in gb.iter_mut().enumerate() {
         *out = g.min(table.clump_cap[b]) * table.clump_cap_norm[b];
     }
-    blend_rows(table, splat_from(h, moist, sl), desert_share(h, moist), gb)
+    blend_rows(
+        table,
+        splat_from(h, moist, sl),
+        desert_share(h, moist),
+        fel_share_on(h, fel),
+        gb,
+    )
 }
 
 /// What one clutter cell grew.
@@ -9641,9 +9902,39 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.0,              // MushroomPatch
 ];
 
-/// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
-/// so this is the exact supremum and not a rounded one.
+/// Widest scale `scatter` can hand a slot. Both draws top out at
+/// `... + 255 * (span/255)` = 1.1 ([`slot_scale`]), so this is the exact
+/// supremum and not a rounded one.
 pub const SLOT_SCALE_MAX: f32 = 1.1;
+
+/// Trees come in two sizes (tree size classes v0) — the reference's
+/// `_small` and `_large` populations over the same ground
+/// (`reference/FORESTS.md` §4). This share of the scale byte is the small
+/// class, out of 256: about 30 %.
+pub const TREE_SMALL_BYTES: u8 = 77;
+/// The small class's scale span, and the large class's.
+pub const TREE_SMALL_SCALE: (f32, f32) = (0.6, 0.78);
+pub const TREE_LARGE_SCALE: (f32, f32) = (0.95, SLOT_SCALE_MAX);
+/// The mean tree scale over the byte, so a tree's wood can be its share of
+/// it and the island's wood stays what it was before the split
+/// (`gather::tree_wood_pm`). `tests/forest.rs` re-derives it.
+pub const TREE_SCALE_MEAN: f32 = 0.9242;
+
+/// A slot's scale from its scale byte: a tree's size class, or anything
+/// else's ±10 % wobble.
+pub fn slot_scale(occupant: Occupant, b: u8) -> f32 {
+    if occupant != Occupant::Tree {
+        return 0.9 + b as f32 * (0.2 / 255.0);
+    }
+    if b < TREE_SMALL_BYTES {
+        let (lo, hi) = TREE_SMALL_SCALE;
+        lo + b as f32 * ((hi - lo) / (TREE_SMALL_BYTES - 1) as f32)
+    } else {
+        let (lo, hi) = TREE_LARGE_SCALE;
+        let n = (255 - TREE_SMALL_BYTES) as f32;
+        lo + (b - TREE_SMALL_BYTES) as f32 * ((hi - lo) / n)
+    }
+}
 
 /// Cells either side of a body's own that can hold a slot touching it.
 ///

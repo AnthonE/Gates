@@ -1169,6 +1169,10 @@ fn cell(
         .spawn((
             Button,
             SlotCell { kind, slot },
+            // A slot is silent under the pointer and on the press: what it
+            // says is the item landing (`Cue::ItemMove`, `send_move`).
+            super::super::audio::NoHover,
+            super::super::audio::Quiet,
             Node {
                 width: Val::Px(SLOT_PX),
                 height: Val::Px(SLOT_PX),
@@ -1291,7 +1295,7 @@ fn flame_badge(parent: &mut ChildSpawnerCommands, icons: &Icons) {
         height: Val::Px(15.0),
         ..default()
     };
-    match icons.glyph("fire_pit") {
+    match icons.glyph("camp_fire") {
         Some(image) => parent.spawn((node, ImageNode { image, ..default() }, Pickable::IGNORE)),
         None => parent.spawn((
             node,
@@ -1451,6 +1455,10 @@ pub fn skin_keys(
     keyboard: Res<ButtonInput<KeyCode>>,
     cells: Query<(&SlotCell, &Interaction)>,
     mut was_open: Local<bool>,
+    (mouse, binds): (
+        Res<ButtonInput<MouseButton>>,
+        Res<super::super::binds::Binds>,
+    ),
 ) {
     // Either page: the skin picker is on the crafting page, the re-skin on
     // this one, and both want what was bought in the launcher.
@@ -1463,7 +1471,9 @@ pub fn skin_keys(
         }
     }
     *was_open = open;
-    if ui.panel != Panel::Inventory || !keyboard.just_pressed(KeyCode::KeyP) {
+    if ui.panel != Panel::Inventory
+        || !binds.just_pressed(super::super::binds::Action::ChangeSkin, &keyboard, &mouse)
+    {
         return;
     }
     let core = &net.session.core;
@@ -1970,7 +1980,10 @@ fn drop_item(ui: &mut Ui, net: &super::super::Net, slot: usize, count: u16) {
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_drop(slot, count, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
-            Ok(()) => ui.say("dropped"),
+            Ok(()) => {
+                ui.say("dropped");
+                ui.sound = Some(crate::sound::Cue::ItemDrop);
+            }
             Err(e) => ui.say(e.to_string()),
         },
         Err(e) => ui.say(format!("the drop would not encode ({e:?})")),
@@ -1989,6 +2002,9 @@ fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveA
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => {
                 ui.status.clear();
+                // Heard on the press, not the server's answer: the hand
+                // set it down, and a refusal is `Cue::Refused` after it.
+                ui.sound = Some(crate::sound::Cue::ItemMove);
                 return true;
             }
             Err(e) => ui.say(e.to_string()),

@@ -315,7 +315,11 @@ pub fn setup(
             // term ever was, because it is nonzero in every direction and warm
             // where the ground is.
             AmbientLight {
-                color: Color::srgb(0.80, 0.85, 0.95),
+                color: Color::srgb(
+                    NIGHT_AMBIENT_SRGB[0],
+                    NIGHT_AMBIENT_SRGB[1],
+                    NIGHT_AMBIENT_SRGB[2],
+                ),
                 brightness: 0.0,
                 affects_lightmapped_meshes: false,
             },
@@ -341,6 +345,10 @@ pub fn setup(
             Bloom::NATURAL,
             Transform::from_xyz(0.0, EYE_HEIGHT, 0.0),
         ))
+        // The HUD and the in-world screens draw on this camera. Said
+        // explicitly, because the loading overlay brings its own camera at a
+        // higher order and Bevy's fallback picks the highest one.
+        .insert(IsDefaultUiCamera)
         .id();
 
     // ⚠ **Ambient occlusion is inserted, not bundled, and on WebGL2 it is not
@@ -451,6 +459,10 @@ pub fn setup(
     commands
         .entity(eye)
         .insert(super::sky::weather_fog(1.0, 0.0, 0.0));
+    // The fog's sunlit share, drawn per pixel where the tier asks for shafts
+    // (`shafts.rs`). Spawned once and idle; `day_night` owns it from here.
+    #[cfg(not(webgl2))]
+    commands.spawn((super::WorldEntity, super::shafts::idle_volume()));
 
     commands.spawn((
         super::WorldEntity,
@@ -593,7 +605,24 @@ pub const NIGHT_DIP: f32 = 0.35;
 /// [`flame_gain`] instead, the eye's adaptation applied to the lights that
 /// matter at night; this term carries the night's look and is not part of
 /// that.
+///
+/// **It is a full moon's night.** Every night was drawn under a full disk
+/// until the moon had phases (`moon.rs`), so this is the night the number
+/// was tuned under; a thinner moon, or none, takes it down toward
+/// [`NEW_MOON_SHARE`] ([`night_light`]).
 pub const NIGHT_AMBIENT_LUX: f32 = 60.0;
+
+/// How much of [`NIGHT_AMBIENT_LUX`] a moonless night keeps: starlight and
+/// the air's own glow. Low enough that a new moon is the night a torch is
+/// for; not zero, so it is the darkest the tuned night goes rather than a
+/// black frame.
+pub const NEW_MOON_SHARE: f32 = 0.35;
+
+/// The night's light as a share of a full moon's, for `moonlight` of the
+/// moon (`moon::shine`): never under [`NEW_MOON_SHARE`].
+pub fn night_light(moonlight: f32) -> f32 {
+    NEW_MOON_SHARE + (1.0 - NEW_MOON_SHARE) * moonlight.clamp(0.0, 1.0)
+}
 
 /// The sun's elevation at a point in the cycle: a sine arch over the day
 /// portion peaking at `RIG_SUN_ELEVATION`, a shallower inverted arch
@@ -650,6 +679,22 @@ pub fn sun_azimuth(frac: f32) -> f32 {
     }
 }
 
+/// Toward the sun on the day's own arc at `frac`, which may run on past
+/// dusk (over `DAY_PORTION`) or back before dawn (under 0): the day
+/// branches of [`sun_elevation`] and [`sun_azimuth`], carried on under the
+/// horizon at the day's pace. Equal to [`to_sun`] over the day. At night
+/// the real sun leaves this path and sweeps the rest of the turn under the
+/// world seven times as fast; this is the slow sun a night's moon is lit
+/// by (`moon::lighting_sun`).
+pub fn day_arc(frac: f32) -> Vec3 {
+    use std::f32::consts::PI;
+    let day = sim_core::limits::DAY_PORTION;
+    to_sun_at(
+        (PI * frac / day).sin() * RIG_SUN_ELEVATION,
+        RIG_SUN_AZIMUTH + RIG_SUN_ARC * (0.5 - frac / day),
+    )
+}
+
 /// How much of full daylight the frame gets, `0..=1`: the sun's height as
 /// a fraction of its noon height, zero from the moment it dips. One
 /// scalar feeds the sun's illuminance, the ambient lerp and the cloud
@@ -672,6 +717,9 @@ pub const TWILIGHT_DEPTH: f32 = 0.10;
 pub const TWILIGHT_MIN_ELEV: f32 = 0.009;
 /// Below this the sun casts no shadow (2°): shadows that long are noise.
 pub const SHADOW_MIN_ELEV: f32 = 0.035;
+/// At this much cloud over the sun it casts no shadow either
+/// (`WeatherNow::occlusion`; the shafts fade out before it, `shafts.rs`).
+pub const SHADOW_MAX_VEIL: f32 = 0.85;
 /// `SunDisk::intensity` at full visibility.
 pub const SUN_DISK_INTENSITY: f32 = 1.6;
 /// The brightest the disk is drawn, linear after exposure and before the
@@ -865,7 +913,26 @@ type CamLight = (
     Option<&'static mut Skybox>,
     Option<&'static mut DistanceFog>,
     Option<&'static mut Exposure>,
+    Option<&'static mut ColorGrading>,
 );
+
+/// The Verdigris' sun, as a multiplier at its heart: green-yellow through the
+/// green deck, and a third dimmer. **(knob)**
+pub const FEL_SUN: [f32; 3] = [0.80, 1.0, 0.62];
+pub const FEL_SUN_DIM: f32 = 0.35;
+/// The night floor's colour, sRGB: a cool moonlit grey.
+pub const NIGHT_AMBIENT_SRGB: [f32; 3] = [0.80, 0.85, 0.95];
+/// The Verdigris' night floor, sRGB: what the ambient colour goes to at its
+/// heart. **(knob)**
+pub const FEL_AMBIENT: [f32; 3] = [0.55, 1.0, 0.50];
+/// Its lightning, sRGB: green fire. The weather's is a cold white.
+pub const FEL_BOLT_RGB: [f32; 3] = [0.55, 1.0, 0.45];
+const BOLT_RGB: [f32; 3] = [0.82, 0.86, 1.0];
+/// The grade at its heart: stops of exposure and post-tonemap saturation.
+/// Only these two fields, which no pipeline specialises on — a tint or a hue
+/// would switch the tonemapping shader's variant on the way in. **(knob)**
+pub const FEL_GRADE_EV: f32 = -0.35;
+pub const FEL_GRADE_SAT: f32 = 1.10;
 
 /// Drive the rig from the server's clock and the weather. Runs every
 /// frame; the queries are empty until `setup` has spawned the rig, which
@@ -875,20 +942,25 @@ type CamLight = (
 /// the fog and the exposure. The weather (weather v0) arrives as one more input:
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
-// Nine, which clippy counts: the flame gain is the ninth, and it is written
-// here for the reason the sun is — this is the one owner of the hour.
+// Ten (eleven natively), which clippy counts: the flame gain is written here
+// for the reason the sun is — this is the one owner of the hour. The fog's
+// sunlit share (`shafts.rs`) is the one owner of the fog, and the film, native
+// only, owns the grade while it rolls.
 #[allow(clippy::too_many_arguments)]
 pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     settings: Res<super::Settings>,
     weather: Option<Res<super::weather::WeatherNow>>,
+    #[cfg(not(target_arch = "wasm32"))] film: Option<Res<super::film::Film>>,
     mut gain: ResMut<FlameGain>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut bolt: Query<BoltLit, (With<BoltLight>, Without<Sun>)>,
     mut cam: Query<CamLight, With<EyeCam>>,
+    mut rays: super::shafts::ShaftRig,
 ) {
-    let frac = sim_core::world::day_frac(pin.day_tick(feed.server_tick_est, &feed.env));
+    let day_tick = pin.day_tick(feed.server_tick_est, &feed.env);
+    let frac = sim_core::world::day_frac(day_tick);
     let light = daylight(frac);
     let lux_share = sun_lux(frac);
     let elev = sun_elevation(frac);
@@ -898,11 +970,36 @@ pub fn day_night(
     if gain.0 != g {
         gain.0 = g;
     }
+    // What puts the sun's shadows out: `occ`, less two terms where something
+    // else draws them. Where shafts are drawn, fog dims the sun and only
+    // cloud puts its shadows out: the shafts ARE its shadows, in the air.
+    // Where the ground draws the deck's own shadows (`cloud_shadow.rs`), the
+    // deck over the EYE's sun says nothing about the hill a hundred metres
+    // off, which the ground lights back up to its own sky. A heavy sky
+    // darkens every point alike and puts them out everywhere.
+    let shadow_veil = {
+        let cover = if super::quality::cloud_shadows(settings.gfx) {
+            0.0
+        } else {
+            w.sun_cover
+        };
+        let fog = if rays.tier() { 0.0 } else { w.fog };
+        w.heavy().max(cover).max(fog)
+    };
+    let effective = super::quality::effective(settings.gfx);
+    let mut sun_now = (0.0, false);
     if let Ok((mut t, mut d, disk)) = sun.single_mut() {
         t.rotation = sun_rotation_render(frac);
         // The twilight tail lights the sky after sunset; cloud takes the
         // direct sun away and leaves a tenth of it through a full overcast.
-        d.illuminance = lux::DIRECT_SUNLIGHT * lux_share * (1.0 - 0.9 * occ);
+        d.illuminance =
+            lux::DIRECT_SUNLIGHT * lux_share * (1.0 - 0.9 * occ) * (1.0 - FEL_SUN_DIM * w.fel);
+        // Green-yellow through the Verdigris' deck.
+        let sun = Vec3::ONE.lerp(Vec3::from_array(FEL_SUN), w.fel);
+        let want = Color::linear_rgb(sun.x, sun.y, sun.z);
+        if d.color != want {
+            d.color = want;
+        }
         // A light at zero illuminance still schedules its cascades;
         // shadows off at night saves the passes and no shadow is cast by
         // a sun that is under the ground anyway — nor by one behind a
@@ -915,7 +1012,8 @@ pub fn day_night(
         // win, and a player who turned shadows off would have them back at
         // the next sunrise.
         d.shadows_enabled =
-            elev > SHADOW_MIN_ELEV && occ < 0.85 && super::quality::effective(settings.gfx).shadows;
+            elev > SHADOW_MIN_ELEV && shadow_veil < SHADOW_MAX_VEIL && effective.shadows;
+        sun_now = (d.illuminance, d.shadows_enabled);
         // The atmosphere draws the disk OVER the skybox, so a cloud in front
         // of the sun has to put the disk out itself.
         if let Some(mut disk) = disk {
@@ -935,12 +1033,31 @@ pub fn day_night(
         if d.illuminance != want {
             d.illuminance = want;
         }
+        let rgb = if w.fel_flash { FEL_BOLT_RGB } else { BOLT_RGB };
+        let want = Color::srgb(rgb[0], rgb[1], rgb[2]);
+        if d.color != want {
+            d.color = want;
+        }
         if flash > 0.0 {
             let toward = Vec3::new(w.flash_dir.x, 0.35, w.flash_dir.y).normalize_or(Vec3::Y);
             *t = Transform::default().looking_to(-toward, Vec3::Y);
         }
     }
-    if let Ok((mut amb, mut env, sky, fog, exposure)) = cam.single_mut() {
+    // The fog's sunlit share, carried by the volume when it is drawn; what
+    // it takes off the flat fog is `lifted`, per metre (`shafts::split`).
+    let lifted = rays.drive(
+        &w,
+        super::shafts::SunNow {
+            lux: sun_now.0,
+            casts: sun_now.1,
+            elev,
+            ev100: exposure_ev100(frac),
+            lux_share,
+            fill: light * (1.0 - 0.35 * w.dark) * (1.0 - 0.25 * w.fel),
+            shadow_m: effective.shadow_m,
+        },
+    );
+    if let Ok((mut amb, mut env, sky, fog, exposure, grading)) = cam.single_mut() {
         if let Some(mut ex) = exposure {
             let want = exposure_ev100(frac);
             if ex.ev100 != want {
@@ -958,30 +1075,60 @@ pub fn day_night(
         // flash lifts the uniform term for a fifth of a second.
         // Under a roof the flash is what the doorway lets in, not the whole
         // sky: the uniform term lit a closed room as bright as open ground.
+        // The night term is the moon's: off the clock, as the sun is, not
+        // off the weather, which a fixture may not have.
         let flash = w.flash * if w.sheltered { SHELTERED_FLASH } else { 1.0 };
+        let moon = super::moon::shine(frac, sim_core::world::moon_phase(day_tick));
         amb.brightness =
-            NIGHT_AMBIENT_LUX * (1.0 - light) * (1.0 - 0.3 * w.dark) + FLASH_LUX * flash;
-        env.intensity = super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark);
+            NIGHT_AMBIENT_LUX * night_light(moon) * (1.0 - light) * (1.0 - 0.3 * w.dark)
+                + FLASH_LUX * flash;
+        let tint = Vec3::from_array(NIGHT_AMBIENT_SRGB).lerp(Vec3::from_array(FEL_AMBIENT), w.fel);
+        let want = Color::srgb(tint.x, tint.y, tint.z);
+        if amb.color != want {
+            amb.color = want;
+        }
+        env.intensity =
+            super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark) * (1.0 - 0.25 * w.fel);
         // Weather fog on both targets: nothing in clear weather on the
         // desktop, the island's own air in a browser, and the weather's
-        // fog and rain on top of either.
+        // fog, rain and dust on top of either.
         if let Some(mut fog) = fog {
             if w.underwater {
                 // Under the surface the water is the fog.
                 let (color, falloff) = super::sky::underwater_fog(lux_share, w.dark);
                 fog.color = color;
                 fog.falloff = falloff;
+                // The sea has no sun to glow toward: its light comes down
+                // through the surface, which the shell draws (`underwater.rs`).
+                fog.directional_light_color = Color::NONE;
             } else {
-                let sigma = w.fog_sigma();
-                fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
-                fog.falloff = super::sky::fog_falloff(sigma);
+                // The Verdigris' haze on top of the weather's, green.
+                let sigma = w.fog_sigma() + super::sky::FEL_FOG_SIGMA * w.fel;
+                let c = super::sky::fog_rgb_fel(lux_share, w.dark, sigma, w.dust_part(), w.fel);
+                fog.color = Color::linear_rgb(c[0], c[1], c[2]);
+                fog.falloff = super::sky::fog_falloff(sigma - lifted);
+                fog.directional_light_color = super::sky::fog_glow();
+            }
+        }
+        // The Verdigris' grade, a little darker and greener-lit. A film owns
+        // the grade while it rolls (`film::lens`).
+        #[cfg(not(target_arch = "wasm32"))]
+        let filming = film.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let filming = false;
+        if let (Some(mut g), false) = (grading, filming) {
+            let ev = FEL_GRADE_EV * w.fel;
+            let sat = 1.0 + (FEL_GRADE_SAT - 1.0) * w.fel;
+            if g.global.exposure != ev || g.global.post_saturation != sat {
+                g.global.exposure = ev;
+                g.global.post_saturation = sat;
             }
         }
         if let Some(mut sky) = sky {
             // The composer bakes the hour and the weather into the deck's
             // texels (`sky.rs`), so the brightness is the deck's physical
             // unit, lifted only by a flash.
-            sky.brightness = super::sky::CLOUD_NITS * super::sky::DECK_GAIN * (1.0 + 3.0 * w.flash);
+            sky.brightness = super::sky::deck_nits(w.flash) * super::sky::DECK_GAIN;
             sky.rotation = Quat::IDENTITY;
         }
     }

@@ -1,6 +1,6 @@
 //! The works' terminals, drawn (`ARC.md` F1): a black plinth with a fire
-//! bowl on it and a gold ring standing behind (the ring is `WORLD.md`
-//! §11.3's shape, planted). Where it stands is `sim_core::spot`'s answer on
+//! bowl on it ([`PLINTH_GLB`]) and a gold ring standing behind (the ring is
+//! `WORLD.md` §11.3's shape, planted, so it stays an exact torus here). Where it stands is `sim_core::spot`'s answer on
 //! the seed, so it is drawn where the sim measures reach from.
 //!
 //! The work's state lights it:
@@ -32,7 +32,16 @@ const FIRE_RANGE_M: f32 = 14.0;
 const GLOW_OPEN: Color = Color::srgb(0.35, 0.6, 1.0);
 const GLOW_EMBER: Color = Color::srgb(0.9, 0.25, 0.1);
 const GLOW_LUMENS: f32 = 2_500.0;
-const PLINTH_H: f32 = 1.0;
+
+/// The plinth and its fire bowl, generated: 1.6 m square, the bowl's rim
+/// 1.58 m over the model's base.
+pub const PLINTH_GLB: &str = "models/site/works_plinth.glb";
+/// How far the plinth stands in the ground: `ART.md` rule 2, nothing sits ON
+/// it.
+const SINK_M: f32 = 0.1;
+/// The plinth's top as drawn, and the bowl's rim.
+const PLINTH_H: f32 = 1.05;
+const BOWL_RIM_M: f32 = 1.48;
 
 /// Stand a terminal up for every work whose row has arrived and that stands
 /// somewhere on this island.
@@ -42,6 +51,7 @@ pub fn spawn(
     world: Option<Res<WorldId>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    server: Res<AssetServer>,
     have: Query<&WorkMark>,
 ) {
     let Some(world) = world else { return };
@@ -54,17 +64,7 @@ pub fn spawn(
             continue;
         };
         let y = sim_core::terrain::ground(world.seed, &world.haven, x, z);
-        let stone = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.06, 0.06, 0.07),
-            perceptual_roughness: 0.35,
-            ..default()
-        });
-        let iron = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.18, 0.16, 0.15),
-            metallic: 0.8,
-            perceptual_roughness: 0.5,
-            ..default()
-        });
+        let (plinth, plinth_material) = super::mobs::model(&server, PLINTH_GLB);
         let gold = materials.add(StandardMaterial {
             base_color: Color::srgb(0.83, 0.64, 0.25),
             metallic: 1.0,
@@ -80,14 +80,9 @@ pub fn spawn(
             ))
             .with_children(|c| {
                 c.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(1.6, PLINTH_H, 1.6))),
-                    MeshMaterial3d(stone.clone()),
-                    Transform::from_xyz(0.0, PLINTH_H * 0.5 - 0.1, 0.0),
-                ));
-                c.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(1.1, 0.25, 1.1))),
-                    MeshMaterial3d(iron),
-                    Transform::from_xyz(0.0, PLINTH_H + 0.02, 0.0),
+                    Mesh3d(plinth),
+                    MeshMaterial3d(plinth_material),
+                    Transform::from_xyz(0.0, -SINK_M, 0.0),
                 ));
                 // The ring, standing on edge behind the bowl.
                 c.spawn((
@@ -105,7 +100,7 @@ pub fn spawn(
                         shadows_enabled: false,
                         ..default()
                     },
-                    Transform::from_xyz(0.0, PLINTH_H + 0.45, 0.0),
+                    Transform::from_xyz(0.0, BOWL_RIM_M + 0.25, 0.0),
                     FireFx {
                         flames: true,
                         flame_dy: -0.35,

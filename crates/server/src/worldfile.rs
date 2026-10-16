@@ -178,6 +178,13 @@ pub struct WorldBoot {
     /// When this world ends (`wipe.rs`). Set by `bin/shard.rs` from the
     /// schedule and the wipe state; off everywhere else.
     pub wipe: crate::wipe::Clock,
+    /// The highest connection generation any player id in the loaded world
+    /// carries — a body, a bag's owner, a lock's or a cupboard's list. A
+    /// restart resets the slot table, so without this the first connection
+    /// into a slot is minted an id the saved world already uses, and would
+    /// be handed what it owns. `net.rs` starts the slot table past it
+    /// (`SlotTable::start_past`).
+    pub id_floor: u32,
 }
 
 impl WorldBoot {
@@ -191,8 +198,23 @@ impl WorldBoot {
             interval_ticks: u64::MAX,
             clamp: false,
             wipe: crate::wipe::Clock::off(),
+            id_floor: 0,
         }
     }
+}
+
+/// The highest connection generation among the player ids `world` holds
+/// (`WorldBoot::id_floor`). An id is `generation << 8 | slot` (`net.rs`);
+/// an animal's carries the mob tag and is no connection's.
+pub fn id_floor(world: &mut sim_core::world::World) -> u32 {
+    let mut floor = 0;
+    world.remap_player_ids(&mut |id| {
+        if id & sim_core::limits::MOB_ID_TAG == 0 {
+            floor = floor.max(id >> 8);
+        }
+        id
+    });
+    floor
 }
 
 /// Rotate `<path>.1` → `.2` and copy `<path>` → `.1`, exactly as the player
@@ -427,6 +449,7 @@ pub fn open(
                 interval_ticks,
                 clamp: false,
                 wipe: crate::wipe::Clock::off(),
+                id_floor: 0,
             },
             WorldLoad {
                 created: true,
@@ -649,6 +672,7 @@ pub fn open(
         .filter(|(_, id)| world.is_sleeper(*id))
         .count();
     let tick = world.tick;
+    let id_floor = id_floor(world);
     Ok((
         WorldBoot {
             file,
@@ -657,6 +681,7 @@ pub fn open(
             interval_ticks,
             clamp: balance,
             wipe: crate::wipe::Clock::off(),
+            id_floor,
         },
         WorldLoad {
             created: false,
@@ -672,6 +697,20 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The floor is the highest generation any player id in the world wears,
+    /// so a restarted shard mints past all of them (`SlotTable::start_past`).
+    #[test]
+    fn the_id_floor_is_the_highest_generation_a_player_id_wears() {
+        use sim_core::world::Command;
+        let mut w = sim_core::world::World::new(1);
+        assert_eq!(id_floor(&mut w), 0, "an empty world holds no ids");
+        w.tick(&[
+            Command::Join { id: (3 << 8) | 1 },
+            Command::Join { id: (9 << 8) | 2 },
+        ]);
+        assert_eq!(id_floor(&mut w), 9);
+    }
 
     /// The header's offsets are a hand-written layout, which is the shape
     /// `CLAUDE.md`'s positional-payload trap is about — the right value at

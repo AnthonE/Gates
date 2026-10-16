@@ -474,9 +474,10 @@ fn a_dropped_eviction_record_still_outranks_the_stale_store_copy() {
 /// The memo is spent at the victim's return, so it never outlives it. A
 /// victim back from its eviction record plays on (the autosave files what
 /// it found), its link drops, and it reconnects before the shard has reaped
-/// the dead link — so its body is still awake, no sleeper answers, and the
-/// join is a restore from the store's newer record. A memo still holding
-/// the eviction record would hand back the raided pack instead.
+/// the dead link. That join is refused while the body is still awake — one
+/// wallet, one body; the accept loop holds it until the reap (`net.rs`) —
+/// and once the link is reaped it wakes the body carrying what it found. A
+/// memo still holding the eviction record would hand back the raided pack.
 #[test]
 fn a_returned_victim_restored_later_gets_the_newer_store_record() {
     const MAX: usize = sim_core::limits::MAX_PLAYERS;
@@ -517,18 +518,24 @@ fn a_returned_victim_restored_later_gets_the_newer_store_record() {
     // A conn slot and a keyless sleeper to make room for the reconnect.
     core.disconnect(7);
     core.tick_bare(&stats, |_, _, _| true);
+    assert!(
+        core.connect_as(7, id2_of(7), Some(me), Some(newer))
+            .is_none(),
+        "a second body for one wallet while the first is connected"
+    );
+    // The dead link is reaped, and the reconnect wakes the body it left.
+    assert!(core.disconnect(5).is_some());
+    core.tick_bare(&stats, |_, _, _| true);
     let (how, _) = core
         .connect_as(7, id2_of(7), Some(me), Some(newer))
         .expect("admitted");
-    assert_eq!(how, Admitted::Restored);
+    assert_eq!(how, Admitted::TookOver);
     core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(
         core.world.players[world_slot(&core, id2_of(7))].inv[0],
         found,
         "the old eviction record outlived the victim's return"
     );
-    // The dead link is reaped at last.
-    assert!(core.disconnect(5).is_some());
 }
 
 /// Two joins in one window must nominate two different victims. Both picks

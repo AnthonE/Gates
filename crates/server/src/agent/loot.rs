@@ -224,12 +224,13 @@ impl Loot {
     }
 
     /// The containers known and worth a walk: seen lately, not emptied,
-    /// and (a barrel) still standing.
+    /// and still standing — a broken barrel, and a crate emptied by anyone
+    /// (it leaves the world until its refill, so `E` has nothing to open).
     pub fn live<'a>(&'a self, core: &'a ClientCore, tick: u32) -> impl Iterator<Item = Spot> + 'a {
         self.spots.iter().flatten().copied().filter(move |s| {
             tick.wrapping_sub(s.seen) < SPOT_KEEP_TICKS
                 && !self.recalls(s.key(), tick)
-                && !(s.prize == Prize::Barrel && core.harvested.contains(s.key()))
+                && !core.harvested.contains(s.key())
         })
     }
 

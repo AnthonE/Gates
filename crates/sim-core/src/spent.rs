@@ -157,6 +157,21 @@ impl SpentArrows {
         self.stamp
     }
 
+    /// Every host through `f` (`World::remap_player_ids`): an arrow stays in
+    /// a body that took a new id. A moved host restarts the walk, so clients
+    /// redraw it on the body's new id.
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        let mut moved = false;
+        for r in self.entries[..self.len].iter_mut() {
+            let host = f(r.host);
+            moved |= host != r.host;
+            r.host = host;
+        }
+        if moved {
+            self.stamp = self.stamp.wrapping_add(1);
+        }
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.len

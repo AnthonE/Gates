@@ -866,7 +866,22 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ));
         }
         if con.health == 0 && con.food == 0 && con.water == 0 {
+            // A row that only moves the Verdigris would work in the sim and
+            // never be eaten: the client's eat verb reads the catalog's
+            // food, water and health (`ItemRow::eats`), which carry no fel.
+            if con.fel != 0 {
+                return Err(format!(
+                    "consumable `{}`: a fel-only row is never eaten — give it some health, food or water",
+                    con.id
+                ));
+            }
             return Err(format!("consumable `{}`: does nothing", con.id));
+        }
+        if !(-1000..=1000).contains(&con.fel) {
+            return Err(format!(
+                "consumable `{}`: fel {} outside ±1000 per mille",
+                con.id, con.fel
+            ));
         }
         // A heal with no span would be an instant heal, and the sim's ramp
         // divides by the span — refuse the row rather than let a division
@@ -902,6 +917,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ("chill_rise_per_s", e.chill_rise_per_s),
             ("chill_fall_per_s", e.chill_fall_per_s),
             ("hurt_at", e.hurt_at),
+            ("fire_comfort", e.fire_comfort),
+            ("company_comfort", e.company_comfort),
+            ("comfort_per_s", e.comfort_per_s),
+            ("regen_chill_max", e.regen_chill_max),
+            ("cold_per_c", e.cold_per_c),
+            ("heat_per_c", e.heat_per_c),
+            ("wet_cool", e.wet_cool),
+            ("clothes_heat_pm", e.clothes_heat_pm),
+            ("heat_hurt_at", e.heat_hurt_at),
+            ("fel_rise_per_s", e.fel_rise_per_s),
+            ("fel_vent_per_s", e.fel_vent_per_s),
+            ("fel_fall_per_s", e.fel_fall_per_s),
+            ("fel_hurt_at", e.fel_hurt_at),
+            ("fel_regen_max", e.fel_regen_max),
+            ("fel_ward_max", e.fel_ward_max),
+            ("fel_pocket_per_s", e.fel_pocket_per_s),
+            ("snow_wet_pm", e.snow_wet_pm),
         ] {
             if v > 1000 {
                 return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));
@@ -914,11 +946,109 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err("exposure: a chill that never falls would never warm".to_string());
         }
         let hp = c.balance.globals.player_hp;
+        let cl = &c.balance.climate;
+        for (name, v) in [
+            ("cold_below_c", e.cold_below_c),
+            ("hot_above_c", e.hot_above_c),
+            ("shade_c", e.shade_c),
+            ("temperate_low_c", cl.temperate_low_c),
+            ("temperate_high_c", cl.temperate_high_c),
+            ("arid_low_c", cl.arid_low_c),
+            ("arid_high_c", cl.arid_high_c),
+            ("rain_cool_c", cl.rain_cool_c),
+            ("crop_frost_c", cl.crop_frost_c),
+            ("crop_warm_c", cl.crop_warm_c),
+            ("crop_hot_c", cl.crop_hot_c),
+            ("crop_scorch_c", cl.crop_scorch_c),
+        ] {
+            if !(-100..=100).contains(&v) {
+                return Err(format!("climate `{name}`: {v} °C is past ±100"));
+            }
+        }
+        if cl.temperate_low_c > cl.temperate_high_c || cl.arid_low_c > cl.arid_high_c {
+            return Err("[climate]: a biome's dawn is warmer than its afternoon".into());
+        }
+        if cl.cloud_flatten_pm > 1000 || cl.lapse_from_m > u16::MAX as u32 || cl.lapse_m > 1000 {
+            return Err("[climate]: cloud past 1000 per mille or a lapse out of range".into());
+        }
+        // Snow (snow v0): an armed exposure reads the air for what falls,
+        // and with no `[climate]` the air is 0 °C everywhere: every rain
+        // would be snow, on the bodies and in every client's sky.
+        let no_air = [
+            cl.temperate_low_c,
+            cl.temperate_high_c,
+            cl.arid_low_c,
+            cl.arid_high_c,
+        ] == [0; 4];
+        if (e.chill_rise_per_s > 0 || e.fel_rise_per_s > 0) && no_air {
+            return Err(
+                "[exposure] is armed with no [climate]: the air would read 0 °C \
+                 everywhere and every rain would fall as snow"
+                    .into(),
+            );
+        }
+        let crop = [
+            cl.crop_frost_c,
+            cl.crop_warm_c,
+            cl.crop_hot_c,
+            cl.crop_scorch_c,
+        ];
+        if crop != [0; 4] && !(crop[0] < crop[1] && crop[1] <= crop[2] && crop[2] < crop[3]) {
+            return Err("[climate]: the crop curve must run frost < warm <= hot < scorch".into());
+        }
+        if e.heat_per_c > 0 && e.hot_above_c <= e.cold_below_c {
+            return Err("[exposure]: the air turns hot before it stops being cold".into());
+        }
+        if e.heat_water_pct > 300 {
+            return Err("[exposure]: the heat burns at most 300% more water".into());
+        }
+        if e.fel_rise_per_s > 0 && e.fel_fall_per_s == 0 {
+            return Err("exposure: a Verdigris that never falls would never leave you".into());
+        }
+        if e.fel_rise_per_s > 0 && e.fel_regen_max > e.fel_hurt_at {
+            return Err("exposure: a body may not mend while the Verdigris hurts it".into());
+        }
+        if e.fel_hp_per_min > 0 && hp / e.fel_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: a full Verdigris kills {hp} hp in under 5 min ({} hp/min)",
+                e.fel_hp_per_min
+            ));
+        }
+        if e.heat_hp_per_min > 0 && hp / e.heat_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: full heat kills {hp} hp in under 5 min ({} hp/min)",
+                e.heat_hp_per_min
+            ));
+        }
         if e.cold_food_pct > 300 || e.cold_water_pct > 300 {
             return Err("[exposure]: the cold burns at most 300% more food or water".into());
         }
-        if e.comfort_hp_per_min > 60 {
-            return Err("[exposure]: comfort heals at most 60 hp a minute".into());
+        if e.regen_hp_per_min > 60 {
+            return Err("[exposure]: regen heals at most 60 hp a minute".into());
+        }
+        if e.regen_fed_pct > 100 || e.regen_comfort_pct > 1000 || e.regen_cap_pct > 100 {
+            return Err("[exposure]: regen's fed ≤ 100%, comfort ≤ 1000%, cap ≤ 100%".into());
+        }
+        if e.regen_food_pct > 300 || e.regen_water_pct > 300 {
+            return Err("[exposure]: regen burns at most 300% more food or water".into());
+        }
+        if e.regen_hp_per_min > 0 && e.regen_chill_max >= e.hurt_at {
+            // Regen and the cold share one accumulator (`exposure::step`).
+            return Err("[exposure]: regen_chill_max must be under hurt_at".into());
+        }
+        if e.fire_comfort > 0 && e.comfort_per_s == 0 {
+            return Err("[exposure]: comfort that never moves would never rise".into());
+        }
+        // A zero meter is `[survival]`'s to refuse, with its own words.
+        let sv = &c.balance.survival;
+        if sv.max_food > 0
+            && sv.max_water > 0
+            && (e.regen_food_min > sv.max_food || e.regen_water_min > sv.max_water)
+        {
+            return Err("[exposure]: regen asks for more food or water than a meter holds".into());
+        }
+        if e.regen_calm_s > u16::MAX as u32 {
+            return Err("[exposure]: regen_calm_s overflows u16".into());
         }
         if e.hurt_hp_per_min > 0 && hp / e.hurt_hp_per_min < 5 {
             return Err(format!(
@@ -1563,7 +1693,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // live. Zero density is legal (a wolf row can arm only the site
         // guards); a density with nowhere to live is a row that cannot be.
         let h = &m.habitat;
-        let weights = [h.meadow, h.forest, h.highland, h.desert];
+        let weights = [h.meadow, h.forest, h.highland, h.desert, h.fel];
         if !(0.0..=50.0).contains(&m.per_km2) || weights.iter().any(|w| !(0.0..=1.0).contains(w)) {
             return Err(format!(
                 "mob `{}`: per_km2 is 0–50 and each habitat weight 0–1",
@@ -1597,7 +1727,8 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // this block exists for (a biter with zero reach never lands one;
         // zero seconds is a bite every tick).
         if m.attack == 0 {
-            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 {
+            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 || m.fel_bite != 0
+            {
                 return Err(format!(
                     "mob `{}`: attack fields set on a species with zero attack",
                     m.id
@@ -1614,6 +1745,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 return Err(format!(
                     "mob `{}`: brave_pct is a percent of max hp, 0–100",
                     m.id
+                ));
+            }
+            if m.fel_bite > 1000 {
+                return Err(format!(
+                    "mob `{}`: fel_bite {} is per mille of the meter, 0–1000",
+                    m.id, m.fel_bite
                 ));
             }
             // A bite from further than the spook radius would be an animal

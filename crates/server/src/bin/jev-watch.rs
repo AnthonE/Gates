@@ -211,7 +211,11 @@ fn run() -> Result<AppExit, String> {
         ),
     }
     println!("  desktop: {}", door.desktop_command());
-    let world = WorldId::new(session.welcome.seed);
+    // The welcome's blight salt too: this wipe's outbreaks are drawn from it.
+    let world = WorldId {
+        blight_salt: session.welcome.blight_salt,
+        ..WorldId::with_haven(session.welcome.seed, *session.core.haven())
+    };
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins

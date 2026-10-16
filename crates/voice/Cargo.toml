@@ -1,0 +1,19 @@
+[package]
+name = "voice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Proximity voice's codec half: Opus frames in and out, shared by the game
+# client (native and wasm) and `jev-bot` (an agent's ears and voice). The wire
+# is `protocol::voice`, the relay is the shard's, the mixing is `sound`'s.
+#
+# **Pure Rust on purpose.** libopus is C, and `wasm32-unknown-unknown` has no C
+# sysroot, so the browser build could not link it at all (and the mingw
+# cross-build has paid for a C dependency before). `rusty-opus` is a port of
+# libopus whose packets libopus decodes identically, measured against it on
+# speech before it came in (2026-10-15). Pinned exactly: a codec is a wire
+# format, and both ends of a call run whatever this resolves to.
+[dependencies]
+rusty-opus = "=1.0.1"

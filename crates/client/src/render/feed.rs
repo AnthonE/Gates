@@ -310,6 +310,10 @@ pub struct Feed {
     /// (body id, `protocol::DEED_*`, item). A sound and nothing else.
     heard: [(u32, u8, u16); FEED_CAP],
     n_heard: usize,
+    /// Far gunshots and blasts this frame (`EventMsg::Report`, wire v113):
+    /// (`protocol::REPORT_*`, x, y, z) metres. A sound and nothing else.
+    reports: [(u8, u16, i16, u16); FEED_CAP],
+    n_reports: usize,
     /// Town sentries that locked on to somebody this frame
     /// (`EventMsg::SentryLock`, wire v92): (gun id, target id).
     sentry_locks: [(u32, u32); FEED_CAP],
@@ -435,6 +439,11 @@ impl Feed {
         &self.heard[..self.n_heard]
     }
 
+    /// Far gunshots and blasts this frame: (`protocol::REPORT_*`, x, y, z).
+    pub fn reports(&self) -> &[(u8, u16, i16, u16)] {
+        &self.reports[..self.n_reports]
+    }
+
     /// Town sentries that locked on this frame: (gun id, target id).
     pub fn sentry_locks(&self) -> &[(u32, u32)] {
         &self.sentry_locks[..self.n_sentry_locks]
@@ -549,6 +558,7 @@ impl Feed {
         self.n_howls = 0;
         self.n_crumbles = 0;
         self.n_heard = 0;
+        self.n_reports = 0;
         self.n_sentry_locks = 0;
         self.n_placed = 0;
         self.n_removed = 0;
@@ -784,6 +794,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_crumbles;
             feed.crumbles[n] = c;
             feed.n_crumbles += 1;
+        }
+    }
+    while let Some(r) = core.pop_report() {
+        if feed.n_reports >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_reports;
+            feed.reports[n] = r;
+            feed.n_reports += 1;
         }
     }
     while let Some(h) = core.pop_heard() {

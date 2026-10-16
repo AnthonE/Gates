@@ -217,10 +217,17 @@ use crate::worldcont::WorldContRec;
 /// **23 — the magazine moves into `PlayerSave`** (store format 9): the same
 /// 32 bytes per body, now inside the player's record rather than the tail,
 /// so a body's stride is unchanged and its order is not.
-pub const WORLD_SAVE_FORMAT: u16 = 23;
+/// **24 — the Verdigris** (`exposure::corrode`): each body's meter and the
+/// partial hp it is owed, after the cold's (+6).
+/// **25 — the Verdigris spreads** (`blight.rs`): the wipe's blight salt after
+/// the arc block (+4 in the head).
+pub const WORLD_SAVE_FORMAT: u16 = 25;
 
 /// The head's arc block: the salt, then every mechanism slot.
 pub const ARC_SAVE_BYTES: usize = 8 + crate::limits::MAX_MECHS * crate::mech::MECH_BYTES;
+
+/// The head's blight block: the salt that draws this wipe's outbreaks.
+pub const BLIGHT_SAVE_BYTES: usize = 4;
 
 /// The head's works block: every slot, written whether or not content
 /// names a work there, so the head stays a fixed size.
@@ -242,8 +249,17 @@ pub const ENV_BYTES: usize = 1 + 8 + 6 * 2 + 1 + 4;
 /// with anything about the head. A hand-copied offset is a silent
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
-pub const HEAD_BYTES: usize =
-    2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + WORKS_SAVE_BYTES + ARC_SAVE_BYTES + SECTION_COUNTS;
+pub const HEAD_BYTES: usize = 2
+    + 8
+    + 4 * 3
+    + 8
+    + 4
+    + 4
+    + ENV_BYTES
+    + WORKS_SAVE_BYTES
+    + ARC_SAVE_BYTES
+    + BLIGHT_SAVE_BYTES
+    + SECTION_COUNTS;
 /// Twelve `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
@@ -272,9 +288,10 @@ pub const SECTION_COUNTS: usize = 12 * 2 + 4;
 /// the round-trip test in `tests/worldsave.rs` is what caught it.
 ///
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
-/// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
+/// the weak-spot pair, the four death-screen facts, `craft_done_at`, wet and
+/// cold (8) and the Verdigris (6).
 /// The magazine rode here from format 12 to 22; it is `PlayerSave`'s now.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + SKIN_WORDS * 8;
+const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + 6 + SKIN_WORDS * 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -589,6 +606,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     for m in w.arc.mechs.iter() {
         o.bytes(&m.to_bytes());
     }
+    o.u32(w.blight_salt);
 
     // Bodies. Everyone in the file is written as a sleeper *by the loader*,
     // not here — see `decode_into`. What is written is who was in the world.
@@ -645,6 +663,9 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(p.wet);
         o.u16(p.chill);
         o.u32(p.cold_acc);
+        // The Verdigris (format 24): hashed, so saved.
+        o.u16(p.fel);
+        o.u32(p.fel_acc);
         // The owned skins (format 16): hashed, so saved. A body that
         // reloads asleep keeps the set until its owner's next session
         // replaces it (`World::take_over` clears it at the door).
@@ -1021,6 +1042,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             return Err(WorldSaveError::BadWork);
         }
     }
+    let blight_salt = r.u32()?;
 
     let n_players = r.count(MAX_PLAYERS)?;
     let n_pieces = r.count(MAX_PIECES)?;
@@ -1069,12 +1091,14 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let wet = r.u16()?;
         let chill = r.u16()?;
         let cold_acc = r.u32()?;
+        let fel = r.u16()?;
+        let fel_acc = r.u32()?;
         let mut skin_bytes = [0u8; SKIN_WORDS * 8];
         for b in skin_bytes.iter_mut() {
             *b = r.u8()?;
         }
         let skins = crate::skin::SkinSet::from_le_bytes(&skin_bytes);
-        if wet > 1000 || chill > 1000 {
+        if wet > 1000 || chill > 1000 || fel > 1000 {
             return Err(WorldSaveError::BadExposure);
         }
         // The hotbar index is read unchecked by every verb that asks what
@@ -1136,11 +1160,23 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             wet,
             chill,
             cold_acc,
+            heat: 0,
+            air_dc: 0,
+            fel,
+            fel_acc,
             skins,
             safe: false,
             hostile: 0,
+            comfort: 0,
+            calm: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
+            // Not on disk: a restored body's life clock starts at the load.
+            born: tick,
+            // Nor how long a restored corpse's life was; but a corpse is
+            // its own death marker.
+            died: 0,
+            death_at: save.dead.then_some((save.body.qx, save.body.qz)),
             dead: save.dead,
             // **A world remembers a crawl** (wounded v0, format 13): the
             // body comes back down with its clock, for `mag`'s reason —
@@ -1553,10 +1589,16 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         {
             return Err(WorldSaveError::AddressOutOfRange);
         }
+        // The rest height is not in the file and is trusted from nowhere:
+        // it is re-derived from the cell, the one `scatter` per record
+        // `open` paid at the mint. Boot only, at most `MAX_WORLD_CONTS`.
+        let s = terrain::scatter(w.seed, &w.scatter, &w.haven, cx as i32, cz as i32);
+        let qy = crate::worldcont::stand_q(s.x, s.y, s.z).1;
         *c = WorldContRec {
             cx,
             cz,
             qx,
+            qy,
             qz,
             table,
             refill_at,
@@ -1797,6 +1839,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     *w.works = works;
     w.works.refresh(&w.works_def);
     *w.arc = arc;
+    w.set_blight_salt(blight_salt);
     w.players = players;
     w.pieces
         .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
@@ -1902,7 +1945,8 @@ mod tests {
         // a world that hashes differently from the one it was written from.
         // 92 → 124 at format 16: the owned skin set, `SKIN_WORDS` words.
         // 124 → 92 at format 23: the magazine moved into `PlayerSave`.
-        assert_eq!(PLAYER_TAIL_BYTES, 92);
+        // 92 → 98 at format 24: the Verdigris' meter and its remainder.
+        assert_eq!(PLAYER_TAIL_BYTES, 98);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
@@ -1913,8 +1957,9 @@ mod tests {
         // in `PlayerSave` (+72) and the owned set in the tail (+32).
         // 485 → 493 at format 22: the glyph mask in `PlayerSave`. 493 at
         // format 23 too: the magazine's 32 B moved from the tail into it.
+        // 493 → 499 at format 24: the Verdigris in the tail.
         assert_eq!(
-            PLAYER_BYTES, 493,
+            PLAYER_BYTES, 499,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1924,8 +1969,8 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 1_516                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22)
-            + 100 * 493                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
+        let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
+            + 100 * 499                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 256 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
@@ -1955,7 +2000,8 @@ mod tests {
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
-        assert_eq!(HEAD_BYTES, 1_516);
+        // 1516 -> 1520 at format 25: the blight's salt.
+        assert_eq!(HEAD_BYTES, 1_520);
         // 4 id + 12 position + 8 stack + 8 deadline + 3 stuck direction.
         assert_eq!(GROUND_ITEM_BYTES, 35);
         // Three millimetre coordinates, the round, the ready deadline, the
@@ -2049,8 +2095,10 @@ mod tests {
         // 3_557_904: 64 fires × 28 and their count. 3_559_192 at format
         // 21: the works block in the head, 8 × 161. 3_560_128 at format 22:
         // the salt and the mechanisms (136) and a glyph mask on 100 bodies.
+        // 3_560_728 at format 24: the Verdigris, six bytes on 100 bodies.
+        // 3_560_732 at format 25: the blight's salt in the head.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_560_128,
+            WORLD_SAVE_MAX_BYTES, 3_560_732,
             "the world save ceiling moved"
         );
     }

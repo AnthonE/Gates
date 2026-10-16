@@ -235,6 +235,11 @@ pub struct Proof {
     /// The SIWE domain — the host we dialled with its port stripped, or, in
     /// a browser, the page's own host where [`page_domain`] chose it.
     pub domain: String,
+    /// The shard this proof is for — the host we dialled, lowercase — signed
+    /// in the `URI:` line ([`protocol::siwe_message_for`]). The same as
+    /// `domain` except where a page signs its own name, and there it is what
+    /// stops one shard under the page's name passing the proof to another.
+    pub uri: String,
     /// The shard's nonce, raw. Rendered as lowercase hex by
     /// [`Proof::nonce_hex`] for a signer that wants text, and passed as bytes
     /// to [`protocol::siwe_message`] by [`Proof::message`] — one value, two
@@ -284,8 +289,9 @@ impl Proof {
         // the fallback keeps the signature total rather than panicking a page.
         let addr = core::str::from_utf8(&sum).unwrap_or("0x");
         let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
-        let n = protocol::siwe_message(
+        let n = protocol::siwe_message_for(
             &self.domain,
+            &self.uri,
             addr,
             protocol::SLUG,
             &self.nonce,
@@ -353,9 +359,18 @@ pub fn proof_wanted(
         return Ok(None);
     }
 
-    let domain = signs_as.unwrap_or_else(|| dialled_host(server));
+    let dialled = dialled_host(server);
+    let domain = signs_as.unwrap_or(dialled);
+    // The URI names the shard in the launcher's form when nothing replaced
+    // the domain, so a desktop proof is the launcher's bytes exactly.
+    let uri = if signs_as.is_some() {
+        dialled.to_ascii_lowercase()
+    } else {
+        domain.to_string()
+    };
     Ok(Some(Proof {
         domain: domain.to_string(),
+        uri,
         nonce: challenge.nonce,
         issued_at: challenge.issued_at,
     }))
@@ -364,7 +379,54 @@ pub fn proof_wanted(
 /// The host of a `host:port`, as a SIWE message names it: the port is not
 /// part of the domain. A bare host is its own.
 fn dialled_host(server: &str) -> &str {
-    server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server)
+    server_host(server).unwrap_or(server)
+}
+
+/// **The host of a server address, or `None` if it is not one.**
+///
+/// A server address is `host[:port]` and nothing else: `host` is a DNS name
+/// (dot-separated labels of letters, digits and `-`), an IPv4 literal, or a
+/// bracketed IPv6 literal. Both dial paths build `https://{server}` and a
+/// URL parser reads that, so anything else is a second meaning waiting to
+/// happen: `evil.example/.elopros.com:443` dials `evil.example`, while a
+/// string test for "under `elopros.com`" passed — and the page signed in as
+/// `elopros.com` for a shard it never reached. The dialler and the signing
+/// rule both ask this, so they cannot read one address two ways.
+pub fn server_host(server: &str) -> Option<&str> {
+    let (host, port) = match server.strip_prefix('[') {
+        Some(rest) => {
+            let (v6, after) = rest.split_once(']')?;
+            v6.parse::<std::net::Ipv6Addr>().ok()?;
+            let port = match after {
+                "" => None,
+                p => Some(p.strip_prefix(':')?),
+            };
+            (&server[..v6.len() + 2], port)
+        }
+        None => match server.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (server, None),
+        },
+    };
+    if let Some(p) = port {
+        if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) || p.parse::<u16>().is_err() {
+            return None;
+        }
+    }
+    if !host.starts_with('[') {
+        let label_ok = |l: &str| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        // One trailing dot is a fully qualified name, and dials as one.
+        let name = host.strip_suffix('.').unwrap_or(host);
+        if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
+            return None;
+        }
+    }
+    Some(host)
 }
 
 /// **Which name a browser page signs: its own, or the host it dialled.**
@@ -395,7 +457,7 @@ pub fn page_domain<'a>(scheme: &str, hostname: &'a str, server: &str) -> Option<
     if hostname.is_empty() || hostname.len() > protocol::DOMAIN_MAX || is_loopback_host(hostname) {
         return None;
     }
-    let dialled = dialled_host(server).as_bytes();
+    let dialled = server_host(server)?.as_bytes();
     let page = hostname.as_bytes();
     let under = dialled.len() > page.len()
         && dialled[..dialled.len() - page.len()].ends_with(b".")
@@ -607,6 +669,14 @@ mod tests {
         .unwrap();
         assert_eq!(paged.domain, "elopros.com");
         assert_eq!(
+            dialled.uri, "game.elopros.com",
+            "the launcher's form: URI = domain"
+        );
+        assert_eq!(
+            paged.uri, "game.elopros.com",
+            "a page's proof names the shard"
+        );
+        assert_eq!(
             (paged.nonce, paged.issued_at),
             (dialled.nonce, dialled.issued_at)
         );
@@ -672,8 +742,79 @@ mod tests {
                 ours,
                 "a sibling, not a parent",
             ),
+            (
+                "https:",
+                "elopros.com",
+                "evil.example/.elopros.com:443",
+                "a path that reads as a subdomain",
+            ),
+            (
+                "https:",
+                "elopros.com",
+                "evil.example:4433/.elopros.com:1",
+                "a port and a path",
+            ),
+            (
+                "https:",
+                "elopros.com",
+                "evil.example#.elopros.com:1",
+                "a fragment",
+            ),
+            (
+                "https:",
+                "elopros.com",
+                "evil.example?.elopros.com:1",
+                "a query",
+            ),
+            (
+                "https:",
+                "elopros.com",
+                "x@evil.example.elopros.com:1",
+                "userinfo",
+            ),
         ] {
             assert_eq!(page_domain(scheme, host, server), None, "{why}");
+        }
+    }
+
+    /// **A server address is `host[:port]` and nothing a URL parser could
+    /// read another way.** The dialler and the signing rule share this, so an
+    /// address that dials one host while reading as another never gets past
+    /// either.
+    #[test]
+    fn a_server_address_is_host_and_port_and_nothing_else() {
+        for (server, host) in [
+            ("game.elopros.com:61234", "game.elopros.com"),
+            ("game.elopros.com", "game.elopros.com"),
+            ("127.0.0.1:4433", "127.0.0.1"),
+            ("[::1]:4433", "[::1]"),
+            ("[2001:db8::1]", "[2001:db8::1]"),
+            ("a-b.example:1", "a-b.example"),
+            ("my_shard:4433", "my_shard"),
+            ("game.elopros.com.:1", "game.elopros.com."),
+        ] {
+            assert_eq!(server_host(server), Some(host), "{server}");
+        }
+        for server in [
+            "",
+            ":443",
+            "evil.example/.elopros.com:443",
+            "evil.example:4433/.elopros.com:1",
+            "user@host:1",
+            "host:port",
+            "host:99999",
+            "host:",
+            "host..:1",
+            ".host:1",
+            "a..b:1",
+            "ho st:1",
+            "host\\x:1",
+            "[::1",
+            "[::1]x",
+            "[nope]:1",
+            "h%2fx:1",
+        ] {
+            assert_eq!(server_host(server), None, "{server:?}");
         }
     }
 
@@ -759,6 +900,7 @@ mod tests {
             player_id: 7,
             tick: 42,
             dev: false,
+            blight_salt: 0,
         };
         let mut b = [0u8; MAX_STREAM_MSG_BYTES];
         let n = encode_welcome(&w, &mut b).expect("encode");

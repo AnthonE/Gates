@@ -265,6 +265,7 @@ impl Arena {
             player_id: me,
             tick: 0,
             dev: true,
+            blight_salt: 0,
         });
         let stats = ShardStats::default();
         let shard = if foe_first {
@@ -324,6 +325,7 @@ impl Arena {
             player_id: self.foe,
             tick: self.tick,
             dev: true,
+            blight_salt: 0,
         });
         assert!(self.shard.connect(1, self.foe));
         self.peer = Some(Peer {

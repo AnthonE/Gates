@@ -80,6 +80,14 @@ pub trait Harvested {
         }
     }
 
+    /// How much of a TREE slot stands, per mille (tree ages v0): what
+    /// [`Harvested::standing_pm`] says, and for a tree the store has not
+    /// felled, the wild stand's age (`gather::wild_pm`). The default knows
+    /// no ages, so every fixture store stays exactly what it was.
+    fn tree_pm(&self, _seed: u64, cx: u16, cz: u16) -> u16 {
+        self.standing_pm(cx, cz)
+    }
+
     /// A felled tree's stump still has wood in it (`NOW.md` §0stump). Asked
     /// only of a harvested tree slot. The default knows no stumps, so no
     /// fixture store grows a swingable one.
@@ -93,6 +101,17 @@ pub trait Harvested {
     /// knows no wear.
     fn ore_top_pm(&self, _cx: u16, _cz: u16, _o: Occupant) -> u16 {
         1000
+    }
+}
+
+/// How much of the slot at `(cx, cz)` stands, per mille: a tree's own
+/// answer, age included ([`Harvested::tree_pm`]), or anything else's.
+#[inline]
+pub fn slot_pm(h: &dyn Harvested, seed: u64, cx: u16, cz: u16, occupant: Occupant) -> u16 {
+    if occupant == Occupant::Tree {
+        h.tree_pm(seed, cx, cz)
+    } else {
+        h.standing_pm(cx, cz)
     }
 }
 
@@ -153,6 +172,10 @@ impl Harvested for crate::gather::SlotLives {
 
     fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
         crate::gather::SlotLives::standing_pm(self, cx, cz)
+    }
+
+    fn tree_pm(&self, seed: u64, cx: u16, cz: u16) -> u16 {
+        crate::gather::SlotLives::tree_pm(self, seed, cx, cz)
     }
 
     fn stump_standing(&self, cx: u16, cz: u16) -> bool {
@@ -283,6 +306,14 @@ impl SlotCache {
             crag_shift: 32 - n.trailing_zeros(),
             lat: Box::new(terrain::Lattice::new()),
         }
+    }
+
+    /// The worldgen memo this cache owns, for callers that tap the terrain
+    /// through it (`terrain::ground_memo`). It changes no answer: the lattice
+    /// keys every entry by seed, so no reset is owed here.
+    #[inline]
+    pub(crate) fn lattice(&mut self) -> &mut terrain::Lattice {
+        &mut self.lat
     }
 
     /// The crag spot (`gi`, `gj`) grows, resolved once per seed.
@@ -587,7 +618,7 @@ impl Occupants<'_> {
                 // A sapling stands at its own size (tree growth v0), which
                 // sits inside the full one — so re-asking only after the
                 // full-size answer keeps this as cheap as it was.
-                let g = match self.harvested.standing_pm(cx as u16, cz as u16) {
+                let g = match slot_pm(self.harvested, seed, cx as u16, cz as u16, slot.occupant) {
                     0 => continue,
                     1000 => match self
                         .harvested
@@ -672,7 +703,7 @@ impl Occupants<'_> {
                 // is a linear scan over the life store, and "nothing blocks"
                 // is the answer almost every tick. `cx`/`cz` are in range here
                 // because an out-of-island cell resolved to `None` above.
-                match self.harvested.standing_pm(cx as u16, cz as u16) {
+                match slot_pm(self.harvested, seed, cx as u16, cz as u16, slot.occupant) {
                     0 => continue,
                     1000 => {
                         let pm = self

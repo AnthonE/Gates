@@ -52,6 +52,12 @@
 # has the headwrap weaker than the shirt where theirs has it stronger.
 # Taking the column fixes an ordering, not only three magnitudes.
 #
+# **`fel_pct` is their Radiation column, for our corruption** (the
+# Verdigris, `sim_core::exposure::corrode`): the share of the meter's rise a
+# piece wards off. Ours, not theirs — cloth over the mouth is what helps, so
+# the burlap hood leads, hide and bone a little, a sheet of road-sign metal
+# nothing. The set is held to `[exposure] fel_ward_max`.
+#
 # ⚠ **Why the numbers are still ours: `crates/content/tests/content.rs`
 # anchors a fixture on `reduction_pct = 25`.** The take was applied,
 # validated, and passed every band (`armor_extra_hits_max` holds with no
@@ -77,6 +83,7 @@ reduction_pct = 10
 move_penalty_pct = 0
 # Their Cold column (`reference/RIPLIST.md` §1h), read whole (weather v0).
 cold_pct = 6
+fel_pct = 25
 
 [[armor]]
 id = "item.armor_burlap_body"
@@ -84,6 +91,7 @@ slot = "body"
 reduction_pct = 15
 move_penalty_pct = 0
 cold_pct = 27
+fel_pct = 10
 
 [[armor]]
 id = "item.armor_roadsign_body"
@@ -92,6 +100,7 @@ reduction_pct = 25
 move_penalty_pct = 5
 # Negative, as theirs is: a sheet of metal draws the cold in.
 cold_pct = -34
+fel_pct = 0
 
 # Prim pieces (ours, priced under burlap's body and over its hood): the
 # poncho is the warm one, the helmet the hard one.
@@ -101,6 +110,7 @@ slot = "body"
 reduction_pct = 11
 move_penalty_pct = 0
 cold_pct = 35
+fel_pct = 15
 
 [[armor]]
 id = "item.armor_bone_head"
@@ -108,3 +118,28 @@ slot = "head"
 reduction_pct = 14
 move_penalty_pct = 0
 cold_pct = 4
+fel_pct = 5
+
+# The Verdigris' own answer (`sim_core::exposure::corrode`): charcoal in a
+# cloth over the mouth wards off most of its rise and almost no blow or cold.
+# 4, not 2 or 3: those sum with a body piece to a percentage where the band
+# and the sim round a hit apart (`content.rs`
+# `the_band_and_the_sim_kill_in_the_same_number_of_hits`).
+[[armor]]
+id = "item.armor_ash_mask"
+slot = "head"
+reduction_pct = 4
+move_penalty_pct = 0
+cold_pct = 3
+fel_pct = 60
+
+# Rust's hazmat, ours: a body piece warding off 40% of the Verdigris, so mask
+# and suit together reach the ceiling (`fel_ward_max`). A hide poncho's
+# blow (11, a percentage the band test already holds) and a warm coat's cold.
+[[armor]]
+id = "item.armor_ash_suit"
+slot = "body"
+reduction_pct = 11
+move_penalty_pct = 0
+cold_pct = 15
+fel_pct = 40

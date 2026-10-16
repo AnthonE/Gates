@@ -22,6 +22,31 @@ fn the_schedule_is_a_function_of_seed_and_tick() {
     assert!(differs, "two seeds share one sky");
 }
 
+/// A fresh wipe stays dry for its first `RAIN_GRACE_TICKS` (the
+/// reference's rain grace), and rains as it always did after.
+#[test]
+fn a_fresh_wipe_does_not_rain() {
+    let mut rained_after = false;
+    for seed in 0..64u64 {
+        for tick in (0..weather::RAIN_GRACE_TICKS).step_by(900) {
+            assert_eq!(
+                weather::auto(seed, tick).rain,
+                0,
+                "seed {seed} rained at {tick}"
+            );
+        }
+        rained_after |= (0..64u64).any(|s| {
+            weather::auto(
+                seed,
+                weather::RAIN_GRACE_TICKS + SEG_TICKS * (s + 1) + FADE_TICKS,
+            )
+            .rain
+                > 0
+        });
+    }
+    assert!(rained_after, "the grace never ended");
+}
+
 #[test]
 fn the_sky_never_jumps_between_ticks() {
     // Across several segment edges, including the fades, no per-mille field

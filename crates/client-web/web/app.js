@@ -166,10 +166,17 @@ const DEV_ADDR = "127.0.0.1:4433";
 let rows = [];
 let picked = null;
 
+/* `host:port` and nothing a URL could read another way — the rule
+   `client::net::handshake::server_host` holds the dial to. A link's
+   `?server=evil.example/.elopros.com:1` dials evil.example; it must not
+   reach the list, let alone wear the official mark. */
+const ADDR = /^(?:[A-Za-z0-9_-]{1,63}(?:\.[A-Za-z0-9_-]{1,63})*\.?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const addrOk = (a) => ADDR.test(String(a || ""));
+
 function baseRows() {
   const out = [];
   const linked = (q.get("server") || "").trim();
-  if (linked) out.push({ id: "link", name: "From your link", addr: linked, direct: true });
+  if (linked && addrOk(linked)) out.push({ id: "link", name: "From your link", addr: linked, direct: true });
   if (!onOrigin) out.push({ id: "dev", name: "Local dev server", addr: DEV_ADDR, direct: true });
   out.push({ id: "public", name: "Gates public server", addr: PUBLIC_ADDR, map: null, max: 100 });
   return out;
@@ -294,6 +301,7 @@ function freshReload(r) {
    anything a list says about a row, so a community shard cannot wear it
    (`client::ui::servers::is_official_addr` is the same rule). */
 function official(r) {
+  if (!addrOk(r.addr)) return false;
   const at = String(r.addr || "").lastIndexOf(":");
   if (at < 1 || r.addr.startsWith("[")) return false;
   const host = r.addr.slice(0, at).toLowerCase().replace(/\.+$/, "");
@@ -1083,7 +1091,23 @@ window.gatesPanic = (msg) => {
   const renderer = /bevy_render[^\n]*renderer|Unable to find a GPU|wgpu surface|request_device/.test(m);
   if (window.gatesGfx === "webgpu" && renderer && playStarted && performance.now() - playStarted < 30000) {
     gpuFallBack("WebGPU did not start in this browser");
+    return;
   }
+  /* Any other panic stops the game for good. If the handoff is still up,
+     say so on it rather than leave its bar sweeping over a dead canvas. */
+  const h = $("handoff");
+  if (!h.hidden && !h.classList.contains("gone")) {
+    h.classList.add("failed");
+    $("handoff-line").textContent = "The game stopped while starting. Reload the page to try again.";
+  }
+};
+/* The game has drawn its own loading screen (`client::render::web::reveal`):
+   fade the handoff out from over it. */
+window.gatesShown = () => {
+  const h = $("handoff");
+  if (h.hidden || h.classList.contains("failed")) return;
+  h.classList.add("gone");
+  setTimeout(() => { h.hidden = true; }, 400);
 };
 
 async function load(gfx, sizes) {
@@ -1217,6 +1241,72 @@ async function openAudio() {
   }
 }
 
+/* ── the microphone, opened on the first push to talk ──────────────────────
+   Proximity voice (`client/src/render/voice.rs`). The game calls `start()` the
+   first time the talk key goes down, which is when the browser asks the
+   player for the microphone, and then `take()` every frame for the samples
+   the `gates-mic` processor captured since (`audio-processor.js`), at `rate`.
+   `state` is "off", "asking", "on" or "none". Never fatal: a page with no
+   microphone still hears everyone near it; it only cannot talk. */
+const MIC_QUEUE = 48; /* ~1 s of 1024-sample batches; the oldest goes past it */
+globalThis.gatesMic = {
+  state: "off",
+  rate: 0,
+  queue: [],
+  start() {
+    if (this.state !== "off") return;
+    this.state = "asking";
+    openMic(this).catch((err) => {
+      console.warn("gates mic: none -", (err && err.message) || err);
+      this.state = "none";
+    });
+  },
+  take() {
+    if (this.queue.length === 0) return null;
+    let n = 0;
+    for (const b of this.queue) n += b.length;
+    const out = new Float32Array(n);
+    let at = 0;
+    for (const b of this.queue) { out.set(b, at); at += b.length; }
+    this.queue.length = 0;
+    return out;
+  },
+};
+/* The talk buttons include a mouse's side buttons, which a browser would
+   otherwise read as back and forward, out of the game. */
+for (const type of ["mousedown", "mouseup", "auxclick"]) {
+  addEventListener(type, (e) => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
+}
+async function openMic(mic) {
+  await startAudio();
+  const a = globalThis.gatesAudio;
+  if (!a) throw new Error("no audio context");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("this page cannot ask for a microphone");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+  });
+  const source = a.context.createMediaStreamSource(stream);
+  /* One output, connected and silent: a node wired to the destination is
+     pulled on every engine, where an output-less one is not everywhere. */
+  const node = new AudioWorkletNode(a.context, "gates-mic", {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+  });
+  node.port.onmessage = (e) => {
+    if (mic.queue.length >= MIC_QUEUE) mic.queue.shift();
+    mic.queue.push(e.data);
+  };
+  source.connect(node);
+  node.connect(a.context.destination);
+  mic.rate = a.context.sampleRate;
+  mic.stream = stream;
+  mic.state = "on";
+  console.info(`gates mic: on at ${a.context.sampleRate} Hz`);
+}
+
 /* ── the score, started inside the gesture ─────────────────────────────────
    The music is whole tracks, four to five minutes each, streamed by the
    browser's own `<audio>` element from `assets/music/` rather than decoded
@@ -1334,7 +1424,10 @@ async function join(kind, audio, identity) {
   const line = kind === "watch" ? watchStatus : status;
   const row = current();
   const server = (row ? row.addr : serverInput.value).trim();
-  const hash = $("hash").value.trim() || undefined;
+  /* A pinned certificate replaces the browser's own check, so a link's
+     `?hash=` is never let pin one for our own host: an official shard has a
+     real certificate, and a pin there is only ever somebody else's. */
+  const hash = official({ addr: server }) ? undefined : $("hash").value.trim() || undefined;
   const { Gates } = glue;
   let g;
   /* A wallet asked to sign means the shard answered: whatever fails after
@@ -1354,11 +1447,16 @@ async function join(kind, audio, identity) {
       /* Address and signer together or neither — `Gates.join` refuses the odd
          pair rather than dropping half of it. */
       g = await Gates.join(server, hash, identity ?? undefined, identity
-        ? (text) => {
+        ? async (text) => {
           walletAsked = true;
           busy = { label: "Signing in", sub: "approve the sign-in in your wallet" };
           paintGo();
-          return wallet.sign(text, identity);
+          const signature = await wallet.sign(text, identity);
+          /* Signed: the rest is the server checking it and the world
+             arriving, so stop asking the player to look at their wallet. */
+          busy = { label: "Joining", sub: "the server is letting you in" };
+          paintGo();
+          return signature;
         }
         : undefined);
     }
@@ -1424,6 +1522,9 @@ async function enter(g, audio, row) {
   /* `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
      loop to requestAnimationFrame and `run()` does not come back. */
   playStarted = performance.now();
+  /* Safety net: the game calls `gatesShown` once it has drawn. A module
+     that never does (an older build) must not leave this over the canvas. */
+  setTimeout(() => window.gatesShown(), 45000);
   g.play("#gates");
 }
 

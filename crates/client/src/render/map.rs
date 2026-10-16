@@ -1,4 +1,5 @@
-//! The map screen — `Screen::Map`, opened with `M`.
+//! The map screen — `Screen::Map`, held open with `G`. Fullscreen, and the
+//! wheel zooms it (`ui::map::MapView`).
 //!
 //! All arithmetic is [`crate::ui::map`]'s: the palette, the hillshade and the
 //! two positional facts that keep the island right side up. This file turns
@@ -24,9 +25,13 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
 use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
+use bevy::input::mouse::{
+    AccumulatedMouseMotion, AccumulatedMouseScroll, MouseButtonInput, MouseScrollUnit,
+};
+use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::window::PrimaryWindow;
 
 use crate::ui::map::{self, MarkKind, GRID_COLS};
 
@@ -38,8 +43,21 @@ use super::{ui, Net, WorldId};
 /// and not by the image.
 pub const MAP_PX: usize = 512;
 
-/// How large the map is drawn, in screen pixels.
-const MAP_DRAW_PX: f32 = 640.0;
+/// How close to the window's edge the crosshair may go, UI px. Pushed past
+/// it, the island slides instead (edge push).
+const EDGE_PX: f32 = 12.0;
+
+/// How far a held left button travels before it is a drag (the island
+/// follows the mouse) rather than a click (a mark's colour), UI px.
+const DRAG_PX: f32 = 4.0;
+
+/// The sea around the island, and the letterbox either side of it at full
+/// zoom-out: the paint's own deep water, so the edge of the picture is not a
+/// line on screen.
+pub(super) fn sea() -> Color {
+    let [r, g, b] = map::SEA_DEEP;
+    Color::srgb(r / 255.0, g / 255.0, b / 255.0)
+}
 
 /// An anchor marker's badge (bed, hearth, backpack, waystation), screen px.
 ///
@@ -56,12 +74,12 @@ const MAP_DRAW_PX: f32 = 640.0;
 /// The ranking survives in the shape rather than the size: the player is the
 /// only SOLID, SATURATED mark on the screen and the only one that points
 /// somewhere (`PLAYER_PX`). `DECISIONS.md` §open, map markers v2.
-const MAP_MARK_PX: f32 = 18.0;
+pub(super) const MAP_MARK_PX: f32 = 18.0;
 
 /// How much of a badge the picture inside it takes. The rest is the ring and
 /// the dark disc that makes a white silhouette readable over a lit island —
 /// an icon drawn edge to edge has nothing separating it from the terrain.
-const MARK_ICON_FRAC: f32 = 0.62;
+pub(super) const MARK_ICON_FRAC: f32 = 0.62;
 
 /// The haven's badge. Larger than an anchor — it is the island's one authored
 /// destination, and the two tiers are separated by size alone
@@ -81,8 +99,8 @@ const PLAYER_PX: f32 = 22.0;
 /// The row is fixed-width so both tiers' names share one axis: a text node
 /// sized to its own string hangs off the right of the badge, and `HAVEN` and
 /// `WAYSTATION` would then be centred on two different things.
-const SITE_LABEL_PX: f32 = 10.0;
-const SITE_LABEL_W: f32 = 84.0;
+pub(super) const SITE_LABEL_PX: f32 = 10.0;
+pub(super) const SITE_LABEL_W: f32 = 84.0;
 
 /// The disc behind a solid badge's picture, and behind a hollow one's.
 ///
@@ -91,15 +109,15 @@ const SITE_LABEL_W: f32 = 84.0;
 /// that works for a shape rather than a glyph. The hollow badge's is fainter
 /// because a ring already reads as an outline and filling it solid would say
 /// "solid", which is the channel a spent bed is using to say the opposite.
-const BADGE_SOLID: Color = Color::srgba(0.05, 0.05, 0.06, 0.72);
-const BADGE_HOLLOW: Color = Color::srgba(0.05, 0.05, 0.06, 0.42);
+pub(super) const BADGE_SOLID: Color = Color::srgba(0.05, 0.05, 0.06, 0.72);
+pub(super) const BADGE_HOLLOW: Color = Color::srgba(0.05, 0.05, 0.06, 0.42);
 
 /// The player's ink. The only saturated, solid mark on the screen.
 const PLAYER_INK: Color = Color::srgb(0.98, 0.30, 0.24);
 
 /// The grid labels' ink. Warm off-white at low alpha — an index rather than a
 /// feature, and 256 of them, so anything louder becomes the picture.
-const GRID_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.45);
+pub(super) const GRID_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.45);
 
 /// The grid label in each cell, screen px.
 ///
@@ -114,7 +132,7 @@ const GRID_INK: Color = Color::srgba(0.95, 0.94, 0.90, 0.45);
 /// a number in the middle of a square sits on top of the terrain it is
 /// describing. The reference's own devblog calls its first version "a little
 /// bit ugly"; the corner is where a printed chart puts it.
-const GRID_LABEL_PX: f32 = 9.0;
+pub(super) const GRID_LABEL_PX: f32 = 11.0;
 
 /// Everything this screen owns.
 #[derive(Component)]
@@ -142,13 +160,24 @@ pub struct Readout;
 #[derive(Resource, Default)]
 pub struct MapPins(pub map::Pins);
 
-/// Where the map's crosshair sits, as a fraction of the island (0..1): the
-/// mouse moves it while the map is held, instead of turning the view, and a
-/// right click marks or clears that spot.
+/// Where the map's crosshair sits: on SCREEN (UI px), where the mouse moves
+/// it while the map is held instead of turning the view, and the island
+/// fraction under it, which a right click marks or clears.
 #[derive(Resource, Default)]
 pub struct MapCursor {
+    /// Screen position, UI px.
+    pub sx: f32,
+    pub sy: f32,
+    /// The island fraction under it, kept in step by [`aim`] and [`view`].
     pub fx: f32,
     pub fy: f32,
+    /// A click's reach on a mark, as an island fraction at this zoom.
+    pub pick: f32,
+    /// The window the map fills, UI px, as last laid out.
+    pub w: f32,
+    pub h: f32,
+    /// A left button held down, and how far the mouse has gone since.
+    drag: Option<f32>,
     /// The marks layer needs redrawing.
     dirty: bool,
     /// The mark whose label is being typed, and how it looked before, for
@@ -170,6 +199,21 @@ pub struct PinLayer;
 #[derive(Component)]
 pub struct MapCrosshair;
 
+/// The island's picture and everything pinned to it. Everything inside is
+/// placed by percentage, so [`view`] moving and sizing this one node is the
+/// whole of the zoom.
+#[derive(Component)]
+pub struct IslandFrame;
+
+/// The zoom, bottom right.
+#[derive(Component)]
+pub struct ZoomReadout;
+
+/// How far in, and where: kept across opens, so the map comes back at the
+/// zoom it was left at (re-centred on the player).
+#[derive(Resource, Default)]
+pub struct MapCamera(pub map::MapView);
+
 /// A mark's badge, screen px (a diamond, unlike every authored mark), and
 /// the picture inside it. Its colour is the player's (`map::PIN_COLOURS`).
 const PIN_PX: f32 = 16.0;
@@ -178,10 +222,6 @@ const PIN_ICON_PX: f32 = 11.0;
 /// its light colours.
 const PIN_TEXT: Color = Color::srgb(0.12, 0.08, 0.02);
 const PIN_EDGE: Color = Color::srgba(0.1, 0.07, 0.02, 0.9);
-
-/// How far the crosshair moves for a pixel of mouse travel, in map
-/// fractions: one pixel of mouse is one pixel of the drawn island.
-const CURSOR_PER_PX: f32 = 1.0 / MAP_DRAW_PX;
 
 /// The painted island, kept across opens.
 #[derive(Resource, Default)]
@@ -192,7 +232,28 @@ pub struct Island {
     /// joining elsewhere shows the wrong coastline — and it looks plausible,
     /// which is the worst kind of wrong.
     seed: Option<u64>,
+    /// The blight overlay's per-texel terrain (`ui::map::BlightCache`), built
+    /// while the loading bar fills: the seed-only half of the overlay.
+    cache: Option<map::BlightCache>,
+    /// The spread over the island, repainted in place when its moment moves.
+    blight: Option<Handle<Image>>,
+    /// The moment `blight` was painted at.
+    blight_key: Option<BlightKey>,
 }
+
+/// What the overlay was painted for: this wipe's outbreaks, the fel tier and
+/// the arc's whole hour. An hour, because the front walks ~3 m of a 16 m
+/// texel in one and an outbreak a few; a tier climb repaints at once.
+#[derive(Clone, Copy, PartialEq)]
+struct BlightKey {
+    plan: sim_core::blight::Plan,
+    tier: u8,
+    hour: u64,
+}
+
+/// The blight overlay inside the island's frame ([`spawn_blight_layer`]).
+#[derive(Component)]
+pub struct MapBlight;
 
 impl Island {
     /// The painted island for this seed, painting it if this is the first
@@ -230,6 +291,72 @@ impl Island {
         }
         self.texture.clone().expect("painted above")
     }
+
+    /// The overlay's terrain cache for this seed: ~65 k height taps, so
+    /// built by [`prepaint`] and only ever reused after.
+    pub fn blight_cache(&mut self, seed: u64, haven: &sim_core::terrain::Haven) {
+        if self.cache.as_ref().map(|c| c.seed()) != Some(seed) {
+            self.cache = Some(map::BlightCache::new(seed, haven, map::BLIGHT_PX));
+            self.blight = None;
+            self.blight_key = None;
+        }
+    }
+
+    /// The blight overlay at this moment, repainting it in place when the
+    /// plan, the tier or the arc's hour has moved since it was last painted.
+    /// The handle stays the same across repaints, so nothing that shows it is
+    /// touched.
+    pub fn blight(
+        &mut self,
+        images: &mut Assets<Image>,
+        world: &WorldId,
+        plan: &sim_core::blight::Plan,
+        tier: u8,
+        tick: u64,
+    ) -> Handle<Image> {
+        use sim_core::blight;
+        self.blight_cache(world.seed, &world.haven);
+        let hour = tick / blight::TICKS_PER_HOUR;
+        let key = BlightKey {
+            plan: *plan,
+            tier,
+            hour,
+        };
+        let cache = self.cache.as_ref().expect("built above");
+        let now = blight::now(plan, &world.haven, hour * blight::TICKS_PER_HOUR, tier);
+        match self.blight.clone() {
+            Some(h) => {
+                if self.blight_key != Some(key) {
+                    if let Some(data) = images.get_mut(&h).and_then(|img| img.data.as_mut()) {
+                        map::paint_blight(cache, &now, data);
+                    }
+                    self.blight_key = Some(key);
+                }
+                h
+            }
+            None => {
+                let px = map::BLIGHT_PX;
+                let mut buf = vec![0u8; px * px * 4];
+                map::paint_blight(cache, &now, &mut buf);
+                let image = Image::new(
+                    Extent3d {
+                        width: px as u32,
+                        height: px as u32,
+                        depth_or_array_layers: 1,
+                    },
+                    TextureDimension::D2,
+                    buf,
+                    TextureFormat::Rgba8UnormSrgb,
+                    // Both worlds: the CPU copy is what a repaint writes into.
+                    RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+                );
+                let h = images.add(image);
+                self.blight = Some(h.clone());
+                self.blight_key = Some(key);
+                h
+            }
+        }
+    }
 }
 
 /// Paint the island while the LOADING screen is up, so the first `G` is free.
@@ -261,6 +388,9 @@ pub fn prepaint(
 ) {
     if let Some(world) = world {
         island.texture(&mut images, world.seed, &world.haven);
+        // And the blight overlay's terrain, ~30 ms more: its paint waits for
+        // the map, when the tier and the moment are this island's.
+        island.blight_cache(world.seed, &world.haven);
     }
 }
 
@@ -284,13 +414,15 @@ pub fn prepaint(
 /// keyboard while it is open.
 pub fn open(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    binds: Res<super::binds::Binds>,
     mut next: ResMut<NextState<Screen>>,
     ui: Option<Res<super::panels::Ui>>,
     pad: Option<Res<super::verbs::Pad>>,
 ) {
     let busy = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
         || pad.map(|p| p.0.is_open()).unwrap_or(false);
-    if !busy && keyboard.just_pressed(KeyCode::KeyG) {
+    if !busy && binds.just_pressed(super::binds::Action::Map, &keyboard, &mouse) {
         next.set(Screen::Map);
     }
 }
@@ -307,13 +439,17 @@ pub fn open(
 /// label is kept (`Enter`) or put back (`Esc`), and then it follows `G` again.
 pub fn keys(
     keyboard: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    binds: Res<super::binds::Binds>,
     cursor: Res<MapCursor>,
     mut next: ResMut<NextState<Screen>>,
 ) {
     if cursor.typing.is_some() {
         return;
     }
-    if !keyboard.pressed(KeyCode::KeyG) || keyboard.just_pressed(KeyCode::Escape) {
+    if !binds.pressed(super::binds::Action::Map, &keyboard, &mouse)
+        || keyboard.just_pressed(KeyCode::Escape)
+    {
         next.set(Screen::InWorld);
     }
 }
@@ -349,12 +485,20 @@ pub fn setup(
     icons: Option<Res<super::icons::Icons>>,
     mut pins: ResMut<MapPins>,
     mut cursor: ResMut<MapCursor>,
+    mut camera: ResMut<MapCamera>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     // Already painted by `prepaint` while the loading bar filled; this is the
     // handle clone. It still PAINTS if it has to — a shard joined without ever
     // passing through `Screen::Loading` is a state this screen should survive,
     // and a map that refused to draw would be a worse answer than a stutter.
     let texture = island.texture(&mut images, world.seed, &world.haven);
+    // The spread over it, at the arc's own hour (`render/blight.rs`).
+    let overlay = blight
+        .as_deref()
+        .map(|b| island.blight(&mut images, &world, &b.plan, b.tier, b.tick));
     let icons = icons.as_deref();
 
     let [x, _, z] = net.session.core.predict.render_position();
@@ -362,9 +506,29 @@ pub fn setup(
     let square = map::grid_label(x, z);
     // The crosshair opens on you; the marks are this island's.
     pins.0.for_seed(world.seed);
+    // The window this screen will fill, in UI px. `view` reads the laid-out
+    // root from the next frame on; this is the first frame's guess, and the
+    // two agree unless the window moves between them.
+    let (w, h) = windows
+        .single()
+        .map(|win| (win.width() / ui_scale.0, win.height() / ui_scale.0))
+        .unwrap_or((1280.0, 720.0));
+    // Back at the zoom it was left at, centred on you as far as the edge
+    // allows; the crosshair opens on you.
+    let cam = &mut camera.0;
+    cam.zoom = cam.target;
+    cam.centre_on(w, h, px, py);
+    let (sx, sy) = cam.to_screen(w, h, px, py);
+    let (left, top, side) = cam.rect(w, h);
     *cursor = MapCursor {
+        sx,
+        sy,
         fx: px,
         fy: py,
+        pick: cam.pick_frac(w, h),
+        w,
+        h,
+        drag: None,
         dirty: true,
         typing: None,
     };
@@ -399,36 +563,40 @@ pub fn setup(
         &arc,
     );
 
+    // The whole window, sea-coloured, clipping the island when it is zoomed
+    // past the edges. The island is one node inside it that `view` moves
+    // and sizes; the chrome floats over it.
     commands
-        .spawn((MapRoot, ui::screen(Color::srgba(0.02, 0.02, 0.025, 0.94))))
+        .spawn((
+            MapRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BackgroundColor(sea()),
+        ))
         .with_children(|root| {
             root.spawn((
-                ui::strong("MAP", 30.0, ui::TITLE),
+                IslandFrame,
                 Node {
-                    margin: UiRect::bottom(Val::Px(6.0)),
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(left),
+                    top: Val::Px(top),
+                    width: Val::Px(side),
+                    height: Val::Px(side),
                     ..default()
                 },
-            ));
-            root.spawn((
-                Readout,
-                ui::strong(readout_text(&square, &bearing), 15.0, ui::DIM),
-                Node {
-                    margin: UiRect::bottom(Val::Px(10.0)),
-                    ..default()
-                },
-            ));
-
-            root.spawn((
-                Node {
-                    width: Val::Px(MAP_DRAW_PX),
-                    height: Val::Px(MAP_DRAW_PX),
-                    border: UiRect::all(Val::Px(1.0)),
-                    ..default()
-                },
-                BorderColor::all(ui::RULE),
                 ImageNode::new(texture),
             ))
             .with_children(|frame| {
+                // The blight first: the first child draws underneath, so the
+                // grid, its labels, the marks and the arrow stay over the green.
+                if let Some(h) = overlay.clone() {
+                    spawn_blight_layer(frame, h);
+                }
                 // The grid's LINES. The labels follow, one per cell.
                 //
                 // ⚠ **This comment used to say the letters and numbers were
@@ -507,13 +675,28 @@ pub fn setup(
                 // off (`clear_labels`); the badge still says what it is.
                 let named = map::clear_labels(
                     &marks.a[..marks.count],
-                    MAP_DRAW_PX,
+                    side,
                     MAP_MARK_PX,
                     SITE_LABEL_PX,
                     SITE_LABEL_W,
                 );
                 for (i, m) in marks.a[..marks.count].iter().enumerate().rev() {
                     spawn_mark_named(frame, m, icons, named[i]);
+                }
+                // Your last death: the death screen's skull pin, kept on the
+                // map after the respawn until the next death moves it
+                // (Rust's "the last place you died", `ClientCore::
+                // death_marker`). Over the places, under your own marks and
+                // the arrow.
+                if let Some((x, z)) = core.death_marker {
+                    let (fx, fy) = map::world_to_map(x, z, 1);
+                    super::death::spawn_skull(
+                        frame,
+                        fx,
+                        fy,
+                        icons.and_then(|i| i.glyph("map_death")),
+                        false,
+                    );
                 }
 
                 // The player. `world_to_map` with size 1 gives a fraction, so
@@ -621,70 +804,168 @@ pub fn setup(
                         ));
                     }
                 }
-                // The crosshair: a ring the mouse moves, on top of it all.
-                frame.spawn((
-                    MapCrosshair,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Percent(px * 100.0),
-                        top: Val::Percent(py * 100.0),
-                        width: Val::Px(18.0),
-                        height: Val::Px(18.0),
-                        margin: UiRect::all(Val::Px(-9.0)),
-                        border: UiRect::all(Val::Px(2.0)),
-                        border_radius: BorderRadius::MAX,
-                        ..default()
-                    },
-                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
-                ));
             });
+            // The crosshair: a ring the mouse moves, over the island, in
+            // SCREEN px — it stays where it is while the island zooms under
+            // it, which is what keeps a zoom about the spot you are reading.
             root.spawn((
-                MapHelp,
-                ui::label(help_text(false), 12.0, ui::FAINT),
+                MapCrosshair,
                 Node {
-                    margin: UiRect::top(Val::Px(6.0)),
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(sx),
+                    top: Val::Px(sy),
+                    width: Val::Px(18.0),
+                    height: Val::Px(18.0),
+                    margin: UiRect::all(Val::Px(-9.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    border_radius: BorderRadius::MAX,
                     ..default()
                 },
+                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                Pickable::IGNORE,
             ));
 
-            // The cap is drop-newest and NOT silent: a truncated map that
-            // says nothing reads as "everything is drawn" (`CLAUDE.md` §4's
-            // stated-overflow-policy law, applied to a picture).
-            if marks.dropped > 0 {
-                root.spawn((
-                    ui::label(
-                        format!("{} marks beyond the cap", marks.dropped),
-                        12.0,
-                        ui::FAINT,
-                    ),
+            // The chrome floats over the picture, top left: what the map is
+            // and where you are on it.
+            root.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(18.0),
+                    top: Val::Px(14.0),
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::axes(Val::Px(14.0), Val::Px(10.0)),
+                    row_gap: Val::Px(2.0),
+                    ..default()
+                },
+                BackgroundColor(super::panels::SCRIM),
+            ))
+            .with_children(|tl| {
+                tl.spawn(ui::strong("MAP", 26.0, ui::TITLE));
+                tl.spawn((
+                    Readout,
+                    ui::strong(readout_text(&square, &bearing), 15.0, ui::DIM),
+                ));
+            });
+
+            // Along the bottom: every gesture, the cap's note, the legend.
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(12.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            })
+            .with_children(|row| {
+                row.spawn((
                     Node {
-                        margin: UiRect::top(Val::Px(6.0)),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        padding: UiRect::axes(Val::Px(14.0), Val::Px(6.0)),
+                        row_gap: Val::Px(3.0),
                         ..default()
                     },
-                ));
-            }
+                    BackgroundColor(super::panels::SCRIM),
+                ))
+                .with_children(|bar| {
+                    bar.spawn((MapHelp, ui::label(help_text(false), 12.0, ui::DIM)));
+                    // The cap is drop-newest and NOT silent: a truncated map
+                    // that says nothing reads as "everything is drawn"
+                    // (`CLAUDE.md` §4's stated-overflow-policy law, applied
+                    // to a picture).
+                    if marks.dropped > 0 {
+                        bar.spawn(ui::label(
+                            format!("{} marks beyond the cap", marks.dropped),
+                            12.0,
+                            ui::FAINT,
+                        ));
+                    }
+                    // The legend: the facts the picture cannot state.
+                    bar.spawn(ui::label(
+                        format!(
+                            "A1 is north-west    -    {} m a square    -    north is up    \
+                             -    let go of G to close",
+                            map::GRID_M as u32
+                        ),
+                        12.0,
+                        ui::FAINT,
+                    ));
+                });
+            });
 
-            // The legend. It used to open with `GRID_LETTERS[..1]` — the
-            // literal string `"A"`, printed where a legend goes, saying
-            // nothing about anything. The grid explains itself now, in all
-            // 256 cells, so what is left is the two facts the picture cannot
-            // state: which way is up, and how to make it go away.
+            // The zoom, bottom right.
             root.spawn((
-                ui::label(
-                    format!(
-                        "A1 is north-west    -    {} m a square    -    north is up    \
-                         -    let go of G to close",
-                        map::GRID_M as u32
-                    ),
-                    12.0,
-                    ui::FAINT,
-                ),
+                ZoomReadout,
+                ui::strong(zoom_text(camera.0.target), 14.0, ui::DIM),
+                ui::TEXT_SHADOW,
                 Node {
-                    margin: UiRect::top(Val::Px(10.0)),
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(20.0),
+                    bottom: Val::Px(18.0),
                     ..default()
                 },
             ));
         });
+}
+
+/// The zoom readout: `1.0×` … `4.0×`.
+fn zoom_text(zoom: f32) -> String {
+    format!("{zoom:.1}\u{d7}")
+}
+
+/// Each frame the map is up: ease the zoom toward the wheel's ask about the
+/// crosshair, and copy the camera onto the island's node and the crosshair's.
+///
+/// The window is read off the laid-out root rather than the OS window, so a
+/// `UiScale` (the browser build sets one) is already divided out.
+pub fn view(
+    time: Res<Time>,
+    mut camera: ResMut<MapCamera>,
+    mut cursor: ResMut<MapCursor>,
+    root: Query<&ComputedNode, With<MapRoot>>,
+    mut frame: Query<&mut Node, (With<IslandFrame>, Without<MapCrosshair>)>,
+    mut cross: Query<&mut Node, (With<MapCrosshair>, Without<IslandFrame>)>,
+    mut zoom: Query<&mut Text, With<ZoomReadout>>,
+) {
+    if let Ok(c) = root.single() {
+        let size = c.size() * c.inverse_scale_factor();
+        if size.x > 1.0 && size.y > 1.0 {
+            cursor.w = size.x;
+            cursor.h = size.y;
+        }
+    }
+    let (w, h) = (cursor.w, cursor.h);
+    let cam = &mut camera.0;
+    cam.ease(w, h, cursor.sx, cursor.sy, time.delta_secs());
+    cam.clamp(w, h);
+    let (fx, fy) = cam.to_frac(w, h, cursor.sx, cursor.sy);
+    cursor.fx = fx;
+    cursor.fy = fy;
+    cursor.pick = cam.pick_frac(w, h);
+
+    let (left, top, side) = cam.rect(w, h);
+    if let Ok(mut node) = frame.single_mut() {
+        let want = (Val::Px(left), Val::Px(top), Val::Px(side));
+        if (node.left, node.top, node.width) != want {
+            node.left = want.0;
+            node.top = want.1;
+            node.width = want.2;
+            node.height = want.2;
+        }
+    }
+    if let Ok(mut node) = cross.single_mut() {
+        let want = (Val::Px(cursor.sx), Val::Px(cursor.sy));
+        if (node.left, node.top) != want {
+            node.left = want.0;
+            node.top = want.1;
+        }
+    }
+    if let Ok(mut text) = zoom.single_mut() {
+        let want = zoom_text(cam.target);
+        if text.0 != want {
+            text.0 = want;
+        }
+    }
 }
 
 /// One mark: a badge with a PICTURE in it, and a name for authored destinations.
@@ -947,12 +1228,6 @@ pub fn mates(
     }
 }
 
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MapRoot>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
-}
-
 /// The line under the island: every gesture the held map answers, so none
 /// of them has to be learned from anywhere else. One function so `setup` and
 /// [`aim`] cannot write it two ways.
@@ -960,71 +1235,121 @@ fn help_text(typing: bool) -> &'static str {
     if typing {
         "type the label  ·  Enter: keep it  ·  Esc: put it back  ·  Backspace: rub out"
     } else {
-        "mouse: aim  ·  right click: mark the spot / clear a mark  ·  \
-         on a mark: left click colour, wheel picture, Enter label"
+        "mouse: aim  ·  wheel: zoom  ·  left drag: pan  ·  right click: mark the spot / clear a mark  ·  \
+         on a mark: left click colour, shift + wheel picture, Enter label"
     }
 }
 
 /// While the map is held the mouse is the map's: it moves the crosshair
-/// instead of turning the view (`input::gather` stands down), and a right
-/// click marks the spot under it or clears the mark that is there. On a mark,
-/// a left click steps its colour and the wheel its picture. Runs in
-/// `PreUpdate`, after the input is read and before anything else sees it, and
-/// takes the buttons for itself — so no click on the map also swings, draws a
-/// bow, lights a torch or places a piece in the world behind it — and the
-/// wheel when it turned a mark's picture, so that does not also walk the
-/// hotbar.
-// Each is a distinct input: the mouse's three channels, the marks and the
-// crosshair, and the three things drawn from them.
+/// instead of turning the view (`input::gather` stands down), and pushing
+/// the crosshair past the window's edge slides the island. The wheel zooms
+/// about the crosshair; a held left button drags the island; a right click
+/// marks the spot under the crosshair or clears the mark that is there. On a
+/// mark, a left CLICK (not a drag) steps its colour and shift + wheel its
+/// picture. Runs in `PreUpdate`, after the input is read and before anything
+/// else sees it, and takes the buttons and the wheel for itself — so no click
+/// on the map also swings, draws a bow, lights a torch or places a piece in
+/// the world behind it, and no zoom also walks the hotbar.
+///
+/// The buttons are read off their MESSAGES, not `ButtonInput`: this system
+/// resets the buttons every frame so the world never sees them, and a reset
+/// button never reports `just_released` — a drag needs to see its release.
+// Each is a distinct input: the mouse's four channels, the shift key, the
+// marks and the camera, and the three things drawn from them.
 #[allow(clippy::too_many_arguments)]
 pub fn aim(
     mut commands: Commands,
     motion: Res<AccumulatedMouseMotion>,
     mut scroll: ResMut<AccumulatedMouseScroll>,
+    mut buttons: MessageReader<MouseButtonInput>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut cursor: ResMut<MapCursor>,
+    mut camera: ResMut<MapCamera>,
     mut pins: ResMut<MapPins>,
     icons: Option<Res<super::icons::Icons>>,
-    mut cross: Query<&mut Node, With<MapCrosshair>>,
+    sound: Option<ResMut<super::audio::Sound>>,
     mut help: Query<&mut Text, With<MapHelp>>,
     layer: Query<(Entity, Option<&Children>), With<PinLayer>>,
 ) {
-    let d = motion.delta * CURSOR_PER_PX;
-    if d != Vec2::ZERO {
-        cursor.fx = (cursor.fx + d.x).clamp(0.0, 1.0);
-        cursor.fy = (cursor.fy + d.y).clamp(0.0, 1.0);
-        if let Ok(mut node) = cross.single_mut() {
-            node.left = Val::Percent(cursor.fx * 100.0);
-            node.top = Val::Percent(cursor.fy * 100.0);
+    let (w, h) = (cursor.w, cursor.h);
+    let cam = &mut camera.0;
+    let d = motion.delta;
+    if let Some(travel) = cursor.drag.as_mut() {
+        // A held left button: the island follows the mouse and the
+        // crosshair stays put — past a hair of travel, so a click with a
+        // shaky hand is still a click.
+        *travel += d.length();
+        if *travel > DRAG_PX {
+            cam.pan_px(w, h, d.x, d.y);
         }
+    } else if d != Vec2::ZERO {
+        // The crosshair moves; past the window's edge the island slides
+        // under it instead (and stops when the island's edge arrives).
+        let (nx, ny) = (cursor.sx + d.x, cursor.sy + d.y);
+        let (cx, cy) = (
+            nx.clamp(EDGE_PX, (w - EDGE_PX).max(EDGE_PX)),
+            ny.clamp(EDGE_PX, (h - EDGE_PX).max(EDGE_PX)),
+        );
+        cam.pan_px(w, h, cx - nx, cy - ny);
+        // …and never off the island: at full zoom-out the sea either side
+        // is not map.
+        let (l, t, side) = cam.rect(w, h);
+        cursor.sx = cx.clamp(l, l + side);
+        cursor.sy = cy.clamp(t, t + side);
     }
+    let (fx, fy) = cam.to_frac(w, h, cursor.sx, cursor.sy);
+    cursor.fx = fx;
+    cursor.fy = fy;
+    cursor.pick = cam.pick_frac(w, h);
+    let pick = cursor.pick;
+
+    // `input::gather`'s units: a mouse notch is a line; a trackpad's pixels
+    // are a fraction of one, so it zooms smoothly rather than in jumps.
+    let notches = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / 60.0,
+    };
+    scroll.delta = Vec2::ZERO;
+    let shift = keyboard.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+
     // Not while a label is being typed: the mark it is going into must stay
     // where it is in the list, and clearing it mid-word would type into
     // whichever mark slid into its place.
-    if cursor.typing.is_none() {
-        let (fx, fy) = (cursor.fx, cursor.fy);
-        if mouse.just_pressed(MouseButton::Right) {
-            pins.0.toggle(fx, fy);
-            cursor.dirty = true;
+    let free = cursor.typing.is_none();
+    let mut pinned = false;
+    for ev in buttons.read() {
+        match (ev.button, ev.state) {
+            (MouseButton::Left, ButtonState::Pressed) => cursor.drag = Some(0.0),
+            (MouseButton::Left, ButtonState::Released) => {
+                let click = cursor.drag.take().is_some_and(|t| t <= DRAG_PX);
+                if let Some(i) = pins.0.hit_within(fx, fy, pick).filter(|_| click && free) {
+                    pins.0.cycle_colour(i, 1);
+                    cursor.dirty = true;
+                }
+            }
+            (MouseButton::Right, ButtonState::Pressed) if free => {
+                pins.0.toggle_within(fx, fy, pick);
+                cursor.dirty = true;
+                pinned = true;
+            }
+            _ => {}
         }
-        let on = pins.0.hit(fx, fy);
-        if let Some(i) = on.filter(|_| mouse.just_pressed(MouseButton::Left)) {
-            pins.0.cycle_colour(i, 1);
-            cursor.dirty = true;
-        }
-        // `input::gather`'s units: a mouse notch is a line and is counted, a
-        // trackpad's pixels are one step a frame in their direction.
-        let notches = match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y.round() as i32,
-            MouseScrollUnit::Pixel => scroll.delta.y.signum() as i32,
-        };
-        if let Some(i) = on.filter(|_| notches != 0) {
-            pins.0.cycle_icon(i, -notches);
-            scroll.delta = Vec2::ZERO;
-            cursor.dirty = true;
+    }
+    if notches != 0.0 {
+        let on = pins.0.hit_within(fx, fy, pick).filter(|_| shift && free);
+        match on {
+            Some(i) => {
+                pins.0.cycle_icon(i, -(notches.signum() as i32));
+                cursor.dirty = true;
+            }
+            None => cam.wheel(notches),
         }
     }
     mouse.reset_all();
+    if let Some(mut sound) = sound.filter(|_| pinned) {
+        sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::MapPin));
+    }
     if !cursor.dirty {
         return;
     }
@@ -1072,7 +1397,7 @@ pub fn label(
         let free = !reports.is_some_and(|r| r.open);
         let enter = keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]);
         if free && enter {
-            if let Some(i) = pins.0.hit(cursor.fx, cursor.fy) {
+            if let Some(i) = pins.0.hit_within(cursor.fx, cursor.fy, cursor.pick) {
                 cursor.typing = Some((i, pins.0.style(i)));
                 cursor.dirty = true;
                 keyboard.reset_all();
@@ -1202,6 +1527,36 @@ pub fn spawn_pin(
                 .with_child((ui::strong(label, SITE_LABEL_PX, fill), ui::TEXT_SHADOW));
             }
         });
+}
+
+/// The blight overlay, one bundle filling the island's frame: it zooms and
+/// pans with the frame for free. Public for the headless spawn test.
+pub fn spawn_blight_layer(frame: &mut ChildSpawnerCommands, h: Handle<Image>) {
+    frame.spawn((
+        MapBlight,
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            top: Val::Px(0.0),
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
+        ImageNode::new(h),
+    ));
+}
+
+/// Keep the overlay current while the map is held open: an arc hour or a
+/// tier turning over repaints it in place. A key compare otherwise.
+pub fn blight_follow(
+    world: Res<WorldId>,
+    blight: Option<Res<super::blight::Blight>>,
+    mut island: ResMut<Island>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if let Some(b) = blight.as_deref() {
+        island.blight(&mut images, &world, &b.plan, b.tier, b.tick);
+    }
 }
 
 /// Forget the painted island when the shard goes: the next one has its own

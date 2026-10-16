@@ -57,6 +57,13 @@ which the decoder would clip), lightly high-passed, otherwise whole.
 | `gather_0`–`2` | `Gather` | Kenney, *rpg-audio*: `Audio/dropLeather.ogg`; Kenney, *rpg-audio*: `Audio/cloth2.ogg`; Kenney, *rpg-audio*: `Audio/cloth3.ogg` |
 | `equip_0`–`2` | `Equip` | Kenney, *RPG Audio*: `Audio/handleSmallLeather.ogg`, `handleSmallLeather2.ogg`, `cloth4.ogg` |
 | `map_paper_0`–`1` | `MapPaper` | Kenney, *RPG Audio*: `Audio/bookFlip1.ogg` (its last flip, from 0.28 s), `bookFlip3.ogg` |
+| `ui_hover_0` | `UiHover` | Kenney, *UI Audio*: `Audio/rollover2.ogg` |
+| `inv_open_0`–`1` | `InvOpen` | Kenney, *RPG Audio*: `Audio/clothBelt.ogg`, `clothBelt2.ogg` |
+| `inv_close_0` | `InvClose` | Kenney, *RPG Audio*: `Audio/cloth1.ogg` |
+| `item_move_0`–`1` | `ItemMove` | Kenney, *RPG Audio*: `Audio/bookPlace1.ogg`, `bookPlace3.ogg` |
+| `item_drop_0` | `ItemDrop` | Kenney, *RPG Audio*: `Audio/beltHandle2.ogg` |
+| `craft_start_0`–`1` | `CraftStart` | Kenney, *RPG Audio*: `Audio/beltHandle1.ogg`, `metalClick.ogg` |
+| `map_pin_0` | `MapPin` | Kenney, *Interface Sounds*: `Audio/drop_002.ogg` |
 | `container_open_0`–`2` | `ContainerOpen` | Kenney, *RPG Audio*: `Audio/metalLatch.ogg` laid 60–70 ms ahead of `creak1.ogg`, `creak3.ogg` and `creak2.ogg` (−2 to −3 dB), one creak per take |
 
 ## `freesound/` — Freesound, cut here (2026-10-01)
@@ -147,6 +154,7 @@ recordings the take is the two layered.
 | `shot_heli_far_0`–`2` | `ShotHeliFar` | a real Mosin-Nagant (7.62×54R, a machine gun's round) — *The Free Firearm Sound Library* (as above; CC0), `M_26P` (mid distance, single shots): the three shots at 1.137, 6.105, 10.743 s, each the blast and its echo off the range ~130 ms later, right channel only, 0.62 s from 12 ms before the blast, pitched to 0.85× like the near takes, HP 80 Hz / LP 4 kHz, everything after 120 ms (the echo and the tail) 8 dB down, faded over the last 250 ms (cut 2026-10-13). Distant shots kept sharp with quiet tails, as the reference tuned its own, so a burst far off still reads round by round |
 | `bed_rotor_0` | `BedRotor` | USC Red Library, *R03-02 Helicopter Flying in Place* (<https://archive.org/details/Red_Library_Aircraft_Misc>, CC0): a two-blade rotor close by, 11.6 slaps a second. Loop 6.0–28.1 s, the end moved +63 ms so the seam falls on the same point of the blade beat, 0.6 s linear crossfade. The tape is high-passed near 100 Hz, so the thump under it is rebuilt from its own slaps: the 100–600 Hz band's envelope, band-passed to 45–120 Hz and added so 50–100 Hz sits 10 dB under the whole (cut 2026-10-13). Replaces a Black Hawk's four-blade buzz |
 | `bed_rotor_far_0` | `BedRotorFar` | USC Gold Tape 36, *G36-07 Helicopter Flies In and Out and In* (<https://archive.org/details/GOLD_TAPE_36_Helicopters>, CC0): the two-blade helicopter holding off at a distance, steady to ±1 dB. Loop 40.5–60.5 s, 1 s equal-power crossfade, HP 30 Hz, LP 2.5 kHz (above it is tape hiss; a far rotor has nothing there) (cut 2026-10-13) |
+| `geiger_0`–`3` | `Geiger` | USC Red Library, *R11-44 Radiation Geiger Counter* (<https://archive.org/details/Red_Library_Machines_1>, CC0): four single tube clicks, at 1.114, 2.139, 2.217 and 7.322 s, 21 ms each with nothing above 2% of the peak from the next one (cut 2026-10-15). The Verdigris counter |
 
 The USC library is the same Sunset/Red/Gold editorial collections, digitized
 by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).
@@ -172,5 +180,5 @@ between −18.8 and −31.6) with no limiting; peaks stay under −2 dBFS.
 | `ruin_respiration.ogg` | *Ruin Respiration* | 300.0 s | +11.6 dB | a world song, and the one a tense moment picks |
 | `empty_citadel.ogg` | *The Empty Citadel* | 240.0 s | +8.5 dB | a world song: a flat sub-bass drone |
 
-146 files from Freesound, 65 from Kenney and 33 in `pd/` in the bank, about 4.2 MB of Ogg,
+146 files from Freesound, 65 from Kenney and 37 in `pd/` in the bank, about 4.2 MB of Ogg,
 plus the four score tracks, 12.0 MB.

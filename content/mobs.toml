@@ -74,6 +74,9 @@ attack = 15
 attack_range_m = 2
 attack_seconds = 2
 brave_pct = 75
+# Turned in the Verdigris (`sim_core::blight::TURN_ON`), a bite also puts 6%
+# on the corruption meter, less what the bitten body's mask and suit ward.
+fel_bite = 60
 
 # The leash and the fright radius, and the pair is the whole behaviour.
 # 60 m of roam keeps a pig findable near where the seed put it — the
@@ -102,7 +105,8 @@ respawn_seconds = 300
 # temperate biomes and not the snow, so meadow and forest are whole, the
 # desert nearly so, and the granite above the treeline is thin.
 per_km2 = 5.0
-habitat = { meadow = 1.0, forest = 1.0, highland = 0.15, desert = 0.7 }
+# The Verdigris barely: a boar roots in ash only at its edge.
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.15, desert = 0.7, fel = 0.1 }
 # The hit volume a swing's ray must enter (melee aim v1, 2026-09-05): a
 # cylinder on the animal's feet, centimetres. Read off what the client draws
 # — a pig is 1.5 m long and 0.78 m high (`render/mobs.rs`), so the radius
@@ -248,6 +252,8 @@ attack = 30
 attack_range_m = 2
 attack_seconds = 2
 brave_pct = 0
+# Turned, a wolf's bite puts 8% on the corruption meter, before the ward.
+fel_bite = 80
 
 # A wider territory than the pig's 60, for the reason the animal exists:
 # a predator you only ever meet in one clearing is a hazard sign, not a
@@ -296,7 +302,8 @@ respawn_seconds = 300
 # sites. Now ~12 roam (four packs) and only the pad keeps any
 # (`mob::SITE_GUARDS`, on top of these).
 per_km2 = 3.0
-habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.4 }
+# The Verdigris is the wolves' own: packs run its ash.
+habitat = { meadow = 0.4, forest = 1.0, highland = 1.0, desert = 0.4, fel = 0.8 }
 # The night doubles them (`NOW.md` §0pr 3): the extra wolves hatch after dusk
 # and leave at daybreak once nobody is near — a night out costs more than
 # the cold. Ours, not the reference's (its wolves keep one population).
@@ -411,7 +418,7 @@ respawn_seconds = 300
 # Rust's `stag.population` is 3 per km², in the temperate, snow and jungle
 # biomes: meadow and woods, the high ground well, the desert hardly.
 per_km2 = 3.0
-habitat = { meadow = 1.0, forest = 1.0, highland = 0.6, desert = 0.05 }
+habitat = { meadow = 1.0, forest = 1.0, highland = 0.6, desert = 0.05, fel = 0.05 }
 # 1.6 m long, 1.3 m to the top of the head (`render/mobs.rs` STAG_*).
 body_r_cm = 55
 body_h_cm = 130

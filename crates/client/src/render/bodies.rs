@@ -500,11 +500,10 @@ pub fn stream(
 /// `Added<AnimationPlayer>`, which is the one moment a body's entities exist
 /// and nothing has posed them.
 ///
-/// **The walk is DOWN from the body, not a global name scan.** `bind_spine`
-/// searches every named entity in the world and then checks each candidate's
-/// ancestry, which is O(all bones) per body; a descendant walk is O(this
-/// body's bones) and cannot find somebody else's hand by construction rather
-/// than by a second test. Bounded at 512 for `viewmodel::dress_arms`'s reason
+/// **The walk is DOWN from the body, not a global name scan** (`bind_spine`
+/// walks down too): a scan of every named entity in the world is O(all
+/// bones) per body; a descendant walk is O(this body's bones) and cannot find
+/// somebody else's hand by construction rather than by a second test. Bounded at 512 for `viewmodel::dress_arms`'s reason
 /// — wall 4's habit applied to a traversal.
 ///
 /// **The two entities keep being spawned under the body root** and are moved

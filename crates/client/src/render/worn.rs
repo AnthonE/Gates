@@ -106,6 +106,8 @@ const BURLAP: [f32; 3] = [0.33, 0.25, 0.14];
 const BONE: [f32; 3] = [0.50, 0.46, 0.36];
 /// Tanned hide.
 const HIDE: [f32; 3] = [0.26, 0.15, 0.08];
+/// Cloth blacked with charcoal, the Ash Mask's and the Ash Suit's.
+const ASH: [f32; 3] = [0.045, 0.045, 0.040];
 
 /// Build the meshes and materials once (`Startup`).
 pub fn load(
@@ -125,6 +127,7 @@ pub fn load(
     let burlap = materials.add(cloth(BURLAP, 0.95));
     let bone = materials.add(cloth(BONE, 0.7));
     let hide = materials.add(cloth(HIDE, 0.8));
+    let ash = materials.add(cloth(ASH, 0.95));
     let metal = super::textures::MapSet::load(&assets, "metal");
     let sign = materials.add(StandardMaterial {
         base_color: Color::linear_rgb(0.62, 0.64, 0.66),
@@ -167,6 +170,17 @@ pub fn load(
         ],
         None,
     ));
+    // The Ash Mask: a band of blacked cloth tied round the lower face, over
+    // the mouth and nose, standing a finger off the head.
+    let mask = add(lathe(
+        Vec2::ZERO,
+        &[
+            (1.53, 0.192, 0.245),
+            (1.60, 0.197, 0.252),
+            (1.67, 0.192, 0.246),
+        ],
+        None,
+    ));
     let crest = add(Cuboid::new(0.035, 0.06, 0.42)
         .mesh()
         .build()
@@ -190,6 +204,16 @@ pub fn load(
     commands.insert_resource(WornKit {
         pieces: vec![
             ("Burlap Hood", vec![part(hood, &burlap, Bone::Head)]),
+            ("Ash Mask", vec![part(mask, &ash, Bone::Head)]),
+            // The suit is the tunic's cut in the mask's blacked cloth: two
+            // parts, so a helmet over it still fits `MAX_PARTS`.
+            (
+                "Ash Suit",
+                vec![
+                    part(tunic_top.clone(), &ash, Bone::Spine),
+                    part(tunic_skirt.clone(), &ash, Bone::Hips),
+                ],
+            ),
             (
                 "Bone Helmet",
                 vec![

@@ -63,6 +63,8 @@ render = [
     "dep:cpal",
     # The native music stream's ring into that callback (`render/music_out.rs`).
     "dep:rtrb",
+    # Proximity voice's codec (`render/voice.rs`).
+    "dep:voice",
 ]
 # Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
 # reloads it into the running client instead of asking for a rebuild and a
@@ -89,16 +91,11 @@ webgpu = ["bevy?/webgpu"]
 # the transcoder is C++, which is the whole reason the variant exists.
 webassets = ["dep:basis-universal", "dep:ktx2", "dep:ruzstd", "dep:png"]
 
-# Both player binaries carry `native`: each drives `client_endpoint` and each
-# is a program with a terminal or an OS window around it. Without the
-# requirement, `cargo build -p client --target wasm32-unknown-unknown` compiles
-# them and dies inside `#[tokio::main]` — an error about a macro, for a binary
-# that was never meant to exist on that target.
-[[bin]]
-name = "client"
-path = "src/main.rs"
-required-features = ["native"]
-
+# The player binary carries `native`: it drives `client_endpoint` and opens an
+# OS window. Without the requirement, `cargo build -p client --target
+# wasm32-unknown-unknown` compiles it and dies inside `#[tokio::main]` — an
+# error about a macro, for a binary that was never meant to exist on that
+# target.
 [[bin]]
 name = "gates"
 path = "src/bin/gates.rs"
@@ -224,6 +221,13 @@ required-features = ["render"]
 [[test]]
 name = "spectate_label"
 path = "tests/spectate_label.rs"
+required-features = ["render"]
+
+# The loading screen and every settings tab, spawned headless for the same
+# reason: a duplicate component panics at spawn, not at compile.
+[[test]]
+name = "screens_spawn"
+path = "tests/screens_spawn.rs"
 required-features = ["render"]
 
 # The animal the client draws against the cylinder the sim lets you hit —
@@ -521,6 +525,9 @@ content = { path = "../content" }
 [dependencies]
 # The audio model, its own crate so the browser's AudioWorklet can link it alone.
 sound = { path = "../sound" }
+# Proximity voice's Opus codec (`render/voice.rs`). Pure Rust, so the browser
+# build links it too; on `render`, because only the game talks.
+voice = { path = "../voice", optional = true }
 # Default features for now. Trimming is still a follow-up — but the list of
 # what to trim has changed and the old one is now wrong in a load-bearing way:
 # **`bevy_ui` is not dead weight, it is the whole interaction surface.** Every
@@ -890,4 +897,7 @@ web-sys = { version = "0.3", features = [
     # the browser's user agent in it, and the crash beacon (`Navigator`).
     "RequestInit",
     "Navigator",
+    # `render/settings.rs`: the settings and keybinds, kept in `localStorage`
+    # the way the desktop keeps them in a file.
+    "Storage",
 ] }

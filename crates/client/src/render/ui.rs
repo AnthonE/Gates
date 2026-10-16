@@ -17,7 +17,7 @@
 //!
 //! Colours are read off the reference's own options screen (the reference set,
 //! and the frame the operator pasted): near-black panels a shade lighter than
-//! the background, an olive selection block for the chosen category, warm
+//! the background, a blue selection block for the chosen category, warm
 //! off-white type, and a hairline rule the same warm hue at low alpha.
 //!
 //! **This file also owns the FACE**, for the same reason it owns the palette,
@@ -30,6 +30,7 @@
 use bevy::asset::{uuid_handle, AssetId};
 use bevy::prelude::*;
 use bevy::text::Font;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 // ---- the face ------------------------------------------------------------
 
@@ -211,7 +212,7 @@ pub const FAINT: Color = Color::srgba(0.62, 0.60, 0.56, 0.80);
 /// What a button's background is at rest and under the pointer.
 ///
 /// Carried per entity rather than assumed, because the settings sidebar's
-/// selected row is olive and every other button is grey, and a hover system
+/// selected row is the accent blue and every other button is grey, and a hover system
 /// that hard-coded one pair would repaint the selection on the way past it.
 #[derive(Component)]
 pub struct Hover {
@@ -236,13 +237,92 @@ impl Hover {
 
 /// One hover handler for every screen. Runs wherever a menu is up; a button
 /// with no `Hover` is simply not repainted, which is what an inert row wants.
-pub fn hover(mut q: Query<(&Interaction, &Hover, &mut BackgroundColor), Changed<Interaction>>) {
-    for (interaction, h, mut bg) in q.iter_mut() {
-        *bg = BackgroundColor(match interaction {
-            Interaction::None => h.idle,
-            _ => h.over,
-        });
+///
+/// Three states, not two: a press is the lit colour pushed a shade down and
+/// the button sunk a hair ([`PRESS_SCALE`]), so the hand feels the click
+/// land before the screen answers it.
+pub fn hover(
+    mut q: Query<
+        (&Interaction, &Hover, &mut BackgroundColor, &mut UiTransform),
+        Changed<Interaction>,
+    >,
+) {
+    for (interaction, h, mut bg, mut xf) in q.iter_mut() {
+        let (want, scale) = match interaction {
+            Interaction::None => (h.idle, 1.0),
+            Interaction::Hovered => (h.over, 1.0),
+            Interaction::Pressed => (pressed(h.over), PRESS_SCALE),
+        };
+        *bg = BackgroundColor(want);
+        xf.scale = Vec2::splat(scale);
     }
+}
+
+/// How far a pressed button sinks.
+pub const PRESS_SCALE: f32 = 0.96;
+
+/// A lit colour, pressed: a fifth darker, same alpha.
+pub fn pressed(c: Color) -> Color {
+    let s = c.to_srgba();
+    Color::srgba(s.red * 0.8, s.green * 0.8, s.blue * 0.8, s.alpha)
+}
+
+/// Release the pointer: unlocked and visible. Every screen and text field
+/// that takes the mouse back from the world does this.
+pub fn free_cursor(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>) {
+    if let Ok(mut c) = cursor.single_mut() {
+        c.grab_mode = CursorGrabMode::None;
+        c.visible = true;
+    }
+}
+
+/// Despawn every entity carrying `M`: the `OnExit` teardown of a screen
+/// whose nodes all hang off roots with that marker.
+pub fn despawn_all<M: Component>(mut commands: Commands, roots: Query<Entity, With<M>>) {
+    for e in roots.iter() {
+        commands.entity(e).despawn();
+    }
+}
+
+/// The digit keys numbered rows answer to: the Esc menu, the death and
+/// disconnected screens, the hearth's take-back. Fixed rather than bound,
+/// because each of those screens prints the number beside its row.
+pub const DIGITS: [KeyCode; 9] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
+];
+
+/// Which numbered row's digit was pressed this frame, if any, among the
+/// first `rows`.
+pub fn digit_pressed(keyboard: &ButtonInput<KeyCode>, rows: usize) -> Option<usize> {
+    DIGITS
+        .iter()
+        .take(rows)
+        .position(|k| keyboard.just_pressed(*k))
+}
+
+/// One numbered row of a verb screen (the Esc menu, the disconnected
+/// screen): `n  Name` over a dim detail line, with the screen's own marker
+/// so its click handler can find it. The digit [`digit_pressed`] reads is the
+/// number drawn here.
+pub fn verb_row(
+    parent: &mut bevy::ecs::relationship::RelatedSpawnerCommands<'_, ChildOf>,
+    n: usize,
+    name: &str,
+    detail: &str,
+    marker: impl Bundle,
+) {
+    parent.spawn((row(460.0), marker)).with_children(|b| {
+        b.spawn(strong(format!("{n}  {name}"), 20.0, TEXT));
+        b.spawn(label(detail.to_string(), 13.0, DIM));
+    });
 }
 
 /// A full-screen column: the root every menu screen hangs off.
@@ -444,9 +524,8 @@ pub const STAR_ON: Handle<Image> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5
 pub const STAR_OFF: Handle<Image> = uuid_handle!("6f0d1c8e-2f4a-4c7b-9a31-0d2b7c5e4a15");
 
 /// Put [`SIGIL`], [`STAR_ON`] and [`STAR_OFF`] in `Assets<Image>` at
-/// plugin-build time. Desktop only, because only the desktop front end draws
-/// them.
-#[cfg(not(target_arch = "wasm32"))]
+/// plugin-build time. On every target: the stars are desktop-only, but the
+/// sigil is in the wordmark the browser's loading screen draws.
 pub fn build_marks(app: &mut App) {
     let (side, sigil) = sigil_pixels();
     let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -463,7 +542,6 @@ pub fn build_marks(app: &mut App) {
 
 /// A square RGBA8 image with its mip chain: every mark here is drawn well
 /// below its size, and a single level minified that far crawls.
-#[cfg(not(target_arch = "wasm32"))]
 fn mipped(side: u32, level0: Vec<u8>) -> Image {
     use bevy::asset::RenderAssetUsages;
     use bevy::image::ImageSampler;
@@ -490,7 +568,6 @@ fn mipped(side: u32, level0: Vec<u8>) -> Image {
 }
 
 /// The sigil's side and RGBA8 pixels.
-#[cfg(not(target_arch = "wasm32"))]
 fn sigil_pixels() -> (u32, Vec<u8>) {
     let bytes: &[u8] = include_bytes!("../../icon/gates-256.png");
     let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
@@ -512,12 +589,10 @@ fn sigil_pixels() -> (u32, Vec<u8>) {
 }
 
 /// The star textures' side, px. Drawn at 16.
-#[cfg(not(target_arch = "wasm32"))]
 const STAR_TEX: u32 = 64;
 
 /// A five-point star, white on clear (tinted where it is drawn), filled or
 /// as an outline, 4x4 supersampled.
-#[cfg(not(target_arch = "wasm32"))]
 fn star_pixels(filled: bool) -> Vec<u8> {
     use std::f32::consts::{FRAC_PI_2, PI};
     const SS: u32 = 4;

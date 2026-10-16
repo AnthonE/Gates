@@ -53,6 +53,17 @@ pub const SAND: [f32; 3] = [203.0, 185.0, 148.0];
 /// The desert's sand, warmer: what [`SAND`] goes to as the ground dries
 /// (`terrain::aridity`), as the world's own sand does (`ground_splat`).
 pub const DESERT: [f32; 3] = [214.0, 170.0, 104.0];
+/// The Verdigris: ash and dead ground, a dark green-black — what every
+/// identity goes to by the ground's corruption (`terrain::fel`), as the
+/// world's own ground does (`ground_splat`).
+pub const FEL_GROUND: [f32; 3] = [46.0, 70.0, 42.0];
+/// How far a fully corrupted pixel goes toward [`FEL_GROUND`]: the base map's
+/// heart and the spread's overlay ([`paint_blight`]) share it, so the two
+/// cannot drift apart.
+pub const FEL_MIX: f32 = 0.85;
+/// The hot spots on the overlay: a brighter, sicker green than the ash, so a
+/// burning haven pad reads apart from the creep around it.
+pub const FEL_HOT: [f32; 3] = [86.0, 132.0, 46.0];
 /// Open meadow.
 pub const GRASS: [f32; 3] = [109.0, 140.0, 74.0];
 /// Forest litter: the same green, darker — how the reference separates wooded
@@ -232,6 +243,148 @@ pub fn map_to_world(fx: f32, fy: f32) -> (f32, f32) {
     (ISLAND_SIZE * (1.0 - fx), ISLAND_SIZE * (1.0 - fy))
 }
 
+/// The map screen's camera: how far in, and which point of the island sits
+/// at the middle of the window. Everything is a fraction of the island
+/// (`world_to_map(.., 1)`) or a UI pixel, so the render layer only copies
+/// numbers onto nodes.
+///
+/// The island fits the window's short side at zoom 1, the whole of it on
+/// screen with sea either side (the reference's fully zoomed-out map), and
+/// the wheel takes it to [`ZOOM_MAX`]. Zoom is about a point: the spot under
+/// the crosshair stays under it while the island grows ([`Self::zoom_about`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapView {
+    /// The zoom drawn this frame, easing toward [`Self::target`].
+    pub zoom: f32,
+    /// Where the wheel asked the zoom to go.
+    pub target: f32,
+    /// The island fraction at the window's centre.
+    pub cx: f32,
+    pub cy: f32,
+}
+
+/// Zoomed all the way out: the island fits the window.
+pub const ZOOM_MIN: f32 = 1.0;
+/// Zoomed all the way in. The texture is 4 m a pixel ([`GRID_M`] / 64), so
+/// at 4× a 1080-line window draws about eight screen pixels to a texel,
+/// which is the most it can carry before the terrain goes to mush.
+pub const ZOOM_MAX: f32 = 4.0;
+/// One wheel notch multiplies the zoom by this.
+pub const ZOOM_STEP: f32 = 1.25;
+/// How fast the drawn zoom closes on the asked one, per second (the rate of
+/// an exponential approach: a notch is 90% done in about a sixth of a second).
+pub const ZOOM_EASE: f32 = 14.0;
+/// How near a click has to land to a mark, in UI pixels on screen: the
+/// badge's own size, whatever the zoom.
+pub const PIN_PICK_PX: f32 = 12.0;
+
+impl Default for MapView {
+    fn default() -> Self {
+        Self {
+            zoom: ZOOM_MIN,
+            target: ZOOM_MIN,
+            cx: 0.5,
+            cy: 0.5,
+        }
+    }
+}
+
+impl MapView {
+    /// The island's side on screen, UI px, in a `w × h` window.
+    pub fn side(&self, w: f32, h: f32) -> f32 {
+        w.min(h).max(1.0) * self.zoom
+    }
+
+    /// Where the island's top-left corner sits, and its side, UI px.
+    pub fn rect(&self, w: f32, h: f32) -> (f32, f32, f32) {
+        let side = self.side(w, h);
+        (w * 0.5 - self.cx * side, h * 0.5 - self.cy * side, side)
+    }
+
+    /// The island fraction under screen point `(sx, sy)`. Off the island is
+    /// outside `0..1`, and is left there for the caller to clamp.
+    pub fn to_frac(&self, w: f32, h: f32, sx: f32, sy: f32) -> (f32, f32) {
+        let (l, t, side) = self.rect(w, h);
+        ((sx - l) / side, (sy - t) / side)
+    }
+
+    /// The screen point an island fraction is drawn at.
+    pub fn to_screen(&self, w: f32, h: f32, fx: f32, fy: f32) -> (f32, f32) {
+        let (l, t, side) = self.rect(w, h);
+        (l + fx * side, t + fy * side)
+    }
+
+    /// A click's reach as an island fraction ([`Pins::hit_within`]).
+    pub fn pick_frac(&self, w: f32, h: f32) -> f32 {
+        PIN_PICK_PX / self.side(w, h)
+    }
+
+    /// Keep the island on screen: along an axis where it is wider than the
+    /// window its edge may not come inside the window's, and along one where
+    /// it is narrower it sits in the middle.
+    pub fn clamp(&mut self, w: f32, h: f32) {
+        let side = self.side(w, h);
+        let axis = |c: f32, span: f32| {
+            let half = span * 0.5 / side;
+            if half >= 0.5 {
+                0.5
+            } else {
+                c.clamp(half, 1.0 - half)
+            }
+        };
+        self.cx = axis(self.cx, w);
+        self.cy = axis(self.cy, h);
+    }
+
+    /// Set the zoom to `zoom`, keeping the island point under screen point
+    /// `(sx, sy)` where it is (then clamped, which can nudge it at an edge).
+    pub fn zoom_about(&mut self, w: f32, h: f32, sx: f32, sy: f32, zoom: f32) {
+        let (fx, fy) = self.to_frac(w, h, sx, sy);
+        self.zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        let side = self.side(w, h);
+        // The new corner puts (fx, fy) back under (sx, sy); the centre
+        // follows from the corner.
+        self.cx = (w * 0.5 - (sx - fx * side)) / side;
+        self.cy = (h * 0.5 - (sy - fy * side)) / side;
+        self.clamp(w, h);
+    }
+
+    /// `notches` of the wheel (fractional for a trackpad) on the target.
+    pub fn wheel(&mut self, notches: f32) {
+        self.target = (self.target * ZOOM_STEP.powf(notches)).clamp(ZOOM_MIN, ZOOM_MAX);
+    }
+
+    /// One frame of the ease: the drawn zoom closes on the target about
+    /// screen point `(sx, sy)`. Snaps the last hair so it settles.
+    pub fn ease(&mut self, w: f32, h: f32, sx: f32, sy: f32, dt: f32) {
+        if self.zoom == self.target {
+            return;
+        }
+        let k = 1.0 - (-ZOOM_EASE * dt.max(0.0)).exp();
+        let mut z = self.zoom + (self.target - self.zoom) * k;
+        if (z - self.target).abs() < 0.002 {
+            z = self.target;
+        }
+        self.zoom_about(w, h, sx, sy, z);
+    }
+
+    /// Slide the island by `(dx, dy)` screen px (a drag: it follows the
+    /// mouse), clamped.
+    pub fn pan_px(&mut self, w: f32, h: f32, dx: f32, dy: f32) {
+        let side = self.side(w, h);
+        self.cx -= dx / side;
+        self.cy -= dy / side;
+        self.clamp(w, h);
+    }
+
+    /// Centre on island fraction `(fx, fy)` as far as the clamp allows.
+    pub fn centre_on(&mut self, w: f32, h: f32, fx: f32, fy: f32) {
+        self.cx = fx;
+        self.cy = fy;
+        self.clamp(w, h);
+    }
+}
+
 /// How many marks a player can put on their map (Rust's five).
 pub const PINS_MAX: usize = 5;
 
@@ -377,11 +530,18 @@ impl Pins {
     /// [`PIN_PICK_FRAC`] on both axes, and the newest of a tie — it is the
     /// one drawn on top, so it is the one a click on the pile means.
     pub fn hit(&self, fx: f32, fy: f32) -> Option<usize> {
+        self.hit_within(fx, fy, PIN_PICK_FRAC)
+    }
+
+    /// [`Self::hit`] with the reach `r` given, as a map fraction: the zoomed
+    /// map keeps the reach the size of the badge ON SCREEN, so it shrinks
+    /// as the island grows ([`MapView::pick_frac`]).
+    pub fn hit_within(&self, fx: f32, fy: f32, r: f32) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, &(x, z)) in self.marks().iter().enumerate() {
             let (mx, my) = world_to_map(x, z, 1);
             let d = (mx - fx).abs().max((my - fy).abs());
-            if d < PIN_PICK_FRAC && best.is_none_or(|(_, b)| d <= b) {
+            if d < r && best.is_none_or(|(_, b)| d <= b) {
                 best = Some((i, d));
             }
         }
@@ -392,7 +552,12 @@ impl Pins {
     /// it, or put one there — dropping the oldest when all five are down.
     /// A mark's look travels with it when an older one goes.
     pub fn toggle(&mut self, fx: f32, fy: f32) {
-        if let Some(i) = self.hit(fx, fy) {
+        self.toggle_within(fx, fy, PIN_PICK_FRAC);
+    }
+
+    /// [`Self::toggle`] with the reach given ([`Self::hit_within`]).
+    pub fn toggle_within(&mut self, fx: f32, fy: f32, r: f32) {
+        if let Some(i) = self.hit_within(fx, fy, r) {
             self.at.copy_within(i + 1..self.len, i);
             self.style.copy_within(i + 1..self.len, i);
             self.len -= 1;
@@ -577,48 +742,69 @@ pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
             let dhdx = (rows[cur][i + 2] - rows[cur][i]) * inv2s;
             let dhdz = (rows[next][i + 1] - rows[prev][i + 1]) * inv2s;
 
-            let (r, g, b) = if h <= SEA_LEVEL {
-                // Water: one ramp from shelf to floor, and NO hillshade. The
-                // sea bed has relief and drawing it would put a second,
-                // competing terrain inside the shape the eye is trying to read
-                // as the coastline.
+            let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+            // The coastline, anti-aliased: how much of this pixel is land,
+            // from how far its centre stands above the waterline against the
+            // rise across one pixel. A hard `h <= SEA_LEVEL` drew the coast
+            // as a staircase of 4 m squares, and the zoomed map (up to 4×,
+            // `MapView`) blows a staircase up into steps. No extra taps: the
+            // slope is the hillshade's own.
+            let land = ((h - SEA_LEVEL) / (slope * step).max(1e-3) + 0.5).clamp(0.0, 1.0);
+            // Water: one ramp from shelf to floor, and NO hillshade. The sea
+            // bed has relief and drawing it would put a second, competing
+            // terrain inside the shape the eye is trying to read as the
+            // coastline.
+            let water = || {
                 let t = (-h / DEEP_M).clamp(0.0, 1.0);
                 (
                     SEA_SHALLOW[0] + (SEA_DEEP[0] - SEA_SHALLOW[0]) * t,
                     SEA_SHALLOW[1] + (SEA_DEEP[1] - SEA_SHALLOW[1]) * t,
                     SEA_SHALLOW[2] + (SEA_DEEP[2] - SEA_SHALLOW[2]) * t,
                 )
-            } else {
-                let slope = (dhdx * dhdx + dhdz * dhdz).sqrt();
+            };
+            let mut ground = || {
                 let w = terrain::splat_from(h, terrain::moisture(seed, x, z), slope);
                 // They sum to ~255 by construction, and "~" is the splat law's
                 // own word for it — dividing by the actual sum keeps the blend
                 // a true average whatever the rounding did.
                 let sum = (w[0] as f32 + w[1] as f32 + w[2] as f32 + w[3] as f32).max(1.0);
                 let arid = terrain::aridity(seed, x, z);
+                let fel = terrain::fel(seed, x, z) * FEL_MIX;
                 let sand = |c: usize| SAND[c] + (DESERT[c] - SAND[c]) * arid;
                 let mix = |c: usize| {
-                    (sand(c) * w[0] as f32
+                    let g = (sand(c) * w[0] as f32
                         + GRASS[c] * w[1] as f32
                         + LITTER[c] * w[2] as f32
                         + ROCK[c] * w[3] as f32)
-                        / sum
+                        / sum;
+                    g + (FEL_GROUND[c] - g) * fel
                 };
-                // Hillshade. A heightfield's normal is `(-dh/dx, 1, -dh/dz)`
-                // before normalising; the lambert term against `LIGHT` becomes
-                // a multiplier, so the biome tint survives it as a tint.
-                let inv = 1.0 / (dhdx * dhdx + 1.0 + dhdz * dhdz).sqrt();
-                let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
-                let shade =
-                    (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1);
-                let o = py * size + px;
-                shade_of[o] = shade;
-                cov[o] = match terrain::road_band(seed, haven, x, z) {
-                    terrain::RoadBand::Off => 0.0,
-                    terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
-                    terrain::RoadBand::Carriageway => 1.0,
-                };
+                let shade = hillshade(dhdx, dhdz);
+                // The land mask the road pass reads stays the hard line: a
+                // road never runs into a pixel whose centre is under water.
+                if h > SEA_LEVEL {
+                    let o = py * size + px;
+                    shade_of[o] = shade;
+                    cov[o] = match terrain::road_band(seed, haven, x, z) {
+                        terrain::RoadBand::Off => 0.0,
+                        terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
+                        terrain::RoadBand::Carriageway => 1.0,
+                    };
+                }
                 (mix(0) * shade, mix(1) * shade, mix(2) * shade)
+            };
+            let (r, g, b) = if land <= 0.0 {
+                water()
+            } else if land >= 1.0 {
+                ground()
+            } else {
+                let (sr, sg, sb) = water();
+                let (gr, gg, gb) = ground();
+                (
+                    sr + (gr - sr) * land,
+                    sg + (gg - sg) * land,
+                    sb + (gb - sb) * land,
+                )
             };
 
             let o = (py * size + px) * 4;
@@ -688,6 +874,134 @@ fn paint_roads(size: usize, cov: &[f32], shade: &[f32], out: &mut [u8]) {
                 v += (ROAD[c] * s - v) * core;
                 out[p + c] = v.clamp(0.0, 255.0) as u8;
             }
+        }
+    }
+}
+
+/// Hillshade. A heightfield's normal is `(-dh/dx, 1, -dh/dz)` before
+/// normalising; the lambert term against [`LIGHT`] becomes a multiplier, so
+/// the biome tint survives it as a tint. Shared by [`paint`] and the blight
+/// overlay's cache, which must light the green as the base lit the ground.
+pub fn hillshade(dhdx: f32, dhdz: f32) -> f32 {
+    let inv = 1.0 / (dhdx * dhdx + 1.0 + dhdz * dhdz).sqrt();
+    let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
+    (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1)
+}
+
+// ---------------------------------------------------------------------------
+// The blight over the map (`sim_core::blight`): the Verdigris as it has
+// spread, laid over the painted island as a second image.
+//
+// The base map is painted once a seed and already carries the wipe-day heart
+// (`FEL_MIX`). What spreads after is an overlay, so a front that walks a few
+// metres an hour costs a 256² repaint from a cache, never the base's 263 ms.
+
+/// The overlay's side, texels: 16 m each over the island.
+pub const BLIGHT_PX: usize = 256;
+
+/// What the overlay paints from: per texel, the height and the heart's wander
+/// noise (`terrain::fel_wander`), and the hillshade the base map lit it by.
+/// Seed-only, so built once while the loading bar fills; `shade` 0 is water.
+pub struct BlightCache {
+    seed: u64,
+    size: usize,
+    h: Vec<f32>,
+    n: Vec<f32>,
+    shade: Vec<f32>,
+}
+
+impl BlightCache {
+    /// The cache for `seed`, at the carved ground the sim reads the spread
+    /// at (`terrain::ground`), not the raw surface the base map shades.
+    pub fn new(seed: u64, haven: &Haven, size: usize) -> Self {
+        let step = ISLAND_SIZE / size as f32;
+        let half = step * 0.5;
+        let mut lat = terrain::Lattice::new();
+        let mut h = vec![0.0f32; size * size];
+        let mut n = vec![0.0f32; size * size];
+        for j in 0..size {
+            let z = half + j as f32 * step;
+            for i in 0..size {
+                let x = half + i as f32 * step;
+                let k = j * size + i;
+                h[k] = terrain::ground_memo(&mut lat, seed, haven, x, z);
+                if h[k] > SEA_LEVEL {
+                    n[k] = terrain::fel_wander_memo(&mut lat, seed, x, z);
+                }
+            }
+        }
+        let inv2s = 1.0 / (2.0 * step);
+        let at = |i: usize, j: usize| h[j.min(size - 1) * size + i.min(size - 1)];
+        let mut shade = vec![0.0f32; size * size];
+        for j in 0..size {
+            for i in 0..size {
+                let k = j * size + i;
+                if h[k] <= SEA_LEVEL {
+                    continue;
+                }
+                let dhdx = (at(i + 1, j) - at(i.saturating_sub(1), j)) * inv2s;
+                let dhdz = (at(i, j + 1) - at(i, j.saturating_sub(1))) * inv2s;
+                shade[k] = hillshade(dhdx, dhdz);
+            }
+        }
+        BlightCache {
+            seed,
+            size,
+            h,
+            n,
+            shade,
+        }
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+/// Paint the spread at `now` over the base map, RGBA: transparent where the
+/// ground is no greener than the base already drew it, and only the
+/// increment where it is — the base mixes the wipe-day heart in, and a full
+/// overlay would darken the heart twice. Wipe day is clear everywhere.
+///
+/// Every land texel carries the green's colour, alpha 0 included, so a
+/// stretched, filtered overlay fades at its edge instead of fringing black.
+pub fn paint_blight(cache: &BlightCache, now: &sim_core::blight::Now, out: &mut [u8]) {
+    use sim_core::blight;
+    let size = cache.size;
+    assert!(
+        out.len() >= size * size * 4,
+        "buffer too small for the overlay"
+    );
+    let step = ISLAND_SIZE / size as f32;
+    let half = step * 0.5;
+    for j in 0..size {
+        let z = half + j as f32 * step;
+        let py = size - 1 - j;
+        for i in 0..size {
+            let x = half + i as f32 * step;
+            let px = size - 1 - i;
+            let k = j * size + i;
+            let o = (py * size + px) * 4;
+            let s = cache.shade[k];
+            let (mut tint, mut a) = (FEL_GROUND, 0.0f32);
+            if s > 0.0 && blight::within_reach(now, x, z) {
+                let d = blight::depth_n(now, x, z, cache.h[k], cache.n[k]);
+                let f1 = FEL_MIX * d.any();
+                let f0 = FEL_MIX * terrain::fel_of(terrain::fel_d2(x, z), cache.n[k]).max(0.0);
+                a = ((f1 - f0) / (1.0 - f0).max(1e-3)).clamp(0.0, 1.0);
+                if d.hot > d.fel {
+                    tint = FEL_HOT;
+                }
+            }
+            let s = if s > 0.0 { s } else { 1.0 };
+            out[o] = (tint[0] * s).clamp(0.0, 255.0) as u8;
+            out[o + 1] = (tint[1] * s).clamp(0.0, 255.0) as u8;
+            out[o + 2] = (tint[2] * s).clamp(0.0, 255.0) as u8;
+            out[o + 3] = (a * 255.0).round() as u8;
         }
     }
 }
@@ -1079,6 +1393,48 @@ impl Marks {
     }
 }
 
+/// Append the authored tier — the haven, the waystations and depot, THE
+/// GATE, the ziggurat, the landmarks and the works: the places every
+/// player's map names. [`resolve_marks`] starts with it, and the death
+/// screen's map is it plus your own bags.
+pub fn resolve_sites(out: &mut Marks, haven: &Haven, arc: &ArcMarks) {
+    out.push(MarkKind::Haven, haven.x, haven.z);
+    for w in haven.minor.iter().filter(|w| w.live) {
+        let kind = if sim_core::depot::is_depot(w) {
+            MarkKind::Depot
+        } else {
+            MarkKind::Waystation
+        };
+        out.push(kind, w.x, w.z);
+    }
+    if haven.town.live {
+        out.push(MarkKind::Town, haven.town.x, haven.town.z);
+    }
+    if haven.ziggurat.live {
+        out.push(MarkKind::Monument, haven.ziggurat.x, haven.ziggurat.z);
+    }
+    // The landmarks, behind the sites: named places, fewer than the cap
+    // leaves room for (the assert above `MarkKind`).
+    for m in haven.marks.iter().filter(|m| m.live) {
+        out.push(MarkKind::Landmark, m.x, m.z);
+        if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Landmark {
+            out.a[out.count - 1].name = Some(sim_core::landmark::name(m.kind));
+        }
+    }
+    // The works, named: the island's shared projects, authored like the
+    // sites, so inside the tier the cap can never reach (the assert above
+    // `MarkKind`). A work on a seed without its site stands nowhere and is
+    // not drawn (`sim_core::spot`).
+    for (spot, label) in arc.works.iter().take(arc.n_works) {
+        if let Some((x, _, z)) = sim_core::spot::world(haven, spot) {
+            out.push(MarkKind::Work, x, z);
+            if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Work {
+                out.a[out.count - 1].label = *label;
+            }
+        }
+    }
+}
+
 /// Fill `out` with every marker the map draws.
 ///
 /// Push ORDER is the drop policy: authored destinations first, so the cap
@@ -1130,42 +1486,7 @@ pub fn resolve_marks(
 ) {
     out.count = 0;
     out.dropped = 0;
-
-    out.push(MarkKind::Haven, haven.x, haven.z);
-    for w in haven.minor.iter().filter(|w| w.live) {
-        let kind = if sim_core::depot::is_depot(w) {
-            MarkKind::Depot
-        } else {
-            MarkKind::Waystation
-        };
-        out.push(kind, w.x, w.z);
-    }
-    if haven.town.live {
-        out.push(MarkKind::Town, haven.town.x, haven.town.z);
-    }
-    if haven.ziggurat.live {
-        out.push(MarkKind::Monument, haven.ziggurat.x, haven.ziggurat.z);
-    }
-    // The landmarks, behind the sites: named places, fewer than the cap
-    // leaves room for (the assert above `MarkKind`).
-    for m in haven.marks.iter().filter(|m| m.live) {
-        out.push(MarkKind::Landmark, m.x, m.z);
-        if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Landmark {
-            out.a[out.count - 1].name = Some(sim_core::landmark::name(m.kind));
-        }
-    }
-    // The works, named: the island's shared projects, authored like the
-    // sites, so inside the tier the cap can never reach (the assert above
-    // `MarkKind`). A work on a seed without its site stands nowhere and is
-    // not drawn (`sim_core::spot`).
-    for (spot, label) in arc.works.iter().take(arc.n_works) {
-        if let Some((x, _, z)) = sim_core::spot::world(haven, spot) {
-            out.push(MarkKind::Work, x, z);
-            if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Work {
-                out.a[out.count - 1].label = *label;
-            }
-        }
-    }
+    resolve_sites(out, haven, arc);
 
     let have = have.min(defs.def_count);
     let half = BUILD_CELL_M * 0.5;
@@ -1247,28 +1568,18 @@ pub fn resolve_marks(
 }
 
 /// Fill `out` with **your own bags** and nothing else — the death
-/// screen's map (bag choice v0).
+/// screen's buttons on its map (bag choice v0).
 ///
-/// A different function from [`resolve_marks`] rather than a flag on it,
-/// and the difference is the whole point of the screen:
-///
-///   · [`resolve_marks`] draws the island — every bed and hearth anyone
-///     placed, off the broadcast deploy mirror, which cannot say whose
-///     they are;
-///   · this draws the **answers to the question on screen**, off the
-///     own-fact bag list, which is the only thing that can.
-///
-/// So no haven, no waystations, no other player's bed, and — the one that
-/// is a rule rather than a choice — **no marker for where you fell.**
-/// `ALPHA.md` §1: "who/what killed you — range and weapon, no map
-/// position". A raider standing over your body is looking at your screen's
-/// twin on their own machine; the reason the death screen never carried a
-/// position is that yours would pin the base they just cleared. Adding a
-/// map here does not repeal that, and `no_wake_map_marks_the_corpse` is
-/// what keeps someone from helpfully adding it back.
+/// A different function from [`resolve_marks`] rather than a flag on it:
+/// that one draws every bed anyone placed, off the broadcast deploy mirror,
+/// which cannot say whose they are; this draws the **answers to the question
+/// on screen**, off the own-fact bag list, which is the only thing that can.
+/// The death screen draws [`resolve_sites`] and its own skull where you
+/// fell under these (`render::death`); neither is a `Mark` here, so this
+/// list stays exactly the set of buttons.
 ///
 /// The cap is [`resolve_marks`]'s and cannot be reached: `BAG_CAP` is 8
-/// against [`MAP_MARKS_MAX`]'s 64. It is checked anyway, because a cap
+/// against [`MAP_MARKS_MAX`]'s 128. It is checked anyway, because a cap
 /// that is only correct as long as another crate's constant does not move
 /// is not a cap.
 pub fn resolve_wake_marks(out: &mut Marks, bags: &[BagAnchor]) {
@@ -1644,6 +1955,18 @@ mod tests {
             for i in (0..size).step_by(7) {
                 let (x, z) = (half + i as f32 * step, half + j as f32 * step);
                 let h = terrain::height(seed, x, z);
+                // The coast's own pixel is shared: `paint` blends land and
+                // sea within a pixel's rise of the waterline, so a sample
+                // that close is neither and says nothing about orientation.
+                let rise = ((terrain::height(seed, x + step, z)
+                    - terrain::height(seed, x - step, z))
+                .abs()
+                .max(
+                    (terrain::height(seed, x, z + step) - terrain::height(seed, x, z - step)).abs(),
+                )) * 0.5;
+                if (h - SEA_LEVEL).abs() < rise {
+                    continue;
+                }
                 let (px, py) = world_to_map(x, z, size);
                 let o = ((py as usize).min(size - 1) * size + (px as usize).min(size - 1)) * 4;
                 let (r, g, b) = (buf[o] as f32, buf[o + 1] as f32, buf[o + 2] as f32);
@@ -1676,6 +1999,109 @@ mod tests {
                 "an unpainted pixel"
             );
         }
+    }
+
+    // ---- the blight overlay ---------------------------------------------
+
+    use sim_core::blight::{self, Plan};
+
+    const BLIGHT_SEED: u64 = 20260731;
+
+    fn overlay(cache: &BlightCache, now: &blight::Now) -> Vec<u8> {
+        let mut out = vec![0u8; cache.size() * cache.size() * 4];
+        paint_blight(cache, now, &mut out);
+        out
+    }
+
+    fn opaque(buf: &[u8]) -> usize {
+        buf.chunks_exact(4).filter(|p| p[3] > 0).count()
+    }
+
+    /// Wipe day IS the heart, and the base map already drew the heart: the
+    /// overlay adds nothing anywhere.
+    #[test]
+    fn the_blight_overlay_is_clear_on_wipe_day() {
+        let haven = terrain::haven(BLIGHT_SEED);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, 64);
+        let now = blight::now(&Plan::new(BLIGHT_SEED, 9, &haven), &haven, 0, 0);
+        assert_eq!(opaque(&overlay(&cache, &now)), 0);
+    }
+
+    /// The green grows on the map as the wipe ages, and never reaches the sea.
+    #[test]
+    fn the_overlay_grows_with_the_wipe_and_never_paints_the_sea() {
+        let haven = terrain::haven(BLIGHT_SEED);
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, 64);
+        let plan = Plan::new(BLIGHT_SEED, 9, &haven);
+        let early = overlay(&cache, &blight::now(&plan, &haven, 0, 0));
+        let late = overlay(
+            &cache,
+            &blight::now(&plan, &haven, 168 * blight::TICKS_PER_HOUR, 2),
+        );
+        assert!(
+            opaque(&late) > opaque(&early) + 20,
+            "the overlay did not grow"
+        );
+        let size = cache.size();
+        for j in 0..size {
+            for i in 0..size {
+                if cache.h[j * size + i] > SEA_LEVEL {
+                    continue;
+                }
+                let o = ((size - 1 - j) * size + (size - 1 - i)) * 4;
+                assert_eq!(late[o + 3], 0, "the overlay painted the sea at ({i},{j})");
+            }
+        }
+    }
+
+    /// The overlay lands where `world_to_map` puts the world, with the base
+    /// map's own flips: an outbreak on known land shows on its own texel and
+    /// not on the mirrored or the flipped one.
+    #[test]
+    fn the_blight_overlay_lands_where_world_to_map_says() {
+        let haven = terrain::haven(BLIGHT_SEED);
+        let size = 64;
+        let cache = BlightCache::new(BLIGHT_SEED, &haven, size);
+        let step = ISLAND_SIZE / size as f32;
+        // The highest texel well clear of the heart, and of both centre
+        // lines, so its mirror and its flip are other ground.
+        let off_centre = |k: usize| (2 * k as i64 - size as i64 + 1).abs() > 12;
+        let (mut best, mut at) = (f32::MIN, (0usize, 0usize));
+        for j in (size / 8..7 * size / 8).filter(|j| off_centre(*j)) {
+            for i in (size / 8..7 * size / 8).filter(|i| off_centre(*i)) {
+                let (x, z) = (step * 0.5 + i as f32 * step, step * 0.5 + j as f32 * step);
+                let (dx, dz) = (x - terrain::FEL_HEART.0, z - terrain::FEL_HEART.1);
+                let h = cache.h[j * size + i];
+                if dx * dx + dz * dz > 1_000.0 * 1_000.0 && h > best {
+                    best = h;
+                    at = (i, j);
+                }
+            }
+        }
+        assert!(
+            best > terrain::BEACH_MAX_H + blight::COAST_M,
+            "no inland texel"
+        );
+        let (x, z) = (
+            step * 0.5 + at.0 as f32 * step,
+            step * 0.5 + at.1 as f32 * step,
+        );
+        let mut now = blight::now(&Plan::new(BLIGHT_SEED, 9, &haven), &haven, 0, 0);
+        now.n = 1;
+        now.discs[0] = blight::Disc {
+            x,
+            z,
+            r: 3.0 * step,
+            depth: 0.8,
+            hot: false,
+        };
+        let buf = overlay(&cache, &now);
+        let (fx, fy) = world_to_map(x, z, size);
+        let (px, py) = (fx as usize, fy as usize);
+        let alpha = |px: usize, py: usize| buf[(py * size + px) * 4 + 3];
+        assert!(alpha(px, py) > 0, "the outbreak is not on its own texel");
+        assert_eq!(alpha(size - 1 - px, py), 0, "the overlay is mirrored");
+        assert_eq!(alpha(px, size - 1 - py), 0, "the overlay is flipped");
     }
 
     // ---- the markers ----------------------------------------------------
@@ -2250,7 +2676,17 @@ mod tests {
     /// rule is per-channel and written down rather than re-derived.
     #[test]
     fn marker_fills_are_not_the_ground_palette() {
-        let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP, ROAD];
+        let grounds = [
+            SAND,
+            GRASS,
+            LITTER,
+            ROCK,
+            FEL_GROUND,
+            FEL_HOT,
+            SEA_SHALLOW,
+            SEA_DEEP,
+            ROAD,
+        ];
         for kind in [
             MarkKind::Haven,
             MarkKind::Town,
@@ -2517,6 +2953,7 @@ mod tests {
             cz,
             level: 0,
             ready,
+            wait_s: if ready { 0 } else { 60 },
         }
     }
 
@@ -2534,13 +2971,11 @@ mod tests {
         assert_eq!(MarkKind::Bed.fill(), MarkKind::BedSpent.fill());
     }
 
-    /// **`ALPHA.md` §1: no map position.** The death screen grew a map and
-    /// that rule did not move — a marker for where you fell would hand the
-    /// raider standing over your body a pin to the base they just cleared.
-    /// Structural, because the way this breaks is somebody helpfully adding
-    /// a "you died here" dot.
+    /// The wake marks are the bag buttons on the death screen's map and
+    /// nothing else: the skull where you fell and the named places are drawn
+    /// around them, never mixed into the list a click is resolved against.
     #[test]
-    fn no_wake_map_marks_the_corpse() {
+    fn the_wake_marks_are_only_your_own_bags() {
         let mut out = Marks::default();
         resolve_wake_marks(&mut out, &[anchor(10, 20, true)]);
         assert_eq!(out.count, 1, "the wake map drew something besides the bags");
@@ -2607,5 +3042,56 @@ mod tests {
         resolve_wake_marks(&mut out, &bags);
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, over);
+    }
+
+    /// The zoomed map: the spot under the crosshair stays under it, the
+    /// island never leaves the window, and the two projections invert.
+    #[test]
+    fn the_map_zooms_about_the_crosshair_and_keeps_the_island_on_screen() {
+        let (w, h) = (1920.0, 1080.0);
+        let mut v = MapView::default();
+        // Zoomed out: the island fits the short side, centred.
+        assert_eq!(v.rect(w, h), (420.0, 0.0, 1080.0));
+        let (fx, fy) = v.to_frac(w, h, 700.0, 300.0);
+        let (sx, sy) = v.to_screen(w, h, fx, fy);
+        assert!((sx - 700.0).abs() < 1e-3 && (sy - 300.0).abs() < 1e-3);
+
+        // In about a point well inside: it stays put.
+        v.zoom_about(w, h, 700.0, 300.0, 2.5);
+        let (gx, gy) = v.to_frac(w, h, 700.0, 300.0);
+        assert!((gx - fx).abs() < 1e-4 && (gy - fy).abs() < 1e-4, "{v:?}");
+
+        // Past the cap clamps; the island still covers the window.
+        v.zoom_about(w, h, 0.0, 0.0, 99.0);
+        assert_eq!(v.zoom, ZOOM_MAX);
+        let (l, t, side) = v.rect(w, h);
+        assert!(l <= 0.0 && t <= 0.0 && l + side >= w && t + side >= h);
+
+        // A drag cannot pull it off either.
+        v.pan_px(w, h, 1e6, -1e6);
+        let (l, t, side) = v.rect(w, h);
+        assert!(l <= 1e-3 && t + side >= h - 1e-3, "{v:?}");
+
+        // Back out: re-centred on the axis it no longer fills.
+        v.zoom_about(w, h, 0.0, 0.0, ZOOM_MIN);
+        assert_eq!((v.cx, v.cy), (0.5, 0.5));
+    }
+
+    /// The wheel moves the target and the ease arrives at it, about the
+    /// crosshair, and the pick reach shrinks as the island grows.
+    #[test]
+    fn the_wheel_eases_to_its_zoom() {
+        let (w, h) = (1280.0, 720.0);
+        let mut v = MapView::default();
+        v.wheel(2.0);
+        assert!((v.target - ZOOM_STEP * ZOOM_STEP).abs() < 1e-5);
+        let far = v.pick_frac(w, h);
+        for _ in 0..120 {
+            v.ease(w, h, 640.0, 360.0, 1.0 / 60.0);
+        }
+        assert_eq!(v.zoom, v.target);
+        assert!(v.pick_frac(w, h) < far);
+        v.wheel(-40.0);
+        assert_eq!(v.target, ZOOM_MIN);
     }
 }

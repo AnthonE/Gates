@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 use basis_universal::{sys, DecodeFlags, TranscoderBlockFormat};
 use client::render::props::{prop_models, OCCUPANTS};
 use client::render::structures::{BAG_ASSET, DEPLOY_ASSET, DOOR_LOCKED_ASSET};
-use client::ui::hold::{HeldSrc, HELD_MODELS};
+use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 
 /// Every packed model with a normal map, as it stood on 2026-09-05: bent by
 /// the packer, X/Y means 0.212. Remove an entry when its file is re-packed
@@ -90,6 +90,10 @@ const NO_NORMAL_MAP: &[&str] = &[
     "models/site/mark_yard.glb",
     "models/site/mark_relay.glb",
     "models/site/mark_quarry.glb",
+    // Remeshed on Meshy after delivery (580 k triangles to 3 k), which
+    // re-bakes the base colour and metal/roughness only: its relief is in
+    // the geometry and the albedo (`assets/models/MANIFEST.md` §held).
+    "models/held/stone.glb",
 ];
 
 fn asset_path(rel: &str) -> PathBuf {
@@ -124,13 +128,31 @@ fn packed_models() -> Vec<&'static str> {
     for p in client::render::props::TIER_CRATE_GLB {
         set.insert(p);
     }
+    for p in client::render::boulders::SPIRE_GLB {
+        set.insert(p);
+    }
     for (_, p) in client::render::props::ROADSIDE_GLB {
+        set.insert(p);
+    }
+    // The monuments' generated parts, each a model in its own renderer.
+    for p in [
+        client::render::heli::HULL_GLB,
+        client::render::sentry::HEAD_GLB,
+        client::render::works::PLINTH_GLB,
+        client::render::lore::SLAB_GLB,
+        client::render::lore::DIAL_GLB,
+        client::render::town_fx::SEARCHLIGHT_GLB,
+    ] {
         set.insert(p);
     }
     for m in HELD_MODELS.iter() {
         if let HeldSrc::Glb(p) = &m.src {
             set.insert(*p);
         }
+    }
+    // The skins with models of their own (#292), which replace a held row's.
+    for m in SKIN_MODELS.iter() {
+        set.insert(m.path);
     }
     set.into_iter().collect()
 }

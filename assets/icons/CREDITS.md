@@ -29,6 +29,8 @@ every item either way, because the painted ones are derived works of it.
 | file | source icon |
 |---|---|
 | `animal_fat.png` | `lorc/meat` |
+| `ash_mask.png` | `lorc/gas-mask` |
+| `ash_suit.png` | `delapouite/hazmat-suit` |
 | `auto_turret.png` | `lorc/sentry-gun` |
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
@@ -41,7 +43,9 @@ every item either way, because the painted ones are derived works of it.
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
+| `camp_fire.png` | `lorc/campfire` |
 | `charcoal.png` | `delapouite/coal-pile` |
+| `charcoal_tonic.png` | `lorc/standing-potion` |
 | `cloth.png` | `delapouite/rolled-cloth` |
 | `code_lock.png` | `delapouite/dial-padlock` |
 | `cooked_meat.png` | `lorc/chicken-leg` |
@@ -51,7 +55,6 @@ every item either way, because the painted ones are derived works of it.
 | `electric_fuse.png` | `delapouite/electrical-resistance` |
 | `empty_propane_tank.png` | `delapouite/fire-extinguisher` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
-| `fire_pit.png` | `lorc/campfire` |
 | `full_waterskin.png` | `delapouite/water-flask` |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |
@@ -70,6 +73,7 @@ every item either way, because the painted ones are derived works of it.
 | `leather.png` | `delapouite/animal-hide` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_bed.png` | `delapouite/sleeping-bag` |
+| `map_death.png` | `lorc/skull-mask` |
 | `map_hearth.png` | `delapouite/fireplace` |
 | `map_site.png` | `delapouite/hut` |
 | `medical_syringe.png` | `lorc/syringe` |
@@ -125,6 +129,8 @@ every item either way, because the painted ones are derived works of it.
 | `torch.png` | `delapouite/torch` |
 | `ui_clock.png` | `lorc/stopwatch` |
 | `ui_lock.png` | `lorc/padlock` |
+| `ui_pin.png` | `delapouite/position-marker` |
+| `ui_respawn.png` | `delapouite/clockwise-rotation` |
 | `ui_star.png` | `delapouite/round-star` |
 | `verb_demolish.png` | `lorc/demolish` |
 | `verb_pick_up.png` | `lorc/grab` |
@@ -135,7 +141,7 @@ every item either way, because the painted ones are derived works of it.
 | `vital_hp.png` | `sbed/health-normal` |
 | `vital_water.png` | `sbed/water-drop` |
 | `waterskin.png` | `delapouite/water-flask` |
-| `wood.png` | `delapouite/log` |
+| `wood.png` | `delapouite/wood-pile` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
 | `wooden_arrow.png` | `lorc/arrowhead` |
 | `wooden_barricade.png` | `delapouite/palisade` |

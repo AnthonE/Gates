@@ -59,6 +59,9 @@ pub struct External {
     next_id: u64,
     /// Replies that named an older request and were skipped.
     pub stale: u64,
+    /// Where its lines go to be spoken, when the body has a voice
+    /// (`agent_voice.rs`): a reply's `speak`, else its `say`.
+    speech: Option<crate::agent_voice::SpeechTx>,
 }
 
 impl External {
@@ -163,7 +166,32 @@ impl External {
             timeout,
             next_id: 1,
             stale: 0,
+            speech: None,
         })
+    }
+
+    /// Give the body a voice: requests then say `"voice": true`, and each
+    /// accepted reply's `speak` (or, without one, its `say`) is spoken.
+    pub fn with_speech(mut self, tx: crate::agent_voice::SpeechTx) -> Self {
+        self.speech = Some(tx);
+        self
+    }
+
+    /// What a reply asks to have said out loud: `speak`, else a local
+    /// `say` (a line typed to a far team is not read out to strangers).
+    fn spoken(line: &str) -> Option<String> {
+        let v: Value = serde_json::from_str(line.trim_end()).ok()?;
+        let say = if v["to"] == "team" {
+            &Value::Null
+        } else {
+            &v["say"]
+        };
+        let said = [&v["speak"], say]
+            .into_iter()
+            .filter_map(|t| t.as_str())
+            .map(crate::agent_voice::clean)
+            .find(|t| !t.is_empty() && !t.starts_with('/'));
+        said
     }
 
     pub(crate) fn observation(id: u64, summary: &Summary) -> Value {
@@ -268,6 +296,24 @@ impl External {
     }
 }
 
+#[cfg(test)]
+mod voice_tests {
+    use super::External;
+
+    #[test]
+    fn a_reply_is_spoken_by_speak_else_a_local_say() {
+        let spoken = |line: &str| External::spoken(line);
+        assert_eq!(
+            spoken(r#"{"say":"hi","speak":"hello there friend"}"#).as_deref(),
+            Some("hello there friend")
+        );
+        assert_eq!(spoken(r#"{"say":"hi"}"#).as_deref(), Some("hi"));
+        assert_eq!(spoken(r#"{"say":"base is north","to":"team"}"#), None);
+        assert_eq!(spoken(r#"{"speak":"  ","say":"/kick x"}"#), None);
+        assert_eq!(spoken("not json"), None);
+    }
+}
+
 impl DecisionSource for External {
     fn kind(&self) -> SourceKind {
         SourceKind::External
@@ -277,7 +323,11 @@ impl DecisionSource for External {
         let id = self.next_id;
         self.next_id += 1;
         let deadline = Instant::now() + self.timeout;
-        let mut line = Self::observation(id, summary).to_string();
+        let mut request = Self::observation(id, summary);
+        if self.speech.is_some() {
+            request["voice"] = Value::Bool(true);
+        }
+        let mut line = request.to_string();
         line.push('\n');
         let stdin = self
             .stdin
@@ -295,7 +345,12 @@ impl DecisionSource for External {
             .lines
             .as_mut()
             .ok_or("external agent output is closed")?;
-        wait(lines, id, deadline, summary, &mut self.stale)
+        let (choice, reply) = wait(lines, id, deadline, summary, &mut self.stale)?;
+        if let (Some(tx), Some(text)) = (self.speech.as_mut(), Self::spoken(&reply)) {
+            // Full: a line is still being said; this one goes unsaid.
+            let _ = tx.push(text);
+        }
+        Ok(choice)
     }
 }
 
@@ -306,11 +361,11 @@ fn wait(
     deadline: Instant,
     summary: &Summary,
     stale: &mut u64,
-) -> Result<Choice, String> {
+) -> Result<(Choice, String), String> {
     loop {
         match lines.pop() {
             Ok(Line::Text(text)) => match External::reply(&text, id, summary)? {
-                Some(choice) => return Ok(choice),
+                Some(choice) => return Ok((choice, text)),
                 None => *stale += 1,
             },
             Ok(Line::TooLong) => {

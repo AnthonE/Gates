@@ -1271,14 +1271,77 @@ impl Content {
         ex.hurt_hp_per_min = u16f(e.hurt_hp_per_min, "hurt_hp_per_min")?;
         ex.cold_food_pct = u16f(e.cold_food_pct, "cold_food_pct")?;
         ex.cold_water_pct = u16f(e.cold_water_pct, "cold_water_pct")?;
-        ex.comfort_hp_per_min = u16f(e.comfort_hp_per_min, "comfort_hp_per_min")?;
+        ex.fire_comfort = u16f(e.fire_comfort, "fire_comfort")?;
+        ex.company_comfort = u16f(e.company_comfort, "company_comfort")?;
+        ex.comfort_per_s = u16f(e.comfort_per_s, "comfort_per_s")?;
+        ex.regen_hp_per_min = u16f(e.regen_hp_per_min, "regen_hp_per_min")?;
+        ex.regen_fed_pct = u16f(e.regen_fed_pct, "regen_fed_pct")?;
+        ex.regen_comfort_pct = u16f(e.regen_comfort_pct, "regen_comfort_pct")?;
+        ex.regen_cap_pct = u16f(e.regen_cap_pct, "regen_cap_pct")?;
+        ex.regen_food_min = u16f(e.regen_food_min, "regen_food_min")?;
+        ex.regen_water_min = u16f(e.regen_water_min, "regen_water_min")?;
+        ex.regen_chill_max = u16f(e.regen_chill_max, "regen_chill_max")?;
+        ex.regen_calm_s = u16f(e.regen_calm_s, "regen_calm_s")?;
+        ex.regen_food_pct = u16f(e.regen_food_pct, "regen_food_pct")?;
+        ex.regen_water_pct = u16f(e.regen_water_pct, "regen_water_pct")?;
+        // The air (climate v0). Degrees validated to ±100, so tenths fit i16.
+        let dc = |c: i32| (c * 10) as i16;
+        ex.cold_below_dc = dc(e.cold_below_c);
+        ex.cold_per_c = u16f(e.cold_per_c, "cold_per_c")?;
+        ex.hot_above_dc = dc(e.hot_above_c);
+        ex.heat_per_c = u16f(e.heat_per_c, "heat_per_c")?;
+        ex.shade_dc = dc(e.shade_c);
+        ex.wet_cool = u16f(e.wet_cool, "wet_cool")?;
+        ex.clothes_heat_pm = u16f(e.clothes_heat_pm, "clothes_heat_pm")?;
+        ex.heat_water_pct = u16f(e.heat_water_pct, "heat_water_pct")?;
+        ex.heat_hurt_at = if e.heat_per_c > 0 {
+            u16f(e.heat_hurt_at, "heat_hurt_at")?
+        } else {
+            1000
+        };
+        ex.heat_hp_per_min = u16f(e.heat_hp_per_min, "heat_hp_per_min")?;
+        // The Verdigris. A line nothing reaches when it is not armed.
+        ex.fel_rise_per_s = u16f(e.fel_rise_per_s, "fel_rise_per_s")?;
+        ex.fel_vent_per_s = u16f(e.fel_vent_per_s, "fel_vent_per_s")?;
+        ex.fel_fall_per_s = u16f(e.fel_fall_per_s, "fel_fall_per_s")?;
+        let armed = e.fel_rise_per_s > 0;
+        ex.fel_hurt_at = if armed {
+            u16f(e.fel_hurt_at, "fel_hurt_at")?
+        } else {
+            1000
+        };
+        ex.fel_hp_per_min = u16f(e.fel_hp_per_min, "fel_hp_per_min")?;
+        ex.fel_regen_max = if armed {
+            u16f(e.fel_regen_max, "fel_regen_max")?
+        } else {
+            1000
+        };
+        ex.fel_ward_max = u16f(e.fel_ward_max, "fel_ward_max")?;
+        ex.fel_pocket_per_s = u16f(e.fel_pocket_per_s, "fel_pocket_per_s")?;
+        ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
+        let cl = &self.balance.climate;
+        ex.air = sim_core::climate::ClimateContent {
+            temperate_low_dc: dc(cl.temperate_low_c),
+            temperate_high_dc: dc(cl.temperate_high_c),
+            arid_low_dc: dc(cl.arid_low_c),
+            arid_high_dc: dc(cl.arid_high_c),
+            lapse_from_m: u16f(cl.lapse_from_m, "lapse_from_m")?,
+            lapse_m: u16f(cl.lapse_m, "lapse_m")?,
+            cloud_flatten_pm: u16f(cl.cloud_flatten_pm, "cloud_flatten_pm")?,
+            rain_cool_dc: dc(cl.rain_cool_c),
+            crop_frost_dc: dc(cl.crop_frost_c),
+            crop_warm_dc: dc(cl.crop_warm_c),
+            crop_hot_dc: dc(cl.crop_hot_c),
+            crop_scorch_dc: dc(cl.crop_scorch_c),
+        };
         for a in &self.armors {
             let idx = self
                 .item_index(&a.id)
                 .ok_or_else(|| format!("bake: armor `{}` names no item", a.id))?
                 as usize;
-            // Per cent to per mille of chill kept out.
+            // Per cent to per mille of chill kept out, and of the Verdigris.
             ex.warmth[idx] = (a.cold_pct * 10) as i16;
+            ex.ward[idx] = (a.fel_pct * 10) as u16;
         }
         for con in &self.consumables {
             let idx = self
@@ -1306,11 +1369,21 @@ impl Content {
             (seconds as u32).checked_mul(TICK_HZ).ok_or_else(|| {
                 format!("bake: consumable `{}` span {seconds} s overflows", con.id)
             })?;
+            let fel = i16::try_from(con.fel)
+                .ok()
+                .filter(|v| (-1000..=1000).contains(v))
+                .ok_or_else(|| {
+                    format!(
+                        "bake: consumable `{}` fel {} outside ±1000",
+                        con.id, con.fel
+                    )
+                })?;
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
                 water: u16f(con.water, "water")?,
                 seconds,
+                fel,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;
@@ -2503,6 +2576,7 @@ impl Content {
                 )?,
                 // Validate bounded it to 0..=100; the cast cannot truncate.
                 brave_pct: m.brave_pct as u8,
+                fel_bite: small(m.fel_bite, "fel_bite")?,
                 roam_cm: m.roam_m as i64 * 100,
                 spook_cm: m.spook_m as i64 * 100,
                 night_spook_cm: m.night_spook_m as i64 * 100,
@@ -2512,7 +2586,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
                 // Thousandths per km², and per mille per biome in
                 // `terrain::Biome` order (beach, meadow, forest, highland,
-                // desert).
+                // desert, the Verdigris).
                 // Validate bounded every value, so the casts cannot wrap.
                 per_km2_milli: (m.per_km2 * 1000.0).round() as u32,
                 night_extra_pct: (m.night_extra * 100.0).round() as u16,
@@ -2522,6 +2596,7 @@ impl Content {
                     (m.habitat.forest * 1000.0).round() as u16,
                     (m.habitat.highland * 1000.0).round() as u16,
                     (m.habitat.desert * 1000.0).round() as u16,
+                    (m.habitat.fel * 1000.0).round() as u16,
                 ],
                 // Centimetres straight through: the hit volume a swing's ray
                 // is tested against (`melee::mob_cast`). Validate bounded

@@ -29,10 +29,12 @@
 //!   silence between songs, the intensity read so a song never opens in the
 //!   middle of a fight. [`music`] is that director; the songs are whole
 //!   recorded tracks streamed beside the engine, not cues.
-//! - **Occlusion is a knob and it shipped OFF.** The reference gated its first
-//!   pass behind `audio.occlusion` for a week, and a later build was still
-//!   fixing excess DSP from it on surround setups. There is no occlusion in
-//!   this module, and that is the reference's own ordering, not a shortcut.
+//! - **Occlusion is a knob, and it is on now**, as the reference's has been
+//!   since late 2016. The walk is the client's (`ui::occlusion`: the shot
+//!   walk over the built pieces, from the ear to the source); what it costs
+//!   a sound is a gain and a low-pass, applied to a one-shot as it starts and
+//!   to a talker every quarter second (`talk`). This module only carries
+//!   the filter; the SOUND OCCLUSION row turns the walk off.
 //!
 //! Every number below is a knob with its documented default
 //! (`DECISIONS.md` §open, "audio v0"). None of them was measured against
@@ -47,6 +49,9 @@ pub mod birds;
 // on both targets, and it is here rather than in `render/` so that the
 // arithmetic a player actually hears is gated headless like the rest.
 pub mod engine;
+// The Verdigris counter: when it clicks, from how deep the green is where you
+// stand. Pure cadence, like the voices; `render/audio.rs` plays the click.
+pub mod geiger;
 // What the mixer is told when the health bar moves. Pure, and deliberately
 // takes the *fall* as well as the event: three of the sim's seven damage
 // routes announce nothing, on purpose, and a mixer fed only `EV_HURT` goes
@@ -59,6 +64,9 @@ pub mod mixer;
 pub mod music;
 pub mod steps;
 pub mod synth;
+// Players talking (proximity voice): each talker's decoded speech, mixed into
+// the block at the gains the game thread computes from where they stand.
+pub mod talk;
 // What water sounds like from where you are standing. `reference/WATER.md` §7
 // is the research; this is the model, and `render/audio.rs` plays it.
 pub mod water;
@@ -85,10 +93,10 @@ pub const SAMPLE_RATE: u32 = 44_100;
 /// Which group a cue is balanced in. The reference's mixer groups, at the
 /// size ours can be honest about.
 ///
-/// **There is still no `Voice` bus**, because there is no voice chat — and a
-/// bus with nothing on it is the greyed-out settings row
-/// `render/settings.rs` refuses to draw, one layer down. [`Bus::Music`]
-/// stopped being one of those when `music::Director` landed.
+/// **Players' voices are not a bus here**: they never pass the cue mixer.
+/// [`talk`] mixes them after the renderer, at gains the client computes with
+/// its own VOICE slider. [`Bus::Music`] stopped being a greyed-out row when
+/// `music::Director` landed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bus {
     /// Everything the player or the world did: steps, swings, impacts, the
@@ -405,11 +413,29 @@ pub enum Cue {
     /// echo, kept short so a burst still reads round by round
     /// (`render/audio.rs` picks it past `HELI_SHOT_FAR_M`).
     ShotHeliFar,
+    /// The pointer arriving on a button: the faintest tick, so a menu
+    /// answers the hand before it clicks. Appended, the enum's append-order
+    /// rule, like the six after it.
+    UiHover,
+    /// Your inventory, crafting or loot page opening: the pack's cloth.
+    InvOpen,
+    /// …and closing.
+    InvClose,
+    /// An item set down in a slot (a move, a split, a quick-move).
+    ItemMove,
+    /// An item thrown out of the inventory onto the ground.
+    ItemDrop,
+    /// The CRAFT button: the kit coming out.
+    CraftStart,
+    /// A mark put on, or taken off, the map.
+    MapPin,
+    /// The Verdigris counter: one tube click, yours, so not positional.
+    Geiger,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 94;
+pub const CUE_COUNT: usize = 102;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -512,6 +538,14 @@ impl Cue {
         Cue::ShotHeli,
         Cue::BedRotorFar,
         Cue::ShotHeliFar,
+        Cue::UiHover,
+        Cue::InvOpen,
+        Cue::InvClose,
+        Cue::ItemMove,
+        Cue::ItemDrop,
+        Cue::CraftStart,
+        Cue::MapPin,
+        Cue::Geiger,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -642,6 +676,9 @@ impl Cue {
             | Cue::OreCrumble
             | Cue::OreBreak
             | Cue::Tung => 0.07,
+            // Your own hands in your own pack: a nudge, like the equip, so a
+            // row of moves is not one sound stamped out.
+            Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
             // The bonus answering you: nearly a symbol, but struck on rock,
             // and two in a row in unison would ring.
             Cue::OreGlint => 0.03,
@@ -655,6 +692,9 @@ impl Cue {
             Cue::Fuse => 0.04,
             // A hiss is noise: a nudge keeps two in a row from matching.
             Cue::TorchOut => 0.06,
+            // A click retriggered up to fourteen times a second is the
+            // machine-gun tell this knob exists for.
+            Cue::Geiger => 0.05,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -702,6 +742,8 @@ impl Cue {
             | Cue::HitLimb
             | Cue::Death
             | Cue::UiClick
+            | Cue::UiHover
+            | Cue::MapPin
             | Cue::BedWind
             | Cue::BedSurf
             | Cue::BedUnder
@@ -917,13 +959,20 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 48.0, 0.60,  30, 4, true),   // bullet, metal
     row(GAME, 56.0, 0.84,  90, 3, true),   // ricochet
     row(GAME, 30.0, 0.70,  30, 5, true),   // flesh hit
-    // The far report: past `ShotGun`'s radius the near layer is gone and
-    // this is what is left of a gunshot. Twice the reach, dark, and at a
-    // gain that meets the near layer where `render/audio.rs` switches.
-    row(GAME, 200.0, 0.75,  60, 6, true),  // gun fired, far
+    // The far report: past the switch (`render/audio.rs`, 45 m) this is
+    // what is left of a gunshot. The reference hears a pistol 400 m off, a
+    // rifle 500 and a heavy gun 600 (its Sept 2025 maintenance devblog), so
+    // the row carries 600 and the shard sends the report only as far as the
+    // gun reaches (`GUN_REPORT_CM`): a revolver at 400 m is faint, not gone.
+    // The gain meets the near layer's level at the switch:
+    // 0.85·(1 − 45/100)² = 0.30·(1 − 45/600)².
+    row(GAME, 600.0, 0.30,  60, 6, true),  // gun fired, far
     // A charge is the loudest thing on the island and the one sound a
-    // whole server should know the place of.
-    row(GAME, 200.0, 1.00,   0, 7, true),  // blast
+    // whole server should know the place of: the reference sends every
+    // explosion to every client. 1500 m on a 4 km island (`BLAST_REPORT_CM`)
+    // is a raid heard from most of it, a dull far rumble under the falloff
+    // and the distance low-pass.
+    row(GAME, 1500.0, 1.00,  0, 7, true),  // blast
     row(GAME, 60.0, 0.80,  80, 5, true),   // collapse
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock
     // Your own hands, so non-positional; the cooldown is what keeps a
@@ -1029,8 +1078,23 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME,  0.0, 0.60,   0, 0, false),  // rotor, far
     // The heli's gun from far off: a machine gun's reach in the reference
     // (600 m, its far tier), which the heli is subscribed past. The gain
-    // meets the near round's at the switch (`render/audio.rs`).
-    row(GAME, 600.0, 0.32,  60, 6, true),  // heli gun, far
+    // meets the near round's at the switch (`render/audio.rs`, 60 m):
+    // 0.80·(1 − 60/200)² = 0.48·(1 − 60/600)².
+    row(GAME, 600.0, 0.48,  60, 6, true),  // heli gun, far
+    // The interface's small sounds, under the click: a hover is the quietest
+    // thing in the bank and its cooldown is what keeps a sweep across a row
+    // of buttons from becoming a rattle.
+    row(GAME,  0.0, 0.18,  45, 1, false),  // ui hover
+    row(GAME,  0.0, 0.50, 150, 3, false),  // inventory open
+    row(GAME,  0.0, 0.42, 150, 3, false),  // inventory close
+    row(GAME,  0.0, 0.48,  60, 3, false),  // item moved
+    row(GAME,  0.0, 0.52, 120, 3, false),  // item dropped
+    row(GAME,  0.0, 0.50, 120, 3, false),  // craft started
+    row(GAME,  0.0, 0.45,  80, 2, false),  // map pin
+    // The counter: a hazard reading, so the game bus (turning the scenery
+    // down must not mute it); a cooldown under a frame, so clicks on
+    // consecutive frames both land; ducked under a near shot.
+    row(GAME,  0.0, 0.36,   8, 2, false),  // geiger click
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1075,9 +1139,15 @@ const RSWING: CueDef = CueDef {
 };
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
+///
+/// **40 m, not the 24 it opened at**: the reference's client spawns another
+/// player's footstep out to 75 m from the camera (`BaseFootstepEffect`, its
+/// hard cull), so a step is a sound you hear coming, not one that arrives
+/// with the swing. Under `(1 - d/R)²` a step at 20 m is a quarter of one at
+/// your feet; crouching halves it again (`render/audio.rs`).
 const STEP: CueDef = CueDef {
     bus: Bus::Game,
-    radius_m: 24.0,
+    radius_m: 40.0,
     gain: 0.35,
     cooldown_ms: 90,
     priority: 1,
@@ -1111,15 +1181,14 @@ const RSTEP: CueDef = CueDef {
 /// (It also used to derive `render/audio.rs`'s spatial scale for rodio's
 /// clamp; the engine pans now and that half is gone.)
 ///
-/// **Set by [`Cue::ShotHeliFar`]**, at 600 m: the heli is subscribed far
-/// past the shard's 208 m interest radius (`heli::HELI_AOI_SCALE`), so its
-/// gun's events arrive from that far. Every other cue is still inside
-/// 208 m, where [`Cue::ShotGunFar`] and [`Cue::Blast`] held the ceiling at
-/// 200 m (an event from further never arrives). It is a derived number and
-/// not a taste one — it is the maximum of the table, and the test that
-/// asserts so is what makes raising a radius force this line rather than
-/// silently invert a cue's falloff.
-pub const MAX_AUDIBLE_M: f32 = 600.0;
+/// **Set by [`Cue::Blast`]**, at 1500 m: a blast and a far gunshot reach a
+/// client past the shard's 208 m interest radius as a report
+/// (`EventMsg::Report`, v113), and the heli is subscribed past it too
+/// (`heli::HELI_AOI_SCALE`). It is a derived number and not a taste one —
+/// it is the maximum of the table, and the test that asserts so is what
+/// makes raising a radius force this line rather than silently invert a
+/// cue's falloff.
+pub const MAX_AUDIBLE_M: f32 = 1500.0;
 
 /// How many voices may sound at once.
 ///

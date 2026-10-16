@@ -47,6 +47,7 @@ use sim_core::input::{
 
 use crate::look::{self, FREE_LOOK_YAW_LIMIT, MOUSE_RAD_PER_PX, PITCH_LIMIT};
 
+use super::binds::{Action, Binds, HOTBAR};
 use super::{Eye, Net, EYE_HEIGHT};
 
 /// Free-running view angles, radians. Not sim state: the sim gets the
@@ -73,17 +74,6 @@ pub struct Look {
 
 pub use crate::look::{pitch_u8, yaw_u16};
 
-/// The belt's keys, slot 1 to 6. Read here to select and by `verbs::keys` to
-/// eat — one list, so the two cannot disagree about which key is which slot.
-pub const HOTBAR_KEYS: [KeyCode; 6] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-];
-
 // Ten sources and two `Local`s. Every source is distinct: the session, the
 // free view, the cursor, the settings, two input maps, the accumulated motion,
 // the accumulated scroll, the sound queue, whether a panel has the pointer,
@@ -101,7 +91,7 @@ pub fn gather(
     ),
     aimed: Option<Res<super::verbs::Aimed>>,
     screen: Option<Res<State<super::Screen>>>,
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, binds): (Res<ButtonInput<KeyCode>>, Res<Binds>),
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -172,7 +162,7 @@ pub fn gather(
     // owns the pointer. The offset is dropped the instant any of that stops
     // being true, so releasing returns the view to the body rather than
     // stranding a player looking sideways with no key held.
-    let free = !look.frozen && !panel_open && keys.pressed(KeyCode::AltLeft);
+    let free = !look.frozen && !panel_open && binds.pressed(Action::FreeLook, &keys, &mouse);
     if !free {
         look.free_yaw = 0.0;
         look.free_pitch = 0.0;
@@ -334,17 +324,23 @@ pub fn gather(
     // the sim's left-handed `move_x` is answered for.
     let mut fwd = 0i32;
     let mut right = 0i32;
-    if keys.pressed(KeyCode::KeyW) {
+    if binds.pressed(Action::Forward, &keys, &mouse) {
         fwd += 1;
     }
-    if keys.pressed(KeyCode::KeyS) {
+    if binds.pressed(Action::Back, &keys, &mouse) {
         fwd -= 1;
     }
-    if keys.pressed(KeyCode::KeyD) {
+    if binds.pressed(Action::Right, &keys, &mouse) {
         right += 1;
     }
-    if keys.pressed(KeyCode::KeyA) {
+    if binds.pressed(Action::Left, &keys, &mouse) {
         right -= 1;
+    }
+    // The door keypad types with letters (`S` is its SET), so the body
+    // stands still while it is up rather than stepping back on every code.
+    if pad.as_ref().is_some_and(|p| p.0.is_open()) {
+        fwd = 0;
+        right = 0;
     }
     // **The probe drives here or it does not drive at all.** A capture run
     // with a verb pass hands its intent in through the same two axes and
@@ -363,10 +359,10 @@ pub fn gather(
     };
 
     let mut buttons = probe.map_or(0u8, |i| i.buttons);
-    if keys.pressed(KeyCode::ShiftLeft) {
+    if binds.pressed(Action::Sprint, &keys, &mouse) {
         buttons |= BTN_SPRINT;
     }
-    if keys.pressed(KeyCode::Space) {
+    if binds.pressed(Action::Jump, &keys, &mouse) {
         buttons |= BTN_JUMP;
     }
     // **Crouch is a stance** (v83): slower (`movement::step`, which the
@@ -374,15 +370,11 @@ pub fn gather(
     // (`Player::crouched`), quieter steps, and the sneak the animal brain
     // listens for (`sim-core/src/brain.rs`).
     //
-    // `ControlRight` too: `panels/inv.rs` already treats the two as one
-    // modifier, and a split would be a keyboard the player has to think about.
-    // **And `Z`**: in the browser build Ctrl+W — crouch and walk forward —
-    // closes the tab, and no page can stop it (`client-web/web/app.js`
-    // guards the close; `Z` is the key that never asks it).
-    if keys.pressed(KeyCode::ControlLeft)
-        || keys.pressed(KeyCode::ControlRight)
-        || keys.pressed(KeyCode::KeyZ)
-    {
+    // Ctrl or `Z` by default: in the browser build Ctrl+W — crouch and walk
+    // forward — closes the tab, and no page can stop it
+    // (`client-web/web/app.js` guards the close; `Z` is the key that never
+    // asks it).
+    if binds.pressed(Action::Crouch, &keys, &mouse) {
         buttons |= BTN_CROUCH;
     }
     // Hotbar 1–6. `set_input` clamps into range, so an out-of-range key
@@ -399,13 +391,13 @@ pub fn gather(
             .as_ref()
             .and_then(|h| h.0)
             .is_some_and(|at| super::verbs::hearth_rows_known(&net.session.core, at));
-    for (i, k) in HOTBAR_KEYS.iter().enumerate() {
+    for (i, a) in HOTBAR.iter().enumerate() {
         let core = &net.session.core;
         let food = core
             .inv
             .get(i)
             .is_some_and(|&s| crate::ui::hold::eats_on_key(&core.catalog, s));
-        if keys.just_pressed(*k) && !typing && !food {
+        if binds.just_pressed(*a, &keys, &mouse) && !typing && !food {
             sel = i as u8;
         }
     }
@@ -537,9 +529,11 @@ pub fn gather(
     // Not while down or under: the sim reads no flame there
     // (`light::is_lit`), so a latch flipped there would be a light only
     // this screen draws.
-    // `F` strikes it too (§0ctl 3, the flashlight key). The ghost's `F` nudge
-    // needs the plan in hand, and a hand holding a torch is not holding it.
-    let strike = mouse.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::KeyF);
+    // The torch key strikes it too (§0ctl 3, the flashlight key). The
+    // ghost's use of the same key needs the plan in hand, and a hand holding
+    // a torch is not holding it.
+    let strike =
+        mouse.just_pressed(MouseButton::Right) || binds.just_pressed(Action::Torch, &keys, &mouse);
     if holds_light && fuel && !downed && !under && strike {
         net.light = !net.light;
     }
@@ -547,7 +541,7 @@ pub fn gather(
         buttons |= BTN_LIGHT;
     }
     if !downed
-        && keys.pressed(KeyCode::KeyE)
+        && binds.pressed(Action::Interact, &keys, &mouse)
         && screen
             .as_ref()
             .is_some_and(|s| *s.get() == super::Screen::InWorld)

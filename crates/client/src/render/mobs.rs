@@ -532,7 +532,7 @@ pub fn stream(
     mut q: Query<(&mut Transform, &mut Gait, Option<&super::beasts::Skinned>), With<Animal>>,
     time: Res<Time>,
     assets: Option<Res<HerdAssets>>,
-    beasts: Res<super::beasts::Beasts>,
+    mut beasts: ResMut<super::beasts::Beasts>,
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
     world: Option<Res<super::WorldId>>,
@@ -581,15 +581,22 @@ pub fn stream(
         }
         let pos = Vec3::new(rs.x, rs.y, rs.z);
         let facing = Quat::from_rotation_y(wire_yaw_to_radians(rs.yaw));
-        let fel = beasts.scene_for(slot, tier);
+        // Turned in the green, it wears the top tier (`Mob::turned`); the
+        // first one seen asks for those models.
+        if rs.lit && !beasts.want_top {
+            beasts.want_top = true;
+        }
+        let tier_eff = super::beasts::tier_for(tier, rs.lit);
+        let fel = beasts.scene_for(slot, tier_eff);
         // Drawn in the rigid kit because its fel model had not loaded when it
-        // came into view, or in a tier the island has since climbed past:
-        // drop it, and it spawns again below wearing the island's tier. The
-        // sim moved its numbers at the same moment (`mob::FelTier`).
+        // came into view, or in a tier it no longer wears — the island
+        // climbed past it, or it turned or came back out of the green: drop
+        // it, and it spawns again below wearing its tier now. The sim moved
+        // its numbers at the same moment (`mob::FelTier`, `mob::turn`).
         let stale = |q: &Query<_, _>, e| match q.get(e) {
             Ok((_, _, Some(s))) => {
                 let s: &super::beasts::Skinned = s;
-                s.tier != tier
+                s.tier != tier_eff
             }
             Ok((_, _, None)) => true,
             Err(_) => false,
@@ -653,7 +660,10 @@ pub fn stream(
                         super::WorldEntity,
                         Animal(id),
                         Gait::new(slot),
-                        super::beasts::Skinned { species, tier },
+                        super::beasts::Skinned {
+                            species,
+                            tier: tier_eff,
+                        },
                         SceneRoot(scene),
                         Transform::from_translation(pos).with_rotation(facing),
                     ))

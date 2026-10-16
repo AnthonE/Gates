@@ -309,15 +309,19 @@ pub enum Place {
     Forest,
     Highland,
     Desert,
+    /// The corrupted zone. Its player-facing name is the Verdigris, never
+    /// the internal `fel` (`WORLD.md` §1.1).
+    Verdigris,
 }
 
 impl Place {
-    pub const ALL: [Place; 5] = [
+    pub const ALL: [Place; 6] = [
         Place::Shore,
         Place::Meadow,
         Place::Forest,
         Place::Highland,
         Place::Desert,
+        Place::Verdigris,
     ];
 
     pub fn of(biome: Biome) -> Place {
@@ -327,6 +331,7 @@ impl Place {
             Biome::Forest => Place::Forest,
             Biome::Highland => Place::Highland,
             Biome::Desert => Place::Desert,
+            Biome::Fel => Place::Verdigris,
         }
     }
 
@@ -338,6 +343,7 @@ impl Place {
             Place::Forest => "in the forest",
             Place::Highland => "in the highlands",
             Place::Desert => "in the desert",
+            Place::Verdigris => "in the Verdigris",
         }
     }
 }
@@ -979,6 +985,7 @@ mod tests {
                 Place::Forest => 2,
                 Place::Highland => 3,
                 Place::Desert => 4,
+                Place::Verdigris => 5,
             }
         }
         for (i, p) in Place::ALL.iter().enumerate() {
@@ -1007,6 +1014,7 @@ mod tests {
             Biome::Forest,
             Biome::Highland,
             Biome::Desert,
+            Biome::Fel,
         ] {
             let p = Place::of(b);
             assert!(Place::ALL.contains(&p), "{b:?} mapped outside ALL");

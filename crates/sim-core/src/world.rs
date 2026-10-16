@@ -1026,8 +1026,14 @@ pub const DEATH_BY_COLD: u8 = 7;
 /// The fall (wire v97, `World::fall`): landed harder than a body takes.
 /// The first cause past three bits; the field is four now.
 pub const DEATH_BY_FALL: u8 = 8;
+/// The heat took them (climate v0, `exposure.rs`): the desert's noon in
+/// warm clothes, dry, with no shade.
+pub const DEATH_BY_HEAT: u8 = 9;
+/// The Verdigris took them (`exposure::corrode`): they stood in the
+/// corruption until it ate through them.
+pub const DEATH_BY_FEL: u8 = 10;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_FALL;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_FEL;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1080,6 +1086,30 @@ pub fn day_frac(tick: u64) -> f32 {
 /// the first night tick and not on the last day one.
 pub fn is_night(tick: u64) -> bool {
     day_frac(tick) >= crate::limits::DAY_PORTION
+}
+
+/// How far through its month (`limits::MOON_DAYS`) the moon is at
+/// `day_tick` (the day clock, `weather::day_tick`), `0.0..1.0`: 0 is new,
+/// ½ full. One modulo and one division, like [`day_frac`], so a campfire
+/// sees one moon without a byte on the wire.
+///
+/// It runs on with the clock rather than stepping once a day: a step at
+/// dawn would jump the night's light while the sun is still under the
+/// horizon, and a night only moves it a sixty-fourth of the month.
+///
+/// Day 0's midnight is the full moon. Every night was drawn under a full
+/// disk before the moon had phases, so a fresh world's first night, and
+/// every capture pinned to day 0, keep the moon the night was tuned under.
+pub fn moon_phase(day_tick: u64) -> f32 {
+    use crate::limits::{DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS, MOON_DAYS};
+    const MONTH: u64 = DAY_TICKS * MOON_DAYS;
+    // Dawn to midnight, halfway through the night.
+    const MIDNIGHT: u64 = (DAY_TICKS as f32 * (1.0 + DAY_PORTION) * 0.5) as u64;
+    let t = day_tick
+        .wrapping_add(DAY_PHASE_TICKS)
+        .wrapping_add(MONTH + MONTH / 2 - MIDNIGHT)
+        % MONTH;
+    t as f32 / MONTH as f32
 }
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
@@ -1350,6 +1380,19 @@ pub struct Player {
     pub wet: u16,
     pub chill: u16,
     pub cold_acc: u32,
+    /// The heat the body is in, per mille, and the air it stands in,
+    /// deci-degrees (climate v0). **Derived, not state**: the exposure step
+    /// writes both each second from the air before it reads them, so like
+    /// `hostile` they are neither hashed nor saved; a restart only blanks
+    /// the HUD's reading for that second. A body's doors read the air
+    /// up front (`seed_air`), since the client draws snow off it.
+    pub heat: u16,
+    pub air_dc: i16,
+    /// The Verdigris' meter, per mille, and the partial hp it is owed
+    /// (`exposure::corrode`). Hashed and kept by the world save like the
+    /// cold's; a body restored from the player store comes back clean.
+    pub fel: u16,
+    pub fel_acc: u32,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1368,6 +1411,17 @@ pub struct Player {
     /// Carried through a death (Rust's rule); neither hashed nor saved — a
     /// restart forgives.
     pub hostile: u16,
+    /// Comfort, per mille (`exposure.rs`, Rust's): what a lit fire and
+    /// company at it give, followed at `comfort_per_s`. Raises how far and
+    /// how fast the body mends on its own.
+    pub comfort: u16,
+    /// Seconds since this body last lost hp (`combat::debit` zeroes it);
+    /// regen waits on `regen_calm_s` of it, Rust's `SecondsSinceAttacked`.
+    ///
+    /// Neither is hashed nor saved, for `hostile`'s reason: both are clocks
+    /// over the body that rebuild in seconds, and the hp they move is
+    /// hashed already.
+    pub calm: u16,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1376,6 +1430,25 @@ pub struct Player {
     /// (`GATE_SPAWN_COOLDOWN_TICKS` after the last use). Carried through a
     /// death; not saved.
     pub gate_spawn_at: u64,
+    /// The tick this body stood up: a fresh join, a wake, or a restore. The
+    /// corpse keeps it so the server can say on the death screen how long
+    /// the life lasted (Rust's "alive for"). Not saved: a restored body
+    /// starts its clock at the restore.
+    pub born: u64,
+    /// The tick this body fell, 0 while it stands. With `born` it is the
+    /// "alive for" the server says again to an owner who comes back to the
+    /// corpse later (logged off on the death screen, or killed asleep).
+    /// Also 0 on a corpse restored from disk: neither clock is saved, so
+    /// that life's length is not this world's to say. Not saved and not
+    /// hashed, for `born`'s reasons.
+    pub died: u64,
+    /// Where this player last fell, in body quanta: Rust's death marker. The
+    /// death screen's skull, then the compass's and the map's after the
+    /// respawn, until the next death moves it. The server tells the owner at
+    /// every join (`SUB_DEATH_MARK`), so it lives here and not in a client's
+    /// memory. Not saved and not hashed: a restart forgets it, except on a
+    /// body restored dead, whose corpse marks itself.
+    pub death_at: Option<(i32, i32)>,
 }
 
 impl Player {
@@ -1391,6 +1464,15 @@ impl Player {
             && !self.dead
             && !self.sleeping
             && !self.wounded
+    }
+
+    /// How long the life that ended at `died` lasted, in whole seconds: the
+    /// death screen's "alive for". `None` when this world did not time it.
+    pub fn alive_s(&self) -> Option<u32> {
+        (self.died != 0).then(|| {
+            let secs = self.died.saturating_sub(self.born) / crate::limits::TICK_HZ as u64;
+            secs.min(u32::MAX as u64) as u32
+        })
     }
 }
 
@@ -1453,11 +1535,20 @@ impl Default for Player {
             wet: 0,
             chill: 0,
             cold_acc: 0,
+            heat: 0,
+            air_dc: 0,
+            fel: 0,
+            fel_acc: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
+            comfort: 0,
+            calm: 0,
             gate_spawn: false,
             gate_spawn_at: 0,
+            born: 0,
+            died: 0,
+            death_at: None,
         }
     }
 }
@@ -1569,6 +1660,16 @@ pub enum Command {
     /// minted by `ShardCore::connect_as` alone, beside `Join` and `Leave`.
     Evict {
         id: u32,
+    },
+    /// Everything filed under player id `from` — bags, locks, cupboards,
+    /// turrets — is `to`'s now: the same wallet, back in a new body after
+    /// its old one was evicted (`ShardCore::connect_as`). A takeover does
+    /// the same inside `Wake`. Server-minted beside the join, never from the
+    /// wire. A miss — `from` still wears a body, or `to` wears none — is a
+    /// no-op, `Wake`'s posture for a replay against a diverged world.
+    Rekey {
+        from: u32,
+        to: u32,
     },
     /// Move `id`'s body to `to`'s feet — the admin lane's travel verb
     /// (admin v0, `ALPHA.md` §3).
@@ -1953,8 +2054,11 @@ pub enum Command {
         slot: u8,
     },
     /// Drop `count` of inventory slot `slot` on the ground (Rust's drop).
-    /// It lands in a bag at your feet, merged into your own bag there if one
-    /// is in reach (`backpack::spill_at`). An empty slot does nothing.
+    /// It is thrown out of the hand along the look and lands as a loose
+    /// stack (`grounditem::throw_spot`, `GroundItems::toss`), its own model
+    /// on every screen. Where there is nowhere to land it (the sea), or
+    /// content has loose stacks off, it goes into a bag at your feet as it
+    /// always did (`backpack::spill_at`). An empty slot does nothing.
     Drop {
         id: u32,
         slot: u8,
@@ -2296,11 +2400,20 @@ pub struct World {
     /// when the WAL file format lands, it pins into the header beside the
     /// seed so replays reproduce the spawns they were played under.
     pub dev_spawn: Option<(f32, f32)>,
+    /// This wipe's blight salt (`blight.rs`): drawn by the server for each
+    /// new world like `arc.salt`, but public — it only says where this
+    /// wipe's outbreaks erupt, and every client draws them from it. 0 until
+    /// the server draws one.
+    pub blight_salt: u32,
+    /// The outbreaks that salt draws ([`crate::blight::Plan`]): derived,
+    /// rebuilt by [`World::set_blight_salt`], never saved or hashed.
+    pub blight: crate::blight::Plan,
 }
 
 impl World {
     pub fn new(seed: u64) -> Self {
         let haven = terrain::haven(seed);
+        let blight = crate::blight::Plan::new(seed, 0, &haven);
         Self {
             seed,
             tick: 0,
@@ -2361,6 +2474,8 @@ impl World {
             trust: TrustLedger::new(),
             last_hash: 0,
             dev_spawn: None,
+            blight_salt: 0,
+            blight,
         }
     }
 
@@ -2438,6 +2553,11 @@ impl World {
             let z = c + dz * lo;
             let hy = terrain::height(self.seed, x, z);
             if hy >= terrain::BEACH_MAX_H || terrain::slope(self.seed, x, z) >= SPAWN_MAX_SLOPE {
+                continue;
+            }
+            // Nobody wakes up in the Verdigris: where it reaches the sea,
+            // that stretch of beach is not a spawn.
+            if terrain::fel(self.seed, x, z) > 0.0 {
                 continue;
             }
             if relaxed.is_none() {
@@ -2722,7 +2842,119 @@ impl World {
         let dx = (v.body.qx - p.body.qx) as f32 * POS_XZ_Q;
         let dz = (v.body.qz - p.body.qz) as f32 * POS_XZ_Q;
         let r = crate::backpack::LOOT_REACH_M;
-        (dx * dx + dz * dz <= r * r).then_some(i)
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (v.body.qx, v.body.qy, v.body.qz),
+        );
+        (dx * dx + dz * dz <= r * r
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            ))
+        .then_some(i)
+    }
+
+    /// The eye and the feet the player in `slot` reaches from (`reach.rs`).
+    fn hand(&self, slot: usize) -> ((f32, f32, f32), f32) {
+        let p = &self.players[slot];
+        (crate::reach::eye(p), crate::reach::feet_y(p))
+    }
+
+    /// Whether the player in `slot` reaches entry `i` of the box store — a
+    /// box, an oven, a research table: the planar `BUILD_REACH_M`, then the
+    /// same storey and nothing built in the way (`reach.rs`). The move verb
+    /// and the server's container view ask exactly this.
+    pub fn box_reachable(&self, i: usize, slot: usize) -> bool {
+        let Some(p) = self.players.get(slot) else {
+            return false;
+        };
+        self.deploys.box_in_reach(i, p)
+            && crate::reach::clear_box(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                &self.deploy,
+                &self.deploys,
+                i,
+                crate::reach::eye(p),
+                crate::reach::feet_y(p),
+            )
+    }
+
+    /// [`Self::box_reachable`] for bag `i`.
+    pub fn bag_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(b)) = (self.players.get(slot), self.backpacks.entries().get(i)) else {
+            return false;
+        };
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            (b.qx, b.qy, b.qz),
+        );
+        self.backpacks.in_reach(i, p)
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
+    }
+
+    /// [`Self::box_reachable`] for loose stack `i`.
+    pub fn ground_item_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(g)) = (self.players.get(slot), self.ground_items.entries().get(i))
+        else {
+            return false;
+        };
+        let at = crate::reach::Target::stack(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+            g,
+        );
+        self.ground_items.in_reach(i, p)
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
+    }
+
+    /// [`Self::box_reachable`] for world container `i` — the pad's crate, a
+    /// waystation's cache, a ziggurat room's crate: the planar arm
+    /// (`WorldConts::in_reach`), then the same storey and nothing in the
+    /// way, measured to the floor `open` read off `terrain::scatter`. The
+    /// move verb and the server's container view ask exactly this.
+    pub fn world_cont_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(c)) = (self.players.get(slot), self.world_conts.entries().get(i)) else {
+            return false;
+        };
+        let o = crate::worldcont::occupant_of(c.table as usize);
+        let at = crate::reach::Target::world_cont((c.qx, c.qy, c.qz), o);
+        self.world_conts.in_reach(i, p)
+            && crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
     }
 
     /// The move verb's one mutating body. Everything it decides is decided
@@ -2808,7 +3040,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.backpacks.in_reach(i, &self.players[slot]) {
+                if !self.bag_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -2828,7 +3060,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.deploys.box_in_reach(i, &self.players[slot]) {
+                if !self.box_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -2868,7 +3100,7 @@ impl World {
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
                     return;
                 };
-                if !self.world_conts.in_reach(i, &self.players[slot]) {
+                if !self.world_cont_reachable(i, slot) {
                     self.events
                         .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
@@ -3260,21 +3492,48 @@ impl World {
         use crate::movement::POS_XZ_Q;
         let p = &self.players[slot];
         let (px, pz) = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
-        let mut best: Option<(usize, f32)> = None;
-        for (i, a) in self.spent.entries().iter().enumerate() {
+        let (eye, feet) = self.hand(slot);
+        let (seed, haven, cols, doors) = (
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+        );
+        // The nearest arrow standing in a body the hand reaches — aimed at
+        // the body's middle, so it is not pulled through a wall or a floor.
+        let arrows = self.spent.entries();
+        let mut cand = [(0.0f32, 0u16); crate::limits::MAX_SPENT_ARROWS];
+        let mut n = 0;
+        for (i, a) in arrows.iter().enumerate() {
             if a.host == 0 {
                 continue;
             }
             let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
             let d2 = dx * dx + dz * dz;
-            if d2 <= LOOT_REACH_M * LOOT_REACH_M && best.is_none_or(|(_, b)| d2 < b) {
-                best = Some((i, d2));
+            if d2 <= LOOT_REACH_M * LOOT_REACH_M {
+                cand[n] = (d2, i as u16);
+                n += 1;
             }
         }
-        let Some((i, d2)) = best else {
+        let Some(i) = crate::reach::nearest_clear(&mut cand[..n], |i| {
+            let a = &arrows[i];
+            let at = crate::reach::Target::body(
+                a.qx as f32 / 1000.0,
+                a.qy as f32 / 1000.0,
+                a.qz as f32 / 1000.0,
+            );
+            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+        }) else {
             return false;
         };
-        if let Some(g) = self.ground_items.nearest(p) {
+        let a = &arrows[i];
+        let (dx, dz) = (a.qx as f32 / 1000.0 - px, a.qz as f32 / 1000.0 - pz);
+        let d2 = dx * dx + dz * dz;
+        let clear = |g: &crate::grounditem::GroundItemRec| {
+            let at = crate::reach::Target::stack(seed, haven, cols, doors, g);
+            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+        };
+        if let Some(g) = self.ground_items.nearest_where(p, clear) {
             let g = self.ground_items.entries()[g];
             let (dx, dz) = (g.qx as f32 * POS_XZ_Q - px, g.qz as f32 * POS_XZ_Q - pz);
             if dx * dx + dz * dz <= d2 {
@@ -3347,6 +3606,23 @@ impl World {
                 i += 1;
             }
         }
+    }
+
+    /// Seat this wipe's blight salt and redraw its outbreaks from it.
+    pub fn set_blight_salt(&mut self, salt: u32) {
+        self.blight_salt = salt;
+        self.blight = crate::blight::Plan::new(self.seed, salt, &self.haven);
+    }
+
+    /// The spread right now (`blight.rs`): the heart's front for this hour
+    /// and tier, every outbreak alive and every hot spot burning.
+    pub fn blight_now(&self) -> crate::blight::Now {
+        crate::blight::now(
+            &self.blight,
+            &self.haven,
+            self.tick,
+            self.works.fel_tier(&self.works_def),
+        )
     }
 
     /// The species table in the island's current fel tier (`mob::FelTier`,
@@ -3904,6 +4180,14 @@ impl World {
             // THE GATE's respawn point and its cooldown are the person's.
             gate_spawn: body.gate_spawn,
             gate_spawn_at: body.gate_spawn_at,
+            // The corpse keeps the life's start and its end, so the server
+            // can say how long it lasted, at the death and to an owner who
+            // comes back to it later. `max(1)`: 0 means untimed.
+            born: body.born,
+            died: self.tick.max(1),
+            // Rust's death marker: where the feet were, which is where the
+            // backpack lies. `wake` carries it into the next life.
+            death_at: Some((body.body.qx, body.body.qz)),
             ..Player::default()
         };
         // **What it was wearing goes into the bag with what it was
@@ -4115,6 +4399,11 @@ impl World {
             } else {
                 body.gate_spawn_at
             },
+            // A new body, a new life.
+            born: self.tick,
+            // The marker outlives the corpse: the compass still points at
+            // the backpack after the respawn.
+            death_at: body.death_at,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -4140,20 +4429,16 @@ impl World {
         //
         // ⚠ **`Command::Respawn` is not the only caller, and a comment
         // here said it was until 2026-08-15.** `grep -n '\.wake(' ` on this
-        // file returns three: the respawn command, `seat`'s restore arm
-        // when the save is `dead` (logged off on the death screen), and the
-        // sleeper takeover when the body it takes over is dead. All three
-        // rebuild the body from `..Player::default()`, so all three are new
-        // bodies and all three are paid — and since 2026-08-17 all three
-        // are gated: `tests/bag_respawn.rs` and `server/tests/spawn_kit.rs`
-        // drive `Command::Respawn`;
+        // file returns two: the respawn command and `seat`'s restore arm
+        // when the save is `dead` (a record from the store, which keeps no
+        // corpse). Both rebuild the body from `..Player::default()`, so both
+        // are new bodies and both are paid: `tests/bag_respawn.rs` and
+        // `server/tests/spawn_kit.rs` drive `Command::Respawn`;
         // `persist.rs::a_dead_save_wakes_holding_the_spawn_kit` drives the
-        // dead restore; `sleepers.rs::
-        // a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit` drives the
-        // takeover. Each of the latter two is proven red both under an
-        // early return at its own door and under deleting this `grant_kit`
-        // call alone — the mutation the doors' older position/hp gates
-        // cannot see.
+        // dead restore. A takeover of a dead sleeper no longer wakes: the
+        // owner gets the death screen and answers it with a respawn, which
+        // `sleepers.rs` gates in
+        // `a_takeover_of_a_dead_body_respawns_holding_the_spawn_kit`.
         //
         // A returning login whose save is ALIVE is the different door and
         // still grants nothing, because a saved character keeps what it
@@ -4166,6 +4451,7 @@ impl World {
         // grant depend on what you were carrying, which is the item
         // printer this comment is about.
         inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
+        self.seed_air(slot);
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
@@ -4219,6 +4505,7 @@ impl World {
                     body: Body::at(self.seed, &self.haven, x, z),
                     hp,
                     hp_max: hp,
+                    born: self.tick,
                     ..Player::default()
                 };
                 survival::grant(&self.survival, &mut self.players[slot]);
@@ -4326,6 +4613,10 @@ impl World {
                     wet: 0,
                     chill: 0,
                     cold_acc: 0,
+                    heat: 0,
+                    air_dc: 0,
+                    fel: 0,
+                    fel_acc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -4345,8 +4636,16 @@ impl World {
                     skins: crate::skin::SkinSet::EMPTY,
                     safe: false,
                     hostile: 0,
+                    comfort: 0,
+                    calm: 0,
                     gate_spawn: false,
                     gate_spawn_at: 0,
+                    // The save does not carry it: the clock starts here.
+                    born: self.tick,
+                    died: 0,
+                    // Not even for a dead save: a wipe's survivor is one
+                    // (`server::wipe::survivor`), and its body is nowhere.
+                    death_at: None,
                 };
                 craft::rearm(
                     &self.craft,
@@ -4356,12 +4655,14 @@ impl World {
                     &mut self.players[slot],
                 );
                 if s.dead {
-                    // Logged off on the death screen. Declining the choice
-                    // is choosing the beach — `wake` re-derives the whole
+                    // A dead record from the store: the corpse is gone (its
+                    // sleeper was evicted, or a wipe made this survivor), so
+                    // there is no death screen left to come back to — a body
+                    // still in the world comes back to its own through
+                    // `take_over`. The beach: `wake` re-derives the whole
                     // body from the spawn ring at `deaths` and announces
                     // everything this function would have, so it is the
-                    // exit and not a step (`PlayerSave::dead` says why the
-                    // corpse itself is not restorable).
+                    // exit and not a step (`PlayerSave::dead`).
                     self.wake(slot, false, false, None);
                     return;
                 }
@@ -4371,6 +4672,7 @@ impl World {
         // changes, so without this a player has no vitals until the first
         // thing that hurts them — which is the one moment a bar is no use.
         // The meters are announced at the door for the same reason.
+        self.seed_air(slot);
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -4419,6 +4721,52 @@ impl World {
             .count()
     }
 
+    /// Every player id the world files anything under, through `f`: each
+    /// body's own, the killer on each corpse, every owner — a bag's, a
+    /// cupboard's, a box's, a lock's, a turret's, a death bag's, a planted
+    /// charge's, a fire's — every cupboard crew and lock list, each arrow
+    /// lodged in a body, and each works credit. [`World::rekey`] moves a
+    /// player's things with them to a new connection id through it, and the
+    /// server reads the highest id a saved world still holds through it
+    /// (`worldfile::id_floor`), so the two cannot disagree about what a
+    /// player owns.
+    ///
+    /// Arrows in flight and the per-tick scratch are not visited: they live
+    /// for a moment, are not saved, and miss the move at worst by one hit.
+    pub fn remap_player_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for p in self.players.iter_mut().filter(|p| p.active) {
+            p.id = f(p.id);
+            p.death_by = f(p.death_by);
+        }
+        self.deploys.map_ids(f);
+        // The turret table caches its deployable's owner and never
+        // refreshes a live entry: one left behind shoots its own owner.
+        for t in self.turrets.iter_mut() {
+            t.owner = f(t.owner);
+        }
+        for b in self.backpacks.entries_mut() {
+            b.owner = f(b.owner);
+        }
+        self.charges.map_ids(f);
+        self.fires.map_ids(f);
+        self.spent.map_ids(f);
+        for w in self.works.w.iter_mut() {
+            w.map_ids(f);
+        }
+    }
+
+    /// Everything `from` owns is `to`'s: the same player, back on a new
+    /// connection id (`take_over`, `Command::Rekey`). A player id is minted
+    /// per connection, so without this every reconnect would orphan every
+    /// bag, lock, cupboard and turret its player ever placed. The wallet
+    /// behind both ids is the server's to know, never the sim's.
+    fn rekey(&mut self, from: u32, to: u32) {
+        if from == 0 || to == 0 || from == to {
+            return;
+        }
+        self.remap_player_ids(&mut |id| if id == from { to } else { id });
+    }
+
     /// Seat a returning connection onto the body it left behind.
     ///
     /// **The body wins over the record, and that is the point of the
@@ -4427,13 +4775,14 @@ impl World {
     /// recorded — restoring the record here is precisely the hole that
     /// would make offline raiding pay nothing.
     ///
-    /// A dead sleeper wakes on a beach rather than on the death screen,
-    /// which is the rule `PlayerSave::dead` already reasoned out for the
-    /// other door and this one inherits: the screen is drawn from
-    /// `EV_DEATH`, `EV_DEATH` is the shard-wide kill feed, and re-emitting
-    /// it at a join would announce a fresh killing of somebody who had just
-    /// logged in. Declining the choice is choosing the beach, and being
-    /// killed in your sleep is declining it.
+    /// **A dead sleeper stays dead** (Rust's rule): logged off on the death
+    /// screen, or killed asleep, the owner comes back to the death screen
+    /// and chooses — a bag, THE GATE or the beach — with the corpse's facts
+    /// still on the record. The server says them to this connection alone
+    /// (`SUB_DEAD`), never as `EV_DEATH`: that is the shard-wide kill feed,
+    /// and re-emitting it at a join would announce a fresh killing of
+    /// somebody who had just logged in. Until 2026-10-15 this woke the body
+    /// on a beach instead, which spent the choice for the player.
     fn take_over(&mut self, id: u32, sleeper: u32) {
         let Some(slot) = self.sleeper_slot(sleeper) else {
             return;
@@ -4455,6 +4804,11 @@ impl World {
         if self.slot_of(id).is_some_and(|other| other != slot) {
             return;
         }
+        // The body and everything it owns take the new id together: its
+        // bags, locks and cupboards are the player's, not the connection's.
+        // A death of its own doing (the clock, a fall, a charge it planted)
+        // names it too, and the death screen says "Yourself" by comparing.
+        self.rekey(sleeper, id);
         let p = &mut self.players[slot];
         p.id = id;
         p.sleeping = false;
@@ -4471,7 +4825,8 @@ impl World {
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
-            self.wake(slot, false, false, None);
+            // Nothing to announce: a corpse has no vitals, and the respawn
+            // that answers the screen announces the new body's.
             return;
         }
         // The craft queue survived the sleep; its completion tick did not
@@ -4485,6 +4840,8 @@ impl World {
             self.tick,
             &mut self.players[slot],
         );
+        // A sleeper's air is as old as its sleep: read it afresh.
+        self.seed_air(slot);
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -4833,6 +5190,11 @@ impl World {
             }
             Command::Wake { id, sleeper } => self.take_over(id, sleeper),
             Command::Evict { id } => self.evict(id),
+            Command::Rekey { from, to } => {
+                if self.slot_of(from).is_none() && self.slot_of(to).is_some() {
+                    self.rekey(from, to);
+                }
+            }
             Command::AdminTeleport { id, to } => {
                 // Both bodies resolved before either is touched, and a
                 // miss on either is a no-op: `Wake`'s rule, because a WAL
@@ -5145,6 +5507,17 @@ impl World {
                     // Down, only the door: research and the oven are hand
                     // work, which `live_slot_of` refuses everywhere else.
                     let down = self.players[slot].wounded;
+                    let (eye, feet) = self.hand(slot);
+                    let (seed, haven, cols, doors, content) = (
+                        self.seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
+                        &self.deploy,
+                    );
+                    let reach = |d: &Deploys, i: usize| {
+                        crate::reach::clear_box(seed, haven, cols, doors, content, d, i, eye, feet)
+                    };
                     let lit = !down
                         && (crate::research::begin(
                             &self.research,
@@ -5155,6 +5528,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            reach,
                         ) || crate::oven::toggle(
                             &self.cook,
                             &mut self.deploys,
@@ -5164,6 +5538,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            reach,
                         ));
                     if !lit {
                         let owner = deploy::use_door(
@@ -5504,8 +5879,7 @@ impl World {
                     let p = &mut self.players[slot];
                     let n = count.min(p.inv[i].count);
                     if n > 0 {
-                        let mut spill = [ItemStack::default(); INV_SLOTS];
-                        spill[0] = ItemStack {
+                        let thrown = ItemStack {
                             count: n,
                             ..p.inv[i]
                         };
@@ -5513,7 +5887,46 @@ impl World {
                         if p.inv[i].count == 0 {
                             p.inv[i] = ItemStack::default();
                         }
-                        self.drain_spill(slot, &mut spill);
+                        // Thrown out of the hand to where the sim says it
+                        // lands; the flight is a closed form every client
+                        // draws alike (`grounditem.rs`'s header).
+                        let (body, crouched, yaw, pitch) = {
+                            let p = &self.players[slot];
+                            (p.body, p.crouched(), p.frame.yaw, p.frame.pitch)
+                        };
+                        let seed = self.seed;
+                        let tick = self.tick;
+                        let eye_m = ranged::eye_mm(crouched) as f32 / ranged::MM_PER_M;
+                        let haven = &self.haven;
+                        let cols = self.pieces.cols();
+                        let mut occ = crate::occupy::Occupants {
+                            doors: self.card_door_bits,
+                            table: &self.scatter,
+                            haven,
+                            harvested: &self.slot_lives,
+                            cache: &mut self.slot_cache,
+                        };
+                        let throw = crate::grounditem::throw_spot(
+                            seed,
+                            haven,
+                            cols,
+                            &mut occ,
+                            (body.qx, body.qy, body.qz),
+                            eye_m,
+                            yaw,
+                            pitch,
+                        );
+                        // Nowhere to land (the sea), or loose stacks
+                        // disarmed by content: the bag at the feet.
+                        let laid = throw.map_or(0, |(from, rest)| {
+                            self.ground_items
+                                .toss(&self.backpack, rest, thrown, tick, from)
+                        });
+                        if laid == 0 {
+                            let mut spill = [ItemStack::default(); INV_SLOTS];
+                            spill[0] = thrown;
+                            self.drain_spill(slot, &mut spill);
+                        }
                     }
                 }
             }
@@ -5540,11 +5953,22 @@ impl World {
             Command::Loot { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let town = self.haven.town;
-                    let looted = self.backpacks.loot_nearest(
+                    let (eye, feet) = self.hand(slot);
+                    let (seed, haven, cols, doors) = (
+                        self.seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
+                    );
+                    let looted = self.backpacks.loot_nearest_where(
                         &self.gather,
                         &town,
                         &mut self.players[slot],
                         &mut self.events,
+                        |q| {
+                            let at = crate::reach::Target::lying(seed, haven, cols, q);
+                            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+                        },
                     );
                     // A bag is a container someone else owns (`TRUST_CONT`):
                     // emptying it with `Loot` is the act `move_item` logs for
@@ -5571,7 +5995,7 @@ impl World {
                     let aimed = self
                         .ground_items
                         .index_of_id(target)
-                        .filter(|&i| self.ground_items.in_reach(i, &self.players[slot]));
+                        .filter(|&i| self.ground_item_reachable(i, slot));
                     if let Some(i) = aimed {
                         self.ground_items.take_at(
                             i,
@@ -5581,11 +6005,22 @@ impl World {
                             &mut self.events,
                         );
                     } else if !self.pull_arrow(slot, &mut spill) {
-                        self.ground_items.take_nearest(
+                        let (eye, feet) = self.hand(slot);
+                        let (seed, haven, cols, doors) = (
+                            self.seed,
+                            &self.haven,
+                            self.pieces.cols(),
+                            self.card_door_bits,
+                        );
+                        self.ground_items.take_nearest_where(
                             &self.gather,
                             &mut self.players[slot],
                             &mut spill,
                             &mut self.events,
+                            |g| {
+                                let at = crate::reach::Target::stack(seed, haven, cols, doors, g);
+                                crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+                            },
                         );
                     }
                     // A take into a full pack spills at the feet, the same
@@ -5603,6 +6038,8 @@ impl World {
                         self.seed,
                         &self.scatter,
                         &self.haven,
+                        self.pieces.cols(),
+                        self.card_door_bits,
                         &self.loot,
                         &self.gather,
                         self.tick,
@@ -5732,7 +6169,21 @@ impl World {
         {
             return false;
         }
-        let inp = self.exposure_inputs(i, wx, night);
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let inp = self.exposure_inputs(i, wx, night, day_tick);
+        // The Verdigris first, on its own accumulator: a body can be cold and
+        // corroded in one second, and either can kill it.
+        let corroded = crate::exposure::corrode(
+            &self.survival.exposure,
+            &inp,
+            &mut self.players[i],
+            &mut self.events,
+        );
+        if corroded == survival::Step::Died {
+            let id = self.players[i].id;
+            self.die(i, id, DEATH_BY_FEL, NO_ITEM, 0);
+            return true;
+        }
         let step = crate::exposure::step(
             &self.survival.exposure,
             &inp,
@@ -5740,8 +6191,15 @@ impl World {
             &mut self.events,
         );
         if step == survival::Step::Died {
-            let id = self.players[i].id;
-            self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            let p = &self.players[i];
+            let ec = &self.survival.exposure;
+            let cause = if p.chill <= ec.hurt_at && p.heat > ec.heat_hurt_at {
+                DEATH_BY_HEAT
+            } else {
+                DEATH_BY_COLD
+            };
+            let id = p.id;
+            self.die(i, id, cause, NO_ITEM, 0);
             return true;
         }
         crate::exposure::burn(
@@ -5779,13 +6237,37 @@ impl World {
         false
     }
 
+    /// Read the air at slot `i`'s feet into its `air_dc` now (snow v0), the
+    /// reading its first exposure step would take. Called at each door a
+    /// body comes through: that step is up to a second away on its stagger,
+    /// and until it runs the owner's readout would carry the default's 0 °C,
+    /// which the client draws as snow.
+    fn seed_air(&mut self, i: usize) {
+        let wx = crate::weather::now(self.seed, self.tick, &self.env);
+        let day_tick = crate::weather::day_tick(self.tick, &self.env);
+        let b = self.players[i].body;
+        let x = b.qx as f32 * crate::movement::POS_XZ_Q;
+        let z = b.qz as f32 * crate::movement::POS_XZ_Q;
+        let feet = b.qy as f32 * crate::movement::POS_Y_Q;
+        self.players[i].air_dc = crate::climate::air_dc(
+            &self.survival.exposure.air,
+            self.seed,
+            x,
+            z,
+            feet - crate::terrain::SEA_LEVEL,
+            day_tick,
+            &wx,
+        );
+    }
+
     /// What the world is doing to slot `i`'s body this second: the weather,
-    /// the hour, a roof, the sea at its feet, a fire, a torch.
+    /// the hour and the air, a roof, the sea at its feet, a fire, a torch.
     pub fn exposure_inputs(
         &self,
         i: usize,
         wx: &crate::weather::Wx,
         night: bool,
+        day_tick: u64,
     ) -> crate::exposure::Inputs {
         let p = &self.players[i];
         let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
@@ -5798,46 +6280,114 @@ impl World {
         } else {
             0
         };
+        let ec = &self.survival.exposure;
+        let fire = self.near_fire(x, z, feet);
+        // The Verdigris at the feet, none on the beach: the coast is
+        // survivable even where the corruption reaches the sea. Read only
+        // when the meter is armed, so a world without it pays nothing.
+        // The heart, the creep and the outbreaks fill it at one rate and the
+        // hot spots at their own (`blight.rs`); the vents are the heart's.
+        let (fel_pm, hot_pm) = if ec.fel_rise_per_s == 0 || feet < crate::terrain::BEACH_MAX_H {
+            (0, 0)
+        } else {
+            // Read at the ground, not the feet: the coast's fade and the
+            // ridges' hold are the terrain's, as the client draws them, so a
+            // second storey on a beach or a tower in the front's path is in
+            // the same green as the ground under it.
+            let now = self.blight_now();
+            if crate::blight::within_reach(&now, x, z) {
+                let ground = crate::terrain::ground(self.seed, &self.haven, x, z);
+                let d = crate::blight::depth(&now, self.seed, x, z, ground);
+                ((d.fel * 1000.0) as u16, (d.hot * 1000.0) as u16)
+            } else {
+                (0, 0)
+            }
+        };
+        let vent = fel_pm >= (crate::terrain::FEL_VENT_AT * 1000.0) as u16
+            && crate::terrain::fel(self.seed, x, z) >= crate::terrain::FEL_VENT_AT
+            && crate::terrain::fel_vent_near(self.seed, x, z);
+        let comfort = match fire {
+            Some(at) if ec.fire_comfort > 0 => {
+                let (awake, asleep) = self.company_at(i, at);
+                crate::exposure::comfort_target(ec, true, awake, asleep)
+            }
+            _ => 0,
+        };
         crate::exposure::Inputs {
             rain: wx.rain,
             wind: wx.wind,
             night,
             roofed,
             depth_cm,
-            fire: self.near_fire(x, z, feet),
+            fire: fire.is_some(),
             torch: crate::light::is_lit(p, &self.gather),
-            fed: p.food as u32 * 2 >= self.survival.max_food as u32
-                && p.water as u32 * 2 >= self.survival.max_water as u32,
+            comfort,
+            max_food: self.survival.max_food,
+            max_water: self.survival.max_water,
+            air_dc: crate::climate::air_dc(
+                &self.survival.exposure.air,
+                self.seed,
+                x,
+                z,
+                feet - sea,
+                day_tick,
+                wx,
+            ),
+            fel_pm,
+            vent,
+            hot_pm,
         }
     }
 
-    /// Is a lit fire (a campfire, a furnace) near enough to warm a body
-    /// standing here? Planar reach from the content, and within a storey
-    /// (`exposure::fire_reaches`, which the client's HUD asks too).
-    fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
+    /// The first lit fire (a campfire, a furnace) near enough to warm a
+    /// body standing here, as its `(cx, cz, level, pose)`. Planar reach
+    /// from the content, and within a storey (`exposure::fire_reaches`,
+    /// which the client's HUD asks too).
+    fn near_fire(
+        &self,
+        x: f32,
+        z: f32,
+        feet: f32,
+    ) -> Option<(u16, u16, u8, crate::footprint::Pose)> {
         let r = self.survival.exposure.heat_radius_cm;
         if r == 0 {
-            return false;
+            return None;
         }
         let cols = self.pieces.cols();
         self.deploys
             .boxes()
             .iter()
             .zip(self.deploys.oven_states())
-            .any(|(b, st)| {
-                st.lit
-                    && st.burns()
-                    && crate::exposure::fire_reaches(
-                        self.seed,
-                        &self.haven,
-                        cols,
-                        r,
-                        (b.cx, b.cz, b.level, b.pose),
-                        x,
-                        z,
-                        feet,
-                    )
+            .filter(|(_, st)| st.lit && st.burns())
+            .map(|(b, _)| (b.cx, b.cz, b.level, b.pose))
+            .find(|&at| {
+                crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet)
             })
+    }
+
+    /// The other bodies in the same fire's warmth as slot `i`: `(awake,
+    /// asleep)`. Rust's campfire comfort rises with company — a quarter a
+    /// body, an eighth a sleeper. The dead are not company.
+    fn company_at(&self, i: usize, at: (u16, u16, u8, crate::footprint::Pose)) -> (u32, u32) {
+        let r = self.survival.exposure.heat_radius_cm;
+        let cols = self.pieces.cols();
+        let (mut awake, mut asleep) = (0u32, 0u32);
+        for (j, q) in self.players.iter().enumerate() {
+            if j == i || !q.active || q.dead {
+                continue;
+            }
+            let qx = q.body.qx as f32 * crate::movement::POS_XZ_Q;
+            let qz = q.body.qz as f32 * crate::movement::POS_XZ_Q;
+            let qf = q.body.qy as f32 * crate::movement::POS_Y_Q;
+            if crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, qx, qz, qf) {
+                if q.sleeping {
+                    asleep += 1;
+                } else {
+                    awake += 1;
+                }
+            }
+        }
+        (awake, asleep)
     }
 
     /// Stand the town's public stations (`town::STATIONS`) as owner-0
@@ -6613,13 +7163,21 @@ impl World {
             core::array::from_fn(|i| crate::light::is_lit(&self.players[i], &self.gather));
         // The hour and the air an animal reads: the day clock under any
         // `/time`, and how far this weather lets it see.
+        // The island's tier, the top tier a turned animal fights from, and
+        // the spread it turns in: all on the stack (wall 2).
+        let tier = self.works.fel_tier(&self.works_def);
+        let mc = self.mob.at_tier(tier);
+        let fel_mc = self.mob.at_tier((mob::FEL_TIERS - 1) as u8);
+        let blight = crate::blight::now(&self.blight, &self.haven, tick, tier);
         mob::step(
             seed,
             &self.haven,
             tick,
             day_tick,
             crate::weather::sense_pm(&wx),
-            &self.mob_now(),
+            &mc,
+            &fel_mc,
+            &blight,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,
@@ -6680,6 +7238,11 @@ impl World {
             // The funnel, reduced: a bite is a hit.
             let crate::combat::Hurt { left, died, .. } =
                 crate::combat::hurt(&self.combat, v, b.damage);
+            // A turned animal's bite carries the green, warded by the worn
+            // set; a bite that downed the body leaves the meter alone.
+            if b.fel > 0 && !died {
+                crate::exposure::infect(&self.survival.exposure, v, b.fel);
+            }
             let victim_id = v.id;
             self.events
                 .push(EV_HURT, victim_id, sector as u32, b.damage as u32);
@@ -7010,8 +7573,9 @@ impl World {
                     && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
                     && cols.get(bx as u16, bz as u16).has_piece()
             };
+            let wild_until = |cx: u16, cz: u16| crate::gather::wild_grown_at(seed, cx, cz);
             self.slot_lives
-                .respawn_due_unless(tick, &mut self.events, &built_over);
+                .respawn_due_unless(tick, &mut self.events, &built_over, &wild_until);
         }
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
@@ -7042,13 +7606,25 @@ impl World {
         // question a body asks of the rain, asked at the planter's feet.
         // The same rain waters it.
         let night = is_night(tick);
-        let rain_pm = crate::weather::now(self.seed, tick, &self.env).rain;
+        let wx = crate::weather::now(self.seed, tick, &self.env);
+        let rain_pm = wx.rain;
+        let day_tick = crate::weather::day_tick(tick, &self.env);
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let air = &self.survival.exposure.air;
+        let planter_feet = |b: &crate::deploy::BoxRec| {
+            crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
+                + crate::build::level_y(b.level)
+        };
         let open_sky = |b: &crate::deploy::BoxRec| {
             let (x, z) = b.xz();
-            let feet = crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
-                + crate::build::level_y(b.level);
-            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, feet)
+            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, planter_feet(b))
+        };
+        // The air at the planter sets its pace (climate v0).
+        let crop_pm = |b: &crate::deploy::BoxRec| {
+            let (x, z) = b.xz();
+            let alt = planter_feet(b) - crate::terrain::SEA_LEVEL;
+            let t = crate::climate::air_dc(air, seed, x, z, alt, day_tick, &wx);
+            crate::climate::crop_pm(air, t)
         };
         crate::oven::sweep(
             &self.cook,
@@ -7061,6 +7637,7 @@ impl World {
                 crate::works::KNOB_SMELT_PCT,
             ),
             &open_sky,
+            &crop_pm,
             night,
             rain_pm,
             &mut self.events,
@@ -7284,9 +7861,22 @@ impl World {
                 xb[4..8].copy_from_slice(&p.cold_acc.to_le_bytes());
                 h.update(&xb);
             }
+            // The Verdigris, the same way: a world nobody walked into hashes
+            // as it did before it existed.
+            if p.fel != 0 || p.fel_acc != 0 {
+                let mut fb = [0u8; 6];
+                fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
+                fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
+                h.update(&fb);
+            }
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact
             // about it, and everything it changes (hp) is hashed already.
+            // `born` is not hashed and not saved either: nothing in the sim
+            // reads it, it is the death screen's "alive for", and a load
+            // restarts it, so hashing it would split a save/load round trip.
+            // `died` and `death_at` are the same kind of thing for the same
+            // screen, and skipped for the same reason.
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
             // shards that disagree about whether a body is standing
@@ -7537,6 +8127,9 @@ impl World {
             b[41] = m.path.next;
             b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
             b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
+            // Turned (`blight::turns`): zero for an animal in clean ground,
+            // so a roster that never turns hashes as it always did.
+            b[45] = m.turned as u8;
             h.update(&b);
             let mut poi = [0u8; 24];
             poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());
@@ -7806,8 +8399,9 @@ impl World {
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
         }
-        // World containers (`worldcont.rs`). Every field is hashed
-        // including `refill_at`: two shards whose crates were emptied on
+        // World containers (`worldcont.rs`). Every saved field is hashed
+        // (`qy` is derived from the cell and re-derived at load, never read
+        // from a file) including `refill_at`: two shards whose crates were emptied on
         // different ticks agree about the contents (both empty) and
         // disagree about *when they pay again*, which is a divergence that
         // would otherwise stay silent until the first refill.
@@ -7860,6 +8454,12 @@ impl World {
             for m in self.arc.mechs.iter() {
                 h.update(&m.to_bytes());
             }
+        }
+        // The blight's salt (`blight.rs`), only once one is drawn, so a world
+        // without one hashes as it always did. The outbreaks it draws are
+        // derived from it and the seed, and are not folded twice.
+        if self.blight_salt != 0 {
+            h.update(&self.blight_salt.to_le_bytes());
         }
         // The glyphs each player reads (`lore.rs`), only where there are
         // any, so a world nobody has read in hashes as it always did.
@@ -8004,6 +8604,7 @@ mod tests {
                 cx: 20,
                 cz: 20,
                 qx: 5_000,
+                qy: 0,
                 qz: 5_000,
                 table: crate::loot::LOOT_CRATE as u8,
                 refill_at: 0,
@@ -8067,9 +8668,8 @@ mod tests {
             for id in 1..=64u32 {
                 let (x, z) = w.spawn_pos(id);
                 let h = terrain::height(seed, x, z);
-                let m = terrain::moisture(seed, x, z);
                 assert_eq!(
-                    terrain::biome(h, m),
+                    terrain::biome_at(seed, h, x, z),
                     terrain::Biome::Beach,
                     "seed {seed} id {id}: spawn ({x},{z}) height {h} is not beach"
                 );

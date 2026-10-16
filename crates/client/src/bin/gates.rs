@@ -240,14 +240,21 @@ fn main() -> AppExit {
     app.insert_non_send_resource(Rt(rt));
 
     if let Some(session) = session {
-        app.insert_resource(WorldId::with_haven(
-            session.welcome.seed,
-            *session.core.haven(),
-        ));
+        app.insert_resource(WorldId {
+            blight_salt: session.welcome.blight_salt,
+            ..WorldId::with_haven(session.welcome.seed, *session.core.haven())
+        });
         app.insert_non_send_resource(Net {
             session,
             sel: 0,
             light: false,
+        });
+    }
+    // The pin rides to the connect screen with the address it belongs to.
+    if let Some(hash) = &a.cert_hash {
+        app.insert_resource(client::render::screen::Pin {
+            addr: server.clone(),
+            hash: hash.clone(),
         });
     }
     let start = Start {

@@ -57,6 +57,9 @@ pub const DODGE_TICKS: u32 = TICK_HZ * 2 / 3;
 /// One stage of a door (the walk up, the press, the walk through, the
 /// shut) that has not finished in this long is given up.
 pub const HOP_STAGE_TICKS: u32 = 15 * TICK_HZ;
+/// Closer than its best by this much is progress on the walk up, which
+/// restarts that stage's clock.
+const HOP_PROGRESS_M: f32 = 0.5;
 /// Doors one delivery goes through on the way in, at most.
 pub const MAX_DOORS: usize = 4;
 /// Presses that came to nothing before the delivery gives up.
@@ -109,6 +112,10 @@ struct Hop {
     mid: [f32; 2],
     out: [f32; 2],
     since: u32,
+    /// The walk up's closest to `near` yet: its stage is timed from the
+    /// last time it got closer, so a door begun from across the island is
+    /// not given up halfway there.
+    closest: f32,
     /// A use went out at this tick.
     sent: Option<u32>,
     /// Walking straight: the closest it has come and when, a side-step
@@ -140,6 +147,7 @@ impl Hop {
             mid: [ax, az],
             out,
             since: tick,
+            closest: f32::MAX,
             sent: None,
             straight: false,
             best: None,
@@ -199,6 +207,7 @@ impl Hop {
     fn next(&mut self, stage: Stage, tick: u32) {
         self.stage = stage;
         self.since = tick;
+        self.closest = f32::MAX;
         self.sent = None;
         self.best = None;
         self.dodge = None;
@@ -227,6 +236,17 @@ impl Doors {
     /// Through `door` next, from this side.
     pub fn begin(&mut self, door: OpAddr, x: f32, z: f32, tick: u32) {
         self.hop = Some(Hop::new(door, x, z, tick));
+    }
+
+    /// [`Doors::begin`] for a door on the way to `goal`: worked from the
+    /// side the goal is not on. Where the body stands does not say which
+    /// side that is: arriving from behind a base, a body is on the inner
+    /// side of its far wall's plane while it is still outside, and a door
+    /// worked from there is walked at through the wall.
+    pub fn begin_toward(&mut self, door: OpAddr, goal: [f32; 2], tick: u32) {
+        let (ax, az) = anchor(door.cx, door.cz, door.loc);
+        // The goal reflected through the doorway: a point on its far side.
+        self.begin(door, 2.0 * ax - goal[0], 2.0 * az - goal[1], tick);
     }
 
     /// The lock at `at` refused it: the code goes in there next.
@@ -388,6 +408,10 @@ impl Doors {
                     Through::Go(Intent::IDLE)
                 } else {
                     let left = (h.near[0] - x).hypot(h.near[1] - z);
+                    if left + HOP_PROGRESS_M < h.closest {
+                        h.closest = left;
+                        h.since = tick;
+                    }
                     let step = if h.straight {
                         Step::Blocked
                     } else {

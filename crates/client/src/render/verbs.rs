@@ -31,6 +31,7 @@ use crate::look::{pitch_u8, yaw_u16};
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
 use crate::ui::structure::{self, Store, Target};
 
+use super::binds::{Action, Binds, HOTBAR};
 use super::hud::Toast;
 use super::input::Look;
 use super::panels::{Panel, Ui};
@@ -171,12 +172,33 @@ pub fn resolve(
         z,
     ];
     let dir = [fx * ch, sv, fz * ch];
+    // The shard's hand test (`sim_core::reach`) from the predicted body, so
+    // a box behind a wall or on another storey is not offered.
+    let reach = |rec: &sim_core::deploy::DeployRec, arch: u8| match world.as_deref() {
+        Some(w) => {
+            let cols = core.pieces.cols();
+            let at = sim_core::reach::Target::standing(w.seed, &w.haven, cols, rec, arch);
+            let eye = (eye[0], eye[1], eye[2]);
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, core.card_doors, eye, y, at)
+        }
+        None => true,
+    };
+    // And for a thing lying where it fell: a bag, a sleeper, a loose stack.
+    let lying = lying_test(
+        world.as_deref(),
+        core.pieces.cols(),
+        core.card_doors,
+        eye,
+        y,
+    );
     let mut aim = Aim::new(x, z, fx, fz);
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
             dir,
             span: &span,
+            reach: Some(&reach),
+            lying: Some(&lying),
         });
     }
     aimed.0 = interact::resolve(
@@ -186,6 +208,8 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
+    // Its hold on the core ends here; the island below takes the core mutably.
+    drop(lying);
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
@@ -266,6 +290,7 @@ pub fn resolve(
                         crouched,
                     },
                     &mut island,
+                    shadows.cols,
                 );
                 if open.occupant != 0 {
                     aimed.0 = interact::Pick {
@@ -329,6 +354,14 @@ pub fn resolve(
     // line names the button instead of teaching the verb (`Pick::butcher`).
     aimed.0.butcher =
         aimed.0.verb == Verb::Bag && swung.0.carcass.is_some() && swung.0.bag == aimed.0.handle;
+    // Again, now the island's mutable hold on the core is over.
+    let lying = lying_test(
+        world.as_deref(),
+        core.pieces.cols(),
+        core.card_doors,
+        eye,
+        y,
+    );
     if !core.wounded && !core.dead {
         let help = interact::resolve_assist(
             SwingAim {
@@ -357,7 +390,14 @@ pub fn resolve(
             core.player_id,
             &core.view.entities,
         );
-        if !sleeper.is_none() && (aimed.0.is_none() || sleeper.d2 < aimed.0.d2) {
+        // A sleeper's pack is not offered where the shard would refuse it.
+        let reachable = core
+            .view
+            .entities
+            .iter()
+            .find(|&&(id, _)| id == sleeper.handle)
+            .is_none_or(|&(_, e)| lying((e.qx, e.qy, e.qz), [0; 3]));
+        if reachable && !sleeper.is_none() && (aimed.0.is_none() || sleeper.d2 < aimed.0.d2) {
             aimed.0 = sleeper;
         }
     }
@@ -410,7 +450,7 @@ pub fn resolve(
     // A stack the crosshair is on beats anything merely nearby; a stack
     // merely nearby is only a fallback, so a box you look at with a sack at
     // your feet is still the box.
-    let take = take_or_pull(core, x, z, Some((eye, dir)));
+    let take = take_or_pull(core, x, z, Some((eye, dir)), Some(&lying));
     if take.verb != interact::Verb::None && (aimed.0.is_none() || (take.aimed && !aimed.0.aimed)) {
         aimed.0 = take;
     }
@@ -464,6 +504,8 @@ pub fn resolve(
                 eye,
                 dir,
                 span: &span,
+                reach: None,
+                lying: None,
             },
             core.deploys.entries(),
             &core.deploy_defs,
@@ -539,10 +581,12 @@ pub fn keys(
     // the swing button, so nothing else moves it.
     mut motion: ResMut<super::viewmodel::Motion>,
     mut give: ResMut<Give>,
+    binds: Res<Binds>,
 ) {
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
-    if keys.just_released(KeyCode::KeyE) {
+    let on = |a: Action| binds.just_pressed(a, &keys, &mouse);
+    if binds.just_released(Action::Interact, &keys, &mouse) {
         send(&net, &mut toast, "release help", |buf| {
             protocol::encode_action_assist(0, buf)
         });
@@ -572,23 +616,23 @@ pub fn keys(
         pad.0.close();
         hearth.0 = None;
         give.hold.cancel();
-        const HAND_KEYS: [KeyCode; 12] = [
-            KeyCode::KeyB,
-            KeyCode::KeyE,
-            KeyCode::KeyL,
-            KeyCode::KeyK,
-            KeyCode::KeyU,
-            KeyCode::KeyR,
-            KeyCode::KeyX,
-            KeyCode::KeyC,
-            KeyCode::KeyJ,
-            KeyCode::KeyV,
-            KeyCode::KeyH,
-            KeyCode::Backspace,
+        const HAND_KEYS: [Action; 12] = [
+            Action::Give,
+            Action::Interact,
+            Action::CrewJoin,
+            Action::CrewLeave,
+            Action::Upgrade,
+            Action::Reload,
+            Action::ThrowCharge,
+            Action::SwitchOn,
+            Action::Eat,
+            Action::PickUp,
+            Action::Drink,
+            Action::Demolish,
         ];
-        if keys.just_pressed(KeyCode::KeyE) && crate::ui::wounded::allows(aimed.0.verb) {
+        if on(Action::Interact) && crate::ui::wounded::allows(aimed.0.verb) {
             use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
-        } else if HAND_KEYS.iter().any(|&k| keys.just_pressed(k))
+        } else if HAND_KEYS.iter().any(|&a| on(a))
             // The left click too: it places, eats, reads and repairs, and
             // the sim drops every one of those from a downed body unsaid.
             || mouse.just_pressed(MouseButton::Left)
@@ -612,8 +656,11 @@ pub fn keys(
         give.hold.cancel();
     } else {
         let pick = give.pick;
-        let b = keys.just_pressed(KeyCode::KeyB);
-        if let Some(p) = give.hold.step(b, keys.pressed(KeyCode::KeyB), pick, now) {
+        let b = on(Action::Give);
+        if let Some(p) = give
+            .hold
+            .step(b, binds.pressed(Action::Give, &keys, &mouse), pick, now)
+        {
             send(&net, &mut toast, "give", |buf| {
                 protocol::encode_action_give(p.slot, p.count, p.target, buf)
             });
@@ -631,7 +678,7 @@ pub fn keys(
     // your team, making one if you have none; `Y` says yes to the invite
     // waiting on you. Leave, kick and promote are `/team` lines in chat.
     // Whether any of it happens is the shard's verdict, said in chat.
-    if keys.just_pressed(KeyCode::KeyN) && !pad.0.is_open() {
+    if on(Action::TeamInvite) && !pad.0.is_open() {
         match give.invite {
             Some(target) => {
                 send(&net, &mut toast, "team", |buf| {
@@ -641,7 +688,7 @@ pub fn keys(
             None => toast.warn("look at a player within reach to invite them to your team"),
         }
     }
-    if keys.just_pressed(KeyCode::KeyY) && !pad.0.is_open() {
+    if on(Action::TeamAccept) && !pad.0.is_open() {
         let team = *net.session.core.team();
         if team.invite != 0 && team.count == 0 {
             send(&net, &mut toast, "team", |buf| {
@@ -649,7 +696,7 @@ pub fn keys(
             });
         }
     }
-    if keys.just_pressed(KeyCode::KeyE) {
+    if on(Action::Interact) {
         // A second `E` closes the hearth's panel rather than feeding again.
         if hearth.0.is_some() {
             hearth.0 = None;
@@ -678,7 +725,7 @@ pub fn keys(
     {
         let rows = (net.session.core.stock_count as usize).min(sim_core::limits::HEARTH_STOCK_ROWS);
         let mut took = false;
-        for (i, k) in super::input::HOTBAR_KEYS.iter().enumerate().take(rows) {
+        for (i, k) in super::ui::DIGITS.iter().enumerate().take(rows) {
             if keys.just_pressed(*k) {
                 let (cx, cz, level) = at;
                 send(&net, &mut toast, "take", |buf| {
@@ -696,25 +743,25 @@ pub fn keys(
     // (`hold::eats_on_key`). Below the keypad's claim, so a code typed into
     // a door never eats the mushrooms in slot 3.
     if !net.session.core.wounded {
-        for (i, k) in super::input::HOTBAR_KEYS.iter().enumerate() {
+        for (i, a) in HOTBAR.iter().enumerate() {
             let core = &net.session.core;
             let food = core
                 .inv
                 .get(i)
                 .is_some_and(|&s| crate::ui::hold::eats_on_key(&core.catalog, s));
-            if keys.just_pressed(*k) && food {
+            if on(*a) && food {
                 use_slot(&net, &mut toast, &mut bite, now, i as u8);
             }
         }
     }
-    if keys.just_pressed(KeyCode::KeyL) {
+    if on(Action::CrewJoin) {
         access_aimed(&net, &aimed.0, &mut pad, &mut toast, Access::Join);
     }
     // `K` is the crew's leave and `Shift+K` its clear, and both are only
     // hearth keys: at a door the same letter is the keypad's LOCK, which is
     // why `access_aimed` takes the ask rather than this reading the pick
     // twice.
-    if keys.just_pressed(KeyCode::KeyK) {
+    if on(Action::CrewLeave) {
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
         let now = time.elapsed_secs_f64();
         let ask = if !shift {
@@ -735,7 +782,7 @@ pub fn keys(
             access_aimed(&net, &aimed.0, &mut pad, &mut toast, ask);
         }
     }
-    if keys.just_pressed(KeyCode::KeyU) {
+    if on(Action::Upgrade) {
         upgrade_near(&net, &near.0, &mut toast);
     }
     // **`R` is modal on the hand since reload v1: hammer repairs, anything
@@ -765,7 +812,7 @@ pub fn keys(
             held,
         ) == crate::ui::hold::Click::Deploy
     };
-    if !wheel_up && !hand.places() && !deploying && keys.just_pressed(KeyCode::KeyR) {
+    if !wheel_up && !hand.places() && !deploying && on(Action::Reload) {
         if hand.repairs() {
             if repair_near(&net, &near.0, &mut toast) {
                 motion.strike();
@@ -832,20 +879,20 @@ pub fn keys(
             use_slot(&net, &mut toast, &mut bite, now, net.sel);
         }
     }
-    if keys.just_pressed(KeyCode::KeyX) {
+    if on(Action::ThrowCharge) {
         throw_near(&net, &near.0, &mut toast);
     }
-    if keys.just_pressed(KeyCode::KeyC) {
+    if on(Action::SwitchOn) {
         light_aimed(&net, &aimed.0, &mut toast);
     }
     // `Backspace` — take the nearest structure back down. A destructive
     // verb gets a key nothing else is near, and one a hand resting on WASD
     // cannot reach by accident: the sim gates it on a ten-minute window
     // and a claim, but a misfire inside both is still a foundation gone.
-    if keys.just_pressed(KeyCode::Backspace) {
+    if on(Action::Demolish) {
         demolish_near(&net, &near.0, &mut toast);
     }
-    if keys.just_pressed(KeyCode::KeyJ) {
+    if on(Action::Eat) {
         // Eat what is in the selected hotbar slot — the keyboard twin of the
         // left click above, kept because it works with anything in the slot
         // and says why when that is not food. Whether the slot holds food is
@@ -862,7 +909,7 @@ pub fn keys(
         // right-click makes, so the key and the click cannot disagree.
         use_slot(&net, &mut toast, &mut bite, now, net.sel);
     }
-    if keys.just_pressed(KeyCode::KeyV) {
+    if on(Action::PickUp) {
         // Take a loose stack in reach — the one `E`'s prompt names when it
         // names one, else the nearest — landed arrows included
         // (`sim-core/spent.rs`), on a key the hand reaches without leaving
@@ -875,7 +922,7 @@ pub fn keys(
         let pick = if aimed.0.verb == Verb::Take {
             aimed.0
         } else {
-            take_or_pull(core, x, z, None)
+            take_or_pull(core, x, z, None, None)
         };
         if pick.verb == Verb::None {
             toast.warn("nothing to pick up here");
@@ -886,7 +933,7 @@ pub fn keys(
             });
         }
     }
-    if keys.just_pressed(KeyCode::KeyH) {
+    if on(Action::Drink) {
         // Drink from the water at your feet. `H` because `J` is the eat and
         // the two are one gesture from the player's side — adjacent keys, one
         // hand. Payload-free: the sim reads the heightfield under the body,
@@ -1659,6 +1706,29 @@ pub fn hearth_close(
     }
 }
 
+/// The shard's hand test for a thing lying where it fell (`sim_core::reach`),
+/// from the predicted eye and feet; with no world yet, everything passes.
+fn lying_test<'a>(
+    world: Option<&'a crate::render::WorldId>,
+    cols: &'a sim_core::collide::ColIndex,
+    doors: u32,
+    eye: [f32; 3],
+    feet: f32,
+) -> impl Fn((i32, i32, i32), [i8; 3]) -> bool + 'a {
+    move |q, stuck| match world {
+        Some(w) => {
+            let at = if stuck == [0; 3] {
+                sim_core::reach::Target::lying(w.seed, &w.haven, cols, q)
+            } else {
+                sim_core::reach::Target::stuck_in(&w.haven, doors, q, stuck)
+            };
+            let eye = (eye[0], eye[1], eye[2]);
+            sim_core::reach::clear_from(w.seed, &w.haven, cols, doors, eye, feet, at)
+        }
+        None => true,
+    }
+}
+
 /// The pick `E` takes from where the player stands: a loose stack, or an
 /// arrow standing in a body in reach — their own, where they stand, or one
 /// they can see, where it is drawn.
@@ -1671,17 +1741,25 @@ fn take_or_pull(
     x: f32,
     z: f32,
     sight: Option<([f32; 3], [f32; 3])>,
+    lying: Option<interact::LyingTest>,
 ) -> interact::Pick {
     let at = core.render_tick();
     let mut rs = client_core::interp::RemoteState::default();
-    let mut pick =
-        interact::resolve_take_or_pull(x, z, sight, core.ground_items(), core.lodged(), |id| {
+    let mut pick = interact::resolve_take_or_pull(
+        x,
+        z,
+        sight,
+        core.ground_items(),
+        core.lodged(),
+        |id| {
             if id == core.player_id {
                 Some((x, z))
             } else {
                 core.interp.sample(id, at, &mut rs).then_some((rs.x, rs.z))
             }
-        });
+        },
+        |g| lying.is_none_or(|r| r((g.qx, g.qy, g.qz), g.dir)),
+    );
     pick.stamp_teaches(&core.research);
     pick
 }

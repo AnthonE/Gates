@@ -891,7 +891,7 @@ pub fn drive(
     // entry a frame, so this is ~25 frames, and it is a COUNT of built things
     // rather than a guess about how long that takes.
     if !cap.built {
-        if ring.is_full() && props.is_full() && clutter.is_full() {
+        if ring.is_full() && props.is_full() && props.stale_len() == 0 && clutter.is_full() {
             cap.built = true;
             cap.built_at = Some(cap.frame);
             cap.say(format!(

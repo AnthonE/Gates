@@ -1306,6 +1306,9 @@ fn attack(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mut B
             // A sentence's worth of precision for the death screen, not a
             // sim quantity; f32 sqrt is on wall 1's list.
             range_cm: ((d2 as f32).sqrt()) as u16,
+            // A turned animal's bite carries the green (`def` is already
+            // the top tier's row then).
+            fel: if mob.turned { def.fel_bite } else { 0 },
         });
     }
     RUNNING

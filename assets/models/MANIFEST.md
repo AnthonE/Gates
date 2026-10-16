@@ -745,6 +745,160 @@ spear's map peaked at **0.53** before the import stripped it, i.e. a stick
 that glows in the dark. A torch would be the first exception and would grow
 that list rather than retire the rule.
 
+## `held/` — the prop kit's version 2, batch 1 (Meshy, 2026-10-15)
+
+Ten items that drew the code kit's primitives (`render/heldkit.rs`) and now
+draw these, in the hand, on the ground and as their icon (`iconbake`
+photographs the file). `WANTED.md` §12 is the worklist and its routing.
+Meshy paid plan, the `deploy/` rail's terms: no `NOTICE` entry, no proper
+noun in any prompt (below, in full).
+
+Pipeline, every step a script in `ci/`: `meshy_gen.py --tris 3000`
+(nano-banana-pro image → meshy-t2 smart topology; `--multiview` → meshy-7.1
+multi-image) → `measure_glb.py --size` → `flatten_charts.py` where it helps
+→ `import_meshy.py` to a CUBE the size of the item's longest side, so the
+object keeps its own proportions → `ktx_pack.py --size 512` (a hand-sized
+thing, and the browser downloads each one at boot: ~1 MB a file).
+
+| file | item | image task | mesh task | credits | size (m) | note |
+|---|---|---|---|---|---|---|
+| `held/wood.glb` | Wood | `01a13df9-132f` | `01a13df9-92fc` | 24 | 0.46 × 0.27 × 0.47 | charts flattened |
+| `held/stone.glb` | Stone | `01a13e01-8e0e` | `01a13e02-6222` | 39 | 0.24 × 0.22 × 0.13 | 3 views; remeshed after delivery, see below |
+| `held/metal_ore.glb` | Metal Ore | `01a13e06-1cc1` | `01a13e06-9b16` | 29 | 0.23 × 0.14 × 0.22 | charts flattened; credits overlap the stone's remesh |
+| `held/sulfur_ore.glb` | Sulfur Ore | `01a13e07-fd79` | `01a13e08-a1c2` | 39 | 0.23 × 0.19 × 0.17 | as delivered (flattening turned its rock olive); 3 views |
+| `held/cloth.glb` | Cloth | `01a13e0b-8292` | `01a13e0c-54b5` | 24 | 0.30 × 0.14 × 0.29 | as delivered (chart contrast 0.012 already) |
+| `held/metal_fragments.glb` | Metal Fragments | `01a13e0d-6c57` | `01a13e0d-c1cc` | 24 | 0.25 × 0.10 × 0.25 | charts flattened |
+| `held/charcoal.glb` | Charcoal | `01a13e0e-ab7d` | `01a13e0f-2a0c` | 24 | 0.27 × 0.14 × 0.27 | charts flattened |
+| `held/low_grade_fuel.glb` | Low Grade Fuel | `01a13e0f-e93e` | `01a13e10-6864` | 24 | 0.26 × 0.33 × 0.12 | charts flattened |
+| `held/junk.glb` | Junk | `01a13e11-508e` | `01a13e11-cfb8` | 24 | 0.34 × 0.18 × 0.30 | charts flattened |
+| `held/leather.glb` | Leather | `01a13e12-b919` | `01a13e13-600e` | 24 | 0.34 × 0.11 × 0.11 | as delivered (flattening washed it out) |
+
+**275 credits for the batch** (balance 3,124 → 2,849, measured). The
+per-row figures are balance deltas, and two ran concurrently with the
+stone's remesh, so the metal ore's 29 holds part of that.
+
+What was learned, measured:
+
+- **`--multiview` dropped `target_polycount`**: the stone came back at
+  **580,271 triangles, 26 MB**. `multi-image-to-3d` only honours the budget
+  when told to remesh, which `ci/meshy_beast.py` already did and
+  `meshy_gen.py` now does (`should_remesh`). The sulfur ore, made after the
+  fix, landed at 3,113 with its normal map. The stone was rescued with the
+  Remesh API (3,135 triangles), which re-bakes base colour and metal/rough
+  only, so it ships **without a normal map** (`tests/packed_maps.rs`
+  `NO_NORMAL_MAP` names it) and read the same in every render.
+- **`--multiview` can return one view.** The metal ore asked for several
+  and got one, so it went the single-view way; it reconstructed fine, 0.93
+  deep per unit wide, because the prompt names the depth.
+- **A pile asked for multiple views came back STACKED**: the stone is a
+  three-rock cairn, not the low pile the prompt describes. It reads as stone
+  and shipped; a re-roll would say "lying side by side, none on another".
+- **Chart flattening is per item, not a default.** It equalised the wood,
+  ore, fragments, charcoal, can and junk with no visible loss, turned the
+  sulfur ore's grey rock olive (it pulls each island toward the mean colour,
+  and the mean is part yellow) and washed the leather's browns out. Look,
+  then choose.
+- **`measure_glb.py`'s depth band is a rock's.** The can (0.45) and the
+  leather roll (0.33) "fail" it by being what they are.
+- **`import_meshy.py` now prunes** the textures no material reads. Meshy's
+  multi-image path ships an emissive map; the import strips the slot, and
+  until now `ktx_pack.py` then packed the orphan anyway. The held items
+  shipped before this each carry one, small on disk (0.8-44 KB packed,
+  mostly black) and harmless.
+
+Prompts, in full, for the IP rail:
+
+> **wood** — "A single small stack of split firewood on a plain white background, three-quarter view. Five split logs lying side by side in two loose layers, each piece about 45 centimetres long and 10 centimetres thick; the whole stack 47 centimetres long, 38 centimetres deep and 24 centimetres tall, as deep as it is long. Wedge-shaped and half-round pieces from splitting: rough grey-brown pine bark on the rounded sides, pale cream split faces with long grain and drying cracks, chopped ends showing growth rings. Real, weathered, slightly dirty, soft daylight. Exactly one stack. No ground, no terrain, no axe, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Split pine firewood: rough grey-brown bark, pale cream split wood with long grain and checking cracks, chopped ends with growth rings, dry and dusty, no moss, no green, no paint"
+>
+> **stone** — "A single small pile of three fist-sized broken stones on a plain white background, three-quarter view. Three rough angular rocks of pale grey granite lying together, the pile 24 centimetres wide, 22 centimetres deep and 12 centimetres tall, as deep as it is wide. Fresh fracture faces with sharp edges, a light speckled crystalline surface with faint quartz flecks, mottled with darker grey, dry and dusty. Real, photographed in soft daylight. No moss, no lichen, no green. Exactly one pile. No ground, no terrain, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Pale speckled granite, light grey with faint quartz flecks and darker grey mottling, fresh fracture faces, dry dusty stone, no moss, no green"
+>
+> **metal_ore** — "A single small pile of four fist-sized chunks of iron ore on a plain white background, three-quarter view. Heavy angular lumps of mid grey rock shot through with dark metallic iron seams and rust-brown and ochre staining, a few small dull metallic glints, the pile 23 centimetres wide, 23 centimetres deep and 13 centimetres tall, as deep as it is wide. Real, rough, dusty, photographed in soft daylight. The host rock is mid grey, not black. No moss, no green. Exactly one pile. No ground, no terrain, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Mid grey rock with dark metallic iron seams, rust-brown and ochre staining, small dull metal glints, rough dusty ore, not black, no green"
+>
+> **sulfur_ore** — "A single small pile of four fist-sized lumps of sulfur ore on a plain white background, three-quarter view. Rough grey rock chunks crusted with warm golden-yellow mustard sulfur crystals in the cracks and over one face of each lump, the pile 23 centimetres wide, 23 centimetres deep and 14 centimetres tall, as deep as it is wide. Real, dusty, photographed in soft daylight. The yellow is warm golden mustard, never green, never lime. Exactly one pile. No ground, no terrain, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Grey rock crusted with warm golden-yellow mustard sulfur crystals, dusty, matte, never green, never lime"
+>
+> **cloth** — "A single neat stack of three folded pieces of rough undyed cloth on a plain white background, three-quarter view. Coarse plain-woven fabric, off-white to pale oatmeal, folded into rectangles and stacked slightly askew, frayed edges and a few loose threads, faintly dirty and creased. The stack 30 centimetres wide, 22 centimetres deep and 14 centimetres tall. Real, photographed in soft daylight. Exactly one stack. No ground, no table, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Coarse undyed plain-woven cloth, off-white to pale oatmeal, visible weave, frayed edges, faint dirt and creases, matte, no pattern, no print"
+>
+> **metal_fragments** — "A single small heap of torn scrap metal fragments on a plain white background, three-quarter view. Jagged bent pieces of steel sheet, twisted strips and broken metal chunks lying together, mostly rust-brown and dull grey steel, with bright silver fresh cuts along the torn edges. The heap 25 centimetres long, 21 centimetres wide and 10 centimetres tall. Real, dirty, photographed in soft daylight. Exactly one heap. No tools, no nails, no screws, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Torn scrap steel: rust-brown oxide and dull grey steel, bright silver fresh cuts on the torn edges, dirty, oily, no paint"
+>
+> **charcoal** — "A single small heap of lump charcoal on a plain white background, three-quarter view. Irregular chunks of charred hardwood, deep charcoal grey with a silvery sheen on the cracked faces and pale grey ash dust in the cracks, the wood grain and growth rings still visible on the broken ends. The heap 27 centimetres wide, 25 centimetres deep and 15 centimetres tall, as deep as it is wide. Real, photographed in soft daylight. Exactly one heap. No fire, no flames, no glowing embers, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Lump charcoal: deep charcoal grey charred wood with a silvery sheen on cracked faces, pale grey ash in the cracks, visible wood grain, matte, no glow, no fire"
+>
+> **low_grade_fuel** — "A single steel jerry can standing upright on a plain white background, three-quarter view. A flat rectangular fuel can 33 centimetres tall, 22 centimetres wide and 10 centimetres deep, three bar handles across the top, a capped spout on one corner, pressed X-shaped ribs on its broad sides. Dented, its dull red paint chipped and worn through to bare grey steel on the edges and handles, rust at the seams, grimy. Real, photographed in soft daylight. Exactly one can. No ground, no people, no hands, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Dull red painted steel worn through to bare grey metal on the edges and handles, chipped paint, rust at the seams, grime, dents, no text, no logos"
+>
+> **junk** — "A single small heap of rusty scrap metal junk on a plain white background, three-quarter view. A large hex nut, a long threaded bolt, a broken cog wheel, a bent steel bracket and a short coil spring lying together, mostly rust-brown and dark grey steel with oily dirt. The heap 34 centimetres long, 27 centimetres wide and 21 centimetres tall. Real, photographed in soft daylight. Exactly one heap. No tools, no wood, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Rusty scrap steel: rust-brown oxide, dark grey bare steel, oily dirt, worn threads and teeth, no paint"
+>
+> **leather** — "A single rolled-up tanned animal hide on a plain white background, three-quarter view. A cylinder of rough brown leather 34 centimetres long and about 13 centimetres thick, tied around with two thin leather cords, the loose edge of the hide lying along the roll, the paler suede underside showing at both ends of the roll. Worn, creased, uneven natural edges. Real, photographed in soft daylight. Exactly one roll. No fur, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Rough tanned brown leather with creases and natural grain, paler suede underside at the ends, thin leather cords, worn, matte, no fur, no print"
+
+## `held/` — the prop kit's version 2, batch 2 (Meshy, 2026-10-15)
+
+Ten more, the same pipeline and terms as batch 1 above: the powders, the
+fat, the bones, the tarp, both waterskins and the three gun bodies. Piles and
+folded things are `borne` rows, the skins and bodies `upright`, each keeping
+its kit row's grip and scale (`iconbake --hand`, judged against batch 1's
+stone and wood); the powders went from 0.50 to 0.60, the files being lower
+mounds than the kit's cones.
+
+| file | item | image task | mesh task | credits | size (m) | note |
+|---|---|---|---|---|---|---|
+| `held/sulfur.glb` | Sulfur | `01a13e37-c4b7` | `01a13e38-43f9` | 24 | 0.34 × 0.09 × 0.34 | as delivered (chart contrast 0.019 already) |
+| `held/gunpowder.glb` | Gunpowder | `01a13e39-0593` | `01a13e39-8504` | 24 | 0.34 × 0.10 × 0.34 | as delivered (0.028) |
+| `held/animal_fat.glb` | Animal Fat | `01a13e3a-708d` | `01a13e48-d49f` | 24 | 0.26 × 0.18 × 0.19 | as delivered (0.051); the mesh failed once, see below |
+| `held/bone_fragments.glb` | Bone Fragments | `01a13e3b-f8c2` | `01a13e3c-78f0` | 24 | 0.23 × 0.11 × 0.27 | charts flattened |
+| `held/tarp.glb` | Tarp | `01a13e3d-dd49` | `01a13e3e-32ce` | 24 | 0.36 × 0.15 × 0.29 | as delivered (0.039) |
+| `held/waterskin.glb` | Waterskin | `01a13e3f-1fe5` | `01a13e3f-a695` | 24 | 0.18 × 0.31 × 0.08 | charts flattened |
+| `held/full_waterskin.glb` | Full Waterskin | `01a13e40-691c` | `01a13e40-bf45` | 24 | 0.20 × 0.32 × 0.15 | charts flattened |
+| `held/semi_automatic_body.glb` | Semi Automatic Body | `01a13e41-d335` | `01a13e42-54aa` | 24 | 0.38 × 0.21 × 0.05 | charts flattened |
+| `held/smg_body.glb` | SMG Body | `01a13e4e-2c45` | `01a13e4e-ac50` | 48 | 0.32 × 0.16 × 0.07 | second roll, charts flattened; see below |
+| `held/rifle_body.glb` | Rifle Body | `01a13e44-4cbd` | `01a13e44-cc0d` | 24 | 0.46 × 0.16 × 0.16 | charts flattened |
+
+**264 credits for the batch** (balance 2,849 → 2,585, measured): eleven
+rolls at 24, the ten items and the SMG body's second. The fat's failed first
+mesh cost nothing; its 24 is the image and the mesh built again from it (15).
+
+What was learned, measured:
+
+- **A gun part asked for as "a receiver" can come back as a gun.** The SMG
+  body's first roll (`01a13e43-0aee` / `01a13e43-89d4`, kept in
+  `To Examine/kit_v2/smg_body_roll1_*`) was a chunky pistol with a round
+  breech. The second prompt names the shape instead of the part — "a long
+  straight rectangular tube of stamped sheet steel", the magazine well under
+  its front half, the grip under its back half — and lists what is not there
+  (barrel, stock, magazine, sights, muzzle); it reads as a receiver.
+- **A failed mesh keeps its image.** The fat's first image-to-3d came back
+  `server_error` ("Failed to generate preview images"); the image task was
+  fine, so `meshy_gen.py --resume-image 01a13e3a-708d-74c9-810a-f694116d92ed`
+  built the mesh from it for 15 credits instead of a fresh 24.
+- **The generated guns are authored muzzle to -X**, the kit's revolver to
+  +X. `iconbake`'s `side()` turns a file round so every gun in the bag points
+  the same way; in the hand they are parts and point where they were made.
+- **`measure_glb.py`'s depth band rejects every gun body** (a receiver is a
+  fifth as deep as it is long) and its aspect gate the sulfur heap (a mound
+  is wide and low). Both are what they should be; the gates are a rock's.
+
+Prompts, in full, for the IP rail:
+
+> **sulfur** — "A single small heap of yellow sulfur powder on a plain white background, three-quarter view. Fine crumbly powder in a low rounded mound with a few small broken lumps on top, 34 centimetres wide, 34 centimetres deep and 17 centimetres tall, as deep as it is wide. Warm golden-yellow mustard sulfur, dusty, matte. Real, photographed in soft daylight. Never green, never lime. Exactly one heap. No container, no bag, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Warm golden-yellow mustard sulfur powder, fine and crumbly, dusty, matte, a few small lumps, never green, never lime"
+>
+> **gunpowder** — "A single small heap of black gunpowder on a plain white background, three-quarter view. Fine dark grey-black granular powder in a low rounded mound, a few tiny grains scattered at its foot, 34 centimetres wide, 34 centimetres deep and 16 centimetres tall, as deep as it is wide. Matte charcoal grey with a faint graphite sheen on the grains, not pure black. Real, photographed in soft daylight. Exactly one heap. No container, no bag, no fuse, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Fine dark grey-black granular gunpowder, matte charcoal grey with a faint graphite sheen on the grains, not pure black, no glow"
+>
+> **animal_fat** — "A single slab of raw animal fat on a plain white background, three-quarter view. A thick irregular chunk of white suet with a waxy surface, faintly yellow and creamy, uneven torn edges and a few thin pink streaks, 26 centimetres long, 20 centimetres deep and 17 centimetres tall. Real, photographed in soft daylight. Exactly one piece. No plate, no board, no knife, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Raw white animal fat, waxy creamy suet, faintly yellow, thin pink streaks, slightly glossy, no plate, no blood pool"
+>
+> **bone_fragments** — "A single small pile of broken animal bones on a plain white background, three-quarter view. Two snapped leg bones with knobbed joint ends and a few sharp splinters lying together, weathered off-white and pale ivory with faint brown staining in the cracks, the pile 27 centimetres long, 23 centimetres wide and 9 centimetres tall. Real, photographed in soft daylight. Exactly one pile. No skull, no meat, no blood, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Weathered off-white and pale ivory animal bone, porous ends, faint brown staining in the cracks, dry, matte, no blood"
+>
+> **tarp** — "A single folded canvas tarpaulin on a plain white background, three-quarter view. Heavy olive-drab waterproof canvas folded into a flat rectangular bundle, two brass grommets at one corner, creased, dusty and stained, 36 centimetres wide, 26 centimetres deep and 10 centimetres tall. Real, photographed in soft daylight. Exactly one bundle. No rope, no ground, no people, no hands, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Heavy olive-drab waterproof canvas, visible weave, creases, dust and stains, brass grommets, matte, no text, no logos"
+>
+> **waterskin** — "A single empty leather waterskin on a plain white background, three-quarter view. A flat teardrop-shaped bag of dark tanned leather, slack and creased because it is empty, stitched along its edges, a short leather neck with a wooden stopper and a cord tied around the neck, standing upright, 31 centimetres tall, 18 centimetres wide and 9 centimetres deep. Real, worn, photographed in soft daylight. Exactly one waterskin. No water, no cup, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Dark tanned leather, creased and slack, stitched seams, worn edges, wooden stopper, cord tie, matte, no print"
+>
+> **full_waterskin** — "A single full leather waterskin on a plain white background, three-quarter view. A plump teardrop-shaped bag of dark tanned leather, full and taut with water, darker and slightly glossy where it is damp, stitched along its edges, a short leather neck with a wooden stopper and a cord tied around the neck, standing upright, 32 centimetres tall, 20 centimetres wide and 15 centimetres deep. Real, worn, photographed in soft daylight. Exactly one waterskin. No cup, no puddle, no ground, no people, no hands, no plants, no text, no labels, no scale bar."  ·  texture: "Dark tanned leather, full and taut, darker and slightly glossy where damp, stitched seams, wooden stopper, cord tie, no print"
+>
+> **semi_automatic_body** — "A single bare semi-automatic rifle receiver on a plain white background, three-quarter side view. Only the central metal body of the gun: the receiver with its trigger guard, trigger and a pistol grip, an ejection port and a short stub where the barrel would mount. No stock, no barrel, no magazine, no scope. Worn black and gunmetal-grey finish with scratches and bare steel on the edges, 38 centimetres long, 14 centimetres tall and 8 centimetres wide. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."  ·  texture: "Worn black and gunmetal-grey steel, scratches, bare metal on the edges, oil grime, matte, no text, no logos"
+>
+> **smg_body** — "A single bare submachine gun receiver on a plain white background, seen from the side, slightly from above. A long straight rectangular tube of stamped sheet steel lying horizontally, 32 centimetres long, about 5 centimetres tall and 5 centimetres wide, with a narrow magazine well hanging under its front half, a pistol grip and a trigger guard under its back half, a slot for the cocking handle and rivets along its side. Only the receiver: no barrel, no stock, no magazine, no sights, no muzzle. Worn black paint over steel, scratched to bare metal on the edges. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."  ·  texture: "Worn black paint over stamped steel, scratched to bare metal on the edges, rivets, oil grime, matte, no text, no logos"
+>
+>
+> **smg_body**, first roll (not shipped) — "A single bare submachine gun receiver on a plain white background, three-quarter side view. Only the compact boxy stamped-steel body of the gun with a magazine well underneath, a pistol grip, a trigger and trigger guard and a cocking handle on the side. No stock, no barrel, no magazine, no sights. Worn black finish with scratches and bare steel on the edges, 32 centimetres long, 17 centimetres tall and 6 centimetres wide. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."
+>
+> **rifle_body** — "A single bare bolt-action rifle action on a plain white background, three-quarter side view. Only the long round steel receiver with its bolt and bent bolt handle, a trigger and trigger guard beneath it. No wooden stock, no barrel, no scope, no magazine. Blued steel worn to bare metal on the edges, light rust spots, 46 centimetres long, 14 centimetres tall and 6 centimetres wide. Real, photographed in soft daylight. Exactly one part. No ground, no people, no hands, no ammunition, no text, no labels, no logos, no scale bar."  ·  texture: "Blued steel worn to bare metal on the edges, scratches, light rust spots, oil grime, matte, no text, no logos"
+
 ## `held/skins/` — skins with a model of their own
 
 A skin row in `ui::hold::SKIN_MODELS` draws this file instead of its row's
@@ -927,7 +1081,7 @@ with `ci/prop_kit.py sheet <names…>`.
 | `held/metal_hatchet`, `metal_pickaxe`, `metal_spear`, `satchel_charge`, `bandage`, `medkit`, `berries`, `mushrooms`, `corn`, `raw_meat`, `cooked_meat`, `burnt_meat`, `green_keycard`, `blue_keycard`, `red_keycard` | held items that drew the stand-in tool |
 | `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
 | `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
-| `prop/oil_barrel`, `road_sign`, `food_crate`, `tire_stack`, `car_wreck` | the roadside junk (`props::ROADSIDE_GLB`); the sign and the wreck are authored as-is over the sim's box tables |
+| `prop/oil_barrel`, `road_sign`, `food_crate` | the roadside junk (`props::ROADSIDE_GLB`); the sign is authored as-is over the sim's box table. The wreck and the tyres were here until Meshy's replaced them (§Roadside and monuments) |
 | `mob/pig_body`, `pig_leg`, `wolf_body`, `wolf_leg`, `stag_body`, `stag_leg`, `pig_carcass`, `wolf_carcass`, `stag_carcass` | the animals, authored in `render/mobs.rs`'s frame (+Z forward, a leg's hip at its origin) and exported as-is; the box tables there stay the measured truth |
 
 ## `mob/fel/` — the fel pig, wolf and stag, generated, rigged here (2026-10-13)
@@ -959,3 +1113,102 @@ three days, which is how the first boar and wolf were lost).
 
 The stag's rack is cut out of the weight proxy (`rig_beast.py` `heat`):
 whole, it failed bone heat on two of three stags, and a rack does not bend.
+
+## `prop/fel/` — the Verdigris' obsidian spires, generated (2026-10-15)
+
+Meshy, paid plan, so private ownership with no attribution owed (the
+`deploy/` rail's terms). `ci/meshy_gen.py --multiview --tris 1400`
+(nano-banana-pro image and two more views, then multi-image-to-3d). The
+multi-view stage ignored the triangle target until `meshy_gen.py` passed it
+`should_remesh` (213k triangles on the first roll), so `spire_a` and
+`spire_b` went through Meshy's remesh separately. Then `ci/fel_veins.py --lift 0.05`
+(emissive map from the green veins, albedo lifted off pure black),
+`ci/flatten_charts.py --luma-only --strength 0.8`,
+`ci/import_meshy.py … 1 1 1 --fit-axes --emissive` (a unit box standing on
+its base: `render/boulders.rs` stretches it to the sim block's box) and
+`ci/ktx_pack.py --size 1024`. 166 credits for the four, remeshes included.
+
+Each image prompt is the object sentence below followed by: *"Surface: glossy
+jet-black obsidian volcanic glass with sharp conchoidal ridges and flat
+fractured facets, and a few thin bright emerald-green mineral veins running
+along the cracks and facet edges. The base is rough, matte and charcoal
+grey. Alone on a plain white background, three-quarter view from slightly
+above, soft studio light, neutral grey shadow. No ground plane, no moss, no
+lichen, no grass, no plants, no people, no other objects, no text."* The
+texture prompt: *"glossy jet-black obsidian volcanic glass with sharp
+fractured facets; thin bright emerald-green mineral veins only along cracks
+and facet edges; rough matte charcoal base; no moss, no lichen, no brown, no
+grey stone"*.
+
+| file | tris | object sentence | image | mesh | remesh |
+|---|---|---|---|---|---|
+| `spire_a` | 1,421 | "EXACTLY ONE tall standing shard of black volcanic glass. It is about 1 metre wide, 1 metre deep and 5 metres tall: as deep as it is wide, five times taller than wide. Six to eight flat fractured facets run the full height; the lower two thirds have nearly straight vertical sides, and only the top fifth narrows to a broken, chipped point." | `01a13e89-6e1d-7710-b71f-842527e4da6d` | `01a13e89-f32d-7249-8669-ca2718401c6e` | `01a13e8f-861e-76a8-b583-92dee95c9f65` |
+| `spire_b` | 1,413 | "EXACTLY ONE pair of black volcanic glass shards fused at a shared base and leaning slightly apart, like a split fang. Together they are about 1.3 metres wide, 1 metre deep and 4.5 metres tall; the taller shard reaches the full height and the shorter one stops at two thirds of it. Each shard has flat fractured facets and a chipped point." | `01a13e8e-919b-7036-b8be-ef0e3b56dbd0` | `01a13e8f-3e0c-751b-8d33-2fed98665578` | `01a13e95-c1f0-71da-835d-381781f3632f` |
+| `spire_c` | 1,418 | "EXACTLY ONE stout column of black volcanic glass whose top is split into three jagged broken points, like a cracked crown. It is about 1.3 metres wide, 1.1 metres deep and 3.5 metres tall, with straight faceted sides for the lower two thirds." | `01a13e94-e2e4-753d-b746-dfbd2e8c86d0` | `01a13e95-6527-7671-9e9a-ed211d9d09b1` | — |
+| `spire_d` | 1,439 | "EXACTLY ONE cluster of five black volcanic glass crystals growing from one rough base, of different heights: the tallest about 3 metres, the others between 1 and 2.2 metres, leaning outward a little. The whole cluster is about 1.5 metres wide and 1.5 metres deep. Each crystal is a faceted prism ending in a sharp broken point." | `01a13e97-a010-7234-970b-a5268eccee73` | `01a13e98-4c13-731b-b31f-66ba64c27c76` | — |
+
+The client lights the veins by the hour (`boulders::SPIRE_GLOW_NIGHT`,
+`SPIRE_GLOW_DAY`); the files carry `emissiveFactor` 1. They are not in
+`props::prop_models`, whose gate holds every prop dark.
+## Roadside and monuments — Meshy, 2026-10-15
+
+The roadside junk and the monuments' parts that were code primitives or box
+recipes. Same terms as `deploy/` (Meshy paid plan, no `NOTICE` entry, no
+proper noun in any prompt) and the same pipeline as the held items above:
+`meshy_gen.py` (nano-banana-pro → meshy-t2 smart topology, single view) →
+`import_meshy.py` → `ktx_pack.py --size 1024`. **264 credits for eleven
+rolls** (balance 2,419 → 2,155, measured; they ran four at a time, so the
+sidecars' per-roll deltas overlap and only the total holds). Nine ship.
+`import_meshy.py` grew `--turn` (right-angle turns before the fit: Meshy
+lays a car, a gunship and a turret head along −X) and `--shift` (a pivot that
+is not the box's middle); `ci/cut_glb.py` is new.
+
+| file | slug | draws | image task | mesh task | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `prop/car_wreck.glb` | car_wreck | `CarWreck` (`ROADSIDE_GLB`) | `01a140f7-150b` | `01a140f7-df92` | 4,233 | 1.70 × 1.50 × 4.00 | `--fit-axes --turn=y90` to `CAR_WRECK_BOXES`' bounds (aspect 1.32: the delivery was 2.09 wide) |
+| `prop/tire_stack.glb` | tire_stack | `TireStack` (`ROADSIDE_GLB`) | `01a140f7-1548` | `01a140f7-919a` | 4,446 | 0.83 × 1.20 × 0.78 | `--fit-radius --center` (aspect 1.34: the delivery stood 1.0 to 0.93 across) |
+| `mob/heli.glb` | heli | the heli's hull (`heli::HULL_GLB`) | `01a140f8-b946` | `01a140f9-0c13` | 8,418 | 4.75 × 4.19 × 13.00 | uniform to 13 m, `--turn=y90`; then `ci/cut_glb.py --box -1.6 3.74 -0.3 1.6 3.995 3.0 --spare 0 1.33 0.2` cut the static blade stubs (591 triangles) |
+| `site/sentry_head.glb` | sentry_head | sentry and turret head (`sentry::HEAD_GLB`) | `01a140f8-ddf6` | `01a140f9-30cc` | 2,202 | 0.80 × 0.40 × 0.89 | uniform to 0.8 wide, `--turn=y90 --center --shift=0,0,0.17` (pivot mid-housing) |
+| `deploy/turret_base.glb` | turret_base | DEPLOY row 18 and the sentries' pedestal | `01a140f8-df9e` | `01a140f9-5ab8` | 2,050 | 0.70 × 0.56 × 0.70 | uniform to the `DEPLOY` row |
+| `site/works_plinth.glb` | works_plinth | a work's plinth and bowl (`works::PLINTH_GLB`) | `01a140f8-e4f5` | `01a140f9-daf6` | 3,144 | 1.60 × 1.58 × 1.60 | uniform to 1.6 wide; the gold ring stays a torus |
+| `site/lore_slab.glb` | lore_slab | an inscription's stele (`lore::SLAB_GLB`) | `01a140f9-bae1` | `01a140fa-87b8` | 2,177 | 1.59 × 2.00 × 0.55 | uniform to 2.0 tall; the ring on top stays a torus |
+| `site/lore_dial.glb` | lore_dial | a mechanism's dial drum (`lore::DIAL_GLB`) | `01a140f9-e137` | `01a140fa-85a8` | 2,209 | 1.11 × 1.00 × 1.11 | uniform to 1.0 tall; the gold notch stays code |
+| `site/searchlight.glb` | searchlight | a watchtower's lamp head (`town_fx::SEARCHLIGHT_GLB`) | `01a140fa-81b3` | `01a140fb-2473` | 2,069 | 0.51 × 0.46 × 0.60 | uniform, `--turn=x-90 --center` (lens up +Y); an emissive disc lies on the lens |
+
+**Rolled and not shipped:** the red oil drum (`01a140f7-1533` / `01a140f7-b9c4`) shaded its lid
+as a starburst and streaked its sides, and the food crate (`01a140f7-152b` / `01a140f8-07a4`)
+came back dark and streaky against the plank box it would replace. The
+`ci/prop_kit.py` drum, crate and road sign stay; the sign's chevrons are crisp
+in a way a generated texture is not. The car and tyre recipes are gone from
+`ci/prop_recipes.py` so a `gen` cannot overwrite the deliveries.
+
+**Anchors measured off the models** (the code's numbers, so a re-roll means
+re-measuring): the heli's rotor hub at (0, 3.88, 1.33), its tail rotor on the
+fin's left at (−0.25, 2.55, −5.95), its chin gun's muzzle at (0.02, 0.82,
+6.55); the sentry's muzzle at (0, 0.07, 0.62) in head space; the works bowl's
+rim 1.48 m over the ground with the plinth sunk 0.1; the searchlight's lens at
+y 0.21.
+
+Prompts, in full, for the IP rail:
+
+> **car_wreck** — "A single abandoned wrecked four-door saloon car on a plain white background, three-quarter front view. A boxy old family sedan 4.0 metres long, 1.7 metres wide and 1.5 metres tall, its wheels gone so it sits low on its sills, the bonnet buckled and rusted through, the roof slightly caved in, every window smashed out, the doors still shut. Faded dull green paint peeling to brown rust across every panel, rust holes along the sills and the empty wheel arches, a sagging dull chrome bumper, broken headlamps. Long abandoned, weathered, dirty. Exactly one car. No wheels, no tyres, no ground, no terrain, no grass, no people, no plants, no text, no logos, no badges, no number plates, no scale bar."  ·  texture: "Faded dull green car paint peeling to brown rust, rust holes, dirty smashed glass, grimy dull chrome, no text, no logos, no badges, no number plates"
+>
+> **tire_stack** — "A single stack of five worn car tyres lying flat on top of one another on a plain white background, three-quarter view. The stack is 120 centimetres tall and 84 centimetres across, the tyres slightly offset from each other and not perfectly aligned. Black rubber faded to dusty grey, worn tread on the outer faces, cracked sidewalls, dried mud and dust, no wheel rims, empty centres. Real, photographed in soft daylight. Exactly one stack. No ground, no people, no plants, no text, no letters on the sidewalls, no logos, no scale bar."  ·  texture: "Worn black rubber faded to dusty grey, deep tread grooves, cracked sidewalls, dried mud and dust, no text, no letters, no logos"
+>
+> **heli** — "A single military attack helicopter on a plain white background, side three-quarter view. A narrow armoured gunship 13 metres long nose to tail: a stepped two-seat glass cockpit at the nose, a short cannon in a turret under the nose, short stub wings on both sides of the fuselage each carrying a rocket pod, two engine housings on the roof, a long slim tail boom ending in a swept vertical fin and a small horizontal stabiliser, two landing skids underneath. The main rotor blades and the tail rotor blades are removed, leaving only the rotor hub on its mast. Matte olive drab paint, worn and dirty, exhaust soot behind the engines, scuffed panel edges. Exactly one helicopter. No rotor blades, no ground, no people, no plants, no text, no numbers, no insignia, no markings, no logos, no scale bar."  ·  texture: "Matte olive drab military paint, worn scuffed panel edges, exhaust soot, dark tinted cockpit glass, gunmetal cannon and skids, no text, no numbers, no insignia, no markings"
+>
+> **sentry_head** — "A single automated sentry gun turret head on a plain white background, three-quarter view. A compact armoured steel housing 52 centimetres wide, 32 centimetres tall and 60 centimetres deep with bevelled sides, one heavy machine gun barrel 50 centimetres long projecting straight forward from the middle of its front face, a small boxy camera sensor mounted on its right side, an ammunition box on its left side, a flat underside. Dark olive painted steel, chipped and scratched, gunmetal barrel, bolts and panel seams. Exactly one turret head. No base, no stand, no tripod, no ground, no people, no text, no numbers, no logos, no scale bar."  ·  texture: "Dark olive painted armour steel, chipped and scratched paint, gunmetal barrel, bolts and panel seams, black camera lens, no text, no markings"
+>
+> **turret_base** — "A single squat steel gun turret pedestal on a plain white background, three-quarter view. A square armoured steel box 70 centimetres wide, 70 centimetres deep and 60 centimetres tall with bevelled top edges, a heavy bolted flange foot around the bottom, a round slewing ring bearing on the flat top where a gun would mount, a small hinged access panel and a cable gland on one side. Dark grey painted steel, chipped and scratched, rust at the bolts and seams, grimy. Exactly one pedestal. No gun, no barrel, no ground, no people, no text, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted armour steel, chipped and scratched paint, rusty bolts and seams, grime, no text, no markings"
+>
+> **works_plinth** — "A single square black stone altar plinth on a plain white background, three-quarter view. A solid block of polished black basalt 160 centimetres square and 100 centimetres tall with chamfered edges, a stepped base and a plain worn band around the top edge, and set on top a wide shallow round wrought-iron fire bowl 110 centimetres across on short iron feet, the bowl holding grey ash and charred wood. Ancient, weathered, chipped corners. Exactly one plinth. No fire, no flames, no smoke, no ground, no people, no plants, no text, no letters, no symbols, no carvings, no scale bar."  ·  texture: "Polished black basalt with chipped corners, dark wrought iron fire bowl with soot and grey ash, charred wood, no text, no letters, no symbols"
+>
+> **lore_slab** — "A single tall upright black stone slab on a plain white background, three-quarter view. A standing stele of dark polished basalt 130 centimetres wide, 200 centimetres tall and 35 centimetres thick, its sides roughly dressed with chisel marks and chipped edges, its broad front face smooth, flat and blank, its top edge squared, standing in a low rough stone footing. Ancient, weathered, grey-green lichen in the cracks. Exactly one slab. No carving on the face, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Dark polished basalt with a smooth blank front face, roughly dressed chiselled sides, chipped edges, grey-green lichen in the cracks, no text, no letters, no symbols"
+>
+> **lore_dial** — "A single short round stone drum on a plain white background, three-quarter view. A solid cylinder of dark grey basalt 84 centimetres across and 100 centimetres tall, its flat top polished smooth with a low raised rim, two plain carved bands around the body, a slightly wider rough base. Ancient, weathered, chipped, grey-green lichen in the cracks. Exactly one drum. No ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Dark grey basalt, polished smooth top, chipped edges, carved bands, grey-green lichen in the cracks, no text, no letters, no symbols"
+>
+> **searchlight** — "A single industrial searchlight lamp head on a plain white background, three-quarter view looking at its front. A round steel drum lamp housing 60 centimetres across and 55 centimetres deep, a flat round glass lens filling the whole front face behind a ring of bolts, deep cooling fins around the back of the drum, a curved carrying handle across the top. Dark grey painted steel, worn and chipped, rusty bolts, clear glass lens with a silvered reflector visible inside. Exactly one lamp head. No stand, no yoke, no bracket, no light beam, no glow, no ground, no people, no text, no logos, no scale bar."  ·  texture: "Dark grey painted steel, worn and chipped, rusty bolts, cooling fins, clear glass lens over a silvered reflector, no text, no logos"
+>
+> **oil_barrel** — "A single red-painted steel 55-gallon oil drum standing upright on a plain white background, three-quarter view. 88 centimetres tall and 58 centimetres across, two rolling hoops around the body, rolled rims top and bottom, two bung caps on the closed lid. Red paint dented, scratched and chipped through to grey steel, rust creeping up from the bottom rim, oily black drips down one side. Real, weathered, photographed in soft daylight. Exactly one drum. No ground, no people, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Red painted steel drum, dented, chipped and scratched paint, grey steel showing through, rust at the bottom rim, oily black drips, no text, no labels, no logos"
+>
+> **food_crate** — "A single low wooden supply crate on a plain white background, three-quarter view. A long rectangular box 100 centimetres long, 60 centimetres deep and 40 centimetres tall, rough pine planks nailed into a dark wooden batten frame, a lid of three boards, iron corner brackets and a rope handle at each end. Weathered grey-brown wood, dirty, a faded green paint band across the front with no letters. Real, photographed in soft daylight. Exactly one crate. No ground, no people, no plants, no text, no letters, no labels, no logos, no scale bar."  ·  texture: "Weathered grey-brown pine planks, dark wooden battens, rusty iron corner brackets, frayed rope handles, faded green paint band, no text, no letters"

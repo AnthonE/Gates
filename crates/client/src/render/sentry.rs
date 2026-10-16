@@ -3,9 +3,10 @@
 //! On the wire each is a roster slot below the heli's, a mob record whose
 //! yaw is where the gun points, so it arrives through the same interpolator.
 //! This file takes those ids away from `mobs::stream` and draws a turret on
-//! each watchtower roof: a fixed pedestal, a head that turns to the wire's
-//! yaw, and a lamp that burns green while the gun is idle and red for a few
-//! seconds after it locks on to somebody (`EventMsg::SentryLock`).
+//! each watchtower roof: a fixed pedestal (the player turret's own base,
+//! [`TURRET_BASE_GLB`]), a generated head ([`HEAD_GLB`]) that turns to the
+//! wire's yaw, and a lamp that burns green while the gun is idle and red for
+//! a few seconds after it locks on to somebody (`EventMsg::SentryLock`).
 //!
 //! **The origin is the feet**, like every body: the sim's gun is
 //! `ranged::ARROW_EYE_MM` above it, which is where the barrel sits here and
@@ -14,6 +15,7 @@
 use bevy::prelude::*;
 
 use super::props::{boxes_mesh_with, linear};
+use super::structures::TURRET_BASE_GLB;
 use super::Net;
 use sim_core::limits::MAX_TURRETS;
 use sim_core::mob;
@@ -56,42 +58,32 @@ fn gun_of_slot(s: usize) -> Option<usize> {
 }
 
 const STEEL: u32 = 0x2b2d2f;
-const DARK: u32 = 0x18191a;
-const OLIVE: u32 = 0x4a4d3c;
 
-/// The pedestal, standing on the tower roof (`town::SENTRY_POSTS` puts the
-/// gun 0.8 m over the roof and the feet 1.6 m under the gun, so the roof is
-/// at y = 0.8 here). `(centre, half-extent, hex)`.
-const BASE: &[([f32; 3], [f32; 3], u32)] = &[
-    ([0.0, 0.87, 0.0], [0.55, 0.07, 0.55], DARK),
-    ([0.0, 1.12, 0.0], [0.18, 0.22, 0.18], STEEL),
-];
+/// The pedestal stands on the tower roof (`town::SENTRY_POSTS` puts the gun
+/// 0.8 m over the roof and the feet 1.6 m under the gun, so the roof is at
+/// y = 0.8 here): the player turret's base model, whose top meets the head.
+const PEDESTAL_AT: Vec3 = Vec3::new(0.0, 0.8, 0.0);
 
-/// A player turret's neck: the deployable's own box (`render/structures.rs`)
+/// A player turret's neck: the deployable's own base (`render/structures.rs`)
 /// is its base, 0.6 m tall, and the sim's gun is `turret::GUN_M` over that
 /// base — 1.6 m over the record's feet, like a sentry's — so the neck
 /// bridges the top of the box to the head.
 const NECK: &[([f32; 3], [f32; 3], u32)] = &[([0.0, 1.42, 0.0], [0.09, 0.13, 0.09], STEEL)];
 
-/// The head, facing **+Z** (the sim's yaw 0), about the pedestal's top.
-const HEAD: &[([f32; 3], [f32; 3], u32)] = &[
-    ([0.0, 0.0, 0.0], [0.26, 0.16, 0.3], OLIVE),
-    ([0.0, 0.17, -0.05], [0.18, 0.04, 0.2], STEEL),
-    // The barrel: its muzzle is [`MUZZLE`].
-    ([0.0, 0.0, 0.55], [0.045, 0.045, 0.32], DARK),
-    // The sight box beside it.
-    ([0.17, 0.08, 0.32], [0.05, 0.05, 0.1], DARK),
-];
+/// The head: a generated armoured housing with one barrel, facing **+Z**
+/// (the sim's yaw 0), pivoting in the middle of its housing
+/// (`ci/import_meshy.py --shift`). 0.8 × 0.4 × 0.9 m before [`HEAD_SCALE`].
+pub const HEAD_GLB: &str = "models/site/sentry_head.glb";
 /// The head's pivot, in turret space.
 const HEAD_AT: Vec3 = Vec3::new(0.0, 1.6, 0.0);
-/// The head is drawn this much bigger than its boxes: at true size it is a
+/// A town head is drawn this much bigger than true size: at true size it is a
 /// bump on the roof edge from the street 35 m below. The muzzle and the lamp
 /// ride the head's transform, so they scale with it.
 const HEAD_SCALE: f32 = 1.6;
 /// The muzzle, in head space — where the flash goes.
-pub const MUZZLE: Vec3 = Vec3::new(0.0, 0.0, 0.9);
-/// The status lamp, in head space.
-const LAMP_AT: Vec3 = Vec3::new(-0.16, 0.12, 0.3);
+pub const MUZZLE: Vec3 = Vec3::new(0.0, 0.07, 0.62);
+/// The status lamp, in head space: on the housing's roof.
+const LAMP_AT: Vec3 = Vec3::new(-0.18, 0.21, 0.05);
 
 /// How long the lamp stays red after a lock-on, seconds.
 const ALARM_S: f32 = 6.0;
@@ -102,8 +94,10 @@ const ALARM: LinearRgba = LinearRgba::rgb(6.0, 0.3, 0.2);
 #[derive(Resource)]
 pub struct SentryAssets {
     base: Handle<Mesh>,
+    base_material: Handle<StandardMaterial>,
     neck: Handle<Mesh>,
     head: Handle<Mesh>,
+    head_material: Handle<StandardMaterial>,
     lamp: Handle<Mesh>,
     material: Handle<StandardMaterial>,
     idle: Handle<StandardMaterial>,
@@ -131,6 +125,7 @@ pub struct SentryLamp(pub usize);
 
 pub fn load(
     mut commands: Commands,
+    server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -140,10 +135,14 @@ pub fn load(
         unlit: true,
         ..default()
     };
+    let (base, base_material) = super::mobs::model(&server, TURRET_BASE_GLB);
+    let (head, head_material) = super::mobs::model(&server, HEAD_GLB);
     commands.insert_resource(SentryAssets {
-        base: meshes.add(boxes_mesh_with(BASE, linear, 1.0)),
+        base,
+        base_material,
         neck: meshes.add(boxes_mesh_with(NECK, linear, 1.0)),
-        head: meshes.add(boxes_mesh_with(HEAD, linear, 1.0)),
+        head,
+        head_material,
         lamp: meshes.add(Cuboid::new(0.07, 0.07, 0.07)),
         material: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -209,22 +208,29 @@ pub fn stream(
                     .spawn((
                         super::WorldEntity,
                         SentryBase,
-                        Mesh3d(if town {
-                            assets.base.clone()
-                        } else {
-                            assets.neck.clone()
-                        }),
-                        MeshMaterial3d(assets.material.clone()),
                         Transform::from_translation(pos),
+                        Visibility::default(),
                     ))
                     // Children, not `WorldEntity`: the teardown marks roots
                     // and a recursive despawn takes them.
                     .with_children(|parent| {
+                        if town {
+                            parent.spawn((
+                                Mesh3d(assets.base.clone()),
+                                MeshMaterial3d(assets.base_material.clone()),
+                                Transform::from_translation(PEDESTAL_AT),
+                            ));
+                        } else {
+                            parent.spawn((
+                                Mesh3d(assets.neck.clone()),
+                                MeshMaterial3d(assets.material.clone()),
+                            ));
+                        }
                         parent
                             .spawn((
                                 SentryHead(id),
                                 Mesh3d(assets.head.clone()),
-                                MeshMaterial3d(assets.material.clone()),
+                                MeshMaterial3d(assets.head_material.clone()),
                                 Transform::from_translation(HEAD_AT)
                                     .with_rotation(aim)
                                     .with_scale(Vec3::splat(if town { HEAD_SCALE } else { 1.0 })),

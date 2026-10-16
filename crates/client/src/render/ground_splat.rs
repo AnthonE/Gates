@@ -134,12 +134,15 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::render::storage::ShaderStorageBuffer;
 use bevy::shader::ShaderRef;
 
 use super::terrain_mesh::{
     ALBEDO_LUMA_FLOOR, GROUND_ALBEDO, GROUND_TILE_M, WET_SATURATION, WET_VALUE,
 };
 use super::textures::GroundArrays;
+use sim_core::terrain;
 
 /// The shader, resolved against the asset root `bin/gates.rs` sets.
 pub const SHADER: &str = "shaders/ground_splat.wgsl";
@@ -153,16 +156,33 @@ pub const ATTRIBUTE_MARKINGS: MeshVertexAttribute =
 pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
     MeshVertexAttribute::new("RoadCoverage", 0x726f6164, VertexFormat::Float32x2);
 
-/// How arid the ground under a vertex is, 0..1 (`terrain::aridity`): the
-/// desert's warm sand and the dry grass at its border are a tint on the sand
-/// and grass identities, not identities of their own, so the splat stays four.
-pub const ATTRIBUTE_ARID: MeshVertexAttribute =
-    MeshVertexAttribute::new("Aridity", 0x61726964, VertexFormat::Float32);
+/// The two zones the ground under a vertex is in: x how arid, 0..1
+/// (`terrain::aridity`), or on a rock the NEGATED metres it stands above the
+/// ground (`RockSoup::mesh`), which the shader clamps out of the desert and
+/// takes off the height the spread reads; y the Verdigris' edge noise, within ±1
+/// (`terrain::fel_wander`), from which the shader rebuilds the heart and the
+/// live spread (`blight_at`, `sim_core::blight`). The desert's warm sand and
+/// the Verdigris' ash and obsidian are tints on the four identities, not
+/// identities of their own, so the splat stays four — and one `vec2` at one
+/// location keeps WebGL2's attribute count where the desert left it.
+pub const ATTRIBUTE_ZONE: MeshVertexAttribute =
+    MeshVertexAttribute::new("Zone", 0x7a6f6e65, VertexFormat::Float32x2);
 
 /// The desert's sand, linear: a warm tan, where the beach's sand is a pale
 /// grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about (170, 137, 95),
 /// the colour of the reference game's arid biome. **(knob)**
 pub const DESERT_SAND_ALBEDO: [f32; 3] = [0.40, 0.25, 0.115];
+
+/// Lying snow, linear (snow v0): sRGB about 205 grey, under fresh snow's
+/// ~0.8 so a sunlit drift keeps its relief rather than clipping white.
+/// **(knob)**
+pub const SNOW_ALBEDO: f32 = 0.6;
+/// How far under the lowest place it was seen falling the snow fades in, m:
+/// a degree of air at the lapse `[climate]` ships.
+pub const SNOW_FADE_M: f32 = 10.0;
+/// How far past the band of aridity it was seen falling on the snow fades
+/// out (`WeatherNow::snow_arid`), in aridity.
+pub const SNOW_ARID_FADE: f32 = 0.1;
 
 /// The grass at the desert's border, linear: straw, sRGB about (120, 110, 58).
 /// **(knob)**
@@ -171,6 +191,94 @@ pub const DRY_GRASS_ALBEDO: [f32; 3] = [0.188, 0.155, 0.042];
 /// How far the grass identity goes to [`DRY_GRASS_ALBEDO`] at full aridity.
 /// Short of 1 so the last turf before the sand keeps a little green. **(knob)**
 pub const DRY_GRASS_MIX: f32 = 0.85;
+
+/// The Verdigris' ash, linear: what sand and forest litter go to at full
+/// corruption. A green-black grey at the albedo floor's edge (`ART.md`: no
+/// pure black). **(knob)**
+pub const FEL_ASH_ALBEDO: [f32; 3] = [0.058, 0.062, 0.054];
+/// Its dead turf, linear: what the grass goes to — a scorched olive-brown.
+/// **(knob)**
+pub const FEL_DEAD_ALBEDO: [f32; 3] = [0.074, 0.070, 0.040];
+/// Its obsidian, linear: what the rock goes to — black glass with a cold cast.
+/// **(knob)**
+pub const FEL_ROCK_ALBEDO: [f32; 3] = [0.050, 0.055, 0.056];
+/// What obsidian's roughness is multiplied by: glass, not granite. **(knob)**
+pub const FEL_ROCK_ROUGH: f32 = 0.75;
+/// The fissure plates' size, metres. **(knob)**
+pub const FEL_CELL_M: f32 = 7.0;
+/// A fissure's half-width at its widest, in plate cells (0.018 × 7 m: a
+/// crack about a quarter-metre across, breathing narrower along its run).
+/// **(knob)**
+pub const FEL_CRACK_W: f32 = 0.018;
+/// The scorched rim either side of a fissure, cells. **(knob)**
+pub const FEL_RIM_W: f32 = 0.04;
+/// The share of plate edges that glow at the heart; fewer toward the edge.
+/// **(knob)**
+pub const FEL_CRACK_SHARE: f32 = 0.55;
+/// The pool field's line (its value noise sits in 0..1), and its wavelength,
+/// metres: pools are where the field clears the line. **(knob)**
+pub const FEL_POOL_AT: f32 = 0.66;
+pub const FEL_POOL_M: f32 = 26.0;
+/// The glow by day and by night, linear and exposure-weight 0 — between the
+/// town's lapis (1.6 by night) and its bulbs (6.0), the band `beasts::FEL_GLOW`
+/// sits in. `rig::day_night` blends the two by the hour. **(knob)**
+pub const FEL_GLOW_DAY: [f32; 3] = [0.10, 0.55, 0.07];
+pub const FEL_GLOW_NIGHT: [f32; 3] = [0.45, 2.60, 0.32];
+/// The fissures' slow breath, cycles a second. **(knob)**
+pub const FEL_PULSE_HZ: f32 = 0.35;
+
+/// The spread's advancing edge, drawn brighter so the creep reads as moving:
+/// the window of the creep's own fade coordinate it lights (rising over the
+/// first two, falling over the last two), how much it adds to the fissures'
+/// glow, and how far the front must have walked from wipe day's (units of
+/// `CONTINENT_RADIUS`) before it shows at all, so wipe day is the heart
+/// alone. **(knob)**
+pub const FRONT_RIM_T: [f32; 4] = [0.30, 0.45, 0.65, 0.85];
+pub const FRONT_RIM_GAIN: f32 = 1.5;
+pub const FRONT_RIM_ONSET: f32 = 0.01;
+
+/// The discs the ground can draw at once: outbreaks and hot spots
+/// (`sim_core::blight::MAX_DISCS`, with room).
+pub const BLIGHT_DISCS: usize = 12;
+const _: () = assert!(sim_core::blight::MAX_DISCS <= BLIGHT_DISCS);
+
+/// The live half of the spread's uniform, packed from a moment
+/// (`sim_core::blight::Now`): the front, the disc count and the rim's gain;
+/// the ward's centre; and each disc as (x, z, radius, depth), a hot spot's
+/// depth negative.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlightLive {
+    pub now: Vec4,
+    pub ward: Vec4,
+    pub discs: [Vec4; BLIGHT_DISCS],
+}
+
+impl BlightLive {
+    pub fn of(n: &sim_core::blight::Now) -> Self {
+        let rim =
+            FRONT_RIM_GAIN * ((n.front - sim_core::blight::F0) / FRONT_RIM_ONSET).clamp(0.0, 1.0);
+        let mut discs = [Vec4::ZERO; BLIGHT_DISCS];
+        for (out, d) in discs.iter_mut().zip(n.discs.iter().take(n.n as usize)) {
+            *out = Vec4::new(d.x, d.z, d.r, if d.hot { -d.depth } else { d.depth });
+        }
+        Self {
+            now: Vec4::new(n.front, n.n as f32, rim, 0.0),
+            ward: Vec4::new(n.ward.0, n.ward.1, 0.0, 0.0),
+            discs,
+        }
+    }
+
+    /// Whether `p` already carries this moment.
+    pub fn matches(&self, p: &GroundSplatParams) -> bool {
+        p.blight_now == self.now && p.blight_ward == self.ward && p.blight_discs == self.discs
+    }
+
+    pub fn write(&self, p: &mut GroundSplatParams) {
+        p.blight_now = self.now;
+        p.blight_ward = self.ward;
+        p.blight_discs = self.discs;
+    }
+}
 
 /// Proposed material defaults, DECISIONS.md §open, road surface v1.
 /// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
@@ -432,6 +540,45 @@ pub struct GroundSplatParams {
     pub desert: Vec4,
     /// xyz = [`DRY_GRASS_ALBEDO`]. w reserved and zero.
     pub dry_grass: Vec4,
+    /// Snow (snow v0): x how white the weather has laid the ground and y the
+    /// height it lies from, both live (`terrain_mesh::Ring::set_snow`);
+    /// z = [`SNOW_ALBEDO`], w = [`SNOW_FADE_M`].
+    pub snow: Vec4,
+    /// x..y the band of aridity it lies on (`WeatherNow::snow_arid`), live;
+    /// z = [`SNOW_ARID_FADE`]; w reserved and zero.
+    pub snow_band: Vec4,
+    /// xyz = [`FEL_ASH_ALBEDO`], w = [`FEL_CRACK_SHARE`].
+    pub fel_ash: Vec4,
+    /// xyz = [`FEL_DEAD_ALBEDO`], w = [`FEL_CELL_M`].
+    pub fel_dead: Vec4,
+    /// xyz = [`FEL_ROCK_ALBEDO`], w = [`FEL_ROCK_ROUGH`].
+    pub fel_rock: Vec4,
+    /// rgb = the glow at this hour (`Ring::set_fel_glow`), w =
+    /// [`FEL_PULSE_HZ`].
+    pub fel_glow: Vec4,
+    /// x = [`FEL_CRACK_W`], y = [`FEL_RIM_W`], z = [`FEL_POOL_AT`], w =
+    /// [`FEL_POOL_M`].
+    pub fel_shape: Vec4,
+    /// The heart: xy where it stands, z 1 / `CONTINENT_RADIUS`, w its wander.
+    pub blight_heart: Vec4,
+    /// x, y the heart's whole and outer edge; z the beach's top; w the coast's
+    /// fade, metres.
+    pub blight_fel: Vec4,
+    /// The creep: x its band, y its depth, z the ridges' hold, w the ward's.
+    pub blight_creep: Vec4,
+    /// x, y the ridges' ramp, metres; z, w the ward's inner and outer radius.
+    pub blight_ridge: Vec4,
+    /// The discs' edges: an outbreak's wander and band, a hot spot's.
+    pub blight_disc: Vec4,
+    /// The front rim's window in the creep's fade coordinate.
+    pub blight_rim: Vec4,
+    /// Live: x the front, y how many discs, z the rim's gain now.
+    pub blight_now: Vec4,
+    /// Live: xy the ward's centre.
+    pub blight_ward: Vec4,
+    /// Live: each disc, (x, z, radius, depth), a hot spot's depth negative.
+    /// Last, so the array closes the struct on both sides.
+    pub blight_discs: [Vec4; BLIGHT_DISCS],
 }
 
 impl GroundSplatParams {
@@ -528,6 +675,71 @@ impl GroundSplatParams {
                 DRY_GRASS_ALBEDO[2],
                 0.0,
             ),
+            snow: Vec4::new(0.0, super::weather::NO_SNOW_FLOOR, SNOW_ALBEDO, SNOW_FADE_M),
+            snow_band: super::weather::NO_SNOW_ARID
+                .extend(SNOW_ARID_FADE)
+                .extend(0.0),
+            fel_ash: Vec4::new(
+                FEL_ASH_ALBEDO[0],
+                FEL_ASH_ALBEDO[1],
+                FEL_ASH_ALBEDO[2],
+                FEL_CRACK_SHARE,
+            ),
+            fel_dead: Vec4::new(
+                FEL_DEAD_ALBEDO[0],
+                FEL_DEAD_ALBEDO[1],
+                FEL_DEAD_ALBEDO[2],
+                FEL_CELL_M,
+            ),
+            fel_rock: Vec4::new(
+                FEL_ROCK_ALBEDO[0],
+                FEL_ROCK_ALBEDO[1],
+                FEL_ROCK_ALBEDO[2],
+                FEL_ROCK_ROUGH,
+            ),
+            fel_glow: Vec4::new(
+                FEL_GLOW_DAY[0],
+                FEL_GLOW_DAY[1],
+                FEL_GLOW_DAY[2],
+                FEL_PULSE_HZ,
+            ),
+            fel_shape: Vec4::new(FEL_CRACK_W, FEL_RIM_W, FEL_POOL_AT, FEL_POOL_M),
+            blight_heart: Vec4::new(
+                terrain::FEL_HEART.0,
+                terrain::FEL_HEART.1,
+                1.0 / terrain::CONTINENT_RADIUS,
+                terrain::FEL_WANDER,
+            ),
+            blight_fel: Vec4::new(
+                terrain::FEL_R.0,
+                terrain::FEL_R.1,
+                terrain::BEACH_MAX_H,
+                sim_core::blight::COAST_M,
+            ),
+            blight_creep: Vec4::new(
+                sim_core::blight::BAND,
+                sim_core::blight::CREEP_DEPTH,
+                sim_core::blight::RIDGE,
+                sim_core::blight::WARD,
+            ),
+            blight_ridge: Vec4::new(
+                sim_core::blight::RIDGE_LO_M,
+                sim_core::blight::RIDGE_HI_M,
+                sim_core::blight::WARD_IN_M,
+                sim_core::blight::WARD_OUT_M,
+            ),
+            blight_disc: Vec4::new(
+                sim_core::blight::OUTBREAK_WANDER,
+                sim_core::blight::OUTBREAK_BAND,
+                sim_core::blight::HOT_WANDER,
+                sim_core::blight::HOT_BAND,
+            ),
+            blight_rim: Vec4::from_array(FRONT_RIM_T),
+            // Wipe day's front until a moment is written, so an unwritten
+            // material draws the heart alone.
+            blight_now: Vec4::new(sim_core::blight::F0, 0.0, 0.0, 0.0),
+            blight_ward: Vec4::ZERO,
+            blight_discs: [Vec4::ZERO; BLIGHT_DISCS],
         }
     }
 }
@@ -735,6 +947,20 @@ pub struct GroundSplat {
     /// sample BLACK and put the whole island in shadow.
     #[texture(103, dimension = "2d_array")]
     pub data: Handle<Image>,
+    /// The cloud deck's coverage field (`sky::SoftField`, bytes packed four
+    /// to a word), for its shadows on the land (`cloud_shadow.rs`), and
+    /// their lanes. **A storage buffer, not a texture**: the arrays above
+    /// already fill the sixteen sampled textures a downlevel adapter allows
+    /// under the atmosphere (`the_ground_fits_the_fragment_texture_budget`),
+    /// and a buffer counts against none of them. **Native only**, where the
+    /// shadows are drawn. `cloud_shadow::NO_FIELD` until
+    /// `cloud_shadow::drive` writes the deck's.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[storage(104, read_only, visibility(fragment))]
+    pub cloud_field: Handle<ShaderStorageBuffer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[uniform(105)]
+    pub cloud: super::cloud_shadow::CloudShadowParams,
 }
 
 impl GroundSplat {
@@ -744,6 +970,10 @@ impl GroundSplat {
             params: GroundSplatParams::new(),
             albedo: arrays.albedo.clone(),
             data: arrays.data.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud_field: super::cloud_shadow::NO_FIELD,
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud: super::cloud_shadow::CloudShadowParams::off(),
         }
     }
 }
@@ -765,11 +995,17 @@ impl MaterialExtension for GroundSplat {
         let road = layout.0.get_layout(&[
             ATTRIBUTE_ROAD.at_shader_location(8),
             ATTRIBUTE_MARKINGS.at_shader_location(9),
-            ATTRIBUTE_ARID.at_shader_location(10),
+            ATTRIBUTE_ZONE.at_shader_location(10),
         ])?;
         descriptor.vertex.buffers[0]
             .attributes
             .extend(road.attributes);
+        // The deck's shadows, where the bind group carries the field
+        // (`cloud_field`): the fragment imports `cloud_shadow.wgsl` on this.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("CLOUD_SHADOWS".into());
+        }
         Ok(())
     }
 

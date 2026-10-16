@@ -18,6 +18,9 @@
 //!    Settings ◀────────────────────────────────────────────────────────
 //! ```
 //!
+//! Beside these, `InWorld` also leads to `Map` (held) and `Dead`, and a shard
+//! that hangs up leads to `Disconnected` from any world state.
+//!
 //! **`Boot` is the splash a double-click needs** and it is new (`boot`): the
 //! window now exists before the launcher handshake and before any connect,
 //! so the several seconds that used to be a black nothing are drawn, and the
@@ -105,12 +108,12 @@ impl Nav {
         match self {
             Nav::Play => "PLAY GAME".to_string(),
             Nav::Hub(s) => s.label(hub),
-            Nav::Settings => "OPTIONS".to_string(),
+            Nav::Settings => "SETTINGS".to_string(),
             Nav::Quit => "QUIT".to_string(),
         }
     }
 
-    /// Does picking this entry open a pane, or act at once? QUIT and OPTIONS
+    /// Does picking this entry open a pane, or act at once? QUIT and SETTINGS
     /// are verbs; everything else is a screen. Drawn identically either way,
     /// which is the reference's arrangement too.
     fn is_pane(self) -> bool {
@@ -614,7 +617,7 @@ fn build(
             })
             .with_children(|body| {
                 nav(body, browse.nav, hub);
-                // The payload. OPTIONS and QUIT are verbs rather than screens
+                // The payload. SETTINGS and QUIT are verbs rather than screens
                 // (`Nav::is_pane`), so they never reach here — the pane keeps
                 // whatever was last open while they act.
                 match browse.nav {
@@ -1451,13 +1454,6 @@ pub fn take_pick(
     }
 }
 
-/// Leave the menu: despawn everything it owns.
-pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MenuRoot>>) {
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
-}
-
 /// Start the connect, on the runtime, off the frame.
 ///
 /// **The claimed address is resolved HERE, from `Who`, and that is a fix
@@ -1473,7 +1469,12 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<MenuRoot>>) {
 /// It is still a *claim* and the shard still treats it as one — `sign_siwe`
 /// is what turns it into anything, and `Player`'s own doc says an address is
 /// never authentication.
-pub fn begin_connect(rt: NonSend<Rt>, who: Res<Who>, mut connecting: NonSendMut<Connecting>) {
+pub fn begin_connect(
+    rt: NonSend<Rt>,
+    who: Res<Who>,
+    pin: Option<Res<super::screen::Pin>>,
+    mut connecting: NonSendMut<Connecting>,
+) {
     connecting.address = match who.0.address() {
         None => protocol::Address::GUEST,
         Some(a) => protocol::Address::from_hex(a.as_bytes()).unwrap_or_else(|| {
@@ -1487,16 +1488,16 @@ pub fn begin_connect(rt: NonSend<Rt>, who: Res<Who>, mut connecting: NonSendMut<
     };
     let addr = connecting.addr.clone();
     let address = connecting.address;
+    let hash = pin.filter(|p| p.addr == addr).map(|p| p.hash.clone());
     connecting.waited_s = 0.0;
     let (tx, rx) = std::sync::mpsc::channel();
     rt.0.spawn(async move {
-        // **No pin, and that is enforced rather than assumed.** This screen
-        // dials a shard the player picked from the list, which serves a real
-        // certificate; `--cert-hash` is refused without `--server`, and
-        // `--server` skips this screen entirely (`args::parse`), so the flag
-        // cannot be set on a run that reaches here. The address decides the
-        // rest — loopback permissive, everything else validated.
-        let result = match crate::client_endpoint(&addr, None) {
+        // **The pin only for the address it was given with.** A `--server`
+        // launch comes through this screen too (`bin/gates.rs`), and its
+        // `--cert-hash` used to be dropped here. A shard picked from the
+        // list later is not that address and gets no pin; the address
+        // decides the rest — loopback permissive, everything else validated.
+        let result = match crate::client_endpoint(&addr, hash.as_deref()) {
             Ok(endpoint) => {
                 crate::Session::connect(&endpoint, &addr, address, crate::elo::sign_siwe).await
             }
@@ -1592,10 +1593,10 @@ pub fn poll_connect(
                 "gates: in the world — player {} seed {} tick {}",
                 session.welcome.player_id, session.welcome.seed, session.welcome.tick
             );
-            commands.insert_resource(super::WorldId::with_haven(
-                session.welcome.seed,
-                *session.core.haven(),
-            ));
+            commands.insert_resource(super::WorldId {
+                blight_salt: session.welcome.blight_salt,
+                ..super::WorldId::with_haven(session.welcome.seed, *session.core.haven())
+            });
             // `Commands` has no `insert_non_send_resource`, so this goes
             // through the world directly. `Net` is non-send because the
             // session owns tokio channel receivers (`render::mod`).

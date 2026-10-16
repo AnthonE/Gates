@@ -221,6 +221,13 @@ pub struct Ui {
     pub table_clock: crate::ui::research::TableClock,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
+    /// A sound the last press asked for (an item set down, dropped, the
+    /// craft started), played and cleared by `audio::panel_sounds`.
+    pub sound: Option<crate::sound::Cue>,
+    /// When the open panel opened (`Time::elapsed_secs`), for [`pop_in`].
+    pub opened: f32,
+    /// The kiosk's per-row counts, by offer index (`vendor::VEND_MAX`).
+    pub vend_n: [u8; sim_core::limits::MAX_VEND_OFFERS],
     /// Change detection against the core. A menu that rebuilt every frame
     /// would allocate a node tree per frame for a screen that changes when
     /// a player clicks — so the rebuild is driven by these snapshots, and
@@ -318,6 +325,9 @@ impl Default for Ui {
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
+            sound: None,
+            opened: 0.0,
+            vend_n: [1; sim_core::limits::MAX_VEND_OFFERS],
             seen: Seen::default(),
         }
     }
@@ -353,19 +363,81 @@ impl Hover {
             hot: CELL_HOVER,
         }
     }
+
+    /// The same, lit to a colour of its own (the kiosk's green BUY).
+    pub fn hot(self, hot: Color) -> Self {
+        Self { hot, ..self }
+    }
 }
 
-/// Light the button under the pointer.
-pub fn hover(mut q: Query<(&Interaction, &Hover, &mut BackgroundColor), Changed<Interaction>>) {
-    for (interaction, h, mut bg) in q.iter_mut() {
-        let want = match interaction {
-            Interaction::None => h.rest,
-            _ => h.hot,
+/// Light the button under the pointer, and sink it while it is pressed
+/// (`ui::hover`'s three states, for the panels).
+pub fn hover(
+    mut q: Query<
+        (&Interaction, &Hover, &mut BackgroundColor, &mut UiTransform),
+        Changed<Interaction>,
+    >,
+) {
+    for (interaction, h, mut bg, mut xf) in q.iter_mut() {
+        let (want, scale) = match interaction {
+            Interaction::None => (h.rest, 1.0),
+            Interaction::Hovered => (h.hot, 1.0),
+            Interaction::Pressed => (super::ui::pressed(h.hot), super::ui::PRESS_SCALE),
         };
         if bg.0 != want {
             bg.0 = want;
         }
+        if xf.scale != Vec2::splat(scale) {
+            xf.scale = Vec2::splat(scale);
+        }
     }
+}
+
+/// The card a panel draws on. [`pop_in`] grows it in as the panel opens.
+#[derive(Component)]
+pub struct PanelBody;
+
+/// How long a panel takes to arrive, seconds.
+const POP_S: f32 = 0.14;
+/// What a panel grows from.
+const POP_FROM: f32 = 0.965;
+
+/// A panel opening grows its card in from a hair small and fades its scrim
+/// up, over [`POP_S`]. Timed from the OPEN, not from the spawn: every panel
+/// is despawned and rebuilt when what it draws changes (`rebuild`), and a
+/// card that popped on every rebuild would twitch on every click.
+pub fn pop_in(
+    time: Res<Time>,
+    mut ui: ResMut<Ui>,
+    mut last: Local<Panel>,
+    mut settled: Local<bool>,
+    mut bodies: Query<&mut UiTransform, With<PanelBody>>,
+    mut roots: Query<&mut BackgroundColor, With<PanelRoot>>,
+) {
+    let now = time.elapsed_secs();
+    if ui.panel != *last {
+        if *last == Panel::None {
+            ui.opened = now;
+            *settled = false;
+        }
+        *last = ui.panel;
+    }
+    if *settled {
+        return;
+    }
+    let t = ((now - ui.opened) / POP_S).clamp(0.0, 1.0);
+    let k = crate::ui::ease::out_cubic(t);
+    let scale = Vec2::splat(POP_FROM + (1.0 - POP_FROM) * k);
+    for mut xf in &mut bodies {
+        xf.scale = scale;
+    }
+    let scrim = SCRIM.with_alpha(SCRIM.alpha() * (0.35 + 0.65 * k));
+    for mut bg in &mut roots {
+        if bg.0 == SCRIM || t < 1.0 {
+            bg.0 = scrim;
+        }
+    }
+    *settled = t >= 1.0;
 }
 
 /// What a cell is called, for [`tooltip`]: set on a filled inventory slot,
@@ -550,14 +622,17 @@ pub fn page_root(commands: &mut Commands, ui: &Ui, body: impl FnOnce(&mut ChildS
         ))
         .with_children(|root| {
             page_tabs(root, ui);
-            root.spawn(Node {
-                flex_grow: 1.0,
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                row_gap: Val::Px(8.0),
-                ..default()
-            })
+            root.spawn((
+                PanelBody,
+                Node {
+                    flex_grow: 1.0,
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    row_gap: Val::Px(8.0),
+                    ..default()
+                },
+            ))
             .with_children(|zone| {
                 status_line(zone, ui);
                 body(zone);
@@ -577,7 +652,7 @@ pub fn status_line(root: &mut ChildSpawnerCommands, ui: &Ui) {
             ui.status.clone()
         }),
         font(13.0),
-        TextColor(BADGE),
+        TextColor(STATUS),
     ));
 }
 
@@ -631,6 +706,11 @@ pub const CELL_SEL: Color = Color::srgba(0.122, 0.365, 0.553, 0.88);
 /// blueprint as its item on blueprint paper, and a sheet on the stone-grey
 /// every other stack wears would read as the item itself.
 pub const PAPER_BG: Color = Color::srgba(0.141, 0.259, 0.412, 0.96);
+/// The status line's ink on every page — what just happened, refusals
+/// included. One colour everywhere: it was green on the pages (the station
+/// badge's, so a refusal read as an approval), amber on the cards and grey
+/// on the kiosk.
+pub const STATUS: Color = Color::srgba(0.93, 0.87, 0.70, 0.95);
 /// The one hot line: a selected cell, the head of the queue, an armed button.
 pub const LINE_HOT: Color = Color::srgba(0.98, 0.86, 0.55, 0.95);
 /// A price the player cannot pay, and the reference's own colour for it.
@@ -740,7 +820,7 @@ pub fn register(app: &mut App) {
                 inv::table_clock,
                 rebuild,
                 inv::ghost_follow,
-                hover,
+                (hover, pop_in),
                 tooltip,
             )
                 .chain()
@@ -835,7 +915,9 @@ pub fn keys(
     // A watcher's last seen open container, and whether the inventory is up
     // because of it (the seat block below).
     mut follow: Local<((u8, u32), bool)>,
+    binds: Res<super::binds::Binds>,
 ) {
+    use super::binds::Action;
     // **The wheel is held RIGHT, and only by an item that owns one.**
     //
     // It was `B`, held, whatever was in your hand. Both halves were wrong
@@ -852,9 +934,8 @@ pub fn keys(
     let holding_wheel = !down && hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
     if down {
-        if keyboard.just_pressed(KeyCode::Tab)
-            || keyboard.just_pressed(KeyCode::KeyI)
-            || keyboard.just_pressed(KeyCode::KeyQ)
+        if binds.just_pressed(Action::Inventory, &keyboard, &mouse)
+            || binds.just_pressed(Action::Crafting, &keyboard, &mouse)
         {
             toast.warn(crate::ui::wounded::HANDS_LINE);
         }
@@ -922,26 +1003,35 @@ pub fn keys(
     // keyboard only while it is clicked into (`Ui::search_focus`, Rust's
     // amber field), and while it does, `Q` and `I` are letters.
     let typing = ui.panel == Panel::Craft && ui.search_focus;
+    // While the search box has the keyboard only binds that type nothing
+    // (Tab, by default) still work: a letter there is a letter.
+    let pressed = |a: Action| {
+        if typing {
+            binds.just_pressed_typing(a, &keyboard, &mouse)
+        } else {
+            binds.just_pressed(a, &keyboard, &mouse)
+        }
+    };
     let page = ui.panel.page();
     let mut want = tabs
         .iter()
         .find(|(i, _)| **i == Interaction::Pressed)
         .map(|(_, t)| crate::ui::nav::click(t.0.page()));
-    if keyboard.just_pressed(KeyCode::Tab) || (!typing && keyboard.just_pressed(KeyCode::KeyI)) {
+    if pressed(Action::Inventory) {
         want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Inventory));
-    } else if !typing && keyboard.just_pressed(KeyCode::KeyQ) {
+    } else if pressed(Action::Crafting) {
         want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Crafting));
     }
     // `R` on the inventory page unloads the gun in your hand — the
     // reference's *Unload Ammo*, which lives on its inventory screen too.
     // `verbs::keys` stands down while this page owns the pointer, so the
     // key reloads nowhere else at the same time.
-    if ui.panel == Panel::Inventory && !down && keyboard.just_pressed(KeyCode::KeyR) {
+    if ui.panel == Panel::Inventory && !down && pressed(Action::Reload) {
         super::verbs::unload_held(&net, &mut toast);
     }
     // `O`: the island (`ARC.md` F4). A toggle, and it takes over from any
     // other screen the way `Tab` takes over from the tree.
-    if !typing && keyboard.just_pressed(KeyCode::KeyO) {
+    if pressed(Action::Island) {
         ui.panel = if ui.panel == Panel::Island {
             Panel::None
         } else {
@@ -954,7 +1044,7 @@ pub fn keys(
         want = None;
     }
     // `M`: the team (`team.rs`), a toggle like `O`.
-    if !typing && keyboard.just_pressed(KeyCode::KeyM) {
+    if pressed(Action::TeamScreen) {
         ui.panel = if ui.panel == Panel::Team {
             Panel::None
         } else {

@@ -185,7 +185,7 @@ pub fn stream(
                     pool.spawn(async move {
                         let (soup, tufts) = cell_soup(seed, &haven, key.0, key.1);
                         (
-                            (!soup.is_empty()).then(|| soup.mesh()),
+                            (!soup.is_empty()).then(|| soup.mesh(seed, &haven)),
                             (!tufts.is_empty()).then(|| tufts.mesh()),
                         )
                     }),

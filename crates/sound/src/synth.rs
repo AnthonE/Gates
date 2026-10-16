@@ -592,6 +592,13 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::BedRotorFar => render_take(Cue::BedRotor, take),
         // The heli's gun far off: the far report, by delegation.
         Cue::ShotHeliFar => render_take(Cue::ShotGunFar, take),
+        // The interface's small sounds, by delegation: a click for the
+        // symbols, the pack's rustle for the hands.
+        Cue::UiHover | Cue::MapPin => render_take(Cue::UiClick, take),
+        Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => {
+            render_take(Cue::Equip, take)
+        }
+        Cue::Geiger => geiger(&mut r),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else
@@ -1330,6 +1337,24 @@ fn fizzle(r: &mut Rng) -> Vec<f32> {
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);
+    }
+    out
+}
+
+/// A Geiger-Müller tube's pulse through a small speaker: a 2–4 ms band of
+/// noise with a cone's ring under it, padded with its decayed tail so the
+/// buffer is long enough to be a sound.
+fn geiger(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.014);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let (mut lp, mut hp) = (Lp::new(7_000.0), Lp::new(1_500.0));
+    let mut cone = Res::new(3_200.0, 1_200.0);
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let x = r.noise() * attack(t, 0.0002) * (-t / 0.0008).exp();
+        let b = lp.run(x - hp.run(x));
+        *v = (b + 0.6 * cone.run(b)) * edges(i, n);
     }
     out
 }

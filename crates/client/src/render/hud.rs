@@ -105,7 +105,7 @@ const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
 const HOTBAR_BOTTOM_PX: f32 = 18.0;
 const HOTBAR_CELL_PX: f32 = 46.0;
 /// A hotbar slot at rest, and its edge.
-const SLOT_BG: Color = Color::srgba(0.05, 0.05, 0.06, 0.55);
+const SLOT_BG: Color = Color::srgba(0.078, 0.071, 0.063, 0.58);
 const SLOT_EDGE: Color = Color::srgba(0.75, 0.72, 0.62, 0.35);
 /// The slot in your hand: Rust's selection blue, filled.
 const SLOT_SEL: Color = super::panels::CELL_SEL;
@@ -917,6 +917,105 @@ pub enum Vital {
     Food,
 }
 
+/// The pale bar behind a vital's fill: what it read a moment ago.
+#[derive(Component)]
+pub struct VitalLag(pub Vital);
+
+/// The lag bar's ink: the fill's ghost, not a fourth colour.
+const VITAL_LAG: Color = Color::srgba(0.96, 0.92, 0.84, 0.42);
+/// How long a loss holds before the lag bar drains after it, seconds.
+const LAG_HOLD_S: f32 = 0.35;
+
+/// The vitals' bars, moving: the fill eases to the vital instead of
+/// snapping, and a loss leaves the pale lag bar where the fill was, which
+/// holds a beat and then drains — the chunk a hit took, seen.
+///
+/// Its own system rather than a loop in [`update`] for the clock: `update`
+/// writes what the core says, and this owns how fast the bar gets there.
+pub fn vital_motion(
+    net: NonSend<Net>,
+    time: Res<Time>,
+    mut state: Local<Option<[(f32, f32, f32); 3]>>,
+    mut fills: Query<(&VitalFill, &mut Node), Without<VitalLag>>,
+    mut lags: Query<(&VitalLag, &mut Node), Without<VitalFill>>,
+) {
+    let core = &net.session.core;
+    let dt = time.delta_secs();
+    // Clamped, because the server is authoritative and a vital over its
+    // stated maximum is a bar that would run off its trough rather than a
+    // reason to disbelieve the number beside it.
+    let frac = |v: Vital| {
+        let (value, max) = v.read(core);
+        if max > 0 {
+            (value as f32 / max as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let all = [Vital::Hp, Vital::Water, Vital::Food];
+    // The first frame starts where the vitals are, not at an empty bar
+    // filling up on join.
+    let st = state.get_or_insert_with(|| all.map(|v| (frac(v), frac(v), 0.0)));
+    for (i, v) in all.into_iter().enumerate() {
+        let target = frac(v);
+        let (shown, lag, hold) = &mut st[i];
+        if target < *shown - 1e-4 {
+            *hold = LAG_HOLD_S;
+        }
+        *shown = crate::ui::ease::approach(*shown, target, 18.0, dt);
+        if *lag <= *shown {
+            *lag = *shown;
+        } else if *hold > 0.0 {
+            *hold -= dt;
+        } else {
+            *lag = crate::ui::ease::approach(*lag, *shown, 5.0, dt);
+        }
+    }
+    let idx = |v: Vital| all.iter().position(|a| *a == v).unwrap_or(0);
+    for (fill, mut node) in &mut fills {
+        let want = Val::Percent(st[idx(fill.0)].0 * 100.0);
+        if node.width != want {
+            node.width = want;
+        }
+    }
+    for (lag, mut node) in &mut lags {
+        let want = Val::Percent(st[idx(lag.0)].1 * 100.0);
+        if node.width != want {
+            node.width = want;
+        }
+    }
+}
+
+/// The hotbar slot you just picked pops: a short bump in scale, so the
+/// hand's change reads at the edge of the eye.
+pub fn hotbar_pop(
+    net: NonSend<Net>,
+    time: Res<Time>,
+    mut last: Local<Option<(u8, f32)>>,
+    mut cells: Query<(&Cell, &mut UiTransform)>,
+) {
+    let now = time.elapsed_secs();
+    let sel = net.sel;
+    match *last {
+        Some((s, _)) if s == sel => {}
+        // The first frame is where the hand already was: no pop on join.
+        None => *last = Some((sel, f32::NEG_INFINITY)),
+        Some(_) => *last = Some((sel, now)),
+    }
+    let Some((sel, at)) = *last else { return };
+    let t = (now - at) / 0.18;
+    for (cell, mut xf) in &mut cells {
+        let scale = if cell.0 == sel as usize {
+            crate::ui::ease::pop(t, 0.10)
+        } else {
+            1.0
+        };
+        if xf.scale.x != scale {
+            xf.scale = Vec2::splat(scale);
+        }
+    }
+}
+
 impl Vital {
     /// The vital's value and its maximum. A maximum of 0 means no `Vitals`
     /// message has ever arrived, which is not the same as a zeroed vital —
@@ -974,11 +1073,19 @@ impl Vital {
 pub enum ExposureChip {
     Wet,
     Cold,
+    /// The desert's noon (climate v0): hot, and what cools you.
+    Hot,
     /// Inside THE GATE's safe zone (`sim_core::town::safe`).
     Safe,
     /// Standing in your own base: how long its hearth keeps it, or that it
     /// is decaying (the crew HUD vital, `ui::hearth::vital`).
     Upkeep,
+    /// Rust's COMFORT chip: shown while a fire (and company at it) gives
+    /// any, because comfort is what makes the body mend past 60 %.
+    Comfort,
+    /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
+    /// red while it is costing hp, saying what stops it.
+    Verdigris,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1029,7 +1136,25 @@ fn safe_chip(
 const UPKEEP_CHIP: Color = Color::srgba(0.46, 0.34, 0.16, 0.85);
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
+const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
+const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+
+/// What the Verdigris chip says: the meter, and while it hurts, the way out.
+/// The player-facing name only — never the code's `fel`.
+pub fn fel_line(pct: u8, hurting: bool) -> String {
+    if hurting {
+        format!("VERDIGRIS {pct}% · GET OUT OF THE GREEN")
+    } else {
+        format!("VERDIGRIS {pct}%")
+    }
+}
+
+/// What the COMFORT chip says: Rust's `COMFORT 50%`.
+pub fn comfort_line(comfort_pct: u8) -> String {
+    format!("COMFORT {comfort_pct}%")
+}
 
 /// The world around the body, as the exposure chips read it: the client's
 /// own sky (`weather::WeatherNow`), never a second opinion of the sim's.
@@ -1045,6 +1170,17 @@ pub struct ExposureWorld {
     /// In a lit fire's warmth (`ClientCore::near_fire`, the sim's own
     /// `exposure::fire_reaches` on the client's mirrors).
     pub fire: bool,
+    /// How much of what falls is snow, `0..1` (snow v0).
+    pub snow: f32,
+}
+
+/// What is falling, as a chip names it.
+fn falling(w: ExposureWorld) -> &'static str {
+    if w.snow > 0.5 {
+        "SNOW"
+    } else {
+        "RAIN"
+    }
 }
 
 /// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
@@ -1055,7 +1191,7 @@ pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     let why = if w.underwater {
         "IN THE WATER"
     } else if w.rain > 0.05 && !w.sheltered {
-        "RAIN"
+        falling(w)
     } else if w.fire {
         "DRYING BY A FIRE"
     } else if w.sheltered {
@@ -1080,7 +1216,7 @@ pub fn spill_line(n: u16, label: &str) -> String {
 pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     let open = !w.sheltered;
     let why = if w.rain > 0.05 && open {
-        "RAIN"
+        falling(w)
     } else if w.wind > 0.4 && open {
         "WIND"
     } else if wet_pct >= 30 {
@@ -1102,6 +1238,22 @@ pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     }
 }
 
+/// What the HOT chip says (climate v0): the air, and what cools a body —
+/// shade, the water, getting wet. Heatstroke while it is taking hp.
+pub fn hot_line(hurting: bool, air_c: i8, wet_pct: u8, w: ExposureWorld) -> String {
+    let help = if w.underwater {
+        "THE WATER COOLS YOU"
+    } else if w.sheltered {
+        "SHADE HELPS"
+    } else if wet_pct >= 30 {
+        "WET HELPS"
+    } else {
+        "FIND SHADE OR WATER"
+    };
+    let what = if hurting { "HEATSTROKE" } else { "HOT" };
+    format!("{what} · {air_c}°C · {help}")
+}
+
 /// Keep the wet and cold chips on what the server last said. Hidden while
 /// there is nothing to say — dry, and warm enough not to mention. The
 /// upkeep chip likewise: shown while the shard keeps re-telling you your
@@ -1119,23 +1271,43 @@ pub fn exposure(
         sheltered: n.sheltered,
         underwater: n.underwater,
         fire: false,
+        snow: n.snow,
     });
     // Asked only while a chip could say it: the walk is over the lit set,
     // small, but it is a frame-rate reader.
     if core.wet_pct > 0 || core.cold_pct >= 25 || core.cold_hurting {
         w.fire = core.near_fire();
     }
+    // One `hurting` bit answers for both; a body is never past both at once,
+    // so the larger of the two is the one hurting.
+    let hot = core.heat_pct > core.cold_pct;
+    let air = core.air_c;
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, wet_line(core.wet_pct, w), WET_CHIP),
+            ExposureChip::Comfort => (
+                core.comfort_pct > 0,
+                comfort_line(core.comfort_pct),
+                COMFORT_CHIP,
+            ),
             // The one chip that costs hp says what stops it.
-            ExposureChip::Cold if core.cold_hurting => {
-                (true, cold_line(true, core.wet_pct, w), FREEZE_CHIP)
-            }
+            ExposureChip::Cold if core.cold_hurting && !hot => (
+                true,
+                format!("{air}°C · {}", cold_line(true, core.wet_pct, w)),
+                FREEZE_CHIP,
+            ),
             ExposureChip::Cold => (
                 core.cold_pct >= 25,
-                cold_line(false, core.wet_pct, w),
+                format!("{air}°C · {}", cold_line(false, core.wet_pct, w)),
                 COLD_CHIP,
+            ),
+            ExposureChip::Hot if core.cold_hurting && hot => {
+                (true, hot_line(true, air, core.wet_pct, w), FREEZE_CHIP)
+            }
+            ExposureChip::Hot => (
+                core.heat_pct >= 25,
+                hot_line(false, air, core.wet_pct, w),
+                HOT_CHIP,
             ),
             ExposureChip::Safe => {
                 let [x, _, z] = core.eye_position();
@@ -1155,6 +1327,15 @@ pub fn exposure(
                     None => (false, String::new(), SAFE_CHIP),
                 }
             }
+            ExposureChip::Verdigris => (
+                core.fel_pct > 0,
+                fel_line(core.fel_pct, core.fel_hurting),
+                if core.fel_hurting {
+                    FREEZE_CHIP
+                } else {
+                    FEL_CHIP
+                },
+            ),
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1334,11 +1515,35 @@ pub fn hit_number(
     }
 }
 
-/// The compass strip. Bearing only — the reference also pins markers to it
-/// (death skull, map pin) and ours carries none, because `ALPHA.md` §1 has a
-/// rule about position an operator should read before we pin anything.
+/// The compass strip: the bearing, and your nearest map mark after it.
 #[derive(Component)]
 pub struct Compass;
+
+/// Rust's death marker on the compass (operator, 2026-10-15): your last
+/// death, a skull riding the marker row over the bearing number at its
+/// bearing, with how far. Shown from the respawn until the next death moves
+/// it (`ClientCore::death_marker`); the placement is
+/// `ui::death::compass_mark`'s.
+#[derive(Component)]
+pub struct DeathMark;
+
+/// The skull's disc, dimmed while the death is behind you.
+#[derive(Component)]
+pub struct DeathMarkDisc;
+
+/// How far the death is, beside the skull.
+#[derive(Component)]
+pub struct DeathMarkText;
+
+/// The marker row: its top, a mark's size, and how far either side of the
+/// middle it reaches — `ui::death::COMPASS_HALF_SPAN_DEG` of bearing.
+const COMPASS_MARK_TOP: f32 = 3.0;
+const COMPASS_MARK_PX: f32 = 16.0;
+const COMPASS_HALF_SPAN_PX: f32 = 170.0;
+/// The bearing number, under the marker row.
+const COMPASS_TOP: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX + 3.0;
+/// The skull's red, the death screen's pin.
+const DEATH_MARK_INK: Color = Color::srgb(0.86, 0.17, 0.13);
 
 /// The netcode readout under the build stamp: reconcile confirm rate and the
 /// live smoothing offset.
@@ -1516,6 +1721,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     // (`ui::hold::eats_on_key`), so which key is which cell
                     // is now worth a glance.
                     cell.spawn((
+                        SlotKey(i),
                         Text::new((i + 1).to_string()),
                         super::ui::font_bold(10.0),
                         TextColor(Color::srgba(0.97, 0.95, 0.88, 0.55)),
@@ -1704,6 +1910,9 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Safe,
                 ExposureChip::Wet,
                 ExposureChip::Cold,
+                ExposureChip::Hot,
+                ExposureChip::Verdigris,
+                ExposureChip::Comfort,
             ] {
                 stack.spawn((
                     chip,
@@ -1788,6 +1997,20 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                             },
                             BackgroundColor(super::panels::VITAL_TROUGH),
                             children![
+                                // Behind the fill: where it was a moment
+                                // ago, draining after it ([`vital_motion`]).
+                                (
+                                    VitalLag(v),
+                                    Node {
+                                        position_type: PositionType::Absolute,
+                                        left: Val::Px(0.0),
+                                        top: Val::Px(0.0),
+                                        width: Val::Percent(0.0),
+                                        height: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    BackgroundColor(VITAL_LAG),
+                                ),
                                 (
                                     VitalFill(v),
                                     Node {
@@ -2049,6 +2272,79 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         Pickable::IGNORE,
     ));
 
+    // The marker row over the compass, Rust's arrangement: marks ride a
+    // row at their bearing and the number reads under it. One mark today,
+    // the last death; a zero-width anchor at the screen's middle that the
+    // mark is placed off by `death_mark`.
+    commands
+        .spawn((
+            super::WorldEntity,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(COMPASS_MARK_TOP),
+                left: Val::Percent(50.0),
+                width: Val::Px(0.0),
+                height: Val::Px(COMPASS_MARK_PX),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                DeathMark,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(4.0),
+                    ..default()
+                },
+                Visibility::Hidden,
+                Pickable::IGNORE,
+            ))
+            .with_children(|mark| {
+                mark.spawn((
+                    DeathMarkDisc,
+                    Node {
+                        width: Val::Px(COMPASS_MARK_PX),
+                        height: Val::Px(COMPASS_MARK_PX),
+                        flex_shrink: 0.0,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::MAX,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    BackgroundColor(DEATH_MARK_INK),
+                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|disc| {
+                    if let Some(h) = icons.as_ref().and_then(|i| i.glyph("map_death")) {
+                        disc.spawn((
+                            ImageNode::new(h),
+                            Node {
+                                width: Val::Px(COMPASS_MARK_PX * 0.7),
+                                height: Val::Px(COMPASS_MARK_PX * 0.7),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                    }
+                });
+                mark.spawn((
+                    DeathMarkText,
+                    Text::new(""),
+                    super::ui::font_bold(12.0),
+                    TextColor(Color::srgba(0.95, 0.93, 0.88, 0.9)),
+                    super::ui::TEXT_SHADOW,
+                    Pickable::IGNORE,
+                ));
+            });
+        });
+
     // The compass strip, top centre: a 90° window on the bearing, letters at
     // the cardinals. `hud.js`'s shape, in text rather than in a canvas.
     commands.spawn((
@@ -2056,7 +2352,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         Compass,
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(14.0),
+            top: Val::Px(COMPASS_TOP),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -2105,11 +2401,11 @@ pub fn update(
     art: Res<super::icons::Icons>,
     mut plan: Query<&mut Text, (With<Plan>, Without<VitalNum>)>,
     mut rows: Query<(&VitalRow, &mut Node), (Without<VitalFill>, Without<Cell>)>,
-    mut fills: Query<(&VitalFill, &mut Node), Without<Cell>>,
     mut nums: Query<(&VitalNum, &mut Text), Without<Plan>>,
     // `Option`, because a capture run does not register the menus at all.
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
+    binds: Res<super::binds::Binds>,
 ) {
     let core = &net.session.core;
 
@@ -2247,14 +2543,14 @@ pub fn update(
                     // wall the nudge is sent and ignored, and a hint about
                     // it there would teach a key that does nothing.
                     let keys = if shape == sim_core::build::SHAPE_FOUNDATION_STEPS {
-                        "(hold right · R/F rotate · Shift+R/F height)"
+                        "(hold right · [R]/[F] rotate · SHIFT+[R]/[F] height)"
                     } else if matches!(
                         shape,
                         sim_core::build::SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
                     ) {
-                        "(hold right · R/F height)"
+                        "(hold right · [R]/[F] height)"
                     } else if sim_core::circulation::is_riser(shape) {
-                        "(hold right · R/F rotate)"
+                        "(hold right · [R]/[F] rotate)"
                     } else {
                         "(hold right)"
                     };
@@ -2281,6 +2577,8 @@ pub fn update(
                 None => "BUILD  -   (hold right)".to_string(),
             }
         };
+        // Written against the default keys; the player's own go in here.
+        let out = binds.relabel(&out);
         if text.0 != out {
             text.0 = out;
         }
@@ -2398,21 +2696,6 @@ pub fn update(
             node.display = want;
         }
     }
-    for (fill, mut node) in fills.iter_mut() {
-        let (value, max) = fill.0.read(core);
-        // Clamped, because the server is authoritative and a vital over its
-        // stated maximum is a bar that would run off its trough rather than a
-        // reason to disbelieve the number beside it.
-        let pct = if max > 0 {
-            (value as f32 / max as f32).clamp(0.0, 1.0) * 100.0
-        } else {
-            0.0
-        };
-        let want = Val::Percent(pct);
-        if node.width != want {
-            node.width = want;
-        }
-    }
     for (num, mut text) in nums.iter_mut() {
         let (value, _) = num.0.read(core);
         let out = value.to_string();
@@ -2489,6 +2772,17 @@ pub fn gate_watch(
 /// A ring is drained to EMPTY each frame rather than one entry per frame:
 /// they are small (`TOAST_RING`) and a backlog drip-fed at frame rate would
 /// still be showing the first refusal after the tenth.
+/// The surge toast's watch (`ui::arc::SurgeWatch`): a resource rather than a
+/// `Local`, so every session starts it over ([`forget_surge`]) and a rejoin
+/// whose arc is synced before the HUD's first frame is not heard as a surge.
+#[derive(Resource, Default)]
+pub struct Surge(pub crate::ui::arc::SurgeWatch);
+
+/// A new session: no baseline, nothing armed.
+pub fn forget_surge(mut surge: ResMut<Surge>) {
+    surge.0 = Default::default();
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn feedback(
     net: NonSend<Net>,
@@ -2499,6 +2793,7 @@ pub fn feedback(
     ghost: Option<Res<super::ghost::Ghost>>,
     mut marks: Query<(&HitMark, &mut BackgroundColor, &mut Node)>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
+    mut surge: ResMut<Surge>,
 ) {
     let core = &net.session.core;
     // The sim refuses ground the world keeps for itself with the occupied
@@ -2597,6 +2892,11 @@ pub fn feedback(
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
+    }
+    // The fel tier climbed on a live work (`ui::arc::SurgeWatch`): the
+    // Verdigris jumps outward. After the work's own line, so it sits on top.
+    if surge.0.step(&core.arc, !feed.work_events().is_empty()) {
+        toast.warn(crate::ui::arc::SURGE_LINE);
     }
     // A lock opened somewhere (`ARC.md` F7): heard across the island.
     for &(mech, by) in feed.mech_solves() {
@@ -3125,6 +3425,34 @@ pub fn conn_warn(
     }
 }
 
+/// A belt cell's key label. Follows the player's binds (`slot_keys`).
+#[derive(Component)]
+pub struct SlotKey(usize);
+
+/// Redraw the belt's key labels when the binds change. Run in every world
+/// state; it does nothing on a frame the binds did not move.
+pub fn slot_keys(
+    binds: Res<super::binds::Binds>,
+    mut labels: Query<(&SlotKey, &mut Text)>,
+    added: Query<(), Added<SlotKey>>,
+) {
+    if !binds.is_changed() && added.is_empty() {
+        return;
+    }
+    for (slot, mut text) in labels.iter_mut() {
+        let Some(a) = super::binds::HOTBAR.get(slot.0) else {
+            continue;
+        };
+        let want = match binds.key(*a) {
+            "UNBOUND" => "",
+            k => k,
+        };
+        if text.0 != want {
+            text.0 = want.to_string();
+        }
+    }
+}
+
 /// How often [`net_line`] rebuilds its string. The HUD's own cadence
 /// (`DECISIONS.md`, client render cosmetics: "HUD 250 ms").
 const NET_LINE_PERIOD_S: f32 = 0.25;
@@ -3149,6 +3477,7 @@ pub fn prompt(
     time: Res<Time>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
     mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
+    binds: Res<super::binds::Binds>,
 ) {
     if let Ok(mut text) = prompts.single_mut() {
         // `E` outranks the swing, and the swing is drawn only where `E` is
@@ -3241,6 +3570,9 @@ pub fn prompt(
             }
             None => want,
         };
+        // Every line above names the default keys; the player's own go in
+        // here, once, rather than at each of the places that build one.
+        let want = binds.relabel(&want);
         if text.0 != want {
             text.0 = want;
         }
@@ -3257,6 +3589,59 @@ pub fn prompt(
         if text.0 != want {
             text.0 = want;
         }
+    }
+}
+
+/// Place the death marker on the compass's row each frame: off the middle
+/// by its bearing from you against your heading, dimmed and held at the
+/// nearer end while it is behind you, with how far beside it. Hidden with
+/// no death this session and on the death screen itself.
+pub fn death_mark(
+    net: NonSend<super::Net>,
+    look: Res<super::input::Look>,
+    mut shown: Local<Option<(u32, bool)>>,
+    mut mark: Query<(&mut Node, &mut Visibility), With<DeathMark>>,
+    mut disc: Query<&mut BackgroundColor, With<DeathMarkDisc>>,
+    mut text: Query<(&mut Text, &mut TextColor), With<DeathMarkText>>,
+) {
+    let core = &net.session.core;
+    let Ok((mut node, mut vis)) = mark.single_mut() else {
+        return;
+    };
+    let Some(at) = core.death_marker.filter(|_| !core.dead) else {
+        if *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        }
+        // A HUD rebuilt for the next session starts with empty words.
+        *shown = None;
+        return;
+    };
+    let [x, _, z] = core.predict.render_position();
+    let m = crate::ui::death::compass_mark(crate::look::bearing_deg(look.yaw), (x, z), at);
+    let left = Val::Px(m.across * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
+    if node.left != left {
+        node.left = left;
+    }
+    if *vis != Visibility::Inherited {
+        *vis = Visibility::Inherited;
+    }
+    // The words and the dimming change when the metre does, not each frame.
+    let key = if m.dist_m < 1000.0 {
+        m.dist_m.round() as u32
+    } else {
+        1_000_000 + (m.dist_m / 100.0).round() as u32
+    };
+    if *shown == Some((key, m.off_row)) {
+        return;
+    }
+    *shown = Some((key, m.off_row));
+    let alpha = if m.off_row { 0.45 } else { 1.0 };
+    if let Ok(mut bg) = disc.single_mut() {
+        bg.0 = DEATH_MARK_INK.with_alpha(alpha);
+    }
+    if let Ok((mut t, mut ink)) = text.single_mut() {
+        t.0 = crate::ui::death::short_distance(m.dist_m);
+        ink.0 = ink.0.with_alpha(0.9 * alpha);
     }
 }
 
@@ -4096,6 +4481,25 @@ mod tests {
         assert_eq!(conn_warning(0.0, None, None), None);
     }
 
+    /// The HOT chip names the air and what cools you, shade first.
+    #[test]
+    fn the_hot_chip_says_what_cools_you() {
+        let open = ExposureWorld::default();
+        let shade = ExposureWorld {
+            sheltered: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            hot_line(false, 41, 0, open),
+            "HOT · 41°C · FIND SHADE OR WATER"
+        );
+        assert_eq!(
+            hot_line(true, 44, 0, shade),
+            "HEATSTROKE · 44°C · SHADE HELPS"
+        );
+        assert_eq!(hot_line(false, 38, 50, open), "HOT · 38°C · WET HELPS");
+    }
+
     /// The exposure chips say why (`NOW.md` §0wx item 3), and a roof that
     /// is working is said to be working.
     #[test]
@@ -4111,6 +4515,13 @@ mod tests {
         };
         assert_eq!(wet_line(40, roofed), "WET 40% · DRYING UNDER A ROOF");
         assert_eq!(cold_line(false, 0, open_rain), "COLD · RAIN");
+        // Where the air freezes it is snow that falls (snow v0).
+        let open_snow = ExposureWorld {
+            snow: 1.0,
+            ..open_rain
+        };
+        assert_eq!(wet_line(40, open_snow), "WET 40% · SNOW");
+        assert_eq!(cold_line(false, 0, open_snow), "COLD · SNOW");
         assert_eq!(
             cold_line(false, 50, roofed),
             "COLD · WET CLOTHES · ROOF HELPS"

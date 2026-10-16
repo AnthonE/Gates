@@ -42,6 +42,7 @@ use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS};
 use crate::sound::mixer::{Mixer, Request, Start, Takes};
 use crate::sound::music::{self, Director, Track};
 use crate::sound::steps::Steps;
+use crate::sound::talk::TalkMsg;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
 use crate::sound::{Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP};
@@ -315,7 +316,16 @@ pub struct Engine {
     /// score is whole tracks streamed beside it (`sound::music`). [`music`]
     /// fills it and each target's flush carries it out.
     pub score: Score,
+    /// Players' voices this frame (`render/voice.rs`): decoded samples and
+    /// ear gains for the audio thread's `sound::talk`. Bounded at
+    /// [`TALK_FRAME_CAP`], drop-newest and counted in `talk_dropped`.
+    talk: Vec<TalkMsg>,
+    pub talk_dropped: u32,
 }
+
+/// Voice messages one frame may carry across: ~8 talkers, a frame or two
+/// each, and their gains.
+pub const TALK_FRAME_CAP: usize = 48;
 
 /// What the score asks of the music output: the native stream
 /// (`audio_out::Music`) or the page's `<audio>` element (`audio_web`).
@@ -347,11 +357,27 @@ impl Default for Engine {
             diag: Diag::default(),
             out_rate: SAMPLE_RATE,
             score: Score::default(),
+            talk: Vec::with_capacity(TALK_FRAME_CAP),
+            talk_dropped: 0,
         }
     }
 }
 
 impl Engine {
+    /// Queue a voice message for this frame's flush.
+    pub fn push_talk(&mut self, msg: TalkMsg) {
+        if self.talk.len() >= TALK_FRAME_CAP {
+            self.talk_dropped = self.talk_dropped.saturating_add(1);
+            return;
+        }
+        self.talk.push(msg);
+    }
+
+    /// The frame's voice messages, in order; empty afterwards.
+    pub fn take_talk(&mut self) -> impl Iterator<Item = TalkMsg> + '_ {
+        self.talk.drain(..)
+    }
+
     /// Queue a command for this frame's flush.
     pub fn push(&mut self, cmd: Cmd) {
         if self.n >= CMD_FRAME_CAP {
@@ -414,6 +440,8 @@ pub struct Sound {
     /// The forest layer's clock (`sound::birds`), driven by [`bed`], which
     /// already has the cover score and the props to perch on.
     pub birds: Birds,
+    /// The Verdigris counter's clock (`sound::geiger`), driven by [`geiger`].
+    pub geiger: crate::sound::geiger::Geiger,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -641,6 +669,9 @@ pub fn teardown(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>, mut last_h
     // is the same rule and the same reason.
     sound.voices.reset();
     sound.birds.reset();
+    // And the counter's: a dose carried over would read the next island's
+    // first reading as a bite and burst on the join.
+    sound.geiger.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
     // The waterline and the snapshot go with it, and the second one is the
@@ -668,6 +699,7 @@ pub fn steps(
     mut sound: ResMut<Sound>,
     time: Res<Time>,
     fx: Option<ResMut<super::fx::Fx>>,
+    blight: Option<Res<super::blight::Blight>>,
     mut air: Local<Air>,
 ) {
     let mut fx = fx;
@@ -711,7 +743,8 @@ pub fn steps(
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
     let core = &net.session.core;
-    if let Some(depth) = in_leaves(&world, pos, |key| plant_size(core, key)) {
+    let now = blight.as_deref().and_then(|b| b.now.as_ref());
+    if let Some(depth) = in_leaves_at(&world, pos, |key| plant_size(core, key), now) {
         sound.play(Request::own(Cue::Brush).with_gain(step.gain * brush_gain(depth)));
     }
     if let Some(mut fx) = fx {
@@ -735,6 +768,17 @@ fn brush_gain(depth: f32) -> f32 {
 /// `pos`, since a plant near a cell's edge reaches into its neighbour.
 /// `size` is a plant's drawn size by cell key: 0 picked, 1 grown.
 pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -> Option<f32> {
+    in_leaves_at(w, pos, size, None)
+}
+
+/// [`in_leaves`] in the spread as it stands (`render::blight`): a shrub the
+/// green has killed is dead scrub, drawn and heard alike.
+pub fn in_leaves_at(
+    w: &super::WorldId,
+    pos: [f32; 3],
+    size: impl Fn(u32) -> f32,
+    now: Option<&sim_core::blight::Now>,
+) -> Option<f32> {
     use sim_core::terrain::{scatter, CELLS_PER_SIDE, CELL_SIZE};
     let cell = |v: f32| (v / CELL_SIZE).floor() as i32;
     let (cx, cz) = (cell(pos[0]), cell(pos[2]));
@@ -749,7 +793,17 @@ pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -
             if !slot.occupant.is_plant() {
                 continue;
             }
-            let scenery = super::plants::scenery(w.seed, &slot, key);
+            let fel = match now {
+                Some(n) if !sim_core::blight::within_reach(n, slot.x, slot.z) => 0.0,
+                _ => super::blight::live_fel(
+                    now,
+                    slot.x,
+                    slot.z,
+                    slot.y,
+                    sim_core::terrain::fel_wander(w.seed, slot.x, slot.z),
+                ),
+            };
+            let scenery = super::plants::scenery_with(w.seed, &slot, key, fel);
             let Some(r) = super::plants::leaf_reach(slot.occupant, key, scenery) else {
                 continue;
             };
@@ -844,6 +898,42 @@ pub fn fires(
     next.0 = 0.45 + 0.75 * r;
 }
 
+/// The Verdigris counter in your ear: clicks at the rate of the green where
+/// you stand (`sound::geiger`), and a burst when your dose jumps. Quiet on
+/// the beach, out of the green, and when you are dead.
+pub fn geiger(
+    net: NonSend<Net>,
+    world: Res<super::WorldId>,
+    feed: Res<super::feed::Feed>,
+    blight: Option<Res<super::blight::Blight>>,
+    time: Res<Time>,
+    mut sound: ResMut<Sound>,
+) {
+    let core = &net.session.core;
+    if core.dead {
+        sound.geiger.reset();
+        return;
+    }
+    // A hit this frame, then the meter's reading: a jump beside a hit is a
+    // bite heard.
+    if !feed.hurt_from().is_empty() {
+        sound.geiger.hurt();
+    }
+    if feed.applied2 & client_core::core::APPLIED2_EXPOSURE != 0 {
+        sound.geiger.dose(core.fel_pct);
+    }
+    let [x, feet, z] = core.predict.render_position();
+    let depth = blight
+        .as_deref()
+        .and_then(|b| b.now.as_ref())
+        .map_or(0.0, |now| {
+            crate::sound::geiger::field(now, world.seed, &world.haven, x, z, feet)
+        });
+    if sound.geiger.due(depth, time.delta_secs()) {
+        sound.play(Request::own(Cue::Geiger));
+    }
+}
+
 /// One remote body's step odometer — the same `sound::steps::Steps` the
 /// local player runs, one per drawn body, carried as a component so it dies
 /// with the entity and a body that leaves AOI and returns starts fresh (no
@@ -877,8 +967,10 @@ pub fn remote_steps(
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
     mut fx: Option<ResMut<super::fx::Fx>>,
+    blight: Option<Res<super::blight::Blight>>,
 ) {
     let dt = time.delta_secs();
+    let now = blight.as_deref().and_then(|b| b.now.as_ref());
     for (t, mut steps, anim) in bodies.iter_mut() {
         let pos = [t.translation.x, t.translation.y, t.translation.z];
         // Spaced as the drawn feet are spaced (`Rig::step_m`), so a remote's
@@ -903,7 +995,7 @@ pub fn remote_steps(
                 net.as_deref()
                     .map_or(1.0, |n| plant_size(&n.session.core, key))
             };
-            if let Some(depth) = in_leaves(&world, pos, size) {
+            if let Some(depth) = in_leaves_at(&world, pos, size, now) {
                 let gain = step.gain * brush_gain(depth);
                 sound.play(Request::at(Cue::RemoteBrush, pos).with_gain(gain));
             }
@@ -1120,6 +1212,23 @@ pub fn remote_heard(
         };
         let p = t.translation;
         sound.play(Request::at(cue, [p.x, p.y + REMOTE_HANDS_H_M, p.z]));
+    }
+}
+
+/// Gunshots and blasts from past the interest set (wire v113, `SUB_REPORT`):
+/// the shard sends no body for them, only what went off and where, out to
+/// `GUN_REPORT_CM` and `BLAST_REPORT_CM`. A gun is its far layer at the
+/// place, a blast is a blast; the falloff and the distance low-pass make
+/// them the dull far crack and rumble they should be.
+pub fn far_reports(feed: Res<super::feed::Feed>, mut sound: ResMut<Sound>) {
+    for &(kind, x, y, z) in feed.reports() {
+        let cue = match kind {
+            protocol::REPORT_GUN => Cue::ShotGunFar,
+            protocol::REPORT_BLAST => Cue::Blast,
+            _ => continue,
+        };
+        let at = [x as f32, y as f32 + REMOTE_HANDS_H_M, z as f32];
+        sound.play(Request::at(cue, at));
     }
 }
 
@@ -1661,12 +1770,93 @@ pub fn map_paper(sound: Option<ResMut<Sound>>) {
 /// each screen's handler: a screen added later clicks without knowing this
 /// exists. Runs where the mixer does (`world_running`), so the in-world
 /// panels and the Esc menu click; the desktop's title menu does not yet.
-pub fn ui_click(
-    buttons: Query<&Interaction, (Changed<Interaction>, With<Button>)>,
-    mut sound: ResMut<Sound>,
-) {
+pub fn ui_click(buttons: Query<&Interaction, Clickable>, mut sound: ResMut<Sound>) {
     if buttons.iter().any(|i| *i == Interaction::Pressed) {
         sound.play(Request::own(Cue::UiClick));
+    }
+}
+
+/// The buttons [`ui_click`] hears: any, but a [`Quiet`] one.
+type Clickable = (Changed<Interaction>, With<Button>, Without<Quiet>);
+/// The buttons [`ui_hover`] hears: any, but a [`NoHover`] one.
+type Hoverable = (Changed<Interaction>, With<Button>, Without<NoHover>);
+
+/// A button whose press has a cue of its own (the CRAFT button's
+/// [`Cue::CraftStart`]), so [`ui_click`] leaves it alone rather than
+/// stacking a click under it.
+#[derive(Component)]
+pub struct Quiet;
+
+/// A button the pointer sweeps across without a tick: the inventory's slots
+/// and the recipe grid, where a tick per cell would be a rattle. Rust's
+/// slots are silent under the pointer too; its buttons are not.
+#[derive(Component)]
+pub struct NoHover;
+
+/// The pointer arriving on a button (`Cue::UiHover`): the faintest tick.
+///
+/// **Only a pointer that MOVED this frame.** Every panel is rebuilt when
+/// what it draws changes (`panels::rebuild`), and a rebuild respawns the
+/// button under a still pointer, which then turns `Hovered` without anybody
+/// having moved — a tick there would sound like a hover the player never
+/// made. And not the button just pressed: letting go turns it back to
+/// `Hovered`, which is the end of a click, not the start of a hover.
+pub fn ui_hover(
+    buttons: Query<(Entity, &Interaction), Hoverable>,
+    mut moved: MessageReader<bevy::window::CursorMoved>,
+    mut pressed: Local<Option<Entity>>,
+    mut sound: ResMut<Sound>,
+) {
+    let moved = moved.read().count() > 0;
+    let mut hover = false;
+    for (e, i) in &buttons {
+        match i {
+            Interaction::Pressed => *pressed = Some(e),
+            Interaction::Hovered if *pressed == Some(e) => *pressed = None,
+            Interaction::Hovered => hover = true,
+            Interaction::None => {}
+        }
+    }
+    if hover && moved {
+        sound.play(Request::own(Cue::UiHover));
+    }
+}
+
+/// The panels' own sounds: the pack opening and closing as the inventory
+/// pages come and go, and whatever a panel asked for on its last press
+/// (`panels::Ui::sound` — an item set down, an item dropped, the craft
+/// started). One slot rather than a queue: a panel does one thing a press.
+///
+/// A box opening is the box's sound ([`feed`]'s `ContainerOpen`), so the
+/// pack's rustle stays out from under it.
+pub fn panel_sounds(
+    net: NonSend<Net>,
+    ui: Option<ResMut<super::panels::Ui>>,
+    mut last: Local<super::panels::Panel>,
+    mut sound: ResMut<Sound>,
+) {
+    use super::panels::Panel;
+    let Some(mut ui) = ui else {
+        return;
+    };
+    let pack = |p: Panel| {
+        matches!(
+            p,
+            Panel::Inventory | Panel::Craft | Panel::Vendor | Panel::Tech
+        )
+    };
+    let now = ui.panel;
+    if now != *last {
+        let boxed = net.session.core.cont_kind != sim_core::inventory::CONT_SELF;
+        if pack(now) && !pack(*last) && !boxed {
+            sound.play(Request::own(Cue::InvOpen));
+        } else if now == Panel::None && pack(*last) {
+            sound.play(Request::own(Cue::InvClose));
+        }
+        *last = now;
+    }
+    if let Some(cue) = ui.sound.take() {
+        sound.play(Request::own(cue));
     }
 }
 
@@ -2012,8 +2202,9 @@ pub fn bed(
     // snapshot's, which is the point of a snapshot.
     sound.bed_target[2] = 1.0;
     // The rain (weather v0): as hard as it falls, duller under a roof. The
-    // snapshot takes it away underwater.
-    sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
+    // snapshot takes it away underwater. Snow falls near silent, so the bed
+    // fades as the rain turns to it (snow v0).
+    sound.bed_target[3] = weather.falling_rain() * if weather.sheltered { 0.35 } else { 1.0 };
     // The heli's rotor, by distance to the drawn hull — none drawn, none
     // heard. Its side and its distance's muffling are its place, sent
     // below ([`rotor_place`]).
@@ -2265,6 +2456,8 @@ pub fn pump(
     time: Res<Time>,
     settings: Res<super::Settings>,
     mut reported: Local<Reported>,
+    net: Option<NonSend<Net>>,
+    world: Option<Res<super::WorldId>>,
 ) {
     let mix = mix_of(&settings).under(&sound.snap);
     let dt = time.delta_secs();
@@ -2294,7 +2487,21 @@ pub fn pump(
             *slot = Some(*s);
         }
     }
-    for start in chosen.into_iter().flatten() {
+    // Walls between the ears and a source (`ui::occlusion`): the built
+    // pieces this client already collides against, walked from the ear.
+    let walls = match (settings.occlusion, net.as_deref(), world.as_deref()) {
+        (true, Some(n), Some(w)) => Some((w.seed, &w.haven, n.session.core.pieces.cols())),
+        _ => None,
+    };
+    for mut start in chosen.into_iter().flatten() {
+        let mut walled = 0;
+        if let (Some((seed, haven, cols)), Some(at)) = (walls, start.at) {
+            let n = crate::ui::occlusion::walls_between(seed, haven, cols, listener, at);
+            if let Some((gain, hz)) = crate::ui::occlusion::muffle(n) {
+                start.gain *= gain;
+                walled = engine::lp_hz(hz, out_rate);
+            }
+        }
         // The rate is the mixer's speed resampled to the renderer's rate —
         // `engine::rate` is the one resampler in the chain (`audio_out.rs`).
         // The take is the bank's to count and never the last one played.
@@ -2303,7 +2510,8 @@ pub fn pump(
         engine.push(
             engine::start_cmd(&start, listener, right, out_rate)
                 .with_take(take, takes)
-                .muffled(under),
+                .muffled(under)
+                .muffled(walled),
         );
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence

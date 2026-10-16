@@ -124,6 +124,11 @@ pub const OFFICIAL_DOMAIN: &str = "elopros.com";
 /// says about itself: a row can name any shard it likes, but a host under
 /// [`OFFICIAL_DOMAIN`] is our DNS, so a community shard cannot wear the flag.
 pub fn is_official_addr(addr: &str) -> bool {
+    // Only an address that dials the host it names: `evil.example/.elopros.com:1`
+    // dials `evil.example` (`net::handshake::server_host`).
+    if crate::net::handshake::server_host(addr).is_none() {
+        return false;
+    }
     let host = match addr.rsplit_once(':') {
         // `[::1]:4433` and other bracketed literals are never ours.
         Some((h, _)) if !h.starts_with('[') => h,

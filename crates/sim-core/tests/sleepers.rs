@@ -478,12 +478,12 @@ fn a_return_takes_over_the_body_it_left() {
     assert!(!w.is_sleeper(2), "the old id still names a sleeper");
 }
 
-/// Waking onto a body somebody killed puts you on a beach, not back in the
-/// corpse — the rule `PlayerSave::dead` already reasoned out for the
-/// restore door, inherited here rather than re-decided. `deaths` is what
-/// proves it went through `wake` and not through a plain takeover.
+/// Waking onto a body somebody killed puts you back on its death screen
+/// (Rust's rule): still dead, where it fell, with who killed it on the
+/// record, until you choose. The respawn that answers is the one that moves
+/// you, and only then.
 #[test]
-fn waking_onto_a_corpse_beaches_you_alive() {
+fn waking_onto_a_corpse_keeps_the_death_screen() {
     let mut w = duel_world();
     let sleeper = slot_of(&w, 2);
     let raider = slot_of(&w, 1);
@@ -508,9 +508,21 @@ fn waking_onto_a_corpse_beaches_you_alive() {
         sleeper: 2,
     }]);
 
-    let p = &w.players[sleeper];
-    assert!(!p.dead, "you came back as a corpse");
+    let p = w.players[sleeper];
+    assert_eq!(p.id, 0x0202, "the corpse did not change hands");
+    assert!(p.dead, "the takeover spent the death screen's choice");
     assert!(!p.sleeping);
+    assert_eq!((p.body.qx, p.body.qz), (fell_at.qx, fell_at.qz));
+    assert_eq!(p.death_by, 1, "the screen lost who did it");
+    assert_eq!(p.death_at, Some((fell_at.qx, fell_at.qz)));
+    assert!(p.alive_s().is_some(), "this world timed that life");
+
+    w.tick(&[Command::Respawn {
+        id: 0x0202,
+        on_bag: false,
+    }]);
+    let p = &w.players[sleeper];
+    assert!(!p.dead, "the respawn did not stand the body up");
     assert!(p.hp > 0, "you came back with no hp");
     assert!(
         p.body.qx != fell_at.qx || p.body.qz != fell_at.qz,
@@ -520,6 +532,11 @@ fn waking_onto_a_corpse_beaches_you_alive() {
         p.inv,
         [ItemStack::default(); INV_SLOTS],
         "a corpse's inventory came back with it"
+    );
+    assert_eq!(
+        p.death_at,
+        Some((fell_at.qx, fell_at.qz)),
+        "the death marker did not outlive the corpse"
     );
 }
 
@@ -556,26 +573,14 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
     kit
 }
 
-/// **The third of `wake`'s three doors is paid too** (`NOW.md` §0kit
-/// remainder 1). A takeover of a dead body goes through `wake`, and `wake`
-/// is where a new body is built — so the victim of an offline raid logs
-/// back in holding the spawn kit. The test above proves this door beaches
-/// the body alive; with `duel_world`'s `spawn_kit` EMPTY, its
-/// inventory-is-empty assertion said nothing about the kit, and a refactor
-/// that early-returned around the grant stayed green on every suite. This
-/// is the door where a missed kit costs most: the raid already took
-/// everything else, so waking naked here is §0die's ended session exactly.
-///
-/// Proven red 2026-08-17, both ways, and the two mutations measure
-/// different things. Early-returning before the wake in `take_over`
-/// (`if self.players[slot].dead { return; }` in place of the `wake` call)
-/// fails this on "woke naked" — beside the beach gate above, which catches
-/// that skip on `!p.dead`. Deleting only `inventory::grant_kit` from
-/// `wake` fails this on the same line while **every pre-existing gate in
-/// this file stays green** — that narrower hole, a wake that stands the
-/// body up and forgets to arm it, is the coverage this test adds.
+/// **The victim of an offline raid answers the screen holding the spawn
+/// kit** (`NOW.md` §0kit remainder 1). The takeover keeps the corpse dead;
+/// the respawn that answers it goes through `wake`, and `wake` is where a
+/// new body is built and armed. This is the door where a missed kit costs
+/// most: the raid already took everything else, so waking naked here is
+/// §0die's ended session exactly.
 #[test]
-fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
+fn a_takeover_of_a_dead_body_respawns_holding_the_spawn_kit() {
     let mut w = duel_world();
     // After the joins, deliberately: the fresh arm must not be the grantor
     // this test observes. The kit reaches the body through `wake` or not
@@ -602,9 +607,14 @@ fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
         id: 0x0202,
         sleeper: 2,
     }]);
+    assert!(w.players[sleeper].dead, "the takeover woke the corpse");
+    w.tick(&[Command::Respawn {
+        id: 0x0202,
+        on_bag: false,
+    }]);
 
     let p = &w.players[sleeper];
-    assert!(!p.dead, "you came back as a corpse");
+    assert!(!p.dead, "the respawn did not stand the body up");
     assert_eq!(
         (p.inv[0], p.inv[1]),
         (
@@ -630,10 +640,7 @@ fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
         p.inv[2..].iter().all(|s| *s == ItemStack::default()),
         "a corpse's inventory came back beside the kit"
     );
-    assert_eq!(
-        p.deaths, 1,
-        "the death count did not move — this wake did not go through `wake`"
-    );
+    assert_eq!(p.deaths, 1, "one death, one respawn");
 }
 
 /// **Waking a body with the id you were just handed.** Not an exotic case:

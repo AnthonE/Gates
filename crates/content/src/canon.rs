@@ -203,6 +203,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.reduction_pct);
         h.u(a.move_penalty_pct);
         h.u(a.cold_pct as u32);
+        h.u(a.fel_pct);
     }
 
     h.s("consumables");
@@ -212,6 +213,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.food);
         h.u(con.water);
         h.u(con.seconds);
+        h.u(con.fel as u32);
         h.u(u32::from(con.belt_recovery));
         h.u(u32::from(con.revive));
     }
@@ -269,6 +271,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.attack_range_m);
         h.u(m.attack_seconds);
         h.u(m.brave_pct);
+        h.u(m.fel_bite);
         h.u(m.roam_m);
         h.u(m.spook_m);
         h.u(m.night_spook_m);
@@ -484,7 +487,56 @@ pub fn hash(c: &Content) -> u64 {
         ex.hurt_hp_per_min,
         ex.cold_food_pct,
         ex.cold_water_pct,
-        ex.comfort_hp_per_min,
+        ex.fire_comfort,
+        ex.company_comfort,
+        ex.comfort_per_s,
+        ex.regen_hp_per_min,
+        ex.regen_fed_pct,
+        ex.regen_comfort_pct,
+        ex.regen_cap_pct,
+        ex.regen_food_min,
+        ex.regen_water_min,
+        ex.regen_chill_max,
+        ex.regen_calm_s,
+        ex.regen_food_pct,
+        ex.regen_water_pct,
+        ex.cold_below_c as u32,
+        ex.cold_per_c,
+        ex.hot_above_c as u32,
+        ex.heat_per_c,
+        ex.shade_c as u32,
+        ex.wet_cool,
+        ex.clothes_heat_pm,
+        ex.heat_water_pct,
+        ex.heat_hurt_at,
+        ex.heat_hp_per_min,
+        ex.fel_rise_per_s,
+        ex.fel_vent_per_s,
+        ex.fel_fall_per_s,
+        ex.fel_hurt_at,
+        ex.fel_hp_per_min,
+        ex.fel_regen_max,
+        ex.fel_ward_max,
+        ex.fel_pocket_per_s,
+        ex.snow_wet_pm,
+    ] {
+        h.u(v);
+    }
+    let cl = &c.balance.climate;
+    h.s("climate");
+    for v in [
+        cl.temperate_low_c as u32,
+        cl.temperate_high_c as u32,
+        cl.arid_low_c as u32,
+        cl.arid_high_c as u32,
+        cl.lapse_from_m,
+        cl.lapse_m,
+        cl.cloud_flatten_pm,
+        cl.rain_cool_c as u32,
+        cl.crop_frost_c as u32,
+        cl.crop_warm_c as u32,
+        cl.crop_hot_c as u32,
+        cl.crop_scorch_c as u32,
     ] {
         h.u(v);
     }

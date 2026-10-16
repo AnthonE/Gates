@@ -9,6 +9,7 @@
 #   ./ci/scene.sh --settle 240         # give the base longer to go up
 #   ./ci/scene.sh --keep               # leave the shard's log and config behind
 #   ./ci/scene.sh --hour dusk --weather storm   # pin the probe's hour and sky
+#   ./ci/scene.sh --wipe-hour 120      # the wipe five days in: the blight grown
 #
 # ## What this is for
 #
@@ -122,6 +123,9 @@ KIT_EXTRA=""
 # `SUBJECT_FRAMES`, which reports what it found rather than assuming it. What
 # this buys is the world having had a chance to become worth photographing.
 SETTLE=120
+# The hour of the wipe the fresh world starts at (`dev_arc_hour`): the works
+# opened and lit as that hour would have them, the blight spread as far.
+WIPE_HOUR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -138,6 +142,7 @@ while [ $# -gt 0 ]; do
     --hour)       HOUR="$2";       shift 2 ;;
     --weather)    WEATHER="$2";    shift 2 ;;
     --keep)       KEEP=1;          shift ;;
+    --wipe-hour)  WIPE_HOUR="$2";  shift 2 ;;
     -h|--help)    sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "scene: unknown argument \`$1\`" >&2; exit 1 ;;
   esac
@@ -208,6 +213,9 @@ population = $POPULATION
 # downs a body standing in the open: that was every probe death on a slow box.
 dev_heli = false
 TOML
+if [ -n "$WIPE_HOUR" ]; then
+  echo "dev_arc_hour = $WIPE_HOUR" >> "$CONF"
+fi
 
 mkdir -p "$OUT"
 echo "scene: seed $SEED · spawn $SPAWN · population $POPULATION · out $OUT"

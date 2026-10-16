@@ -3,13 +3,15 @@
 //! On the wire it is the roster's last slot (`heli::HELI_SLOT`), a mob
 //! record like a pig, so it arrives through the same interpolator. This file
 //! takes that one id away from `mobs::stream` and draws a gunship instead:
-//! a box-massed hull, a main rotor and a tail rotor that spin, and a bank
-//! into whatever way it is moving. Nothing here decides anything — position,
-//! heading and life are sim state; the spin and the bank are derived.
+//! a generated hull ([`HULL_GLB`]), a main rotor and a tail rotor that spin,
+//! and a bank into whatever way it is moving. Nothing here decides anything —
+//! position, heading and life are sim state; the spin and the bank are
+//! derived.
 //!
-//! **The origin is the feet**, like every body: the sim's gun is
-//! `ranged::ARROW_EYE_MM` above it, which is where the nose gun sits here
-//! and where `fx/gun.rs` draws the round from.
+//! **The origin is the feet**, like every body: the skids stand on y = 0 and
+//! the nose points down +Z. The sim's gun is `ranged::ARROW_EYE_MM` above the
+//! feet; [`MUZZLE`] is the model's chin gun, where `fx/gun.rs` draws the round
+//! from, 0.8 m under it and close enough to read as the same shot.
 
 use bevy::prelude::*;
 
@@ -24,47 +26,16 @@ pub fn is_heli(id: u32) -> bool {
     mob::slot_of_id(id) == Some(HELI_SLOT)
 }
 
-const OLIVE: u32 = 0x3d4430;
-const DARK: u32 = 0x2a2f22;
-const GLASS: u32 = 0x1c2630;
 const STEEL: u32 = 0x1e1e1e;
 
-/// The hull, facing **+Z** (the sim's yaw 0), skids at y = 0. Sized after a
-/// light attack helicopter: ~13 m nose to tail, a 12 m rotor.
-/// `(centre, half-extent, hex)`.
-const HULL: &[([f32; 3], [f32; 3], u32)] = &[
-    // Cabin — the silhouette.
-    ([0.0, 2.2, 0.6], [1.0, 0.95, 2.4], OLIVE),
-    // Nose, lower and narrower.
-    ([0.0, 1.85, 3.5], [0.8, 0.65, 0.7], OLIVE),
-    // Canopy.
-    ([0.0, 2.7, 2.6], [0.82, 0.5, 1.0], GLASS),
-    // Engine housing on the roof.
-    ([0.0, 3.3, -0.3], [0.65, 0.32, 1.5], DARK),
-    // Rotor mast.
-    ([0.0, 3.75, -0.2], [0.12, 0.2, 0.12], STEEL),
-    // Tail boom, fin, stabiliser.
-    ([0.0, 2.55, -4.5], [0.28, 0.28, 3.2], OLIVE),
-    ([0.0, 3.3, -7.6], [0.1, 0.85, 0.55], OLIVE),
-    ([0.0, 2.6, -7.2], [1.15, 0.05, 0.32], OLIVE),
-    // Stub wings and the pods under them.
-    ([0.0, 1.9, 0.6], [1.75, 0.06, 0.38], DARK),
-    ([-1.55, 1.6, 0.7], [0.24, 0.24, 0.85], DARK),
-    ([1.55, 1.6, 0.7], [0.24, 0.24, 0.85], DARK),
-    // The chin gun: its muzzle is [`MUZZLE`].
-    ([0.0, 1.35, 3.95], [0.22, 0.22, 0.3], STEEL),
-    ([0.0, 1.35, 4.6], [0.07, 0.07, 0.55], STEEL),
-    // Skids and struts.
-    ([-0.95, 0.08, 0.4], [0.07, 0.07, 2.3], STEEL),
-    ([0.95, 0.08, 0.4], [0.07, 0.07, 2.3], STEEL),
-    ([-0.85, 0.65, 1.5], [0.05, 0.55, 0.05], STEEL),
-    ([0.85, 0.65, 1.5], [0.05, 0.55, 0.05], STEEL),
-    ([-0.85, 0.65, -0.7], [0.05, 0.55, 0.05], STEEL),
-    ([0.85, 0.65, -0.7], [0.05, 0.55, 0.05], STEEL),
-];
+/// The hull: a generated gunship, 13 m nose to tail, facing **+Z** with its
+/// skids at y = 0 (`assets/models/MANIFEST.md` §Roadside and monuments). Its blades were
+/// cut off at import (`ci/cut_glb.py`): the rotors below are drawn here so
+/// they can spin.
+pub const HULL_GLB: &str = "models/mob/heli.glb";
 
 /// The chin gun's muzzle, in hull space — where the flash goes.
-pub const MUZZLE: Vec3 = Vec3::new(0.0, 1.35, 5.15);
+pub const MUZZLE: Vec3 = Vec3::new(0.02, 0.82, 6.55);
 
 /// Two blades crossed at the hub, in the rotor's own plane (XZ).
 const ROTOR: &[([f32; 3], [f32; 3], u32)] = &[
@@ -72,13 +43,15 @@ const ROTOR: &[([f32; 3], [f32; 3], u32)] = &[
     ([0.0, 0.0, 0.0], [0.16, 0.03, 6.0], STEEL),
     ([0.0, 0.0, 0.0], [0.25, 0.08, 0.25], STEEL),
 ];
-const ROTOR_AT: Vec3 = Vec3::new(0.0, 3.98, -0.2);
+/// The hull's rotor hub, measured off the model.
+const ROTOR_AT: Vec3 = Vec3::new(0.0, 3.88, 1.33);
 /// The tail rotor, in the YZ plane, on the fin's left.
 const TAIL_ROTOR: &[([f32; 3], [f32; 3], u32)] = &[
-    ([0.0, 0.0, 0.0], [0.03, 1.05, 0.1], STEEL),
-    ([0.0, 0.0, 0.0], [0.03, 0.1, 1.05], STEEL),
+    ([0.0, 0.0, 0.0], [0.03, 0.9, 0.1], STEEL),
+    ([0.0, 0.0, 0.0], [0.03, 0.1, 0.9], STEEL),
 ];
-const TAIL_ROTOR_AT: Vec3 = Vec3::new(-0.16, 3.3, -7.7);
+/// Halfway up the swept fin, clear of its left face.
+const TAIL_ROTOR_AT: Vec3 = Vec3::new(-0.25, 2.55, -5.95);
 
 /// Rotor speeds, radians a second. Faster than any frame rate resolves,
 /// which is the point: the blades read as a blur that turns.
@@ -95,6 +68,7 @@ const VEL_SMOOTH: f32 = 4.0;
 #[derive(Resource)]
 pub struct HeliAssets {
     hull: Handle<Mesh>,
+    hull_material: Handle<StandardMaterial>,
     rotor: Handle<Mesh>,
     tail: Handle<Mesh>,
     material: Handle<StandardMaterial>,
@@ -122,11 +96,14 @@ pub struct Rotor {
 
 pub fn load(
     mut commands: Commands,
+    server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let (hull, hull_material) = super::mobs::model(&server, HULL_GLB);
     commands.insert_resource(HeliAssets {
-        hull: meshes.add(boxes_mesh_with(HULL, linear, 1.0)),
+        hull,
+        hull_material,
         rotor: meshes.add(boxes_mesh_with(ROTOR, linear, 1.0)),
         tail: meshes.add(boxes_mesh_with(TAIL_ROTOR, linear, 1.0)),
         material: materials.add(StandardMaterial {
@@ -204,7 +181,7 @@ pub fn stream(
                     super::WorldEntity,
                     HeliBody,
                     Mesh3d(assets.hull.clone()),
-                    MeshMaterial3d(assets.material.clone()),
+                    MeshMaterial3d(assets.hull_material.clone()),
                     Transform::from_translation(pos).with_rotation(rotation),
                 ))
                 // Children, not `WorldEntity`: the teardown marks roots

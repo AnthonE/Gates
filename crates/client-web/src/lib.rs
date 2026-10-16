@@ -1,55 +1,25 @@
 //! Gates in a tab: the module a page loads, and nothing else.
 //!
-//! **This is the browser's `main.rs`, and it is deliberately the same slice
-//! that file was.** The native client's first cut (DECISIONS.md 2026-08-05)
-//! connected over the real wire, drove the real `ClientCore` and reported what
-//! the world said — no window, no renderer — because the risky claim was never
-//! *"Rust can draw a triangle"*, it was that the transport, the handshake,
-//! both lanes and the predictor run against an unmodified shard. The risky
-//! claim here is identical with one word changed, and so is the answer.
+//! The page (`web/app.js`) owns the shard list, the wallet and the join:
+//! [`Gates::join`] (or [`Gates::watch`]) connects over `WebTransport` and
+//! returns once the shard has said welcome, and [`Gates::play`] hands that
+//! session to the same Bevy client the desktop runs, drawing into the page's
+//! canvas. From then on Bevy drives the frame loop and the page only watches
+//! for it to hand control back (`client::render::web`).
 //!
-//! What it is NOT: the game. There is no canvas. Bevy on WebGL2 is the next
-//! slice and the largest unknown left (`findings/web-build-20260909.md` §8,
-//! §10.1 — the dependency stack was proved to compile for this target and
-//! nothing has drawn a frame). What this proves is the half nobody could
-//! prove from a build log: that a `WebTransport` in a browser completes our
-//! handshake against a real shard and that snapshots arrive.
-//!
-//! **The server needs no change for any of this** and that is the finding the
-//! whole port rests on: `crates/server/src/net.rs` already serves
-//! browser-shaped certificates, and `NETCODE.md` §2.2's P-256 and 14-day rules
-//! are WebTransport spec rules, written for browsers, that our shard has
-//! satisfied since before there was a browser client to want them.
+//! **The server needs no change for any of this**: `crates/server/src/net.rs`
+//! already serves browser-shaped certificates, and `NETCODE.md` §2.2's P-256
+//! and 14-day rules are WebTransport spec rules, written for browsers.
 #![cfg(target_arch = "wasm32")]
 
 use wasm_bindgen::prelude::*;
 
-/// One joined session, handed to the page.
-///
-/// The page owns the frame loop and calls [`pump`](Gates::pump) from
-/// `requestAnimationFrame`, exactly as `bin/gates.rs` calls it from a Bevy
-/// system — the pump is synchronous, drains both lanes without blocking and
-/// never awaits, which is what makes it callable from a frame at all
-/// (`client::Session::pump`).
+/// One joined session, handed to the page until [`Gates::play`] gives it to
+/// the renderer.
 #[wasm_bindgen]
 pub struct Gates {
     session: client::Session,
-    /// The camera angles this client carries between frames. Owned here and
-    /// stepped by `look::control`, so the page hands over pixels and key
-    /// states and derives nothing — see [`Gates::input`].
-    aim: client::look::Aim,
-    /// The last frame's snapshot count, kept here so [`snapshots`](Gates::snapshots)
-    /// can be a getter.
-    ///
-    /// **Not derived by calling `pump` again**, which is what the first draft
-    /// did and is a real bug rather than a style point: `pump` DRAINS both
-    /// lanes, so a getter that called it would consume snapshots and events
-    /// outside the frame loop and hand them to nobody. Same family as
-    /// `CLAUDE.md`'s destructive-read trap — a queue with a single-consumer
-    /// contract needs one owner, and here the owner is `pump`.
-    last: client::Frame,
-    /// The `host:port` joined, which the disconnect line names (it used to
-    /// name the world seed).
+    /// The `host:port` joined, which the disconnect line names.
     server: String,
 }
 
@@ -132,16 +102,7 @@ impl Gates {
         )
         .await
         .map_err(join_error)?;
-        let last = client::Frame {
-            tick: 0,
-            snapshots: 0,
-        };
-        Ok(Gates {
-            session,
-            aim: client::look::Aim::default(),
-            last,
-            server,
-        })
+        Ok(Gates { session, server })
     }
 
     /// Take a **read-only seat** watching `target` on `server` (wire v73;
@@ -179,15 +140,7 @@ impl Gates {
         let session = client::Session::watch(&server, cert_hash.as_deref(), target)
             .await
             .map_err(join_error)?;
-        Ok(Gates {
-            session,
-            aim: client::look::Aim::default(),
-            last: client::Frame {
-                tick: 0,
-                snapshots: 0,
-            },
-            server,
-        })
+        Ok(Gates { session, server })
     }
 
     /// What a seat's label says (`SPECTATING …`), or `undefined` when this
@@ -198,109 +151,6 @@ impl Gates {
             .watching
             .as_ref()
             .map(client::ui::spectate::label)
-    }
-
-    /// Hand this frame's raw input to the client core.
-    ///
-    /// **Pixels and key states in — the page derives nothing.** Which way is
-    /// right is arithmetic, and `crates/client/src/look.rs` exists because
-    /// that arithmetic was wrong on both clients at once: the operator
-    /// reported the mouse inverted, and the half nobody had noticed is that
-    /// the strafe was mirrored too. A second client re-deriving `(-r, f)` from
-    /// a doc comment is that bug's second chance, so `look::control` is the
-    /// one named entry and this is a passthrough to it.
-    ///
-    /// `buttons` is a `BTN_*` bitfield the caller has already decided. What a
-    /// click MEANS is modal even here — a page with a panel open must not send
-    /// an attack — and that decision is the caller's, exactly as it is the
-    /// Bevy client's (`render/input.rs`).
-    ///
-    /// Call it before [`pump`](Gates::pump): the core takes the level, and
-    /// `advance` is what mints a frame from it.
-    #[allow(clippy::too_many_arguments)]
-    pub fn input(
-        &mut self,
-        dx_px: f32,
-        dy_px: f32,
-        forward: bool,
-        back: bool,
-        left: bool,
-        right: bool,
-        buttons: u8,
-        sel: u8,
-        invert_pitch: bool,
-    ) {
-        let (buttons, yaw, pitch, move_x, move_z, sel) = client::look::control(
-            &mut self.aim,
-            client::look::Raw {
-                dx_px,
-                dy_px,
-                invert_pitch,
-                forward,
-                back,
-                left,
-                right,
-                buttons,
-                sel,
-            },
-        );
-        self.session
-            .core
-            .set_input(buttons, yaw, pitch, move_x, move_z, sel);
-    }
-
-    /// Where this player's eye is, in world metres — `[x, y, z]`.
-    ///
-    /// **The readback that makes an operator's one act prove prediction.**
-    /// Without it the page can show `snapshots` climbing while the input lane
-    /// is silently clamped and the body never moves, which looks identical to
-    /// a working client. A number that changes when a key is held is the
-    /// cheapest possible evidence that input reached the shard and came back.
-    #[wasm_bindgen(getter)]
-    pub fn eye(&self) -> Vec<f32> {
-        self.session.core.eye_position().to_vec()
-    }
-
-    /// `[over_mtu, backpressured]` — datagrams this page's transport REFUSED
-    /// to send, and did not.
-    ///
-    /// Both should be 0 forever: `DATAGRAM_BUDGET_BYTES` is 1,100 against a
-    /// 1,200-byte QUIC floor, and this lane writes one small datagram a frame.
-    /// They are surfaced because "should be 0 forever" is what was said about
-    /// the clamp itself for a year while nothing checked, and because the
-    /// failure they describe is invisible from the outside — a player who
-    /// cannot move, on a page whose snapshot counter is still climbing.
-    #[wasm_bindgen(getter)]
-    pub fn refused(&self) -> Vec<f64> {
-        let (over_mtu, backpressured) = self.session.wire_counts();
-        vec![over_mtu as f64, backpressured as f64]
-    }
-
-    /// Snapshots the receive ring dropped before a frame drained them — wall
-    /// 4's drop-oldest policy, as a number. Non-zero means this page is not
-    /// draining fast enough to keep every sample the interpolator wants.
-    #[wasm_bindgen(getter)]
-    pub fn dropped(&self) -> f64 {
-        self.session.datagrams_dropped() as f64
-    }
-
-    /// Advance one frame. `dt_ms` is the page's frame time; the core owns the
-    /// 30 Hz tick and this only tells it how much wall time passed.
-    ///
-    /// Returns how many sim steps that frame drove — 0 or 1 is the correct
-    /// reading at 60 Hz against a 30 Hz tick, not a stalled clock.
-    pub fn pump(&mut self, dt_ms: f64) -> u32 {
-        self.last = self.session.pump(dt_ms);
-        self.last.tick
-    }
-
-    /// Snapshots accepted since the join. **This is the number that says the
-    /// transport works**: it climbs only when a datagram arrived over
-    /// `WebTransport`, decoded, and was applied by the same `ClientCore` the
-    /// desktop client runs. `f64` because JS has no `u64`.
-    #[wasm_bindgen(getter)]
-    pub fn snapshots(&self) -> f64 {
-        self.last.snapshots as f64
     }
 
     #[wasm_bindgen(getter)]
@@ -316,13 +166,6 @@ impl Gates {
         self.session.welcome.seed.to_string()
     }
 
-    /// Whether the shard has hung up. Sticky: a connection does not come back,
-    /// and the page must stop drawing a live world over a dead wire.
-    #[wasm_bindgen(getter)]
-    pub fn closed(&self) -> bool {
-        self.session.closed()
-    }
-
     /// Hand the world to Bevy and start drawing. **Consumes the session.**
     ///
     /// `self` by value because the `Session` moves into the ECS: `Net` owns it
@@ -331,12 +174,10 @@ impl Gates {
     /// after this call, which is the honest shape — the join is over and the
     /// renderer is the thing that is live.
     ///
-    /// **The page must stop pumping.** `Session::pump` drains `ClientCore`'s
-    /// own-fact rings destructively and `render/input.rs` now calls it from a
-    /// Bevy system every frame; two drivers would each see half the hits,
-    /// toasts and refusals. That is the single-consumer defect `CLAUDE.md`
-    /// records merging cleanly and breaking silently, so the page's
-    /// `requestAnimationFrame` loop is deleted rather than left dormant.
+    /// **Only Bevy pumps the session.** `Session::pump` drains `ClientCore`'s
+    /// own-fact rings destructively and `render/input.rs` calls it every
+    /// frame; a second driver would see half the hits, toasts and refusals,
+    /// which is why this module exports no pump of its own.
     ///
     /// ⚠ **`run()` does not return on this platform.** Bevy's wasm arm hands
     /// the loop to `requestAnimationFrame` and returns immediately, so the
@@ -446,7 +287,10 @@ impl Gates {
         // `OnEnter(Screen::Loading)` runs before `Startup`, and `sky::setup`
         // takes a non-optional `Res<WorldId>` — so a `WorldId` inserted later
         // does not arrive late, it makes that system silently not run.
-        app.insert_resource(WorldId::with_haven(seed, *session.core.haven()));
+        app.insert_resource(WorldId {
+            blight_salt: session.welcome.blight_salt,
+            ..WorldId::with_haven(seed, *session.core.haven())
+        });
         // The element winit draws into, for `web::follow_viewport`'s stretch.
         app.insert_resource(client::render::web::Canvas(canvas.clone()));
         app.insert_non_send_resource(Net {

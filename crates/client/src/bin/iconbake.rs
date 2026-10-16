@@ -1,26 +1,33 @@
 //! `cargo run -p client --features render --bin iconbake -- <out_dir> [stem…]`
-//! — photograph the items that have a 3D model, for their inventory icons.
+//! — photograph every item, for its inventory icon.
 //!
 //! Rust's icons are renders of the item's own model on a transparent ground,
-//! lit from the upper left and seen from a three-quarter angle. Ours were
-//! white game-icons.net silhouettes tinted at the draw, so every cell was
-//! the same off-white. This renders the items whose model makes a good
-//! picture ([`SUBJECTS`]) the same way Rust's are, and `ci/finish_icons.py`
-//! turns the frames into `assets/icons/*.png`. Every other item keeps its
-//! silhouette, which the finisher paints.
+//! lit from the upper left and seen from a three-quarter angle. This renders
+//! every item the same way ([`SUBJECTS`]): its own model where it has one,
+//! and otherwise its prop from the kit (`render::heldkit`), baked exactly as
+//! the hand and the ground draw it. Then
+//! `ci/finish_icons.py` turns the frames into `assets/icons/*.png`; it paints
+//! a silhouette only for a stem with no render.
 //!
 //! Headless: no window, no winit. The camera draws into an offscreen image
 //! with a transparent clear, and the frame is read back with `Screenshot`.
 //! Runs on a GPU-less box through Mesa's lavapipe
-//! (`apt-get install mesa-vulkan-drivers`).
+//! (`apt-get install mesa-vulkan-drivers`), about a second a subject.
 //!
-//! Not a gate and not run by CI. Re-run it when a model in [`SUBJECTS`]
-//! changes, then run the finisher:
+//! Not a gate and not run by CI. Re-run it when a model or a prop changes,
+//! then run the finisher:
 //!
 //! ```text
 //! cargo run -p client --features render --bin iconbake -- ci/icons/renders
 //! python3 ci/finish_icons.py
 //! ```
+//!
+//! `--hand <out_dir> [stem…]` shoots each held row instead, the way the
+//! first-person camera frames it at rest (`viewmodel::pose` under the hold,
+//! no arm): the check for a new row's grip and scale.
+//!
+//! `--look <out_dir> <file.glb…>` photographs any files under `assets/` the
+//! icon's way — a generator's rolls, before one becomes a row.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -45,9 +52,20 @@ const FRAME_PX: u32 = 512;
 /// first subject also waits out shader compilation, which lavapipe does on
 /// the CPU, and a readback is asynchronous in frames.
 const SETTLE_FIRST: u32 = 120;
-const SETTLE: u32 = 30;
+const SETTLE: u32 = 12;
 /// A glTF that has not spawned a mesh by then is reported and skipped.
 const LOAD_TIMEOUT: u32 = 900;
+
+/// Where a subject's geometry comes from: a glTF under `assets/`, a mesh
+/// `render::heldgen` builds in code (the bat), or the prop kit
+/// (`render::heldkit`) for the items with no model — its own torch, revolver,
+/// crossbow and strung bow included, which photograph better than the hand's.
+#[derive(Clone, Copy)]
+enum Src {
+    Glb(&'static str),
+    Gen(&'static str),
+    Kit(&'static str),
+}
 
 /// One icon to photograph.
 #[derive(Clone, Copy)]
@@ -55,36 +73,123 @@ struct Subject {
     /// The icon's file stem — the item's display name, normalised
     /// (`ui::icons::stem`).
     stem: &'static str,
-    /// The model, under `assets/`.
-    glb: &'static str,
+    /// The model.
+    src: Src,
     /// Model rotation before framing, degrees: yaw about Y, then pitch about
     /// X, then roll about Z (`EulerRot::YXZ`). The camera never leaves its
     /// three-quarter bearing, so this is how a subject shows its best side.
     turn: [f32; 3],
+    /// Then a turn about the camera's own axis, degrees, counter-clockwise
+    /// on screen: how a long thing is laid on the frame's diagonal.
+    roll: f32,
+    /// How much thicker than its model a long thing is drawn, across its
+    /// length (model X and Z): a haft true to scale is a hairline in a 48 px
+    /// cell, and the reference's tools read because they are chunky.
+    girth: f32,
 }
 
 const fn s(stem: &'static str, glb: &'static str, turn: [f32; 3]) -> Subject {
-    Subject { stem, glb, turn }
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn,
+        roll: 0.0,
+        girth: 1.0,
+    }
 }
 
-/// The items photographed rather than painted.
+/// A long thing (a tool, a spear, a bow), authored standing: turned to show
+/// its head's broad side, thickened by `girth`, then laid on the diagonal
+/// with the head at the top right — the way Rust frames every tool.
+const fn long(stem: &'static str, src: Src, girth: f32) -> Subject {
+    Subject {
+        stem,
+        src,
+        turn: [0.0, 0.0, 0.0],
+        roll: -45.0,
+        girth,
+    }
+}
+
+/// A prop from the kit, turned.
+const fn kit(stem: &'static str, turn: [f32; 3]) -> Subject {
+    Subject {
+        stem,
+        src: Src::Kit(stem),
+        turn,
+        roll: 0.0,
+        girth: 1.0,
+    }
+}
+
+/// A model laid side on and turned `roll` on screen: a gun's framing. A
+/// generated gun is authored muzzle to -X, the kit's to +X, so it is turned
+/// round first and every gun in the bag points the same way.
+const fn side(stem: &'static str, glb: &'static str, roll: f32) -> Subject {
+    Subject {
+        stem,
+        src: Src::Glb(glb),
+        turn: [180.0, 0.0, 0.0],
+        roll,
+        girth: 1.0,
+    }
+}
+
+/// A long prop from the kit, on the diagonal.
+const fn kit_long(stem: &'static str, roll: f32) -> Subject {
+    Subject {
+        stem,
+        src: Src::Kit(stem),
+        turn: [0.0, 0.0, 0.0],
+        roll,
+        girth: 1.0,
+    }
+}
+
+/// Every item but the three keycards' painted cousins is photographed
+/// (2026-10): the models where an item has one, the prop kit where it does
+/// not. The finisher paints a silhouette only for a stem with no render.
 ///
-/// **Chunky things only, and that was measured rather than assumed.** Every
-/// item with a model was rendered on 2026-09-24 and each render put beside
-/// its painted silhouette at the 34 px a cell draws it: the boxes, the bag,
-/// the bench, the cupboard and the stones read better as photographs; the
-/// thin tools (spear, hatchet, pickaxe, hammer, bow) went to a hairline and
-/// read worse, and the generated torch and revolver are boxes that a
-/// silhouette beats. Those stay painted until a model is chunky enough.
-/// Framing is `ci/finish_icons.py`'s, from the pixels, so there is no size
-/// here.
+/// **Long things are thickened, and that was measured.** On 2026-09-24 the
+/// tools rendered true to scale went to a hairline at the cell's size and
+/// the painted silhouettes beat them; laid on the diagonal and drawn
+/// [`Subject::girth`] times thicker across their length they read, and
+/// they read as the reference's do — the same object, lit. Framing is the
+/// finisher's, from the pixels, so there is no size here.
 const SUBJECTS: &[Subject] = &[
-    s("stone", "models/prop/node_stone.glb", [30.0, 0.0, 0.0]),
-    s("metal_ore", "models/prop/node_metal.glb", [30.0, 0.0, 0.0]),
+    // The resources, as the hand carries them (`WANTED.md` §12).
+    s("stone", "models/held/stone.glb", [0.0, 0.0, 0.0]),
+    s("metal_ore", "models/held/metal_ore.glb", [0.0, 0.0, 0.0]),
+    s("sulfur_ore", "models/held/sulfur_ore.glb", [0.0, 0.0, 0.0]),
+    s("wood", "models/held/wood.glb", [0.0, 0.0, 0.0]),
+    s("cloth", "models/held/cloth.glb", [0.0, 0.0, 0.0]),
+    s("charcoal", "models/held/charcoal.glb", [0.0, 0.0, 0.0]),
     s(
-        "sulfur_ore",
-        "models/prop/node_sulfur.glb",
-        [30.0, 0.0, 0.0],
+        "metal_fragments",
+        "models/held/metal_fragments.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "low_grade_fuel",
+        "models/held/low_grade_fuel.glb",
+        [25.0, 0.0, 0.0],
+    ),
+    s("junk", "models/held/junk.glb", [0.0, 0.0, 0.0]),
+    s("leather", "models/held/leather.glb", [0.0, 0.0, 0.0]),
+    s("sulfur", "models/held/sulfur.glb", [0.0, 0.0, 0.0]),
+    s("gunpowder", "models/held/gunpowder.glb", [0.0, 0.0, 0.0]),
+    s("animal_fat", "models/held/animal_fat.glb", [0.0, 0.0, 0.0]),
+    s(
+        "bone_fragments",
+        "models/held/bone_fragments.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("tarp", "models/held/tarp.glb", [0.0, 0.0, 0.0]),
+    s("waterskin", "models/held/waterskin.glb", [0.0, 0.0, 0.0]),
+    s(
+        "full_waterskin",
+        "models/held/full_waterskin.glb",
+        [0.0, 0.0, 0.0],
     ),
     // The small box shares this model; the finisher draws it smaller.
     s("large_box", "models/deploy/box.glb", [0.0, 0.0, 0.0]),
@@ -92,6 +197,162 @@ const SUBJECTS: &[Subject] = &[
     s("workbench", "models/deploy/workbench.glb", [0.0, 0.0, 0.0]),
     // The hearth is the tool cupboard, and the render is the cupboard.
     s("hearth", "models/deploy/hearth.glb", [0.0, 0.0, 0.0]),
+    // The tools and weapons with models, on the diagonal.
+    long("bat", Src::Gen("bat"), 1.0),
+    long(
+        "stone_hatchet",
+        Src::Glb("models/held/stone_hatchet.glb"),
+        1.9,
+    ),
+    long(
+        "stone_pickaxe",
+        Src::Glb("models/held/stone_pickaxe.glb"),
+        1.9,
+    ),
+    long(
+        "metal_hatchet",
+        Src::Glb("models/held/metal_hatchet.glb"),
+        1.9,
+    ),
+    long(
+        "metal_pickaxe",
+        Src::Glb("models/held/metal_pickaxe.glb"),
+        1.9,
+    ),
+    long("hammer", Src::Glb("models/held/hammer.glb"), 1.9),
+    long(
+        "wooden_spear",
+        Src::Glb("models/held/wooden_spear.glb"),
+        2.4,
+    ),
+    long("metal_spear", Src::Glb("models/held/metal_spear.glb"), 2.2),
+    // Things you hold up to use.
+    s(
+        "building_plan",
+        "models/held/building_plan.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "satchel_charge",
+        "models/held/satchel_charge.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("bandage", "models/held/bandage.glb", [0.0, 0.0, 0.0]),
+    s("medkit", "models/held/medkit.glb", [0.0, 0.0, 0.0]),
+    s("berries", "models/held/berries.glb", [0.0, 0.0, 0.0]),
+    s("mushrooms", "models/held/mushrooms.glb", [0.0, 0.0, 0.0]),
+    s("corn", "models/held/corn.glb", [0.0, 0.0, 0.0]),
+    s("raw_meat", "models/held/raw_meat.glb", [0.0, 0.0, 0.0]),
+    s(
+        "cooked_meat",
+        "models/held/cooked_meat.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("burnt_meat", "models/held/burnt_meat.glb", [0.0, 0.0, 0.0]),
+    // A card held up, tipped back and turned landscape, the reference's way.
+    Subject {
+        stem: "green_keycard",
+        src: Src::Glb("models/held/green_keycard.glb"),
+        turn: [35.0, -25.0, 0.0],
+        roll: 80.0,
+        girth: 1.0,
+    },
+    Subject {
+        stem: "blue_keycard",
+        src: Src::Glb("models/held/blue_keycard.glb"),
+        turn: [35.0, -25.0, 0.0],
+        roll: 80.0,
+        girth: 1.0,
+    },
+    Subject {
+        stem: "red_keycard",
+        src: Src::Glb("models/held/red_keycard.glb"),
+        turn: [35.0, -25.0, 0.0],
+        roll: 80.0,
+        girth: 1.0,
+    },
+    // The deployables, as they stand in the world.
+    s("furnace", "models/deploy/furnace.glb", [0.0, 0.0, 0.0]),
+    s("recycler", "models/deploy/recycler.glb", [0.0, 0.0, 0.0]),
+    s(
+        "research_table",
+        "models/deploy/research_table.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "workbench_2",
+        "models/deploy/workbench2.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "workbench_3",
+        "models/deploy/workbench3.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "wooden_barricade",
+        "models/deploy/barricade.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    // A door's face is on its X axis: a quarter turn shows it to the
+    // camera (measured against 0, 30 and 60, which went edge-on).
+    s("wooden_door", "models/deploy/door.glb", [90.0, 0.0, 0.0]),
+    s(
+        "metal_door",
+        "models/deploy/door_locked.glb",
+        [90.0, 0.0, 0.0],
+    ),
+    // The prop kit: long things on the diagonal…
+    kit_long("hunting_bow", -45.0),
+    kit_long("crossbow", -45.0),
+    kit_long("torch", -45.0),
+    kit_long("stone_spear", -45.0),
+    kit_long("wooden_arrow", -45.0),
+    kit_long("bone_arrow", -45.0),
+    kit_long("metal_arrow", -45.0),
+    kit_long("high_velocity_arrow", -45.0),
+    kit_long("fire_arrow", -45.0),
+    kit_long("metal_blade", -45.0),
+    kit_long("medical_syringe", -45.0),
+    kit_long("electric_fuse", -45.0),
+    kit_long("metal_pipe", -45.0),
+    kit_long("metal_spring", -30.0),
+    // …guns and plates side on, nudged up at the muzzle…
+    kit_long("revolver", 18.0),
+    side(
+        "semi_automatic_body",
+        "models/held/semi_automatic_body.glb",
+        18.0,
+    ),
+    side("smg_body", "models/held/smg_body.glb", 18.0),
+    side("rifle_body", "models/held/rifle_body.glb", 18.0),
+    kit_long("blueprint", 20.0),
+    // …and the rest as they would sit on a table.
+    kit("gears", [30.0, 0.0, 0.0]),
+    kit("rope", [0.0, 0.0, 0.0]),
+    kit("empty_propane_tank", [0.0, 0.0, 0.0]),
+    kit("sewing_kit", [0.0, 0.0, 0.0]),
+    kit("sheet_metal", [0.0, 0.0, 0.0]),
+    kit("road_signs", [30.0, 0.0, 0.0]),
+    kit("tech_trash", [30.0, 30.0, 0.0]),
+    kit("key_lock", [30.0, 0.0, 0.0]),
+    kit("code_lock", [30.0, 0.0, 0.0]),
+    kit("pistol_round", [30.0, 0.0, 0.0]),
+    kit("corn_seed", [0.0, 0.0, 0.0]),
+    kit("hemp_seed", [0.0, 0.0, 0.0]),
+    // The garments stand up in the hand; laid back for the camera.
+    kit("burlap_tunic", [30.0, -20.0, 0.0]),
+    kit("burlap_hood", [30.0, 0.0, 0.0]),
+    kit("hide_poncho", [30.0, -20.0, 0.0]),
+    kit("bone_helmet", [30.0, 0.0, 0.0]),
+    kit("roadsign_vest", [30.0, -20.0, 0.0]),
+    kit("planter_box", [0.0, 0.0, 0.0]),
+    kit("camp_fire", [0.0, 0.0, 0.0]),
+    kit("auto_turret", [30.0, 0.0, 0.0]),
+    kit("metal_window_bars", [90.0, 0.0, 0.0]),
+    kit("garage_door", [90.0, 0.0, 0.0]),
+    kit("glass_window", [90.0, 0.0, 0.0]),
+    kit("wood_shutters", [90.0, 0.0, 0.0]),
 ];
 
 /// Where the camera sits relative to the subject: right, above and in front,
@@ -100,6 +361,8 @@ const VIEW_DIR: Vec3 = Vec3::new(0.62, 0.55, 1.0);
 
 #[derive(Resource)]
 struct Bake {
+    /// Shooting held rows in the first-person frame (`--hand`), not icons.
+    hand: bool,
     out: PathBuf,
     queue: Vec<Subject>,
     target: Handle<Image>,
@@ -129,8 +392,87 @@ struct Written(bool);
 #[derive(Component)]
 struct IconCam;
 
+/// The kit's material as the studio lights it. Metal is mostly diffuse
+/// here: with no environment to reflect, a metallic surface renders black but
+/// for its highlights, and the game's `METAL_GAIN` is set for a hand that has
+/// the island's sky in it. A third keeps the sheen and the colour both.
+fn kit_material() -> StandardMaterial {
+    StandardMaterial {
+        metallic: 0.3 / client::render::heldkit::METAL_GAIN,
+        ..client::render::heldkit::material()
+    }
+}
+
+/// A frame of the `--hand` sheet, px: the game's 16:9.
+const HAND_PX: (u32, u32) = (960, 540);
+
+/// `--hand`'s subjects: every held row, in its own source, or `stems`.
+fn hand_queue(only: &[&String]) -> Vec<Subject> {
+    use client::ui::hold::{HeldSrc, HELD_MODELS};
+    HELD_MODELS
+        .iter()
+        .filter(|m| only.is_empty() || only.iter().any(|o| o.as_str() == m.key))
+        .map(|m| Subject {
+            stem: m.key,
+            src: match m.src {
+                HeldSrc::Glb(path) => Src::Glb(path),
+                HeldSrc::Gen(name) => Src::Gen(name),
+            },
+            turn: [0.0; 3],
+            roll: 0.0,
+            girth: 1.0,
+        })
+        .rev()
+        .collect()
+}
+
+/// `--look`'s subjects: files, by their path under `assets/`, each shot
+/// under its own file stem. Leaked: a subject's names are `'static` because
+/// every other subject is a table row, and this is a one-shot process.
+fn look_queue(files: &[&String]) -> Vec<Subject> {
+    let root = std::env::current_dir().unwrap_or_default().join("assets");
+    files
+        .iter()
+        .map(|f| {
+            let p = std::path::Path::new(f.as_str());
+            let p = p
+                .canonicalize()
+                .ok()
+                .and_then(|abs| abs.strip_prefix(&root).ok().map(|r| r.to_path_buf()))
+                .unwrap_or_else(|| p.to_path_buf());
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("look");
+            Subject {
+                stem: Box::leak(stem.to_owned().into_boxed_str()),
+                src: Src::Glb(Box::leak(p.to_string_lossy().into_owned().into_boxed_str())),
+                turn: [0.0; 3],
+                roll: 0.0,
+                girth: 1.0,
+            }
+        })
+        .rev()
+        .collect()
+}
+
+/// Where a held row's model sits in view space at rest: the rig's carry,
+/// the hold, then the row's own pose about the palm.
+fn hand_place(key: &str) -> Transform {
+    use client::render::viewmodel::{carried, carry_of, item_pose, pose, VIEWMODEL_PALM};
+    let def = client::ui::hold::HELD_MODELS
+        .iter()
+        .find(|m| m.key == key)
+        .expect("a held row");
+    carried(carry_of(Some(def)), 0.0, Quat::IDENTITY, Vec3::ZERO)
+        * item_pose(None, Quat::IDENTITY)
+        * pose(def, VIEWMODEL_PALM)
+}
+
 fn main() -> AppExit {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let hand = args.first().is_some_and(|a| a == "--hand");
+    let look = args.first().is_some_and(|a| a == "--look");
+    if hand || look {
+        args.remove(0);
+    }
     let Some(out) = args.first().cloned() else {
         eprintln!("usage: iconbake <out_dir> [stem…]");
         for s in SUBJECTS {
@@ -139,12 +481,18 @@ fn main() -> AppExit {
         return AppExit::from_code(2);
     };
     let only: Vec<&String> = args.iter().skip(1).collect();
-    let queue: Vec<Subject> = SUBJECTS
-        .iter()
-        .copied()
-        .filter(|s| only.is_empty() || only.iter().any(|o| o.as_str() == s.stem))
-        .rev()
-        .collect();
+    let queue: Vec<Subject> = if hand {
+        hand_queue(&only)
+    } else if look {
+        look_queue(&only)
+    } else {
+        SUBJECTS
+            .iter()
+            .copied()
+            .filter(|s| only.is_empty() || only.iter().any(|o| o.as_str() == s.stem))
+            .rev()
+            .collect()
+    };
     if queue.is_empty() {
         eprintln!("iconbake: no subject matches {only:?}");
         return AppExit::from_code(2);
@@ -186,11 +534,12 @@ fn main() -> AppExit {
     // the three lights below are sized against.
     app.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.92, 0.95, 1.0),
-        brightness: 90.0,
+        brightness: 150.0,
         ..default()
     });
     app.insert_resource(Written::default());
     app.insert_resource(Bake {
+        hand,
         out,
         queue,
         target: Handle::default(),
@@ -205,36 +554,65 @@ fn main() -> AppExit {
 
 /// The camera, its offscreen target and the studio lights.
 fn stage(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut bake: ResMut<Bake>) {
+    client::render::heldkit::install(&mut images);
+    let (w, h) = if bake.hand {
+        HAND_PX
+    } else {
+        (FRAME_PX, FRAME_PX)
+    };
     let target = images.add(Image::new_target_texture(
-        FRAME_PX,
-        FRAME_PX,
+        w,
+        h,
         TextureFormat::Rgba8UnormSrgb,
         None,
     ));
     bake.target = target.clone();
-    commands.spawn((
-        IconCam,
-        Camera3d::default(),
-        Camera {
-            clear_color: ClearColorConfig::Custom(Color::NONE),
-            ..default()
-        },
-        RenderTarget::Image(target.into()),
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::Fixed {
-                width: 1.0,
-                height: 1.0,
+    if bake.hand {
+        // The eye: at the origin looking down −Z, the game's lens, a dull
+        // sky behind so a dark item still has an edge.
+        commands.spawn((
+            IconCam,
+            Camera3d::default(),
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::srgb(0.52, 0.58, 0.64)),
+                ..default()
             },
-            near: 0.0,
-            far: 100.0,
-            ..OrthographicProjection::default_3d()
-        }),
-        // ACES over the game's TonyMcMapface: an icon sits on a dark cell at
-        // 34 px, and the extra contrast is what keeps it a picture there.
-        Tonemapping::AcesFitted,
-        Msaa::Sample4,
-        Transform::from_translation(VIEW_DIR.normalize() * 10.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+            RenderTarget::Image(target.into()),
+            Projection::Perspective(PerspectiveProjection {
+                fov: client::render::rig::FOV_DEG.to_radians(),
+                near: 0.01,
+                ..default()
+            }),
+            Tonemapping::AcesFitted,
+            Msaa::Sample4,
+            Transform::IDENTITY,
+        ));
+    } else {
+        commands.spawn((
+            IconCam,
+            Camera3d::default(),
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            RenderTarget::Image(target.into()),
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::Fixed {
+                    width: 1.0,
+                    height: 1.0,
+                },
+                near: 0.0,
+                far: 100.0,
+                ..OrthographicProjection::default_3d()
+            }),
+            // ACES over the game's TonyMcMapface: an icon sits on a dark cell at
+            // 34 px, and the extra contrast is what keeps it a picture there.
+            Tonemapping::AcesFitted,
+            Msaa::Sample4,
+            Transform::from_translation(VIEW_DIR.normalize() * 10.0)
+                .looking_at(Vec3::ZERO, Vec3::Y),
+        ));
+    }
     // Key: high and to the camera's left, so every icon is lit from the
     // upper left like Rust's and the silhouettes the finisher shades.
     commands.spawn((
@@ -248,7 +626,7 @@ fn stage(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut bake: Re
     // Fill from the right, cool and weak, so the shadow side keeps its form.
     commands.spawn((
         DirectionalLight {
-            illuminance: 850.0,
+            illuminance: 1_200.0,
             color: Color::srgb(0.80, 0.86, 1.0),
             shadows_enabled: false,
             ..default()
@@ -276,6 +654,8 @@ fn drive(
     children: Query<&Children>,
     bounds: Query<(&Aabb, &GlobalTransform)>,
     mut cam: Query<(&mut Transform, &mut Projection), With<IconCam>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut cur) = bake.cur.take() else {
@@ -295,13 +675,69 @@ fn drive(
             subject.turn[1].to_radians(),
             subject.turn[2].to_radians(),
         );
-        let place = Transform::from_rotation(turn);
-        let root = commands
-            .spawn((
-                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(subject.glb))),
-                place,
-            ))
-            .id();
+        let roll = Quat::from_axis_angle(VIEW_DIR.normalize(), subject.roll.to_radians());
+        let place = Transform::from_rotation(roll * turn).with_scale(Vec3::new(
+            subject.girth,
+            1.0,
+            subject.girth,
+        ));
+        let place = if bake.hand {
+            hand_place(subject.stem)
+        } else {
+            place
+        };
+        let root = match subject.src {
+            // The hand loads a row's file the way `viewmodel` does: its one
+            // primitive and its one material.
+            Src::Glb(glb) if bake.hand => commands
+                .spawn((
+                    Mesh3d(
+                        assets.load(
+                            GltfAssetLabel::Primitive {
+                                mesh: 0,
+                                primitive: 0,
+                            }
+                            .from_asset(glb),
+                        ),
+                    ),
+                    MeshMaterial3d::<StandardMaterial>(
+                        assets.load(
+                            GltfAssetLabel::Material {
+                                index: 0,
+                                is_scale_inverted: false,
+                            }
+                            .from_asset(glb),
+                        ),
+                    ),
+                    place,
+                ))
+                .id(),
+            Src::Glb(glb) => commands
+                .spawn((
+                    SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(glb))),
+                    place,
+                ))
+                .id(),
+            Src::Gen(name) => commands
+                .spawn((
+                    Mesh3d(meshes.add(client::render::heldgen::mesh(name))),
+                    MeshMaterial3d(mats.add(client::render::heldgen::material(name))),
+                    place,
+                ))
+                .id(),
+            Src::Kit(name) => commands
+                .spawn((
+                    Mesh3d(
+                        meshes.add(
+                            client::render::heldkit::baked(name)
+                                .unwrap_or_else(|| panic!("no kit prop {name}")),
+                        ),
+                    ),
+                    MeshMaterial3d(mats.add(kit_material())),
+                    place,
+                ))
+                .id(),
+        };
         bake.cur = Some(Current {
             subject,
             root,
@@ -314,7 +750,10 @@ fn drive(
 
     match cur.phase {
         Phase::Loading => {
-            if let Some((min, max)) = world_bounds(cur.root, &children, &bounds) {
+            if bake.hand && world_bounds(cur.root, &children, &bounds).is_some() {
+                cur.phase = Phase::Settling;
+                cur.frames = 0;
+            } else if let Some((min, max)) = world_bounds(cur.root, &children, &bounds) {
                 // Frame it: the corners on the camera's own axes, a square
                 // around the larger extent, centred on the middle of both.
                 let back = VIEW_DIR.normalize();

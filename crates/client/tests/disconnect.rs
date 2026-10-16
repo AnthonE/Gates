@@ -94,6 +94,7 @@ fn boot(state: Screen, entries: Vec<Entry>, with_world: bool) -> (App, Replay) {
             seed: SEED,
             tick: 0,
             dev: true,
+            blight_salt: 0,
         },
         watch: None,
         entries,

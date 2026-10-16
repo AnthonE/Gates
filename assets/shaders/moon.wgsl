@@ -6,7 +6,13 @@
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
 }
-#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_value}
+#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_value, slab_step, slab_warp, slab_shape}
+
+// Steps through the raymarched slab for a cover reading (`deck.wgsl`'s
+// `slab_shape`): the shape alone, no erosion, so a cloud hides a little
+// past its eroded rim and never less than it draws.
+const SLAB_STEPS: i32 = 12;
+
 
 // Field for field `moon::MoonParams`.
 struct Moon {
@@ -19,9 +25,15 @@ struct Moon {
     deck: vec4<f32>,
     // xy the deck's drift, noise units; z the field threshold; w the edge.
     cloud: vec4<f32>,
-    // x one over the field's period; y half a texel, uv; z 1 where the disk
-    // covers what is behind it, 0 where it adds; w the quad over the disk.
+    // x one over the field's period; y half a texel, uv; z unused; w the
+    // quad over the disk.
     field: vec4<f32>,
+    // xyz toward the sun in the disk's frame (x right, y up, z toward the
+    // eye), at the phase angle; w the earthshine on the dark side.
+    lit: vec4<f32>,
+    // The raymarched slab (`deck::slab_lanes`), as the stars read it; w 0
+    // where the deck is drawn flat.
+    slab: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> moon: Moon;
@@ -107,6 +119,15 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let z = sqrt(max(1.0 - r * r, 0.0));
     albedo *= 0.84 + 0.16 * sqrt(z);
 
+    // The phase: the sun on this point of the ball, Lommel–Seeliger, which
+    // is flat at full and brightest toward the limb it lights — so the
+    // terminator falls off to nothing smoothly and needs no antialiasing.
+    // The floor under `z` softens the horns where it meets the rim. The
+    // earth lights the rest, ashen, and shows the seas there too.
+    let mu = max(dot(vec3(p, z), moon.lit.xyz), 0.0);
+    let sunlit = min(2.0 * mu / (mu + max(z, 0.08)), 1.25);
+    albedo *= sunlit + moon.lit.w;
+
     // Behind the deck: where this pixel's ray meets it, is there cloud?
     let d = normalize(in.dir);
     let q = deck_point(d, moon.deck.x, moon.deck.y) + moon.cloud.xy;
@@ -114,8 +135,23 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let foot = max(length(dpdx(q)), length(dpdy(q)));
     let f0 = textureSampleGrad(field_tex, field_samp, uv, dpdx(uv), dpdy(uv)).r;
     let f = f0 + moon.deck.w * deck_detail(q, foot);
-    let cov = clamp((f - moon.cloud.z) / moon.cloud.w, 0.0, 1.0) * deck_fade(d.y, moon.deck.y, moon.deck.z);
+    var cov = clamp((f - moon.cloud.z) / moon.cloud.w, 0.0, 1.0) * deck_fade(d.y, moon.deck.y, moon.deck.z);
+    if moon.slab.w > 0.0 {
+        // Behind the slab the sky draws, not its base's outline (`stars.wgsl`).
+        var tau = 0.0;
+        for (var i = 0; i < SLAB_STEPS; i += 1) {
+            let s = slab_step(d, view.world_position.y, moon.slab, moon.deck.y, i, SLAB_STEPS);
+            let h = (s.y - moon.slab.x) / (moon.slab.y - moon.slab.x);
+            let sq = (s.xz + slab_warp(s.xyz, h)) / moon.slab.z + moon.cloud.xy;
+            let sf = textureSampleLevel(field_tex, field_samp, sq * moon.field.x + moon.field.y, 1.0).r;
+            tau += slab_shape(h, (sf - moon.cloud.z) / moon.cloud.w) * moon.slab.w * s.w;
+        }
+        cov = (1.0 - exp(-tau)) * deck_fade(d.y, moon.deck.y, moon.deck.z);
+    }
 
+    // Added, not laid over: the air's glow and the halo are in front of
+    // the moon and show on its dark side; the stars behind it are left out
+    // where they are drawn (`stars.wgsl`).
     let k = a * (1.0 - cov) * moon.light.w;
-    return vec4(moon.light.rgb * albedo * k * view.exposure, k * moon.field.z);
+    return vec4(moon.light.rgb * albedo * k * view.exposure, 0.0);
 }

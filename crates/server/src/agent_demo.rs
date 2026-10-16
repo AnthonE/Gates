@@ -233,7 +233,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -268,6 +268,9 @@ pub struct MindArgs {
     /// How long an MCP harness has to answer before the scripted policy
     /// plays that turn (`--autopilot-s`).
     pub autopilot: Duration,
+    /// Ears and a voice (`--voice`, `agent_voice.rs`): it hears what the
+    /// players near it say out loud and speaks its lines.
+    pub voice: bool,
 }
 
 /// `--autopilot-s`'s default: a long think for a big model, well inside the
@@ -288,6 +291,7 @@ impl Default for MindArgs {
             friend: None,
             friend_away_think: false,
             autopilot: AUTOPILOT_DEFAULT,
+            voice: false,
         }
     }
 }
@@ -327,6 +331,7 @@ impl MindArgs {
                     .ok_or("--temperament is one of passive, defensive, opportunist, kos")?;
             }
             "--mcp" => self.source = Source::Mcp,
+            "--voice" => self.voice = true,
             "--autopilot-s" => {
                 let secs = number(arg)?;
                 if !(5..=55).contains(&secs) {
@@ -381,6 +386,19 @@ impl MindArgs {
 
     /// Check the configuration and credentials, then start the source.
     pub fn build(&self) -> Result<Mind, String> {
+        self.build_with_speech(None)
+    }
+
+    /// [`Self::build`], with a voice for an external or MCP mind's lines
+    /// (`agent_voice::AgentVoice::spawn`'s producer).
+    pub fn build_with_speech(
+        &self,
+        speech: Option<crate::agent_voice::SpeechTx>,
+    ) -> Result<Mind, String> {
+        let voiced = |door: crate::external::External| match speech {
+            Some(tx) => door.with_speech(tx),
+            None => door,
+        };
         self.cfg.check()?;
         let buddy = self.friend.is_some();
         // A buddy's mind costs nothing while its friend is away: those
@@ -402,7 +420,7 @@ impl MindArgs {
                     ..self.cfg
                 };
                 cfg.check()?;
-                let door = crate::mcp::spawn(self.autopilot)?;
+                let door = voiced(crate::mcp::spawn(self.autopilot)?);
                 Mind::new(Autopilot::new(door, gate), cfg).map(priced)
             }
             Source::External(program, args) => {
@@ -415,17 +433,18 @@ impl MindArgs {
                     // The autopilot's answer to a request the agent missed
                     // must land inside the mind's own deadline.
                     let inner = self.cfg.timeout.mul_f32(0.8);
-                    let door =
-                        crate::external::External::spawn_with_env(program, args, &env, inner)?;
+                    let door = voiced(crate::external::External::spawn_with_env(
+                        program, args, &env, inner,
+                    )?);
                     return Mind::new(Autopilot::new(door, gate), self.cfg).map(priced);
                 }
                 Mind::new(
-                    crate::external::External::spawn_with_env(
+                    voiced(crate::external::External::spawn_with_env(
                         program,
                         args,
                         &env,
                         self.cfg.timeout,
-                    )?,
+                    )?),
                     self.cfg,
                 )
             }

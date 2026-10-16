@@ -154,6 +154,11 @@ pub const LOCK_RING: usize = 8;
 /// the newest is the one still worth hearing.
 pub const HEARD_RING: usize = 8;
 
+/// Far gunshots and blasts heard between two frames (`EventMsg::Report`,
+/// wire v113): (`protocol::REPORT_*`, x, y, z) in metres. Drop-oldest, the
+/// heard ring's reason.
+pub const REPORT_RING: usize = 8;
+
 /// The victim slot of a hitmarker that names no body.
 ///
 /// The hitmarker ring carries two facts that read identically to a player —
@@ -391,7 +396,8 @@ pub const APPLIED2_LODGED: u32 = 1 << 11;
 pub const APPLIED2_ENV: u32 = 1 << 7;
 
 /// The owner's wet/cold readout changed (`EventMsg::Exposure`, weather
-/// v0) — re-read `wet_pct`, `cold_pct` and `cold_hurting`.
+/// v0) — re-read `wet_pct`, `cold_pct`, `cold_hurting`, `comfort_pct`, and
+/// the Verdigris' `fel_pct` and `fel_hurting`.
 pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
 
 /// A structure hit landed that was THIS player's blow (wire v77): the
@@ -723,6 +729,19 @@ impl Harvested for HarvestedSet {
         match self.growth(key) {
             Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
             None => 1000,
+        }
+    }
+
+    /// A tree nobody felled grows with the wild stand (tree ages v0), off
+    /// the seed, as the server's `SlotLives::tree_pm` does.
+    fn tree_pm(&self, seed: u64, cx: u16, cz: u16) -> u16 {
+        let key = cell_key(cx, cz);
+        if self.contains(key) {
+            return 0;
+        }
+        match self.growth(key) {
+            Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
+            None => sim_core::gather::wild_pm(seed, cx, cz, self.now as u64),
         }
     }
 
@@ -1252,9 +1271,9 @@ impl ClientCore {
     /// deployable burns (a running recycler is lit and warms nothing) and
     /// the reach the defs drip carries, through the one rule both sides
     /// call (`exposure::fire_reaches`). A fire whose record or row has not
-    /// arrived yet, or that was lit before this client joined and has not
-    /// toggled since (`EV_OVEN` is the only carrier of the bit, and its
-    /// flame is not drawn either), warms nothing here: the shy answer.
+    /// arrived yet, or whose lit bit has not (`EV_OVEN`, sent on a toggle
+    /// and after the deploy walk's batch), warms nothing here: the shy
+    /// answer.
     pub fn fire_warms(&self, x: f32, z: f32, feet: f32) -> bool {
         let r = self.heat_radius_cm;
         if r == 0 {
@@ -1442,15 +1461,17 @@ struct InputState {
 // the second one is (the interp-delay lesson, re-paid). Read at the point
 // of use. `INTERP_DELAY_TICKS` (4) stays the starting point, so a fresh
 // session feels exactly what shipped before the delay learned to move.
+// The server reads the two below by path to bound the playout a datagram
+// reports (`server::stats::PLAYOUT_BOUND_DECAY_TICKS`, `JITTER_K_WHOLE`).
 /// Delay above the floor per unit of smoothed jitter: two jitters of
 /// margin, the classic adaptive-playout sizing (a sample later than the
 /// mean by one jitter is ordinary; by two is the tail worth buffering).
-const PLAYOUT_JITTER_K: f64 = 2.0;
+pub const PLAYOUT_JITTER_K: f64 = 2.0;
 /// How fast the playout delay may move, in ticks per second. A delay
 /// change slides every remote body on screen; half a tick per second is
 /// 16 ms of slide per second — beneath notice, and fast enough to double
 /// the buffer inside a rough patch's first seconds.
-const PLAYOUT_SLEW_PER_S: f64 = 0.5;
+pub const PLAYOUT_SLEW_PER_S: f64 = 0.5;
 /// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
 const JITTER_GAIN: f64 = 1.0 / 16.0;
 
@@ -1905,7 +1926,8 @@ pub struct ClientCore {
     /// caller a whole line (the `removed_key`/`removed_info` pattern).
     pub last_death_killer: u32,
     /// The death screen, own-body only. `dead` is set by the `Death` whose
-    /// victim is `player_id` and cleared by the `Respawn` that answers it;
+    /// victim is `player_id` (or by `Dead`, v116, when the body was already
+    /// dead at the join) and cleared by the `Respawn` that answers it;
     /// the four beside it are the sentence the screen says (ALPHA.md §1:
     /// "who/what killed you — range and weapon, no map position"), held
     /// rather than ringed because there is only ever one of them and the
@@ -1920,6 +1942,16 @@ pub struct ClientCore {
     pub own_death_cause: u8,
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
+    /// How long the body that fell had been standing, in seconds (v115) —
+    /// the death screen's "alive for". `None` when the server did not time
+    /// that life (`EventMsg::Dead` about a corpse restored from disk).
+    pub own_death_alive_s: Option<u32>,
+    /// Where this body last fell, world XZ: Rust's death marker, which the
+    /// death screen pins and the compass and the map keep showing after the
+    /// respawn, until the next death moves it. The server's, not this
+    /// client's memory (`EventMsg::DeathMark`, v116): stated at every join
+    /// and ahead of each death, so a reconnect or a reload keeps it.
+    pub death_marker: Option<(f32, f32)>,
     pub woke_on_bag: bool,
     /// **Down, not dead** (wounded v0, wire v63): set by the `Wounded`
     /// naming this body, cleared by `Recovered`, by the `Death` that ends a
@@ -1946,6 +1978,20 @@ pub struct ClientCore {
     pub wet_pct: u8,
     pub cold_pct: u8,
     pub cold_hurting: bool,
+    /// Own comfort, per cent (Rust's; a lit fire gives 50).
+    pub comfort_pct: u8,
+    /// The heat the owner is in, per cent, and the air they stand in, whole
+    /// °C (climate v0) — what the server's exposure step last read.
+    pub heat_pct: u8,
+    pub air_c: i8,
+    /// The Verdigris' meter on the owner, per cent, and whether it is
+    /// costing hp (wire v113).
+    pub fel_pct: u8,
+    pub fel_hurting: bool,
+    /// Whether any reading has landed (snow v0): until one has, `air_c`'s
+    /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
+    /// sends one, so its sky never snows.
+    pub air_read: bool,
     /// Until when you are hostile, the low 32 bits of the server tick
     /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
     pub hostile_until: u32,
@@ -1978,6 +2024,10 @@ pub struct ClientCore {
     /// the plural is the anchor, the singular is the loot.
     own_bags: [BagAnchor; BAG_CAP],
     own_bags_count: usize,
+    /// The server tick estimate the bag list landed at, so each cooling
+    /// bag's `wait_s` can be counted down without another message
+    /// (`bag_wait_left`).
+    own_bags_at: f64,
     /// The bag that stood where THIS body died — `WireBag::id`, zero for
     /// none (the store's own "no bag" sentinel). The wire deliberately
     /// carries no bag owner (`BackpackRec::owner` is sim-side only), so
@@ -2076,6 +2126,10 @@ pub struct ClientCore {
     heard: [(u32, u8, u16); HEARD_RING],
     heard_head: usize,
     heard_len: usize,
+    /// Far reports (`EventMsg::Report`, v113): (kind, x, y, z) metres.
+    reports: [(u8, u16, i16, u16); REPORT_RING],
+    report_head: usize,
+    report_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -2302,6 +2356,8 @@ impl ClientCore {
             own_death_cause: 0,
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
+            own_death_alive_s: None,
+            death_marker: None,
             woke_on_bag: false,
             wounded: false,
             wound_ticks: 0,
@@ -2311,12 +2367,19 @@ impl ClientCore {
             wet_pct: 0,
             cold_pct: 0,
             cold_hurting: false,
+            comfort_pct: 0,
+            heat_pct: 0,
+            air_c: 0,
+            fel_pct: 0,
+            fel_hurting: false,
+            air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
             own_bags_count: 0,
+            own_bags_at: 0.0,
             own_bag: 0,
             own_bag_pending: false,
             refusal_head: 0,
@@ -2359,6 +2422,9 @@ impl ClientCore {
             heard: [(0, 0, 0); HEARD_RING],
             heard_head: 0,
             heard_len: 0,
+            reports: [(0, 0, 0, 0); REPORT_RING],
+            report_head: 0,
+            report_len: 0,
             howl_head: 0,
             howl_len: 0,
             knock_head: 0,
@@ -2464,6 +2530,22 @@ impl ClientCore {
     /// is the authority either way.
     pub fn any_bag_ready(&self) -> bool {
         self.own_bags().iter().any(|b| b.ready)
+    }
+
+    /// Whole seconds until own bag `i` is ready, counted down on this
+    /// client's clock from the `Bags` message that stated it (v115): 0 when
+    /// it is. The death screen's timer on a cooling bag, and advisory like
+    /// `ready` — the sim decides at the wake.
+    pub fn bag_wait_left(&self, i: usize) -> u32 {
+        let Some(b) = self.own_bags().get(i) else {
+            return 0;
+        };
+        if b.ready {
+            return 0;
+        }
+        let ticks = (self.clock.server_est - self.own_bags_at).max(0.0);
+        let since = (ticks / sim_core::limits::TICK_HZ as f64) as u32;
+        (b.wait_s as u32).saturating_sub(since)
     }
 
     /// The `APPLIED2_*` flags the last `on_stream` call set — word 1 of
@@ -2769,6 +2851,7 @@ impl ClientCore {
                     w.fuel = fuel;
                     w.got = got;
                     w.mine = mine;
+                    w.synced = true;
                 }
                 self.arc.unlocks = unlocks;
                 self.arc.gen = self.arc.gen.wrapping_add(1);
@@ -3108,8 +3191,8 @@ impl ClientCore {
                     // rebuilt from the server's, and the walk carries no
                     // burn state, so keeping a lit address across it
                     // would be keeping a fire that may no longer stand.
-                    // The next toggle or self-snuff re-lights it, which
-                    // is at most one fuel unit away.
+                    // The walk re-lights what burns: the server sends an
+                    // `EV_OVEN` after each batch for its lit fires.
                     self.ovens.clear();
                     self.pieces
                         .rebuild_cols(&self.piece_defs, self.piece_defs_have);
@@ -3648,6 +3731,7 @@ impl ClientCore {
                 cause,
                 item,
                 range_cm,
+                alive_s,
             } => {
                 // Drop-oldest, like chat: a feed that stalls on the oldest
                 // kill is worse than one that loses it.
@@ -3674,8 +3758,35 @@ impl ClientCore {
                     self.own_death_cause = cause;
                     self.own_death_item = item;
                     self.own_death_range_cm = range_cm;
+                    self.own_death_alive_s = Some(alive_s);
                     flags |= APPLIED_RESPAWN;
                 }
+            }
+            EventMsg::Dead {
+                killer,
+                cause,
+                item,
+                range_cm,
+                alive_s,
+            } => {
+                // The death screen said again (v116): this body was already
+                // dead when this connection reached it. No feed line and no
+                // bag arm — the kill and its backpack happened while nobody
+                // here was looking.
+                self.dead = true;
+                self.wounded = false;
+                self.assist = (0, 0, 0);
+                self.predict.crawl = false;
+                self.own_death_killer = killer;
+                self.own_death_cause = cause;
+                self.own_death_item = item;
+                self.own_death_range_cm = range_cm;
+                self.own_death_alive_s = alive_s;
+                flags |= APPLIED_RESPAWN;
+            }
+            EventMsg::DeathMark { at } => {
+                let q = sim_core::movement::POS_XZ_Q;
+                self.death_marker = at.map(|(qx, qz)| (qx as f32 * q, qz as f32 * q));
             }
             EventMsg::Respawn { on_bag } => {
                 self.dead = false;
@@ -3715,11 +3826,22 @@ impl ClientCore {
             EventMsg::Exposure {
                 wet_pct,
                 cold_pct,
+                heat_pct,
                 hurting,
+                comfort_pct,
+                air_c,
+                fel_pct,
+                fel_hurting,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
                 self.cold_hurting = hurting;
+                self.comfort_pct = comfort_pct;
+                self.heat_pct = heat_pct;
+                self.air_c = air_c;
+                self.fel_pct = fel_pct;
+                self.fel_hurting = fel_hurting;
+                self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
             EventMsg::Recovered { chance_pm, hp } => {
@@ -3825,6 +3947,14 @@ impl ClientCore {
                 self.howls[(self.howl_head + self.howl_len) % HOWL_RING] = mob;
                 self.howl_len += 1;
             }
+            EventMsg::Report { kind, x, y, z } => {
+                if self.report_len == REPORT_RING {
+                    self.report_head = (self.report_head + 1) % REPORT_RING;
+                    self.report_len -= 1;
+                }
+                self.reports[(self.report_head + self.report_len) % REPORT_RING] = (kind, x, y, z);
+                self.report_len += 1;
+            }
             EventMsg::Heard { body, deed, item } => {
                 // Drop-oldest, the swing ring's shape. An id naming no
                 // drawn body is heard nowhere, which is right for it.
@@ -3908,6 +4038,7 @@ impl ClientCore {
             EventMsg::Bags { bags, count } => {
                 self.own_bags = bags;
                 self.own_bags_count = (count as usize).min(BAG_CAP);
+                self.own_bags_at = self.clock.server_est;
                 self.applied2 |= APPLIED2_BAGS;
             }
         }
@@ -4172,6 +4303,18 @@ impl ClientCore {
         self.lock_head = (self.lock_head + 1) % LOCK_RING;
         self.lock_len -= 1;
         Some(l)
+    }
+
+    /// Oldest buffered far report: (`protocol::REPORT_*`, x, y, z) metres.
+    /// Drained once a frame by `render::feed`, like every ring here.
+    pub fn pop_report(&mut self) -> Option<(u8, u16, i16, u16)> {
+        if self.report_len == 0 {
+            return None;
+        }
+        let r = self.reports[self.report_head];
+        self.report_head = (self.report_head + 1) % REPORT_RING;
+        self.report_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered deed heard from another body: (body id,
@@ -5984,7 +6127,7 @@ mod tests {
 
         // This body dies. The predicted body sits at the default origin,
         // so the death position is (0, 0).
-        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(c.dead);
 
@@ -6033,7 +6176,7 @@ mod tests {
     fn a_far_bag_does_not_spend_the_own_bag_latch() {
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
 
         let far_q = (8.0 / POS_XZ_Q) as i32; // 2x the join radius

@@ -28,10 +28,9 @@ use std::path::PathBuf;
 
 use crate::shot;
 
-/// The key. `F12` because it is what a player already reaches for and because
-/// this client binds no other function key at all (grep `KeyCode::F` — the
-/// hotbar is the digits and everything else is a letter), so it collides with
-/// nothing that exists and nothing that is planned.
+/// The key. `F12` because it is what a player already reaches for. The
+/// function keys the client keeps for itself are listed in
+/// `binds::RESERVED`, which is also what stops a player binding one.
 pub const KEY: KeyCode = KeyCode::F12;
 
 /// Frames between the shot and the check that it landed. A frame count rather

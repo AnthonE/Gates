@@ -62,6 +62,7 @@ pub fn write_header(
     w.write_all(&welcome.seed.to_le_bytes())?;
     w.write_all(&welcome.tick.to_le_bytes())?;
     w.write_all(&[welcome.dev as u8])?;
+    w.write_all(&welcome.blight_salt.to_le_bytes())?;
     if let Some(watch) = watch {
         let mut buf = [0u8; WATCH_BYTES];
         let n = protocol::encode_watch(watch, &mut buf)
@@ -131,11 +132,13 @@ pub fn read(r: &mut impl Read) -> io::Result<Recording> {
     let seed = c.u64()?;
     let tick = c.u32()?;
     let dev = c.take(1)?[0] != 0;
+    let blight_salt = c.u32()?;
     let welcome = protocol::Welcome {
         player_id,
         seed,
         tick,
         dev,
+        blight_salt,
     };
     let watch = if watched {
         let len = c.u32()? as usize;
@@ -310,6 +313,7 @@ mod tests {
             seed: 0xdead_beef_0102_0304,
             tick: 912,
             dev: true,
+            blight_salt: 0x0B11_6417,
         };
         let mut buf = Vec::new();
         write_header(&mut buf, &welcome, None).unwrap();
@@ -336,6 +340,7 @@ mod tests {
             seed: 11,
             tick: 3,
             dev: false,
+            blight_salt: 0,
         };
         let watch = protocol::Watch {
             address: protocol::Address([0x5a; 20]),

@@ -490,6 +490,33 @@ fn each_roadside_model_is_the_volume_the_sim_blocks() {
     }
 }
 
+/// The ground pickups (`props::PICKUP_GLB`) draw the item's own held model,
+/// scaled up: a row that names a file no held row loads would ship a model no
+/// other gate reads, and one scaled past knee height is a pile a player cannot
+/// see over, on a cell the sim leaves passable.
+#[test]
+fn each_pickup_is_a_held_model_lying_on_the_ground() {
+    use client::ui::hold::{HeldSrc, HELD_MODELS};
+    for (o, rel, k) in client::render::props::PICKUP_GLB {
+        assert!(
+            HELD_MODELS
+                .iter()
+                .any(|m| matches!(m.src, HeldSrc::Glb(p) if p == rel)),
+            "{o:?} draws {rel}, which no held row loads"
+        );
+        let g = glb_of(rel);
+        assert_eq!(g.primitives().len(), 1, "{rel}: one primitive");
+        let (peak, radius) = g.peak_and_radius();
+        assert!(
+            g.min_y().abs() < 1e-3,
+            "{o:?} ({rel}) has min.y {:+.4}: drawn at lift 0 it floats or sinks",
+            g.min_y()
+        );
+        assert!(peak * k <= 0.6, "{o:?} draws {:.2} m tall", peak * k);
+        assert!(radius * k <= 0.6, "{o:?} draws {:.2} m out", radius * k);
+    }
+}
+
 #[test]
 fn nothing_floats_and_nothing_is_buried_whole() {
     for (o, rel) in shipped() {

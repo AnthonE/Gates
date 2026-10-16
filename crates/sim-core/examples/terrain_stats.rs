@@ -28,7 +28,7 @@ fn main() {
             };
             hist[bucket] += 1;
             if h >= 0.0 {
-                biomes[terrain::biome(h, terrain::moisture(seed, x, z)) as usize] += 1;
+                biomes[terrain::biome_at(seed, h, x, z) as usize] += 1;
             }
         }
     }
@@ -41,8 +41,8 @@ fn main() {
         println!("  {l}: {c}");
     }
     println!(
-        "biomes: beach {} meadow {} forest {} highland {}",
-        biomes[0], biomes[1], biomes[2], biomes[3]
+        "biomes: beach {} meadow {} forest {} highland {} desert {} verdigris {}",
+        biomes[0], biomes[1], biomes[2], biomes[3], biomes[4], biomes[5]
     );
 
     // The grove field itself. Its island mean is exactly what `CLUMP_NORM`
@@ -92,7 +92,7 @@ fn main() {
             let h = terrain::height(seed, x, z);
             land[i] = u8::from(
                 h >= terrain::LAND_MIN_H
-                    && terrain::biome(h, terrain::moisture(seed, x, z)) == terrain::Biome::Forest,
+                    && terrain::biome_at(seed, h, x, z) == terrain::Biome::Forest,
             );
         }
     }

@@ -11,15 +11,18 @@
 //! overflow all fall to the same zero-state path — recovery is not a
 //! special case.
 
+use crate::stats::{
+    AIM_STALE_CEILING_TICKS, JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS, PLAYOUT_CLAIM_MARGIN_TICKS,
+};
 use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::{self, InputFrame};
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
-    CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_MOBS, MAX_PLAYERS,
-    MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
-    WEAR_SLOTS,
+    CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INTERP_DELAY_TICKS, INV_SLOTS,
+    MAX_INPUT_FRAMES, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP,
+    PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, WEAR_SLOTS,
 };
 
 /// Consecutive starved ticks before the nudge escalates to `HardResync`
@@ -163,7 +166,8 @@ pub struct ClientNetState {
     starve_ticks: u32,
     /// Frames the throttle may still take as a second-per-tick
     /// (`limits::INPUT_CATCHUP_CREDIT_CAP` says why); and the drift
-    /// trickle's tick counter.
+    /// trickle's tick counter. Earned by a starved tick only when its ghost
+    /// left the body where it was (`consume_input`).
     catchup_credit: u16,
     drift_ticks: u16,
     /// The last REAL frame this connection executed — the decay mint's
@@ -175,10 +179,41 @@ pub struct ClientNetState {
     last_real: InputFrame,
     /// The playout delay this client's newest input datagram reported
     /// (wire v61), already saturated by the codec's 4-bit field; clamped
-    /// again to the shared rails where favour is minted. Defaults to the
-    /// pre-v61 constant so a client that has not spoken yet is priced
-    /// exactly as every client used to be.
+    /// again to the shared rails and capped at `playout_cap` where favour
+    /// is minted (`priced_playout`). Defaults to the pre-v61 constant so a
+    /// client that has not spoken yet is priced exactly as every client
+    /// used to be.
     pub reported_playout: u8,
+    /// **The measured bound on that claim.** RFC 3550's interarrival jitter
+    /// (the client's own estimator, gain 1/16), run over this connection's
+    /// ack age: arrival tick minus the view `ShardCore::push_input` stamps.
+    /// That reading carries the downstream jitter the client sizes its
+    /// delay from, plus the upstream leg. Ticks × 256, so the integer
+    /// form's rounding bias is 1/32 tick. Bounded: a sample is clamped at
+    /// `AIM_STALE_CEILING_TICKS` and a ramped one sits at most
+    /// `MAX_INPUT_FRAMES - 1` below it, so this stays under 90 × 256.
+    ack_jitter_x256: u32,
+    /// The previous sample, ticks. `None` until one exists, and again after
+    /// a datagram with no measurable view, the way the client restarts its
+    /// own pairing.
+    ack_age_last: Option<i32>,
+    /// Per-frame samples `note_ack_age` may still spend, and the tick it
+    /// last ran. One accrues per sim tick, capped at `MAX_INPUT_FRAMES`: a
+    /// client whose render frame spans n ticks sends n fresh frames every n
+    /// ticks and spends what it accrued; one advancing seq faster than the
+    /// clock (free, because `push_frame` skips the window forward) gets one.
+    ack_sample_credit: u8,
+    ack_note_tick: u64,
+    /// The highest bound earned and the world tick it was earned at. It
+    /// gives back one tick per `PLAYOUT_BOUND_DECAY_TICKS`, the client's
+    /// slew.
+    playout_peak: (u8, u64),
+    /// The bound in force: the most playout favour is priced at. Never
+    /// below `INTERP_DELAY_TICKS`, the delay every client starts at and
+    /// every agent reports, so neither is ever capped. Not sim state:
+    /// nothing hashes, saves or sends it; the favour it prices rides the
+    /// command.
+    pub playout_cap: u8,
     /// Post-consume input-buffer depth, cached at consume time for the
     /// snapshot header (`SnapshotHeader::buffered_depth`) — `buffered_depth()`
     /// is an O(cap) scan and the header is built later in the same tick.
@@ -421,13 +456,20 @@ pub struct ClientNetState {
     pub skins_platform: sim_core::skin::SkinSet,
     /// The wet/cold readout as last sent, `(wet %, cold %, hurting)`.
     /// `None` owes the client the reading.
-    pub last_expo: Option<(u8, u8, bool)>,
+    pub last_expo: Option<sim_core::exposure::Readout>,
     /// Until when the owner is hostile, as last sent (`EventMsg::Hostile`).
     /// `None` owes the client the reading.
     pub last_hostile: Option<u32>,
     /// THE GATE's respawn point as last sent (`EventMsg::GateSpawn`).
     /// `None` owes the client the reading.
     pub last_gate_spawn: Option<u32>,
+    /// Where the body last fell, as last sent (`EventMsg::DeathMark`, v116).
+    /// `None` owes the client the marker.
+    pub last_death_mark: Option<Option<(i32, i32)>>,
+    /// The death screen is owed if the body is already dead (`EventMsg::Dead`,
+    /// v116): a fresh join and a resync start owing it, and the drip clears
+    /// it once the body is in the world, dead or not.
+    pub dead_owed: bool,
     /// The team as last sent (`EventMsg::Team`, v108), and the tick it was
     /// sent at: a change of who or how is sent at once, a member's move no
     /// oftener than `team::MOVE_TICKS`. `None` owes the client the view.
@@ -473,6 +515,12 @@ impl ClientNetState {
             drift_ticks: 0,
             last_real: InputFrame::default(),
             reported_playout: sim_core::limits::INTERP_DELAY_TICKS,
+            ack_jitter_x256: 0,
+            ack_age_last: None,
+            ack_sample_credit: 0,
+            ack_note_tick: 0,
+            playout_peak: (0, 0),
+            playout_cap: INTERP_DELAY_TICKS,
             depth_report: 0,
             nudge: Nudge::Ok,
             sent: [SentSnap::empty(); SENT_SNAPSHOT_RING],
@@ -535,6 +583,8 @@ impl ClientNetState {
             last_expo: None,
             last_hostile: None,
             last_gate_spawn: None,
+            last_death_mark: None,
+            dead_owed: true,
             last_team: None,
             team_sent_at: 0,
             pending_team: None,
@@ -610,6 +660,8 @@ impl ClientNetState {
         self.last_expo = None;
         self.last_hostile = None;
         self.last_gate_spawn = None;
+        self.last_death_mark = None;
+        self.dead_owed = true;
         self.last_team = None;
     }
 
@@ -682,6 +734,72 @@ impl ClientNetState {
     /// a grep for this name, not a value assertion.
     pub fn take_ack_regressions(&mut self) -> u64 {
         core::mem::take(&mut self.ack_regressions) as u64
+    }
+
+    /// Fold one input datagram's ack age into the playout bound. `age` is
+    /// `now − view`, the ticks the datagram's frames were stamped with
+    /// (`None`: nothing measurable, so the pairing restarts). `fresh` is
+    /// how many frames the datagram delivered for the first time: a client
+    /// whose render frame spans n ticks sends n frames at once and applies
+    /// snapshots n at a time, and its estimator reads that burst as jitter.
+    /// So the datagram counts as n samples a tick apart, the oldest frame
+    /// youngest — as many as the tick clock has paid for since the last
+    /// datagram (`ack_sample_credit`), so inflating seq buys nothing.
+    pub fn note_ack_age(&mut self, tick: u64, age: Option<u16>, fresh: usize) {
+        let accrued = tick
+            .saturating_sub(self.ack_note_tick)
+            .min(MAX_INPUT_FRAMES as u64) as u8;
+        self.ack_note_tick = tick;
+        self.ack_sample_credit = (self.ack_sample_credit + accrued).min(MAX_INPUT_FRAMES as u8);
+        let Some(age) = age else {
+            self.ack_age_last = None;
+            return;
+        };
+        let age = i32::from(age.min(AIM_STALE_CEILING_TICKS));
+        let n = fresh
+            .min(usize::from(self.ack_sample_credit))
+            .clamp(1, MAX_INPUT_FRAMES);
+        self.ack_sample_credit = self.ack_sample_credit.saturating_sub(n as u8);
+        let n = n as i32;
+        for j in 0..n {
+            let a = age - (n - 1 - j);
+            if let Some(last) = self.ack_age_last {
+                // RFC 3550 A.8's integer form, scaled ×256: J += (|D| − J)/16.
+                // One left-to-right expression on purpose: `+= 16*d − …`
+                // would underflow at d = 0.
+                let d = a.abs_diff(last);
+                self.ack_jitter_x256 =
+                    self.ack_jitter_x256 + 16 * d - ((self.ack_jitter_x256 + 8) >> 4);
+            }
+            self.ack_age_last = Some(a);
+        }
+        // The client's target rule (client-core `advance`): floor + K
+        // jitters. Rounded up, plus the margin, floored at the shipped delay.
+        let k_jitters = (JITTER_K_WHOLE * self.ack_jitter_x256).div_ceil(256);
+        let target =
+            (u32::from(PLAYOUT_MIN_TICKS) + k_jitters + u32::from(PLAYOUT_CLAIM_MARGIN_TICKS))
+                .clamp(u32::from(INTERP_DELAY_TICKS), u32::from(PLAYOUT_MAX_TICKS))
+                as u8;
+        let (peak, at) = self.playout_peak;
+        let given_back =
+            (tick.saturating_sub(at) / PLAYOUT_BOUND_DECAY_TICKS).min(u64::from(u8::MAX)) as u8;
+        let held = peak.saturating_sub(given_back);
+        if target >= held {
+            self.playout_peak = (target, tick);
+            self.playout_cap = target;
+        } else {
+            self.playout_cap = held;
+        }
+    }
+
+    /// The playout favour is priced at: the claim on the shared rails,
+    /// capped at the bound. `true` when the cap cut the claim.
+    pub fn priced_playout(&self) -> (u8, bool) {
+        let claim = self
+            .reported_playout
+            .clamp(PLAYOUT_MIN_TICKS, PLAYOUT_MAX_TICKS);
+        let priced = claim.min(self.playout_cap);
+        (priced, priced < claim)
     }
 
     /// Process the redundant ack header of one input datagram: mark ring
@@ -815,14 +933,17 @@ impl ClientNetState {
     /// is stamped too new and measures too little, which is the safe
     /// direction (it under-favours the shooter on inputs that were already
     /// lost) and is the half of §2.2's claim that survives.
-    pub fn push_frame(&mut self, f: InputFrame, view: Option<u16>) {
+    /// Returns whether the frame was new here — not executed and not a
+    /// repeat of the one buffered in its slot: `note_ack_age`'s per-frame
+    /// sample count.
+    pub fn push_frame(&mut self, f: InputFrame, view: Option<u16>) -> bool {
         if !self.got_input {
             self.got_input = true;
             self.last_executed = f.seq.wrapping_sub(1);
         }
         let ahead = f.seq.wrapping_sub(self.last_executed);
         if ahead == 0 || ahead > 0x7FFF {
-            return; // executed already, or ancient
+            return false; // executed already, or ancient
         }
         if ahead as usize > INPUT_BUFFER_CAP {
             self.last_executed = f.seq.wrapping_sub(INPUT_BUFFER_CAP as u16);
@@ -836,6 +957,7 @@ impl ClientNetState {
         if !repeat {
             self.in_view[slot] = view;
         }
+        !repeat
     }
 
     fn buffered_depth(&self) -> usize {
@@ -1013,7 +1135,20 @@ impl ClientNetState {
             }
         } else {
             self.starve_ticks += 1;
-            self.earn_credit();
+            // Owed a catch-up frame only if the body stood still this tick.
+            // The ramp's walking ticks (`ghost_frame`: 2/3, then 1/3 of the
+            // last real stride) already moved it; crediting them as well let
+            // a lag switch keep the ghost AND run every withheld frame on
+            // time, about a stride a pulse. Per tick, not per episode: a
+            // diagonal ghost walks 0.94 + 0.47 of a stride (`movement::step`
+            // clamps the wish before the decay shrinks it). After `+= 1`,
+            // because `ghost_frame` reads the count.
+            let ghost_walked = self
+                .ghost_frame()
+                .is_some_and(|g| g.move_x != 0 || g.move_z != 0);
+            if !ghost_walked {
+                self.earn_credit();
+            }
         }
         // `HardResync` is the rung that still steers (netcode v2 S4):
         // the client's clock runs a proportional controller on the
@@ -1212,6 +1347,198 @@ mod tests {
         assert_eq!(c.consume_input().unwrap().frame.seq, 5);
         assert!(c.consume_input().is_none());
         assert_eq!(c.ghost_frame().unwrap().move_x, -60);
+    }
+
+    /// A steady ack age is no jitter: the bound stays at the shipped delay.
+    #[test]
+    fn a_steady_ack_age_earns_only_the_floor() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        for t in 0..300 {
+            c.note_ack_age(t, Some(2), 1);
+        }
+        assert_eq!((c.ack_jitter_x256, c.playout_cap), (0, INTERP_DELAY_TICKS));
+    }
+
+    /// A client rendering every third tick sends three frames at once, and
+    /// its own estimator reads that burst as jitter: so does the bound.
+    #[test]
+    fn a_burst_of_frames_reads_as_the_burst_the_client_saw() {
+        for (fresh, want) in [(3, (333, 6)), (1, (0, INTERP_DELAY_TICKS))] {
+            let mut c = ClientNetState::new();
+            c.reset(1);
+            for i in 0..600u64 {
+                c.note_ack_age(i * 3, Some(5), fresh);
+            }
+            assert_eq!((c.ack_jitter_x256, c.playout_cap), want, "fresh {fresh}");
+        }
+    }
+
+    /// Advancing seq faster than the clock buys no samples: the credit is
+    /// paid by sim ticks, not by frames claimed.
+    #[test]
+    fn seq_inflation_buys_no_jitter() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        for t in 0..600 {
+            c.note_ack_age(t, Some(1), MAX_INPUT_FRAMES);
+        }
+        assert_eq!(c.playout_cap, INTERP_DELAY_TICKS);
+    }
+
+    /// Ack ages alternating a tick either side earn what a client measuring
+    /// that jitter would claim, and a tick of margin.
+    #[test]
+    fn alternating_ack_ages_earn_what_that_jitter_would_claim() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        for t in 0..600u64 {
+            c.note_ack_age(t, Some(if t % 2 == 0 { 1 } else { 3 }), 1);
+        }
+        assert_eq!((c.ack_jitter_x256, c.playout_cap), (504, 7));
+    }
+
+    /// After a rough patch the bound gives back a tick per slew period and
+    /// no faster, so a delay still sliding down is never undercut.
+    #[test]
+    fn the_bound_gives_back_a_tick_per_slew_period_and_no_faster() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        for t in 0..300u64 {
+            c.note_ack_age(t, Some(if t % 2 == 0 { 0 } else { 6 }), 1);
+        }
+        assert_eq!(c.playout_cap, PLAYOUT_MAX_TICKS);
+        let mut caps = Vec::new();
+        for t in 300..900u64 {
+            c.note_ack_age(t, Some(3), 1);
+            caps.push(c.playout_cap);
+        }
+        let period = PLAYOUT_BOUND_DECAY_TICKS as usize;
+        assert!(caps[..period].iter().all(|&k| k == PLAYOUT_MAX_TICKS));
+        assert!(caps.windows(2).all(|w| w[1] <= w[0]), "never rises");
+        for i in period..caps.len() {
+            assert!(
+                caps[i] + 1 >= caps[i - period],
+                "faster than the slew at {i}"
+            );
+        }
+        assert!(caps[300..].iter().all(|&k| k == INTERP_DELAY_TICKS));
+    }
+
+    /// A datagram with no measurable view restarts the pairing, and a
+    /// sample past the ceiling folds at the ceiling.
+    #[test]
+    fn an_unmeasured_datagram_restarts_the_pairing_and_the_ceiling_holds() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        c.note_ack_age(0, Some(2), 1);
+        c.note_ack_age(1, None, 1);
+        c.note_ack_age(2, Some(60), 1);
+        assert_eq!(c.ack_jitter_x256, 0);
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        c.note_ack_age(0, Some(2), 1);
+        c.note_ack_age(1, Some(9000), 1);
+        assert_eq!(
+            c.ack_jitter_x256,
+            16 * (u32::from(AIM_STALE_CEILING_TICKS) - 2)
+        );
+    }
+
+    /// `push_frame` says which frames it had not seen; `priced_playout`
+    /// caps the claim on the rails and says when it did.
+    #[test]
+    fn push_frame_reports_new_frames_and_the_claim_is_priced_at_the_cap() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        let f = |seq| InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        assert!(c.push_frame(f(1), None));
+        assert!(!c.push_frame(f(1), None), "a repeat");
+        assert!(c.consume_input().is_some());
+        assert!(!c.push_frame(f(1), None), "executed already");
+        c.playout_cap = INTERP_DELAY_TICKS;
+        for (claim, want) in [
+            (15, (INTERP_DELAY_TICKS, true)),
+            (3, (3, false)),
+            (0, (PLAYOUT_MIN_TICKS, false)),
+        ] {
+            c.reported_playout = claim;
+            assert_eq!(c.priced_playout(), want, "claim {claim}");
+        }
+    }
+
+    /// A starved tick earns its catch-up only when the body stood still on
+    /// it: the ramp's two walking ticks were already paid for by the ghost.
+    #[test]
+    fn a_starved_tick_that_walked_earns_no_credit() {
+        for (move_z, owed) in [(127i8, 3u16), (0, 5)] {
+            let mut c = ClientNetState::new();
+            c.reset(1);
+            c.push_frame(
+                InputFrame {
+                    seq: 0,
+                    move_z,
+                    ..InputFrame::default()
+                },
+                None,
+            );
+            assert!(c.consume_input().is_some());
+            c.catchup_credit = 0;
+            c.drift_ticks = 0;
+            for _ in 0..5 {
+                assert!(c.consume_input().is_none());
+            }
+            // Walking: ticks 1-2 walk (84, 42), 3's ghost is still, 4-5 re-run it.
+            assert_eq!(c.catchup_credit, owed, "move_z {move_z}");
+        }
+    }
+
+    /// The honest half with the bank empty: a loss burst of walking frames
+    /// still pays for its own catch-up — L starved ticks earn L - 2, and the
+    /// throttle needs L - 5 double-steps to get back under its threshold —
+    /// and every frame runs.
+    #[test]
+    fn a_loss_burst_pays_its_own_catch_up_from_an_empty_bank() {
+        let walk = |seq| InputFrame {
+            seq,
+            move_z: 127,
+            ..InputFrame::default()
+        };
+        let run =
+            |c: &mut ClientNetState| c.consume_input().map_or(0, |g| 1 + g.prev.is_some() as u32);
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        let (mut seq, mut ran) = (0u16, 0u32);
+        for _ in 0..10 {
+            c.push_frame(walk(seq), None);
+            seq += 1;
+            ran += run(&mut c);
+        }
+        c.catchup_credit = 0;
+        c.drift_ticks = 0;
+        for _ in 0..10 {
+            ran += run(&mut c); // ten ticks lost
+        }
+        for _ in 0..10 {
+            c.push_frame(walk(seq), None); // one datagram's redundancy
+            seq += 1;
+        }
+        for _ in 0..15 {
+            c.push_frame(walk(seq), None);
+            seq += 1;
+            ran += run(&mut c);
+        }
+        assert!(
+            usize::from(c.depth_report()) <= INPUT_THROTTLE_DEPTH,
+            "the throttle never re-centred"
+        );
+        for _ in 0..10 {
+            ran += run(&mut c);
+        }
+        assert_eq!(ran, u32::from(seq), "an honest frame was not run");
     }
 
     #[test]

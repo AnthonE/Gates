@@ -95,8 +95,20 @@ largest per-vertex `hypot(x, z)`, `render::tree::bounds`) rather than for the
 box: one shared X/Z factor, so the plan shape is preserved and only its scale
 moves, and Y independently as `--fit-axes` does.
 
+`--turn=y90,x-90` turns the mesh by right angles before anything is
+measured, applied left to right about the named axis (degrees, a multiple of
+90). The generator stands a thing however its reference image showed it, and
+the draw code has an axis of its own: a car parked along +Z, a gunship nosing
+down +Z, a searchlight's lens up +Y. Positions, normals and tangents turn
+together; a right angle is an exact permutation, so nothing drifts.
+
+`--shift=DX,DY,DZ` moves the fitted mesh, metres, after everything else: for
+a part that turns about a point that is not its box's middle (a turret head
+pivots in its housing, not halfway along its barrel).
+
 Usage:  ci/import_meshy.py <in.glb> <out.glb> W H D
                            [--emissive] [--fit-axes] [--fit-radius] [--center]
+                           [--turn=AXISDEG,...] [--shift=DX,DY,DZ]
 """
 import json
 import struct
@@ -167,8 +179,117 @@ def vecs(gltf, blob, acc_i, want):
     ).reshape(n, want)
 
 
+def prune(gltf, blob):
+    """Drop the textures, images and buffer views no material reads, and
+    return the compacted buffer.
+
+    The emissive strip below leaves its map behind: still an image, still in
+    the buffer, and `ci/ktx_pack.py` packs every image it finds. Measured on
+    the held items shipped before this existed: four images where three are
+    read. Small on disk (a stripped emissive is mostly black: 0.8-44 KB
+    packed), but a texture in the file that nothing samples, and a multi-image
+    delivery's is a full-size map. Accessor and image indices are remapped;
+    nothing that is read moves."""
+    slots = ("normalTexture", "occlusionTexture", "emissiveTexture")
+    pbr_slots = ("baseColorTexture", "metallicRoughnessTexture")
+    used_tex = set()
+    for m in gltf.get("materials", []):
+        for k in slots:
+            if k in m:
+                used_tex.add(m[k]["index"])
+        for k in pbr_slots:
+            t = m.get("pbrMetallicRoughness", {}).get(k)
+            if t is not None:
+                used_tex.add(t["index"])
+    textures = gltf.get("textures", [])
+    keep_tex = [i for i in range(len(textures)) if i in used_tex]
+    tex_map = {old: new for new, old in enumerate(keep_tex)}
+    used_img = {textures[i].get("source") for i in keep_tex} - {None}
+    images = gltf.get("images", [])
+    keep_img = [i for i in range(len(images)) if i in used_img]
+    img_map = {old: new for new, old in enumerate(keep_img)}
+    used_bv = {a["bufferView"] for a in gltf.get("accessors", []) if "bufferView" in a}
+    used_bv |= {images[i]["bufferView"] for i in keep_img if "bufferView" in images[i]}
+    views = gltf.get("bufferViews", [])
+    keep_bv = [i for i in range(len(views)) if i in used_bv]
+    bv_map = {old: new for new, old in enumerate(keep_bv)}
+    if len(keep_tex) == len(textures) and len(keep_img) == len(images) and len(keep_bv) == len(views):
+        return blob
+    for m in gltf.get("materials", []):
+        for k in slots:
+            if k in m:
+                m[k]["index"] = tex_map[m[k]["index"]]
+        for k in pbr_slots:
+            t = m.get("pbrMetallicRoughness", {}).get(k)
+            if t is not None:
+                t["index"] = tex_map[t["index"]]
+    gltf["textures"] = [dict(textures[i], source=img_map[textures[i]["source"]])
+                        if "source" in textures[i] else textures[i] for i in keep_tex]
+    gltf["images"] = [images[i] for i in keep_img]
+    for im in gltf["images"]:
+        if "bufferView" in im:
+            im["bufferView"] = bv_map[im["bufferView"]]
+    for a in gltf.get("accessors", []):
+        if "bufferView" in a:
+            a["bufferView"] = bv_map[a["bufferView"]]
+    out = bytearray()
+    new_views = []
+    for i in keep_bv:
+        bv = dict(views[i])
+        st = bv.get("byteOffset", 0)
+        data = blob[st:st + bv["byteLength"]]
+        out += b"\0" * (-len(out) % 4)
+        bv["byteOffset"] = len(out)
+        out += data
+        new_views.append(bv)
+    gltf["bufferViews"] = new_views
+    gltf["buffers"][0]["byteLength"] = len(out)
+    if not gltf["textures"]:
+        gltf.pop("textures")
+    if not gltf["images"]:
+        gltf.pop("images")
+    return out
+
+
+def right_angle(spec):
+    """The exact rotation for one `--turn` step, e.g. `y90` or `x-90`."""
+    axis, deg = spec[0].lower(), int(spec[1:])
+    if axis not in "xyz" or deg % 90:
+        raise SystemExit(f"--turn: {spec!r} is not an axis and a multiple of 90")
+    c, s = [(1, 0), (0, 1), (-1, 0), (0, -1)][(deg // 90) % 4]
+    if axis == "x":
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float32)
+    if axis == "y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float32)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
+
+
+def turn(gltf, blob, specs):
+    """Turn every primitive by the `--turn` steps, each accessor once."""
+    r = np.eye(3, dtype=np.float32)
+    for spec in specs:
+        r = right_angle(spec) @ r
+    done = set()
+    for m in gltf["meshes"]:
+        for p in m["primitives"]:
+            for name, width in (("POSITION", 3), ("NORMAL", 3), ("TANGENT", 4)):
+                i = p["attributes"].get(name)
+                if i is None or i in done:
+                    continue
+                done.add(i)
+                v = vecs(gltf, blob, i, width)
+                v[:, :3] = v[:, :3] @ r.T
+                _rebound(gltf, i, v)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    turns = [t for a in sys.argv[1:] if a.startswith("--turn=")
+             for t in a.split("=", 1)[1].split(",") if t]
+    shift = np.zeros(3)
+    for a in sys.argv[1:]:
+        if a.startswith("--shift="):
+            shift = np.array([float(x) for x in a.split("=", 1)[1].split(",")])
     keep_emissive = "--emissive" in sys.argv
     fit_axes = "--fit-axes" in sys.argv
     fit_radius = "--fit-radius" in sys.argv
@@ -179,6 +300,8 @@ def main():
     target = np.array([float(v) for v in args[2:5]])
 
     gltf, blob = read_glb(src)
+    if turns:
+        turn(gltf, blob, turns)
     accs = [p["attributes"]["POSITION"]
             for m in gltf["meshes"] for p in m["primitives"]]
 
@@ -237,7 +360,7 @@ def main():
                 continue
             done.add(at["POSITION"])
             v = positions(gltf, blob, at["POSITION"])
-            v[:] = (v - pivot) * k
+            v[:] = (v - pivot) * k + shift
             a = gltf["accessors"][at["POSITION"]]
             a["min"] = v.min(0).astype(float).tolist()
             a["max"] = v.max(0).astype(float).tolist()
@@ -268,6 +391,7 @@ def main():
             continue
         m.pop("emissiveTexture", None)
         m["emissiveFactor"] = [0.0, 0.0, 0.0]
+    blob = prune(gltf, blob)
 
     write_glb(dst, gltf, blob)
     out = size * k

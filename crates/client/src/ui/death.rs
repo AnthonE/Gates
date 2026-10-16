@@ -1,25 +1,33 @@
-//! What the death screen says.
+//! What the death screen says, and which buttons it offers.
 //!
-//! Pure and in `ui/` because it is a sentence assembled from five wire
-//! fields, and a sentence assembled inside a Bevy system is one no headless
+//! Pure and in `ui/` because every string on it is assembled from wire
+//! fields, and a string assembled inside a Bevy system is one no headless
 //! test can read back.
 //!
-//! **No position anywhere in it, and that is a rule rather than an
-//! omission** (`ALPHA.md` §1, "who/what killed you — range and weapon, no
-//! map position"): a screen that told you where you fell would hand the
-//! raider standing over your body a pin to the base they just cleared. Who,
-//! with what, from how far.
+//! **The layout is Rust's** (operator, 2026-10-15, with the reference frame
+//! pasted): a strip across the top — YOU DIED, then ALIVE FOR, KILLED BY,
+//! WITH A, AT A DISTANCE OF and IN — the island in the middle with a skull
+//! where you fell and your bags on it, and a bar along the bottom with one
+//! button per bag, THE GATE once you have reached it, and RANDOM RESPAWN.
+//! This file is the words and the order; `render/death.rs` draws them.
+//!
+//! **The map marks where you fell now.** This screen used to refuse any
+//! position (`ALPHA.md` §1, "no map position"); the reference screen the
+//! operator asked for has the skull pin, and only the body that fell ever
+//! sees it.
 
 use protocol::event::ItemCatalog;
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::mob;
 use sim_core::world::{
-    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_HAND,
-    DEATH_BY_MOB, DEATH_BY_SALT,
+    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_FALL,
+    DEATH_BY_FEL, DEATH_BY_HAND, DEATH_BY_HEAT, DEATH_BY_MOB, DEATH_BY_SALT,
 };
 
 use super::craft::item_name;
 
-/// Everything the screen needs, read straight off `ClientCore`.
+/// Everything the screen needs about the death, read straight off
+/// `ClientCore`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Death {
     pub cause: u8,
@@ -28,9 +36,21 @@ pub struct Death {
     pub range_cm: u16,
     /// This client's own id, so "you did it to yourself" is answerable.
     pub own_id: u32,
+    /// How long the body had been standing, in seconds (wire v115). `None`
+    /// when the server did not time that life (a corpse restored from disk),
+    /// and then the strip has no ALIVE FOR.
+    pub alive_s: Option<u32>,
 }
 
-/// The one line under the title.
+impl Death {
+    /// Whether the killer is the victim.
+    fn own_doing(&self) -> bool {
+        self.killer == self.own_id
+    }
+}
+
+/// The death as one line. The report composer's prefill
+/// ([`report_title`]) is built from it.
 ///
 /// An unknown cause is reported as itself rather than folded into the
 /// nearest sentence — `DEATH_BY_MAX`'s own doc records a judged FAIL where a
@@ -45,8 +65,10 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_CLOCK => "you ran out".to_string(),
         DEATH_BY_SALT => "the sea is salt".to_string(),
         DEATH_BY_COLD => "the cold took you".to_string(),
-        sim_core::world::DEATH_BY_FALL => "you fell too far".to_string(),
-        DEATH_BY_HAND if d.killer == d.own_id => "you did it to yourself".to_string(),
+        DEATH_BY_HEAT => "the heat took you".to_string(),
+        DEATH_BY_FEL => "the verdigris took you".to_string(),
+        DEATH_BY_FALL => "you fell too far".to_string(),
+        DEATH_BY_HAND if d.own_doing() => "you did it to yourself".to_string(),
         DEATH_BY_HAND => {
             let weapon = match item_name(catalog, d.item) {
                 Some(n) => format!(" with {n}"),
@@ -59,31 +81,13 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
                 d.range_cm as f32 / 100.0
             )
         }
-        // The bow gets its own verb rather than `DEATH_BY_HAND`'s, for the
-        // reason `world.rs` gives for the cause existing at all: the range
-        // is the whole story of a ranged kill, and "killed you from 41.3 m"
-        // reads as a melee reach bug rather than as an archer.
-        //
-        // No self-kill arm. `ranged.rs` refuses an arrow against its own
-        // shooter (`tests/shoot.rs: an_arrow_never_hits_its_owner`), so a
-        // branch for it here would be unreachable code asserting a rule
-        // that is already a wall one crate down.
-        //
-        // **Two causes, one sentence, and that is the point.** A bullet
-        // shared `DEATH_BY_ARROW` outright from hitscan v0 to arrow
-        // recovery v1, and the reason it went unnoticed for twenty-three
-        // days is written right here: the sentence was already exact,
-        // because the weapon is a wire field, so this reads "shot you with
-        // the revolver from 12.4 m" and "shot you with the bow from
-        // 34.0 m" off one branch either way. What was wrong was never the
-        // words — it was the *cause code* underneath them, which is what
-        // anything reading the cause rather than the sentence sees.
-        //
-        // So `DEATH_BY_BULLET` is named here rather than given an arm: the
-        // fix upstream was to stop lying about which cause it was, not to
-        // say something different to the player. Leaving it unnamed would
-        // have been the actual regression — it falls to `other` and prints
-        // "killed by cause 6".
+        // The bow gets its own verb, for the reason `world.rs` gives for
+        // the cause existing at all: the range is the whole story of a
+        // ranged kill, and "killed you from 41.3 m" reads as a melee reach
+        // bug rather than as an archer. A bullet shares the sentence — the
+        // weapon is a wire field, so "shot you with the revolver" and "shot
+        // you with the bow" come off one branch. No self-kill arm:
+        // `ranged.rs` refuses an arrow against its own shooter.
         DEATH_BY_ARROW | DEATH_BY_BULLET => {
             let weapon = match item_name(catalog, d.item) {
                 Some(n) => format!(" with {n}"),
@@ -96,27 +100,13 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
                 d.range_cm as f32 / 100.0
             )
         }
-        // The killer is a roster slot's tagged id, never a player number —
-        // printing "#8388608" would be the wire's bookkeeping leaking into
-        // a sentence. The species comes off that slot through `mob::kind_of`,
-        // which is what the renderer picks the mesh with and what the sim
-        // built the roster with: three readers, one pure function, and no
-        // wire field. A death screen that named the wrong animal would be
-        // the cheapest possible way to find out the three had drifted.
-        DEATH_BY_MOB if mob::slot_of_id(d.killer).is_some_and(sim_core::turret::is_turret_slot) => {
-            "an auto turret gunned you down".to_string()
-        }
-        DEATH_BY_MOB => match mob::slot_of_id(d.killer).map(mob::kind_of) {
-            Some(mob::MOB_WOLF) => "a wolf ran you down".to_string(),
-            Some(mob::MOB_STAG) => "a stag gored you".to_string(),
-            Some(mob::MOB_HELI) => "the attack helicopter gunned you down".to_string(),
-            Some(mob::MOB_SENTRY) => "THE GATE's sentry gunned you down".to_string(),
-            _ => "a pig gored you".to_string(),
+        DEATH_BY_MOB => match beast(d.killer) {
+            Some(b) => b.sentence.to_string(),
+            None => "something gored you".to_string(),
         },
         // The blast's whole story is the distance, an arrow's rule — and
-        // the planter may be the victim, which gets the sentence a
-        // self-inflicted bomb has earned since bombs existed.
-        DEATH_BY_CHARGE if d.killer == d.own_id => "you blew yourself up".to_string(),
+        // the planter may be the victim.
+        DEATH_BY_CHARGE if d.own_doing() => "you blew yourself up".to_string(),
         DEATH_BY_CHARGE => format!(
             "{}'s charge got you from {:.1} m",
             killer,
@@ -126,145 +116,404 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Which answers the screen offers (bag choice v0)
-// ---------------------------------------------------------------------------
-//
-// **A row for an anchor you do not have is not a choice, it is a wrong
-// button.** "Wake on your bag" was drawn unconditionally, and for a player
-// who has never placed one it always resolved to a beach — the sim's
-// deliberate kindness (`asking_for_a_bag_you_have_not_got_is_a_beach`),
-// arriving as a screen that offered two doors into one room. The list is
-// data now, and `ClientCore::own_bags()` is what decides its length.
-//
-// The order is fixed and the beach is LAST, which is what makes
-// `rows(false)` a suffix of `rows(true)` rather than a second table: the
-// digit that answers "just get me back in" is the last one either way.
+/// A killer that is not a player: its KILLED BY name and its sentence.
+struct Beast {
+    name: &'static str,
+    sentence: &'static str,
+}
 
-/// Where you wake up.
+/// What a mob killer is, off its roster slot.
 ///
-/// `ui` rather than `render` because the whole of "which rows exist and
-/// which key reaches them" is arithmetic that a headless test can read
-/// back, and it was in a Bevy file where nothing could
-/// (`crate::ui`'s standing rule).
+/// The killer is a roster slot's tagged id, never a player number —
+/// printing "#8388608" would be the wire's bookkeeping leaking into a
+/// sentence. The species comes off that slot through `mob::kind_of`, which
+/// is what the renderer picks the mesh with and what the sim built the
+/// roster with: three readers, one pure function, and no wire field.
+fn beast(killer: u32) -> Option<Beast> {
+    let slot = mob::slot_of_id(killer)?;
+    if sim_core::turret::is_turret_slot(slot) {
+        return Some(Beast {
+            name: "Auto turret",
+            sentence: "an auto turret gunned you down",
+        });
+    }
+    Some(match mob::kind_of(slot) {
+        mob::MOB_WOLF => Beast {
+            name: "Wolf",
+            sentence: "a wolf ran you down",
+        },
+        mob::MOB_STAG => Beast {
+            name: "Stag",
+            sentence: "a stag gored you",
+        },
+        mob::MOB_HELI => Beast {
+            name: "Attack helicopter",
+            sentence: "the attack helicopter gunned you down",
+        },
+        mob::MOB_SENTRY => Beast {
+            name: "THE GATE's sentry",
+            sentence: "THE GATE's sentry gunned you down",
+        },
+        _ => Beast {
+            name: "Pig",
+            sentence: "a pig gored you",
+        },
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The strip across the top
+// ---------------------------------------------------------------------------
+
+/// How a fact's chip is coloured: green for the life you had, red for what
+/// ended it, grey for the rest — the reference's three.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tone {
+    Life,
+    Foe,
+    Plain,
+}
+
+/// What a fact is, so the render layer can hang a picture on the two that
+/// carry one (the killer's face, the weapon's icon).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FactKind {
+    Alive,
+    Killer,
+    Weapon,
+    Distance,
+    Square,
+}
+
+/// One field of the strip: the small caption over a coloured chip.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Fact {
+    pub kind: FactKind,
+    pub caption: &'static str,
+    pub value: String,
+    pub tone: Tone,
+}
+
+/// The last meters the server stated, for a death by the survival clock:
+/// which of them ran out is what KILLED BY names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Meters {
+    pub food: u16,
+    pub water: u16,
+}
+
+/// "47 seconds", "14 minutes", "2 hours", "3 days": the largest whole unit,
+/// as the reference prints it.
+pub fn alive_for(secs: u32) -> String {
+    let (n, unit) = match secs {
+        0..60 => (secs, "second"),
+        60..3_600 => (secs / 60, "minute"),
+        3_600..86_400 => (secs / 3_600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// What the KILLED BY chip says: the player, the animal, or the thing that
+/// is not anybody (Rust's "Cold", "Fall", "Hunger").
+pub fn killed_by(d: &Death, killer: &str, meters: Meters) -> String {
+    match d.cause {
+        DEATH_BY_CLOCK => match (meters.food == 0, meters.water == 0) {
+            (true, true) => "Hunger and thirst".to_string(),
+            (false, true) => "Thirst".to_string(),
+            _ => "Hunger".to_string(),
+        },
+        DEATH_BY_SALT => "Salt water".to_string(),
+        DEATH_BY_COLD => "Cold".to_string(),
+        DEATH_BY_HEAT => "Heat".to_string(),
+        DEATH_BY_FALL => "Fall".to_string(),
+        DEATH_BY_FEL => "The Verdigris".to_string(),
+        DEATH_BY_MOB => beast(d.killer).map_or("An animal", |b| b.name).to_string(),
+        DEATH_BY_HAND | DEATH_BY_CHARGE if d.own_doing() => "Yourself".to_string(),
+        DEATH_BY_HAND | DEATH_BY_ARROW | DEATH_BY_BULLET | DEATH_BY_CHARGE => killer.to_string(),
+        other => format!("Cause {other}"),
+    }
+}
+
+/// Whether the killer is a player other than you — the deaths that get a
+/// face, a weapon and a REPORT CHEAT button.
+pub fn by_another_player(d: &Death) -> bool {
+    matches!(
+        d.cause,
+        DEATH_BY_HAND | DEATH_BY_ARROW | DEATH_BY_BULLET | DEATH_BY_CHARGE
+    ) && !d.own_doing()
+        && d.killer != 0
+        && mob::slot_of_id(d.killer).is_none()
+}
+
+/// The WITH A chip: the weapon in the killer's hand, when there was one and
+/// its name has arrived. A charge carries no item (the bomb went with the
+/// plant), so it has no chip rather than a guessed one.
+pub fn weapon<'a>(d: &Death, catalog: &'a ItemCatalog) -> Option<&'a str> {
+    if !matches!(d.cause, DEATH_BY_HAND | DEATH_BY_ARROW | DEATH_BY_BULLET) || d.own_doing() {
+        return None;
+    }
+    item_name(catalog, d.item)
+}
+
+/// "356 meters", or "2.5 meters" up close where the tenth is the story.
+/// Integer arithmetic, rounded once: 9.99 m is "10 meters", never "10.0".
+pub fn meters(range_cm: u16) -> String {
+    let tenths = (range_cm as u32 + 5) / 10;
+    if tenths < 100 {
+        format!("{}.{} meters", tenths / 10, tenths % 10)
+    } else {
+        format!("{} meters", (range_cm as u32 + 50) / 100)
+    }
+}
+
+/// The AT A DISTANCE OF chip, for a death something did from somewhere.
+pub fn distance(d: &Death) -> Option<String> {
+    let ranged = matches!(
+        d.cause,
+        DEATH_BY_HAND | DEATH_BY_ARROW | DEATH_BY_BULLET | DEATH_BY_CHARGE | DEATH_BY_MOB
+    );
+    (ranged && d.range_cm > 0 && !(d.cause == DEATH_BY_HAND && d.own_doing()))
+        .then(|| meters(d.range_cm))
+}
+
+/// The strip, in the reference's order. `square` is the grid square the
+/// body fell in (`ui::map::grid_label`), empty off the island.
+pub fn facts(
+    d: &Death,
+    catalog: &ItemCatalog,
+    killer: &str,
+    meters: Meters,
+    square: &str,
+) -> Vec<Fact> {
+    let mut out = Vec::new();
+    if let Some(secs) = d.alive_s {
+        out.push(Fact {
+            kind: FactKind::Alive,
+            caption: "ALIVE FOR",
+            value: alive_for(secs),
+            tone: Tone::Life,
+        });
+    }
+    out.push(Fact {
+        kind: FactKind::Killer,
+        caption: "KILLED BY",
+        value: killed_by(d, killer, meters),
+        tone: Tone::Foe,
+    });
+    if let Some(w) = weapon(d, catalog) {
+        out.push(Fact {
+            kind: FactKind::Weapon,
+            caption: "WITH A",
+            value: w.to_string(),
+            tone: Tone::Foe,
+        });
+    }
+    if let Some(m) = distance(d) {
+        out.push(Fact {
+            kind: FactKind::Distance,
+            caption: "AT A DISTANCE OF",
+            value: m,
+            tone: Tone::Plain,
+        });
+    }
+    if !square.is_empty() {
+        out.push(Fact {
+            kind: FactKind::Square,
+            caption: "IN",
+            value: square.to_string(),
+            tone: Tone::Plain,
+        });
+    }
+    out
+}
+
+/// What REPORT CHEAT puts in the report composer for the player to finish:
+/// who, with what, from how far, and where — the evidence a reader needs
+/// first, with the frame of this screen attached by the composer itself.
+pub fn report_title(d: &Death, catalog: &ItemCatalog, killer: &str, square: &str) -> String {
+    let mut s = format!("cheat? {}", sentence(d, catalog, killer));
+    if !square.is_empty() {
+        s.push_str(" in ");
+        s.push_str(square);
+    }
+    s.push_str(" - ");
+    s.chars().take(crate::report::TITLE_MAX).collect()
+}
+
+// ---------------------------------------------------------------------------
+// The bar along the bottom
+// ---------------------------------------------------------------------------
+
+/// Where you wake up: one button on the bottom bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Wake {
-    Bag,
+    /// Your own bag, by its place in `ClientCore::own_bags`.
+    Bag(usize),
     /// THE GATE's respawn point (Rust's Outpost spawn point): unlocked by
     /// reaching the town, resting 30 minutes after each use.
     Gate,
+    /// RANDOM RESPAWN: the beach ring.
     Beach,
 }
 
-/// The rows, in the reference's order: the anchor you'd rather have first.
-/// `(wake, title, the small line under it)`.
-pub const WAKES: [(Wake, &str, &str); 3] = [
-    (
-        Wake::Bag,
-        "Wake on your bag",
-        "the nearest one that is ready",
-    ),
-    (
-        Wake::Gate,
-        "Wake at THE GATE",
-        "the town's market street - rests 30 minutes after",
-    ),
-    (Wake::Beach, "Wake on a beach", "the shoreline, somewhere"),
-];
-
-/// What the screen can offer: a bag you own, and THE GATE once you have
-/// been there.
-///
-/// **Owning one, not one being ready.** A bag inside its cooldown is still
-/// a bag you placed and still somewhere you might rather wake; the sim
-/// picks the nearest ready one and falls back to the beach if none is, and
-/// [`woke`] tells the player which answered. Hiding the row on a cooldown
-/// would take the choice away for five minutes over a fact the client
-/// learned at the moment of death and cannot refresh. THE GATE's row is the
-/// same: its line says when it rests, and asking early is a beach.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Anchors {
-    pub bag: bool,
-    pub gate: bool,
+/// The buttons, left to right: every bag you own, THE GATE once reached,
+/// and RANDOM RESPAWN last, so every digit is a button's place on the bar
+/// and the beach's is always the last one.
+pub fn wakes(bags: usize, gate: bool) -> impl Iterator<Item = Wake> {
+    (0..bags.min(BAG_CAP))
+        .map(Wake::Bag)
+        .chain(gate.then_some(Wake::Gate))
+        .chain(std::iter::once(Wake::Beach))
 }
 
-impl Anchors {
-    fn has(self, wake: Wake) -> bool {
-        match wake {
-            Wake::Bag => self.bag,
-            Wake::Gate => self.gate,
-            Wake::Beach => true,
-        }
-    }
-}
-
-/// The rows to draw, in order. The beach is LAST whatever else is offered,
-/// so the digit that answers "just get me back in" is the last one.
-pub fn rows(a: Anchors) -> impl Iterator<Item = &'static (Wake, &'static str, &'static str)> {
-    WAKES.iter().filter(move |r| a.has(r.0))
-}
-
-/// The wake a **digit** selects — 1-based, over the rows actually drawn.
-///
-/// Position, not identity, which is the whole point: with no bag, `1` is
-/// the first row on the screen, whatever it is. A player does not read a
-/// table, they press the number next to the words.
-pub fn wake_at(a: Anchors, n: usize) -> Option<Wake> {
+/// The wake a **digit** selects — 1-based, over the buttons actually drawn
+/// (`0` is the tenth). Position, not identity: a player presses the number
+/// on the button, not a number they remember from a table.
+pub fn wake_at(bags: usize, gate: bool, n: usize) -> Option<Wake> {
     if n == 0 {
         return None;
     }
-    rows(a).nth(n - 1).map(|r| r.0)
+    wakes(bags, gate).nth(n - 1)
 }
 
-/// Whether a wake is on the screen at all.
-pub fn offers(a: Anchors, wake: Wake) -> bool {
-    rows(a).any(|r| r.0 == wake)
-}
-
-/// The footer line under the rows.
-///
-/// With nothing but the beach there is no choice to explain and one thing
-/// worth saying instead — *why* there is only one row. A player who is not
-/// told assumes the feature is broken, which is the same failure [`woke`]
-/// exists to avoid one beat later.
-pub fn note(a: Anchors) -> &'static str {
-    if a.bag || a.gate {
-        "click a row, or press its number"
-    } else {
-        "no bag placed - the shoreline is the only way back"
+/// The digit printed on button `n` (1-based): `1`…`9`, then `0`.
+pub fn digit(n: usize) -> Option<char> {
+    match n {
+        1..=9 => char::from_digit(n as u32, 10),
+        10 => Some('0'),
+        _ => None,
     }
 }
 
-/// THE GATE row's small line: when the point rests, or why it will not take
-/// you. `left_ticks` is `ClientCore::gate_spawn_left`'s answer.
-pub fn gate_line(left_ticks: u32, hostile: bool) -> String {
-    if hostile {
-        "not while you are hostile - this will be a beach".to_string()
+/// `4:32`, or `1:02:03` past the hour.
+pub fn clock(secs: u32) -> String {
+    if secs >= 3_600 {
+        format!("{}:{:02}:{:02}", secs / 3_600, secs / 60 % 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+/// Whether a button can be pressed now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ready {
+    Now,
+    /// Cooling down (a bag) or resting (THE GATE), seconds left.
+    In(u32),
+    /// THE GATE will not take a hostile player, seconds of hostility left.
+    Hostile(u32),
+}
+
+/// THE GATE's state from `ClientCore::gate_spawn_left` and `hostile_left`,
+/// both in ticks.
+pub fn gate_ready(left_ticks: u32, hostile_ticks: u32) -> Ready {
+    let secs = |t: u32| t.div_ceil(sim_core::limits::TICK_HZ);
+    if hostile_ticks > 0 {
+        Ready::Hostile(secs(hostile_ticks))
     } else if left_ticks > 0 {
-        let secs = left_ticks.div_ceil(sim_core::limits::TICK_HZ);
-        format!(
-            "resting {}:{:02} - this will be a beach",
-            secs / 60,
-            secs % 60
-        )
+        Ready::In(secs(left_ticks))
     } else {
-        WAKES[1].2.to_string()
+        Ready::Now
     }
 }
+
+/// The small line under a button's name: the grid square, or why it will
+/// not take you yet.
+pub fn wake_line(square: &str, ready: Ready) -> String {
+    match ready {
+        Ready::Now => square.to_string(),
+        Ready::In(s) => clock(s),
+        Ready::Hostile(s) => format!("hostile {}", clock(s)),
+    }
+}
+
+/// A bag's name on its button: the deployable it is (`SLEEPING BAG`), off
+/// the deploy mirror's record at its address, and the bag's own word when
+/// the mirror or the catalog has not said yet. Rust prints the name the
+/// owner gave it; ours have none, and the grid square under it is what
+/// tells two of them apart.
+pub fn bag_title(
+    b: &BagAnchor,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    have: u16,
+    catalog: &ItemCatalog,
+) -> String {
+    let have = have.min(defs.def_count);
+    deploys
+        .iter()
+        .find(|r| r.cx == b.cx && r.cz == b.cz && r.level == b.level && (r.row as u16) < have)
+        .map(|r| &defs.defs[r.row as usize])
+        .filter(|def| def.arch == ARCH_BAG)
+        .and_then(|def| item_name(catalog, def.item))
+        .map_or_else(|| "SLEEPING BAG".to_string(), str::to_uppercase)
+}
+
+/// What the bar says when there is nothing on it but RANDOM RESPAWN: why.
+/// A player who is not told assumes the feature is broken.
+pub const NO_BAGS: &str = "no sleeping bag placed - place one and you can wake on it";
 
 /// What the toast says once the wake lands.
 ///
 /// `asked` is what the player pressed; `on_bag` and `in_town` are which
-/// anchor actually answered — **asking for a bag inside its cooldown gets a
-/// beach**, and so does THE GATE while it rests, and a player who is not
-/// told that has no way to learn it except by looking around.
+/// anchor actually answered — **asking for a bag that went cold since the
+/// list was sent gets a beach**, and so does THE GATE while it rests, and a
+/// player who is not told that has no way to learn it except by looking
+/// around.
 pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
     match (asked, on_bag, in_town) {
         (_, true, _) => Some("you woke on your bag"),
         (Wake::Gate, _, true) => Some("you woke at THE GATE"),
-        (Wake::Bag, false, _) => Some("no bag ready - you woke on a beach"),
+        (Wake::Bag(_), false, _) => Some("that bag was not ready - you woke on a beach"),
         (Wake::Gate, false, false) => Some("THE GATE would not take you - you woke on a beach"),
         (Wake::Beach, false, _) => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The marker on the compass (Rust's death marker)
+// ---------------------------------------------------------------------------
+
+/// How far either side of the bearing the compass's marker row reaches,
+/// degrees: a mark this far round sits at the row's end.
+pub const COMPASS_HALF_SPAN_DEG: f32 = 90.0;
+
+/// Where a world point sits on the compass's marker row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompassMark {
+    /// Across the row: -1 at the left end, 0 dead ahead, 1 at the right end.
+    pub across: f32,
+    /// Further round than the row reaches (behind you, mostly): the mark is
+    /// held at the end it is nearer, which is the way to turn.
+    pub off_row: bool,
+    /// How far away, metres, on the ground.
+    pub dist_m: f32,
+}
+
+/// Where `to` sits on the compass seen from `from` (world XZ) facing
+/// `facing_deg`, a bearing in `crate::look::bearing_deg`'s degrees — the
+/// same function the bearing number above it is printed from, so the mark
+/// and the number cannot disagree about which way is which. Clockwise of
+/// your heading is to the right, as on any compass strip.
+pub fn compass_mark(facing_deg: f32, from: (f32, f32), to: (f32, f32)) -> CompassMark {
+    let (dx, dz) = (to.0 - from.0, to.1 - from.1);
+    let bearing = crate::look::bearing_of(dx, dz);
+    let rel = (bearing - facing_deg + 540.0).rem_euclid(360.0) - 180.0;
+    let across = rel / COMPASS_HALF_SPAN_DEG;
+    CompassMark {
+        across: across.clamp(-1.0, 1.0),
+        off_row: across.abs() > 1.0,
+        dist_m: (dx * dx + dz * dz).sqrt(),
+    }
+}
+
+/// The compass's short distance: `143m`, `1.2km`.
+pub fn short_distance(m: f32) -> String {
+    if m >= 1000.0 {
+        format!("{:.1}km", m / 1000.0)
+    } else {
+        format!("{m:.0}m")
     }
 }
 
@@ -287,15 +536,12 @@ mod tests {
             cause: DEATH_BY_CLOCK,
             ..Death::default()
         };
-        assert_eq!(sentence(&d, &cat, &format!("#{}", d.killer)), "you ran out");
+        assert_eq!(sentence(&d, &cat, "#0"), "you ran out");
         let d = Death {
             cause: DEATH_BY_SALT,
             ..Death::default()
         };
-        assert_eq!(
-            sentence(&d, &cat, &format!("#{}", d.killer)),
-            "the sea is salt"
-        );
+        assert_eq!(sentence(&d, &cat, "#0"), "the sea is salt");
     }
 
     #[test]
@@ -307,16 +553,17 @@ mod tests {
             item: 4,
             range_cm: 250,
             own_id: 7,
+            alive_s: Some(0),
         };
         assert_eq!(
-            sentence(&d, &cat, &format!("#{}", d.killer)),
+            sentence(&d, &cat, "#12"),
             "#12 killed you with STONE HATCHET from 2.5 m"
         );
     }
 
     /// The catalog arrives in batches, so an unnamed weapon is a real state
-    /// for the first frames of a session — the sentence drops the clause
-    /// rather than printing an index at a moment like this one.
+    /// for the first frames of a session — the sentence drops the clause and
+    /// the strip drops the chip, rather than printing an index.
     #[test]
     fn an_unnamed_weapon_drops_the_clause() {
         let cat = ItemCatalog::EMPTY;
@@ -326,11 +573,10 @@ mod tests {
             item: 4,
             range_cm: 100,
             own_id: 7,
+            alive_s: Some(0),
         };
-        assert_eq!(
-            sentence(&d, &cat, &format!("#{}", d.killer)),
-            "#12 killed you from 1.0 m"
-        );
+        assert_eq!(sentence(&d, &cat, "#12"), "#12 killed you from 1.0 m");
+        assert_eq!(weapon(&d, &cat), None);
     }
 
     #[test]
@@ -342,59 +588,43 @@ mod tests {
             own_id: 7,
             ..Death::default()
         };
-        assert_eq!(
-            sentence(&d, &cat, &format!("#{}", d.killer)),
-            "you did it to yourself"
-        );
+        assert_eq!(sentence(&d, &cat, "#7"), "you did it to yourself");
+        assert_eq!(killed_by(&d, "#7", Meters::default()), "Yourself");
+        assert!(!by_another_player(&d), "nobody to report");
     }
 
-    /// **Each species gets its own sentence, off the roster slot.** The
-    /// killer id is tagged (`MOB_ID_TAG`) and its low bits are the slot, so
-    /// the same `mob::kind_of` the sim built the roster with and the
-    /// renderer picks the mesh with also picks the verb here. Three readers
-    /// of one pure function and no wire field between them — this is the
-    /// cheapest of the three to check, so it is the one that reddens first
-    /// if they ever drift.
+    /// **Each species gets its own words, off the roster slot**, and the
+    /// strip and the sentence read the same table.
     #[test]
     fn the_death_screen_names_the_animal_that_killed_you() {
         let cat = ItemCatalog::EMPTY;
-        let said = |slot: usize| {
-            sentence(
-                &Death {
-                    cause: DEATH_BY_MOB,
-                    killer: mob::mob_id(slot),
-                    ..Death::default()
-                },
-                &cat,
-                "",
-            )
+        let of = |slot: usize| Death {
+            cause: DEATH_BY_MOB,
+            killer: mob::mob_id(slot),
+            ..Death::default()
         };
-        let wolf = (0..sim_core::limits::MAX_MOBS)
-            .find(|&s| mob::kind_of(s) == mob::MOB_WOLF)
-            .expect("the roster holds a predator");
-        let pig = (0..sim_core::limits::MAX_MOBS)
-            .find(|&s| mob::kind_of(s) == mob::MOB_PIG)
-            .expect("the roster holds prey");
-        let stag = (0..sim_core::limits::MAX_MOBS)
-            .find(|&s| mob::kind_of(s) == mob::MOB_STAG)
-            .expect("the roster holds a stag");
-        assert_eq!(said(wolf), "a wolf ran you down");
-        assert_eq!(said(pig), "a pig gored you");
-        assert_eq!(said(stag), "a stag gored you");
+        let find = |kind| {
+            (0..sim_core::limits::MAX_MOBS)
+                .find(|&s| mob::kind_of(s) == kind)
+                .expect("the roster holds the kind")
+        };
+        let (wolf, pig, stag) = (find(mob::MOB_WOLF), find(mob::MOB_PIG), find(mob::MOB_STAG));
+        assert_eq!(sentence(&of(wolf), &cat, ""), "a wolf ran you down");
+        assert_eq!(sentence(&of(pig), &cat, ""), "a pig gored you");
+        assert_eq!(sentence(&of(stag), &cat, ""), "a stag gored you");
         assert_eq!(
-            said(mob::HELI_SLOT),
+            sentence(&of(mob::HELI_SLOT), &cat, ""),
             "the attack helicopter gunned you down"
         );
-        assert_ne!(
-            said(wolf),
-            said(pig),
-            "both species share one sentence — the screen is guessing"
+        assert_eq!(killed_by(&of(wolf), "", Meters::default()), "Wolf");
+        assert_eq!(killed_by(&of(pig), "", Meters::default()), "Pig");
+        assert_eq!(
+            killed_by(&of(mob::HELI_SLOT), "", Meters::default()),
+            "Attack helicopter"
         );
+        assert!(!by_another_player(&of(wolf)), "a wolf is not reportable");
     }
 
-    /// `DEATH_BY_MAX`'s doc records a judged FAIL where a fourth cause would
-    /// have shipped silently. A client that folded an unknown cause into the
-    /// nearest sentence would hide it here too.
     #[test]
     fn an_unknown_cause_says_so() {
         let cat = ItemCatalog::EMPTY;
@@ -406,13 +636,29 @@ mod tests {
             ..Death::default()
         };
         assert_eq!(
-            sentence(&d, &cat, &format!("#{}", d.killer)),
+            sentence(&d, &cat, "#0"),
             format!("killed by cause {unknown}")
+        );
+        assert_eq!(
+            killed_by(&d, "#0", Meters::default()),
+            format!("Cause {unknown}")
         );
     }
 
-    /// The bow's own sentence — the range is the story, so it must survive
-    /// into the line the player reads.
+    #[test]
+    fn every_cause_has_a_name_on_the_chip() {
+        // A cause added on one branch and a chip table on another met in a
+        // merge once, and the Verdigris read "Cause 10".
+        for cause in 0..=sim_core::world::DEATH_BY_MAX {
+            let d = Death {
+                cause,
+                ..Death::default()
+            };
+            let chip = killed_by(&d, "#0", Meters::default());
+            assert!(!chip.starts_with("Cause"), "cause {cause} reads {chip:?}");
+        }
+    }
+
     #[test]
     fn an_arrow_says_who_shot_and_how_far() {
         let cat = catalog_with(1, "BOW");
@@ -422,127 +668,270 @@ mod tests {
             own_id: 3,
             item: 1,
             range_cm: 4130,
+            alive_s: Some(0),
         };
+        assert_eq!(sentence(&d, &cat, "#7"), "#7 shot you with BOW from 41.3 m");
+    }
+
+    #[test]
+    fn alive_for_prints_the_largest_whole_unit() {
+        assert_eq!(alive_for(0), "0 seconds");
+        assert_eq!(alive_for(1), "1 second");
+        assert_eq!(alive_for(59), "59 seconds");
+        assert_eq!(alive_for(60), "1 minute");
+        assert_eq!(alive_for(14 * 60 + 59), "14 minutes");
+        assert_eq!(alive_for(2 * 3_600 + 5), "2 hours");
+        assert_eq!(alive_for(3 * 86_400 + 7_200), "3 days");
+        assert_eq!(alive_for(86_400), "1 day");
+    }
+
+    /// The reference's strip, in its order, for the reference's death: a
+    /// player with a rifle from across a valley.
+    #[test]
+    fn a_shot_from_far_fills_every_chip_in_order() {
+        let cat = catalog_with(9, "Semi-Automatic Rifle");
+        let d = Death {
+            cause: DEATH_BY_BULLET,
+            killer: 40,
+            item: 9,
+            range_cm: 35_600,
+            own_id: 3,
+            alive_s: Some(3 * 86_400 + 600),
+        };
+        let f = facts(&d, &cat, "Garry", Meters::default(), "X3");
+        let got: Vec<_> = f.iter().map(|f| (f.caption, f.value.as_str())).collect();
         assert_eq!(
-            sentence(&d, &cat, &format!("#{}", d.killer)),
-            "#7 shot you with BOW from 41.3 m"
+            got,
+            [
+                ("ALIVE FOR", "3 days"),
+                ("KILLED BY", "Garry"),
+                ("WITH A", "Semi-Automatic Rifle"),
+                ("AT A DISTANCE OF", "356 meters"),
+                ("IN", "X3"),
+            ]
         );
+        assert_eq!(f[0].tone, Tone::Life);
+        assert_eq!(f[1].tone, Tone::Foe);
+        assert_eq!(f[3].tone, Tone::Plain);
+        assert!(by_another_player(&d));
     }
 
-    /// No sentence may contain a coordinate. Asserted structurally rather
-    /// than by eye, because `ALPHA.md` §1 is the kind of rule that gets
-    /// broken by someone adding a helpful debug field.
+    /// A death nobody did has no weapon and no distance — and no report.
     #[test]
-    fn no_sentence_carries_a_position() {
-        let cat = catalog_with(1, "ROCK");
-        for cause in 0..=4u8 {
-            let d = Death {
-                cause,
-                killer: 3,
-                item: 1,
-                range_cm: 512,
-                own_id: 9,
-            };
-            let s = sentence(&d, &cat, &format!("#{}", d.killer));
-            for bad in ["x=", "z=", "at (", "cell"] {
-                assert!(!s.contains(bad), "cause {cause} leaked a position: {s}");
-            }
-        }
+    fn the_cold_has_no_weapon_and_no_distance() {
+        let cat = catalog_with(1, "BOW");
+        let d = Death {
+            cause: DEATH_BY_COLD,
+            killer: 3,
+            item: 1,
+            range_cm: 500,
+            own_id: 3,
+            alive_s: Some(90),
+        };
+        let f = facts(&d, &cat, "#3", Meters::default(), "");
+        let kinds: Vec<_> = f.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, [FactKind::Alive, FactKind::Killer]);
+        assert_eq!(f[1].value, "Cold");
+        assert!(!by_another_player(&d));
     }
 
-    const NONE: Anchors = Anchors {
-        bag: false,
-        gate: false,
-    };
-    const BAG: Anchors = Anchors {
-        bag: true,
-        gate: false,
-    };
-    const GATE: Anchors = Anchors {
-        bag: false,
-        gate: true,
-    };
-    const BOTH: Anchors = Anchors {
-        bag: true,
-        gate: true,
-    };
-
-    /// **The item, in one assertion.** No bag placed and THE GATE never
-    /// reached ⇒ one row, and it is the beach.
+    /// A corpse restored from disk comes back without its life's length
+    /// (wire v116): the strip leaves ALIVE FOR out rather than say "0".
     #[test]
-    fn a_player_with_no_anchor_is_offered_only_the_beach() {
-        let r: Vec<_> = rows(NONE).collect();
-        assert_eq!(r.len(), 1, "an anchorless death was offered a choice");
-        assert_eq!(r[0].0, Wake::Beach);
-        assert!(!offers(NONE, Wake::Bag) && !offers(NONE, Wake::Gate));
-        assert_eq!(rows(BAG).count(), 2, "a bag owner lost the choice");
-        assert!(offers(BAG, Wake::Bag) && !offers(BAG, Wake::Gate));
-        assert!(offers(GATE, Wake::Gate) && !offers(GATE, Wake::Bag));
-        assert_eq!(rows(BOTH).count(), 3);
+    fn an_untimed_life_has_no_alive_for() {
+        let d = Death {
+            cause: DEATH_BY_COLD,
+            killer: 3,
+            own_id: 3,
+            alive_s: None,
+            ..Death::default()
+        };
+        let f = facts(&d, &ItemCatalog::default(), "#3", Meters::default(), "");
+        let kinds: Vec<_> = f.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, [FactKind::Killer]);
     }
 
-    /// The beach is the LAST row whatever else is offered.
     #[test]
-    fn the_beach_is_the_last_row_either_way() {
-        for a in [NONE, BAG, GATE, BOTH] {
-            assert_eq!(rows(a).last().unwrap().0, Wake::Beach);
-        }
+    fn the_clock_names_the_meter_that_ran_out() {
+        let d = Death {
+            cause: DEATH_BY_CLOCK,
+            ..Death::default()
+        };
+        let m = |food, water| killed_by(&d, "", Meters { food, water });
+        assert_eq!(m(0, 40), "Hunger");
+        assert_eq!(m(40, 0), "Thirst");
+        assert_eq!(m(0, 0), "Hunger and thirst");
     }
 
-    /// A digit means the row it is drawn next to.
     #[test]
-    fn a_digit_selects_by_position_and_not_by_identity() {
-        assert_eq!(wake_at(BAG, 1), Some(Wake::Bag));
-        assert_eq!(wake_at(BAG, 2), Some(Wake::Beach));
-        assert_eq!(wake_at(NONE, 1), Some(Wake::Beach));
-        assert_eq!(wake_at(GATE, 1), Some(Wake::Gate));
-        assert_eq!(wake_at(BOTH, 2), Some(Wake::Gate));
-        assert_eq!(wake_at(BOTH, 3), Some(Wake::Beach));
-        // Past the drawn rows, and the 1-based zero, are both nothing —
-        // never a wrap onto the other answer.
-        assert_eq!(wake_at(NONE, 2), None);
-        assert_eq!(wake_at(BOTH, 4), None);
-        assert_eq!(wake_at(BAG, 0), None);
+    fn meters_keep_the_tenth_only_up_close() {
+        assert_eq!(meters(250), "2.5 meters");
+        assert_eq!(meters(40), "0.4 meters");
+        assert_eq!(meters(999), "10 meters");
+        assert_eq!(meters(1_000), "10 meters");
+        assert_eq!(meters(35_649), "356 meters");
     }
 
-    /// Every drawn row has a key that reaches it, in every shape.
     #[test]
-    fn every_drawn_row_is_reachable_by_its_own_digit() {
-        for a in [NONE, BAG, GATE, BOTH] {
-            for (i, (wake, _, _)) in rows(a).enumerate() {
-                assert_eq!(
-                    wake_at(a, i + 1),
-                    Some(*wake),
-                    "row {i} of {a:?} has no digit"
+    fn the_report_names_the_killer_and_fits_the_title() {
+        let cat = catalog_with(9, "REVOLVER");
+        let d = Death {
+            cause: DEATH_BY_BULLET,
+            killer: 40,
+            item: 9,
+            range_cm: 1_240,
+            own_id: 3,
+            alive_s: Some(0),
+        };
+        let t = report_title(&d, &cat, "Garry", "H7");
+        assert_eq!(
+            t,
+            "cheat? Garry shot you with REVOLVER from 12.4 m in H7 - "
+        );
+        let long = "x".repeat(400);
+        assert!(report_title(&d, &cat, &long, "H7").chars().count() <= crate::report::TITLE_MAX);
+    }
+
+    #[test]
+    fn the_beach_is_the_last_button_whatever_else_is_offered() {
+        for bags in 0..=BAG_CAP {
+            for gate in [false, true] {
+                let all: Vec<_> = wakes(bags, gate).collect();
+                assert_eq!(all.len(), bags + gate as usize + 1);
+                assert_eq!(*all.last().unwrap(), Wake::Beach);
+                assert!(
+                    all.len() <= 10,
+                    "more buttons than digits: {bags} bags, gate {gate}"
                 );
             }
         }
+        // Past the cap the list is the cap's: the wire never carries more.
+        assert_eq!(wakes(BAG_CAP + 3, false).count(), BAG_CAP + 1);
     }
 
-    /// The anchorless footer says WHY there is one row.
+    /// A digit means the button it is printed on.
     #[test]
-    fn the_bagless_footer_explains_itself() {
-        assert_ne!(note(NONE), note(BAG));
-        assert_eq!(note(GATE), note(BAG));
-        assert!(note(NONE).contains("bag"), "{}", note(NONE));
+    fn a_digit_selects_by_position_and_not_by_identity() {
+        assert_eq!(wake_at(0, false, 1), Some(Wake::Beach));
+        assert_eq!(wake_at(2, false, 1), Some(Wake::Bag(0)));
+        assert_eq!(wake_at(2, false, 2), Some(Wake::Bag(1)));
+        assert_eq!(wake_at(2, false, 3), Some(Wake::Beach));
+        assert_eq!(wake_at(1, true, 2), Some(Wake::Gate));
+        assert_eq!(wake_at(0, true, 1), Some(Wake::Gate));
+        assert_eq!(wake_at(0, true, 2), Some(Wake::Beach));
+        // Past the drawn buttons, and the 1-based zero, are nothing.
+        assert_eq!(wake_at(0, false, 2), None);
+        assert_eq!(wake_at(1, false, 0), None);
+        // Every drawn button has a digit, and the digit reaches it.
+        for bags in 0..=BAG_CAP {
+            for (i, w) in wakes(bags, true).enumerate() {
+                assert!(digit(i + 1).is_some(), "button {i} has no digit");
+                assert_eq!(wake_at(bags, true, i + 1), Some(w));
+            }
+        }
+        assert_eq!(digit(10), Some('0'));
+        assert_eq!(digit(11), None);
     }
 
     #[test]
-    fn the_gate_row_says_when_it_rests() {
-        assert_eq!(gate_line(0, false), WAKES[1].2);
-        assert!(gate_line(90 * sim_core::limits::TICK_HZ, false).starts_with("resting 1:30"));
-        assert!(gate_line(0, true).contains("hostile"));
+    fn a_cooling_button_counts_down_and_a_ready_one_says_where() {
+        assert_eq!(clock(272), "4:32");
+        assert_eq!(clock(5), "0:05");
+        assert_eq!(clock(3_723), "1:02:03");
+        assert_eq!(wake_line("H7", Ready::Now), "H7");
+        assert_eq!(wake_line("H7", Ready::In(90)), "1:30");
+        let hz = sim_core::limits::TICK_HZ;
+        assert_eq!(gate_ready(0, 0), Ready::Now);
+        assert_eq!(gate_ready(90 * hz, 0), Ready::In(90));
+        assert_eq!(gate_ready(0, 10 * hz), Ready::Hostile(10));
+        assert!(wake_line("", gate_ready(0, 10 * hz)).starts_with("hostile"));
     }
 
     #[test]
     fn the_wake_reports_the_anchor_that_answered() {
+        assert!(woke(Wake::Bag(0), false, false).unwrap().contains("beach"));
         assert_eq!(
-            woke(Wake::Bag, false, false),
-            Some("no bag ready - you woke on a beach")
+            woke(Wake::Bag(1), true, false),
+            Some("you woke on your bag")
         );
-        assert_eq!(woke(Wake::Bag, true, false), Some("you woke on your bag"));
         assert_eq!(woke(Wake::Beach, false, false), None);
         assert_eq!(woke(Wake::Gate, false, true), Some("you woke at THE GATE"));
         assert!(woke(Wake::Gate, false, false).unwrap().contains("beach"));
+    }
+
+    /// The death marker rides the compass the way the bearing number reads:
+    /// dead ahead is the middle, clockwise is right, and behind you is held
+    /// at the nearer end rather than dropped.
+    #[test]
+    fn the_compass_puts_the_death_where_you_would_turn_to() {
+        let here = (1000.0, 1000.0);
+        // Ten metres away in each of the four directions the bearing names.
+        let north = (here.0, here.1 + 10.0);
+        let east = (here.0 - 10.0, here.1); // east is -x
+        let west = (here.0 + 10.0, here.1);
+        let south = (here.0, here.1 - 10.0);
+        let at = |facing, to| compass_mark(facing, here, to);
+
+        let ahead = at(0.0, north);
+        assert!(ahead.across.abs() < 1e-3 && !ahead.off_row, "{ahead:?}");
+        assert!((ahead.dist_m - 10.0).abs() < 1e-3);
+        assert!(
+            (at(0.0, east).across - 1.0).abs() < 1e-3,
+            "east of north is right"
+        );
+        assert!(
+            (at(0.0, west).across + 1.0).abs() < 1e-3,
+            "west of north is left"
+        );
+        // Turn to face it and it comes to the middle.
+        assert!(at(90.0, east).across.abs() < 1e-3);
+        // Half-way round to the right.
+        let ne = at(45.0, east);
+        assert!((ne.across - 0.5).abs() < 1e-3, "{ne:?}");
+        // Behind, a little to the right: held at the right end, marked off.
+        let behind = at(0.0, (here.0 - 1.0, here.1 - 10.0));
+        assert!(
+            behind.off_row && (behind.across - 1.0).abs() < 1e-3,
+            "{behind:?}"
+        );
+        // Dead behind falls to one end and says so, never the middle.
+        let back = at(0.0, south);
+        assert!(back.off_row && back.across.abs() > 0.99, "{back:?}");
+        // Across the 0/360 seam: facing 350, a mark at 10 is just right.
+        let seam = at(350.0, (here.0 - 1.763, here.1 + 10.0));
+        assert!(seam.across > 0.0 && seam.across < 0.3, "{seam:?}");
+    }
+
+    #[test]
+    fn the_compass_distance_is_short() {
+        assert_eq!(short_distance(143.4), "143m");
+        assert_eq!(short_distance(1_234.0), "1.2km");
+    }
+
+    #[test]
+    fn a_bag_is_named_by_what_it_is_and_falls_back_to_its_own_word() {
+        let cat = catalog_with(5, "Sleeping Bag");
+        let mut defs = DeployContent::EMPTY;
+        defs.def_count = 1;
+        defs.defs[0].arch = ARCH_BAG;
+        defs.defs[0].item = 5;
+        let rec = DeployRec {
+            cx: 10,
+            cz: 20,
+            level: 0,
+            row: 0,
+            ..DeployRec::default()
+        };
+        let b = BagAnchor {
+            cx: 10,
+            cz: 20,
+            level: 0,
+            ready: true,
+            wait_s: 0,
+        };
+        assert_eq!(bag_title(&b, &[rec], &defs, 1, &cat), "SLEEPING BAG");
+        // No record at that address, or no row dripped yet: still a name.
+        assert_eq!(bag_title(&b, &[], &defs, 1, &cat), "SLEEPING BAG");
+        assert_eq!(bag_title(&b, &[rec], &defs, 0, &cat), "SLEEPING BAG");
     }
 }

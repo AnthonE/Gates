@@ -5,7 +5,8 @@
 //
 // The fragment stage is `bevy_pbr`'s `pbr_prepass.wgsl` (forward, non-bindless,
 // non-meshlet: the only way this material is ever drawn) with the alpha test
-// widened by the edge-on factor.
+// widened by the edge-on factor and read through `alpha_cut`, as the main
+// pass reads it.
 #import bevy_pbr::{
     mesh_functions,
     prepass_io,
@@ -20,6 +21,7 @@
 #import bevy_pbr::pbr_prepass_functions
 #endif
 #import "shaders/foliage_common.wgsl"::{displace, grazing_keep, local_height, origin_rand}
+#import "shaders/alpha_cut.wgsl"::{cut_read, cut_uv}
 
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
@@ -80,26 +82,19 @@ fn vertex(in: Vertex) -> VertexOutput {
 }
 
 // `pbr_prepass_functions::prepass_alpha_discard`, non-bindless, with the
-// edge-on factor multiplied in before the test.
-fn foliage_alpha_discard(in: VertexOutput, keep: f32) {
+// edge-on factor multiplied in before the test and the base colour exactly
+// as `foliage.wgsl` builds it — vertex colour included, read through
+// `alpha_cut` at the gradients the caller took (`base_uv`).
+fn foliage_alpha_discard(in: VertexOutput, keep: f32, uv: vec2<f32>, duv: vec4<f32>) {
 #ifdef MAY_DISCARD
     var output_color: vec4<f32> = pbr_bindings::material.base_color;
+#ifdef VERTEX_COLORS
+    output_color *= in.color;
+#endif
     let flags = pbr_bindings::material.flags;
 #ifdef VERTEX_UVS
-#ifdef STANDARD_MATERIAL_BASE_COLOR_UV_B
-    var uv = in.uv_b;
-#else
-    var uv = in.uv;
-#endif
-    let uv_transform = pbr_bindings::material.uv_transform;
-    uv = (uv_transform * vec3(uv, 1.0)).xy;
     if (flags & pbr_types::STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
-        output_color = output_color * textureSampleBias(
-            pbr_bindings::base_color_texture,
-            pbr_bindings::base_color_sampler,
-            uv,
-            view.mip_bias
-        );
+        output_color = output_color * cut_read(uv, duv);
     }
 #endif
     output_color.a *= keep;
@@ -118,6 +113,20 @@ fn foliage_alpha_discard(in: VertexOutput, keep: f32) {
 #endif
 }
 
+// The base colour's UV and its gradients, taken first thing while every
+// invocation is still live (`alpha_cut`).
+fn base_uv(in: VertexOutput) -> vec2<f32> {
+#ifdef VERTEX_UVS
+#ifdef STANDARD_MATERIAL_BASE_COLOR_UV_B
+    return cut_uv(in.uv_b);
+#else
+    return cut_uv(in.uv);
+#endif
+#else
+    return vec2<f32>(0.0);
+#endif
+}
+
 #ifdef PREPASS_FRAGMENT
 @fragment
 fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
@@ -125,13 +134,20 @@ fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
     // is its plant's volume, the same from either side.
     let is_front = true;
     let keep = grazing_keep(in.world_position.xyz);
+    let uv = base_uv(in);
+    let duv = vec4(dpdx(uv), dpdy(uv));
     let flags = pbr_bindings::material.flags;
 
+    // The crossfade's cut before the alpha read, which takes the gradients
+    // above and needs no live neighbour, so a pixel the crossfade removes
+    // skips the read. A normal map below is read Bevy's way, at implicit
+    // derivatives, so with one the cut waits until the end.
+#ifndef STANDARD_MATERIAL_NORMAL_MAP
 #ifdef VISIBILITY_RANGE_DITHER
     pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
 #endif
-
-    foliage_alpha_discard(in, keep);
+#endif
+    foliage_alpha_discard(in, keep, uv, duv);
 
     var out: prepass_io::FragmentOutput;
 
@@ -182,12 +198,26 @@ fn fragment(in: VertexOutput) -> prepass_io::FragmentOutput {
     out.motion_vector = pbr_prepass_functions::calculate_motion_vector(in.world_position, in.previous_world_position);
 #endif
 
+#ifdef STANDARD_MATERIAL_NORMAL_MAP
+#ifdef VISIBILITY_RANGE_DITHER
+    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+#endif
+
     return out;
 }
 #else
 @fragment
 fn fragment(in: VertexOutput) {
     let keep = grazing_keep(in.world_position.xyz);
-    foliage_alpha_discard(in, keep);
+    let uv = base_uv(in);
+    let duv = vec4(dpdx(uv), dpdy(uv));
+    // A depth-only prepass cuts what the main pass cuts, the crossfade first:
+    // the alpha read needs no live neighbour. (No shadow pipeline is keyed
+    // with the dither, so a cascade never crossfades.)
+#ifdef VISIBILITY_RANGE_DITHER
+    pbr_functions::visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+    foliage_alpha_discard(in, keep, uv, duv);
 }
 #endif

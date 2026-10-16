@@ -46,6 +46,13 @@ use std::path::Path;
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
     (
+        "weather.rs",
+        "sand_at",
+        "cosmetic: whether the ground under and upwind of the eye is dry land \
+         or sea, for the dust haze (`render/weather.rs`); a reading of the \
+         shoreline, and nothing stands on it.",
+    ),
+    (
         "terrain.rs",
         "solve_town",
         "solver: locates the town on raw terrain, before the carve it causes.",
@@ -208,6 +215,13 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
         "terrain.rs",
         "waystation_ring_phase",
         "locator: `haven_ring_phase` with the lesser tier's numbers.",
+    ),
+    (
+        "terrain.rs",
+        "fel_vent",
+        "locator: decides where a vent of the Verdigris burns — on land and \
+         not on a cliff — the way a boulder is seated; the fire is drawn on \
+         `ground` (`render/fel_vents.rs`).",
     ),
     (
         "terrain.rs",

@@ -195,10 +195,15 @@ pub struct Ghost {
 /// the nudge cannot ask for what the sim will not give.
 pub fn height_keys(
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    binds: Res<super::binds::Binds>,
     net: NonSend<Net>,
     ui: Option<Res<Ui>>,
     mut ghost: ResMut<Ghost>,
 ) {
+    use super::binds::Action;
+    let up = binds.just_pressed(Action::Reload, &keys, &mouse);
+    let down = binds.just_pressed(Action::Torch, &keys, &mouse);
     let busy = ui
         .as_ref()
         .map(|u| u.panel.grabs_pointer())
@@ -215,7 +220,7 @@ pub fn height_keys(
         core.deploy_defs_have,
         held,
     ) == crate::ui::hold::Click::Deploy;
-    if !busy && deploying && keys.just_pressed(KeyCode::KeyR) {
+    if !busy && deploying && up {
         ghost.deploy_turn = (ghost.deploy_turn + 1) % 4;
         return;
     }
@@ -227,10 +232,10 @@ pub fn height_keys(
     let step_height = shape == Some(SHAPE_FOUNDATION_STEPS)
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
     if shape.is_some_and(sim_core::circulation::is_riser) && !step_height {
-        if keys.just_pressed(KeyCode::KeyR) {
+        if up {
             ghost.stair_turn = (ghost.stair_turn + 1) % STAIR_LOCS.len() as u8;
         }
-        if keys.just_pressed(KeyCode::KeyF) {
+        if down {
             ghost.stair_turn =
                 (ghost.stair_turn + STAIR_LOCS.len() as u8 - 1) % STAIR_LOCS.len() as u8;
         }
@@ -239,10 +244,10 @@ pub fn height_keys(
     if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) && !step_height {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    if up {
         ghost.nudge = (ghost.nudge + 1).min(sim_core::build::PLATE_RISE_MAX_BANDS as i8);
     }
-    if keys.just_pressed(KeyCode::KeyF) {
+    if down {
         ghost.nudge = (ghost.nudge - 1).max(-(sim_core::build::PLATE_SINK_MAX_BANDS as i8));
     }
 }
@@ -822,6 +827,8 @@ pub fn deploy_track(
                     eye: [x, eye_y, z],
                     dir: [fx * ch, sv, fz * ch],
                     span: &span,
+                    reach: None,
+                    lying: None,
                 },
                 core.deploys.entries(),
                 &core.deploy_defs,

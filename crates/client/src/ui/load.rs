@@ -60,6 +60,11 @@ pub struct Progress {
     /// The far mesh, which is one build rather than a ring and so is a bit
     /// rather than a fraction.
     pub far: bool,
+    /// Render pipelines still compiling (`render::pipelines`). Not part of
+    /// the bar, because their total is not known up front, but the screen
+    /// does not end until it is zero: a world drawn before its pipelines are
+    /// ready shows the clear colour where the sky should be.
+    pub pipelines: u32,
 }
 
 impl Progress {
@@ -72,6 +77,7 @@ impl Progress {
             scatter: (0, 1),
             clutter: (0, 1),
             far: false,
+            pipelines: 0,
         }
     }
 
@@ -88,14 +94,33 @@ impl Progress {
         (f(self.ground) + f(self.scatter) + f(self.clutter)) / 3.0
     }
 
-    /// Is there a world to walk into? Placed **and** every ring resident
-    /// **and** the far mesh built.
-    pub fn done(&self) -> bool {
+    /// Placed, every ring resident and the far mesh built. Everything but
+    /// the pipelines.
+    pub fn built(&self) -> bool {
         self.placed
             && self.far
             && self.ground.0 >= self.ground.1
             && self.scatter.0 >= self.scatter.1
             && self.clutter.0 >= self.clutter.1
+    }
+
+    /// Is there a world to walk into? [`built`](Self::built) **and** no
+    /// pipeline still compiling.
+    pub fn done(&self) -> bool {
+        self.built() && self.pipelines == 0
+    }
+
+    /// The player-facing stage, above the bar.
+    pub fn stage(&self) -> &'static str {
+        if !self.placed {
+            "Waiting for the server"
+        } else if !self.built() {
+            "Building the island"
+        } else if self.pipelines > 0 {
+            "Preparing shaders"
+        } else {
+            "Entering"
+        }
     }
 
     /// The counts line under the bar. Says which of the two questions is
@@ -108,7 +133,7 @@ impl Progress {
                 None => "WAITING FOR THE SERVER TO PLACE YOU".to_string(),
             };
         }
-        format!(
+        let mut line = format!(
             "GROUND {}/{}      SCATTER {}/{}      CLUTTER {}/{}",
             self.ground.0,
             self.ground.1,
@@ -116,6 +141,10 @@ impl Progress {
             self.scatter.1,
             self.clutter.0,
             self.clutter.1
-        )
+        );
+        if self.pipelines > 0 {
+            line.push_str(&format!("      SHADERS {}", self.pipelines));
+        }
+        line
     }
 }
