@@ -989,6 +989,7 @@ pub struct Survivor {
     patrol: Patrol,
     hand: Hand,
     hand_failed: Option<u32>,
+    patrol_failed: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1133,6 +1134,7 @@ impl Survivor {
             patrol: Patrol::default(),
             hand: Hand::default(),
             hand_failed: None,
+            patrol_failed: None,
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -2715,8 +2717,10 @@ impl Survivor {
             return false;
         }
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        self.founder_at(tick)
-            .is_some_and(|(p, _)| (p[0] - x).hypot(p[2] - z) <= society::HAND_WALK_M)
+        self.founder_at(tick).is_some_and(|(p, _)| {
+            (p[0] - x).hypot(p[2] - z) <= society::HAND_WALK_M
+                && !doors::walled_between(core, [x, z], [p[0], p[2]])
+        })
     }
 
     /// Hand over (`agent::society`): up to its founder, eyes on them at
@@ -2765,6 +2769,18 @@ impl Survivor {
                     return Intent::IDLE;
                 }
             }
+        }
+        // Behind its walls the founder is not to be followed in: a crewmate
+        // in the airlock works its doors under the founder's own walk.
+        if doors::walled_between(core, [x, z], [at[0], at[2]]) {
+            self.hand_failed = Some(tick);
+            let outcome = if self.hand.given > 0 {
+                Outcome::Done
+            } else {
+                Outcome::Failed(Why::Locked)
+            };
+            self.end_goal(tick, outcome);
+            return Intent::IDLE;
         }
         let d = (at[0] - x).hypot(at[2] - z);
         // Where the founder only says it is, its height is not known: eyes
@@ -2891,6 +2907,7 @@ impl Survivor {
             Step::Blocked => {
                 self.patrol.misses += 1;
                 if usize::from(self.patrol.misses) >= society::PATROL_POSTS.len() {
+                    self.patrol_failed = Some(tick);
                     self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 } else {
                     self.patrol.next();
@@ -5980,7 +5997,12 @@ impl Survivor {
             // A society keeps the peace it asks of others: it raids nobody.
             self.memory.raids = self.society.is_none()
                 && matches!(temperament, Temperament::Opportunist | Temperament::Kos);
-            self.memory.patrol_home = self.patrol_centre().is_some();
+            // A patrol that could not reach its posts is not offered again
+            // at once: a body walled in would choose it every second.
+            self.memory.patrol_home = self.patrol_centre().is_some()
+                && self
+                    .patrol_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= society::PATROL_RETRY_SECS * TICK_HZ);
             self.post_board(core, body);
             self.memory.raid_held = self
                 .raid_failed

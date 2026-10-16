@@ -2427,6 +2427,17 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
             for (run, (name, aim)) in runs.iter_mut().zip(FARM_AIMS) {
                 run.1 = held(name).saturating_mul(100) / aim;
             }
+            // A run that just found none of its kind in sight goes last: the
+            // land round here is bare of it for now.
+            let bare = s
+                .last
+                .filter(|r| matches!(r.outcome, Outcome::Failed(Why::NotFound)))
+                .map(|r| r.goal);
+            for run in runs.iter_mut() {
+                if bare == Some(run.0) {
+                    run.1 = u32::MAX;
+                }
+            }
             runs.sort_by_key(|r| r.1);
             if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
                 return Some((goal, "society: a supply run for the crew's boxes"));
@@ -3402,6 +3413,15 @@ mod tests {
             s.offer(g);
         }
         assert_eq!(pick(&mut scripted, &s), Goal::SupplyStone);
+        // No stone in sight a moment ago: wood instead, for now.
+        s.last = Some(Report {
+            goal: Goal::SupplyStone,
+            outcome: Outcome::Failed(Why::NotFound),
+            gained: 0,
+            secs: 20,
+        });
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
+        s.last = None;
         // Carrying plenty, with its founder near: into the founder's hands.
         s.offer(Goal::HandOver);
         assert_eq!(pick(&mut scripted, &s), Goal::HandOver);

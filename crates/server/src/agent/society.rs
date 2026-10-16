@@ -64,8 +64,10 @@ pub const PATROL_POSTS: [[f32; 2]; 6] = [
 pub const PATROL_DWELL_TICKS: u32 = 3 * sim_core::limits::TICK_HZ;
 /// A post is reached within this many metres.
 pub const PATROL_STOP_M: f32 = 2.5;
-/// One patrol decision is a few laps' worth, seconds.
+/// One patrol decision is a few laps' worth, seconds; one that could not
+/// reach its posts is not tried again for a while.
 pub const PATROL_GOAL_SECS: u32 = 120;
+pub const PATROL_RETRY_SECS: u32 = 60;
 /// The ward: an intruder is someone this near home's middle, metres.
 pub const WARD_M: f32 = 34.0;
 /// A swing or a shot this recent makes its owner an intruder, ticks.
