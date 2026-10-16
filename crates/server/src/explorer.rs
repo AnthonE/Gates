@@ -6373,12 +6373,12 @@ impl Survivor {
         }
         // What the eyes and ears make of the fight around this body: the
         // tracks take facts, never the rings.
-        while let Some((shooter, ..)) = core.pop_shot() {
+        while let Some((shooter, yaw, pitch, speed, low)) = core.pop_shot() {
             if shooter == core.player_id {
                 self.combat.shot(tick);
                 self.shot_at = Some(tick);
             }
-            self.tracks.on_shot(shooter, tick);
+            self.tracks.on_shot(shooter, (yaw, pitch), speed, low, tick);
         }
         // A reload the server turned down (busy, full, nothing to load):
         // the next ask waits out its own retry either way.

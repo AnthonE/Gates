@@ -204,6 +204,8 @@ pub struct Arena {
     /// The other body stands where it is with a bow up, eyes on the
     /// agent's chest; drawing and loosing when `true`.
     pub archer: Option<bool>,
+    /// ...its aim this far to the agent's side, metres: every shot misses.
+    pub wide: f32,
     /// The other body walks straight at the agent, eyes level, whatever it
     /// holds out but never raised, and stops this far off.
     pub walker: Option<f32>,
@@ -297,6 +299,7 @@ impl Arena {
             keep_off: None,
             chopper: None,
             archer: None,
+            wide: 0.0,
             walker: None,
             pin: None,
             haven: sim_core::terrain::haven(SEED),
@@ -677,6 +680,8 @@ impl Arena {
             let dx = (them.qx - me.qx) as f32 * POS_XZ_Q;
             let dz = (them.qz - me.qz) as f32 * POS_XZ_Q;
             let dy = (them.qy - me.qy) as f32 * POS_Y_Q - 0.4;
+            let d = dx.hypot(dz).max(0.1);
+            let (dx, dz) = (dx + dz / d * self.wide, dz - dx / d * self.wide);
             let frame = InputFrame {
                 seq: self.tick as u16,
                 yaw: yaw_toward(dx, dz),
