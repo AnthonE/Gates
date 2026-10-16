@@ -348,6 +348,11 @@ fel_ward_max = 900
 # the mask and the Ash Suit (the 90% cap, 2 a second rounded up) after nearly
 # four.
 fel_pocket_per_s = 20
+# Snow (snow v0): where the air is at or under 0 °C the rain falls as snow,
+# sleet through the degree above (`climate::snow_pm`), and snow wets a body
+# at half the rain's rate — the reference's `weather.wetness_snow` 0.2 against
+# `wetness_rain` 0.4. Per mille of the rain's.
+snow_wet_pm = 500
 
 # The air (climate v0, `sim_core::climate`) — the reference's
 # `Climate.GetTemperature`: each biome's curve over the hour, coldest at

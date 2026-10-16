@@ -1,7 +1,7 @@
 //! The Verdigris' embers: green sparks drifting up around the eye.
 //!
 //! The rain's machinery turned over (`rain.rs`): the same mesh of streak
-//! quads wrapped into a box around the camera by the clock, the same shader,
+//! quads wrapped into a box around the camera by their travel, the same shader,
 //! a second material — so it is one more draw and no new pipeline, on WebGL2
 //! too. The streaks are short and rise slowly on the wind, and their colour
 //! is HDR green, so they read as glowing without bloom (off on Low and in a
@@ -11,7 +11,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 
-use super::rain::{drop_mesh, RainMaterial, RainParams};
+use super::rain::{drop_mesh, RainMaterial, RainParams, Travel};
 use super::weather::WeatherNow;
 
 /// Embers in the mesh — the most the heart of the Verdigris draws.
@@ -34,8 +34,15 @@ pub struct Embers;
 #[derive(Resource)]
 pub struct EmberHandle(pub Handle<RainMaterial>);
 
-/// What the embers look like in this weather: none outside the Verdigris.
-pub fn params_for(w: &WeatherNow) -> RainParams {
+/// How fast the embers drift in this weather, m/s: up, on the wind.
+fn rise(w: &WeatherNow) -> Vec3 {
+    let wind = w.wind_dir * (1.0 + 7.0 * w.wind) * WIND_SHARE;
+    Vec3::new(wind.x, RISE_MS, wind.y)
+}
+
+/// What the embers look like in this weather, `at` their travel so far:
+/// none outside the Verdigris, and never a flake.
+pub fn params_for(w: &WeatherNow, at: &Travel) -> RainParams {
     let k = (w.fel - 0.25) / 0.5;
     let k = k.clamp(0.0, 1.0);
     let alive = if w.underwater {
@@ -43,11 +50,13 @@ pub fn params_for(w: &WeatherNow) -> RainParams {
     } else {
         k * k * (3.0 - 2.0 * k)
     };
-    let wind = w.wind_dir * (1.0 + 7.0 * w.wind) * WIND_SHARE;
     RainParams {
-        fall: Vec3::new(wind.x, RISE_MS, wind.y).extend(STREAK_M),
+        fall: rise(w).extend(STREAK_M),
         box_: BOX_HALF.extend(alive),
         look: Vec4::new(EMBER_RGB[0], EMBER_RGB[1], EMBER_RGB[2], 0.0),
+        snow: Vec4::ZERO,
+        drops: at.drops.extend(at.wobble),
+        flake: Vec4::ZERO,
     }
 }
 
@@ -77,13 +86,19 @@ pub fn setup(
 /// something moved, since a write re-uploads the material.
 pub fn drive(
     weather: Res<WeatherNow>,
+    time: Res<Time>,
     handle: Option<Res<EmberHandle>>,
     mut materials: ResMut<Assets<RainMaterial>>,
+    mut travel: Local<Travel>,
 ) {
     let Some(handle) = handle else {
         return;
     };
-    let want = params_for(&weather);
+    // The travel moves only while there are embers to show it.
+    if params_for(&weather, &travel).box_.w > 0.0 {
+        travel.advance_in(BOX_HALF, rise(&weather), Vec3::ZERO, time.delta_secs());
+    }
+    let want = params_for(&weather, &travel);
     let stale = materials.get(&handle.0).is_some_and(|m| m.params != want);
     if stale {
         if let Some(m) = materials.get_mut(&handle.0) {

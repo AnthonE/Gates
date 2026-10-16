@@ -110,6 +110,14 @@ impl Default for Charges {
 }
 
 impl Charges {
+    /// Every planter through `f` (`World::remap_player_ids`): a fuse burning
+    /// while its planter reconnects still credits them.
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for c in self.entries[..self.len].iter_mut() {
+            c.owner = f(c.owner);
+        }
+    }
+
     pub const fn new() -> Self {
         Self {
             entries: [ChargeRec {

@@ -322,6 +322,10 @@ MAP = {
     # colour is mud, so the map has its own glyphs now.
     "map_bed": "delapouite/sleeping-bag",
     "map_hearth": "delapouite/fireplace",
+    # Where you died, on the death screen's map: Rust's skull pin. The mask
+    # rather than the crossed bones because the skull fills the frame, and
+    # at a marker's 14 px the bones' skull is four pixels.
+    "map_death": "lorc/skull-mask",
 }
 
 # Glyphs the panels draw OVER an item picture. Not items, so not `ITEMS`.
@@ -335,6 +339,10 @@ UI = {
     # the clock beside a craft time — both Rust's.
     "ui_star": "delapouite/round-star",
     "ui_clock": "lorc/stopwatch",
+    # The death screen's two: the pin beside a bag's grid square and the
+    # turn on RANDOM RESPAWN — Rust's own marks for both.
+    "ui_pin": "delapouite/position-marker",
+    "ui_respawn": "delapouite/clockwise-rotation",
 }
 
 VITALS = {

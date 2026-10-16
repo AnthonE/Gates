@@ -7,9 +7,16 @@
     mesh_view_bindings::{view, globals},
     view_transformations::position_world_to_clip,
 }
+#import "shaders/deck.wgsl"::{slab_step, slab_warp, slab_shape}
+
+// Steps through the raymarched slab for a cover reading (`deck.wgsl`'s
+// `slab_shape`): the shape alone, no erosion, so a cloud hides a little
+// past its eroded rim and never less than it draws.
+const SLAB_STEPS: i32 = 12;
 
 struct Stars {
-    // x: how much of the starfield shows. y: a quad's size, pixels.
+    // x: how much of the starfield shows. y: a quad's size, pixels. z: the
+    // share the moon washes out, faintest first.
     look: vec4<f32>,
     // x: the deck's altitude over its noise scale. y: the horizon cutoff
     // (a ray's y). z: the fade above the cutoff.
@@ -18,6 +25,12 @@ struct Stars {
     cloud: vec4<f32>,
     // x: one over the field's period, noise units. y: half a texel, uv.
     field: vec4<f32>,
+    // xyz: toward the moon. w: the cosine of its disk's radius.
+    moon: vec4<f32>,
+    // The raymarched slab (`deck::slab_lanes`): x its floor, m; y its
+    // ceiling, m; z metres per noise unit; w extinction per metre — 0 where
+    // the deck is drawn flat, which the flat reading above matches.
+    slab: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> stars: Stars;
@@ -29,7 +42,8 @@ struct VertexIn {
     @location(0) position: vec3<f32>,
     // The quad corner, -1..1 both ways.
     @location(2) uv: vec2<f32>,
-    // x: brightness. y: twinkle phase. z: warmth.
+    // x: brightness. y: twinkle phase. z: warmth. w: rank, 0..1, brighter
+    // higher.
     @location(5) color: vec4<f32>,
 }
 
@@ -54,11 +68,16 @@ fn vertex(in: VertexIn) -> VertexOut {
     // Low stars sit in thicker air: dimmer, and twinkling harder.
     let tw = 1.0 + 0.3 * (1.2 - d.y) * sin(globals.time * (1.3 + 3.0 * in.color.y) + in.color.y * 40.0);
     let low = smoothstep(0.02, 0.22, d.y);
+    // Under a moon the faint ones go first, over a few percent of the rank.
+    let seen = clamp((in.color.w - stars.look.z) / 0.04 + 1.0, 0.0, 1.0);
+    // Behind the moon's disk, none: the moon adds to the sky (`moon.wgsl`)
+    // rather than covering it, so it cannot hide them itself.
+    let unhidden = select(1.0, 0.0, dot(d, stars.moon.xyz) > stars.moon.w);
     let rgb = mix(vec3(0.78, 0.86, 1.0), vec3(1.0, 0.9, 0.74), in.color.z);
     out.clip = clip;
     out.uv = in.uv;
     out.dir = d;
-    out.light = rgb * in.color.x * tw * low * stars.look.x;
+    out.light = rgb * in.color.x * tw * low * seen * unhidden * stars.look.x;
     return out;
 }
 
@@ -69,10 +88,25 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     var clear = 1.0;
     let d = normalize(in.dir);
     if d.y > stars.deck.y {
-        let q = d.xz * (stars.deck.x / d.y) + stars.cloud.xy;
-        let f = textureSampleLevel(field_tex, field_samp, q * stars.field.x + stars.field.y, 0.0).r;
         let fade = clamp((d.y - stars.deck.y) / stars.deck.z, 0.0, 1.0);
-        clear = 1.0 - clamp((f - stars.cloud.z) / stars.cloud.w, 0.0, 1.0) * fade;
+        if stars.slab.w > 0.0 {
+            // The slab the sky draws: a cumulus's flank stands well above
+            // its base's outline, and a star read off the outline shone
+            // through it.
+            var tau = 0.0;
+            for (var i = 0; i < SLAB_STEPS; i += 1) {
+                let s = slab_step(d, view.world_position.y, stars.slab, stars.deck.y, i, SLAB_STEPS);
+                let h = (s.y - stars.slab.x) / (stars.slab.y - stars.slab.x);
+                let q = (s.xz + slab_warp(s.xyz, h)) / stars.slab.z + stars.cloud.xy;
+                let f = textureSampleLevel(field_tex, field_samp, q * stars.field.x + stars.field.y, 1.0).r;
+                tau += slab_shape(h, (f - stars.cloud.z) / stars.cloud.w) * stars.slab.w * s.w;
+            }
+            clear = 1.0 - (1.0 - exp(-tau)) * fade;
+        } else {
+            let q = d.xz * (stars.deck.x / d.y) + stars.cloud.xy;
+            let f = textureSampleLevel(field_tex, field_samp, q * stars.field.x + stars.field.y, 0.0).r;
+            clear = 1.0 - clamp((f - stars.cloud.z) / stars.cloud.w, 0.0, 1.0) * fade;
+        }
     }
     // Alpha zero: `AlphaMode::Add` blends premultiplied (`One,
     // OneMinusSrcAlpha`), so any alpha here would erase the sky behind the

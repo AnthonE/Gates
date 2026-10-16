@@ -1,12 +1,21 @@
 //! The lore, drawn (`ARC.md` F5–F7): the speakers as people (the player
 //! rig at idle, the shopkeepers' shade), the inscriptions as black slabs
-//! with a gold ring on top, and each mechanism's dials as stone drums whose
-//! notch turns as the dials do. Where each stands is `sim_core::spot`'s
-//! answer, so it is drawn where the sim measures reach from.
+//! ([`SLAB_GLB`]) with a gold ring on top, and each mechanism's dials as
+//! stone drums ([`DIAL_GLB`]) whose notch turns as the dials do. Where each
+//! stands is `sim_core::spot`'s answer, so it is drawn where the sim
+//! measures reach from.
 
 use bevy::prelude::*;
 
 use super::{Net, WorldEntity, WorldId};
+
+/// An inscription's stone: a blank basalt stele on a footing, 1.31 m wide,
+/// 2.0 m tall, generated. The ring on top stays an exact torus.
+pub const SLAB_GLB: &str = "models/site/lore_slab.glb";
+/// How far the stele stands in the ground (`ART.md` rule 2).
+const SLAB_SINK_M: f32 = 0.1;
+/// A dial's drum: a basalt drum 1.1 m across, its top at 1.0 m, generated.
+pub const DIAL_GLB: &str = "models/site/lore_dial.glb";
 
 /// A drawn speaker, inscription or dial; what it is and its index.
 #[derive(Component)]
@@ -42,15 +51,11 @@ pub fn spawn(
     rig: Res<super::anim::Rig>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    server: Res<AssetServer>,
     have: Query<&LoreMark>,
 ) {
     let Some(world) = world else { return };
     let lore = &net.session.core.lore;
-    let stone = || StandardMaterial {
-        base_color: Color::srgb(0.07, 0.07, 0.08),
-        perceptual_roughness: 0.4,
-        ..default()
-    };
     let gold = || StandardMaterial {
         base_color: Color::srgb(0.83, 0.64, 0.25),
         metallic: 1.0,
@@ -112,7 +117,8 @@ pub fn spawn(
         let Some(p) = at(&world, &ins.spot) else {
             continue;
         };
-        let (slab, ring) = (materials.add(stone()), materials.add(gold()));
+        let (slab, slab_material) = super::mobs::model(&server, SLAB_GLB);
+        let ring = materials.add(gold());
         commands
             .spawn((
                 WorldEntity,
@@ -125,9 +131,9 @@ pub fn spawn(
             ))
             .with_children(|c| {
                 c.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(1.3, 2.0, 0.35))),
-                    MeshMaterial3d(slab),
-                    Transform::from_xyz(0.0, 0.9, 0.0),
+                    Mesh3d(slab),
+                    MeshMaterial3d(slab_material),
+                    Transform::from_xyz(0.0, -SLAB_SINK_M, 0.0),
                 ));
                 c.spawn((
                     Mesh3d(meshes.add(Torus::new(0.28, 0.36))),
@@ -151,7 +157,8 @@ pub fn spawn(
             let Some(p) = at(&world, &sim_core::mech::dial_spot(&def, d)) else {
                 continue;
             };
-            let (drum, notch) = (materials.add(stone()), materials.add(gold()));
+            let (drum, drum_material) = super::mobs::model(&server, DIAL_GLB);
+            let notch = materials.add(gold());
             commands
                 .spawn((
                     WorldEntity,
@@ -163,11 +170,7 @@ pub fn spawn(
                     Visibility::default(),
                 ))
                 .with_children(|c| {
-                    c.spawn((
-                        Mesh3d(meshes.add(Cylinder::new(0.42, 1.0))),
-                        MeshMaterial3d(drum),
-                        Transform::from_xyz(0.0, 0.5, 0.0),
-                    ));
+                    c.spawn((Mesh3d(drum), MeshMaterial3d(drum_material)));
                     c.spawn((
                         DialNotch(k as u8, d as u8),
                         Transform::from_xyz(0.0, 1.0, 0.0),

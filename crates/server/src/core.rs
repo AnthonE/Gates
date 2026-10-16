@@ -14,13 +14,14 @@ use protocol::{
     encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
     encode_event_catalog, encode_event_charge_placed, encode_event_chat,
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_fire,
-    encode_event_gather, encode_event_gather_refused, encode_event_gitem_sync, encode_event_health,
-    encode_event_heard, encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_lodged_sync, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_dead,
+    encode_event_death, encode_event_death_mark, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_fire, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
+    encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_lodged_sync, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
     encode_event_research, encode_event_research_refused, encode_event_research_rows,
@@ -503,6 +504,10 @@ impl SleeperIndex {
     }
 }
 
+/// One eviction record: whose, the record, the put's stamp, and the id the
+/// evicted body wore.
+type EvictRow = (PlayerKey, PlayerSave, u64, u32);
+
 /// The sim's own copy of every eviction record it has handed out, by key
 /// (NOW §0y 2). `connect_as` reads it ahead of the record a joiner brings.
 ///
@@ -525,8 +530,13 @@ impl SleeperIndex {
 /// table drops its oldest put, which costs that one victim only the hole
 /// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
 /// allocates.
+///
+/// It also keeps the id the evicted body wore: the victim's bags, locks and
+/// cupboards are still filed under it, and the rejoin moves them to the new
+/// body (`Command::Rekey`). A restart forgets this, and those things stay
+/// with the old id, which `SlotTable::start_past` keeps anyone from wearing.
 struct EvictMemo {
-    entries: Box<[Option<(PlayerKey, PlayerSave, u64)>]>,
+    entries: Box<[Option<EvictRow>]>,
     /// The next put's stamp: oldest-first replacement with no ties when one
     /// window evicts more than once.
     next: u64,
@@ -540,34 +550,36 @@ impl EvictMemo {
         }
     }
 
-    fn find(&self, key: &PlayerKey) -> Option<PlayerSave> {
+    /// The record filed for `key` and the id its body wore.
+    fn find(&self, key: &PlayerKey) -> Option<(PlayerSave, u32)> {
         self.entries
             .iter()
             .flatten()
-            .find(|(k, _, _)| k == key)
-            .map(|(_, s, _)| *s)
+            .find(|(k, _, _, _)| k == key)
+            .map(|(_, s, _, id)| (*s, *id))
     }
 
     fn forget(&mut self, key: &PlayerKey) {
         for e in self.entries.iter_mut() {
-            if e.map(|(k, _, _)| k == *key).unwrap_or(false) {
+            if e.map(|(k, _, _, _)| k == *key).unwrap_or(false) {
                 *e = None;
             }
         }
     }
 
-    /// File `save` under `key`, replacing any earlier one for the same key,
-    /// else into a free row, else over the oldest put.
-    fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
+    /// File `save` and the evicted body's `id` under `key`, replacing any
+    /// earlier one for the same key, else into a free row, else over the
+    /// oldest put.
+    fn put(&mut self, key: &PlayerKey, save: PlayerSave, id: u32) {
         self.forget(key);
-        let stamp = |e: &Option<(PlayerKey, PlayerSave, u64)>| e.map_or(0, |(_, _, n)| n);
+        let stamp = |e: &Option<EvictRow>| e.map_or(0, |(_, _, n, _)| n);
         let row = self
             .entries
             .iter()
             .position(|e| e.is_none())
             .or_else(|| (0..self.entries.len()).min_by_key(|&i| stamp(&self.entries[i])));
         if let Some(i) = row {
-            self.entries[i] = Some((*key, save, self.next));
+            self.entries[i] = Some((*key, save, self.next, id));
             self.next += 1;
         }
     }
@@ -1583,11 +1595,15 @@ impl ShardCore {
             .filter(|&s| !self.spoken_for(s));
         // No body, so a record: this shard's own eviction record first, the
         // store's (as the accept loop read it) only if it has none. Peeked,
-        // not taken — it is spent below only once the join is queued.
-        let save = match key {
-            Some(k) if sleeper.is_none() => self.evicted.find(&k).or(save),
-            _ => save,
-        };
+        // not taken — it is spent below only once the join is queued. The
+        // eviction record also names the id the evicted body wore, which
+        // still owns its bags, locks and cupboards: they follow the wallet
+        // to the new body (`Command::Rekey`, after the join).
+        let memo = key
+            .filter(|_| sleeper.is_none())
+            .and_then(|k| self.evicted.find(&k));
+        let save = memo.map(|(s, _)| s).or(save);
+        let former = memo.map(|(_, was)| was).filter(|&was| was != id);
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
@@ -1599,10 +1615,11 @@ impl ShardCore {
         let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
             match self.evict_victim() {
                 Some(victim) => {
-                    // Room for both commands or neither: an `Evict` whose
+                    // Room for every command or none: an `Evict` whose
                     // join was then refused by a full queue would delete a
                     // body and seat nobody in its place.
-                    if self.queued_len + 2 > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
+                    let n = 2 + usize::from(former.is_some());
+                    if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
                         return None;
                     }
                     // The record comes off the live body NOW — the current
@@ -1617,9 +1634,10 @@ impl ShardCore {
                     if let Some((k, s)) = record.as_ref() {
                         // The arrow points at a body the command below is
                         // about to remove. The record is kept for the
-                        // victim's return, which may beat the store to it.
+                        // victim's return, which may beat the store to it,
+                        // with the id their things are filed under.
                         self.sleepers.forget(k);
-                        self.evicted.put(k, *s);
+                        self.evicted.put(k, *s, victim);
                     }
                     let roomed = self.queue(Command::Evict { id: victim });
                     debug_assert!(roomed, "room for two was checked above");
@@ -1635,11 +1653,19 @@ impl ShardCore {
         } else {
             None
         };
-        if !self.queue(cmd) {
+        // The join and the move of what the evicted body owned go together
+        // or not at all: a join without it would seat the wallet with
+        // nothing it built.
+        let n = 1 + usize::from(former.is_some());
+        if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS || !self.queue(cmd) {
             return None;
         }
-        // A woken body takes this connection's id (`World::take_over`); its
-        // team seat goes with it.
+        if let Some(was) = former {
+            let roomed = self.queue(Command::Rekey { from: was, to: id });
+            debug_assert!(roomed, "room for both was checked above");
+        }
+        // A woken body takes this connection's id (`World::take_over`), and
+        // what it owns goes with it there; its team seat goes with it here.
         if let Some(sleeper) = sleeper {
             self.teams.rekey(sleeper, id);
         }
@@ -3930,14 +3956,54 @@ impl ShardCore {
                             Err(_) => ShardStats::bump(&stats.encode_range_errors),
                         }
                     }
-                    let (cause, item, range_cm) = self
+                    // The life's length rides the same read: the corpse
+                    // keeps `born` and `died` (`World::die`), so "alive for"
+                    // is the sim's clock and not a guess the client could
+                    // make.
+                    let corpse = self
                         .world
                         .players
                         .iter()
                         .find(|p| p.active && p.id == ev.a)
-                        .map(|p| (p.death_cause, p.death_item, p.death_range_cm))
-                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0));
-                    match encode_event_death(ev.a, ev.b, cause, item, range_cm, &mut self.ev_buf) {
+                        .copied();
+                    let (cause, item, range_cm, alive_s) = corpse
+                        .map(|p| {
+                            (
+                                p.death_cause,
+                                p.death_item,
+                                p.death_range_cm,
+                                p.alive_s().unwrap_or(0),
+                            )
+                        })
+                        .unwrap_or((DEATH_BY_CLOCK, NO_ITEM, 0, 0));
+                    // **Where it fell goes to the victim alone, ahead of the
+                    // broadcast** (v116): the death screen centres its map
+                    // on it the frame `Death` raises the screen, for the
+                    // bags' reason above. The kill feed never carries it.
+                    // Seats watching the victim hear it from the drip.
+                    if let (Some(slot), Some(p)) = (self.client_slot_of(ev.a), corpse) {
+                        match encode_event_death_mark(p.death_at, &mut self.ev_buf) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    self.clients[slot].last_death_mark = Some(p.death_at);
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
+                    match encode_event_death(
+                        ev.a,
+                        ev.b,
+                        cause,
+                        item,
+                        range_cm,
+                        alive_s,
+                        &mut self.ev_buf,
+                    ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -5452,6 +5518,52 @@ impl ShardCore {
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
             self.clients[slot].bags_owed = false;
+        }
+
+        // The death screen on the server (v116), after the bags it is built
+        // around. The marker whenever it is not what this client last heard
+        // (a join, a resync; a death sends it itself, ahead of the
+        // broadcast). The screen itself once per join or resync, and only
+        // for a body that is already dead — logged off on it, or killed
+        // asleep (`World::take_over`); a death while connected is the
+        // broadcast's. A join still queued has no body yet and owes on.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let p = self.world.players[wslot];
+            if self.clients[slot].last_death_mark != Some(p.death_at) {
+                match encode_event_death_mark(p.death_at, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_death_mark = Some(p.death_at);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+            if self.clients[slot].dead_owed {
+                if p.dead {
+                    match encode_event_dead(
+                        p.death_by,
+                        p.death_cause,
+                        p.death_item,
+                        p.death_range_cm,
+                        p.alive_s(),
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                return;
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                self.clients[slot].dead_owed = false;
+            }
         }
 
         // The crew HUD vital (NOW §0up 3): a body standing in a claim it is
@@ -8664,16 +8776,18 @@ mod tests {
             hp: n as u16,
             ..PlayerSave::EMPTY
         };
+        // The id the evicted body wore rides with its record.
+        let rec = |n: usize| Some((save(n), n as u32 + 1));
         let mut memo = EvictMemo::new();
         for n in 0..MAX_PLAYERS {
-            memo.put(&key(n), save(n));
+            memo.put(&key(n), save(n), n as u32 + 1);
         }
-        memo.put(&key(3), save(1000));
-        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
-        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
+        memo.put(&key(3), save(1000), 1001);
+        assert_eq!(memo.find(&key(3)), rec(1000), "re-filed in place");
+        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS), MAX_PLAYERS as u32 + 1);
         assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
-        assert_eq!(memo.find(&key(1)), Some(save(1)));
-        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
+        assert_eq!(memo.find(&key(1)), rec(1));
+        assert_eq!(memo.find(&key(MAX_PLAYERS)), rec(MAX_PLAYERS));
         memo.forget(&key(1));
         assert_eq!(memo.find(&key(1)), None);
     }

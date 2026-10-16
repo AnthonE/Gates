@@ -518,6 +518,7 @@ pub fn hash(c: &Content) -> u64 {
         ex.fel_regen_max,
         ex.fel_ward_max,
         ex.fel_pocket_per_s,
+        ex.snow_wet_pm,
     ] {
         h.u(v);
     }

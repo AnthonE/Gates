@@ -38,6 +38,12 @@ const SHADER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/shaders/ground_splat.wgsl"
 );
+/// The deck's shadows on the land: the ground's fragment imports it under
+/// `CLOUD_SHADOWS`, natively, and it declares the material's last two slots.
+const CLOUD_SHADER: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/shaders/cloud_shadow.wgsl"
+);
 
 const ROLES: [&str; 4] = ["sand", "grass", "litter", "rock"];
 
@@ -144,8 +150,12 @@ fn every_map_delivers_a_mean_of_one() {
 /// failure rather than a skip.
 #[test]
 fn the_shader_and_the_rust_side_bind_the_same_slots() {
-    let src = std::fs::read_to_string(SHADER)
-        .unwrap_or_else(|e| panic!("the ground splat shader is not at {SHADER}: {e}"));
+    let src = [SHADER, CLOUD_SHADER]
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("the ground's shader is not at {path}: {e}"))
+        })
+        .join("\n");
 
     let mut found: Vec<(u32, String)> = Vec::new();
     for line in src.lines() {
@@ -177,11 +187,16 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     // shader, which is the point. (Sixteen `texture_2d`s at 101–117 until
     // 2026-09-12, three `texture_2d_array`s until 2026-10-07, two since, for
     // the reason `the_ground_fits_the_fragment_texture_budget` states.)
+    // The last two are the deck's shadows (`cloud_shadow.wgsl`), bound only
+    // natively: its field is a storage buffer, for the reason
+    // `the_ground_fits_the_fragment_texture_budget` states.
     let want: Vec<(u32, &str)> = vec![
         (100, "splat"),
         (101, "albedo_maps"),
         (102, "ground_sampler"),
         (103, "data_maps"),
+        (104, "cloud_field"),
+        (105, "cloud"),
     ];
 
     // ── And the RUST struct, which this gate never actually read ────────
@@ -204,7 +219,7 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     ))
     .expect("ground_splat.rs is not where this test expects it");
     let mut rust_slots: Vec<u32> = Vec::new();
-    for attr in ["#[uniform(", "#[texture(", "#[sampler("] {
+    for attr in ["#[uniform(", "#[texture(", "#[sampler(", "#[storage("] {
         for (_, rest) in rust_src.split_once(attr).into_iter().flat_map(|_| {
             rust_src
                 .match_indices(attr)
@@ -329,6 +344,37 @@ fn the_ground_fits_the_fragment_texture_budget() {
     assert_eq!(
         rust_textures, arrays,
         "`GroundSplat` declares {rust_textures} textures and the shader binds {arrays}"
+    );
+    // The deck's shadows (`cloud_shadow.wgsl`) read their field out of a
+    // storage buffer, which no sampled-texture budget counts: a texture
+    // there was a seventeenth on a native GL fallback, whose wgpu backend
+    // reports sixteen whatever the driver can do.
+    let cloud = std::fs::read_to_string(CLOUD_SHADER).expect("cloud shadow shader");
+    let cloud_textures = cloud
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .filter(|l| l.contains("@binding(") && l.contains(": texture_"))
+        .count();
+    assert_eq!(
+        cloud_textures, 0,
+        "cloud_shadow.wgsl binds {cloud_textures} textures: the deck's field \
+         is a storage buffer, so the ground stays inside the budget"
+    );
+    // And it is native only: WebGPU's floor is eight storage buffers a
+    // stage, and the browser's ground was never measured against it.
+    const NATIVE: &str = "#[cfg(not(target_arch = \"wasm32\"))]";
+    let pushed = format!(
+        "{NATIVE}\n        if let Some(fragment) = descriptor.fragment.as_mut() {{\n            \
+         fragment.shader_defs.push(\"CLOUD_SHADOWS\".into());"
+    );
+    assert!(
+        src.contains("#ifdef CLOUD_SHADOWS\n#import \"shaders/cloud_shadow.wgsl\"")
+            && rust_src.contains(&pushed)
+            && rust_src.contains(&format!(
+                "{NATIVE}\n    #[storage(104, read_only, visibility(fragment))]"
+            )),
+        "cloud_shadow.wgsl must be imported only under `CLOUD_SHADOWS`, and \
+         only the native build may push that def and bind its field"
     );
 
     let total = VIEW + ATMOSPHERE + STANDARD_MATERIAL + rust_textures as u32;

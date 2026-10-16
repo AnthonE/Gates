@@ -89,6 +89,7 @@ pub fn cinematic(g: super::quality::Gfx, b: Budget) -> super::quality::Gfx {
         shadow_m: b.shadow_m.unwrap_or(300.0),
         shadow_map_px: b.shadow_px.unwrap_or(4096),
         tree_lod_swap_m: b.tree_lod_m.unwrap_or(160.0),
+        clouds: crate::config::Clouds::High,
         ..g
     }
 }

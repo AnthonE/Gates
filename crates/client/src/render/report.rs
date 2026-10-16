@@ -187,6 +187,16 @@ impl Reports {
         self.dirty = true;
     }
 
+    /// Open the composer with a line already written, for the player to
+    /// finish and send — the death screen's REPORT CHEAT. Filed as
+    /// [`Kind::Other`] until the player Tabs to another kind.
+    pub fn open_with(&mut self, text: &str) {
+        self.open = true;
+        self.kind = KINDS.iter().position(|k| *k == Kind::Other).unwrap_or(0);
+        self.text = text.chars().take(TITLE_MAX).collect();
+        self.dirty = true;
+    }
+
     fn say(&mut self, what: impl Into<String>) {
         self.notice = what.into();
         self.notice_left = NOTICE_SECS;
@@ -206,12 +216,16 @@ impl Reports {
 #[derive(Component)]
 pub struct ReportLine;
 
+/// How far up the composer's line sits. The death screen lifts it over its
+/// bottom bar while it is up (`render::death`) and puts it back here.
+pub const LINE_BOTTOM: f32 = 52.0;
+
 pub fn setup(mut commands: Commands) {
     commands.spawn((
         ReportLine,
         Node {
             position_type: PositionType::Absolute,
-            bottom: Val::Px(52.0),
+            bottom: Val::Px(LINE_BOTTOM),
             left: Val::Px(22.0),
             max_width: Val::Percent(92.0),
             ..default()
@@ -220,6 +234,9 @@ pub fn setup(mut commands: Commands) {
         super::ui::font(15.0),
         TextColor(Color::srgba(0.98, 0.94, 0.80, 0.95)),
         Pickable::IGNORE,
+        // Over every screen, the death screen's opaque sheet included — its
+        // REPORT CHEAT opens this composer.
+        GlobalZIndex(super::death::DEATH_Z + 1),
     ));
 }
 

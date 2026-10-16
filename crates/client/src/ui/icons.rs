@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 133] = [
+pub const STEMS: [&str; 136] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -211,6 +211,8 @@ pub const STEMS: [&str; 133] = [
     // (`ci/finish_icons.py`); a picture multiplied by a badge colour is mud.
     "map_bed",
     "map_hearth",
+    // Where you died, on the death screen's map (Rust's skull pin).
+    "map_death",
     // The panels' own marks, drawn over or beside an item picture: the
     // padlock on a recipe or tech node not yet learned, the favourite star,
     // and the clock beside a craft time — Rust's three, in white for the
@@ -218,6 +220,9 @@ pub const STEMS: [&str; 133] = [
     "ui_lock",
     "ui_star",
     "ui_clock",
+    // The death screen's bag pin and RANDOM RESPAWN's turn.
+    "ui_pin",
+    "ui_respawn",
     // The three vitals, bottom right. Not items — these are the only stems
     // that name a HUD readout rather than something a player can hold, and
     // they are here because `tests/ui.rs` §G holds this list equal to the

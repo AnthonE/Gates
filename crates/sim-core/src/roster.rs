@@ -155,6 +155,18 @@ impl<const N: usize> Roster<N> {
         self.len = 1;
     }
 
+    /// Every member through `f`, in order — `World::remap_player_ids`, for a
+    /// player back on a new connection id. Rebuilt through [`Self::add`], so
+    /// two members `f` maps to one id stay one member and the tail stays
+    /// zeroed; the order, which is hashed, holds.
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        let mut out = Self::new();
+        for &m in self.members() {
+            out.add(f(m));
+        }
+        *self = out;
+    }
+
     /// Rebuild from a decoded save. `None` when the file's count is past
     /// the cap — **refused whole, never clamped**, because a clamped count
     /// is a list that quietly forgot somebody and this module's whole
@@ -180,6 +192,21 @@ mod tests {
     use super::*;
 
     type R = Roster<4>;
+
+    #[test]
+    fn a_rekey_keeps_the_place_and_never_lists_anyone_twice() {
+        let rekey = |from: u32, to: u32| move |m: u32| if m == from { to } else { m };
+        let mut r = R::of(1);
+        r.add(2);
+        r.add(3);
+        r.map_ids(&mut rekey(2, 9));
+        assert_eq!(r.members(), &[1, 9, 3], "the member moved place");
+        r.map_ids(&mut rekey(1, 3));
+        assert_eq!(r.members(), &[3, 9], "a player listed twice");
+        assert_eq!(r.raw(), &[3, 9, 0, 0], "the tail was not zeroed");
+        r.map_ids(&mut rekey(7, 8));
+        assert_eq!(r.members(), &[3, 9], "a stranger's rekey moved somebody");
+    }
 
     #[test]
     fn add_is_idempotent_and_refuses_rather_than_evicting() {

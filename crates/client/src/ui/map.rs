@@ -1393,6 +1393,48 @@ impl Marks {
     }
 }
 
+/// Append the authored tier — the haven, the waystations and depot, THE
+/// GATE, the ziggurat, the landmarks and the works: the places every
+/// player's map names. [`resolve_marks`] starts with it, and the death
+/// screen's map is it plus your own bags.
+pub fn resolve_sites(out: &mut Marks, haven: &Haven, arc: &ArcMarks) {
+    out.push(MarkKind::Haven, haven.x, haven.z);
+    for w in haven.minor.iter().filter(|w| w.live) {
+        let kind = if sim_core::depot::is_depot(w) {
+            MarkKind::Depot
+        } else {
+            MarkKind::Waystation
+        };
+        out.push(kind, w.x, w.z);
+    }
+    if haven.town.live {
+        out.push(MarkKind::Town, haven.town.x, haven.town.z);
+    }
+    if haven.ziggurat.live {
+        out.push(MarkKind::Monument, haven.ziggurat.x, haven.ziggurat.z);
+    }
+    // The landmarks, behind the sites: named places, fewer than the cap
+    // leaves room for (the assert above `MarkKind`).
+    for m in haven.marks.iter().filter(|m| m.live) {
+        out.push(MarkKind::Landmark, m.x, m.z);
+        if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Landmark {
+            out.a[out.count - 1].name = Some(sim_core::landmark::name(m.kind));
+        }
+    }
+    // The works, named: the island's shared projects, authored like the
+    // sites, so inside the tier the cap can never reach (the assert above
+    // `MarkKind`). A work on a seed without its site stands nowhere and is
+    // not drawn (`sim_core::spot`).
+    for (spot, label) in arc.works.iter().take(arc.n_works) {
+        if let Some((x, _, z)) = sim_core::spot::world(haven, spot) {
+            out.push(MarkKind::Work, x, z);
+            if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Work {
+                out.a[out.count - 1].label = *label;
+            }
+        }
+    }
+}
+
 /// Fill `out` with every marker the map draws.
 ///
 /// Push ORDER is the drop policy: authored destinations first, so the cap
@@ -1444,42 +1486,7 @@ pub fn resolve_marks(
 ) {
     out.count = 0;
     out.dropped = 0;
-
-    out.push(MarkKind::Haven, haven.x, haven.z);
-    for w in haven.minor.iter().filter(|w| w.live) {
-        let kind = if sim_core::depot::is_depot(w) {
-            MarkKind::Depot
-        } else {
-            MarkKind::Waystation
-        };
-        out.push(kind, w.x, w.z);
-    }
-    if haven.town.live {
-        out.push(MarkKind::Town, haven.town.x, haven.town.z);
-    }
-    if haven.ziggurat.live {
-        out.push(MarkKind::Monument, haven.ziggurat.x, haven.ziggurat.z);
-    }
-    // The landmarks, behind the sites: named places, fewer than the cap
-    // leaves room for (the assert above `MarkKind`).
-    for m in haven.marks.iter().filter(|m| m.live) {
-        out.push(MarkKind::Landmark, m.x, m.z);
-        if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Landmark {
-            out.a[out.count - 1].name = Some(sim_core::landmark::name(m.kind));
-        }
-    }
-    // The works, named: the island's shared projects, authored like the
-    // sites, so inside the tier the cap can never reach (the assert above
-    // `MarkKind`). A work on a seed without its site stands nowhere and is
-    // not drawn (`sim_core::spot`).
-    for (spot, label) in arc.works.iter().take(arc.n_works) {
-        if let Some((x, _, z)) = sim_core::spot::world(haven, spot) {
-            out.push(MarkKind::Work, x, z);
-            if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Work {
-                out.a[out.count - 1].label = *label;
-            }
-        }
-    }
+    resolve_sites(out, haven, arc);
 
     let have = have.min(defs.def_count);
     let half = BUILD_CELL_M * 0.5;
@@ -1561,28 +1568,18 @@ pub fn resolve_marks(
 }
 
 /// Fill `out` with **your own bags** and nothing else — the death
-/// screen's map (bag choice v0).
+/// screen's buttons on its map (bag choice v0).
 ///
-/// A different function from [`resolve_marks`] rather than a flag on it,
-/// and the difference is the whole point of the screen:
-///
-///   · [`resolve_marks`] draws the island — every bed and hearth anyone
-///     placed, off the broadcast deploy mirror, which cannot say whose
-///     they are;
-///   · this draws the **answers to the question on screen**, off the
-///     own-fact bag list, which is the only thing that can.
-///
-/// So no haven, no waystations, no other player's bed, and — the one that
-/// is a rule rather than a choice — **no marker for where you fell.**
-/// `ALPHA.md` §1: "who/what killed you — range and weapon, no map
-/// position". A raider standing over your body is looking at your screen's
-/// twin on their own machine; the reason the death screen never carried a
-/// position is that yours would pin the base they just cleared. Adding a
-/// map here does not repeal that, and `no_wake_map_marks_the_corpse` is
-/// what keeps someone from helpfully adding it back.
+/// A different function from [`resolve_marks`] rather than a flag on it:
+/// that one draws every bed anyone placed, off the broadcast deploy mirror,
+/// which cannot say whose they are; this draws the **answers to the question
+/// on screen**, off the own-fact bag list, which is the only thing that can.
+/// The death screen draws [`resolve_sites`] and its own skull where you
+/// fell under these (`render::death`); neither is a `Mark` here, so this
+/// list stays exactly the set of buttons.
 ///
 /// The cap is [`resolve_marks`]'s and cannot be reached: `BAG_CAP` is 8
-/// against [`MAP_MARKS_MAX`]'s 64. It is checked anyway, because a cap
+/// against [`MAP_MARKS_MAX`]'s 128. It is checked anyway, because a cap
 /// that is only correct as long as another crate's constant does not move
 /// is not a cap.
 pub fn resolve_wake_marks(out: &mut Marks, bags: &[BagAnchor]) {
@@ -2956,6 +2953,7 @@ mod tests {
             cz,
             level: 0,
             ready,
+            wait_s: if ready { 0 } else { 60 },
         }
     }
 
@@ -2973,13 +2971,11 @@ mod tests {
         assert_eq!(MarkKind::Bed.fill(), MarkKind::BedSpent.fill());
     }
 
-    /// **`ALPHA.md` §1: no map position.** The death screen grew a map and
-    /// that rule did not move — a marker for where you fell would hand the
-    /// raider standing over your body a pin to the base they just cleared.
-    /// Structural, because the way this breaks is somebody helpfully adding
-    /// a "you died here" dot.
+    /// The wake marks are the bag buttons on the death screen's map and
+    /// nothing else: the skull where you fell and the named places are drawn
+    /// around them, never mixed into the list a click is resolved against.
     #[test]
-    fn no_wake_map_marks_the_corpse() {
+    fn the_wake_marks_are_only_your_own_bags() {
         let mut out = Marks::default();
         resolve_wake_marks(&mut out, &[anchor(10, 20, true)]);
         assert_eq!(out.count, 1, "the wake map drew something besides the bags");

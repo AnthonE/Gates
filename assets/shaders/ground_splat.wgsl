@@ -57,6 +57,10 @@
         calculate_tbn_mikktspace,
     },
 }
+// The cloud deck's shadows on the land, natively (`render/cloud_shadow.rs`).
+#ifdef CLOUD_SHADOWS
+#import "shaders/cloud_shadow.wgsl"::cloud_shadow
+#endif
 
 struct GroundSplat {
     // Per identity, in `terrain::splat`'s order — sand · grass · litter · rock:
@@ -130,6 +134,13 @@ struct GroundSplat {
     desert: vec4<f32>,
     // xyz the straw the grass dries to. w reserved and zero.
     dry_grass: vec4<f32>,
+    // Snow (snow v0, `ground_splat::SNOW_*`): x = how white the weather has
+    // laid the ground 0..1, y = the height it lies from (m), z = its linear
+    // albedo, w = how far under that height it fades in (m).
+    snow: vec4<f32>,
+    // x..y = the band of aridity it lies on, z = how far past either end it
+    // fades out (aridity), w reserved and zero.
+    snow_band: vec4<f32>,
     // The Verdigris (`ground_splat::FEL_*`), by the vertex's corruption:
     // xyz the ash sand and litter go to; w the share of a fissure cell's
     // edges that glow at the heart.
@@ -1025,6 +1036,20 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let rain_wet = splat.identity[0].w * clamp(in.world_normal.y, 0.0, 1.0);
     let wet = max(in.uv_b.y, rain_wet);
     base = wetted(base, wet);
+    // Snow (snow v0): it lies from `snow.y` up, where the air is colder,
+    // on ground as arid as where it fell (`snow_band`: the air's other
+    // axis), on what faces the sky and never under the water. A colour set
+    // BEFORE the photograph multiplies, so the relief's light and shade
+    // survive it (`ART.md`: a modifier that sets a colour keeps the mean-1
+    // field).
+    let band = splat.snow_band;
+    let snow = splat.snow.x
+        * smoothstep(splat.snow.y - splat.snow.w, splat.snow.y, wp.y)
+        * smoothstep(band.x - band.z, band.x, arid)
+        * (1.0 - smoothstep(band.y, band.y + band.z, arid))
+        * smoothstep(0.55, 0.85, in.world_normal.y)
+        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y);
+    base = mix(base, vec3(splat.snow.z), snow);
 
     // The photograph, last: a scalar field with a mean of 1, so it contributes
     // relief and not colour.
@@ -1174,6 +1199,9 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ra.g));
 
     out.color = apply_pbr_lighting(pbr_input);
+#ifdef CLOUD_SHADOWS
+    out.color = vec4(out.color.rgb + view.exposure * cloud_shadow(pbr_input), out.color.a);
+#endif
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

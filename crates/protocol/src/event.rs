@@ -331,7 +331,9 @@ const SUB_GATHER_REFUSED: u32 = 49;
 /// cooldown lapses on a clock that emits nothing. `world.rs`'s respawn is
 /// still the authority and still falls back to the beach, and the client
 /// says which anchor answered (`ui::death::woke`), so a stale bit costs a
-/// sentence rather than a wrong place to wake up.
+/// sentence rather than a wrong place to wake up. A bag that is not ready
+/// carries its seconds to go after the bit (v115, `BagAnchor::wait_s`), and
+/// the client counts them down itself: the death screen's timer.
 /// **50, not 49** — see `PROTO_VER`'s v43 note. This landed on a branch
 /// as 49 with `PROTO_VER` 42, and the gather refusal above landed on the
 /// trunk as the same two numbers. Two layouts under one version is
@@ -563,7 +565,13 @@ const SUB_TEAM: u32 = 97;
 /// shard sends it out to `GUN_REPORT_CM` / `BLAST_REPORT_CM`; nearer, the
 /// shot rides `EV_SHOT` on its body and the blast its impact.
 const SUB_REPORT: u32 = 98;
-const SUB_MAX: u32 = SUB_REPORT;
+/// You are dead, and were before this connection reached the body (wire
+/// v116): the death screen again, for its owner only. See `EventMsg::Dead`.
+const SUB_DEAD: u32 = 99;
+/// Where your body last fell (wire v116): Rust's death marker. Own-fact. See
+/// `EventMsg::DeathMark`.
+const SUB_DEATH_MARK: u32 = 100;
+const SUB_MAX: u32 = SUB_DEATH_MARK;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -2196,23 +2204,49 @@ pub enum EventMsg {
     /// Widened in v16 to carry what the death screen is made of:
     /// `cause` is a `sim_core::world::DEATH_BY_*` code, `item` the weapon
     /// in the killer's hand (`NO_ITEM` when the world did it), `range_cm`
-    /// how far the blow landed from. **Still no position** — that is not an
-    /// omission but the rule ALPHA.md §1 states outright ("no map
-    /// position"): a death that told you where you fell would hand every
-    /// raider a map pin to the base they just cleared, and hand the corpse
-    /// one back. Who, with what, from how far. Never where.
+    /// how far the blow landed from. **Still no position**: a death that
+    /// told everyone where it happened would hand every raider a map pin to
+    /// the base they just cleared. Who, with what, from how far. The victim
+    /// alone is told where, by `DeathMark` (v116), ahead of this.
     ///
     /// Broadcast rather than own-fact for the same reason it always was —
     /// a kill feed reports kills nobody saw — and the extra three fields
     /// broadcast with it because they are the feed's content too: "killed
     /// you with a rock from 2 m" is the line, for everyone.
+    ///
+    /// `alive_s` (v115) is how long the victim's body had been standing, in
+    /// whole seconds — the death screen's "alive for", Rust's first field.
+    /// Server-side truth (`Player::born`), because a client that joined
+    /// onto its own sleeper cannot know when that body woke.
     Death {
         victim: u32,
         killer: u32,
         cause: u8,
         item: u16,
         range_cm: u16,
+        alive_s: u32,
     },
+    /// You are dead, and were before this connection reached the body (v116):
+    /// you logged off on the death screen, or were killed asleep. `Death`'s
+    /// facts for the death screen, said again to its owner alone at a join
+    /// and after a resync, never to the kill feed: re-announcing `Death`
+    /// would tell the whole shard about a killing that happened while its
+    /// victim was away. `alive_s` is `None` when the server did not time
+    /// that life (a corpse restored from disk keeps neither clock).
+    Dead {
+        killer: u32,
+        cause: u8,
+        item: u16,
+        range_cm: u16,
+        alive_s: Option<u32>,
+    },
+    /// Where your body last fell (v116), in body quanta (`SUB_FIRE`'s
+    /// absolute x and z): Rust's death marker, which the death screen pins
+    /// and the compass and the map keep showing after the respawn, until the
+    /// next death moves it. Own-fact: sent ahead of your `Death`, at a join
+    /// and after a resync. `None` when the server has no death of yours on
+    /// record.
+    DeathMark { at: Option<(i32, i32)> },
     /// You woke up: `on_bag` is true if one of your own sleeping bags
     /// answered, false if the beach ring did. Own-fact, and the one message
     /// that closes the death screen.
@@ -2800,10 +2834,18 @@ pub fn encode_event_bags(bags: &[BagAnchor], buf: &mut [u8]) -> Result<usize, Wi
         {
             return Err(WireError::Range);
         }
+        // `ready` and `wait_s` say one thing twice (`BagAnchor::wait_s`),
+        // and a pair that disagrees is a sim bug, refused rather than sent.
+        if b.ready != (b.wait_s == 0) {
+            return Err(WireError::Range);
+        }
         w.write(b.cx as u32, BUILD_CELL_BITS)?;
         w.write(b.cz as u32, BUILD_CELL_BITS)?;
         w.write(b.level as u32, BUILD_LEVEL_BITS)?;
         w.write_bit(b.ready)?;
+        if !b.ready {
+            w.write(b.wait_s as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -5027,6 +5069,7 @@ pub fn encode_event_death(
     cause: u8,
     item: u16,
     range_cm: u16,
+    alive_s: u32,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if cause > DEATH_CAUSE_MAX {
@@ -5038,6 +5081,50 @@ pub fn encode_event_death(
     w.write(cause as u32, DEATH_CAUSE_BITS)?;
     w.write(item as u32, 16)?;
     w.write(range_cm as u32, 16)?;
+    w.write(alive_s, 32)?;
+    Ok(w.finish())
+}
+
+/// The death screen said again to its owner, own-fact — see
+/// `EventMsg::Dead`. `Death`'s fields and range check, without the victim
+/// (it is the receiver) and with the life's length behind a bit.
+pub fn encode_event_dead(
+    killer: u32,
+    cause: u8,
+    item: u16,
+    range_cm: u16,
+    alive_s: Option<u32>,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cause > DEATH_CAUSE_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_DEAD)?;
+    w.write(killer, 32)?;
+    w.write(cause as u32, DEATH_CAUSE_BITS)?;
+    w.write(item as u32, 16)?;
+    w.write(range_cm as u32, 16)?;
+    w.write_bit(alive_s.is_some())?;
+    if let Some(s) = alive_s {
+        w.write(s, 32)?;
+    }
+    Ok(w.finish())
+}
+
+/// Where the receiver last fell, own-fact — see `EventMsg::DeathMark`. A
+/// position off the entity lane's window is refused, `SUB_IMPACT`'s check.
+pub fn encode_event_death_mark(at: Option<(i32, i32)>, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_DEATH_MARK)?;
+    w.write_bit(at.is_some())?;
+    if let Some((qx, qz)) = at {
+        if !(0..(1i64 << POS_XZ_BITS)).contains(&(qx as i64))
+            || !(0..(1i64 << POS_XZ_BITS)).contains(&(qz as i64))
+        {
+            return Err(WireError::Range);
+        }
+        w.write(qx as u32, POS_XZ_BITS)?;
+        w.write(qz as u32, POS_XZ_BITS)?;
+    }
     Ok(w.finish())
 }
 
@@ -5748,11 +5835,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut bags = [BagAnchor::default(); BAG_CAP];
             for b in bags.iter_mut().take(count) {
+                let cx = r.read(BUILD_CELL_BITS)? as u16;
+                let cz = r.read(BUILD_CELL_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                let ready = r.read_bit()?;
+                // The wait rides only on a bag that is cooling (v115), and
+                // a cooling bag with no wait is the pair the encoder refuses.
+                let wait_s = if ready { 0 } else { r.read(16)? as u16 };
+                if !ready && wait_s == 0 {
+                    return Err(WireError::Malformed);
+                }
                 *b = BagAnchor {
-                    cx: r.read(BUILD_CELL_BITS)? as u16,
-                    cz: r.read(BUILD_CELL_BITS)? as u16,
-                    level: r.read(BUILD_LEVEL_BITS)? as u8,
-                    ready: r.read_bit()?,
+                    cx,
+                    cz,
+                    level,
+                    ready,
+                    wait_s,
                 };
             }
             EventMsg::Bags {
@@ -6791,7 +6889,39 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 cause,
                 item: r.read(16)? as u16,
                 range_cm: r.read(16)? as u16,
+                alive_s: r.read(32)?,
             }
+        }
+        SUB_DEAD => {
+            let killer = r.read(32)?;
+            let cause = r.read(DEATH_CAUSE_BITS)? as u8;
+            if cause > DEATH_CAUSE_MAX {
+                return Err(WireError::Malformed);
+            }
+            let item = r.read(16)? as u16;
+            let range_cm = r.read(16)? as u16;
+            let alive_s = if r.read_bit()? {
+                Some(r.read(32)?)
+            } else {
+                None
+            };
+            EventMsg::Dead {
+                killer,
+                cause,
+                item,
+                range_cm,
+                alive_s,
+            }
+        }
+        SUB_DEATH_MARK => {
+            let at = if r.read_bit()? {
+                let qx = r.read(POS_XZ_BITS)? as i32;
+                let qz = r.read(POS_XZ_BITS)? as i32;
+                Some((qx, qz))
+            } else {
+                None
+            };
+            EventMsg::DeathMark { at }
         }
         SUB_MOVED => {
             let from_kind = r.read(CONT_KIND_BITS)? as u8;
@@ -10282,7 +10412,7 @@ mod wire_domains {
     fn the_highest_live_death_cause_encodes() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for cause in 0..=sim_core::world::DEATH_BY_MAX {
-            let n = encode_event_death(7, 9, cause, 3, 250, &mut buf).unwrap_or_else(|e| {
+            let n = encode_event_death(7, 9, cause, 3, 250, 60, &mut buf).unwrap_or_else(|e| {
                 panic!(
                     "death cause {cause} is live in the sim and the wire \
                      refused it ({e:?}). This is the 2026-08-05 failure \
@@ -10305,7 +10435,7 @@ mod wire_domains {
         let forged = sim_core::world::DEATH_BY_MAX + 1;
         if (forged as u32) < (1 << DEATH_CAUSE_BITS) {
             assert_eq!(
-                encode_event_death(7, 9, forged, 3, 250, &mut buf),
+                encode_event_death(7, 9, forged, 3, 250, 60, &mut buf),
                 Err(WireError::Range),
                 "cause {forged} is not a live death and the encoder let it \
                  through — the domain is no longer closed"

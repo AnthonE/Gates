@@ -73,6 +73,7 @@ every item either way, because the painted ones are derived works of it.
 | `leather.png` | `delapouite/animal-hide` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_bed.png` | `delapouite/sleeping-bag` |
+| `map_death.png` | `lorc/skull-mask` |
 | `map_hearth.png` | `delapouite/fireplace` |
 | `map_site.png` | `delapouite/hut` |
 | `medical_syringe.png` | `lorc/syringe` |
@@ -128,6 +129,8 @@ every item either way, because the painted ones are derived works of it.
 | `torch.png` | `delapouite/torch` |
 | `ui_clock.png` | `lorc/stopwatch` |
 | `ui_lock.png` | `lorc/padlock` |
+| `ui_pin.png` | `delapouite/position-marker` |
+| `ui_respawn.png` | `delapouite/clockwise-rotation` |
 | `ui_star.png` | `delapouite/round-star` |
 | `verb_demolish.png` | `lorc/demolish` |
 | `verb_pick_up.png` | `lorc/grab` |

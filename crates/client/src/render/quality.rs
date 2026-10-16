@@ -54,13 +54,16 @@
 use bevy::anti_alias::smaa::Smaa;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
 use bevy::core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass};
-use bevy::light::{CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap};
+use bevy::light::{
+    CascadeShadowConfig, CascadeShadowConfigBuilder, DirectionalLightShadowMap, VolumetricFog,
+};
 use bevy::pbr::{ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::camera::{MipBias, TemporalJitter};
+use bevy::render::render_resource::TextureUsages;
 
-use crate::config::{Ao, Quality};
+use crate::config::{Ao, Clouds, Quality};
 
 use super::props::Fellable;
 use super::rig::{EyeCam, Sun};
@@ -103,6 +106,9 @@ pub struct Gfx {
     pub tree_lod_swap_m: f32,
     /// Percentage of each world-image dimension; the HUD stays at window size.
     pub render_scale: u8,
+    /// How the cloud deck is drawn (`deck.rs`): flat, or raymarched at one
+    /// of two step counts.
+    pub clouds: Clouds,
 }
 
 /// The shadow distances the screen offers, metres, ascending.
@@ -304,6 +310,13 @@ pub fn preset(q: Quality) -> Gfx {
             shadow_m: 200.0,
             shadow_map_px: 2048,
             tree_lod_swap_m: super::tree::TREE_LOD_SWAP_M,
+            // A browser's top rung marches half the steps: the same slab,
+            // grainier, on the integrated GPU most pages run on.
+            clouds: if cfg!(target_arch = "wasm32") {
+                Clouds::Medium
+            } else {
+                Clouds::High
+            },
         },
         Quality::Medium => Gfx {
             render_scale: super::render_scale::RENDER_SCALE_MAX,
@@ -319,6 +332,7 @@ pub fn preset(q: Quality) -> Gfx {
             shadow_m: 140.0,
             shadow_map_px: 2048,
             tree_lod_swap_m: MEDIUM_TREE_LOD_SWAP_M,
+            clouds: Clouds::Medium,
         },
         Quality::Low => Gfx {
             render_scale: super::render_scale::RENDER_SCALE_MAX,
@@ -351,6 +365,7 @@ pub fn preset(q: Quality) -> Gfx {
             #[cfg(not(webgl2))]
             shadow_map_px: 1024,
             tree_lod_swap_m: 35.0,
+            clouds: Clouds::Low,
         },
     }
 }
@@ -449,11 +464,15 @@ pub fn effective(g: Gfx) -> Gfx {
     //
     // All three are WebGL2's walls, not the browser's: the WebGPU module has
     // storage buffers and compute and takes every one of them.
+    // The raymarched deck is drawn where the atmosphere composites it
+    // (`deck.rs`); WebGL2 has none, and draws its own flat deck whatever
+    // this row says.
     #[cfg(webgl2)]
     let g = Gfx {
         ao: Ao::Off,
         taa: false,
         bloom: false,
+        clouds: Clouds::Low,
         ..g
     };
     #[cfg(target_arch = "wasm32")]
@@ -484,6 +503,17 @@ pub fn effective(g: Gfx) -> Gfx {
     }
 }
 
+/// Whether the ground draws the cloud deck's shadows (`cloud_shadow.rs`):
+/// natively, where its bind group carries the deck's field, and on the
+/// HIGH clouds row only — the term is a second look at the sun for most of
+/// the ground, and MEDIUM is the rung for a GPU that cannot spare it until
+/// a mid-range card says otherwise. `rig::day_night` reads this too: where
+/// the ground draws the deck's shadows, the eye's own cloud no longer puts
+/// the sun's shadows out.
+pub fn cloud_shadows(g: Gfx) -> bool {
+    !cfg!(target_arch = "wasm32") && effective(g).clouds == Clouds::High
+}
+
 /// What one effective [`Gfx`] asks the renderer for, in Bevy's own types.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Tier {
@@ -505,6 +535,11 @@ pub struct Tier {
     pub shadow_map_px: usize,
     /// Where a tree stops being its own geometry (`tree::TREE_LOD_SWAP_M`).
     pub tree_lod_swap_m: f32,
+    /// Light shafts through the weather's fog (`shafts.rs`): the CLOUDS
+    /// row's top rung, the same family of raymarched air, and only where the
+    /// sun casts far enough to hold the box. Never under WebGL2, whose
+    /// clouds `effective` holds flat.
+    pub shafts: bool,
 }
 
 /// The Bevy components one effective [`Gfx`] resolves to.
@@ -525,6 +560,9 @@ pub fn components(g: Gfx) -> Tier {
         shadow_m: g.shadow_m,
         shadow_map_px: g.shadow_map_px,
         tree_lod_swap_m: g.tree_lod_swap_m,
+        shafts: g.clouds == Clouds::High
+            && g.shadows
+            && super::shafts::reach_m(g.shadow_m) >= super::shafts::SHAFT_MIN_REACH_M,
     }
 }
 
@@ -655,7 +693,7 @@ pub fn apply(
     // `Ref` rather than a second `Added<EyeCam>` query: the marker's own
     // change ticks answer "did this camera just appear" without a parameter,
     // and this system is already at clippy's argument ceiling.
-    cam: Query<(Entity, Ref<EyeCam>)>,
+    mut cam: Query<(Entity, Ref<EyeCam>, Option<&mut Camera3d>)>,
     sun: Query<Entity, With<Sun>>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     mut lod: ResMut<TreeLod>,
@@ -663,7 +701,7 @@ pub fn apply(
     capture: Option<Res<super::capture::Capture>>,
 ) {
     let capturing = capture.is_some();
-    let fresh = cam.iter().any(|(_, marker)| marker.is_added());
+    let fresh = cam.iter().any(|(_, marker, _)| marker.is_added());
     let want = effective(settings.gfx);
     let moved = *last != Some(want);
     if !moved && !fresh {
@@ -672,7 +710,7 @@ pub fn apply(
     *last = Some(want);
     let t = components(want);
 
-    if let Ok((cam, _)) = cam.single() {
+    if let Ok((cam, _, cam3d)) = cam.single_mut() {
         let mut e = commands.entity(cam);
         match t.ssao {
             Some(quality_level) => e.insert(ScreenSpaceAmbientOcclusion {
@@ -706,6 +744,23 @@ pub fn apply(
             e.insert(Bloom::NATURAL);
         } else {
             e.remove::<Bloom>();
+        }
+        // The camera's half of the shafts; `rig::day_night` lights them only
+        // while the weather has a fog for them. No mesh pipeline keys on this
+        // component, so the tier moving it re-specializes nothing.
+        if t.shafts {
+            e.insert(super::shafts::camera_fog(t.taa && !capturing, t.shadow_m));
+            // The march samples the main depth texture, and Bevy flags it
+            // sampleable only on frames the pass runs — a new descriptor, so
+            // a new full-size target, at every switch. Flagged for good here.
+            if let Some(mut c) = cam3d {
+                let usage = TextureUsages::from(c.depth_texture_usages);
+                if !usage.contains(TextureUsages::TEXTURE_BINDING) {
+                    c.depth_texture_usages = (usage | TextureUsages::TEXTURE_BINDING).into();
+                }
+            }
+        } else {
+            e.remove::<VolumetricFog>();
         }
         // A prepass is a sampled texture in every main-pass pipeline, and
         // removing SSAO or TAA leaves the ones they required behind. Where

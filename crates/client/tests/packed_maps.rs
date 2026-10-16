@@ -134,6 +134,17 @@ fn packed_models() -> Vec<&'static str> {
     for (_, p) in client::render::props::ROADSIDE_GLB {
         set.insert(p);
     }
+    // The monuments' generated parts, each a model in its own renderer.
+    for p in [
+        client::render::heli::HULL_GLB,
+        client::render::sentry::HEAD_GLB,
+        client::render::works::PLINTH_GLB,
+        client::render::lore::SLAB_GLB,
+        client::render::lore::DIAL_GLB,
+        client::render::town_fx::SEARCHLIGHT_GLB,
+    ] {
+        set.insert(p);
+    }
     for m in HELD_MODELS.iter() {
         if let HeldSrc::Glb(p) = &m.src {
             set.insert(*p);

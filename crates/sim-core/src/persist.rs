@@ -171,18 +171,16 @@ pub struct PlayerSave {
     /// **This body was down when it was saved**, and the restore reads it
     /// as "wake at a beach", not "come back dead".
     ///
-    /// The death screen is a *choice* (ALPHA.md §1: beach or a bag) and
-    /// logging off is declining it. Two things follow, and both are why
-    /// this is one bit rather than five saved fields. The screen cannot be
-    /// restored: it is drawn from `EV_DEATH`, which is broadcast — the kill
-    /// feed — so re-announcing it at a join would tell the whole shard
-    /// somebody had just been killed who had just logged in. And the
-    /// position must NOT be restored: a corpse's `body` is where it fell,
-    /// so restoring it in place would stand the player up alive at their
-    /// own death site with their sleeping bag still unspent, which is a
-    /// better outcome than staying to click the button. So a dead save
-    /// wakes on the ring at `deaths`, which is the beach it would have got
-    /// for pressing "beach".
+    /// A corpse still in the world is not restored from here: its owner
+    /// takes the sleeper over and gets the death screen back, facts and
+    /// all (`World::take_over`). This record is what is left when the
+    /// corpse is gone (its sleeper evicted, or a wipe's survivor, which
+    /// `server::wipe` writes as exactly this bit), so it is one bit rather
+    /// than the screen's saved fields. And the position must NOT be
+    /// restored: a corpse's `body` is where it fell, so restoring it in
+    /// place would stand the player up alive at their own death site with
+    /// their sleeping bag still unspent. So a dead save wakes on the ring at
+    /// `deaths`, which is the beach it would have got for pressing "beach".
     pub dead: bool,
     /// **This body was down when it was saved** (wounded v0, format 6),
     /// with the tick its roll comes at and the tick until which a second

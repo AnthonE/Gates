@@ -1170,6 +1170,17 @@ pub struct ExposureWorld {
     /// In a lit fire's warmth (`ClientCore::near_fire`, the sim's own
     /// `exposure::fire_reaches` on the client's mirrors).
     pub fire: bool,
+    /// How much of what falls is snow, `0..1` (snow v0).
+    pub snow: f32,
+}
+
+/// What is falling, as a chip names it.
+fn falling(w: ExposureWorld) -> &'static str {
+    if w.snow > 0.5 {
+        "SNOW"
+    } else {
+        "RAIN"
+    }
 }
 
 /// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
@@ -1180,7 +1191,7 @@ pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     let why = if w.underwater {
         "IN THE WATER"
     } else if w.rain > 0.05 && !w.sheltered {
-        "RAIN"
+        falling(w)
     } else if w.fire {
         "DRYING BY A FIRE"
     } else if w.sheltered {
@@ -1205,7 +1216,7 @@ pub fn spill_line(n: u16, label: &str) -> String {
 pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     let open = !w.sheltered;
     let why = if w.rain > 0.05 && open {
-        "RAIN"
+        falling(w)
     } else if w.wind > 0.4 && open {
         "WIND"
     } else if wet_pct >= 30 {
@@ -1260,6 +1271,7 @@ pub fn exposure(
         sheltered: n.sheltered,
         underwater: n.underwater,
         fire: false,
+        snow: n.snow,
     });
     // Asked only while a chip could say it: the walk is over the lit set,
     // small, but it is a frame-rate reader.
@@ -1503,11 +1515,35 @@ pub fn hit_number(
     }
 }
 
-/// The compass strip. Bearing only — the reference also pins markers to it
-/// (death skull, map pin) and ours carries none, because `ALPHA.md` §1 has a
-/// rule about position an operator should read before we pin anything.
+/// The compass strip: the bearing, and your nearest map mark after it.
 #[derive(Component)]
 pub struct Compass;
+
+/// Rust's death marker on the compass (operator, 2026-10-15): your last
+/// death, a skull riding the marker row over the bearing number at its
+/// bearing, with how far. Shown from the respawn until the next death moves
+/// it (`ClientCore::death_marker`); the placement is
+/// `ui::death::compass_mark`'s.
+#[derive(Component)]
+pub struct DeathMark;
+
+/// The skull's disc, dimmed while the death is behind you.
+#[derive(Component)]
+pub struct DeathMarkDisc;
+
+/// How far the death is, beside the skull.
+#[derive(Component)]
+pub struct DeathMarkText;
+
+/// The marker row: its top, a mark's size, and how far either side of the
+/// middle it reaches — `ui::death::COMPASS_HALF_SPAN_DEG` of bearing.
+const COMPASS_MARK_TOP: f32 = 3.0;
+const COMPASS_MARK_PX: f32 = 16.0;
+const COMPASS_HALF_SPAN_PX: f32 = 170.0;
+/// The bearing number, under the marker row.
+const COMPASS_TOP: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX + 3.0;
+/// The skull's red, the death screen's pin.
+const DEATH_MARK_INK: Color = Color::srgb(0.86, 0.17, 0.13);
 
 /// The netcode readout under the build stamp: reconcile confirm rate and the
 /// live smoothing offset.
@@ -2236,6 +2272,79 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         Pickable::IGNORE,
     ));
 
+    // The marker row over the compass, Rust's arrangement: marks ride a
+    // row at their bearing and the number reads under it. One mark today,
+    // the last death; a zero-width anchor at the screen's middle that the
+    // mark is placed off by `death_mark`.
+    commands
+        .spawn((
+            super::WorldEntity,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(COMPASS_MARK_TOP),
+                left: Val::Percent(50.0),
+                width: Val::Px(0.0),
+                height: Val::Px(COMPASS_MARK_PX),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                DeathMark,
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    flex_direction: FlexDirection::Row,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(4.0),
+                    ..default()
+                },
+                Visibility::Hidden,
+                Pickable::IGNORE,
+            ))
+            .with_children(|mark| {
+                mark.spawn((
+                    DeathMarkDisc,
+                    Node {
+                        width: Val::Px(COMPASS_MARK_PX),
+                        height: Val::Px(COMPASS_MARK_PX),
+                        flex_shrink: 0.0,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::MAX,
+                        align_items: AlignItems::Center,
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    BackgroundColor(DEATH_MARK_INK),
+                    BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|disc| {
+                    if let Some(h) = icons.as_ref().and_then(|i| i.glyph("map_death")) {
+                        disc.spawn((
+                            ImageNode::new(h),
+                            Node {
+                                width: Val::Px(COMPASS_MARK_PX * 0.7),
+                                height: Val::Px(COMPASS_MARK_PX * 0.7),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                    }
+                });
+                mark.spawn((
+                    DeathMarkText,
+                    Text::new(""),
+                    super::ui::font_bold(12.0),
+                    TextColor(Color::srgba(0.95, 0.93, 0.88, 0.9)),
+                    super::ui::TEXT_SHADOW,
+                    Pickable::IGNORE,
+                ));
+            });
+        });
+
     // The compass strip, top centre: a 90° window on the bearing, letters at
     // the cardinals. `hud.js`'s shape, in text rather than in a canvas.
     commands.spawn((
@@ -2243,7 +2352,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
         Compass,
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(14.0),
+            top: Val::Px(COMPASS_TOP),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -3483,6 +3592,59 @@ pub fn prompt(
     }
 }
 
+/// Place the death marker on the compass's row each frame: off the middle
+/// by its bearing from you against your heading, dimmed and held at the
+/// nearer end while it is behind you, with how far beside it. Hidden with
+/// no death this session and on the death screen itself.
+pub fn death_mark(
+    net: NonSend<super::Net>,
+    look: Res<super::input::Look>,
+    mut shown: Local<Option<(u32, bool)>>,
+    mut mark: Query<(&mut Node, &mut Visibility), With<DeathMark>>,
+    mut disc: Query<&mut BackgroundColor, With<DeathMarkDisc>>,
+    mut text: Query<(&mut Text, &mut TextColor), With<DeathMarkText>>,
+) {
+    let core = &net.session.core;
+    let Ok((mut node, mut vis)) = mark.single_mut() else {
+        return;
+    };
+    let Some(at) = core.death_marker.filter(|_| !core.dead) else {
+        if *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        }
+        // A HUD rebuilt for the next session starts with empty words.
+        *shown = None;
+        return;
+    };
+    let [x, _, z] = core.predict.render_position();
+    let m = crate::ui::death::compass_mark(crate::look::bearing_deg(look.yaw), (x, z), at);
+    let left = Val::Px(m.across * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
+    if node.left != left {
+        node.left = left;
+    }
+    if *vis != Visibility::Inherited {
+        *vis = Visibility::Inherited;
+    }
+    // The words and the dimming change when the metre does, not each frame.
+    let key = if m.dist_m < 1000.0 {
+        m.dist_m.round() as u32
+    } else {
+        1_000_000 + (m.dist_m / 100.0).round() as u32
+    };
+    if *shown == Some((key, m.off_row)) {
+        return;
+    }
+    *shown = Some((key, m.off_row));
+    let alpha = if m.off_row { 0.45 } else { 1.0 };
+    if let Ok(mut bg) = disc.single_mut() {
+        bg.0 = DEATH_MARK_INK.with_alpha(alpha);
+    }
+    if let Ok((mut t, mut ink)) = text.single_mut() {
+        t.0 = crate::ui::death::short_distance(m.dist_m);
+        ink.0 = ink.0.with_alpha(0.9 * alpha);
+    }
+}
+
 /// The keypad, as a small panel in the house grammar (`NOW.md` §0z item 3).
 ///
 /// **Pointer-free is the bar**: this is presentation, not a mouse flow.
@@ -4353,6 +4515,13 @@ mod tests {
         };
         assert_eq!(wet_line(40, roofed), "WET 40% · DRYING UNDER A ROOF");
         assert_eq!(cold_line(false, 0, open_rain), "COLD · RAIN");
+        // Where the air freezes it is snow that falls (snow v0).
+        let open_snow = ExposureWorld {
+            snow: 1.0,
+            ..open_rain
+        };
+        assert_eq!(wet_line(40, open_snow), "WET 40% · SNOW");
+        assert_eq!(cold_line(false, 0, open_snow), "COLD · SNOW");
         assert_eq!(
             cold_line(false, 50, roofed),
             "COLD · WET CLOTHES · ROOF HELPS"

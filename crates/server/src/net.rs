@@ -734,8 +734,10 @@ pub async fn spawn_shard(
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut pending = PendingStartup(Some(shutdown.clone()));
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    // Players, then spectator seats (`slot::MAX_CONNS`).
+    // Players, then spectator seats (`slot::MAX_CONNS`). Started past every
+    // id the saved world still holds, before anyone can connect.
     let slots = Arc::new(SlotTable::new(MAX_CONNS));
+    slots.start_past(world_boot.id_floor);
     tokio::spawn(wake_relay(slots.clone()));
 
     let (ctrl_tx, ctrl_rx) = RingBuffer::<Connect>::new(CTRL_RING_CAP);
@@ -787,6 +789,7 @@ pub async fn spawn_shard(
         interval_ticks: world_interval,
         clamp: world_clamp,
         wipe,
+        id_floor: _,
     } = world_boot;
 
     // The anomaly log, opened before the sim thread that writes to it —

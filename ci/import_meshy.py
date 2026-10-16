@@ -95,8 +95,20 @@ largest per-vertex `hypot(x, z)`, `render::tree::bounds`) rather than for the
 box: one shared X/Z factor, so the plan shape is preserved and only its scale
 moves, and Y independently as `--fit-axes` does.
 
+`--turn=y90,x-90` turns the mesh by right angles before anything is
+measured, applied left to right about the named axis (degrees, a multiple of
+90). The generator stands a thing however its reference image showed it, and
+the draw code has an axis of its own: a car parked along +Z, a gunship nosing
+down +Z, a searchlight's lens up +Y. Positions, normals and tangents turn
+together; a right angle is an exact permutation, so nothing drifts.
+
+`--shift=DX,DY,DZ` moves the fitted mesh, metres, after everything else: for
+a part that turns about a point that is not its box's middle (a turret head
+pivots in its housing, not halfway along its barrel).
+
 Usage:  ci/import_meshy.py <in.glb> <out.glb> W H D
                            [--emissive] [--fit-axes] [--fit-radius] [--center]
+                           [--turn=AXISDEG,...] [--shift=DX,DY,DZ]
 """
 import json
 import struct
@@ -239,8 +251,45 @@ def prune(gltf, blob):
     return out
 
 
+def right_angle(spec):
+    """The exact rotation for one `--turn` step, e.g. `y90` or `x-90`."""
+    axis, deg = spec[0].lower(), int(spec[1:])
+    if axis not in "xyz" or deg % 90:
+        raise SystemExit(f"--turn: {spec!r} is not an axis and a multiple of 90")
+    c, s = [(1, 0), (0, 1), (-1, 0), (0, -1)][(deg // 90) % 4]
+    if axis == "x":
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float32)
+    if axis == "y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float32)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
+
+
+def turn(gltf, blob, specs):
+    """Turn every primitive by the `--turn` steps, each accessor once."""
+    r = np.eye(3, dtype=np.float32)
+    for spec in specs:
+        r = right_angle(spec) @ r
+    done = set()
+    for m in gltf["meshes"]:
+        for p in m["primitives"]:
+            for name, width in (("POSITION", 3), ("NORMAL", 3), ("TANGENT", 4)):
+                i = p["attributes"].get(name)
+                if i is None or i in done:
+                    continue
+                done.add(i)
+                v = vecs(gltf, blob, i, width)
+                v[:, :3] = v[:, :3] @ r.T
+                _rebound(gltf, i, v)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    turns = [t for a in sys.argv[1:] if a.startswith("--turn=")
+             for t in a.split("=", 1)[1].split(",") if t]
+    shift = np.zeros(3)
+    for a in sys.argv[1:]:
+        if a.startswith("--shift="):
+            shift = np.array([float(x) for x in a.split("=", 1)[1].split(",")])
     keep_emissive = "--emissive" in sys.argv
     fit_axes = "--fit-axes" in sys.argv
     fit_radius = "--fit-radius" in sys.argv
@@ -251,6 +300,8 @@ def main():
     target = np.array([float(v) for v in args[2:5]])
 
     gltf, blob = read_glb(src)
+    if turns:
+        turn(gltf, blob, turns)
     accs = [p["attributes"]["POSITION"]
             for m in gltf["meshes"] for p in m["primitives"]]
 
@@ -309,7 +360,7 @@ def main():
                 continue
             done.add(at["POSITION"])
             v = positions(gltf, blob, at["POSITION"])
-            v[:] = (v - pivot) * k
+            v[:] = (v - pivot) * k + shift
             a = gltf["accessors"][at["POSITION"]]
             a["min"] = v.min(0).astype(float).tolist()
             a["max"] = v.max(0).astype(float).tolist()

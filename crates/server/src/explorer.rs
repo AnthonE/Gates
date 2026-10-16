@@ -7470,7 +7470,7 @@ mod tests {
         let now = Instant::now();
         goal(&mut bot, Goal::Explore, 1);
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, &mut buf).unwrap();
+        let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, 0, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         assert!(bot.core.as_ref().unwrap().dead);
         view.entities[0].1.dead = true;
@@ -7519,12 +7519,13 @@ mod tests {
             cz: cell(body.qz),
             level: 0,
             ready: true,
+            wait_s: 0,
         };
         let die = |bot: &mut Survivor, view: &mut ClientView, seq: u16| {
             let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
             let n = protocol::event::encode_event_bags(&[bag], &mut buf).unwrap();
             event(bot, n, &buf);
-            let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, &mut buf).unwrap();
+            let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, 0, &mut buf).unwrap();
             event(bot, n, &buf);
             view.entities[0].1.dead = true;
             view.newest_applied = Some(view.newest_applied.unwrap() + 1);

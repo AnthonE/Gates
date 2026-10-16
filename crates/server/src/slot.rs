@@ -123,6 +123,21 @@ impl SlotTable {
             .map(|_| generation)
     }
 
+    /// Boot only, before the accept loop: start every slot's generations past
+    /// `floor`, so no id this shard mints repeats one a saved world still
+    /// holds (`worldfile::WorldBoot::id_floor`). A repeated id would be
+    /// handed whatever the old one owned — a bag, a lock's say, a cupboard —
+    /// or be refused a body because a sleeper already wears it.
+    pub fn start_past(&self, floor: u32) {
+        let floor = floor & 0x3FFF_FFFF;
+        for w in self.words.iter() {
+            let cur = w.load(Ordering::Acquire);
+            if state_of(cur) == SLOT_EMPTY && generation_of(cur) < floor {
+                w.store(pack(SLOT_EMPTY, floor), Ordering::Release);
+            }
+        }
+    }
+
     /// Accept loop only: undo a claim whose control-ring push was refused.
     pub fn unclaim(&self, slot: usize, generation: u32) {
         let _ = self.words[slot].compare_exchange(
@@ -407,3 +422,20 @@ pub struct WriteMsg {
 /// `MAX_PLAYERS..MAX_CONNS`, so every loop that means "players" keeps its
 /// `0..MAX_PLAYERS` bound and cannot reach a watcher by accident.
 pub const MAX_CONNS: usize = sim_core::limits::MAX_PLAYERS + sim_core::limits::MAX_SPECTATORS;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A restarted shard mints past every id its saved world still holds:
+    /// the first claim after `start_past(7)` is generation 8, never 1.
+    #[test]
+    fn a_slot_started_past_a_floor_never_mints_under_it() {
+        let t = SlotTable::new(3);
+        t.start_past(7);
+        assert_eq!(t.claim(1), Some(8));
+        // A live slot is left alone, and a lower floor moves nothing.
+        t.start_past(3);
+        assert_eq!(t.claim(2), Some(8));
+    }
+}

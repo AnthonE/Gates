@@ -57,6 +57,10 @@ pub mod boulders;
 pub mod capture;
 pub mod cliff_skin;
 pub mod cliffs;
+// The cloud deck's shadows on the land. Native only — the browser's ground
+// has no texture to spare for the deck's field (`cloud_shadow.rs`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cloud_shadow;
 pub mod deck;
 // The trailer camera: a recorded session through a scripted lens, encoded as
 // it renders. Native only — it pipes frames to an `ffmpeg` process.
@@ -147,6 +151,8 @@ pub mod hud;
 // terminals in the world.
 pub mod arc_hud;
 pub mod hurt_flash;
+// Frost at the frame's edges while the cold bites.
+pub mod frost;
 // Speakers, stones and dials (`ARC.md` F5–F7).
 pub mod impact;
 pub mod input;
@@ -197,6 +203,8 @@ pub mod pipelines;
 pub mod prewarm;
 pub mod quality;
 pub mod rain;
+// Rainbows over a passing shower, opposite the sun.
+pub mod rainbow;
 pub mod render_scale;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
@@ -207,6 +215,8 @@ pub mod plants;
 pub mod props;
 pub mod rig;
 pub mod settings;
+// Light shafts through the weather's fog (`rig::day_night` drives them).
+pub mod shafts;
 pub mod shake;
 pub mod sheet;
 // Where a blow meets the drawn mesh rather than the sim's cylinder.
@@ -630,10 +640,18 @@ impl Plugin for GatesRenderPlugin {
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
-        // The moon (`moon.rs`), and a browser's sky drawn per pixel (`deck.rs`).
+        // The moon (`moon.rs`), and the sky's clouds drawn per pixel
+        // (`deck.rs`): the browser's WebGL2 deck, and the cloud deck
+        // everywhere the atmosphere draws.
         app.add_plugins(MaterialPlugin::<moon::MoonMaterial>::default());
         app.add_plugins(MaterialPlugin::<deck::DeckMaterial>::default());
+        app.add_plugins(MaterialPlugin::<deck::CloudMaterial>::default());
+        app.add_plugins(MaterialPlugin::<deck::SkyFogMaterial>::default());
+        // The rainbow over the sky, under its fog (`rainbow.rs`).
+        app.add_plugins(MaterialPlugin::<rainbow::RainbowMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
+        // The cold's frost on the frame (`frost.rs`).
+        app.add_plugins(UiMaterialPlugin::<frost::FrostMaterial>::default());
         // The portrait's layer reaches every node its scene spawns, before
         // visibility is worked out (`portrait.rs`).
         app.add_plugins(bevy::app::HierarchyPropagatePlugin::<
@@ -650,6 +668,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<weather::WeatherNow>()
             .init_resource::<blight::Blight>()
             .init_resource::<hud::Surge>()
+            .init_resource::<shafts::Shafts>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
@@ -1032,10 +1051,20 @@ impl Plugin for GatesRenderPlugin {
         // while the Esc menu is up raises the screen on resume, which is the
         // right order — two full-screen states cannot both be entered.
         app.add_systems(OnEnter(Screen::Dead), (death::enter, death::setup).chain())
-            .add_systems(OnExit(Screen::Dead), ui::despawn_all::<death::DeathRoot>)
+            .add_systems(
+                OnExit(Screen::Dead),
+                (ui::despawn_all::<death::DeathRoot>, death::leave),
+            )
             .add_systems(
                 Update,
-                (death::click, death::keys, death::act, death::awaken)
+                (
+                    death::fit,
+                    death::click,
+                    death::keys,
+                    death::act,
+                    death::refresh,
+                    death::awaken,
+                )
                     .chain()
                     .run_if(in_state(Screen::Dead)),
             )
@@ -1176,9 +1205,11 @@ impl Plugin for GatesRenderPlugin {
                     // would lose a frame of its own life to the counter.
                     prewarm::warm,
                     prewarm::warm_models,
+                    prewarm::warm_sites,
                     prewarm::retire
                         .after(prewarm::warm)
-                        .after(prewarm::warm_models),
+                        .after(prewarm::warm_models)
+                        .after(prewarm::warm_sites),
                     // Every photograph out of `assets/textures/` gets the mip
                     // chain Bevy will not build for it. `drain` after
                     // `enqueue`, so an image that finishes loading on this
@@ -1545,6 +1576,7 @@ impl Plugin for GatesRenderPlugin {
             OnEnter(Screen::Loading),
             (moon::setup, deck::setup).after(sky::setup),
         )
+        .add_systems(OnEnter(Screen::Loading), rainbow::setup.after(sky::setup))
         .add_systems(
             OnEnter(Screen::Loading),
             underwater::setup.after(rig::setup),
@@ -1755,7 +1787,8 @@ impl Plugin for GatesRenderPlugin {
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
-                    hud::prompt,
+                    // The compass's words, then its death marker.
+                    (hud::prompt, hud::death_mark),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
@@ -1923,6 +1956,15 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !filming),
         )
+        // The cold's frost on the frame (`frost.rs`). HUD, so not on a plate
+        // run or a film.
+        .add_systems(
+            Update,
+            frost::drive
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !plate && !filming),
+        )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
         .add_systems(
@@ -1947,6 +1989,11 @@ impl Plugin for GatesRenderPlugin {
                 .before(weather::update)
                 .before(Stream)
                 .run_if(world_running),
+        )
+        // The rainbow, off this frame's sun and rain.
+        .add_systems(
+            Update,
+            rainbow::drive.after(weather::update).run_if(world_running),
         )
         // The weather (weather v0): read after the drain and before the rig
         // lights the frame from it; the deck is composed after both.
@@ -2049,6 +2096,16 @@ impl Plugin for GatesRenderPlugin {
             )
                 .chain()
                 .after(Stream)
+                .run_if(world_running),
+        );
+
+        // The deck's shadows on the land, off the weather they are read from
+        // (`cloud_shadow.rs`). Native only, as the module is.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_systems(Startup, cloud_shadow::init).add_systems(
+            Update,
+            cloud_shadow::drive
+                .after(weather::update)
                 .run_if(world_running),
         );
 

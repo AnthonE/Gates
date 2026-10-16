@@ -46,6 +46,13 @@ use std::path::Path;
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
     (
+        "weather.rs",
+        "sand_at",
+        "cosmetic: whether the ground under and upwind of the eye is dry land \
+         or sea, for the dust haze (`render/weather.rs`); a reading of the \
+         shoreline, and nothing stands on it.",
+    ),
+    (
         "terrain.rs",
         "solve_town",
         "solver: locates the town on raw terrain, before the carve it causes.",
