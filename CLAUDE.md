@@ -65,6 +65,13 @@ hours.
 5. **Worldgen change:** `terrain_golden` fails and shows the new hash as
    `left`. Paste it into `GOLDEN_TERRAIN_HASH`.
 6. **Item/recipe/balance numbers** live in `content/*.toml`, validated at boot.
+   Adding, removing, renaming or reordering a row moves the content layout:
+   `layout_golden` fails, paste `left` into `GOLDEN_LAYOUT_HASH`.
+7. **Wipes wait for the wipe.** The `deploy kind` check (`ci/deploy_kind.py`)
+   names what a PR takes to ship: CLIENT, SHARD (a restart), WIRE (everyone
+   updates) or WIPE (worldgen, content layout, a save format or the seed
+   moved). Main stays deployable mid-wipe, so a WIPE PR into main is red:
+   target `next-wipe`, which merges into main on wipe day.
 
 ## Commands
 
@@ -75,6 +82,7 @@ cargo run -p client --features render --bin gates    # the game
 cargo run -p server --bin bots -- 100                # 100 bots
 cargo test -p <crate>                                # one crate's tests
 ./ci/gates.sh [fast]                                 # what CI runs (fast = a PR's run)
+python3 ci/deploy_kind.py                            # what this branch takes to ship
 ```
 
 ## Traps that already cost real time

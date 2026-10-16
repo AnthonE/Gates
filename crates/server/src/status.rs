@@ -20,7 +20,7 @@
 //!  "aim_stale_hist":[0,0,0,0,0,0,0,0],
 //!  "favour_granted":0,"favour_sum":0,
 //!  "favour_clamped":0,"favour_disagree":0,"next_wipe":0,
-//!  "wipe":1,"act":1,"works_lit":0,"works_total":6}
+//!  "wipe":1,"act":1,"works_lit":0,"works_total":6,"restart_at":0}
 //! ```
 //!
 //! (one line on the wire; wrapped here to fit)
@@ -88,6 +88,11 @@
 //! - `wipe`, `act`, `works_lit`, `works_total` — the server's progression
 //!   (`ARC.md`): which wipe is running, the act, and how many works are lit
 //!   of how many exist. What the island banner tells a player, for a list.
+//!
+//! - `restart_at` — unix seconds of a pending `/restart`, 0 for none
+//!   (`wipe::Restart`). The key being there at all is how
+//!   `ci/deploy_shard.sh --warn` knows this shard takes SIGUSR1 as a
+//!   countdown, not as the default kill.
 //!
 //! ## What this thread is allowed to touch
 //!
@@ -389,7 +394,7 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
          \"aim_stale_hist\":{},\
          \"favour_granted\":{},\"favour_sum\":{},\
          \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{},\
-         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{}}}",
+         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{},\"restart_at\":{}}}",
         ShardStats::get(&stats.players),
         ShardStats::get(&stats.agents),
         ShardStats::get(&stats.spectators),
@@ -419,6 +424,7 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         ShardStats::get(&stats.act),
         ShardStats::get(&stats.works_lit),
         ShardStats::get(&stats.works_total),
+        ShardStats::get(&stats.restart_at),
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 /// exit is `store_stopped` being raised, which is exact.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
 
+/// The countdown SIGUSR1 starts, minutes: a deploy's warning (`--warn`).
+const RESTART_SIGNAL_MIN: u16 = 2;
+
 /// **"The supervisor is stopping this service", whatever the OS calls it.**
 ///
 /// Ctrl-C is portable and `tokio::signal::ctrl_c` handles it on both
@@ -601,6 +604,30 @@ async fn main() {
             handle.cert_hash
         ),
     }
+    // **SIGUSR1 is "restart in two minutes"**: the `/restart` countdown for an
+    // operator with no admin in game, which `ci/deploy_shard.sh --warn` sends
+    // after it stages a build. Installed before the status endpoint, because
+    // that endpoint's `restart_at` key is the deploy's word that this shard
+    // has the handler (SIGUSR1's default is to kill). Unix only.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::user_defined1()) {
+            Ok(mut usr1) => {
+                let stats = handle.stats.clone();
+                tokio::spawn(async move {
+                    while usr1.recv().await.is_some() {
+                        ShardStats::set(&stats.restart_asked, RESTART_SIGNAL_MIN as u64 + 1);
+                        println!("shard: SIGUSR1 — restarting in {RESTART_SIGNAL_MIN} min");
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!("shard: SIGUSR1 handler: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // The status endpoint, only where the operator said (config.rs says why
     // absent-serves-nothing is the default). A bind failure refuses the boot
     // rather than running without it: a shard whose config names an endpoint
@@ -678,6 +705,16 @@ async fn main() {
             // bring up the fresh island.
             _ = wipe_watch.tick() => {
                 if !ShardStats::raised(&handle.stats.wipe_due) {
+                    // A `/restart` came due: the same flush, no wipe, and an
+                    // exit the supervisor answers by starting the shard again
+                    // (on whatever build `ci/deploy_shard.sh` staged).
+                    if ShardStats::raised(&handle.stats.restart_due) {
+                        shutdown(&handle, "RESTART").await;
+                        trust_down(trust_log.as_mut()).await;
+                        drain(pop.take()).await;
+                        println!("shard: restarting — exiting; the supervisor starts it again");
+                        return;
+                    }
                     continue;
                 }
                 shutdown(&handle, "WIPE").await;

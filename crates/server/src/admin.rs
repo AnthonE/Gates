@@ -85,6 +85,7 @@ pub const VERB_WIPE: u16 = 9;
 pub const VERB_BRAIN: u16 = 10;
 pub const VERB_WHO: u16 = 11;
 pub const VERB_UNBAN: u16 = 12;
+pub const VERB_RESTART: u16 = 13;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
@@ -99,6 +100,7 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Weather { .. } => VERB_WEATHER,
         AdminCmd::Time { .. } => VERB_TIME,
         AdminCmd::Wipe { .. } | AdminCmd::WipeCancel | AdminCmd::WipeWhen => VERB_WIPE,
+        AdminCmd::Restart { .. } | AdminCmd::RestartCancel => VERB_RESTART,
         AdminCmd::Brain => VERB_BRAIN,
         AdminCmd::Who => VERB_WHO,
         // A `/bug` is never an admin act; it has its own `Kind`, and
