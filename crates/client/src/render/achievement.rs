@@ -96,11 +96,14 @@ pub fn lines(a: &protocol::Achieved) -> (&'static str, String, String) {
     ("ACHIEVEMENT UNLOCKED", name, under)
 }
 
-/// Take this frame's unlocks and run the popup.
-#[allow(clippy::type_complexity)]
+/// Take this frame's unlocks and run the popup. Unlocks that land while the
+/// island is still loading wait for it: an unlock at the join (a pack that
+/// already held 65 Junk) would otherwise pop up over the loading screen.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn popup(
     mut commands: Commands,
     feed: Res<Feed>,
+    screen: Option<Res<State<super::Screen>>>,
     icons: Option<Res<Icons>>,
     time: Res<Time>,
     mut st: Local<PopState>,
@@ -119,7 +122,11 @@ pub fn popup(
         }
         st.queue.push_back(*a);
     }
+    let loading = screen.is_some_and(|s| *s.get() == super::Screen::Loading);
     if !st.showing {
+        if loading {
+            return;
+        }
         let Some(a) = st.queue.pop_front() else {
             return;
         };
