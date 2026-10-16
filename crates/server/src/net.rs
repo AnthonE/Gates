@@ -523,6 +523,8 @@ pub struct SimTables {
     pub arc_text: content::bake::ArcText,
     /// What the standings weigh (`standings.rs`, `arc.toml` `[standings]`).
     pub standing_rules: crate::standings::Rules,
+    /// The achievement list as tables (`achievements.rs`).
+    pub achievements: crate::achievements::Baked,
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -534,10 +536,13 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
     let gather = content.bake_gather()?;
     let survival = content.bake_survival()?;
     let cook = content.bake_cooking()?;
+    let deploy = content.bake_deployables()?;
+    let achievements = crate::achievements::Baked::bake_from(content, &deploy);
     Ok(SimTables {
         craft: content.bake_craft()?,
         build: content.bake_building()?,
-        deploy: content.bake_deployables()?,
+        deploy,
+        achievements,
         backpack: content.bake_backpack()?,
         spawn_kit: content.bake_spawn_kit()?,
         loot: content.bake_loot()?,
@@ -4020,6 +4025,7 @@ fn sim_thread(
         mechs,
         arc_text,
         standing_rules,
+        achievements,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -4065,6 +4071,15 @@ fn sim_thread(
         wipe.number(),
     );
     core.standings.exits = exits;
+    // Achievements: a career, so beside the hall and not in what a wipe moves.
+    if !achievements.unresolved.is_empty() {
+        eprintln!(
+            "shard: achievements naming items the content lacks (never earnable): {}",
+            achievements.unresolved.join(", ")
+        );
+    }
+    core.achievements =
+        crate::achievements::Achievements::open(achievements, standings_base.as_deref());
     // The skins this shard gave away, beside the hall: the wipe keeps both.
     core.gifts = crate::gifts::Gifts::open(standings_base.as_deref());
     core.online = crate::online::Online::open(standings_base.as_deref());
@@ -4575,6 +4590,8 @@ fn sim_thread(
     if let Err(e) = core.standings.save_now() {
         eprintln!("shard: standings at shutdown: {e}");
     }
+    // The achievements' last flush, landed before the process ends.
+    core.achievements.close();
     // Room for the shutdown's side files — the teams the save below takes,
     // and a gift ledger a full ring left dirty — on the ring the store thread
     // is draining right now. Bounded like the accept loop's drain; past the

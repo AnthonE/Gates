@@ -335,6 +335,9 @@ pub struct ShardCore {
     pub gifts: crate::gifts::Gifts,
     /// Who is connected, for the platform's `/online.json` (`online.rs`).
     pub online: crate::online::Online,
+    /// Every wallet's achievements (`achievements.rs`), tallied off the
+    /// sim's events per connection. Not sim state.
+    pub achievements: crate::achievements::Achievements,
     /// Every team and waiting invite (`team.rs`, wire v108). Not sim state.
     pub teams: crate::team::Teams,
     /// Per slot, the tick from which it is owed the standings' join lines.
@@ -659,6 +662,7 @@ impl ShardCore {
             restart_say: None,
             restart_fired: false,
             standings: crate::standings::Standings::off(),
+            achievements: crate::achievements::Achievements::off(),
             gifts: crate::gifts::Gifts::off(),
             online: crate::online::Online::off(),
             teams: crate::team::Teams::default(),
@@ -1097,6 +1101,109 @@ impl ShardCore {
                     );
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// This tick's events, tallied into each wallet's achievements
+    /// (`achievements.rs`). `n` is how many of `cmd_buf` the tick ran.
+    ///
+    /// The cost is the point of the shape: nothing happens unless a wallet
+    /// is connected; a tracked event costs a slot lookup (a scan of
+    /// `MAX_PLAYERS` ids) and a bit or counter set in place; the pack sweep
+    /// reads one body a tick. Nothing here allocates unless something was
+    /// earned, and the writer thread does the formatting.
+    fn note_achievements(&mut self, n: usize) {
+        use sim_core::world::{
+            EV_CONSUMED, EV_CRAFT_DONE, EV_DEPLOY_PLACED, EV_DOOR, EV_DRANK, EV_GATHER,
+            EV_RESEARCH, EV_RESPAWN, EV_VEND, EV_VITALS,
+        };
+        let tick = self.world.tick;
+        if tick.is_multiple_of(crate::achievements::FLUSH_SECS * sim_core::limits::TICK_HZ as u64) {
+            self.achievements.flush();
+        }
+        if !self.achievements.tracking() {
+            return;
+        }
+        for i in 0..self.world.events.len() {
+            let ev = self.world.events.entries()[i];
+            let who = match ev.code {
+                EV_GATHER | EV_CRAFT_DONE | EV_RESEARCH | EV_VEND | EV_CONSUMED | EV_DRANK
+                | EV_VITALS | EV_RESPAWN => ev.a,
+                EV_DEPLOY_PLACED => ev.c,
+                // A lock mints no deployable: its placement is a door
+                // announcement with the lock bit, matched to this tick's own
+                // `PlaceDeploy` of a lock at that address.
+                EV_DOOR if ev.b & 0b100 != 0 => ev.c,
+                _ => continue,
+            };
+            let Some(slot) = self.client_slot_of(who) else {
+                continue;
+            };
+            if !self.achievements.tracks(slot) {
+                continue;
+            }
+            if ev.code == EV_DOOR {
+                if let Some(row) = self.lock_placed(&self.cmd_buf[..n], who, ev) {
+                    self.achievements.placed(slot, row);
+                }
+            } else {
+                self.achievements.event(slot, ev);
+            }
+        }
+        let slot = self.achievements.sweep_next();
+        if self.clients[slot].connected && self.achievements.tracks(slot) {
+            let id = self.clients[slot].id;
+            if let Some(p) = self.world.players.iter().find(|p| p.active && p.id == id) {
+                self.achievements.swept(slot, &p.inv, &p.worn);
+            }
+        }
+    }
+
+    /// The deploy row of the lock `who` placed this tick at `ev`'s door, if
+    /// that is what `ev` announces.
+    fn lock_placed(
+        &self,
+        cmds: &[Command],
+        who: u32,
+        ev: sim_core::world::SimEvent,
+    ) -> Option<u16> {
+        let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
+        let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+        let defs = &self.world.deploy.defs;
+        cmds.iter().find_map(|c| match *c {
+            Command::PlaceDeploy {
+                id,
+                row,
+                cx: x,
+                cz: z,
+                level: l,
+                loc: o,
+                ..
+            } if id == who
+                && (x, z, l, o) == (cx, cz, level, loc)
+                && defs
+                    .get(usize::from(row))
+                    .is_some_and(|d| d.arch == sim_core::deploy::ARCH_LOCK) =>
+            {
+                Some(row)
+            }
+            _ => None,
+        })
+    }
+
+    /// What the achievements owe chat: each unlock, to the one who earned it.
+    fn pump_achievements(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let mut owed: Vec<(usize, String)> = Vec::new();
+        self.achievements
+            .take_tells(|slot, line| owed.push((slot, line)));
+        for (slot, line) in owed {
+            if self.clients[slot].connected {
+                self.answer(slot, line, stats, send);
             }
         }
     }
@@ -1722,6 +1829,8 @@ impl ShardCore {
         }
         self.keys[slot] = key;
         self.clients[slot].reset(id);
+        let wallet = self.key_str(slot);
+        self.achievements.join(slot, wallet.as_deref());
         // The sweep must not read this connection's arrival as "nothing has
         // changed" against the previous tenant of the slot.
         self.last_saved[slot] = PlayerSave::EMPTY;
@@ -1858,6 +1967,7 @@ impl ShardCore {
         self.keys[slot] = None;
         self.clients[slot].connected = false;
         self.last_saved[slot] = PlayerSave::EMPTY;
+        self.achievements.leave(slot);
         save.map(|s| (id, s))
     }
 
@@ -2535,6 +2645,7 @@ impl ShardCore {
         }
         self.world.tick(&self.cmd_buf[..n]);
         self.note_standings();
+        self.note_achievements(n);
         // The boards, rebuilt at most every five seconds; whatever moved
         // them since the last look is owed to everyone.
         if self
@@ -3160,6 +3271,7 @@ impl ShardCore {
     ) {
         self.pump_wipe(stats, send);
         self.pump_standings(stats, send);
+        self.pump_achievements(stats, send);
         // How the accept loop's half of an admin verb went, to the admin
         // alone. One who left meanwhile hears nothing, which is counted.
         if let Some(rx) = ops.admin_answers.as_mut() {

@@ -170,6 +170,8 @@ pub fn spawn_status(addr: SocketAddr, stats: Arc<ShardStats>) -> std::io::Result
 ///   bot's leaderboard;
 /// - `GET /online.json` (`online::json_path`) — who is connected, rewritten
 ///   once a minute: the platform's "playing now" and hours on record;
+/// - `GET /achievements.json` (`achievements::json_path`) — every wallet's
+///   achievements, rewritten when one moves (at most every 30 s);
 /// - `GET /payout/<wipe>.json` (`standings::payout_path`) — what a closed
 ///   wipe owes each wallet, which the platform's cashier reads and pays.
 ///   The shard still holds no keys: it says who earned what, and the
@@ -343,6 +345,26 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         let head = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
              Access-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        return stream.write_all(body.as_bytes());
+    }
+    if path == "/achievements.json" {
+        // Every wallet's achievements, for the platform (`achievements.rs`).
+        let body = base.and_then(|b| {
+            read_capped(
+                &crate::achievements::json_path(b),
+                crate::achievements::JSON_CAP,
+            )
+        });
+        let Some(body) = body else {
+            return stream.write_all(NOT_FOUND);
+        };
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Access-Control-Allow-Origin: *\r\nCache-Control: no-store\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream.write_all(head.as_bytes())?;

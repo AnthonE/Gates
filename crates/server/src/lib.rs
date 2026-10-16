@@ -27,6 +27,7 @@
 //! never needed them).
 
 /// Who may run an admin verb, and what one does (admin v0).
+pub mod achievements;
 pub mod admin;
 /// The agent player's skills, hands and knowledge under the mind.
 pub mod agent;

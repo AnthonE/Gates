@@ -63,6 +63,9 @@ struct Args {
     /// routing over the foundation block — the brain's worst case rather
     /// than the handful that happen to live near the cluster.
     mobs_near: bool,
+    /// Sign every client in with a wallet, so achievements track all of
+    /// them (`--wallets 1`); guests are tracked as nobody and cost nothing.
+    wallets: bool,
 }
 
 impl Default for Args {
@@ -77,6 +80,7 @@ impl Default for Args {
             pitch_m: 6.0,
             spectators: 0,
             mobs_near: false,
+            wallets: false,
         }
     }
 }
@@ -102,10 +106,12 @@ fn parse_args() -> Args {
                     .min(sim_core::limits::MAX_SPECTATORS)
             }
             "--mobs-near" => a.mobs_near = val == "1",
+            "--wallets" => a.wallets = val == "1",
             "--help" | "-h" => {
                 println!(
                     "profile [--clients N] [--pieces N] [--ticks N] [--warmup N] \
-                     [--seed N] [--content DIR] [--pitch M] [--spectators N] [--mobs-near 1]"
+                     [--seed N] [--content DIR] [--pitch M] [--spectators N] [--mobs-near 1] \
+                     [--wallets 1]"
                 );
                 std::process::exit(0);
             }
@@ -154,6 +160,11 @@ fn build_core(a: &Args) -> ShardCore {
     bake!(loot, bake_loot);
     bake!(mob, bake_mobs);
     bake!(research, bake_research);
+    if a.wallets {
+        use server::achievements::{Achievements, Baked, ACHIEVEMENTS, SETS};
+        let baked = Baked::bake_from(&content, &core.world.deploy);
+        core.achievements = Achievements::new(ACHIEVEMENTS, SETS, baked);
+    }
     core.catalog = match server::net::bake_catalog(
         &content,
         &core.world.combat,
@@ -177,7 +188,15 @@ const HERD_M: f32 = sim_core::terrain::ISLAND_SIZE * 0.44;
 /// one an input frame so the sim has something to execute.
 fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
     for slot in 0..a.clients {
-        assert!(core.connect(slot, id_of(slot)), "connect {slot}");
+        if a.wallets {
+            let key = server::store::PlayerKey::new(format!("0x{:040x}", slot + 1).as_bytes());
+            assert!(
+                core.connect_as(slot, id_of(slot), key, None).is_some(),
+                "connect {slot}"
+            );
+        } else {
+            assert!(core.connect(slot, id_of(slot)), "connect {slot}");
+        }
         if (slot + 1) % 32 == 0 || slot + 1 == a.clients {
             core.tick_bare(stats, |_, _, _| true);
         }
