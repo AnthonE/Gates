@@ -2684,15 +2684,15 @@ impl Survivor {
             .sum()
     }
 
-    /// Where its founder is: in sight, else where the founder says it is.
-    fn founder_at(&self) -> Option<([f32; 3], bool)> {
+    /// Where its founder is, and whether it is in sight: in sight, else
+    /// where its eyes last had them a moment ago, else where the founder
+    /// says it is.
+    fn founder_at(&self, tick: u32) -> Option<([f32; 3], bool)> {
         let soc = self.society?;
-        if let Some(t) = self
-            .tracks
-            .get(self.kin.founder())
-            .filter(|t| t.visible && t.active())
-        {
-            return Some((t.pos, true));
+        if let Some(t) = self.tracks.get(self.kin.founder()).filter(|t| {
+            t.active() && (t.visible || tick.wrapping_sub(t.last_seen) < FOLLOW_SEEN_TICKS)
+        }) {
+            return Some((t.pos, t.visible));
         }
         let [x, z] = soc.board?.founder(soc.crew_no)?;
         Some(([x, 0.0, z], false))
@@ -2715,7 +2715,7 @@ impl Survivor {
             return false;
         }
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        self.founder_at()
+        self.founder_at(tick)
             .is_some_and(|(p, _)| (p[0] - x).hypot(p[2] - z) <= society::HAND_WALK_M)
     }
 
@@ -2727,7 +2727,7 @@ impl Survivor {
     fn hand_over(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let founder = self.kin.founder();
-        let Some((at, seen)) = self.founder_at().filter(|_| founder != 0) else {
+        let Some((at, seen)) = self.founder_at(tick).filter(|_| founder != 0) else {
             self.hand_failed = Some(tick);
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
@@ -2767,7 +2767,18 @@ impl Survivor {
             }
         }
         let d = (at[0] - x).hypot(at[2] - z);
-        if !seen || d > society::HAND_STAND_M {
+        // Where the founder only says it is, its height is not known: eyes
+        // level, to find it.
+        let eye_y = if seen || at[1] != 0.0 {
+            at[1] + 1.0
+        } else {
+            body.qy as f32 * POS_Y_Q + tracks::eye_m(false)
+        };
+        let face = Intent {
+            look: Look::Point([at[0], eye_y, at[2]]),
+            ..Intent::IDLE
+        };
+        if d > society::HAND_STAND_M {
             self.stats.phase = Phase::Approaching;
             self.hand.aimed = None;
             let hurry = d > FOLLOW_RUN_M;
@@ -2780,23 +2791,20 @@ impl Survivor {
                 tick,
             ) {
                 step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
-                Step::Wait => Intent::walk(yaw_toward(at[0] - x, at[2] - z)),
-                // Close but not close enough, or no way: straight at them.
-                Step::Arrived | Step::Blocked if seen => {
+                // No plan yet, close but not close enough, or no way: straight
+                // at them, as a player walks up to a friend.
+                Step::Wait | Step::Arrived | Step::Blocked => {
                     Intent::walk(yaw_toward(at[0] - x, at[2] - z))
-                }
-                Step::Arrived | Step::Blocked => {
-                    self.hand_failed = Some(tick);
-                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
-                    Intent::IDLE
                 }
             };
         }
+        if !seen && at[1] == 0.0 {
+            // Where it was said to be, and not here: looked round for there.
+            self.stats.phase = Phase::Approaching;
+            return face;
+        }
         self.stats.phase = Phase::Delivering;
-        let look = Intent {
-            look: Look::Point([at[0], at[1] + 1.0, at[2]]),
-            ..Intent::IDLE
-        };
+        let look = face;
         if self.hand.sent.is_some() {
             return look;
         }

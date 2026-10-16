@@ -2130,6 +2130,104 @@ fn a_survivor_joins_a_team_and_keeps_up_with_its_teammate() {
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
+/// A society's crewmate (`agent::society`): its founder — the puppet, an
+/// agent, known by the post it holds on the guild's board — invites it and
+/// it says yes, as it would to nobody else; then, carrying wood, it walks up
+/// to its founder and hands the wood over with the human client's give, a
+/// stack at a time, until the pack holds none.
+#[test]
+fn a_crewmate_joins_its_founder_and_hands_over_its_wood() {
+    use server::agent::society::{post_of, Board, Kin, Role, Society, MAX_ALLIES};
+
+    let board: &'static Board = Box::leak(Box::new(Board::new()));
+    board.set_member(post_of(0, 0), PUPPET);
+    let mut crew = [Kin::NONE; protocol::TEAM_MAX];
+    crew[0] = Kin::member(protocol::Name::EMPTY, None, 0, 0);
+    crew[1] = Kin::member(protocol::Name::new("me").unwrap(), None, 0, 1);
+    let opts = server::explorer::SurvivorOpts {
+        society: Some(Society {
+            role: Role::Farmer,
+            me: 1,
+            crew,
+            crew_len: 2,
+            allies: [Kin::NONE; MAX_ALLIES],
+            allies_len: 0,
+            code: None,
+            crew_no: 0,
+            board: Some(board),
+        }),
+        ..Default::default()
+    };
+    let mind = Mind::inline(
+        Prefer(&[Goal::JoinTeam, Goal::HandOver], None),
+        MindConfig::default(),
+    )
+    .unwrap();
+    let mut h = Harness::with_opts(false, common::clearing(3), mind, opts);
+    h.with_puppet();
+    for core in [&mut h.shard, &mut h.replay] {
+        core.note_agent(1, true);
+    }
+    h.step();
+    let body = h.me().body;
+    h.stage_puppet(|p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the crewmate never joined: {}", h.explain());
+
+    // Its founder walks eight metres off; it is given a run's worth of wood.
+    let content = common::content();
+    let wood = |count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, "item.wood")
+    };
+    let wood_item = wood(1).item;
+    h.stage_puppet(|p| p.body.qx += 800 / 3);
+    h.stage(move |p| {
+        p.inv[HOTBAR_SLOTS + 5] = wood(1000);
+        p.inv[HOTBAR_SLOTS + 6] = wood(500);
+    });
+    let handed = h.until(90 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::HandOver)
+    });
+    assert!(handed, "no hand-over ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::HandOver)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    let held = |p: &sim_core::world::Player| -> u32 {
+        p.inv
+            .iter()
+            .filter(|s| s.count > 0 && s.item == wood_item)
+            .map(|s| u32::from(s.count))
+            .sum()
+    };
+    let founder = h
+        .shard
+        .world
+        .players
+        .iter()
+        .find(|p| p.active && p.id == PUPPET)
+        .unwrap();
+    assert_eq!(held(founder), 1500, "the founder holds the wood");
+    assert_eq!(held(h.me()), 0, "the pack is empty of it");
+    assert_eq!(report.gained, 1500);
+    assert!(h.verbs.contains("give"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
 /// The free bot as a teammate, end to end through the real scripted
 /// policy: a person beside it asks to team up in local chat and it
 /// invites them by the human client's own verb; they say yes; on team chat
