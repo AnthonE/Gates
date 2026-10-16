@@ -254,7 +254,7 @@ impl RainbowParams {
         // Where the sky's fog draws after this layer it fogs the bow too;
         // under WebGL2 the deck folded its fog in and the bow has to.
         let air = if sky::BAKE_BACKDROP {
-            sky::SkyFog::new(w.fog_part(), w.rain_part()).lanes()
+            sky::ComposeParams::from_weather(w).fog.lanes()
         } else {
             Vec4::ZERO
         };

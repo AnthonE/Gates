@@ -980,7 +980,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
             cl.arid_low_c,
             cl.arid_high_c,
         ] == [0; 4];
-        if e.chill_rise_per_s > 0 && no_air {
+        if (e.chill_rise_per_s > 0 || e.fel_rise_per_s > 0) && no_air {
             return Err(
                 "[exposure] is armed with no [climate]: the air would read 0 °C \
                  everywhere and every rain would fall as snow"

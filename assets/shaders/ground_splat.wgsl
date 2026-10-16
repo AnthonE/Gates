@@ -1041,14 +1041,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // axis), on what faces the sky and never under the water. A colour set
     // BEFORE the photograph multiplies, so the relief's light and shade
     // survive it (`ART.md`: a modifier that sets a colour keeps the mean-1
-    // field).
+    // field). Never on the Verdigris' hot ground, whose fissures glow and
+    // pools lie flat: from the fel block's own gate it stays bare.
     let band = splat.snow_band;
     let snow = splat.snow.x
         * smoothstep(splat.snow.y - splat.snow.w, splat.snow.y, wp.y)
-        * smoothstep(band.x - band.z, band.x, arid)
-        * (1.0 - smoothstep(band.y, band.y + band.z, arid))
+        * smoothstep(band.x - band.z, band.x, dry)
+        * (1.0 - smoothstep(band.y, band.y + band.z, dry))
         * smoothstep(0.55, 0.85, in.world_normal.y)
-        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y);
+        * smoothstep(splat.caustics.x, splat.caustics.x + 0.3, wp.y)
+        * (1.0 - smoothstep(0.02, 0.25, fel));
     base = mix(base, vec3(splat.snow.z), snow);
 
     // The photograph, last: a scalar field with a mean of 1, so it contributes

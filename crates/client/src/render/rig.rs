@@ -1053,7 +1053,7 @@ pub fn day_night(
             elev,
             ev100: exposure_ev100(frac),
             lux_share,
-            fill: light * (1.0 - 0.35 * w.dark),
+            fill: light * (1.0 - 0.35 * w.dark) * (1.0 - 0.25 * w.fel),
             shadow_m: effective.shadow_m,
         },
     );
@@ -1104,14 +1104,8 @@ pub fn day_night(
             } else {
                 // The Verdigris' haze on top of the weather's, green.
                 let sigma = w.fog_sigma() + super::sky::FEL_FOG_SIGMA * w.fel;
-                let base =
-                    super::sky::fog_color_dust(lux_share, w.dark, sigma, w.dust_part()).to_linear();
-                let fel = super::sky::fel_fog_rgb(lux_share);
-                fog.color = Color::linear_rgb(
-                    base.red + (fel[0] - base.red) * w.fel,
-                    base.green + (fel[1] - base.green) * w.fel,
-                    base.blue + (fel[2] - base.blue) * w.fel,
-                );
+                let c = super::sky::fog_rgb_fel(lux_share, w.dark, sigma, w.dust_part(), w.fel);
+                fog.color = Color::linear_rgb(c[0], c[1], c[2]);
                 fog.falloff = super::sky::fog_falloff(sigma - lifted);
                 fog.directional_light_color = super::sky::fog_glow();
             }

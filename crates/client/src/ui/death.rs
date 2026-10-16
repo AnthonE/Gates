@@ -21,7 +21,7 @@ use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::mob;
 use sim_core::world::{
     DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_FALL,
-    DEATH_BY_HAND, DEATH_BY_HEAT, DEATH_BY_MOB, DEATH_BY_SALT,
+    DEATH_BY_FEL, DEATH_BY_HAND, DEATH_BY_HEAT, DEATH_BY_MOB, DEATH_BY_SALT,
 };
 
 use super::craft::item_name;
@@ -66,7 +66,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_SALT => "the sea is salt".to_string(),
         DEATH_BY_COLD => "the cold took you".to_string(),
         DEATH_BY_HEAT => "the heat took you".to_string(),
-        sim_core::world::DEATH_BY_FEL => "the verdigris took you".to_string(),
+        DEATH_BY_FEL => "the verdigris took you".to_string(),
         DEATH_BY_FALL => "you fell too far".to_string(),
         DEATH_BY_HAND if d.own_doing() => "you did it to yourself".to_string(),
         DEATH_BY_HAND => {
@@ -227,6 +227,7 @@ pub fn killed_by(d: &Death, killer: &str, meters: Meters) -> String {
         DEATH_BY_COLD => "Cold".to_string(),
         DEATH_BY_HEAT => "Heat".to_string(),
         DEATH_BY_FALL => "Fall".to_string(),
+        DEATH_BY_FEL => "The Verdigris".to_string(),
         DEATH_BY_MOB => beast(d.killer).map_or("An animal", |b| b.name).to_string(),
         DEATH_BY_HAND | DEATH_BY_CHARGE if d.own_doing() => "Yourself".to_string(),
         DEATH_BY_HAND | DEATH_BY_ARROW | DEATH_BY_BULLET | DEATH_BY_CHARGE => killer.to_string(),
@@ -642,6 +643,20 @@ mod tests {
             killed_by(&d, "#0", Meters::default()),
             format!("Cause {unknown}")
         );
+    }
+
+    #[test]
+    fn every_cause_has_a_name_on_the_chip() {
+        // A cause added on one branch and a chip table on another met in a
+        // merge once, and the Verdigris read "Cause 10".
+        for cause in 0..=sim_core::world::DEATH_BY_MAX {
+            let d = Death {
+                cause,
+                ..Death::default()
+            };
+            let chip = killed_by(&d, "#0", Meters::default());
+            assert!(!chip.starts_with("Cause"), "cause {cause} reads {chip:?}");
+        }
     }
 
     #[test]

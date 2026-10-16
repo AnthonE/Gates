@@ -524,14 +524,14 @@ pub struct SkyFogParams {
 
 impl SkyFogParams {
     /// The fog over a compose's sky, the colour the rig gives the ground's
-    /// (`sky::fog_color_dust` of the same light, weight, extinction and
-    /// dust), or none under the sea, where the shell is the sky
+    /// (`sky::fog_rgb_fel` of the same light, weight, extinction, dust and
+    /// Verdigris), or none under the sea, where the shell is the sky
     /// (`underwater.rs`).
     pub fn new(p: &ComposeParams, underwater: bool) -> Self {
         if underwater {
             return Self::default();
         }
-        let c = sky::fog_rgb_dust(p.light, p.dark, p.fog.sigma(), p.fog.dust());
+        let c = sky::fog_rgb_fel(p.light, p.dark, p.fog.sigma(), p.fog.dust(), p.fel);
         let g = sky::fog_glow().to_linear();
         Self {
             color: Vec3::from_array(c).extend(0.0),
@@ -729,7 +729,8 @@ pub fn drive(
         // that volume lies over the sky too: the layer keeps what the ground's
         // flat fog keeps, in the same colour, so the horizon seam holds.
         if let Some(s) = shafts.filter(|s| s.volume > 0.0 && !weather.underwater) {
-            want.air = sky::SkyFog::new(s.flat, weather.rain_part()).lanes();
+            let flat = s.flat + sky::FEL_FOG_SIGMA * live.fel;
+            want.air = sky::SkyFog::new(flat, weather.rain_part()).lanes();
         }
         let stale = fogs.get(&handle.0).is_some_and(|m| m.params != want);
         if stale {

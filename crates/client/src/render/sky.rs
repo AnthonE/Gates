@@ -868,6 +868,16 @@ pub fn fel_fog_rgb(light: f32) -> [f32; 3] {
     core::array::from_fn(|c| FEL_FOG[c] * lum * light + FEL_FOG_NIGHT[c] * (1.0 - light))
 }
 
+/// [`fog_rgb_dust`] greened by the Verdigris `fel` deep ([`fel_fog_rgb`]):
+/// the ground's flat fog (`rig::day_night`), the deck's fog band, the sky's
+/// fog layer and the shafts all take this one, so the horizon seam holds
+/// in the green too.
+pub fn fog_rgb_fel(light: f32, dark: f32, sigma: f32, dust: f32, fel: f32) -> [f32; 3] {
+    let fog = fog_rgb_dust(light, dark, sigma, dust);
+    let green = fel_fog_rgb(light);
+    core::array::from_fn(|c| fog[c] + (green[c] - fog[c]) * fel)
+}
+
 /// How deep the ground fog lies, metres: a valley fog, so overhead the sky
 /// still shows through it faintly while the horizon is gone.
 pub const FOG_LAYER_M: f32 = 60.0;
@@ -1130,8 +1140,6 @@ impl DeckLight {
         // The Verdigris greens the deck: lit tops, dark bellies.
         let top_k: [f32; 3] = core::array::from_fn(|c| 1.0 + (FEL_CLOUD_TOP[c] - 1.0) * p.fel);
         let base_k: [f32; 3] = core::array::from_fn(|c| 1.0 + (FEL_CLOUD_BASE[c] - 1.0) * p.fel);
-        let fog = fog_rgb_dust(p.light, p.dark, p.fog.sigma(), p.fog.dust());
-        let fel_fog = fel_fog_rgb(p.light);
         Self {
             sun_h,
             toward: sun_h * LIT_STEP,
@@ -1146,7 +1154,7 @@ impl DeckLight {
                 MOON_SCATTER * MOONLIT[c] * p.night * p.moonlight * (1.0 - 0.7 * p.dark)
             }),
             gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
-            fog_rgb: core::array::from_fn(|c| fog[c] + (fel_fog[c] - fog[c]) * p.fel),
+            fog_rgb: fog_rgb_fel(p.light, p.dark, p.fog.sigma(), p.fog.dust(), p.fel),
             thresh: 1.0 - p.cover,
         }
     }
