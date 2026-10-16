@@ -90,11 +90,12 @@ use crate::ui::hub::{Hub, Section};
 use crate::ui::servers::{self, Cat, Listing};
 
 impl Nav {
-    const ALL: [Nav; 6] = [
+    const ALL: [Nav; 7] = [
         Nav::Play,
         Nav::Hub(Section::News),
         Nav::Hub(Section::Store),
         Nav::Hub(Section::Workshop),
+        Nav::Hub(Section::Buddies),
         Nav::Settings,
         Nav::Quit,
     ];
@@ -1638,7 +1639,7 @@ mod tests {
     #[test]
     fn every_nav_entry_reads_as_itself() {
         // A nav entry needs something behind it — `settings.rs`'s policy
-        // against greyed rows, applied to the column. Three of these six are
+        // against greyed rows, applied to the column. Four of these seven are
         // the launcher's and their "something" is a state sentence rather
         // than a screen we drew (`crate::ui::hub`), which is why they are
         // here rather than left off.

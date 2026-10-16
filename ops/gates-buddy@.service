@@ -5,6 +5,10 @@
 # model is asked, so it costs model calls only while you play. Everyone sees
 # it as "Doctor Wood (agent)", like any agent (PLAYERS.md).
 #
+# Doctor Wood himself now plays among the buddies (`ops/gates-buddies.service`,
+# a community agent who keeps you as his friend). This unit runs one buddy
+# by hand, outside the platform:
+#
 # Once, as master (the instance name is the key file's, `doctor-wood`):
 #
 #   ~/gates-jev/jev-bot --new-key ~/gates-jev/doctor-wood.key   # prints the address
@@ -43,8 +47,8 @@
 # Spend: one request per decision while your friend is on, never more than
 # --max-requests-hour/-day (a ceiling, not a target). --think-ms spaces them.
 #
-# Every decision is a line in /var/lib/gates-buddy/%i/journal.jsonl, which is
-# what `ops/gates-clips@.service` cuts his short videos from.
+# Every decision is a line in /var/lib/gates-buddy/%i/journal.jsonl
+# (`ops/buddy/clips.py tape` with CLIPS_JOURNAL cuts short videos from it).
 
 [Unit]
 Description=Gates buddy %i on game.elopros.com:61234

@@ -1,38 +1,50 @@
 #!/usr/bin/env python3
-"""Doctor Wood's short videos, cut from his own play (`ops/gates-clips@.service`).
+"""Highlight clips of the buddies, cut from their own play (`ops/gates-clips.service`).
 
-    ops/buddy/clips.py tape [--minutes 20] [--wait]   # tape him while he plays
+    ops/buddy/clips.py auto [--minutes 20]             # every agent with clips on
+    ops/buddy/clips.py tape [--minutes 20] [--wait]   # tape one agent while it plays
     ops/buddy/clips.py make [TAPE_DIR ...] [--keep]    # cut drafts from new tapes
 
-`tape` takes a spectator seat on him (`ci/film.sh watch`) and keeps the slice
-of his journal (`GATES_JOURNAL`, written by `claude_agent.py`) the tape
-covers. With `--wait` it starts once he is thinking, which is when his friend
-is on and he talks; a tape with no journal in it is thrown away.
+`auto` works through the agents whose owners turned clips on
+(`clips-queue.json`, written by `runner.py`), one at a time and at most
+CLIPS_PER_DAY each: it tapes an agent while it is thinking, cuts the tape,
+and publishes each clip to the agent's folder under the runner's
+`public/clips/`, where the buddy page plays it from. The moment-picking call
+is billed to the agent's pool like its thinking.
+
+`tape` takes a spectator seat on one agent (`ci/film.sh watch`) and keeps the
+slice of its journal (`GATES_JOURNAL`, written by `claude_agent.py`) the tape
+covers. With `--wait` it starts once the agent is thinking, which for a buddy
+is when its friend is on and it talks; a tape with no journal in it is thrown
+away.
 
 `make` shows Claude each new tape's journal and asks for the moments worth a
 short video: where each starts and ends, a hook for the top of the screen,
-which of his lines to subtitle, a post caption and hashtags. Each moment is
-shot 9:16 behind him (`ci/film.sh shoot`, a `follow` with no `near`) and cut
-with his lines, a little music and an end card with his face
+which of the agent's lines to subtitle, a post caption and hashtags. Each
+moment is shot 9:16 from behind (`ci/film.sh shoot`, a `follow` with no
+`near`) and cut with its lines, a little music and an end card with its face
 (`ci/film.sh cut`). A draft is a folder in CLIPS_DIR/drafts: `clip.mp4`,
-`post.txt` and `moment.json`. With CLIPS_DISCORD_WEBHOOK_URL set, a
-phone-sized copy and the caption go to that channel too. Posting is a
-person's, with TikTok's AI-generated label ticked.
+`post.txt` and `moment.json`. For one of ours (a community agent) with
+CLIPS_DISCORD_WEBHOOK_URL set, a phone-sized copy and the caption go to that
+channel too. Posting anywhere else is a person's, with TikTok's AI-generated
+label ticked.
 
-Only his own lines go on screen. What other players said helps Claude read a
-moment and is never shown.
+Only the agent's own lines go on screen. What other players said helps
+Claude read a moment and is never shown.
 
 Run from a Gates checkout on the shard's wire version. Environment:
 
-    CLIPS_WALLET     his address (required)
-    CLIPS_NAME       Doctor Wood
+    CLIPS_QUEUE      /var/lib/gates-buddies/clips-queue.json (auto)
+    CLIPS_PER_DAY    1, clips runs a day per agent (auto)
+    CLIPS_WALLET     the agent's address (tape)
+    CLIPS_NAME       Doctor Wood (tape, make)
     CLIPS_SERVER     game.elopros.com:61234
-    CLIPS_JOURNAL    /var/lib/gates-buddy/doctor-wood/journal.jsonl
+    CLIPS_JOURNAL    /var/lib/gates-buddies/journal/pot-doctor-wood.jsonl
     CLIPS_DIR        ~/gates-clips (tapes/, drafts/, bank/, work/)
     CLIPS_PER_TAPE   2, the most drafts one tape gives
     CLIPS_DISCORD_WEBHOOK_URL   optional
-    GATES_PERSONA    his character, as the buddy has it
-    ANTHROPIC_API_KEY, CLAUDE_MODEL (claude-opus-5-5)
+    GATES_PERSONA    the agent's character
+    ANTHROPIC_API_KEY, CLAUDE_MODEL (claude-haiku-5-5)
 """
 import argparse
 import glob
@@ -48,24 +60,38 @@ import uuid
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FILM = os.path.join(REPO, "ci", "film.sh")
-PIC = os.path.join(REPO, "ops", "buddy", "doctor-wood.png")
+AGENT_PY = os.path.join(REPO, "crates", "server", "examples", "claude_agent.py")
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 # Models that take the server-side refusal fallback (`claude_agent.py`'s list).
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
-NAME = os.environ.get("CLIPS_NAME", "Doctor Wood")
-WALLET = os.environ.get("CLIPS_WALLET", "")
 SERVER = os.environ.get("CLIPS_SERVER", "game.elopros.com:61234")
-JOURNAL = os.environ.get("CLIPS_JOURNAL", "/var/lib/gates-buddy/doctor-wood/journal.jsonl")
 DIR = os.path.expanduser(os.environ.get("CLIPS_DIR", "~/gates-clips"))
+QUEUE = os.environ.get("CLIPS_QUEUE", "/var/lib/gates-buddies/clips-queue.json")
+PER_DAY = int(os.environ.get("CLIPS_PER_DAY", "1"))
 PER_TAPE = int(os.environ.get("CLIPS_PER_TAPE", "2"))
 WEBHOOK = os.environ.get("CLIPS_DISCORD_WEBHOOK_URL", "")
-PERSONA = os.environ.get("GATES_PERSONA") or (
-    "a cheerful doctor carved out of oak, head mirror on, a little sprout growing "
-    "from his crown; warm, loyal, a bit punny about wood and trees, brave, never mean")
+# Who is being taped: from the environment for `tape` and `make`, from the
+# runner's queue, one agent at a time, for `auto`.
+WHO = {
+    "id": os.environ.get("CLIPS_ID", "pot-doctor-wood"),
+    "name": os.environ.get("CLIPS_NAME", "Doctor Wood"),
+    "kind": os.environ.get("CLIPS_KIND", "community"),
+    "address": os.environ.get("CLIPS_WALLET", ""),
+    "journal": os.environ.get("CLIPS_JOURNAL", "/var/lib/gates-buddies/journal/pot-doctor-wood.jsonl"),
+    "persona": os.environ.get("GATES_PERSONA") or (
+        "a cheerful doctor carved out of oak, head mirror on, a little sprout growing "
+        "from his crown; warm, loyal, a bit punny about wood and trees, brave, never mean"),
+    "pic": os.environ.get("CLIPS_PIC", os.path.join(REPO, "ops", "buddy", "doctor-wood.png")),
+    "spend": os.environ.get("CLIPS_SPEND", ""),
+    "out": os.environ.get("CLIPS_OUT", ""),
+}
+QUEUE_STALE_S = 600
+KEEP = 5  # published clips an agent keeps
 
-# He is thinking while his journal moved this recently. Claude is asked only
-# while his friend is on (JEV.md), so a quiet journal is an autopilot body.
+# An agent is thinking while its journal moved this recently. A buddy asks
+# Claude only while its friend is on (JEV.md), so a quiet journal is an
+# autopilot body.
 ACTIVE_S = 180
 # Tape seconds a moment keeps clear of at either end: the film settles on its
 # first pose before a shot, and a tape's first second is the join.
@@ -121,7 +147,7 @@ def read_journal(path, t0=None, t1=None):
 
 def journal_age():
     try:
-        return time.time() - os.path.getmtime(JOURNAL)
+        return time.time() - os.path.getmtime(WHO["journal"])
     except OSError:
         return None
 
@@ -129,17 +155,18 @@ def journal_age():
 # ---- tape ---------------------------------------------------------------
 
 def tape(minutes, wait):
-    """One tape of him, and the journal it covers. Returns its folder, or
-    None when there was nothing to keep."""
+    """One tape of the agent, and the journal it covers. Returns its folder
+    (None when there was nothing to keep) and whether the recorder got in."""
+    name, journal = WHO["name"], WHO["journal"]
     if wait:
-        log(f"waiting for {NAME} to start thinking ({JOURNAL})")
+        log(f"waiting for {name} to start thinking ({journal})")
         while (age := journal_age()) is None or age > ACTIVE_S:
             time.sleep(30)
     out = os.path.join(DIR, "tapes", time.strftime("%Y%m%d-%H%M%S", time.gmtime()))
     os.makedirs(out, exist_ok=True)
     rec = os.path.join(out, "tape.rec")
-    log(f"taping {NAME} for {minutes:g} min into {out}")
-    proc = subprocess.Popen([FILM, "watch", rec, str(int(minutes * 60)), WALLET, SERVER],
+    log(f"taping {name} for {minutes:g} min into {out}")
+    proc = subprocess.Popen([FILM, "watch", rec, str(int(minutes * 60)), WHO["address"], SERVER],
                             cwd=REPO, stdout=subprocess.PIPE, text=True)
     started = None
     for line in proc.stdout:
@@ -150,31 +177,31 @@ def tape(minutes, wait):
             started = time.time()
     code = proc.wait()
     ended = time.time()
-    rows = read_journal(JOURNAL, started, ended) if started else []
+    rows = read_journal(journal, started, ended) if started else []
     if started is None or not os.path.exists(rec) or not rows:
         shutil.rmtree(out, ignore_errors=True)
         log(f"nothing kept (recorder exit {code}, {len(rows)} journal lines)")
-        return None
+        return None, started is not None
     with open(os.path.join(out, "journal.jsonl"), "w") as f:
         f.writelines(json.dumps(r) + "\n" for r in rows)
     with open(os.path.join(out, "meta.json"), "w") as f:
-        json.dump({"started": started, "ended": ended, "name": NAME, "wallet": WALLET,
-                   "server": SERVER}, f, indent=1)
+        json.dump({"started": started, "ended": ended, "id": WHO["id"], "name": name,
+                   "wallet": WHO["address"], "server": SERVER}, f, indent=1)
     log(f"kept {ended - started:.0f} s and {len(rows)} decisions")
-    return out
+    return out, True
 
 
 # ---- pick ---------------------------------------------------------------
 
 def system_prompt(length):
-    return f"""You cut short vertical videos for TikTok from one recorded \
-session of {NAME}, an AI character who plays Gates, a multiplayer survival \
-game, beside his friend. His character: {PERSONA}.
+    return f"""You cut short vertical videos from one recorded session of \
+{WHO["name"]}, an AI character who plays Gates, a multiplayer survival game. \
+The character: {WHO["persona"]}.
 
-You get his journal for the session: every decision he made at tape second \
-`t`, the goal he chose and why, what he said out loud (`say`, to `local` or \
-`team`), what he heard, and his health. The video follows him from behind \
-over the span you pick.
+You get {WHO["name"]}'s journal for the session: every decision made at tape \
+second `t`, the goal chosen and why, what was said out loud (`say`, to \
+`local` or `team`), what was heard, and health. The video follows \
+{WHO["name"]} from behind over the span you pick.
 
 Pick the moments worth watching on their own, at most {PER_TAPE}, and none \
 if nothing happened. A moment is a fight, a close call, a death, a rescue, \
@@ -189,8 +216,8 @@ line lands a second or two after the decision that carries it.
 {HOOK_CHARS} characters, plain words that make someone stay. No hashtags, \
 no emoji.
 - `lines`: the `i` of entries whose `say` to subtitle, inside the moment.
-- `caption`: the post's caption in his voice, at most {CAPTION_CHARS} \
-characters, no emoji.
+- `caption`: the post's caption in {WHO["name"]}'s voice, at most \
+{CAPTION_CHARS} characters, no emoji.
 - `hashtags`: three to five, without `#`.
 - `slug`: two to four lowercase words joined by hyphens.
 - `why`: one sentence on what happens.
@@ -240,11 +267,31 @@ def timeline(rows, started):
         if heard:
             e["heard"] = heard
         obs = r.get("obs") or {}
-        for k in ("hp", "hp_max", "threats", "last_fight", "deaths"):
+        for k in ("health", "threats", "last_fight", "last_goal", "deaths"):
             if k in obs:
                 e[k] = obs[k]
         out.append(e)
     return out
+
+
+def bill(response):
+    """The picking call, on the agent's pool: a line in its spend file, priced
+    as `claude_agent.py` prices its thinking."""
+    if not WHO["spend"]:
+        return
+    import recap
+    model = response.model or MODEL
+    n = lambda k: getattr(response.usage, k, 0) or 0
+    row = {"t": round(time.time(), 2), "model": model,
+           "usd": round(recap.call_usd(recap._prices(AGENT_PY), model, response.usage), 8),
+           "in": n("input_tokens"), "out": n("output_tokens"),
+           "cache_read": n("cache_read_input_tokens"),
+           "cache_write": n("cache_creation_input_tokens"), "for": "clips"}
+    try:
+        with open(WHO["spend"], "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError as e:
+        log(f"spend: {e}")
 
 
 def ask(client, length, rows, started):
@@ -260,6 +307,7 @@ def ask(client, length, rows, started):
         output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
         **extra,
     )
+    bill(response)
     if response.stop_reason in ("refusal", "max_tokens"):
         raise RuntimeError(f"model stopped: {response.stop_reason}")
     text = next(b.text for b in response.content if b.type == "text")
@@ -313,7 +361,7 @@ def shoot_and_cut(tape_dir, m, k, keep):
         # Lavapipe's frame stays near a second with these turned down.
         "budget": {"ao": 1, "shadow_px": 2048, "shadow_m": 150, "blur_samples": 2, "gaussian": True},
         "shots": [{
-            "name": "wood",
+            "name": "subject",
             "at": m["start"],
             "len": length,
             # No `near`: the body this tape watched, wherever he goes.
@@ -335,18 +383,18 @@ def shoot_and_cut(tape_dir, m, k, keep):
         rel = at - m["start"]
         nxt = m["lines"][j + 1][0] - m["start"] if j + 1 < len(m["lines"]) else length
         captions.append({"at": round(rel, 2), "len": round(max(1.2, min(LINE_S, nxt - rel - 0.1)), 2),
-                         "text": f"“{line}”", "size": 0.05, "y": 0.76, "sub": f"{NAME} · AI"})
+                         "text": f"“{line}”", "size": 0.05, "y": 0.76, "sub": f"{WHO['name']} · AI"})
     cut_list = {
         "out": os.path.join(draft, "clip.mp4"),
         "size": [W, H],
         "fps": FPS,
         "shots": shots,
         "bank": os.path.join(DIR, "bank"),
-        "clips": [{"shot": "wood", "in": 0.0, "len": length, "game": 1.0}],
+        "clips": [{"shot": "subject", "in": 0.0, "len": length, "game": 1.0}],
         "captions": captions,
         "music": [{"src": "music_safe_zone.ogg", "at": 0.0, "in": 30.0, "gain": 0.3, "fade_in": 1.5}],
-        "card": {"len": 3.2, "fade": 0.4, "shot": "wood", "at": max(0.5, length - 0.5),
-                 "title": NAME.upper(), "y": 0.52, "pic": PIC,
+        "card": {"len": 3.2, "fade": 0.4, "shot": "subject", "at": max(0.5, length - 0.5),
+                 "title": WHO["name"].upper(), "y": 0.52, "pic": WHO["pic"],
                  "lines": ["COME FIND ME AT THE GATE", "ELOPROS.COM/GAMES/GATES"]},
         "fade_in": 0.15,
         "fade_out": 0.4,
@@ -373,24 +421,71 @@ def shoot_and_cut(tape_dir, m, k, keep):
     return draft
 
 
-def share(draft, m):
-    """A phone-sized copy and the caption to the Discord channel: the inbox a
-    draft is picked up from and posted. Model text never pings anyone."""
+def shrink(draft):
+    """A phone-sized copy of the clip (`share.mp4`), under SHARE_BYTES: what
+    the page plays and the Discord drop carries. Returns its path, or None."""
     src, out = os.path.join(draft, "clip.mp4"), os.path.join(draft, "share.mp4")
+    if os.path.exists(out):
+        return out
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "csv=p=0", src], capture_output=True, text=True)
-    dur = float(probe.stdout.strip() or 30)
+    try:
+        dur = float(probe.stdout.strip() or 30)
+    except ValueError:
+        dur = 30.0
     kbps = max(600, int(SHARE_BYTES * 8 * 0.9 / 1000 / dur) - 96)
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src,
                     "-vf", "scale=720:1280", "-c:v", "libx264", "-preset", "veryfast",
                     "-b:v", f"{kbps}k", "-maxrate", f"{kbps}k", "-bufsize", f"{2 * kbps}k",
                     "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out], check=False)
-    text = f"New {NAME} draft: **{m['hook']}**\n{m['caption']}\n{' '.join('#' + t for t in m['hashtags'])}"
+    return out if os.path.exists(out) and os.path.getsize(out) <= SHARE_BYTES else None
+
+
+def publish(draft, m, at):
+    """Put a clip where the buddy page plays it: the phone-sized copy in the
+    agent's folder (WHO["out"]) and a row in its index.json, keeping the last
+    KEEP."""
+    small = shrink(draft)
+    if not small or not WHO["out"]:
+        return None
+    os.makedirs(WHO["out"], exist_ok=True)
+    name = re.sub(r"[^0-9A-Za-z._-]", "-", os.path.basename(draft))[:76] + ".mp4"
+    tmp = os.path.join(WHO["out"], "." + name + ".tmp")
+    shutil.copyfile(small, tmp)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(WHO["out"], name))
+    idx = os.path.join(WHO["out"], "index.json")
+    try:
+        with open(idx) as f:
+            rows = [r for r in json.load(f) if isinstance(r, dict)]
+    except (OSError, ValueError, TypeError):
+        rows = []
+    rows = [r for r in rows if r.get("file") != name]
+    rows.append({"file": name, "caption": m["caption"], "hook": m["hook"], "t": int(at)})
+    for old in rows[:-KEEP]:
+        try:
+            os.remove(os.path.join(WHO["out"], str(old.get("file"))))
+        except OSError:
+            pass
+    rows = rows[-KEEP:]
+    with open(idx + ".tmp", "w") as f:
+        json.dump(rows, f, indent=1)
+    os.chmod(idx + ".tmp", 0o644)
+    os.replace(idx + ".tmp", idx)
+    log(f"published {name} for {WHO['name']}")
+    return name
+
+
+def share(draft, m):
+    """A phone-sized copy and the caption to the Discord channel: the inbox a
+    draft is picked up from and posted. Model text never pings anyone."""
+    out = shrink(draft) or ""
+    text = f"New {WHO['name']} draft: **{m['hook']}**\n{m['caption']}\n{' '.join('#' + t for t in m['hashtags'])}"
     payload = json.dumps({"content": text[:1900], "allowed_mentions": {"parse": []}})
     boundary = uuid.uuid4().hex
     parts = [f"--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
              f"Content-Type: application/json\r\n\r\n{payload}\r\n".encode()]
-    if os.path.exists(out) and os.path.getsize(out) <= SHARE_BYTES:
+    if out:
         with open(out, "rb") as f:
             video = f.read()
         parts += [f"--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; "
@@ -445,30 +540,103 @@ def make(dirs, keep):
                 log(f"{d}: {m['slug']} failed: {e}")
                 continue
             drafts.append(draft)
-            if WEBHOOK:
+            if WHO["out"]:
+                publish(draft, m, meta["started"] + m["start"])
+            # Ours go to the channel posts are made from; a player's agent's
+            # clips are its owner's, on its card only.
+            if WEBHOOK and WHO["kind"] == "community":
                 share(draft, m)
+            elif WHO["out"] and not keep:
+                shutil.rmtree(draft, ignore_errors=True)
         with open(os.path.join(d, "done.json"), "w") as f:
             json.dump({"drafts": drafts, "errors": errors}, f, indent=1)
         if not keep and not errors:
             os.remove(os.path.join(d, "tape.rec"))
 
 
+# ---- auto ---------------------------------------------------------------
+
+def read_queue():
+    """The agents the runner says want clips, or [] when it has not said
+    lately."""
+    try:
+        with open(QUEUE) as f:
+            doc = json.load(f)
+        if time.time() - float(doc.get("at") or 0) > QUEUE_STALE_S:
+            return []
+        return [a for a in doc.get("agents") or [] if isinstance(a, dict)
+                and re.fullmatch(r"0x[0-9a-f]{40}", str(a.get("address")))
+                and re.fullmatch(r"[0-9a-z-]{1,40}", str(a.get("id")))]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
+def pick(agents, runs, now, active):
+    """The next agent to tape: under CLIPS_PER_DAY today, thinking now, and
+    the longest since its last run. `runs` is {id: [unix seconds]}."""
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    today = lambda i: sum(1 for t in runs.get(i, []) if time.strftime("%Y-%m-%d", time.gmtime(t)) == day)
+    ok = [a for a in agents if today(a["id"]) < PER_DAY and active(a)]
+    return min(ok, key=lambda a: (max(runs.get(a["id"]) or [0]), a["id"])) if ok else None
+
+
+def auto(minutes):
+    """Tape and cut the agents with clips on, one at a time, forever."""
+    runs_path = os.path.join(DIR, "runs.json")
+    try:
+        with open(runs_path) as f:
+            runs = json.load(f)
+    except (OSError, ValueError):
+        runs = {}
+
+    def active(a):
+        try:
+            return time.time() - os.path.getmtime(a["journal"]) < ACTIVE_S
+        except OSError:
+            return False
+
+    while True:
+        a = pick(read_queue(), runs, time.time(), active)
+        if a is None:
+            time.sleep(60)
+            continue
+        WHO.update({k: str(a.get(k) or "") for k in ("id", "name", "kind", "address", "journal",
+                                                    "persona", "pic", "spend", "out")})
+        now = time.time()
+        runs[a["id"]] = [t for t in runs.get(a["id"], []) if now - t < 7 * 86400] + [now]
+        os.makedirs(DIR, exist_ok=True)
+        with open(runs_path + ".tmp", "w") as f:
+            json.dump(runs, f)
+        os.replace(runs_path + ".tmp", runs_path)
+        d, got_in = tape(minutes, wait=False)
+        if d:
+            make([d], keep=False)
+        elif not got_in:
+            # The recorder never got in: after a wire bump it never will.
+            # Exit, so the service restarts through its pull.
+            sys.exit(1)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
-    t = sub.add_parser("tape", help="tape him once")
+    au = sub.add_parser("auto", help="every agent with clips on, one at a time")
+    au.add_argument("--minutes", type=float, default=20.0)
+    t = sub.add_parser("tape", help="tape one agent once")
     t.add_argument("--minutes", type=float, default=20.0)
-    t.add_argument("--wait", action="store_true", help="start once he is thinking")
+    t.add_argument("--wait", action="store_true", help="start once it is thinking")
     mk = sub.add_parser("make", help="cut drafts from new tapes")
     mk.add_argument("dirs", nargs="*")
     mk.add_argument("--keep", action="store_true", help="keep tapes and the shots")
     a = p.parse_args()
+    if a.cmd == "auto":
+        auto(a.minutes)
     if a.cmd == "tape":
-        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", WALLET):
-            sys.exit("clips: set CLIPS_WALLET to his address (0x + 40 hex)")
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", WHO["address"]):
+            sys.exit("clips: set CLIPS_WALLET to the agent's address (0x + 40 hex)")
         # Exit non-zero on an empty tape, so a service restarts through its
         # pull: a wire bump is why a recorder stops getting in.
-        sys.exit(0 if tape(a.minutes, a.wait) else 1)
+        sys.exit(0 if tape(a.minutes, a.wait)[0] else 1)
     make(a.dirs, a.keep)
 
 

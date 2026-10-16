@@ -233,7 +233,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -260,6 +260,11 @@ pub struct MindArgs {
     pub frame_url: Option<String>,
     /// The one wallet it plays with (`--friend 0x…`).
     pub friend: Option<protocol::Address>,
+    /// While its friend is away the mind keeps deciding on its own
+    /// (`--friend-away think`) instead of handing the body to the free
+    /// scripted policy (`autopilot`, the default): a character with a
+    /// friend, rather than a buddy that waits for one.
+    pub friend_away_think: bool,
     /// How long an MCP harness has to answer before the scripted policy
     /// plays that turn (`--autopilot-s`).
     pub autopilot: Duration,
@@ -284,6 +289,7 @@ impl Default for MindArgs {
             temperament: Temperament::default(),
             frame_url: None,
             friend: None,
+            friend_away_think: false,
             autopilot: AUTOPILOT_DEFAULT,
             voice: false,
         }
@@ -340,6 +346,13 @@ impl MindArgs {
                     .ok_or("--friend needs a wallet (0x + 40 hex)")?;
                 self.friend = Some(address);
             }
+            "--friend-away" => {
+                self.friend_away_think = match args.next().as_deref() {
+                    Some("think") => true,
+                    Some("autopilot") => false,
+                    _ => return Err("--friend-away is autopilot or think".into()),
+                };
+            }
             "--external" => {
                 let program = args.next().ok_or("--external needs a program")?;
                 self.source = Source::External(program, args.collect());
@@ -390,8 +403,10 @@ impl MindArgs {
         let buddy = self.friend.is_some();
         // A buddy's mind costs nothing while its friend is away: those
         // turns are the autopilot's and never reach the spend guard.
+        // `--friend-away think` keeps the mind deciding instead.
+        let gate = buddy && !self.friend_away_think;
         let priced = |mind: Mind| {
-            if buddy {
+            if gate {
                 mind.free_when(crate::autopilot::friend_away)
             } else {
                 mind
@@ -406,7 +421,7 @@ impl MindArgs {
                 };
                 cfg.check()?;
                 let door = voiced(crate::mcp::spawn(self.autopilot)?);
-                Mind::new(Autopilot::new(door, buddy), cfg).map(priced)
+                Mind::new(Autopilot::new(door, gate), cfg).map(priced)
             }
             Source::External(program, args) => {
                 let env: Vec<(&str, String)> = self
@@ -421,7 +436,7 @@ impl MindArgs {
                     let door = voiced(crate::external::External::spawn_with_env(
                         program, args, &env, inner,
                     )?);
-                    return Mind::new(Autopilot::new(door, true), self.cfg).map(priced);
+                    return Mind::new(Autopilot::new(door, gate), self.cfg).map(priced);
                 }
                 Mind::new(
                     voiced(crate::external::External::spawn_with_env(
@@ -521,6 +536,22 @@ mod tests {
         assert_eq!(kos.opts().temperament, Temperament::Kos);
         assert!(parse("--temperament").is_err());
         assert!(parse("--temperament berserk").is_err());
+        assert!(
+            !parse("--scripted").unwrap().friend_away_think,
+            "autopilot by default"
+        );
+        assert!(
+            parse("--friend-away think --scripted")
+                .unwrap()
+                .friend_away_think
+        );
+        assert!(
+            !parse("--friend-away autopilot --scripted")
+                .unwrap()
+                .friend_away_think
+        );
+        assert!(parse("--friend-away nap").is_err());
+        assert!(parse("--friend-away").is_err());
     }
 
     /// Off this machine the owner is handed the public page, which takes
