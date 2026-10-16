@@ -108,8 +108,8 @@ use sim_core::world::{
     TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE,
-    EV_STUMP_GRUBBED, EV_WORK,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_SHOP,
+    EV_SHOP_REFUSED, EV_STUMP_GRUBBED, EV_WORK,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -4393,8 +4393,10 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 63] = [
+    const COVERED: [(&str, u8); 65] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_SHOP", EV_SHOP),
+        ("EV_SHOP_REFUSED", EV_SHOP_REFUSED),
         ("EV_NODE_STAGE", EV_NODE_STAGE),
         ("EV_EXTRACTED", EV_EXTRACTED),
         ("EV_GAVE", EV_GAVE),
@@ -5891,6 +5893,63 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
     let inv = &w.players[0].inv;
     assert_eq!(sim_core::craft::inv_count(inv, 1), 0, "paid 3 × 2");
     assert_eq!(sim_core::craft::inv_count(inv, 2), 8, "got 4 × 2");
+}
+
+/// `EV_SHOP: a = player, b = box key, c = op << 16 | row << 8 | times`, then
+/// `EV_SHOP_REFUSED: a = player, b = box key, c = reason << 24 | op << 16 |
+/// row << 8 | times` — the fixture's fire row made a vending machine, an
+/// offer set on row 2, then a buy of one lot from the empty machine.
+#[test]
+fn a_shop_press_names_the_presser_the_machine_then_the_press() {
+    use sim_core::shop::{ShopAct, REFUSE_SH_STOCK, SHOP_OP_BUY, SHOP_OP_SET};
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    w.deploy.defs[DEPLOY_FIRE as usize].arch = sim_core::deploy::ARCH_VENDING;
+    w.deploy.shop_coin = FILLER;
+    w.players[0].inv[4] = ItemStack {
+        item: 6,
+        count: 4,
+        cond: 0,
+        skin: 0,
+    };
+    place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+    let b = w.deploys.boxes()[0];
+    let key = box_key(b.cx, b.cz, b.level, b.loc);
+    assert!(w.deploys.vending_index(key).is_some());
+
+    w.tick(&[Command::Shop {
+        id: BUILDER,
+        key,
+        act: ShopAct::Set {
+            row: 2,
+            item: 3,
+            lot: 2,
+            price: 5,
+        },
+    }]);
+    let ev = only(&w, EV_SHOP);
+    distinct3(ev, "EV_SHOP");
+    assert_eq!(ev.a, BUILDER, "EV_SHOP.a is the presser");
+    assert_eq!(ev.b, key, "EV_SHOP.b is the machine's box key");
+    assert_eq!(
+        ev.c,
+        (SHOP_OP_SET as u32) << 16 | 2 << 8,
+        "EV_SHOP.c is the press"
+    );
+
+    w.tick(&[Command::Shop {
+        id: BUILDER,
+        key,
+        act: ShopAct::Buy { row: 2, times: 1 },
+    }]);
+    let ev = only(&w, EV_SHOP_REFUSED);
+    assert_eq!(ev.a, BUILDER, "EV_SHOP_REFUSED.a is the presser");
+    assert_eq!(ev.b, key, "EV_SHOP_REFUSED.b is the machine's box key");
+    assert_eq!(
+        ev.c,
+        REFUSE_SH_STOCK << 24 | (SHOP_OP_BUY as u32) << 16 | 2 << 8 | 1,
+        "EV_SHOP_REFUSED.c is the reason over the press"
+    );
 }
 
 /// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`,

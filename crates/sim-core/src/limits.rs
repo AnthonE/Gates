@@ -844,6 +844,12 @@ pub const MAX_DIALS: usize = 4;
 /// Proposed default, DECISIONS.md §open (box v0).
 pub const BOX_SLOTS: usize = 12;
 
+/// Vending machines with offers set, shard-wide (`shop.rs`). A machine with
+/// no offers holds no record; past the cap a first `SET` refuses.
+pub const MAX_SHOPS: usize = 64;
+/// Offers one vending machine shows.
+pub const SHOP_ROWS: usize = 6;
+
 /// Code locks bolted onto doors at once (`lock.rs`). Its own dense list
 /// beside the hearths and the boxes, for the reason both of those have
 /// one: `DeployRec` is the struct the wire mirrors, so a code, two

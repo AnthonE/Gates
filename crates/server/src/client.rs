@@ -360,6 +360,10 @@ pub struct ClientNetState {
     /// watcher the close a resync swallowed. Survives `close_container`
     /// and `ev_resync` on purpose.
     pub cont_shown: bool,
+    /// The open vending machine's offers as last successfully queued to this
+    /// client (`SUB_SHOP`), `None` until the first is away. Cleared by an
+    /// open and a close, so every open is told the machine afresh.
+    pub last_shop: Option<protocol::ShopView>,
     /// The **body's** slots as last successfully queued — `last_cont`'s
     /// twin, for a stream that runs beside the ground container rather
     /// than taking its place.
@@ -555,6 +559,7 @@ impl ClientNetState {
             open_cont_reset: false,
             last_cont: [ItemStack::default(); INV_SLOTS],
             cont_shown: false,
+            last_shop: None,
             last_wear: [ItemStack::default(); WEAR_SLOTS],
             wear_reset: true,
             pending_action: None,
@@ -690,6 +695,7 @@ impl ClientNetState {
         self.open_cont_handle = handle;
         self.open_cont_reset = true;
         self.last_cont = [ItemStack::default(); INV_SLOTS];
+        self.last_shop = None;
     }
 
     /// Send the whole body next tick. The shadow is zeroed so the reset
@@ -707,6 +713,7 @@ impl ClientNetState {
         self.open_cont_handle = 0;
         self.open_cont_reset = false;
         self.last_cont = [ItemStack::default(); INV_SLOTS];
+        self.last_shop = None;
     }
 
     /// Arm the slot for a fresh connection. Everything netcode resets; the

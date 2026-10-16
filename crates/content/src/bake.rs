@@ -507,6 +507,7 @@ impl Content {
                     DeployArchetype::Barricade => sim_core::deploy::ARCH_BARRICADE,
                     DeployArchetype::Planter => sim_core::deploy::ARCH_PLANTER,
                     DeployArchetype::Turret => sim_core::deploy::ARCH_TURRET,
+                    DeployArchetype::Vending => sim_core::deploy::ARCH_VENDING,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -599,6 +600,16 @@ impl Content {
             dc.key_lock_item = self
                 .item_index(&d.id)
                 .ok_or_else(|| format!("bake: `{}` is not an item", d.id))?;
+        }
+        // A vending machine prices its offers in the island's coin.
+        if self
+            .deployables
+            .iter()
+            .any(|d| d.archetype == DeployArchetype::Vending)
+        {
+            dc.shop_coin = self
+                .item_index(EXTRACT_COIN)
+                .ok_or_else(|| format!("bake: a vending machine needs `{EXTRACT_COIN}`"))?;
         }
         Ok(dc)
     }

@@ -1056,6 +1056,26 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        // A vending machine opens on the server like a box, and on the
+        // client as its shop panel (`panels::shop`): the offers, and for its
+        // owner's crew the editor and a way into the slots.
+        Verb::Shop => {
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                if let Some(ui) = ui {
+                    if ui.panel == Panel::None {
+                        ui.panel = Panel::Shop;
+                        ui.shop_key = handle;
+                        ui.shop_open_seen = false;
+                        ui.shop_draft_key = 0;
+                        ui.status.clear();
+                        ui.dirty = true;
+                    }
+                }
+            }
+        }
         Verb::Planter => {
             // A planter is a box that grows: `E` opens it and the panel is
             // where the seeds go in and the harvest comes out.

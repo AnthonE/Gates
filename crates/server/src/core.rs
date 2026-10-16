@@ -60,10 +60,10 @@ use sim_core::world::{
     EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
     EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
     EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
-    EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOT,
-    EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_STUMP_GRUBBED, EV_SWING,
-    EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
-    STRUCT_DEPLOY_BIT,
+    EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOP,
+    EV_SHOP_REFUSED, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
+    EV_STUMP_GRUBBED, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
+    EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_NODE_STAGE,
@@ -2455,6 +2455,7 @@ impl ShardCore {
                         offer,
                         times,
                     },
+                    ActionMsg::Shop { key, act } => Command::Shop { id: c.id, key, act },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
                     ActionMsg::Arc {
                         op: sim_core::works::OP_EXTRACT,
@@ -3332,6 +3333,31 @@ impl ShardCore {
                         )
                     };
                     match r {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_SHOP | EV_SHOP_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    let code = if ev.code == EV_SHOP {
+                        0
+                    } else {
+                        (ev.c >> 24) as u8
+                    };
+                    match protocol::encode_event_shop_result(
+                        ev.b,
+                        ((ev.c >> 16) & 0xFF) as u8,
+                        ((ev.c >> 8) & 0xFF) as u8,
+                        (ev.c & 0xFF) as u8,
+                        code,
+                        &mut self.ev_buf,
+                    ) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -5109,6 +5135,34 @@ impl ShardCore {
         (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
     }
 
+    /// Vending machine `i` (an index into the box store) as player `viewer`
+    /// is shown it (`SUB_SHOP`): its offers, how many of each item it holds,
+    /// the coin, and whether `viewer` may stock it and set its offers.
+    pub fn shop_view(&self, i: usize, viewer: u32) -> protocol::ShopView {
+        let deploys = &self.world.deploys;
+        let Some(b) = deploys.boxes().get(i) else {
+            return protocol::ShopView::default();
+        };
+        let key = sim_core::deploy::box_key(b.cx, b.cz, b.level, b.loc);
+        let mut view = protocol::ShopView {
+            key,
+            coin: self.world.deploy.shop_coin,
+            may_edit: sim_core::shop::may_edit(&self.world.pieces, deploys, i, viewer),
+            ..Default::default()
+        };
+        for (row, o) in view.rows.iter_mut().zip(deploys.shops().offers(key)) {
+            if o.live() {
+                *row = protocol::ShopRow {
+                    item: o.item,
+                    lot: o.lot,
+                    price: o.price,
+                    have: sim_core::shop::count_in(&b.items, o.item).min(u16::MAX as u32) as u16,
+                };
+            }
+        }
+        view
+    }
+
     /// Hearth `hi`'s stock ack into `ev_buf`: each row's item, what the
     /// hearth holds and what a day charges (wire v89) — the sweep's own
     /// arithmetic over the claim cache the tick just refreshed (upkeep v2's
@@ -6872,6 +6926,26 @@ impl ShardCore {
                                 }
                             }
                             Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
+                    // A vending machine's offers and stock (`shop.rs`), owed
+                    // to whoever has it open: on the open, and again whenever
+                    // what the shop panel shows moves.
+                    if kind == CONT_BOX && self.world.deploys.vending_index(handle).is_some() {
+                        let viewer = self.world.players[self.clients[slot].own_wslot].id;
+                        let view = self.shop_view(i, viewer);
+                        if self.clients[slot].last_shop != Some(view) {
+                            match protocol::encode_event_shop(&view, &mut self.ev_buf) {
+                                Ok(len) => {
+                                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                        ShardStats::bump(&stats.ev_sent);
+                                        self.clients[slot].last_shop = Some(view);
+                                    } else {
+                                        return;
+                                    }
+                                }
+                                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                            }
                         }
                     }
                 }

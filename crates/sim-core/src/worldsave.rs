@@ -221,7 +221,18 @@ use crate::worldcont::WorldContRec;
 /// partial hp it is owed, after the cold's (+6).
 /// **25 — the Verdigris spreads** (`blight.rs`): the wipe's blight salt after
 /// the arc block (+4 in the head).
-pub const WORLD_SAVE_FORMAT: u16 = 25;
+/// **26 — the compound shop** (`shop.rs`): the vending machines' offers, a
+/// count and its records **at the very end** of the blob. A 25 file still
+/// reads (with no offers): every byte it holds means what it meant when it
+/// was written, so reading it as 25 is not the reinterpretation this number
+/// refuses.
+pub const WORLD_SAVE_FORMAT: u16 = 26;
+/// The one older format [`decode_into`] still reads: 26 minus its tail.
+pub const WORLD_SAVE_FORMAT_PREV: u16 = 25;
+
+/// One vending machine's offers: its box key, then each row's item, lot
+/// and price (format 26).
+pub const SHOP_BYTES: usize = 4 + crate::limits::SHOP_ROWS * 6;
 
 /// The head's arc block: the salt, then every mechanism slot.
 pub const ARC_SAVE_BYTES: usize = 8 + crate::limits::MAX_MECHS * crate::mech::MECH_BYTES;
@@ -398,7 +409,9 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_SPENT_ARROWS * SPENT_BYTES
     + MAX_GROUND_ITEMS * GROUND_ITEM_BYTES
     + MAX_FIRES * FIRE_BYTES
-    + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
+    + MAX_SLOT_LIVES * SLOT_LIFE_BYTES
+    + 2
+    + crate::limits::MAX_SHOPS * SHOP_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
 /// (wall 3) — the reason crosses to a server that can print, and nothing
@@ -852,6 +865,17 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         // A regrowing tree's clock (format 15, tree growth v0).
         o.u64(s.grown_at);
     }
+    // The vending machines' offers (format 26), last so a 25 file is this
+    // blob minus its tail.
+    o.u16(w.deploys.shops().len() as u16);
+    for r in w.deploys.shops().entries() {
+        o.u32(r.key);
+        for row in r.rows.iter() {
+            o.u16(row.item);
+            o.u16(row.lot);
+            o.u16(row.price);
+        }
+    }
 
     if o.at > o.buf.len() {
         return Err(WorldSaveError::Truncated);
@@ -991,7 +1015,7 @@ fn terrain_cell_ok(cx: u16, cz: u16) -> bool {
 pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let mut r = R::new(blob);
     let format = r.u16()?;
-    if format != WORLD_SAVE_FORMAT {
+    if format != WORLD_SAVE_FORMAT && format != WORLD_SAVE_FORMAT_PREV {
         return Err(WorldSaveError::Format(format));
     }
     let tick = r.u64()?;
@@ -1825,6 +1849,47 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         };
     }
 
+    // --- the vending machines' offers (format 26) ---------------------------
+    // Each must name a vending machine in this file, once, with canonical
+    // rows (an empty row is all zeros) over items the table has.
+    let mut shops = [crate::shop::ShopRec::default(); crate::limits::MAX_SHOPS];
+    let n_shops = if format >= 26 {
+        r.count(crate::limits::MAX_SHOPS)?
+    } else {
+        0
+    };
+    for k in 0..n_shops {
+        let key = r.u32()?;
+        let mut rec = crate::shop::ShopRec {
+            key,
+            ..Default::default()
+        };
+        for row in rec.rows.iter_mut() {
+            row.item = r.u16()?;
+            row.lot = r.u16()?;
+            row.price = r.u16()?;
+            if row.item as usize >= max_item || (row.lot == 0 && (row.item != 0 || row.price != 0))
+            {
+                return Err(WorldSaveError::BadContentRow);
+            }
+        }
+        let machine = boxes[..n_boxes]
+            .iter()
+            .zip(ovens[..n_boxes].iter())
+            .any(|(b, ov)| {
+                ov.arch == crate::deploy::ARCH_VENDING
+                    && crate::deploy::box_key(b.cx, b.cz, b.level, b.loc) == key
+            });
+        if key == 0
+            || !machine
+            || !rec.rows.iter().any(crate::shop::ShopOffer::live)
+            || shops[..k].iter().any(|s| s.key == key)
+        {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        shops[k] = rec;
+    }
+
     // --- commit -----------------------------------------------------------
     // Nothing above this line touched `w`. Every refusal returns with the
     // world exactly as the caller had it, which is what lets a shard report
@@ -1852,6 +1917,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &ovens[..n_boxes],
         &locks[..n_locks],
     );
+    w.deploys.restore_shops(&shops[..n_shops]);
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.world_conts.restore(&conts[..n_conts]);
     w.charges.restore(&charges[..n_charges]);
@@ -1982,21 +2048,22 @@ mod tests {
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
             + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
-            + 131_072 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
-                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-                            // 56 -> 62 at format 10: a tenth count, plus the
-                            // spent store's `u32` eviction counter beside the
-                            // body one. 62 -> 64 at format 14: an eleventh
-                            // count for the loose stacks. No head field beside
-                            // it — `next_id` is derived by the loader from the
-                            // ids it installs (`GroundItems::restore`), unlike
-                            // a bag's, and a head field duplicating a
-                            // derivable one is a second place for it to be
-                            // wrong. 64 -> 90 at format 15: the admin's sky and
-                            // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
-                            // fires' count. 92 -> 1380 at format 21: the
-                            // works, every slot whether or not content
-                            // names one (`MAX_WORKS` × `WORK_BYTES`).
+            + 131_072 * 23 // harvested slots (format 15: the occupant and the sapling's clock)
+            + 2 + 64 * 40; // vending offers (format 26): a count, then key + 6 rows of item, lot, price
+                           // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+                           // 56 -> 62 at format 10: a tenth count, plus the
+                           // spent store's `u32` eviction counter beside the
+                           // body one. 62 -> 64 at format 14: an eleventh
+                           // count for the loose stacks. No head field beside
+                           // it — `next_id` is derived by the loader from the
+                           // ids it installs (`GroundItems::restore`), unlike
+                           // a bag's, and a head field duplicating a
+                           // derivable one is a second place for it to be
+                           // wrong. 64 -> 90 at format 15: the admin's sky and
+                           // clock (`ENV_BYTES`). 90 -> 92 at format 20: the
+                           // fires' count. 92 -> 1380 at format 21: the
+                           // works, every slot whether or not content
+                           // names one (`MAX_WORKS` × `WORK_BYTES`).
         assert_eq!(crate::works::WORK_BYTES, 161);
         // 1380 -> 1516 at format 22: the arc's salt and every mechanism.
         assert_eq!(crate::mech::MECH_BYTES, 16);
@@ -2097,8 +2164,9 @@ mod tests {
         // the salt and the mechanisms (136) and a glyph mask on 100 bodies.
         // 3_560_728 at format 24: the Verdigris, six bytes on 100 bodies.
         // 3_560_732 at format 25: the blight's salt in the head.
+        // 3_563_294 at format 26: the vending offers' tail, 2 + 64 × 40.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_560_732,
+            WORLD_SAVE_MAX_BYTES, 3_563_294,
             "the world save ceiling moved"
         );
     }

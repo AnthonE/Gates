@@ -395,7 +395,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 19] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 20] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -534,6 +534,9 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 19] = [
     // 18 · auto turret: its steel base, `DEPLOY_VOL`'s row. The gun on top is
     // a roster record, drawn by `render/sentry.rs`.
     ([0.7, 0.6, 0.7], Color::srgb(0.169, 0.176, 0.184), 0.55, 0.4),
+    // 19 · vending machine: a tall steel cabinet, `DEPLOY_VOL`'s row, in a
+    // painted red a shopper picks out across a compound.
+    ([0.9, 1.9, 0.8], Color::srgb(0.553, 0.165, 0.137), 0.5, 0.5),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2254,6 +2257,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/barricade.glb"),      // 16 barricade
     None,                                     // 17 planter — the cuboid until a model
     Some(TURRET_BASE_GLB),                    // 18 turret base; the gun is `sentry.rs`'s
+    None,                                     // 19 vending machine — the cuboid until a model
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too

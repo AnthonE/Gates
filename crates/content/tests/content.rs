@@ -4847,10 +4847,10 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 12,
-        "expected exactly twelve solid rows — the hearth, the box (twice), the \
+        seen, 13,
+        "expected exactly thirteen solid rows — the hearth, the box (twice), the \
          furnace, the three benches, the recycler, the research table, \
-         the barricade, the planter and the auto turret — \
+         the barricade, the planter, the auto turret and the vending machine — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \

@@ -61,7 +61,7 @@
 
 use crate::store::{PlayerKey, PLAYER_KEY_MAX_BYTES, SAVE_BACKUP_COUNT};
 use sim_core::limits::MAX_PLAYERS;
-use sim_core::worldsave::{WORLD_SAVE_FORMAT, WORLD_SAVE_MAX_BYTES};
+use sim_core::worldsave::{WORLD_SAVE_FORMAT, WORLD_SAVE_FORMAT_PREV, WORLD_SAVE_MAX_BYTES};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -508,7 +508,9 @@ pub fn open(
         ));
     }
     let blob_format = at16(H_BLOB_FORMAT);
-    if blob_format != WORLD_SAVE_FORMAT {
+    // The previous blob format still reads (`worldsave::decode_into`): it is
+    // this one minus a tail, so nothing in it means something else now.
+    if blob_format != WORLD_SAVE_FORMAT && blob_format != WORLD_SAVE_FORMAT_PREV {
         return Err(format!(
             "world file {} holds a v{blob_format} world, this build reads \
              v{WORLD_SAVE_FORMAT} — the sim's state layout moved. Move it aside \
