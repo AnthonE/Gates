@@ -227,6 +227,9 @@ pub enum Goal {
     /// Walk a ring of posts round home, looking out, and take on whoever
     /// comes into the ward armed or fighting (`agent::society`).
     Patrol,
+    /// Keep the crew's vending machine (`agent::shop`): put it down outside
+    /// the base, take its junk out, put the wares in, set its prices.
+    KeepShop,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -254,7 +257,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 37] = [
+    pub const FIXED: [Goal; 38] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -292,6 +295,7 @@ impl Goal {
         Goal::SolveLock,
         Goal::SwipeCard,
         Goal::Patrol,
+        Goal::KeepShop,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -337,6 +341,7 @@ impl Goal {
             Goal::SolveLock => "solve_lock",
             Goal::SwipeCard => "swipe_card",
             Goal::Patrol => "patrol",
+            Goal::KeepShop => "keep_shop",
         }
     }
 
@@ -422,6 +427,7 @@ impl Goal {
             Goal::SolveLock => "Turn a lock's dials to the answer a stone gave; the last turn pays.".into(),
             Goal::SwipeCard => "Swipe your keycard at its ziggurat door and walk into the room.".into(),
             Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
+            Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
         }
     }
 }
@@ -721,6 +727,8 @@ pub struct SocietySense {
     pub allies_in_sight: Sighting,
     /// Intruders inside the ward at home: armed, or fighting.
     pub intruders: Sighting,
+    /// The crew's vending machine stands (`agent::shop`).
+    pub shop: bool,
 }
 
 impl SocietySense {
@@ -738,6 +746,7 @@ impl SocietySense {
         allies: 0,
         allies_in_sight: Sighting::NONE,
         intruders: Sighting::NONE,
+        shop: false,
     };
 
     fn json(&self) -> Value {
@@ -757,6 +766,7 @@ impl SocietySense {
             "allies": self.allies,
             "allies_in_sight": self.allies_in_sight.json(),
             "intruders_at_home": self.intruders.json(),
+            "crew_shop_stands": self.shop,
         })
     }
 }
@@ -2294,7 +2304,37 @@ fn founding(s: &Summary) -> Option<(Goal, &'static str)> {
 /// the cooking and recycling — so it gets nothing here.
 fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
     let soc = &s.society;
-    if !soc.set || soc.role == Role::Founder || s.team.home.count == 0 {
+    if !soc.set {
+        return None;
+    }
+    let shop_item = crate::agent::shop::SHOP_ITEM;
+    let make_shop = || {
+        (!soc.shop && s.count_of(shop_item) == 0)
+            .then(|| s.craftable().iter().find(|n| n.as_str() == shop_item))
+            .flatten()
+            .map(|name| {
+                (
+                    Goal::Craft(*name),
+                    "society: a vending machine for the crew",
+                )
+            })
+    };
+    // The founder's job is the playbook itself — the base, its stations,
+    // the cooking and recycling — and, the base done, the crew's shop put
+    // down outside it.
+    if soc.role == Role::Founder {
+        if s.milestone != Milestone::Done {
+            return None;
+        }
+        if s.offers(Goal::KeepShop) {
+            return Some((
+                Goal::KeepShop,
+                "society: the crew's shop goes up by the base",
+            ));
+        }
+        return make_shop();
+    }
+    if s.team.home.count == 0 {
         return None;
     }
     if s.offers(Goal::Deliver) && (s.free_slots <= SCRIPTED_DELIVER_FREE || s.team.home_has_needs) {
@@ -2338,7 +2378,18 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
             if s.count_of("Junk") >= RUNNER_BANK_AT && s.offers(Goal::Deliver) {
                 return Some((Goal::Deliver, "society: the takings to the crew's boxes"));
             }
+            // The crew's shop sells for more than THE GATE pays: stocked
+            // while it stands, made when the crew has none.
+            if s.offers(Goal::KeepShop) {
+                return Some((Goal::KeepShop, "society: stocking the crew's shop"));
+            }
+            if let Some(pick) = make_shop() {
+                return Some(pick);
+            }
             for name in ["Wood", "Stone"] {
+                if soc.shop {
+                    break;
+                }
                 if let Some(goal) = named(name)
                     .map(Goal::Sell)
                     .filter(|g| s.offers(*g) && s.count_of(name) >= RUNNER_SELL_AT)

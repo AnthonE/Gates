@@ -18,9 +18,10 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 /// Test bound on the largest request a summary can produce; its size is
 /// what a decision costs. Not sent anywhere. Raised from 6 KiB when the team
-/// chest's goals joined the vocabulary.
+/// chest's goals joined the vocabulary, and by half a KiB when a society's
+/// patrol and shop did.
 #[cfg(test)]
-const REQUEST_BYTES_MAX: usize = 7 * 1024;
+const REQUEST_BYTES_MAX: usize = 7 * 1024 + 512;
 
 const INSTRUCTIONS: &str = "Choose the next goal for a player in a survival game. \
 A local controller carries the goal out with ordinary player inputs and reports how it went. \

@@ -547,6 +547,11 @@ pub struct Memory {
     pub raid_held: bool,
     /// It knows a home to walk a patrol round (`agent::society`).
     pub patrol_home: bool,
+    /// Its crew's vending machine stands, and keeping it is worth a walk:
+    /// one to put down, wares to stock it with, or takings due a look
+    /// (`agent::shop`).
+    pub shop_stands: bool,
+    pub shop: bool,
     /// A blow, blast or shot at the base fresh enough to call it back
     /// (`defend::DEFEND_ALARM_TICKS`).
     pub alarm: bool,
@@ -858,9 +863,14 @@ pub struct Survivor {
     oven_job: DeviceJob,
     fire: Option<(u16, u16)>,
     recycler: Option<(u16, u16)>,
+    /// The crew's vending machine it put down, and when it last kept it
+    /// (`agent::shop`).
+    shop: Option<(u16, u16)>,
+    shop_kept: Option<u32>,
     pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
     recycle_failed: Option<u32>,
+    shop_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
     /// When a build goal last could not reach its work.
@@ -1039,9 +1049,12 @@ impl Survivor {
             oven_job: DeviceJob::new(Work::Cook),
             fire: None,
             recycler: None,
+            shop: None,
+            shop_kept: None,
             oven_stats: OvenStats::default(),
             cook_failed: None,
             recycle_failed: None,
+            shop_failed: None,
             home_failed: None,
             build_failed: None,
             defend_job: DefendJob::default(),
@@ -1987,10 +2000,10 @@ impl Survivor {
         self.read_job.reset();
         self.solve_job.reset();
         self.swipe_job.reset();
-        self.oven_job = DeviceJob::new(if goal == Goal::Recycle {
-            Work::Recycle
-        } else {
-            Work::Cook
+        self.oven_job = DeviceJob::new(match goal {
+            Goal::Recycle => Work::Recycle,
+            Goal::KeepShop => Work::Shop,
+            _ => Work::Cook,
         });
         if goal == Goal::Loot {
             self.loot.stats.runs += 1;
@@ -2095,6 +2108,7 @@ impl Survivor {
             | Goal::Loot
             | Goal::Cook
             | Goal::Recycle
+            | Goal::KeepShop
             | Goal::Raid
             | Goal::Follow
             | Goal::Meet
@@ -2231,12 +2245,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Stash => self.stash(core, body, tick),
-            Goal::Cook | Goal::Recycle if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
+            Goal::Cook | Goal::Recycle | Goal::KeepShop if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
                 self.oven_failed(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
             }
-            Goal::Cook | Goal::Recycle => self.tend(core, body, tick),
+            Goal::Cook | Goal::Recycle | Goal::KeepShop => self.tend(core, body, tick),
             Goal::Defend if elapsed >= DEFEND_GOAL_SECS * TICK_HZ => {
                 self.defend_failed = Some(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
@@ -2554,6 +2568,7 @@ impl Survivor {
             allies: soc.allies_len,
             allies_in_sight,
             intruders,
+            shop: self.memory.shop_stands,
         };
         // The walk to THE GATE: a founder while some of its crew is not on
         // its team and it is still founding (later a crewmate walks to
@@ -5040,9 +5055,40 @@ impl Survivor {
     fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
         let (own, within) = match work {
             Work::Cook => (self.fire, oven::KEEP_M),
+            Work::Shop => return self.shop_machine(core),
             _ => (self.recycler, oven::SEEN_NEAR_M),
         };
         oven::nearest(core, work, own.into_iter(), x, z, within)
+    }
+
+    /// Where the crew's vending machine goes, with home's middle known.
+    fn shop_spot(&self, core: &ClientCore) -> Option<[f32; 2]> {
+        self.patrol_centre()
+            .map(|home| crate::agent::shop::spot(core, home))
+    }
+
+    /// The crew's vending machine: the one it put down, else one standing
+    /// at the crew's spot (a crewmate's, or its own from before a
+    /// reconnect; its view says whether this body may keep it).
+    fn shop_machine(&self, core: &ClientCore) -> Option<(u16, u16)> {
+        let [sx, sz] = self.shop_spot(core)?;
+        if let Some(own) = self.shop.filter(|&d| oven::stands(core, Work::Shop, d)) {
+            return Some(own);
+        }
+        let cells = core
+            .deploys
+            .entries()
+            .iter()
+            .filter(|d| d.level == 0 && d.loc == LOC_PLANE)
+            .map(|d| (d.cx, d.cz));
+        oven::nearest(
+            core,
+            Work::Shop,
+            cells,
+            sx,
+            sz,
+            crate::agent::shop::SPOT_NEAR_M,
+        )
     }
 
     /// Is a walk home not worth another try yet?
@@ -5054,6 +5100,7 @@ impl Survivor {
     fn oven_failed(&mut self, tick: u32) {
         match self.oven_job.work() {
             Work::Cook => self.cook_failed = Some(tick),
+            Work::Shop => self.shop_failed = Some(tick),
             _ => self.recycle_failed = Some(tick),
         }
     }
@@ -5065,10 +5112,10 @@ impl Survivor {
     /// switched off and the panel shut.
     fn tend(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let work = self.oven_job.work();
-        self.stats.phase = if work == Work::Cook {
-            Phase::Cooking
-        } else {
-            Phase::Recycling
+        self.stats.phase = match work {
+            Work::Cook => Phase::Cooking,
+            Work::Shop => Phase::Trading,
+            _ => Phase::Recycling,
         };
         let Some(haven) = self.haven else {
             return Intent::IDLE;
@@ -5076,7 +5123,40 @@ impl Survivor {
         let (seed, _) = core.island();
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let go_to = self.device_near(core, work, x, z);
-        self.oven_job.keep(self.keep);
+        if work == Work::Shop {
+            // A founder puts the machine down and keeps its own stuff for
+            // the base; whoever stocks it sells what it carries.
+            let mut keep = Keep::NONE;
+            if self.society.is_some_and(|s| s.founder()) {
+                for name in crate::agent::shop::WARES {
+                    if let Some(item) = crate::agent::build::item_named(core, name) {
+                        keep.add(item, u32::MAX);
+                    }
+                }
+            }
+            self.oven_job.keep(keep);
+            // No machine yet: to the crew's spot to put it down there.
+            if go_to.is_none() && self.oven_job.placed().is_none() {
+                if let Some(spot) = self.shop_spot(core) {
+                    if (spot[0] - x).hypot(spot[1] - z) > 1.5 {
+                        return match self.route.to(core, body, spot, 1.0, false, tick) {
+                            step @ Step::Walk { yaw, .. } => {
+                                step.walk().unwrap_or(Intent::walk(yaw))
+                            }
+                            Step::Wait => Intent::walk(yaw_toward(spot[0] - x, spot[1] - z)),
+                            Step::Arrived => Intent::IDLE,
+                            Step::Blocked => {
+                                self.oven_failed(tick);
+                                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                                Intent::IDLE
+                            }
+                        };
+                    }
+                }
+            }
+        } else {
+            self.oven_job.keep(self.keep);
+        }
         let builder = &self.builder;
         let step = self.oven_job.step(
             core,
@@ -5094,6 +5174,7 @@ impl Survivor {
         if let Some(at) = self.oven_job.placed() {
             match work {
                 Work::Cook => self.fire = Some(at),
+                Work::Shop => self.shop = Some(at),
                 _ => self.recycler = Some(at),
             }
         }
@@ -5148,6 +5229,10 @@ impl Survivor {
                 self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf)),
                 intent,
             ),
+            Tend::Offer { key, act, intent } => (
+                self.queue(|buf| protocol::encode_action_shop(key, act, buf)),
+                intent,
+            ),
             Tend::Close(intent) => (
                 self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
                 intent,
@@ -5155,6 +5240,9 @@ impl Survivor {
             Tend::Done => {
                 // The shut panel may still wait on its pace.
                 if self.outbox.is_none() {
+                    if work == Work::Shop {
+                        self.shop_kept = Some(tick);
+                    }
                     self.end_goal(tick, Outcome::Done);
                 }
                 return Intent::IDLE;
@@ -5811,6 +5899,27 @@ impl Survivor {
                     && self
                         .recycle_failed
                         .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // The crew's shop (`agent::shop`): a machine carried and none
+            // standing is put down (a founder does no more); one standing
+            // is stocked when the pack has lots of a ware, and looked in on
+            // for its takings now and then.
+            let machine = self.society.and_then(|_| self.shop_machine(core));
+            self.memory.shop_stands = machine.is_some();
+            let carried_machine = oven::device_row(core, crate::agent::shop::SHOP_ITEM)
+                .is_some_and(|(_, item)| count_item(core, item) > 0);
+            let placing = machine.is_none() && carried_machine && self.shop_spot(core).is_some();
+            let founder = self.society.is_some_and(|s| s.founder());
+            let stocking = machine.is_some()
+                && !founder
+                && (crate::agent::shop::lots_carried(core) >= crate::agent::shop::STOCK_LOTS
+                    || self.shop_kept.is_none_or(|at| {
+                        tick.wrapping_sub(at) >= crate::agent::shop::VISIT_SECS * TICK_HZ
+                    }));
+            self.memory.shop = self.society.is_some()
+                && (placing || stocking)
+                && self
+                    .shop_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
             for spot in self.loot.live(core, tick) {
@@ -6418,6 +6527,7 @@ impl BotDriver for Survivor {
         self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
         self.recycler = None;
+        self.shop = None;
         if self.welcomed.is_none() {
             self.welcomed = Some(welcome.tick);
             self.set_deadline(self.deadline_after);
@@ -7201,6 +7311,9 @@ pub fn observe(
     }
     if memory.recycle && !senses.hostile {
         s.offer(Goal::Recycle);
+    }
+    if memory.shop && !senses.hostile {
+        s.offer(Goal::KeepShop);
     }
     // A visit home while there is something to see to there.
     if matches!(memory.home.state, HomeState::Built | HomeState::Inside)

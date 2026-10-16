@@ -88,13 +88,13 @@ pub enum Role {
 impl Role {
     pub const ALL: [Role; 4] = [Role::Founder, Role::Farmer, Role::Guard, Role::Runner];
     /// The jobs a crew hands out when none are named, after its founder:
-    /// two hands to the boxes for every guard, and a runner once the crew
-    /// is big enough to spare one.
+    /// a farmer, a guard and a runner (who keeps the shop) for a crew of
+    /// four, then more hands to the boxes than guards.
     const CYCLE: [Role; 6] = [
         Role::Farmer,
         Role::Guard,
-        Role::Farmer,
         Role::Runner,
+        Role::Farmer,
         Role::Guard,
         Role::Farmer,
     ];
