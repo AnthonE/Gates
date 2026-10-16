@@ -38,9 +38,16 @@ const PLATE_A: f32 = 0.92;
 #[derive(Component)]
 pub struct PopRoot;
 
-/// A piece of the popup, the colour it fades from and its opacity at full.
+/// A piece of the popup, the colour it fades from and its opacity at full:
+/// its text, its fill or its picture.
 #[derive(Component)]
 pub struct PopInk([f32; 3], f32);
+
+/// The plate's edge, which fades with it. Its own component, never a second
+/// `PopInk` on the plate: two of one component in a bundle panics at spawn
+/// (`CLAUDE.md` §traps), and nothing before the spawn says so.
+#[derive(Component)]
+pub struct PopEdge([f32; 3]);
 
 #[derive(Default)]
 pub struct PopState {
@@ -102,8 +109,8 @@ pub fn popup(
         &PopInk,
         Option<&mut TextColor>,
         Option<&mut BackgroundColor>,
-        Option<&mut BorderColor>,
         Option<&mut ImageNode>,
+        Option<(&PopEdge, &mut BorderColor)>,
     )>,
 ) {
     for a in feed.achievements() {
@@ -133,7 +140,7 @@ pub fn popup(
     for (_, mut node) in &mut roots {
         node.right = Val::Px(24.0 - SLIDE_PX * (1.0 - slide));
     }
-    for (ink, text, bg, border, image) in &mut inks {
+    for (ink, text, bg, image, edge) in &mut inks {
         let c = Color::srgba(ink.0[0], ink.0[1], ink.0[2], ink.1 * alpha);
         if let Some(mut t) = text {
             t.0 = c;
@@ -141,11 +148,11 @@ pub fn popup(
         if let Some(mut b) = bg {
             b.0 = c;
         }
-        if let Some(mut b) = border {
-            *b = BorderColor::all(c);
-        }
         if let Some(mut i) = image {
             i.color = c;
+        }
+        if let Some((edge, mut border)) = edge {
+            *border = BorderColor::all(Color::srgba(edge.0[0], edge.0[1], edge.0[2], alpha));
         }
     }
 }
@@ -170,7 +177,7 @@ fn spawn_popup(commands: &mut Commands, a: &protocol::Achieved, icons: Option<&I
             WorldEntity,
             PopRoot,
             PopInk(PLATE, PLATE_A),
-            PopInk(EDGE, 1.0),
+            PopEdge(EDGE),
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(24.0),
@@ -252,6 +259,33 @@ mod tests {
 
     fn text(s: &str) -> protocol::ChatText {
         protocol::ChatText::sanitize(s.as_bytes()).unwrap()
+    }
+
+    /// The popup spawns — a bundle with two of one component is a panic at
+    /// spawn that the compiler and clippy both pass — and every piece of it
+    /// fades.
+    #[test]
+    fn the_popup_spawns_whole() {
+        use bevy::ecs::world::CommandQueue;
+        for set in [false, true] {
+            let mut world = World::new();
+            let mut queue = CommandQueue::default();
+            let a = protocol::Achieved {
+                set,
+                name: text("Collect Wood"),
+                desc: Some(text("Collect 100 Wood")),
+                icon: Some(text("wood")),
+                done: 3,
+                total: 40,
+            };
+            spawn_popup(&mut Commands::new(&mut queue, &world), &a, None);
+            queue.apply(&mut world);
+            let roots = world.query::<&PopRoot>().iter(&world).count();
+            assert_eq!(roots, 1);
+            assert_eq!(world.query::<&PopEdge>().iter(&world).count(), 1);
+            let texts = world.query::<(&PopInk, &Text)>().iter(&world).count();
+            assert_eq!(texts, 3, "eyebrow, name, line under");
+        }
     }
 
     #[test]
