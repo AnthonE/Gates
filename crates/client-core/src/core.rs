@@ -1982,6 +1982,10 @@ pub struct ClientCore {
     /// °C (climate v0) — what the server's exposure step last read.
     pub heat_pct: u8,
     pub air_c: i8,
+    /// Whether any reading has landed (snow v0): until one has, `air_c`'s
+    /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
+    /// sends one, so its sky never snows.
+    pub air_read: bool,
     /// Until when you are hostile, the low 32 bits of the server tick
     /// (`EventMsg::Hostile`); 0 when you are not. See [`Self::hostile_left`].
     pub hostile_until: u32,
@@ -2360,6 +2364,7 @@ impl ClientCore {
             comfort_pct: 0,
             heat_pct: 0,
             air_c: 0,
+            air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
             wounded_fact: None,
@@ -3799,6 +3804,7 @@ impl ClientCore {
                 self.comfort_pct = comfort_pct;
                 self.heat_pct = heat_pct;
                 self.air_c = air_c;
+                self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
             EventMsg::Recovered { chance_pm, hp } => {

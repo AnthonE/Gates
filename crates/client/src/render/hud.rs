@@ -1156,6 +1156,17 @@ pub struct ExposureWorld {
     /// In a lit fire's warmth (`ClientCore::near_fire`, the sim's own
     /// `exposure::fire_reaches` on the client's mirrors).
     pub fire: bool,
+    /// How much of what falls is snow, `0..1` (snow v0).
+    pub snow: f32,
+}
+
+/// What is falling, as a chip names it.
+fn falling(w: ExposureWorld) -> &'static str {
+    if w.snow > 0.5 {
+        "SNOW"
+    } else {
+        "RAIN"
+    }
 }
 
 /// What the WET chip says (`NOW.md` §0wx item 3): how wet, and why — the
@@ -1166,7 +1177,7 @@ pub fn wet_line(wet_pct: u8, w: ExposureWorld) -> String {
     let why = if w.underwater {
         "IN THE WATER"
     } else if w.rain > 0.05 && !w.sheltered {
-        "RAIN"
+        falling(w)
     } else if w.fire {
         "DRYING BY A FIRE"
     } else if w.sheltered {
@@ -1191,7 +1202,7 @@ pub fn spill_line(n: u16, label: &str) -> String {
 pub fn cold_line(hurting: bool, wet_pct: u8, w: ExposureWorld) -> String {
     let open = !w.sheltered;
     let why = if w.rain > 0.05 && open {
-        "RAIN"
+        falling(w)
     } else if w.wind > 0.4 && open {
         "WIND"
     } else if wet_pct >= 30 {
@@ -1246,6 +1257,7 @@ pub fn exposure(
         sheltered: n.sheltered,
         underwater: n.underwater,
         fire: false,
+        snow: n.snow,
     });
     // Asked only while a chip could say it: the walk is over the lit set,
     // small, but it is a frame-rate reader.
@@ -4462,6 +4474,13 @@ mod tests {
         };
         assert_eq!(wet_line(40, roofed), "WET 40% · DRYING UNDER A ROOF");
         assert_eq!(cold_line(false, 0, open_rain), "COLD · RAIN");
+        // Where the air freezes it is snow that falls (snow v0).
+        let open_snow = ExposureWorld {
+            snow: 1.0,
+            ..open_rain
+        };
+        assert_eq!(wet_line(40, open_snow), "WET 40% · SNOW");
+        assert_eq!(cold_line(false, 0, open_snow), "COLD · SNOW");
         assert_eq!(
             cold_line(false, 50, roofed),
             "COLD · WET CLOTHES · ROOF HELPS"

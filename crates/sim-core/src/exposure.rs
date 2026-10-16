@@ -6,7 +6,8 @@
 //! - **Wet.** Rain soaks you unless something is overhead; standing in the
 //!   sea soaks you to the depth you stand in; out of it you dry slowly, and
 //!   fast beside a fire. The reference's `weather.wetness_rain` is the rate
-//!   and a roof is what stops it.
+//!   and a roof is what stops it. Where the air freezes the rain falls as
+//!   snow, which wets at a share of that (`wetness_snow`).
 //! - **Chill.** Where the body is heading is the night, the rain and the
 //!   wind that reach it, and how wet it is — made worse by a piece that
 //!   draws cold in, less what it wears (wet clothes keep half their warmth)
@@ -118,6 +119,10 @@ pub struct ExposureContent {
     /// Past this heat it costs hp, this many a minute at full heat.
     pub heat_hurt_at: u16,
     pub heat_hp_per_min: u16,
+    /// Snow (snow v0): per mille of the rain's wetting that snow does — the
+    /// reference's `wetness_snow` 0.2 against `wetness_rain` 0.4. The air
+    /// at the body decides what falls ([`snow_pm`]).
+    pub snow_wet_pm: u16,
     /// Per item index: the chill a worn piece keeps out. Negative draws it
     /// in — a road sign jacket is a sheet of metal — as a per-mille share
     /// of the cold the body is already in, never as cold of its own.
@@ -167,6 +172,7 @@ impl ExposureContent {
         heat_water_pct: 0,
         heat_hurt_at: 1000,
         heat_hp_per_min: 0,
+        snow_wet_pm: 1000,
         warmth: [0; MAX_ITEM_DEFS],
     };
 
@@ -263,6 +269,17 @@ pub fn feel_pm(ec: &ExposureContent, inp: &Inputs) -> i32 {
     }
     let span = ec.hot_above_dc as i32 - ec.cold_below_dc as i32;
     (ec.hot_above_dc as i32 - inp.air_dc as i32).clamp(0, span) * 1000 / span
+}
+
+/// How much of what falls on this body is snow, per mille (snow v0): the
+/// air's say alone (`climate::snow_pm`). It is the air the owner's readout
+/// carries, and the client draws its sky off that reading by the same line,
+/// so the body and the sky cannot disagree about what falls — whatever the
+/// cold or the heat make of the air. Content keeps the air real: an armed
+/// `[exposure]` needs a `[climate]` (`content::validate`).
+#[inline]
+pub fn snow_pm(inp: &Inputs) -> u16 {
+    crate::climate::snow_pm(inp.air_dc)
 }
 
 /// The chill a body is heading for, per mille — the whole rule in one
@@ -364,12 +381,15 @@ pub fn step(ec: &ExposureContent, inp: &Inputs, p: &mut Player, events: &mut Eve
     }
     let hp_before = p.hp;
 
-    // 1 · Wet. Rain on an uncovered body soaks it; otherwise it dries,
-    // faster by a fire. Standing in the sea holds it at least as wet as the
-    // water is deep.
+    // 1 · Wet. Rain on an uncovered body soaks it — snow at its share of
+    // the rate, sleet at a share of each; otherwise it dries, faster by a
+    // fire. Standing in the sea holds it at least as wet as the water is
+    // deep.
     if inp.rain > 0 && !inp.roofed {
-        let add = (inp.rain as u32 * ec.wet_rain_per_s as u32 / 1000) as u16;
-        p.wet = p.wet.saturating_add(add).min(1000);
+        let snow = snow_pm(inp) as u64;
+        let keep = 1000 - snow * (1000 - ec.snow_wet_pm.min(1000) as u64) / 1000;
+        let add = inp.rain as u64 * ec.wet_rain_per_s as u64 * keep / 1_000_000;
+        p.wet = p.wet.saturating_add(add.min(1000) as u16).min(1000);
     } else {
         let dry = if inp.fire {
             ec.dry_fire_per_s

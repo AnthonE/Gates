@@ -41,6 +41,12 @@
 //!     `AtmosphereNode` lives in a private `mod node;` in `bevy_pbr` and is
 //!     never re-exported, so there is no edge to add.
 //!
+//! **What the eye sees of it is drawn per pixel since 2026-10-15**
+//! (`deck.rs`): wherever the atmosphere draws, a fullscreen triangle at depth
+//! 0 in the opaque pass takes the `Skybox`'s place — the same compositing,
+//! by the same owner, so everything below still holds — and the cube is what
+//! the sea reflects. Under WebGL2 the `Skybox` stays, under a per-pixel deck.
+//!
 //! The cubemap is generated from the world seed. No asset, no shader, no
 //! download. **Since weather v0 it is composed, not baked once**: a tileable
 //! noise field is built at boot, and [`compose`] re-projects the deck from it
@@ -382,6 +388,21 @@ pub const FIELD_N: usize = if cfg!(target_arch = "wasm32") || cfg!(debug_asserti
 } else {
     1024
 };
+/// How soft the deck's edge is where its shadow falls, metres: the sun's
+/// own disk blurs a shadow cast from 1.4 km up by 13–40 m, and a cumulus
+/// edge is a few tens of metres more. The field's mip whose texel is
+/// nearest this ([`soft_level`]) is what the rig dims the sun by
+/// ([`SkyComposer::cover_at`]) and what the ground's cloud shadows read
+/// (`cloud_shadow.rs`), so the two agree at the eye.
+pub const SOFT_M: f32 = 60.0;
+
+/// The field's mip [`SOFT_M`] reads: 1 on a desktop release, whose texel
+/// is 28 m; 0 in a browser and a debug build, whose texel is 56 m.
+pub fn soft_level() -> u32 {
+    let texel = CLOUD_SCALE_M * FIELD_PERIOD as f32 / FIELD_N as f32;
+    (SOFT_M / texel).log2().round().max(0.0) as u32
+}
+
 /// Below this `d.y` (~2.6°) there is no deck: `1/d.y` explodes.
 pub const DECK_CUTOFF: f32 = 0.045;
 /// The last stretch above the cutoff the deck fades over.
@@ -409,8 +430,8 @@ pub const SIDE_VIEW_Y: f32 = 0.34;
 /// the sea to reflect, wholly inside the quad's so it never shows round it.
 pub const MOON_R: f32 = 0.03;
 /// The cube's disk, as cosines of its radius (~0.7°) and soft edge (~1.1°).
-const MOON_COS_IN: f32 = 0.999_93;
-const MOON_COS_OUT: f32 = 0.999_8;
+pub const MOON_COS_IN: f32 = 0.999_93;
+pub const MOON_COS_OUT: f32 = 0.999_8;
 /// The halo (~8.6°).
 pub const HALO_COS: f32 = 0.988_77;
 pub const MOON_RGB: [f32; 3] = [0.78, 0.8, 0.84];
@@ -421,8 +442,10 @@ pub const HALO_RGB: [f32; 3] = [0.02, 0.024, 0.032];
 const MOON_SCATTER: f32 = 0.06;
 /// How far round the moon that reaches, as a cosine (~20°).
 pub const MOON_SCATTER_COS: f32 = 0.94;
-/// How brightly the moon lights the deck's underside at deep night, as a
-/// share of the sun: dark shapes against the stars rather than nothing.
+/// How brightly a full moon lights the deck's underside at deep night, as a
+/// share of the sun: dark shapes against the stars rather than nothing. A
+/// thinner moon lights it less, down to the night's floor
+/// (`rig::night_light`).
 const NIGHT_CLOUD_LIGHT: f32 = 0.012;
 /// Moonlight's colour on the deck, over the sun's: a little cool.
 const MOONLIT: [f32; 3] = [0.8, 0.88, 1.0];
@@ -528,30 +551,15 @@ impl CloudField {
     /// spans hundreds of texels, and a sky drawn per pixel from level 0
     /// there shimmers as the deck drifts.
     pub fn image(&self) -> Image {
-        let mut level: Vec<u8> = self
-            .data
-            .iter()
-            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-            .collect();
+        let mut level = self.bytes();
         let mut data = level.clone();
         let mut n = self.n;
         let mut levels = 1;
         while n > 1 {
-            let h = n / 2;
-            let mut next = vec![0u8; h * h];
-            for j in 0..h {
-                for i in 0..h {
-                    let at = |x: usize, y: usize| level[(y % n) * n + x % n] as u32;
-                    let sum = at(2 * i, 2 * j)
-                        + at(2 * i + 1, 2 * j)
-                        + at(2 * i, 2 * j + 1)
-                        + at(2 * i + 1, 2 * j + 1);
-                    next[j * h + i] = ((sum + 2) / 4) as u8;
-                }
-            }
+            let next = halve(&level, n);
             data.extend_from_slice(&next);
             level = next;
-            n = h;
+            n /= 2;
             levels += 1;
         }
         // `Image::new` asserts one level's worth of data; the chain follows it.
@@ -576,6 +584,101 @@ impl CloudField {
             ..default()
         });
         image
+    }
+
+    /// Level 0 as [`Self::image`] stores it, eight bits a texel.
+    fn bytes(&self) -> Vec<u8> {
+        self.data
+            .iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+            .collect()
+    }
+
+    /// Mip `level` of [`Self::image`], texel for texel: what the rig and
+    /// the ground's cloud shadows read the deck over the sun from.
+    pub fn soft(&self, level: u32) -> SoftField {
+        let mut data = self.bytes();
+        let mut n = self.n;
+        for _ in 0..level {
+            if n == 1 {
+                break;
+            }
+            data = halve(&data, n);
+            n /= 2;
+        }
+        let lod = (self.n / n).trailing_zeros();
+        SoftField {
+            n,
+            offset: 0.5 - 0.5 / (1u32 << lod) as f32,
+            data: data.into_boxed_slice(),
+        }
+    }
+}
+
+/// One mip step of the field: each texel the rounded mean of the four
+/// under it.
+fn halve(level: &[u8], n: usize) -> Vec<u8> {
+    let h = n / 2;
+    let mut next = vec![0u8; h * h];
+    for j in 0..h {
+        for i in 0..h {
+            let at = |x: usize, y: usize| level[(y % n) * n + x % n] as u32;
+            let sum = at(2 * i, 2 * j)
+                + at(2 * i + 1, 2 * j)
+                + at(2 * i, 2 * j + 1)
+                + at(2 * i + 1, 2 * j + 1);
+            next[j * h + i] = ((sum + 2) / 4) as u8;
+        }
+    }
+    next
+}
+
+/// One mip of the deck's field ([`CloudField::soft`]), read the way the
+/// ground's cloud shadows read it on the GPU (`cloud_shadow.wgsl`'s
+/// `field_at`, from these very bytes): the same texels, the same centres,
+/// the same bilinear. So the rig's sun at the eye and the shader's
+/// reference for the eye are one number, and a far hill is lit by what
+/// reaches it, not by the gap between two readings of one cloud.
+pub struct SoftField {
+    n: usize,
+    /// Level-`L` texel `i`'s centre is level-0 texel `2^L·i + (2^L − 1)/2`:
+    /// `(1 − 2^−L)/2` of its own texel on.
+    offset: f32,
+    data: Box<[u8]>,
+}
+
+impl SoftField {
+    /// Texels per side.
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    /// How far a texel's centre sits from its noise coordinate, texels.
+    pub fn offset(&self) -> f32 {
+        self.offset
+    }
+
+    /// The texels, row by row.
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Bilinear at noise-unit coordinates, wrapping.
+    pub fn at(&self, q: Vec2) -> f32 {
+        let u = q * (self.n as f32 / FIELD_PERIOD as f32) - Vec2::splat(self.offset);
+        let i = u.floor();
+        let f = u - i;
+        let n = self.n as i64;
+        let texel = |di: i64, dj: i64| {
+            let x = (i.x as i64 + di).rem_euclid(n) as usize;
+            let y = (i.y as i64 + dj).rem_euclid(n) as usize;
+            self.data[y * self.n + x] as f32 / 255.0
+        };
+        let (a, b) = (texel(0, 0), texel(1, 0));
+        let (c, d) = (texel(0, 1), texel(1, 1));
+        let top = a + (b - a) * f.x;
+        let bot = c + (d - c) * f.x;
+        top + (bot - top) * f.y
     }
 }
 
@@ -662,7 +765,9 @@ pub struct ComposeParams {
     pub cover: f32,
     /// How heavy the cloud is: greyer bases, dimmer tops.
     pub dark: f32,
-    /// How far the deck has drifted downwind, noise units.
+    /// The field's offset, noise units: the deck is read at `plane +
+    /// drift`, so this is MINUS how far it has drifted downwind — a cloud
+    /// moves the way the rain slants (`rain::params_for`), not against it.
     pub drift: Vec2,
     /// Toward the sun, unit.
     pub sun: Vec3,
@@ -672,10 +777,16 @@ pub struct ComposeParams {
     pub night: f32,
     /// Toward the moon, unit.
     pub moon: Vec3,
-    /// The fog band at the horizon, `0..=1`.
-    pub fog: f32,
+    /// The weather's air over the sky ([`SkyFog`]).
+    pub fog: SkyFog,
     /// Compose a clear sky behind the cloud (a browser).
     pub backdrop: bool,
+    /// How much of the moon's disk is lit, `0..=1` (`moon::lit_fraction`).
+    pub moon_lit: f32,
+    /// What the moon gives the night, `0..=1` (`WeatherNow::moonlight`).
+    pub moonlight: f32,
+    /// Toward the sun the moon is lit by, unit (`moon::lighting_sun`).
+    pub moon_sun: Vec3,
 }
 
 impl ComposeParams {
@@ -690,8 +801,11 @@ impl ComposeParams {
             light: 1.0,
             night: 0.0,
             moon: Vec3::Y,
-            fog: 0.0,
+            fog: SkyFog::CLEAR,
             backdrop,
+            moon_lit: 1.0,
+            moonlight: 1.0,
+            moon_sun: super::rig::to_sun(CAPTURE_DAY_FRAC),
         }
     }
 
@@ -700,14 +814,114 @@ impl ComposeParams {
         Self {
             cover: deck_cover(w.cloud),
             dark: w.dark,
-            drift: w.drift / CLOUD_SCALE_M,
+            drift: -w.drift / CLOUD_SCALE_M,
             sun: w.sun,
             light: w.sun_lux,
             night: w.night,
             moon: w.moon,
-            fog: (w.fog_sigma() * 100.0).clamp(0.0, 1.0),
+            fog: SkyFog::new(w.fog_part(), w.rain_part()).with_dust(w.dust_part()),
             backdrop: BAKE_BACKDROP,
+            moon_lit: super::moon::lit_fraction(w.moon_phase),
+            moonlight: w.moonlight,
+            moon_sun: w.moon_sun,
         }
+    }
+}
+
+/// How deep the ground fog lies, metres: a valley fog, so overhead the sky
+/// still shows through it faintly while the horizon is gone.
+pub const FOG_LAYER_M: f32 = 60.0;
+/// How deep the rain's haze reads, metres: the rain falls from the cloud
+/// base, but past this the deck above it still shows its shapes.
+pub const RAIN_LAYER_M: f32 = 150.0;
+/// How deep the dust lies, metres: a wind lifts sand a few hundred metres,
+/// so a dusty sky is pale overhead and gone at the horizon.
+pub const DUST_LAYER_M: f32 = 300.0;
+
+/// The weather's fog over the sky, as optical depths: straight up through
+/// each layer, and level across the farthest land the eye can see
+/// (`rig::FAR_M`). A sky ray `y` above the horizon crosses `up / y` of a
+/// layer, never more than the level reach — so the sky at the horizon is
+/// fogged exactly as much as the island's far edge below it, and the seam
+/// the old hand-set band left there is closed by construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkyFog {
+    /// `σ × depth` of the ground fog and of the rain haze.
+    pub up_fog: f32,
+    pub up_rain: f32,
+    /// `σ × rig::FAR_M` of each.
+    pub far_fog: f32,
+    pub far_rain: f32,
+    /// The dust haze's (`WeatherNow::dust_part`), through [`DUST_LAYER_M`]
+    /// and across the island.
+    pub up_dust: f32,
+    pub far_dust: f32,
+}
+
+impl SkyFog {
+    pub const CLEAR: Self = Self {
+        up_fog: 0.0,
+        up_rain: 0.0,
+        far_fog: 0.0,
+        far_rain: 0.0,
+        up_dust: 0.0,
+        far_dust: 0.0,
+    };
+
+    /// The sky's fog for extinctions per metre `fog` and `rain`
+    /// (`WeatherNow::fog_part`, `rain_part`).
+    pub fn new(fog: f32, rain: f32) -> Self {
+        let far = super::rig::FAR_M;
+        Self {
+            up_fog: fog * FOG_LAYER_M,
+            up_rain: rain * RAIN_LAYER_M,
+            far_fog: fog * far,
+            far_rain: rain * far,
+            up_dust: 0.0,
+            far_dust: 0.0,
+        }
+    }
+
+    /// This fog with a dust haze of extinction `dust` per metre in it.
+    pub fn with_dust(self, dust: f32) -> Self {
+        Self {
+            up_dust: dust * DUST_LAYER_M,
+            far_dust: dust * super::rig::FAR_M,
+            ..self
+        }
+    }
+
+    /// The fog and the rain as the shaders take them.
+    pub fn lanes(&self) -> Vec4 {
+        Vec4::new(self.up_fog, self.up_rain, self.far_fog, self.far_rain)
+    }
+
+    /// The dust as the shaders take it: x straight up, y across the island.
+    pub fn dust_lanes(&self) -> Vec4 {
+        Vec4::new(self.up_dust, self.far_dust, 0.0, 0.0)
+    }
+
+    /// How much of a sky ray `y` above the horizon the fog takes, `0..=1`.
+    /// `deck.wgsl`'s `deck_haze` is this, line for line.
+    pub fn band(&self, y: f32) -> f32 {
+        let s = (y + 0.02).max(1e-3);
+        let tau = (self.up_fog / s).min(self.far_fog)
+            + (self.up_rain / s).min(self.far_rain)
+            + (self.up_dust / s).min(self.far_dust);
+        1.0 - (-tau).exp()
+    }
+
+    /// The whole extinction per metre — what the ground's fog is greyed and
+    /// tinted by ([`fog_rgb_dust`], `rig::day_night`'s [`fog_color_dust`]),
+    /// so the sky's band is the same colour.
+    pub fn sigma(&self) -> f32 {
+        (self.far_fog + self.far_rain + self.far_dust) / super::rig::FAR_M
+    }
+
+    /// The dust's part of [`Self::sigma`], per metre — what the ground's
+    /// fog is tinted by ([`fog_rgb_dust`]).
+    pub fn dust(&self) -> f32 {
+        self.far_dust / super::rig::FAR_M
     }
 }
 
@@ -773,6 +987,31 @@ fn airmass(y: f32) -> f32 {
     let y = y.clamp(0.0, 1.0);
     let deg = y.asin().to_degrees();
     1.0 / (y + 0.505_72 * (deg + 6.079_95).powf(-1.636_4))
+}
+
+/// What reaches the ground of a sun `y` above the horizon through the
+/// island's air, per channel: the transmittance `render_sky`'s LUT hands
+/// every sunlit surface and Bevy's volumetric fog (`shafts.rs`), on the same
+/// air mass [`deck_hue_for`] undoes.
+pub fn sun_transmittance(y: f32) -> [f32; 3] {
+    let tau = column_depth();
+    let m = airmass(y);
+    core::array::from_fn(|c| (-tau[c] * m).exp())
+}
+
+/// [`zenith_depth`] of the island's air, worked out once: what the per-pixel
+/// deck (`cloud.wgsl`) undoes the atmosphere's hue with, as [`deck_hue`]'s
+/// table does here.
+pub fn column_depth() -> [f32; 3] {
+    static TAU: std::sync::OnceLock<[f32; 3]> = std::sync::OnceLock::new();
+    *TAU.get_or_init(|| zenith_depth(&super::rig::island_medium()))
+}
+
+/// What one deck unit is drawn at, cd/m²: [`CLOUD_NITS`], and four times
+/// that at a lightning flash's peak. The rig's `Skybox` brightness is this
+/// times [`DECK_GAIN`]; the per-pixel decks draw at this.
+pub fn deck_nits(flash: f32) -> f32 {
+    CLOUD_NITS * (1.0 + 3.0 * flash)
 }
 
 /// The medium's optical depth from the ground straight up, per channel —
@@ -843,7 +1082,9 @@ impl DeckLight {
             0.0
         };
         let warm = [1.0, 1.0 - 0.35 * dusk, 1.0 - 0.6 * dusk];
-        let cloud_light = p.light.max(NIGHT_CLOUD_LIGHT * p.night);
+        let cloud_light = p
+            .light
+            .max(NIGHT_CLOUD_LIGHT * p.night * super::rig::night_light(p.moonlight));
         // The moon takes over from the sun as the night deepens.
         let tint: [f32; 3] = core::array::from_fn(|c| warm[c] + (MOONLIT[c] - warm[c]) * p.night);
         Self {
@@ -857,10 +1098,10 @@ impl DeckLight {
                 CLOUD_BASE[c] * (1.0 - 0.7 * p.dark) * tint[c] * cloud_light
             }),
             scatter: core::array::from_fn(|c| {
-                MOON_SCATTER * MOONLIT[c] * p.night * (1.0 - 0.7 * p.dark)
+                MOON_SCATTER * MOONLIT[c] * p.night * p.moonlight * (1.0 - 0.7 * p.dark)
             }),
             gain: if p.backdrop { 1.0 } else { 1.0 / DECK_GAIN },
-            fog_rgb: fog_rgb(p.light, p.dark, 1.0),
+            fog_rgb: fog_rgb_dust(p.light, p.dark, p.fog.sigma(), p.fog.dust()),
             thresh: 1.0 - p.cover,
         }
     }
@@ -914,8 +1155,11 @@ pub fn compose_range(
             if cm > HALO_COS {
                 let h = (cm - HALO_COS) / (1.0 - HALO_COS);
                 let disk = ((cm - MOON_COS_OUT) / (MOON_COS_IN - MOON_COS_OUT)).clamp(0.0, 1.0);
+                // The sea reflects a crescent as a dimmer blob, not as a
+                // crescent: a reflection through waves wants nothing sharper.
+                // Its light while it is up, so a set moon leaves none.
                 for c in 0..3 {
-                    sky[c] += (MOON_RGB[c] * disk + HALO_RGB[c] * h * h) * p.night;
+                    sky[c] += (MOON_RGB[c] * disk + HALO_RGB[c] * h * h) * p.moonlight * p.night;
                 }
             }
         }
@@ -964,10 +1208,11 @@ pub fn compose_range(
         let mut rgb: [f32; 3] =
             core::array::from_fn(|c| (cloud[c] * cov + sky[c] * (1.0 - cov)) * gain);
 
-        // Fog lies between the eye and everything: a band at the horizon
-        // the colour the ground's fog fades to, so the seam is one colour.
-        if p.fog > 0.0 {
-            let band = p.fog * (1.0 - (d.y + 0.02) / 0.25).clamp(0.0, 1.0);
+        // Fog lies between the eye and everything: as much of the sky as
+        // the weather's air takes along this ray, the colour the ground's
+        // fog fades to, so the seam is one colour.
+        let band = p.fog.band(d.y);
+        if band > 0.0 {
             for c in 0..3 {
                 rgb[c] += (fog_rgb[c] * gain - rgb[c]) * band;
             }
@@ -1011,11 +1256,75 @@ pub fn fog_rgb(light: f32, dark: f32, grey: f32) -> [f32; 3] {
     core::array::from_fn(|c| (h[c] + (lum - h[c]) * grey) * dim + NIGHT_FOG[c] * (1.0 - light))
 }
 
-/// [`fog_rgb`] for a fog of extinction `sigma`: thin weather keeps the
-/// sky's blue, thick fog is neutral.
+/// How grey a fog of extinction `sigma` is, `0..=1`: thin weather keeps
+/// the sky's blue, thick fog is neutral.
+pub fn fog_grey(sigma: f32) -> f32 {
+    (sigma * 400.0).clamp(0.0, 1.0)
+}
+
+/// [`fog_rgb`] for a fog of extinction `sigma`.
 pub fn fog_color(light: f32, dark: f32, sigma: f32) -> Color {
-    let c = fog_rgb(light, dark, (sigma * 400.0).clamp(0.0, 1.0));
+    let c = fog_rgb(light, dark, fog_grey(sigma));
     Color::linear_rgb(c[0], c[1], c[2])
+}
+
+/// The colour sand in the air scatters, linear, at luminance 1: a pale
+/// ochre, the reference's beige. Dust takes blue out of what it sends on
+/// and leaves the brightness, so the haze tints the fog it is part of and
+/// does not light it.
+pub const DUST_RGB: [f32; 3] = [1.28, 0.957, 0.6];
+
+/// [`fog_rgb`] for a fog of extinction `sigma` per metre of which `dust`
+/// is sand (`WeatherNow::dust_part`): pulled toward [`DUST_RGB`] at its own
+/// luminance by dust's share of the air. The share is of everything that
+/// fogs the frame — under WebGL2 that includes the island's own air, which
+/// is the haze's floor there ([`fog_falloff`]), so the first grain of sand
+/// tints a grain's worth and not the whole sky.
+pub fn fog_rgb_dust(light: f32, dark: f32, sigma: f32, dust: f32) -> [f32; 3] {
+    let rgb = fog_rgb(light, dark, fog_grey(sigma));
+    if dust <= 0.0 {
+        return rgb;
+    }
+    let floor = if BAKE_BACKDROP {
+        static AIR: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        *AIR.get_or_init(|| {
+            super::fill::luminance(ground_air(&super::rig::island_medium()).0.to_array())
+        })
+    } else {
+        0.0
+    };
+    let share = (dust / (sigma + floor).max(f32::EPSILON)).min(1.0);
+    let lum = super::fill::luminance(rgb);
+    core::array::from_fn(|c| rgb[c] + (DUST_RGB[c] * lum - rgb[c]) * share)
+}
+
+/// [`fog_rgb_dust`] as the `DistanceFog` takes it — what `rig::day_night`
+/// colours the ground's fog with, so the sky's band (`deck.rs`) meets it.
+pub fn fog_color_dust(light: f32, dark: f32, sigma: f32, dust: f32) -> Color {
+    let c = fog_rgb_dust(light, dark, sigma, dust);
+    Color::linear_rgb(c[0], c[1], c[2])
+}
+
+/// How much of the sun a fog throws forward toward the eye, as Bevy's
+/// `DistanceFog::directional_light_color` alpha: droplets scatter mostly
+/// forward, so a fog bank with the sun behind it glows. Bevy weighs it by
+/// each directional light's own illuminance and its shadow at the fogged
+/// point, so it is nothing at night, a sheet toward a lightning bolt, and
+/// dark where the trees shade the fog.
+pub const FOG_SUN_GLOW: f32 = 0.05;
+/// How tight the glow is round the sun (`directional_light_exponent`).
+pub const FOG_SUN_EXPONENT: f32 = 10.0;
+
+/// The warm white of sunlight through droplets — wherever the weather's fog
+/// is its own `DistanceFog`. Not under WebGL2, where that component is the
+/// island's clear air all day (`browser_haze`) and a glow would brighten
+/// every hill toward the sun in fine weather.
+pub fn fog_glow() -> Color {
+    if BAKE_BACKDROP {
+        Color::NONE
+    } else {
+        Color::linear_rgba(1.0, 0.95, 0.85, FOG_SUN_GLOW)
+    }
 }
 
 /// The weather fog's falloff at extinction `sigma` per metre. On the
@@ -1068,7 +1377,8 @@ pub fn weather_fog(light: f32, dark: f32, sigma: f32) -> DistanceFog {
     DistanceFog {
         color: fog_color(light, dark, sigma),
         falloff: fog_falloff(sigma),
-        ..default()
+        directional_light_color: fog_glow(),
+        directional_light_exponent: FOG_SUN_EXPONENT,
     }
 }
 
@@ -1132,6 +1442,8 @@ pub struct SkyComposer {
     field_image: Handle<Image>,
     next_at: f32,
     composing: bool,
+    /// The field at [`soft_level`]: the deck over the sun's disk.
+    soft: SoftField,
 }
 
 impl SkyComposer {
@@ -1140,8 +1452,13 @@ impl SkyComposer {
         &self.field
     }
 
+    /// The cube the composer keeps current — what the sea reflects.
+    pub fn cube(&self) -> &Handle<Image> {
+        &self.handle
+    }
+
     /// The same noise on the GPU ([`CloudField::image`]), one upload shared
-    /// by the stars, the moon and a browser's per-pixel sky.
+    /// by the stars, the moon and the per-pixel decks.
     pub fn field_image(&self) -> &Handle<Image> {
         &self.field_image
     }
@@ -1152,16 +1469,24 @@ impl SkyComposer {
         self.shown.as_ref()
     }
 
+    /// The field at [`soft_level`] — the deck over the sun, as the rig and
+    /// the ground's cloud shadows read it.
+    pub fn soft_field(&self) -> &SoftField {
+        &self.soft
+    }
+
     /// How much deck stands in front of direction `dir` right now, `0..=1`
-    /// — the sun's disk, for the rig.
+    /// — the sun's disk, for the rig. `drift_m` is how far the deck has
+    /// drifted downwind (`WeatherNow::drift`). Read off [`SoftField`], as
+    /// the ground's cloud shadows read the eye's (`cloud_shadow.wgsl`).
     pub fn cover_at(&self, dir: Vec3, cover: f32, drift_m: Vec2) -> f32 {
         if dir.y <= DECK_CUTOFF {
             return 0.0;
         }
         let t = CLOUD_ALT_M / dir.y;
-        let q = (Vec2::new(dir.x * t, dir.z * t) + drift_m) / CLOUD_SCALE_M;
+        let q = (Vec2::new(dir.x * t, dir.z * t) - drift_m) / CLOUD_SCALE_M;
         let fade = ((dir.y - DECK_CUTOFF) / HORIZON_FADE).clamp(0.0, 1.0);
-        let f = self.field.sample(q.x, q.y);
+        let f = self.soft.at(q);
         ((f - (1.0 - cover)) / EDGE).clamp(0.0, 1.0) * fade
     }
 }
@@ -1186,11 +1511,16 @@ pub fn setup(
     compose_range(&field, &geo, &params, 0..geo.len(), &mut scratch);
     let handle = images.add(cube_image(scratch.clone()));
     let field_image = images.add(field.image());
-    commands.entity(cam).insert(Skybox {
-        image: handle.clone(),
-        brightness: CLOUD_NITS * DECK_GAIN,
-        ..default()
-    });
+    // Only where the deck is not drawn at depth 0 itself (`deck.rs`): the
+    // `Skybox` draws after every opaque item and would paint over it.
+    if BAKE_BACKDROP {
+        commands.entity(cam).insert(Skybox {
+            image: handle.clone(),
+            brightness: CLOUD_NITS * DECK_GAIN,
+            ..default()
+        });
+    }
+    let soft = field.soft(soft_level());
     commands.insert_resource(SkyComposer {
         field,
         geo,
@@ -1202,6 +1532,7 @@ pub fn setup(
         field_image,
         next_at: 0.0,
         composing: false,
+        soft,
     });
 }
 

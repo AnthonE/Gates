@@ -255,6 +255,7 @@ pub enum Knob {
     Taa,
     Bloom,
     TreeLod,
+    Clouds,
     RenderScale,
     DiscordPresence,
     DiscordShareServer,
@@ -336,6 +337,15 @@ impl Settings {
                     .unwrap_or(0) as i32;
                 let want = (at + delta.signum()).clamp(0, Ao::LADDER.len() as i32 - 1);
                 self.gfx.ao = Ao::LADDER[want as usize];
+            }
+            Knob::Clouds => {
+                use crate::config::Clouds;
+                let at = Clouds::LADDER
+                    .iter()
+                    .position(|c| *c == self.gfx.clouds)
+                    .unwrap_or(0) as i32;
+                let want = (at + delta.signum()).clamp(0, Clouds::LADDER.len() as i32 - 1);
+                self.gfx.clouds = Clouds::LADDER[want as usize];
             }
             Knob::Smaa => self.gfx.smaa = !self.gfx.smaa,
             Knob::Taa => self.gfx.taa = !self.gfx.taa,
@@ -427,6 +437,7 @@ impl Settings {
                 | Knob::Taa
                 | Knob::Bloom
                 | Knob::TreeLod
+                | Knob::Clouds
                 | Knob::RenderScale => {
                     self.quality = d.quality;
                     self.gfx = d.gfx;
@@ -481,6 +492,7 @@ impl Settings {
             Knob::Bloom => on_off(self.gfx.bloom),
             Knob::RenderScale => format!("{}%", self.gfx.render_scale),
             Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
+            Knob::Clouds => self.gfx.clouds.name().to_uppercase(),
             Knob::Vsync => on_off(self.vsync),
             Knob::Occlusion => on_off(self.occlusion),
             Knob::MaxFps => {
@@ -544,6 +556,7 @@ impl Settings {
                 shadow_map_px: Some(self.gfx.shadow_map_px as u16),
                 tree_lod_m: Some(self.gfx.tree_lod_swap_m),
                 render_scale: Some(self.gfx.render_scale),
+                clouds: Some(self.gfx.clouds),
             },
         }
     }
@@ -653,6 +666,7 @@ fn gfx_from_file(preset: Quality, f: config::GfxFile) -> quality::Gfx {
             &quality::TREE_LOD_LADDER,
             f.tree_lod_m.unwrap_or(base.tree_lod_swap_m),
         ),
+        clouds: f.clouds.unwrap_or(base.clouds),
     }
 }
 
@@ -968,6 +982,9 @@ fn target_note(s: &Settings) -> String {
             got.tree_lod_swap_m
         ));
     }
+    if got.clouds != want.clouds {
+        notes.push("flat clouds - no atmosphere to march them in".to_string());
+    }
     if notes.is_empty() {
         "everything above is what the renderer gets".to_string()
     } else {
@@ -1061,6 +1078,11 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Toggle("TEMPORAL AA (REPLACES SMAA)", Knob::Taa),
             Row::Toggle("BLOOM", Knob::Bloom),
             Row::Number("FAR TREES", Knob::TreeLod, "metres to the hull"),
+            Row::Number(
+                "CLOUDS",
+                Knob::Clouds,
+                "flat or volumetric; HIGH adds sun shafts",
+            ),
             Row::Number(
                 "RENDER SCALE",
                 Knob::RenderScale,
@@ -2257,6 +2279,7 @@ mod tests {
             shadow_map_px: Some(3000),
             tree_lod_m: Some(1.0),
             render_scale: Some(0),
+            clouds: Some(crate::config::Clouds::High),
         };
         let g = gfx_from_file(Quality::High, wild);
         assert_eq!(

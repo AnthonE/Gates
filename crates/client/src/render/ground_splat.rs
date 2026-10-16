@@ -134,6 +134,8 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::render::storage::ShaderStorageBuffer;
 use bevy::shader::ShaderRef;
 
 use super::terrain_mesh::{
@@ -163,6 +165,17 @@ pub const ATTRIBUTE_ARID: MeshVertexAttribute =
 /// grey-beige (`terrain_mesh::GROUND_ALBEDO[0]`). sRGB about (170, 137, 95),
 /// the colour of the reference game's arid biome. **(knob)**
 pub const DESERT_SAND_ALBEDO: [f32; 3] = [0.40, 0.25, 0.115];
+
+/// Lying snow, linear (snow v0): sRGB about 205 grey, under fresh snow's
+/// ~0.8 so a sunlit drift keeps its relief rather than clipping white.
+/// **(knob)**
+pub const SNOW_ALBEDO: f32 = 0.6;
+/// How far under the lowest place it was seen falling the snow fades in, m:
+/// a degree of air at the lapse `[climate]` ships.
+pub const SNOW_FADE_M: f32 = 10.0;
+/// How far past the band of aridity it was seen falling on the snow fades
+/// out (`WeatherNow::snow_arid`), in aridity.
+pub const SNOW_ARID_FADE: f32 = 0.1;
 
 /// The grass at the desert's border, linear: straw, sRGB about (120, 110, 58).
 /// **(knob)**
@@ -432,6 +445,13 @@ pub struct GroundSplatParams {
     pub desert: Vec4,
     /// xyz = [`DRY_GRASS_ALBEDO`]. w reserved and zero.
     pub dry_grass: Vec4,
+    /// Snow (snow v0): x how white the weather has laid the ground and y the
+    /// height it lies from, both live (`terrain_mesh::Ring::set_snow`);
+    /// z = [`SNOW_ALBEDO`], w = [`SNOW_FADE_M`].
+    pub snow: Vec4,
+    /// x..y the band of aridity it lies on (`WeatherNow::snow_arid`), live;
+    /// z = [`SNOW_ARID_FADE`]; w reserved and zero.
+    pub snow_band: Vec4,
 }
 
 impl GroundSplatParams {
@@ -528,6 +548,10 @@ impl GroundSplatParams {
                 DRY_GRASS_ALBEDO[2],
                 0.0,
             ),
+            snow: Vec4::new(0.0, super::weather::NO_SNOW_FLOOR, SNOW_ALBEDO, SNOW_FADE_M),
+            snow_band: super::weather::NO_SNOW_ARID
+                .extend(SNOW_ARID_FADE)
+                .extend(0.0),
         }
     }
 }
@@ -735,6 +759,20 @@ pub struct GroundSplat {
     /// sample BLACK and put the whole island in shadow.
     #[texture(103, dimension = "2d_array")]
     pub data: Handle<Image>,
+    /// The cloud deck's coverage field (`sky::SoftField`, bytes packed four
+    /// to a word), for its shadows on the land (`cloud_shadow.rs`), and
+    /// their lanes. **A storage buffer, not a texture**: the arrays above
+    /// already fill the sixteen sampled textures a downlevel adapter allows
+    /// under the atmosphere (`the_ground_fits_the_fragment_texture_budget`),
+    /// and a buffer counts against none of them. **Native only**, where the
+    /// shadows are drawn. `cloud_shadow::NO_FIELD` until
+    /// `cloud_shadow::drive` writes the deck's.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[storage(104, read_only, visibility(fragment))]
+    pub cloud_field: Handle<ShaderStorageBuffer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    #[uniform(105)]
+    pub cloud: super::cloud_shadow::CloudShadowParams,
 }
 
 impl GroundSplat {
@@ -744,6 +782,10 @@ impl GroundSplat {
             params: GroundSplatParams::new(),
             albedo: arrays.albedo.clone(),
             data: arrays.data.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud_field: super::cloud_shadow::NO_FIELD,
+            #[cfg(not(target_arch = "wasm32"))]
+            cloud: super::cloud_shadow::CloudShadowParams::off(),
         }
     }
 }
@@ -770,6 +812,12 @@ impl MaterialExtension for GroundSplat {
         descriptor.vertex.buffers[0]
             .attributes
             .extend(road.attributes);
+        // The deck's shadows, where the bind group carries the field
+        // (`cloud_field`): the fragment imports `cloud_shadow.wgsl` on this.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("CLOUD_SHADOWS".into());
+        }
         Ok(())
     }
 

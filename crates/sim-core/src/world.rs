@@ -1085,6 +1085,30 @@ pub fn is_night(tick: u64) -> bool {
     day_frac(tick) >= crate::limits::DAY_PORTION
 }
 
+/// How far through its month (`limits::MOON_DAYS`) the moon is at
+/// `day_tick` (the day clock, `weather::day_tick`), `0.0..1.0`: 0 is new,
+/// ½ full. One modulo and one division, like [`day_frac`], so a campfire
+/// sees one moon without a byte on the wire.
+///
+/// It runs on with the clock rather than stepping once a day: a step at
+/// dawn would jump the night's light while the sun is still under the
+/// horizon, and a night only moves it a sixty-fourth of the month.
+///
+/// Day 0's midnight is the full moon. Every night was drawn under a full
+/// disk before the moon had phases, so a fresh world's first night, and
+/// every capture pinned to day 0, keep the moon the night was tuned under.
+pub fn moon_phase(day_tick: u64) -> f32 {
+    use crate::limits::{DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS, MOON_DAYS};
+    const MONTH: u64 = DAY_TICKS * MOON_DAYS;
+    // Dawn to midnight, halfway through the night.
+    const MIDNIGHT: u64 = (DAY_TICKS as f32 * (1.0 + DAY_PORTION) * 0.5) as u64;
+    let t = day_tick
+        .wrapping_add(DAY_PHASE_TICKS)
+        .wrapping_add(MONTH + MONTH / 2 - MIDNIGHT)
+        % MONTH;
+    t as f32 / MONTH as f32
+}
+
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
 /// 8-bit fields below it, so bit 24 is the first free one.
@@ -1357,7 +1381,8 @@ pub struct Player {
     /// deci-degrees (climate v0). **Derived, not state**: the exposure step
     /// writes both each second from the air before it reads them, so like
     /// `hostile` they are neither hashed nor saved; a restart only blanks
-    /// the HUD's reading for that second.
+    /// the HUD's reading for that second. A body's doors read the air
+    /// up front (`seed_air`), since the client draws snow off it.
     pub heat: u16,
     pub air_dc: i16,
     /// The skins this player owns (`skin.rs`), as the server last heard it
@@ -4344,6 +4369,7 @@ impl World {
         // grant depend on what you were carrying, which is the item
         // printer this comment is about.
         inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
+        self.seed_air(slot);
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
@@ -4556,6 +4582,7 @@ impl World {
         // changes, so without this a player has no vitals until the first
         // thing that hurts them — which is the one moment a bar is no use.
         // The meters are announced at the door for the same reason.
+        self.seed_air(slot);
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -4670,6 +4697,8 @@ impl World {
             self.tick,
             &mut self.players[slot],
         );
+        // A sleeper's air is as old as its sleep: read it afresh.
+        self.seed_air(slot);
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -6045,6 +6074,29 @@ impl World {
             return true;
         }
         false
+    }
+
+    /// Read the air at slot `i`'s feet into its `air_dc` now (snow v0), the
+    /// reading its first exposure step would take. Called at each door a
+    /// body comes through: that step is up to a second away on its stagger,
+    /// and until it runs the owner's readout would carry the default's 0 °C,
+    /// which the client draws as snow.
+    fn seed_air(&mut self, i: usize) {
+        let wx = crate::weather::now(self.seed, self.tick, &self.env);
+        let day_tick = crate::weather::day_tick(self.tick, &self.env);
+        let b = self.players[i].body;
+        let x = b.qx as f32 * crate::movement::POS_XZ_Q;
+        let z = b.qz as f32 * crate::movement::POS_XZ_Q;
+        let feet = b.qy as f32 * crate::movement::POS_Y_Q;
+        self.players[i].air_dc = crate::climate::air_dc(
+            &self.survival.exposure.air,
+            self.seed,
+            x,
+            z,
+            feet - crate::terrain::SEA_LEVEL,
+            day_tick,
+            &wx,
+        );
     }
 
     /// What the world is doing to slot `i`'s body this second: the weather,

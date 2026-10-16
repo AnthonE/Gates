@@ -1,7 +1,11 @@
 // Foliage, main pass (`render/foliage.rs`): `StandardMaterial` with a vertex
 // stage that moves the plant (wind, trails, distance fade) and a fragment
-// stage that is `bevy_pbr`'s own plus one cut — cards seen edge-on fade out.
+// stage that is `bevy_pbr`'s own plus one cut — cards seen edge-on fade out —
+// and the base colour read through `alpha_cut`, as the prepass reads it.
 // The prepass twin is `foliage_prepass.wgsl`; both call `foliage_common`.
+// The fragment is a hand copy of Bevy 0.18.1's `pbr.wgsl` without
+// `apply_decals` and the OIT, forward-decal, deferred and meshlet branches,
+// as is `tree_card.wgsl`'s: adopting one, or a Bevy upgrade, re-checks both.
 #import bevy_pbr::{
     mesh_functions,
     forward_io::{Vertex, VertexOutput, FragmentOutput},
@@ -9,12 +13,14 @@
     view_transformations::position_world_to_clip,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
+    pbr_types::{STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
+    pbr_bindings,
 }
 #ifdef VISIBILITY_RANGE_DITHER
 #import bevy_pbr::pbr_functions::visibility_range_dither
 #endif
 #import "shaders/foliage_common.wgsl"::{displace, grazing_keep, local_height, origin_rand}
+#import "shaders/alpha_cut.wgsl"::{cut_read, cut_uv}
 
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
@@ -70,12 +76,18 @@ fn vertex(in: Vertex) -> VertexOutput {
 @fragment
 fn fragment(vertex_output: VertexOutput) -> FragmentOutput {
     var in = vertex_output;
-    // First, while every invocation is still live: it takes derivatives.
+    // First, while every invocation is still live: both take derivatives.
     let keep = grazing_keep(in.world_position.xyz);
-
-#ifdef VISIBILITY_RANGE_DITHER
-    visibility_range_dither(in.position, in.visibility_range_dither);
+#ifdef VERTEX_UVS
+#ifdef STANDARD_MATERIAL_BASE_COLOR_UV_B
+    let uv = cut_uv(in.uv_b);
+#else
+    let uv = cut_uv(in.uv);
 #endif
+#else
+    let uv = vec2<f32>(0.0);
+#endif
+    let duv = vec4(dpdx(uv), dpdy(uv));
 
     // Every face lit as the front: no foliage normal is a facet's. A card's
     // is pulled toward its plant's volume (`plants::LEAF_VOLUME`, the
@@ -85,6 +97,25 @@ fn fragment(vertex_output: VertexOutput) -> FragmentOutput {
     // mesh with tangents, which every soup has; that is its accident, and
     // this is the rule. The wood is single-sided and never sees a back face.
     var pbr_input = pbr_input_from_standard_material(in, true);
+    // The base colour again, read the way the prepass cuts by (`alpha_cut`):
+    // Bevy's read above and the prepass's own did not always agree on the
+    // mip, and a blade one kept and the other cut was a hole in the fog.
+#ifdef VERTEX_UVS
+    if (pbr_input.material.flags & STANDARD_MATERIAL_FLAGS_BASE_COLOR_TEXTURE_BIT) != 0u {
+        var c = pbr_bindings::material.base_color;
+#ifdef VERTEX_COLORS
+        c *= in.color;
+#endif
+        pbr_input.material.base_color = c * cut_read(uv, duv);
+    }
+#endif
+
+    // The crossfade's cut after every read, so the ones still Bevy's (the
+    // bark's normal map) take their mip from live neighbours.
+#ifdef VISIBILITY_RANGE_DITHER
+    visibility_range_dither(in.position, in.visibility_range_dither);
+#endif
+
     // An opaque material ignores alpha in `alpha_discard`, so the bark that
     // shares this shader is never cut.
     pbr_input.material.base_color.a *= keep;

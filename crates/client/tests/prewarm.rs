@@ -20,7 +20,7 @@ use bevy::asset::AssetPlugin;
 use bevy::mesh::Mesh;
 use bevy::prelude::*;
 use client::render::prewarm::{
-    retire, setup, warm, WarmMesh, Warming, WARM_AHEAD_M, WARM_FRAMES, WARM_SIZE_M,
+    retire, setup, warm, warm_transform, WarmMesh, Warming, WARM_AHEAD_M, WARM_FRAMES, WARM_SIZE_M,
 };
 use client::render::rig::EyeCam;
 use client::render::settings::FOV_MIN_DEG;
@@ -127,6 +127,31 @@ fn the_warm_draw_is_under_a_pixel() {
          it is in frustum and it writes depth, so anything approaching a pixel \
          is a speck the player sees"
     );
+}
+
+/// A site's own mesh is warmed at its own size, which is a monument's: the
+/// draw is shrunk to the shared triangle's speck and centred on the warm
+/// point wherever the mesh's bounds sit, or a ziggurat 60 m across is a
+/// two-pixel blot in the middle of the screen.
+#[test]
+fn a_whole_site_warms_as_a_speck_on_the_warm_point() {
+    for (center, size) in [
+        (Vec3::ZERO, 0.3),
+        (Vec3::new(12.0, 30.0, -4.0), 60.0),
+        (Vec3::new(-200.0, 5.0, 90.0), 240.0),
+    ] {
+        let t = warm_transform(center, size);
+        let drawn = size * t.scale.x;
+        assert!(
+            drawn <= WARM_SIZE_M * 1.0001,
+            "{size} m draws {drawn} m across"
+        );
+        let at = t.transform_point(center);
+        assert!(
+            at.distance(Vec3::new(0.0, 0.0, -WARM_AHEAD_M)) < 1e-6,
+            "{size} m about {center} lands at {at}"
+        );
+    }
 }
 
 /// The warm draws go away, and not on the frame they arrive.

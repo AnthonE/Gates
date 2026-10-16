@@ -74,7 +74,6 @@
 //!   allocation rule on the one system that runs every single frame.
 
 use bevy::asset::{Asset, RenderAssetUsages};
-use bevy::core_pipeline::Skybox;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::NotShadowCaster;
 use bevy::math::Affine2;
@@ -88,7 +87,6 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 use sim_core::terrain::{self, SEA_LEVEL};
 
-use super::rig::EyeCam;
 use super::weather::WeatherNow;
 use super::{Eye, WorldEntity, WorldId};
 
@@ -1868,7 +1866,7 @@ pub fn animate(
     mut materials: ResMut<Assets<WaterMaterial>>,
     time: Res<Time>,
     weather: Option<Res<WeatherNow>>,
-    skybox: Query<&Skybox, With<EyeCam>>,
+    composer: Option<Res<super::sky::SkyComposer>>,
 ) {
     if sea.cell.is_none() {
         return;
@@ -1900,13 +1898,14 @@ pub fn animate(
                     ..WaterParams::noon()
                 },
             };
-            // The deck the camera draws, once it hangs there. The composer
-            // replaces the image behind the same handle, and the material is
-            // re-prepared every frame by this very `get_mut`, so the clouds in
-            // the reflection follow the clouds in the sky.
-            if let Ok(sky) = skybox.single() {
-                if m.extension.sky != sky.image {
-                    m.extension.sky = sky.image.clone();
+            // The composer's cube, once there is one. It replaces the image
+            // behind the same handle, and the material is re-prepared every
+            // frame by this very `get_mut`, so the clouds in the reflection
+            // follow the clouds in the sky. Not the `Skybox`'s: where the
+            // atmosphere draws there is none (`deck.rs`).
+            if let Some(c) = composer.as_deref() {
+                if m.extension.sky != *c.cube() {
+                    m.extension.sky = c.cube().clone();
                 }
             }
         }

@@ -2136,8 +2136,9 @@ pub fn bed(
     // snapshot's, which is the point of a snapshot.
     sound.bed_target[2] = 1.0;
     // The rain (weather v0): as hard as it falls, duller under a roof. The
-    // snapshot takes it away underwater.
-    sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
+    // snapshot takes it away underwater. Snow falls near silent, so the bed
+    // fades as the rain turns to it (snow v0).
+    sound.bed_target[3] = weather.falling_rain() * if weather.sheltered { 0.35 } else { 1.0 };
     // The heli's rotor, by distance to the drawn hull — none drawn, none
     // heard. Its side and its distance's muffling are its place, sent
     // below ([`rotor_place`]).

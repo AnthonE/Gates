@@ -5,7 +5,7 @@
 // plane; land and sea are in front of it by depth.
 #import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::utils::coords_to_viewport_uv
-#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail}
+#import "shaders/deck.wgsl"::{deck_point, deck_fade, deck_detail, deck_haze}
 
 // Field for field `deck::DeckParams`. Colours are linear, in deck units
 // (1.0 is one `sky::CLOUD_NITS`), already graded by the hour and weather.
@@ -30,7 +30,7 @@ struct Deck {
     top: vec4<f32>,
     // xyz a grey base; w the edge's width.
     base: vec4<f32>,
-    // xyz the fog's colour; w the fog band's strength.
+    // xyz the fog's colour; w unused.
     fog: vec4<f32>,
     // x altitude over noise scale; y the horizon cutoff; z the fade above
     // it; w the fine detail's amplitude.
@@ -40,6 +40,10 @@ struct Deck {
     drift: vec4<f32>,
     // x `CORE_SHADE`; y `RIM_GLOW`; z `SIDE_VIEW_Y`; w unused.
     shade: vec4<f32>,
+    // The weather's air over the sky (`sky::SkyFog::lanes`).
+    air: vec4<f32>,
+    // Its dust (`sky::SkyFog::dust_lanes`).
+    dust: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> deck: Deck;
@@ -123,9 +127,9 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     cloud += deck.scatter.rgb * s * s * (1.0 - 0.6 * thick);
     var rgb = mix(sky, cloud, cov);
 
-    // Fog lies between the eye and everything: a band at the horizon.
-    let band = deck.fog.w * clamp(1.0 - (d.y + 0.02) / 0.25, 0.0, 1.0);
-    rgb = mix(rgb, deck.fog.rgb, band);
+    // Fog lies between the eye and everything: as much of the sky as the
+    // weather's air takes along this ray.
+    rgb = mix(rgb, deck.fog.rgb, deck_haze(d.y, deck.air, deck.dust));
 
     return vec4(rgb * deck.horizon.w * view.exposure, 1.0);
 }

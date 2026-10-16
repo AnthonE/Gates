@@ -326,6 +326,11 @@ clothes_heat_pm = 750
 heat_water_pct = 300
 heat_hurt_at = 600
 heat_hp_per_min = 6
+# Snow (snow v0): where the air is at or under 0 °C the rain falls as snow,
+# sleet through the degree above (`climate::snow_pm`), and snow wets a body
+# at half the rain's rate — the reference's `weather.wetness_snow` 0.2 against
+# `wetness_rain` 0.4. Per mille of the rain's.
+snow_wet_pm = 500
 
 # The air (climate v0, `sim_core::climate`) — the reference's
 # `Climate.GetTemperature`: each biome's curve over the hour, coldest at
