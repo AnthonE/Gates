@@ -504,6 +504,10 @@ impl SleeperIndex {
     }
 }
 
+/// One eviction record: whose, the record, the put's stamp, and the id the
+/// evicted body wore.
+type EvictRow = (PlayerKey, PlayerSave, u64, u32);
+
 /// The sim's own copy of every eviction record it has handed out, by key
 /// (NOW §0y 2). `connect_as` reads it ahead of the record a joiner brings.
 ///
@@ -526,8 +530,13 @@ impl SleeperIndex {
 /// table drops its oldest put, which costs that one victim only the hole
 /// this closes. Boxed at `new`, and `PlayerSave` is `Copy`, so a put never
 /// allocates.
+///
+/// It also keeps the id the evicted body wore: the victim's bags, locks and
+/// cupboards are still filed under it, and the rejoin moves them to the new
+/// body (`Command::Rekey`). A restart forgets this, and those things stay
+/// with the old id, which `SlotTable::start_past` keeps anyone from wearing.
 struct EvictMemo {
-    entries: Box<[Option<(PlayerKey, PlayerSave, u64)>]>,
+    entries: Box<[Option<EvictRow>]>,
     /// The next put's stamp: oldest-first replacement with no ties when one
     /// window evicts more than once.
     next: u64,
@@ -541,34 +550,36 @@ impl EvictMemo {
         }
     }
 
-    fn find(&self, key: &PlayerKey) -> Option<PlayerSave> {
+    /// The record filed for `key` and the id its body wore.
+    fn find(&self, key: &PlayerKey) -> Option<(PlayerSave, u32)> {
         self.entries
             .iter()
             .flatten()
-            .find(|(k, _, _)| k == key)
-            .map(|(_, s, _)| *s)
+            .find(|(k, _, _, _)| k == key)
+            .map(|(_, s, _, id)| (*s, *id))
     }
 
     fn forget(&mut self, key: &PlayerKey) {
         for e in self.entries.iter_mut() {
-            if e.map(|(k, _, _)| k == *key).unwrap_or(false) {
+            if e.map(|(k, _, _, _)| k == *key).unwrap_or(false) {
                 *e = None;
             }
         }
     }
 
-    /// File `save` under `key`, replacing any earlier one for the same key,
-    /// else into a free row, else over the oldest put.
-    fn put(&mut self, key: &PlayerKey, save: PlayerSave) {
+    /// File `save` and the evicted body's `id` under `key`, replacing any
+    /// earlier one for the same key, else into a free row, else over the
+    /// oldest put.
+    fn put(&mut self, key: &PlayerKey, save: PlayerSave, id: u32) {
         self.forget(key);
-        let stamp = |e: &Option<(PlayerKey, PlayerSave, u64)>| e.map_or(0, |(_, _, n)| n);
+        let stamp = |e: &Option<EvictRow>| e.map_or(0, |(_, _, n, _)| n);
         let row = self
             .entries
             .iter()
             .position(|e| e.is_none())
             .or_else(|| (0..self.entries.len()).min_by_key(|&i| stamp(&self.entries[i])));
         if let Some(i) = row {
-            self.entries[i] = Some((*key, save, self.next));
+            self.entries[i] = Some((*key, save, self.next, id));
             self.next += 1;
         }
     }
@@ -1584,11 +1595,15 @@ impl ShardCore {
             .filter(|&s| !self.spoken_for(s));
         // No body, so a record: this shard's own eviction record first, the
         // store's (as the accept loop read it) only if it has none. Peeked,
-        // not taken — it is spent below only once the join is queued.
-        let save = match key {
-            Some(k) if sleeper.is_none() => self.evicted.find(&k).or(save),
-            _ => save,
-        };
+        // not taken — it is spent below only once the join is queued. The
+        // eviction record also names the id the evicted body wore, which
+        // still owns its bags, locks and cupboards: they follow the wallet
+        // to the new body (`Command::Rekey`, after the join).
+        let memo = key
+            .filter(|_| sleeper.is_none())
+            .and_then(|k| self.evicted.find(&k));
+        let save = memo.map(|(s, _)| s).or(save);
+        let former = memo.map(|(_, was)| was).filter(|&was| was != id);
         let (cmd, how) = match (sleeper, save) {
             (Some(sleeper), _) => (Command::Wake { id, sleeper }, Admitted::TookOver),
             (None, Some(save)) => (Command::JoinAs { id, save }, Admitted::Restored),
@@ -1600,10 +1615,11 @@ impl ShardCore {
         let evicted = if !matches!(how, Admitted::TookOver) && self.slots_short() {
             match self.evict_victim() {
                 Some(victim) => {
-                    // Room for both commands or neither: an `Evict` whose
+                    // Room for every command or none: an `Evict` whose
                     // join was then refused by a full queue would delete a
                     // body and seat nobody in its place.
-                    if self.queued_len + 2 > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
+                    let n = 2 + usize::from(former.is_some());
+                    if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
                         return None;
                     }
                     // The record comes off the live body NOW — the current
@@ -1618,9 +1634,10 @@ impl ShardCore {
                     if let Some((k, s)) = record.as_ref() {
                         // The arrow points at a body the command below is
                         // about to remove. The record is kept for the
-                        // victim's return, which may beat the store to it.
+                        // victim's return, which may beat the store to it,
+                        // with the id their things are filed under.
                         self.sleepers.forget(k);
-                        self.evicted.put(k, *s);
+                        self.evicted.put(k, *s, victim);
                     }
                     let roomed = self.queue(Command::Evict { id: victim });
                     debug_assert!(roomed, "room for two was checked above");
@@ -1636,11 +1653,19 @@ impl ShardCore {
         } else {
             None
         };
-        if !self.queue(cmd) {
+        // The join and the move of what the evicted body owned go together
+        // or not at all: a join without it would seat the wallet with
+        // nothing it built.
+        let n = 1 + usize::from(former.is_some());
+        if self.queued_len + n > MAX_COMMANDS_PER_TICK - MAX_PLAYERS || !self.queue(cmd) {
             return None;
         }
-        // A woken body takes this connection's id (`World::take_over`); its
-        // team seat goes with it.
+        if let Some(was) = former {
+            let roomed = self.queue(Command::Rekey { from: was, to: id });
+            debug_assert!(roomed, "room for both was checked above");
+        }
+        // A woken body takes this connection's id (`World::take_over`), and
+        // what it owns goes with it there; its team seat goes with it here.
         if let Some(sleeper) = sleeper {
             self.teams.rekey(sleeper, id);
         }
@@ -8750,16 +8775,18 @@ mod tests {
             hp: n as u16,
             ..PlayerSave::EMPTY
         };
+        // The id the evicted body wore rides with its record.
+        let rec = |n: usize| Some((save(n), n as u32 + 1));
         let mut memo = EvictMemo::new();
         for n in 0..MAX_PLAYERS {
-            memo.put(&key(n), save(n));
+            memo.put(&key(n), save(n), n as u32 + 1);
         }
-        memo.put(&key(3), save(1000));
-        assert_eq!(memo.find(&key(3)), Some(save(1000)), "re-filed in place");
-        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS));
+        memo.put(&key(3), save(1000), 1001);
+        assert_eq!(memo.find(&key(3)), rec(1000), "re-filed in place");
+        memo.put(&key(MAX_PLAYERS), save(MAX_PLAYERS), MAX_PLAYERS as u32 + 1);
         assert_eq!(memo.find(&key(0)), None, "the oldest put goes");
-        assert_eq!(memo.find(&key(1)), Some(save(1)));
-        assert_eq!(memo.find(&key(MAX_PLAYERS)), Some(save(MAX_PLAYERS)));
+        assert_eq!(memo.find(&key(1)), rec(1));
+        assert_eq!(memo.find(&key(MAX_PLAYERS)), rec(MAX_PLAYERS));
         memo.forget(&key(1));
         assert_eq!(memo.find(&key(1)), None);
     }

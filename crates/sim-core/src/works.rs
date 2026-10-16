@@ -324,6 +324,24 @@ impl Work {
     }
 
     /// The share `id` is credited with, basis points.
+    /// Every credited giver through `f` (`World::remap_player_ids`). Two
+    /// rows `f` maps to one id become one, its points summed and the later
+    /// row freed, so a giver is never credited twice.
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for c in self.credits.iter_mut().filter(|c| c.points > 0) {
+            c.id = f(c.id);
+        }
+        for i in 0..MAX_WORK_CREDITS {
+            for j in i + 1..MAX_WORK_CREDITS {
+                let (a, b) = (self.credits[i], self.credits[j]);
+                if a.points > 0 && b.points > 0 && a.id == b.id {
+                    self.credits[i].points = a.points.saturating_add(b.points);
+                    self.credits[j] = Credit::default();
+                }
+            }
+        }
+    }
+
     pub fn points_of(&self, id: u32) -> u32 {
         self.credits
             .iter()

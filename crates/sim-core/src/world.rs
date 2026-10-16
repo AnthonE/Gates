@@ -1626,6 +1626,16 @@ pub enum Command {
     Evict {
         id: u32,
     },
+    /// Everything filed under player id `from` — bags, locks, cupboards,
+    /// turrets — is `to`'s now: the same wallet, back in a new body after
+    /// its old one was evicted (`ShardCore::connect_as`). A takeover does
+    /// the same inside `Wake`. Server-minted beside the join, never from the
+    /// wire. A miss — `from` still wears a body, or `to` wears none — is a
+    /// no-op, `Wake`'s posture for a replay against a diverged world.
+    Rekey {
+        from: u32,
+        to: u32,
+    },
     /// Move `id`'s body to `to`'s feet — the admin lane's travel verb
     /// (admin v0, `ALPHA.md` §3).
     ///
@@ -4639,6 +4649,52 @@ impl World {
             .count()
     }
 
+    /// Every player id the world files anything under, through `f`: each
+    /// body's own, the killer on each corpse, every owner — a bag's, a
+    /// cupboard's, a box's, a lock's, a turret's, a death bag's, a planted
+    /// charge's, a fire's — every cupboard crew and lock list, each arrow
+    /// lodged in a body, and each works credit. [`World::rekey`] moves a
+    /// player's things with them to a new connection id through it, and the
+    /// server reads the highest id a saved world still holds through it
+    /// (`worldfile::id_floor`), so the two cannot disagree about what a
+    /// player owns.
+    ///
+    /// Arrows in flight and the per-tick scratch are not visited: they live
+    /// for a moment, are not saved, and miss the move at worst by one hit.
+    pub fn remap_player_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for p in self.players.iter_mut().filter(|p| p.active) {
+            p.id = f(p.id);
+            p.death_by = f(p.death_by);
+        }
+        self.deploys.map_ids(f);
+        // The turret table caches its deployable's owner and never
+        // refreshes a live entry: one left behind shoots its own owner.
+        for t in self.turrets.iter_mut() {
+            t.owner = f(t.owner);
+        }
+        for b in self.backpacks.entries_mut() {
+            b.owner = f(b.owner);
+        }
+        self.charges.map_ids(f);
+        self.fires.map_ids(f);
+        self.spent.map_ids(f);
+        for w in self.works.w.iter_mut() {
+            w.map_ids(f);
+        }
+    }
+
+    /// Everything `from` owns is `to`'s: the same player, back on a new
+    /// connection id (`take_over`, `Command::Rekey`). A player id is minted
+    /// per connection, so without this every reconnect would orphan every
+    /// bag, lock, cupboard and turret its player ever placed. The wallet
+    /// behind both ids is the server's to know, never the sim's.
+    fn rekey(&mut self, from: u32, to: u32) {
+        if from == 0 || to == 0 || from == to {
+            return;
+        }
+        self.remap_player_ids(&mut |id| if id == from { to } else { id });
+    }
+
     /// Seat a returning connection onto the body it left behind.
     ///
     /// **The body wins over the record, and that is the point of the
@@ -4676,16 +4732,15 @@ impl World {
         if self.slot_of(id).is_some_and(|other| other != slot) {
             return;
         }
+        // The body and everything it owns take the new id together: its
+        // bags, locks and cupboards are the player's, not the connection's.
+        // A death of its own doing (the clock, a fall, a charge it planted)
+        // names it too, and the death screen says "Yourself" by comparing.
+        self.rekey(sleeper, id);
         let p = &mut self.players[slot];
         p.id = id;
         p.sleeping = false;
         p.slept_at = 0;
-        // A death of the body's own doing (the clock, a fall, a charge you
-        // planted) names the body, and the body has a new name now: the
-        // death screen says "Yourself" by comparing the two.
-        if p.death_by == sleeper {
-            p.death_by = id;
-        }
         // The frame is the new connection's to fill. Unlike a respawn —
         // which keeps it, because the same client is still holding the same
         // mouse — a takeover is a different session whose input seq starts
@@ -5061,6 +5116,11 @@ impl World {
             }
             Command::Wake { id, sleeper } => self.take_over(id, sleeper),
             Command::Evict { id } => self.evict(id),
+            Command::Rekey { from, to } => {
+                if self.slot_of(from).is_none() && self.slot_of(to).is_some() {
+                    self.rekey(from, to);
+                }
+            }
             Command::AdminTeleport { id, to } => {
                 // Both bodies resolved before either is touched, and a
                 // miss on either is a no-op: `Wake`'s rule, because a WAL

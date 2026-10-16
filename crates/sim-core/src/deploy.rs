@@ -1284,6 +1284,28 @@ impl Deploys {
         &self.hearths[..self.hearth_count]
     }
 
+    /// Every player id this store files a thing under, through `f`: each
+    /// deployable's owner (a bag's is whose bag it is), each cupboard's owner
+    /// and crew, each box's owner, each lock's owner, auth and guests
+    /// (`World::remap_player_ids`).
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for d in self.entries[..self.len].iter_mut() {
+            d.owner = f(d.owner);
+        }
+        for h in self.hearths[..self.hearth_count].iter_mut() {
+            h.owner = f(h.owner);
+            h.crew.map_ids(f);
+        }
+        for b in self.boxes.entries[..self.boxes.len].iter_mut() {
+            b.owner = f(b.owner);
+        }
+        for l in self.locks.entries[..self.locks.len].iter_mut() {
+            l.owner = f(l.owner);
+            l.auth.map_ids(f);
+            l.guests.map_ids(f);
+        }
+    }
+
     /// Where hearth `h` stands: its deploy record's centre, or its cell's
     /// centre for a hearth record with no deploy record under it (a test
     /// fixture's bare hearth).

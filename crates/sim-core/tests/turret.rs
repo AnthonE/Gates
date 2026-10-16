@@ -192,3 +192,34 @@ fn a_dry_turret_holds_fire() {
         );
     }
 }
+
+/// **A turret still knows its owner after they log back in.** The table
+/// caches its deployable's owner, and a reconnect hands the owner a new id
+/// (`World::take_over`): a cache left behind turns the owner's own turret on
+/// them the moment they walk back into their base.
+#[test]
+fn a_turret_spares_its_owner_after_they_reconnect() {
+    let (mut w, _) = turret_world(64);
+    const BACK: u32 = 0x0203;
+    w.tick(&[Command::Leave { id: OWNER }]);
+    w.tick(&[Command::Wake {
+        id: BACK,
+        sleeper: OWNER,
+    }]);
+    let (mut locks, mut hurt_owner) = (0, 0);
+    for _ in 0..300 {
+        w.tick(&[]);
+        for e in w.events.entries() {
+            match e.code {
+                EV_SENTRY_LOCK if is_turret(e.a) => {
+                    assert_eq!(e.b, STRANGER, "it locked on to its owner's new id");
+                    locks += 1;
+                }
+                EV_HURT if e.a == BACK => hurt_owner += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(locks > 0, "the turret never locked on to the stranger");
+    assert_eq!(hurt_owner, 0, "it shot its owner after a reconnect");
+}

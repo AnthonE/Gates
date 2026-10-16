@@ -917,3 +917,71 @@ fn a_bag_inside_a_base_wakes_you_on_its_floor() {
         assert_eq!(respawn_event(&w), Some((1, true)));
     }
 }
+
+/// How many bags `owner` has on the island.
+fn bags_of(w: &World, owner: u32) -> usize {
+    let mut out = [sim_core::deploy::BagAnchor::default(); sim_core::deploy::BAG_CAP];
+    w.deploys.own_bags(&w.deploy, owner, w.tick, &mut out)
+}
+
+/// **Your bag is still yours after you log back in.** A player id is minted
+/// per connection, so the body you come back to takes the new one
+/// (`World::take_over`); what it owns has to take it too, or every reconnect
+/// orphans every bag, lock and cupboard you ever placed — and the death
+/// screen you log back in to offers only the beach.
+#[test]
+fn a_bag_follows_its_owner_into_a_new_connection() {
+    let mut w = lone_world();
+    let (cx, cz) = buildable_cell_near(w.seed, 1000, 1000, 0);
+    place_bag(&mut w, cx, cz);
+    assert_eq!(bags_of(&w, 1), 1);
+
+    w.tick(&[Command::Leave { id: 1 }]);
+    w.tick(&[Command::Wake {
+        id: 0x0201,
+        sleeper: 1,
+    }]);
+    assert_eq!(bags_of(&w, 0x0201), 1, "the bag stayed with the old id");
+    assert_eq!(bags_of(&w, 1), 0, "the old id still owns a bag");
+
+    // And it answers: die, ask for the bag, wake on it.
+    die(&mut w);
+    w.tick(&[Command::Respawn {
+        id: 0x0201,
+        on_bag: true,
+    }]);
+    assert_eq!(
+        respawn_event(&w),
+        Some((0x0201, true)),
+        "the bag did not answer"
+    );
+}
+
+/// The same wallet back in a **new** body, its old one evicted while it was
+/// away: the server names both ids (`Command::Rekey`) and the bag follows.
+/// A rekey whose old id still wears a body would hand a living player's
+/// things to somebody else, so it is refused.
+#[test]
+fn a_rekey_moves_an_evicted_players_bag_and_nothing_else() {
+    let mut w = lone_world();
+    let (cx, cz) = buildable_cell_near(w.seed, 1000, 1000, 0);
+    place_bag(&mut w, cx, cz);
+    w.tick(&[Command::Join { id: 2 }]);
+
+    // Refused while the old id still has a body.
+    w.tick(&[Command::Rekey { from: 1, to: 2 }]);
+    assert_eq!(bags_of(&w, 1), 1, "a living player's bag was moved");
+
+    let save = w.save_of(1).expect("a body has a record");
+    w.tick(&[Command::Leave { id: 1 }]);
+    w.tick(&[Command::Evict { id: 1 }]);
+    w.tick(&[
+        Command::JoinAs { id: 0x0301, save },
+        Command::Rekey {
+            from: 1,
+            to: 0x0301,
+        },
+    ]);
+    assert_eq!(bags_of(&w, 0x0301), 1, "the bag stayed with the evicted id");
+    assert_eq!(bags_of(&w, 2), 0, "a bystander picked up the bag");
+}

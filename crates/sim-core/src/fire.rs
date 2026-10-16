@@ -77,6 +77,13 @@ impl Default for Fires {
 }
 
 impl Fires {
+    /// Every shooter through `f` (`World::remap_player_ids`), for the kill.
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for r in self.entries[..self.len].iter_mut() {
+            r.owner = f(r.owner);
+        }
+    }
+
     pub const fn new() -> Self {
         Self {
             entries: [FireRec {
