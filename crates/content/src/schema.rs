@@ -607,6 +607,9 @@ pub enum DeployArchetype {
     /// A player's auto turret (`sim-core/src/turret.rs`): a container of
     /// rounds and a gun, `deployables.toml` `[turret]`.
     Turret,
+    /// A player's vending machine (`sim-core/src/shop.rs`): a container
+    /// whose stock anyone may buy at its owner's offers, priced in junk.
+    Vending,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim

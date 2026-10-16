@@ -748,6 +748,118 @@ fn an_archer_is_sidestepped_then_run_from_to_cover() {
     assert_eq!(a.heap_ops, 0);
 }
 
+/// Shot at from behind by a gunner it never saw, every round cracking
+/// past it and none landing, the agent does what a person does: a startle,
+/// then a run for cover from where the reports came, eyes that way, and
+/// once the eyes have the gunner, a run from it to cover (nothing it holds
+/// reaches that far). Until the rounds were listened to, it went on with
+/// what it was doing. Its legs answer no sooner than the startle, its view
+/// turns no faster than its hands, and its frames never allocate.
+#[test]
+fn a_gunner_never_seen_is_run_from_and_found() {
+    let content = content();
+    // About its own business, eyes on its work: the scripted mind.
+    let mut a = Arena::new(Temperament::Opportunist);
+    // The gunner joins with the agent, far off until it is placed.
+    assert!(a.shard.connect(1, RUSHER));
+    a.step();
+    let at = a.player(ID).body;
+    let far = Body::at(
+        SEED,
+        &a.haven,
+        at.qx as f32 * POS_XZ_Q + 150.0,
+        at.qz as f32 * POS_XZ_Q,
+    );
+    a.stage(RUSHER, |p| p.body = far);
+    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    // Behind is where it is not looking, once its heading holds.
+    let mut last = a.player(ID).frame.yaw;
+    let mut still = 0;
+    for _ in 0..300 {
+        a.step();
+        let yaw = a.player(ID).frame.yaw;
+        still = if yaw == last { still + 1 } else { 0 };
+        last = yaw;
+        if still >= 15 {
+            break;
+        }
+    }
+    let spear = stack(&content, "item.spear_wood");
+    a.stage(ID, |p| {
+        p.inv[0] = spear;
+        p.hp = p.hp_max;
+    });
+    let item = content.item_index("item.revolver").unwrap();
+    let gun = a.shard.world.combat.held_ranged(item).unwrap();
+    let slot = usize::from(gun.mag_slot);
+    let revolver = stack(&content, "item.revolver");
+    let (at, facing) = (a.player(ID).body, a.player(ID).frame.yaw);
+    let (fx, fz) = sim_core::yaw_dir(facing);
+    let behind = Body::at(
+        SEED,
+        &a.haven,
+        at.qx as f32 * POS_XZ_Q - fx * 30.0,
+        at.qz as f32 * POS_XZ_Q - fz * 30.0,
+    );
+    a.stage(RUSHER, |p| {
+        p.body = behind;
+        p.inv[0] = revolver;
+        p.mag[slot] = gun.magazine;
+        p.mag_round[slot] = gun.ammo[0];
+    });
+    a.step();
+    assert!(
+        a.bot.tracks().get(RUSHER).is_none(),
+        "seen before a shot: {}",
+        a.explain()
+    );
+    let hp = a.player(ID).hp;
+    a.wide = 1.5;
+    a.archer = Some(true);
+    let (mut fired, mut moved, mut found) = (None, None, None);
+    for _ in 0..8 * TICK_HZ {
+        a.step();
+        if fired.is_none() && a.player(RUSHER).mag[slot] < gun.magazine {
+            fired = Some(a.tick);
+        }
+        if moved.is_none() && a.bot.combat().engaged() {
+            moved = Some(a.tick);
+        }
+        if found.is_none() && a.bot.tracks().get(RUSHER).is_some_and(|t| t.visible) {
+            found = Some(a.tick);
+        }
+    }
+    a.archer = None;
+    let c = a.bot.combat().stats;
+    println!(
+        "gunner behind: fired {fired:?}, moved {moved:?}, found {found:?}; {}",
+        a.explain()
+    );
+    assert_eq!(a.player(ID).hp, hp, "a round landed: the scene is a miss");
+    let fired = fired.expect("the gunner never fired");
+    assert!(
+        c.shot_at > 0,
+        "never took the shots as at it: {}",
+        a.explain()
+    );
+    let moved = moved.expect("never moved for the shots");
+    assert!(
+        moved >= fired + server::agent::combat::STARTLE_TICKS,
+        "moved {} ticks after the first shot",
+        moved - fired
+    );
+    assert!(moved <= fired + TICK_HZ, "slow to move: {}", moved - fired);
+    let found = found.expect("never found the gunner");
+    assert!(
+        found <= fired + 2 * TICK_HZ,
+        "slow to find: {}",
+        found - fired
+    );
+    assert!(c.escapes > 0, "found it and stayed: {}", a.explain());
+    assert_eq!(c.engages, 0, "charged a gun with a spear");
+    assert_eq!(a.heap_ops, 0);
+}
+
 /// A defensive agent, bow or rock in hand, and a body carrying a bow
 /// walking straight up to it from 30 m, eyes level, never drawing or
 /// shooting, and stopping 3 m off: a bow carried my way is not an attack

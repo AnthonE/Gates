@@ -13,6 +13,7 @@
 
 pub use crate::agent::build::Milestone;
 use crate::agent::orders::{self, Order};
+use crate::agent::society::Role;
 use protocol::MAX_ITEM_NAME_BYTES;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -223,6 +224,15 @@ pub enum Goal {
     /// Swipe the keycard it carries at its door in the Black Ziggurat and
     /// walk into the room behind it.
     SwipeCard,
+    /// Walk a ring of posts round home, looking out, and take on whoever
+    /// comes into the ward armed or fighting (`agent::society`).
+    Patrol,
+    /// Keep the crew's vending machine (`agent::shop`): put it down outside
+    /// the base, take its junk out, put the wares in, set its prices.
+    KeepShop,
+    /// Walk up to its founder and hand over the wood, stone and ore the
+    /// pack carries for the base (`agent::society`).
+    HandOver,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -250,7 +260,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 36] = [
+    pub const FIXED: [Goal; 39] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -287,6 +297,9 @@ impl Goal {
         Goal::ReadStone,
         Goal::SolveLock,
         Goal::SwipeCard,
+        Goal::Patrol,
+        Goal::KeepShop,
+        Goal::HandOver,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -331,6 +344,9 @@ impl Goal {
             Goal::ReadStone => "read_stone",
             Goal::SolveLock => "solve_lock",
             Goal::SwipeCard => "swipe_card",
+            Goal::Patrol => "patrol",
+            Goal::KeepShop => "keep_shop",
+            Goal::HandOver => "hand_over",
         }
     }
 
@@ -415,6 +431,9 @@ impl Goal {
             Goal::ReadStone => "Read the nearest unread stone: learn its glyphs; some give a lock's answer.".into(),
             Goal::SolveLock => "Turn a lock's dials to the answer a stone gave; the last turn pays.".into(),
             Goal::SwipeCard => "Swipe your keycard at its ziggurat door and walk into the room.".into(),
+            Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
+            Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
+            Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
         }
     }
 }
@@ -685,6 +704,77 @@ impl FriendSense {
         reachable: false,
         invited_me: false,
     };
+}
+
+/// Its society (`agent::society`, `jev-bot --society`): its job, its crew
+/// and how far the crew has come together, its guild beyond the crew, and
+/// who is in the ward at home. Inside the observation, `null` with none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SocietySense {
+    pub set: bool,
+    pub role: crate::agent::society::Role,
+    /// Crewmates beside itself, how many are on its team now, and how many
+    /// the shard has named that are not.
+    pub crew: u8,
+    pub crew_on_team: u8,
+    pub crew_missing: u8,
+    /// The nearest crewmate up, in sight and not on its team: where, and
+    /// whether an `invite` would go to them now.
+    pub crew_near: Sighting,
+    pub crew_reachable: bool,
+    /// The invite waiting on it is a crewmate's.
+    pub crew_invited_me: bool,
+    /// It is on its founder's team (the founder: on a team of its crew).
+    pub founded: bool,
+    /// The founder's first wait for its crew at THE GATE is still on.
+    pub founding: bool,
+    /// Allies named, and those in sight now.
+    pub allies: u8,
+    pub allies_in_sight: Sighting,
+    /// Intruders inside the ward at home: armed, or fighting.
+    pub intruders: Sighting,
+    /// The crew's vending machine stands (`agent::shop`).
+    pub shop: bool,
+}
+
+impl SocietySense {
+    pub const NONE: Self = Self {
+        set: false,
+        role: crate::agent::society::Role::Founder,
+        crew: 0,
+        crew_on_team: 0,
+        crew_missing: 0,
+        crew_near: Sighting::NONE,
+        crew_reachable: false,
+        crew_invited_me: false,
+        founded: false,
+        founding: false,
+        allies: 0,
+        allies_in_sight: Sighting::NONE,
+        intruders: Sighting::NONE,
+        shop: false,
+    };
+
+    fn json(&self) -> Value {
+        if !self.set {
+            return Value::Null;
+        }
+        json!({
+            "my_role": self.role.name(),
+            "crewmates": self.crew,
+            "crewmates_on_my_team": self.crew_on_team,
+            "crewmates_not_yet_on_my_team": self.crew_missing,
+            "crewmate_near_not_on_team": self.crew_near.json(),
+            "a_crewmate_is_in_invite_reach": self.crew_reachable,
+            "a_crewmate_invited_me": self.crew_invited_me,
+            "on_my_founders_team": self.founded,
+            "founder_still_waiting_at_the_gate": self.founding,
+            "allies": self.allies,
+            "allies_in_sight": self.allies_in_sight.json(),
+            "intruders_at_home": self.intruders.json(),
+            "crew_shop_stands": self.shop,
+        })
+    }
 }
 
 /// Relative directions, clockwise from straight ahead.
@@ -1148,6 +1238,20 @@ impl Place {
 /// The scripted policy takes the pack to the team's chest with this few
 /// slots free.
 pub const SCRIPTED_DELIVER_FREE: u8 = 4;
+/// What a society's farmers aim to keep in the crew's boxes: a supply run
+/// goes for whichever of these the boxes hold least of, as a share of its
+/// aim — a base burns wood and stone by the thousand, ore by the hundred
+/// and cloth by the score.
+pub const FARM_AIMS: [(&str, u32); 4] = [
+    ("Wood", 5000),
+    ("Stone", 5000),
+    ("Metal Ore", 1500),
+    ("Cloth", 300),
+];
+/// A society's runner sells a raw stuff once it carries this much of it,
+/// and takes its junk home once it carries this much.
+pub const RUNNER_SELL_AT: u32 = 1000;
+pub const RUNNER_BANK_AT: u32 = 100;
 /// The scripted policy catches up with a teammate farther than this.
 pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 
@@ -1234,6 +1338,8 @@ pub struct Summary {
     pub team: TeamSense,
     /// Its friend (`--friend`), if it has one.
     pub friend: FriendSense,
+    /// Its society (`--society`), if it is in one.
+    pub society: SocietySense,
     /// What the team's boxes held when their panels were last open.
     pub home_holds: [(Name, u32); SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
@@ -1401,6 +1507,7 @@ impl Summary {
             who_len: 0,
         },
         friend: FriendSense::NONE,
+        society: SocietySense::NONE,
         home_holds: [(Name::EMPTY, 0); SUMMARY_HOME_HOLDS],
         home_holds_len: 0,
         gate: None,
@@ -1573,7 +1680,7 @@ impl Summary {
                 json!([v, max])
             }
         };
-        json!({
+        let mut v = json!({
             "body": match self.body {
                 BodyState::Alive => "alive",
                 BodyState::Wounded => "wounded",
@@ -1636,7 +1743,13 @@ impl Summary {
             "team": self.team.json(),
             "team_home_holds": self.home_holds().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             "asked_because": self.trigger.word(),
-        })
+        });
+        // A society's body is told its place in it; a lone one is sent
+        // nothing for it.
+        if self.society.set {
+            v["society"] = self.society.json();
+        }
+        v
     }
 }
 
@@ -2169,6 +2282,176 @@ pub struct Scripted {
     code: Option<crate::agent::lock::LockCode>,
 }
 
+/// A society's crew coming together (`agent::society`): the founder
+/// invites a crewmate in reach, else waits at THE GATE while some of the
+/// crew is not on its team; a crewmate off its founder's team goes there
+/// to be invited. Saying yes is `join_team`, which is only offered for a
+/// crewmate's invite.
+fn founding(s: &Summary) -> Option<(Goal, &'static str)> {
+    let soc = &s.society;
+    if !soc.set {
+        return None;
+    }
+    if soc.role == Role::Founder {
+        if soc.crew_reachable && s.offers(Goal::Invite) {
+            return Some((Goal::Invite, "society: a crewmate is here, inviting them"));
+        }
+        if soc.crew_missing > 0 && s.offers(Goal::Meet) {
+            return Some((Goal::Meet, "society: waiting for the crew at THE GATE"));
+        }
+    } else if !soc.founded && s.offers(Goal::Meet) {
+        return Some((Goal::Meet, "society: to my founder at THE GATE"));
+    }
+    None
+}
+
+/// A crewmate's job (`agent::society::Role`) once it lives in the crew's
+/// base. The founder's is the playbook itself — the base, its stations,
+/// the cooking and recycling — so it gets nothing here.
+fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
+    let soc = &s.society;
+    if !soc.set {
+        return None;
+    }
+    let shop_item = crate::agent::shop::SHOP_ITEM;
+    let make_shop = || {
+        (!soc.shop && s.count_of(shop_item) == 0)
+            .then(|| s.craftable().iter().find(|n| n.as_str() == shop_item))
+            .flatten()
+            .map(|name| {
+                (
+                    Goal::Craft(*name),
+                    "society: a vending machine for the crew",
+                )
+            })
+    };
+    // The founder's job is the playbook itself — the base, its stations,
+    // the cooking and recycling — and, the base done, the crew's shop: put
+    // down outside it, stocked with what the base can spare, its junk taken.
+    if soc.role == Role::Founder {
+        if s.milestone != Milestone::Done {
+            return None;
+        }
+        if s.offers(Goal::KeepShop) {
+            return Some((Goal::KeepShop, "society: keeping the crew's shop"));
+        }
+        return make_shop();
+    }
+    // What it carries for the base goes to its founder's hands, base or no
+    // base yet; a runner's too once the crew's shop stands, for the founder
+    // to sell (before then a runner sells at THE GATE).
+    if (soc.role != Role::Runner || soc.shop) && s.offers(Goal::HandOver) {
+        return Some((Goal::HandOver, "society: my founder can use what I carry"));
+    }
+    if s.team.home.count == 0 {
+        return None;
+    }
+    if s.offers(Goal::Deliver) && (s.free_slots <= SCRIPTED_DELIVER_FREE || s.team.home_has_needs) {
+        return Some((
+            Goal::Deliver,
+            "society: home to put things away and stock up",
+        ));
+    }
+    let named = |n: &str| Name::new(n.as_bytes());
+    match soc.role {
+        Role::Guard => {
+            if soc.intruders.count > 0 && s.offers(Goal::Patrol) {
+                return Some((Goal::Patrol, "society: an intruder at home"));
+            }
+            if s.offers(Goal::Patrol) {
+                return Some((Goal::Patrol, "society: walking the ring round home"));
+            }
+            // Nothing to fight with: a spear first, then the bow.
+            for (item, want, needs) in crate::agent::loadout::ARM_UP {
+                if s.count_of(item) >= want || needs.is_some_and(|n| s.count_of(n) == 0) {
+                    continue;
+                }
+                if let Some(name) = s.craftable().iter().find(|n| n.as_str() == item) {
+                    return Some((Goal::Craft(*name), "society: arming up to guard"));
+                }
+            }
+            if s.trees.count > 0 && s.offers(Goal::GatherWood) {
+                return Some((Goal::GatherWood, "society: wood for a spear"));
+            }
+            None
+        }
+        Role::Runner => {
+            for tool in ["Metal Hatchet", "Metal Pickaxe"] {
+                if let Some(goal) = named(tool)
+                    .map(Goal::Buy)
+                    .filter(|g| s.offers(*g) && s.count_of(tool) == 0)
+                {
+                    return Some((goal, "society: a metal tool at the gate"));
+                }
+            }
+            if s.count_of("Junk") >= RUNNER_BANK_AT && s.offers(Goal::Deliver) {
+                return Some((Goal::Deliver, "society: the takings to the crew's boxes"));
+            }
+            // With the crew's shop standing its stuff sells there, through
+            // the founder's hands (above); before then, at THE GATE.
+            for name in ["Wood", "Stone"] {
+                if soc.shop {
+                    break;
+                }
+                if let Some(goal) = named(name)
+                    .map(Goal::Sell)
+                    .filter(|g| s.offers(*g) && s.count_of(name) >= RUNNER_SELL_AT)
+                {
+                    return Some((goal, "society: selling the crew's surplus at the gate"));
+                }
+            }
+            for (goal, seen) in [
+                (Goal::GatherWood, s.trees.count > 0),
+                (Goal::GatherStone, s.stone_nodes.count > 0),
+            ] {
+                if seen && s.offers(goal) {
+                    return Some((goal, "society: something to sell at the gate"));
+                }
+            }
+            None
+        }
+        Role::Farmer => {
+            let held = |name: &str| -> u32 {
+                s.home_holds()
+                    .iter()
+                    .filter(|(n, _)| n.as_str() == name)
+                    .map(|(_, c)| *c)
+                    .sum()
+            };
+            let mut runs = [
+                (Goal::SupplyWood, 0),
+                (Goal::SupplyStone, 0),
+                (Goal::SupplyOre, 0),
+                (Goal::SupplyHemp, 0),
+            ];
+            for (run, (name, aim)) in runs.iter_mut().zip(FARM_AIMS) {
+                run.1 = held(name).saturating_mul(100) / aim;
+            }
+            // A run that just found none of its kind in sight goes last: the
+            // land round here is bare of it for now.
+            let bare = s
+                .last
+                .filter(|r| matches!(r.outcome, Outcome::Failed(Why::NotFound)))
+                .map(|r| r.goal);
+            for run in runs.iter_mut() {
+                if bare == Some(run.0) {
+                    run.1 = u32::MAX;
+                }
+            }
+            runs.sort_by_key(|r| r.1);
+            if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
+                return Some((goal, "society: a supply run for the crew's boxes"));
+            }
+            let plenty = |name: &str| s.count_of(name) >= SCRIPTED_PLENTY;
+            if s.offers(Goal::FeedWork) && (plenty("Wood") || plenty("Stone")) {
+                return Some((Goal::FeedWork, "society: plenty to give a work"));
+            }
+            None
+        }
+        Role::Founder => None,
+    }
+}
+
 fn pct(value: u16, max: u16) -> u32 {
     if max == 0 {
         100
@@ -2297,7 +2580,10 @@ impl Scripted {
                 self.reply("come closer, or press N on me");
             }
         }
-        if s.team.mate_attacked && s.offers(Goal::Follow) {
+        // A society's farmer runs from fights, its teammates' too: the
+        // guards are for that.
+        let farmer = s.society.set && s.society.role == Role::Farmer;
+        if s.team.mate_attacked && !farmer && s.offers(Goal::Follow) {
             return (Goal::Follow, "scripted: my teammate is under attack");
         }
         let low = SCRIPTED_LOW_METER_PCT;
@@ -2363,6 +2649,12 @@ impl Scripted {
             }
             _ => {}
         }
+        // A society (`agent::society`): the crew comes together at THE GATE
+        // before anything else — its founder invites each crewmate who walks
+        // up, the rest go there to be invited.
+        if let Some(pick) = founding(s) {
+            return pick;
+        }
         // What it died holding is worth a walk while nobody is about: the
         // offer says it is near and no one dangerous is in view.
         if s.offers(Goal::Recover) {
@@ -2377,13 +2669,28 @@ impl Scripted {
         }
         // A teammate wandering off is caught up with; near them, the work
         // goes on.
-        if s.offers(Goal::Follow) && f32::from(s.team.awake.nearest_m) > SCRIPTED_FOLLOW_M {
+        // In a society only a crewmate with no home yet keeps up with the
+        // team (its founder first): a founder leads, and a crewmate that
+        // lives in the base has its own work.
+        let keeps_up =
+            !s.society.set || (s.society.role != Role::Founder && s.team.home.count == 0);
+        if keeps_up
+            && s.offers(Goal::Follow)
+            && f32::from(s.team.awake.nearest_m) > SCRIPTED_FOLLOW_M
+        {
             return (Goal::Follow, "scripted: catching up with my teammate");
         }
         // A heartbeat with no urgent need lets a working goal finish: the
         // rotation below is for choosing a new one, not for abandoning a
         // tree half felled.
-        if let Some(current) = s.current.filter(|c| s.offers(c.goal)) {
+        // A crewmate that has caught up with its founder has work to do
+        // there, not a founder to stand beside.
+        let caught_up = |goal: Goal| {
+            s.society.set
+                && goal == Goal::Follow
+                && f32::from(s.team.awake.nearest_m) <= SCRIPTED_FOLLOW_M
+        };
+        if let Some(current) = s.current.filter(|c| s.offers(c.goal) && !caught_up(c.goal)) {
             return (current.goal, "scripted: keep going");
         }
         // Better tools first, named by the controller's own tool ladders.
@@ -2417,6 +2724,10 @@ impl Scripted {
                     return (Goal::GatherHemp, "scripted: cloth for a sleeping bag");
                 }
             }
+        }
+        // A crewmate's job, once it lives in the crew's base.
+        if let Some(pick) = society_work(s) {
+            return pick;
         }
         // On a team, with the chest it saw a teammate at: fill it. A pack
         // getting full goes in; else a supply run of what it holds least
@@ -3050,6 +3361,93 @@ mod tests {
         ask(&mut s, Some(heard(Team, "follow", false)));
         s.team.mates = 0;
         assert_eq!(ask(&mut s, None).goal, Goal::Explore);
+    }
+
+    /// A society (`agent::society`): its founder waits at THE GATE for
+    /// the crew and invites each crewmate who walks up; a crewmate goes
+    /// there until it is on its founder's team. Living in the base, a
+    /// farmer runs for what the boxes hold least of against its aim, a
+    /// guard walks its ring, a farmer leaves a teammate's fight to the
+    /// guards, and a founder never trails its crew about.
+    #[test]
+    fn a_society_comes_together_and_goes_to_work() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        let pick = |scripted: &mut Scripted, s: &Summary| scripted.decide(s).unwrap().goal;
+        s.society = SocietySense {
+            set: true,
+            role: Role::Founder,
+            crew: 3,
+            crew_missing: 2,
+            ..SocietySense::NONE
+        };
+        assert_eq!(pick(&mut scripted, &s), Goal::Explore, "no gate to meet at");
+        s.offer(Goal::Meet);
+        assert_eq!(pick(&mut scripted, &s), Goal::Meet);
+        s.society.crew_reachable = true;
+        s.offer(Goal::Invite);
+        assert_eq!(pick(&mut scripted, &s), Goal::Invite);
+
+        // A crewmate, off its founder's team: to THE GATE.
+        s.society.role = Role::Farmer;
+        s.society.crew_reachable = false;
+        assert_eq!(pick(&mut scripted, &s), Goal::Meet);
+        s.society.founded = true;
+        assert_eq!(pick(&mut scripted, &s), Goal::Explore, "on the team");
+
+        // Home: the boxes hold plenty of wood and little stone.
+        s.team.mates = 3;
+        s.team.home.add(12.0, 0);
+        s.home_holds[0] = (Name::new(b"Wood").unwrap(), 5000);
+        s.home_holds[1] = (Name::new(b"Stone").unwrap(), 100);
+        s.home_holds_len = 2;
+        for g in [
+            Goal::SupplyWood,
+            Goal::SupplyStone,
+            Goal::Follow,
+            Goal::Patrol,
+        ] {
+            s.offer(g);
+        }
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyStone);
+        // No stone in sight a moment ago: wood instead, for now.
+        s.last = Some(Report {
+            goal: Goal::SupplyStone,
+            outcome: Outcome::Failed(Why::NotFound),
+            gained: 0,
+            secs: 20,
+        });
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
+        s.last = None;
+        // Carrying plenty, with its founder near: into the founder's hands.
+        s.offer(Goal::HandOver);
+        assert_eq!(pick(&mut scripted, &s), Goal::HandOver);
+        s.options_len -= 1;
+        s.team.mate_attacked = true;
+        assert_eq!(
+            pick(&mut scripted, &s),
+            Goal::SupplyStone,
+            "a farmer's fight is the guards'"
+        );
+        s.society.role = Role::Guard;
+        assert_eq!(pick(&mut scripted, &s), Goal::Follow, "a guard runs to it");
+        s.team.mate_attacked = false;
+        assert_eq!(pick(&mut scripted, &s), Goal::Patrol);
+
+        // A founder leads: a teammate far off is not followed.
+        s.society.role = Role::Founder;
+        s.team.awake.add(200.0, 0);
+        assert_ne!(pick(&mut scripted, &s), Goal::Follow);
+        let j = s.to_json();
+        assert_eq!(j["society"]["my_role"], "founder");
+        s.society = SocietySense::NONE;
+        assert!(
+            s.to_json().get("society").is_none(),
+            "a lone body is sent nothing"
+        );
     }
 
     /// Its friend (`--friend`): met at THE GATE while online and not on its

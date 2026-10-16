@@ -1209,6 +1209,12 @@ impl ClientCore {
             .max_by_key(|t| t.id >> 8)
     }
 
+    /// Every nametag the shard has sent, by player. A tag outlives its
+    /// player's connection, as [`Self::tag_of_address`] says.
+    pub fn tags(&self) -> impl Iterator<Item = &Tag> + '_ {
+        self.tags.iter().filter(|t| t.id != 0)
+    }
+
     /// Whether player `id` declared itself an agent (`EventMsg::Agent`).
     /// Self-declared: a program that never said so reads `false`.
     pub fn is_agent(&self, id: u32) -> bool {
@@ -1220,6 +1226,27 @@ impl ClientCore {
     /// [`protocol::TeamView::NONE`] until it has.
     pub fn team(&self) -> &protocol::TeamView {
         &self.team
+    }
+
+    /// Vending machine `key`'s offers and stock as the shard last told this
+    /// client (`EventMsg::Shop`, v118) — it is told when it opens one
+    /// (`encode_action_container(CONT_BOX, key)`) and again while it stays
+    /// open whenever the offers, the stock or its edit right change. `None`
+    /// for a machine never told. Kept after the panel shuts, so it can be
+    /// stale: open the machine again to be told afresh.
+    pub fn shop_offers(&self, key: u32) -> Option<&protocol::ShopView> {
+        if key == 0 {
+            return None;
+        }
+        self.shops.iter().find(|v| v.key == key)
+    }
+
+    /// The answer to this client's last shop press (`EventMsg::ShopResult`),
+    /// and a count of answers so far: a press is answered when the count
+    /// moves. `code` is 0 when it went through, else a
+    /// `sim_core::shop::REFUSE_SH_*`.
+    pub fn shop_last_result(&self) -> (u32, Option<ShopResult>) {
+        (self.shop_result_seq, self.shop_result)
     }
 
     /// Is `id` on this player's team? Never yourself, for this question.
@@ -1506,6 +1533,22 @@ pub struct Tag {
     pub pic: u32,
 }
 
+/// Vending machines a client remembers the offers of (`ClientCore::shop_offers`).
+pub const SHOP_VIEWS: usize = 8;
+
+/// The answer to a shop press (`EventMsg::ShopResult`, v118): the machine's
+/// box key, the op (`sim_core::shop::SHOP_OP_*`) and row as sent, the lots
+/// of a buy, and `code`: 0 when it went through, else a
+/// `sim_core::shop::REFUSE_SH_*`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShopResult {
+    pub key: u32,
+    pub op: u8,
+    pub row: u8,
+    pub times: u8,
+    pub code: u8,
+}
+
 pub struct ClientCore {
     pub player_id: u32,
     /// **This core watches a body it does not drive** (spectators v0, wire
@@ -1671,6 +1714,19 @@ pub struct ClientCore {
     team: protocol::TeamView,
     /// Bumped on every `Team`, so a renderer redraws only when it moved.
     pub team_gen: u32,
+    /// The vending machines this client was told about (`EventMsg::Shop`,
+    /// v118), newest kept: a machine's slot is reused for it, else an empty
+    /// one, else the one told longest ago. Read with [`Self::shop_offers`].
+    shops: [protocol::ShopView; SHOP_VIEWS],
+    /// When each of `shops` was last told, in `shop_gen` ticks.
+    shop_told: [u32; SHOP_VIEWS],
+    /// Bumped on every `Shop` and `ShopResult`, so a renderer redraws only
+    /// when one moved.
+    pub shop_gen: u32,
+    /// The answer to this client's last shop press, and how many answers
+    /// have arrived (so two identical refusals read as two).
+    shop_result: Option<ShopResult>,
+    shop_result_seq: u32,
     /// What each body wears (`EventMsg::Worn`, v98), by player id.
     bodies_worn: Box<[(u32, WornLook)]>,
     worn_next: usize,
@@ -2298,6 +2354,11 @@ impl ClientCore {
             agents: vec![0; sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
             team: protocol::TeamView::NONE,
             team_gen: 0,
+            shops: [protocol::ShopView::default(); SHOP_VIEWS],
+            shop_told: [0; SHOP_VIEWS],
+            shop_gen: 0,
+            shop_result: None,
+            shop_result_seq: 0,
             bodies_worn: vec![(0, WornLook::NONE); 2 * sim_core::limits::MAX_PLAYERS]
                 .into_boxed_slice(),
             worn_next: 0,
@@ -2997,6 +3058,39 @@ impl ClientCore {
             EventMsg::Team(view) => {
                 self.team = view;
                 self.team_gen = self.team_gen.wrapping_add(1);
+            }
+            EventMsg::Shop(view) => {
+                self.shop_gen = self.shop_gen.wrapping_add(1);
+                let k = self
+                    .shops
+                    .iter()
+                    .position(|v| v.key == view.key)
+                    .or_else(|| self.shops.iter().position(|v| v.key == 0))
+                    .unwrap_or_else(|| {
+                        let now = self.shop_gen;
+                        (0..SHOP_VIEWS)
+                            .max_by_key(|&i| now.wrapping_sub(self.shop_told[i]))
+                            .unwrap_or(0)
+                    });
+                self.shops[k] = view;
+                self.shop_told[k] = self.shop_gen;
+            }
+            EventMsg::ShopResult {
+                key,
+                op,
+                row,
+                times,
+                code,
+            } => {
+                self.shop_gen = self.shop_gen.wrapping_add(1);
+                self.shop_result_seq = self.shop_result_seq.wrapping_add(1);
+                self.shop_result = Some(ShopResult {
+                    key,
+                    op,
+                    row,
+                    times,
+                    code,
+                });
             }
             EventMsg::Worn { id, items, skins } => self.file_worn(id, WornLook { items, skins }),
             EventMsg::CraftQ {

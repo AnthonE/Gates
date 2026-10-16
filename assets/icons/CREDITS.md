@@ -132,6 +132,7 @@ every item either way, because the painted ones are derived works of it.
 | `ui_pin.png` | `delapouite/position-marker` |
 | `ui_respawn.png` | `delapouite/clockwise-rotation` |
 | `ui_star.png` | `delapouite/round-star` |
+| `vending_machine.png` | `delapouite/vending-machine` |
 | `verb_demolish.png` | `lorc/demolish` |
 | `verb_pick_up.png` | `lorc/grab` |
 | `verb_repair.png` | `lorc/auto-repair` |

@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_TURRET, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_VENDING, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -571,9 +571,17 @@ const SUB_DEAD: u32 = 99;
 /// Where your body last fell (wire v116): Rust's death marker. Own-fact. See
 /// `EventMsg::DeathMark`.
 const SUB_DEATH_MARK: u32 = 100;
-/// An achievement earned, or a set of them finished (wire v118,
+/// A vending machine's offers and stock as the receiver sees it (wire v118,
+/// `sim_core::shop`): sent when the receiver opens one, and again whenever
+/// what it shows changes while it is open. See [`ShopView`].
+const SUB_SHOP: u32 = 101;
+/// The receiver's shop press answered (wire v118, `EV_SHOP` /
+/// `EV_SHOP_REFUSED`): the machine, the op, the row, the lots, and the
+/// refusal code, 0 for done.
+const SUB_SHOP_RESULT: u32 = 102;
+/// An achievement earned, or a set of them finished (wire v119,
 /// `server::achievements`). Own-fact. See `EventMsg::Achievement`.
-const SUB_ACHIEVEMENT: u32 = 101;
+const SUB_ACHIEVEMENT: u32 = 103;
 const SUB_MAX: u32 = SUB_ACHIEVEMENT;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
@@ -2120,6 +2128,19 @@ pub enum EventMsg {
     Agent { id: u32 },
     /// The receiver's team (v108) — see [`TeamView`].
     Team(TeamView),
+    /// A vending machine's offers as the receiver sees them (v118) — see
+    /// [`ShopView`].
+    Shop(ShopView),
+    /// The receiver's shop press at machine `key` (v118): `op` and `row` as
+    /// sent, `times` lots for a buy, and `code` a `sim_core::shop::REFUSE_SH_*`
+    /// or 0 when it went through.
+    ShopResult {
+        key: u32,
+        op: u8,
+        row: u8,
+        times: u8,
+        code: u8,
+    },
     /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
     /// for an empty one, and each piece's skin (v102), zero for none and
     /// always zero on an empty slot. Appearance only, for drawing the body.
@@ -2250,7 +2271,7 @@ pub enum EventMsg {
     /// and after a resync. `None` when the server has no death of yours on
     /// record.
     DeathMark { at: Option<(i32, i32)> },
-    /// You earned an achievement, or finished a set of them (v118). Own-fact,
+    /// You earned an achievement, or finished a set of them (v119). Own-fact,
     /// sent once, at the unlock: the popup's whole content.
     Achievement(Achieved),
     /// You woke up: `on_bag` is true if one of your own sleeping bags
@@ -3362,7 +3383,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_TURRET || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_VENDING || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -5117,7 +5138,7 @@ pub fn encode_event_dead(
     Ok(w.finish())
 }
 
-/// One unlock, as the popup draws it (`EventMsg::Achievement`, v118).
+/// One unlock, as the popup draws it (`EventMsg::Achievement`, v119).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Achieved {
     /// A set finished rather than one achievement earned.
@@ -5439,6 +5460,100 @@ pub fn encode_event_team(view: &TeamView, buf: &mut [u8]) -> Result<usize, WireE
         w.write(m.x_m as u32, TEAM_POS_BITS)?;
         w.write(m.z_m as u32, TEAM_POS_BITS)?;
     }
+    Ok(w.finish())
+}
+
+/// One offer row of a vending machine as a client is shown it: `lot` of
+/// `item` for `price` of the coin, and `have`, how many of `item` the machine
+/// holds now (saturating). `lot == 0` is an empty row, all zeros.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShopRow {
+    pub item: u16,
+    pub lot: u16,
+    pub price: u16,
+    pub have: u16,
+}
+
+impl ShopRow {
+    pub fn live(&self) -> bool {
+        self.lot > 0
+    }
+
+    /// Whole lots the machine can sell now.
+    pub fn lots(&self) -> u16 {
+        self.have.checked_div(self.lot).unwrap_or(0)
+    }
+}
+
+/// A vending machine (`sim_core::deploy::ARCH_VENDING`) as the receiver sees
+/// it (v118): its box key, the coin its prices are in, whether the receiver
+/// may stock it and set its offers (its owner or the crew of its claim), and
+/// its `SHOP_ROWS` offer rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShopView {
+    pub key: u32,
+    pub coin: u16,
+    pub may_edit: bool,
+    pub rows: [ShopRow; sim_core::limits::SHOP_ROWS],
+}
+
+impl ShopView {
+    /// The shape both ends hold a view to: a real key, canonical empty rows,
+    /// items in the table.
+    pub fn valid(&self) -> bool {
+        self.key != 0
+            && self.rows.iter().all(|r| {
+                (r.item as usize) < MAX_ITEM_DEFS
+                    && (r.lot > 0 || (r.item == 0 && r.price == 0 && r.have == 0))
+            })
+    }
+}
+
+/// A vending machine's offers to its viewer — see [`EventMsg::Shop`].
+pub fn encode_event_shop(view: &ShopView, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !view.valid() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SHOP)?;
+    w.write(view.key, 32)?;
+    w.write(view.coin as u32, 16)?;
+    w.write_bit(view.may_edit)?;
+    for r in view.rows.iter() {
+        w.write_bit(r.live())?;
+        if r.live() {
+            w.write(r.item as u32, 16)?;
+            w.write(r.lot as u32, 16)?;
+            w.write(r.price as u32, 16)?;
+            w.write(r.have as u32, 16)?;
+        }
+    }
+    Ok(w.finish())
+}
+
+/// A shop press answered — see [`EventMsg::ShopResult`].
+pub fn encode_event_shop_result(
+    key: u32,
+    op: u8,
+    row: u8,
+    times: u8,
+    code: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    const _: () = assert!(sim_core::shop::REFUSE_SH_MAX < 16);
+    const _: () = assert!(sim_core::shop::SHOP_TIMES_MAX < 32);
+    if op > sim_core::shop::SHOP_OP_MAX
+        || row as usize >= sim_core::limits::SHOP_ROWS
+        || times > sim_core::shop::SHOP_TIMES_MAX
+        || code as u32 > sim_core::shop::REFUSE_SH_MAX
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SHOP_RESULT)?;
+    w.write(key, 32)?;
+    w.write(op as u32, 2)?;
+    w.write(row as u32, 3)?;
+    w.write(times as u32, 5)?;
+    w.write(code as u32, 4)?;
     Ok(w.finish())
 }
 
@@ -6120,7 +6235,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_TURRET
+                if arch > ARCH_VENDING
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -6836,6 +6951,52 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::Agent { id }
         }
         SUB_TEAM => EventMsg::Team(TeamView::read(&mut r)?),
+        SUB_SHOP => {
+            let mut view = ShopView {
+                key: r.read(32)?,
+                coin: r.read(16)? as u16,
+                may_edit: r.read_bit()?,
+                ..Default::default()
+            };
+            for row in view.rows.iter_mut() {
+                if r.read_bit()? {
+                    *row = ShopRow {
+                        item: r.read(16)? as u16,
+                        lot: r.read(16)? as u16,
+                        price: r.read(16)? as u16,
+                        have: r.read(16)? as u16,
+                    };
+                    if row.lot == 0 {
+                        return Err(WireError::Malformed);
+                    }
+                }
+            }
+            if !view.valid() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Shop(view)
+        }
+        SUB_SHOP_RESULT => {
+            let key = r.read(32)?;
+            let op = r.read(2)? as u8;
+            let row = r.read(3)? as u8;
+            let times = r.read(5)? as u8;
+            let code = r.read(4)? as u8;
+            if op > sim_core::shop::SHOP_OP_MAX
+                || row as usize >= sim_core::limits::SHOP_ROWS
+                || times > sim_core::shop::SHOP_TIMES_MAX
+                || code as u32 > sim_core::shop::REFUSE_SH_MAX
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ShopResult {
+                key,
+                op,
+                row,
+                times,
+                code,
+            }
+        }
         SUB_CHAT => {
             let from = r.read(32)?;
             let channel = Channel::read(&mut r)?;
@@ -9293,6 +9454,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/turret.rs"),
         },
         Module {
+            file: "shop.rs",
+            src: include_str!("../../sim-core/src/shop.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -9813,10 +9978,11 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`.
-            min_members: 19,
+            // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`;
+            // 20 at v118: `ARCH_VENDING`.
+            min_members: 20,
             bits: ARCH_BITS,
-            live_max: 18,
+            live_max: 19,
         },
         Domain {
             what: "deploy matter",

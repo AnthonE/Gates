@@ -169,6 +169,11 @@ pub const ARCH_PLANTER: u8 = 17;
 /// rounds a gun on top spends on anybody who is not its owner or the crew
 /// of the claim it stands in.
 pub const ARCH_TURRET: u8 = 18;
+/// A player's vending machine (`shop.rs`, the compound shop): a container
+/// whose stock anyone in reach may buy at the offers its owner set, paid in
+/// the island's coin. Only its owner and the crew of the claim it stands in
+/// move items in or out (`turret::spares`, the turret's rule).
+pub const ARCH_VENDING: u8 = 19;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -191,7 +196,7 @@ pub const ARCH_TURRET: u8 = 18;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 19] = [
+pub const DEPLOY_VOL: [[f32; 3]; 20] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -211,6 +216,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 19] = [
     [1.8, 1.4, 0.6],   // 16 barricade — a log wall
     [1.6, 0.5, 0.8],   // 17 planter — a raised bed
     [0.7, 0.6, 0.7],   // 18 turret — the base; the gun stands on it
+    [0.9, 1.9, 0.8],   // 19 vending machine
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -308,6 +314,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_RESEARCH
         || arch == ARCH_PLANTER
         || arch == ARCH_TURRET
+        || arch == ARCH_VENDING
 }
 
 /// A workbench archetype's rung on the bench ladder, `0` for anything
@@ -674,10 +681,16 @@ pub struct DeployContent {
     /// lock placed from this item is keyed (`lock::LockRec::fresh_key`);
     /// any other lock item is a code lock.
     pub key_lock_item: u16,
+    /// The coin a vending machine's offers are priced in (`shop.rs`), the
+    /// island's junk; [`NO_SHOP_COIN`] when content ships none, and then
+    /// every purchase refuses.
+    pub shop_coin: u16,
 }
 
 /// `DeployContent::key_lock_item` when no key lock exists.
 pub const NO_KEY_LOCK: u16 = u16::MAX;
+/// `DeployContent::shop_coin` when content names no coin.
+pub const NO_SHOP_COIN: u16 = u16::MAX;
 
 impl DeployContent {
     /// Inert: no deployable exists, every request refuses, nothing
@@ -694,6 +707,7 @@ impl DeployContent {
         inside_decay_pct: 0,
         grief_periods: 0,
         key_lock_item: NO_KEY_LOCK,
+        shop_coin: NO_SHOP_COIN,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -1134,6 +1148,10 @@ pub struct Deploys {
     /// Not `Box<Locks>` — `Locks` boxes its own array, for the shadow-stack
     /// reason its doc comment records.
     locks: Locks,
+    /// The vending machines' offers (`shop.rs`), keyed by the machine's box
+    /// address like a lock is keyed by its door's. Dropped with the machine
+    /// in [`Deploys::remove_at`].
+    shops: crate::shop::Shops,
     /// The privilege volumes, cached per hearth — the shape the upkeep
     /// sweep's coverage questions read (`claim::ClaimCache`, whose doc
     /// carries the determinism and bounds arguments whole). Derived state
@@ -1164,6 +1182,7 @@ impl Deploys {
             hearth_count: 0,
             boxes: Box::new(BoxStore::new()),
             locks: Locks::new(),
+            shops: crate::shop::Shops::new(),
             claim: crate::claim::ClaimCache::new(),
             hearth_gen: 0,
             grief: [GriefRec::default(); MAX_GRIEF_PER_TICK],
@@ -1383,6 +1402,21 @@ impl Deploys {
         self.locks.entries()
     }
 
+    /// The vending machines' offers (`shop.rs`). Read by `state_hash`, by
+    /// `worldsave` and by the server's shop view.
+    pub fn shops(&self) -> &crate::shop::Shops {
+        &self.shops
+    }
+
+    pub(crate) fn shops_mut(&mut self) -> &mut crate::shop::Shops {
+        &mut self.shops
+    }
+
+    /// Replace the offers from a decoded world save. Boot-only.
+    pub(crate) fn restore_shops(&mut self, recs: &[crate::shop::ShopRec]) {
+        self.shops.restore(recs);
+    }
+
     /// Write the two mirror bits of `entries[i]` from the lock store's
     /// verdict. `World::rebuild_doors` is the only caller and the doc
     /// there is the argument; it exists as a method because `entries` is
@@ -1492,6 +1526,13 @@ impl Deploys {
     pub fn table_index(&self, key: u32) -> Option<usize> {
         self.box_index(key)
             .filter(|&i| self.boxes.ovens[i].arch == ARCH_RESEARCH)
+    }
+
+    /// Resolve a packed address to a container index that is a **vending
+    /// machine** (`shop.rs`) — `table_index`'s filter for the shop verb.
+    pub fn vending_index(&self, key: u32) -> Option<usize> {
+        self.box_index(key)
+            .filter(|&i| self.boxes.ovens[i].arch == ARCH_VENDING)
     }
 
     /// Resolve a packed box address to an index into `boxes()`, or `None`
@@ -1660,6 +1701,10 @@ impl Deploys {
             }
         }
         if holds_items(dc.defs[rec.row as usize].arch) {
+            // A vending machine's offers go with it (raid, decay, pickup):
+            // the next machine at this address starts with none.
+            self.shops
+                .drop_key(box_key(rec.cx, rec.cz, rec.level, rec.loc));
             if let Some(b) = self.box_index(box_key(rec.cx, rec.cz, rec.level, rec.loc)) {
                 let bx = self.boxes.entries[b];
                 self.boxes.len -= 1;
@@ -3394,8 +3439,15 @@ pub fn pick_up(
     }
     let rec = deploys.entries[i];
     let def = dc.defs[rec.row as usize];
+    // A vending machine comes up only for the hands it answers to: on open
+    // ground anyone may lift a box, but a shop's stock is not anyone's.
+    if def.arch == ARCH_VENDING && !crate::turret::spares(pieces, deploys, rec.owner, ax, az, p.id)
+    {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
+        return;
+    }
     // A container comes up empty or not at all.
-    if def.arch == ARCH_BOX
+    if (def.arch == ARCH_BOX || def.arch == ARCH_VENDING)
         && deploys
             .box_index(box_key(cx, cz, level, loc))
             .is_some_and(|b| !deploys.boxes.entries[b].is_empty())

@@ -189,6 +189,21 @@ impl TeamHome {
         };
     }
 
+    /// A teammate said which box is the team's (a clan's word, as
+    /// `agent::society` shares it): home is there if it knows none yet,
+    /// it is on the team, and the mirror shows a box at that address. The
+    /// rest of the base it learns by eye, as it would have.
+    pub fn tell(&mut self, core: &ClientCore, at: OpAddr) {
+        if self.anchor.is_some()
+            || core.team().count == 0
+            || self.knows(at)
+            || arch_at(core, at) != Some(ARCH_BOX)
+        {
+            return;
+        }
+        self.learn(at, ARCH_BOX);
+    }
+
     /// The team's stations as a crafter reads them: the best bench of each
     /// rung, and the furnace.
     pub fn stations(&self) -> Stations {

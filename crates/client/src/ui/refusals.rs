@@ -250,6 +250,22 @@ pub fn vend(code: u8) -> String {
     }
 }
 
+/// Why a vending machine press was turned down (`sim_core::shop::REFUSE_SH_*`).
+pub fn shop(code: u8) -> String {
+    use sim_core::shop::*;
+    match code as u32 {
+        REFUSE_SH_REACH => "step up to the machine".into(),
+        REFUSE_SH_OFFER => "that offer is not up".into(),
+        REFUSE_SH_STOCK => "sold out".into(),
+        REFUSE_SH_FUNDS => "you cannot pay for that".into(),
+        REFUSE_SH_FULL => "no room in your pack for that".into(),
+        REFUSE_SH_TAKINGS => "the machine has no room for the junk".into(),
+        REFUSE_SH_ALLOWED => "only its owner's crew sets its offers".into(),
+        REFUSE_SH_CAP => "too many shops on the island".into(),
+        _ => "the machine does not answer".into(),
+    }
+}
+
 /// Why an arc verb did nothing (`sim_core::works::REFUSE_A_*`).
 pub fn arc(code: u8) -> String {
     use sim_core::works::*;

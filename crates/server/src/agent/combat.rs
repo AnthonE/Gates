@@ -6,7 +6,10 @@
 //! - **Idle**: nothing to answer.
 //! - **Guard**: a blow landed and the eyes have not found who struck it:
 //!   face the blow's bearing and walk back from it until they do, or for
-//!   a while.
+//!   a while. Shot at by a body not yet seen (a round cracking past, an
+//!   arrow landing beside me after a report, a blow from nobody in sight),
+//!   run weaving for cover from where the report came, eyes that way, and
+//!   answer whoever the eyes find there ([`Combat::listen`]).
 //! - **Engage**: a fight with one body, swung ([`Combat::melee`]) or
 //!   shot ([`Combat::shoot`]).
 //! - **Escape**: losing, or told to run: back away along a route, weaving,
@@ -37,7 +40,7 @@
 use super::hands::part_height;
 use super::intent::{yaw_toward, Intent, Look};
 use super::route::{into_deeper_water, Route, Step};
-use super::tracks::{clear_line, eye_m, Sight};
+use super::tracks::{clear_line, eye_m, Band, Heard, Sight};
 use super::tracks::{Sound, Species, Track, Tracks, AIM_MISS_M, CLOSING_MPS};
 use super::wiki::{Book, Page};
 use super::{aim, cover};
@@ -116,15 +119,35 @@ pub const GATHERING_TICKS: u32 = 10 * TICK_HZ;
 /// long as it keeps coming my way.
 pub const WARY_M: f32 = 15.0;
 pub const SIZE_UP_TICKS: u32 = 3 * TICK_HZ / 2;
-/// Footsteps heard this recently from where nobody was seen lately (within
-/// [`GLANCE_CONE`] of the sound) turn the eyes that way, for one look this
-/// long; steps from that way are then let be for a while, found or not
-/// (someone walking behind a wall is heard and never seen).
+/// Footsteps or a shot heard this recently from where nobody was seen
+/// lately (within [`GLANCE_CONE`] of the sound) turn the eyes that way, for
+/// one look this long; sounds from that way are then let be for a while,
+/// found or not (someone walking behind a wall is heard and never seen).
 pub const GLANCE_TICKS: u32 = TICK_HZ / 2;
 pub const GLANCE_KNOWN_TICKS: u32 = 3 * TICK_HZ;
 pub const GLANCE_LOOK_TICKS: u32 = TICK_HZ;
 pub const GLANCE_REST_TICKS: u32 = 8 * TICK_HZ;
 const GLANCE_CONE: u16 = 0x2000;
+/// A report heard no longer than this before an arrow or a round landed
+/// beside me, or a blow landed, is the shot that did it: an arrow from as
+/// far as a bow is heard is under a second in the air.
+pub const PAIR_TICKS: u32 = 3 * TICK_HZ / 2;
+/// Shot at and missed, the legs wait this long before they answer it: a
+/// person's startle. A blow that lands is answered at once, as it always
+/// was, and a shot while already running from fire keeps it running.
+pub const STARTLE_TICKS: u32 = TICK_HZ / 4;
+/// Turned toward a blow this long ago and nobody found who struck it: it
+/// came from further off than a swing, and is run from as a shot is. About
+/// what slow hands take to come round and the eyes to pick a body out.
+pub const LOOKED_TICKS: u32 = TICK_HZ;
+/// Where cover is taken from until the shooter is seen: this far along the
+/// report's bearing, by how far off it sounded.
+pub const NEAR_GUESS_M: f32 = 12.0;
+pub const MID_GUESS_M: f32 = 40.0;
+pub const FAR_GUESS_M: f32 = 90.0;
+/// The body a guard under fire runs from before the eyes have it (no
+/// entity is ever this id: `client_core::core::NO_VICTIM`).
+const UNSEEN: u32 = u32::MAX;
 /// A player holding a bow on me and standing still for this long has
 /// stopped to shoot: the draw a person sees (the wire carries what is in
 /// hand and where it looks, not whether it is drawn). Someone walking my
@@ -332,6 +355,18 @@ pub struct Foe {
     pub dealt_from: Option<u32>,
 }
 
+/// Shot at by a body not yet seen: when it was heard, which way the
+/// report came from (a world wire yaw toward it) and how far off it
+/// sounded, and whether the reflex has taken it up yet (a miss waits out
+/// the startle).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Fire {
+    at: u32,
+    toward: u16,
+    band: Band,
+    taken: bool,
+}
+
 /// What the reflex made of this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Assess {
@@ -446,6 +481,10 @@ pub struct CombatStats {
     pub evades: u64,
     /// Escapes that found cover to run to.
     pub covers: u64,
+    /// Guards begun under fire from a body not yet seen: a round cracking
+    /// past, an arrow landing beside it after a report, a blow with a
+    /// report to match or from nobody in sight.
+    pub shot_at: u64,
     /// Bags and stacks asked for after a win.
     pub loots: u64,
     pub pickups: u64,
@@ -465,6 +504,11 @@ pub struct Combat {
     foe: Option<Foe>,
     /// The last blow taken: tick and world bearing toward its source.
     hurt: Option<(u32, u16)>,
+    /// The last shot at me from a body not yet seen.
+    fire: Option<Fire>,
+    /// How many sounds the ears had heard by the last frame
+    /// ([`Tracks::heard_since`]).
+    ears: u64,
     /// Strafe side (+1 right, −1 left) and when it next reverses.
     strafe: (i8, u32),
     /// When my own next swing is ready, from the last one it felt.
@@ -608,6 +652,8 @@ impl Combat {
             retreat: None,
             foe: None,
             hurt: None,
+            fire: None,
+            ears: 0,
             strafe: (1, 0),
             ready_at: 0,
             stuck: None,
@@ -648,6 +694,7 @@ impl Combat {
         self.retreat = None;
         self.foe = None;
         self.hurt = None;
+        self.fire = None;
         self.stuck = None;
         self.shunned = [None; SHUN_MAX];
         self.draw = None;
@@ -806,6 +853,7 @@ impl Combat {
         }
         self.mode = Mode::Engage;
         self.retreat = None;
+        self.threat = None;
     }
 
     fn over(&mut self, away: Option<u16>, end: End) -> Assess {
@@ -824,6 +872,7 @@ impl Combat {
         self.cover = None;
         self.cover_tried = None;
         self.spoils = None;
+        self.fire = self.fire.filter(|f| !f.taken);
         self.last_end = Some(end);
         Assess::Over { away, end }
     }
@@ -841,6 +890,8 @@ impl Combat {
         let me = pos(body);
         self.verb = None;
         self.size_up(tracks, kit.book, me, tick);
+        self.listen(tracks, kit, me, tick);
+        self.take_fire(me, tick);
         match self.mode {
             Mode::Idle | Mode::Downed | Mode::Heal => {
                 self.mode = Mode::Idle;
@@ -866,7 +917,17 @@ impl Combat {
                 if let Some(id) = self.attacker(tracks, kit, me, tick) {
                     return self.answer(core, body, tracks, route, kit, id, tick);
                 }
-                self.back_away(core, body, tracks, route, tick, false)
+                // Turned to the blow and nobody there who struck it: it
+                // came from further off than a swing reaches.
+                let unfound = self.hurt.filter(|&(at, _)| {
+                    let age = tick.wrapping_sub(at);
+                    (LOOKED_TICKS..ALARM_TICKS).contains(&age)
+                });
+                if let Some((_, toward)) = unfound.filter(|_| !self.under_fire()) {
+                    self.cover_from(me, toward, Band::Mid, false, tick);
+                }
+                let fired = self.under_fire();
+                self.back_away(core, body, tracks, route, tick, fired)
             }
             Mode::Escape => self.back_away(core, body, tracks, route, tick, true),
             Mode::Engage => self.fight(core, body, tracks, route, kit, tick),
@@ -884,6 +945,101 @@ impl Combat {
         self.cover = None;
         self.cover_tried = None;
         self.draw = None;
+    }
+
+    /// What the ears make of the sounds heard since the last frame. A round
+    /// cracking past, or an arrow or a round landing beside me just after a
+    /// report, is a shot at me from where the report came, and so is a blow
+    /// that lands with a report to match its side: a person knows that much,
+    /// and roughly from where, before they have seen anyone. Not in the safe
+    /// zone, where no player's shot can hurt me (a blow still counts), and
+    /// never from a teammate, whose reports the ears do not listen for
+    /// (`Tracks::on_shot`). What was heard while the body could not answer
+    /// (down, asleep) is history by the time it can.
+    fn listen(&mut self, tracks: &Tracks, kit: &Kit, me: [f32; 3], tick: u32) {
+        let mark = self.ears;
+        self.ears = tracks.stats.heard;
+        let safe = in_zone(kit, me);
+        for h in tracks.heard_since(mark) {
+            if tick.wrapping_sub(h.tick) >= ALARM_TICKS {
+                continue;
+            }
+            let from = match h.sound {
+                Sound::Whiz if !safe => Some(*h),
+                Sound::Impact if !safe => report(tracks, h, None),
+                Sound::Hurt => report(tracks, h, Some(h.bearing)),
+                _ => None,
+            };
+            if let Some(r) = from {
+                self.fire = Some(Fire {
+                    at: h.tick,
+                    toward: r.bearing,
+                    band: r.band,
+                    taken: false,
+                });
+            }
+        }
+    }
+
+    /// Take up a shot at me once the startle has passed, at once if a blow
+    /// landed with it or the body is already running from fire: the guard
+    /// runs for cover from where the report came. A fight under way goes
+    /// on, and a run from a body seen runs on.
+    fn take_fire(&mut self, me: [f32; 3], tick: u32) {
+        let Some(f) = self.fire.filter(|f| !f.taken) else {
+            return;
+        };
+        let blow = self
+            .hurt
+            .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS);
+        if !blow && !self.under_fire() && tick.wrapping_sub(f.at) < STARTLE_TICKS {
+            return;
+        }
+        self.fire = Some(Fire { taken: true, ..f });
+        match self.mode {
+            Mode::Engage => {}
+            Mode::Escape => {
+                if let Some(r) = self.retreat.as_mut() {
+                    r.start = tick;
+                }
+            }
+            _ => self.cover_from(me, f.toward, f.band, blow, tick),
+        }
+    }
+
+    /// Guard from a shooter not yet seen, `toward` that way and about as
+    /// far as `band` sounded: back away from it, weaving to cover, eyes on
+    /// where it must be. A new side, or a blow taken on the way, looks for
+    /// cover again.
+    fn cover_from(&mut self, me: [f32; 3], toward: u16, band: Band, blow: bool, tick: u32) {
+        let m = match band {
+            Band::Near => NEAR_GUESS_M,
+            Band::Mid => MID_GUESS_M,
+            Band::Far => FAR_GUESS_M,
+        };
+        let (dx, dz) = yaw_dir(toward);
+        let at = [me[0] + dx * m, me[2] + dz * m];
+        let moved = match self.threat {
+            Some((UNSEEN, was, true)) if self.under_fire() => {
+                off(yaw_toward(was[0] - me[0], was[1] - me[2]), toward) > GLANCE_CONE
+            }
+            _ => {
+                self.stats.shot_at += 1;
+                true
+            }
+        };
+        if moved || blow {
+            self.cover = None;
+            self.cover_tried = None;
+        }
+        self.run(Mode::Guard, tick, toward.wrapping_add(1 << 15));
+        self.threat = Some((UNSEEN, at, true));
+        self.draw = None;
+    }
+
+    /// Guarding from a shooter not yet seen.
+    fn under_fire(&self) -> bool {
+        self.mode == Mode::Guard && self.threat.is_some_and(|(_, _, ranged)| ranged)
     }
 
     /// A stranger worth keeping an eye on while the goal runs: a player
@@ -918,11 +1074,14 @@ impl Combat {
                 part: Part::Chest.bits(),
             });
         }
-        // Steps behind me, or off to the side, from someone I have not
-        // seen about: a look round.
+        // Steps behind me or off to the side, or a shot, from someone I
+        // have not seen about: a look round.
         let step = tracks
             .heard()
-            .filter(|h| h.sound == Sound::Step && tick.wrapping_sub(h.tick) < GLANCE_TICKS)
+            .filter(|h| {
+                matches!(h.sound, Sound::Step | Sound::Shot)
+                    && tick.wrapping_sub(h.tick) < GLANCE_TICKS
+            })
             .last()?;
         let near = |a: u16, b: u16| (a.wrapping_sub(b) as i16).unsigned_abs() <= GLANCE_CONE;
         let known = tracks
@@ -1140,6 +1299,9 @@ impl Combat {
         let blow = self
             .hurt
             .filter(|(at, _)| tick.wrapping_sub(*at) < ALARM_TICKS);
+        let fire = self
+            .fire
+            .filter(|f| f.taken && tick.wrapping_sub(f.at) < FLEE_TICKS);
         let mut best: Option<(f32, u32)> = None;
         let low = me_low(tracks);
         for t in tracks.seen() {
@@ -1155,6 +1317,15 @@ impl Combat {
                 let off = (bearing.wrapping_sub(toward) as i16).unsigned_abs();
                 (d <= reach.max(1.0) + ATTACKER_SLACK_M || (ranged && aimed(t, me, low, book)))
                     && (off <= HURT_CONE || d < 1.0)
+            });
+            // Found where a shot at me came from, with something that
+            // shoots it that far pointed my way: the shooter.
+            let fired = fire.is_some_and(|f| {
+                let bearing = yaw_toward(t.pos[0] - me[0], t.pos[2] - me[2]);
+                ranged
+                    && d <= reach
+                    && off(bearing, f.toward) <= HURT_CONE
+                    && aimed(t, me, low, book)
             });
             let charging = t.species == Species::Wolf && d < WOLF_ALARM_M && closing(t, me, d);
             // One I could not get at is let be: it is the base it is after.
@@ -1177,7 +1348,7 @@ impl Combat {
             // blow back would make this body hostile under the same guns.
             let zone = t.species == Species::Player && (in_zone(kit, me) || in_zone(kit, t.pos));
             let provoked = rushing || drawn || raiding;
-            if ((!zone && (swung || shot || struck || provoked)) || charging)
+            if ((!zone && (swung || shot || struck || fired || provoked)) || charging)
                 && best.is_none_or(|(b, _)| d < b)
             {
                 best = Some((d, t.id));
@@ -2036,6 +2207,26 @@ impl Combat {
     }
 }
 
+/// The report heard last before `h` (or with it), no longer than
+/// [`PAIR_TICKS`] before, and within [`HURT_CONE`] of `side` if one is
+/// given: the shot that landed it.
+fn report(tracks: &Tracks, h: &Heard, side: Option<u16>) -> Option<Heard> {
+    tracks
+        .heard()
+        .filter(|r| {
+            matches!(r.sound, Sound::Shot | Sound::Whiz)
+                && h.tick.wrapping_sub(r.tick) <= PAIR_TICKS
+                && side.is_none_or(|s| off(r.bearing, s) <= HURT_CONE)
+        })
+        .last()
+        .copied()
+}
+
+/// How far apart two wire yaws are, either way round.
+fn off(a: u16, b: u16) -> u16 {
+    (a.wrapping_sub(b) as i16).unsigned_abs()
+}
+
 /// Inside the town's safe zone (`town::safe`, a map fact).
 fn in_zone(kit: &Kit, p: [f32; 3]) -> bool {
     sim_core::town::safe(&kit.town, p[0], p[2])
@@ -2711,6 +2902,218 @@ mod tests {
         tracks.stand(7, [0.0, 0.0, edge + 8.0], true);
         let out = [0.0, 0.0, edge + 7.0];
         assert_eq!(combat.attacker(&tracks, &kit, out, 10), Some(7));
+    }
+
+    fn spear_kit(book: &Book, town: Town) -> Kit<'_> {
+        Kit {
+            book,
+            melee: Some((0, wire("Wooden Spear"))),
+            ranged: None,
+            rounds: 0,
+            loaded: None,
+            hp: 100,
+            hp_max: 100,
+            on_target: false,
+            settled: false,
+            lead_ticks: 4,
+            lane_free: true,
+            raided: None,
+            home_ground: false,
+            town,
+        }
+    }
+
+    /// Shot at by a body it has not seen, it does what a person does:
+    /// startled a moment, then off for cover from where the report came,
+    /// at a run, eyes that way. Whoever the eyes then find there with a gun
+    /// pointed at it is the one it answers; a body there pointing it
+    /// somewhere else is not. A shot that cannot hurt it (in the safe zone)
+    /// is no alarm.
+    #[test]
+    fn a_round_cracking_past_sends_it_to_cover_and_finds_the_shooter() {
+        let book = book();
+        let kit = spear_kit(&book, Town::NONE);
+        let (west, east, north) = (
+            yaw_toward(-1.0, 0.0),
+            yaw_toward(1.0, 0.0),
+            yaw_toward(0.0, 1.0),
+        );
+        let me = [0.0; 3];
+        let shooter = 7;
+        let mut tracks = Tracks::new();
+        tracks.reset(1, 1);
+        tracks.place(me);
+        // Out of sight 30 m east, a revolver fired along a line by my chest.
+        tracks.stand(shooter, [30.0, 0.0, 0.0], false);
+        tracks.on_shot(shooter, (west, 128), 0, 500, 10);
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let mut route = Route::new();
+        let body = EntityState::default();
+        let mut combat = Combat::new(Temperament::Defensive);
+        for tick in 10..10 + STARTLE_TICKS {
+            let a = combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick);
+            assert_eq!(a, Assess::Calm, "startled, at {tick}");
+        }
+        let tick = 10 + STARTLE_TICKS;
+        let a = combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick);
+        let Assess::Fight(intent) = a else {
+            panic!("no answer to the shot: {a:?}");
+        };
+        assert!(combat.under_fire(), "{:?}", combat.mode());
+        assert_eq!(combat.stats.shot_at, 1);
+        let Look::Heading(eyes) = intent.look else {
+            panic!("eyes {:?}", intent.look);
+        };
+        assert!(off(eyes, east) <= GLANCE_CONE, "looking {eyes}");
+        let (_, away) = combat.retreat().unwrap();
+        assert!(off(away, west) <= GLANCE_CONE, "backing off along {away}");
+        // A second round on the way does not count a second alarm.
+        tracks.on_shot(shooter, (west, 128), 0, 500, tick + 5);
+        combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick + 5);
+        assert_eq!(combat.stats.shot_at, 1);
+        // In sight now, revolver up and on me: the one shooting.
+        tracks.stand(shooter, [30.0, 0.0, 0.0], true);
+        let t = tracks.track_mut(shooter).unwrap();
+        t.held = Some(wire("Revolver"));
+        t.yaw = west;
+        assert_eq!(combat.attacker(&tracks, &kit, me, tick + 6), Some(shooter));
+        // Pointed up the beach instead: someone else's fight.
+        tracks.track_mut(shooter).unwrap().yaw = north;
+        assert_eq!(combat.attacker(&tracks, &kit, me, tick + 6), None);
+
+        // The same round in the safe zone is no alarm.
+        let town = Town {
+            live: true,
+            ..Town::NONE
+        };
+        let kit = spear_kit(&book, town);
+        let mut combat = Combat::new(Temperament::Defensive);
+        for tick in 20..20 + 2 * STARTLE_TICKS {
+            combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick);
+        }
+        assert_eq!((combat.mode(), combat.stats.shot_at), (Mode::Idle, 0));
+    }
+
+    /// An arrow landing beside me just after a twang is a shot at me from
+    /// the twang's side; with no report it says nothing of where. A blow
+    /// with a report from its side is a shot, taken up at once; a blow from
+    /// a side nothing was heard from is a swing turned toward first, and
+    /// run from as a shot only once the eyes have looked and found nobody.
+    #[test]
+    fn an_arrow_beside_me_or_a_blow_from_nobody_is_run_from_as_a_shot() {
+        let book = book();
+        let kit = spear_kit(&book, Town::NONE);
+        let (north, south) = (yaw_toward(0.0, 1.0), yaw_toward(0.0, -1.0));
+        let me = [0.0; 3];
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let mut route = Route::new();
+        let body = EntityState::default();
+        let fresh = || {
+            let mut tracks = Tracks::new();
+            tracks.reset(1, 1);
+            tracks.place(me);
+            tracks.stand(7, [0.0, 0.0, 25.0], false);
+            tracks
+        };
+        // A twang from the north, then the arrow in the dirt beside me.
+        let mut tracks = fresh();
+        tracks.on_shot(7, (south, 140), 900, 10, 10);
+        tracks.on_impact([1.0, 0.0, 1.0], 25);
+        let mut combat = Combat::new(Temperament::Opportunist);
+        for tick in 25..25 + STARTLE_TICKS + 1 {
+            combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick);
+        }
+        assert!(combat.under_fire());
+        let (_, away) = combat.retreat().unwrap();
+        assert!(off(away, south) <= GLANCE_CONE);
+        // The arrow alone: nothing to say from where.
+        let mut tracks = fresh();
+        tracks.on_impact([1.0, 0.0, 1.0], 25);
+        let mut combat = Combat::new(Temperament::Opportunist);
+        for tick in 25..25 + 2 * STARTLE_TICKS {
+            combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick);
+        }
+        assert_eq!(combat.mode(), Mode::Idle);
+
+        // The twang, then the arrow in me: at once, from the twang's side.
+        let mut tracks = fresh();
+        tracks.on_shot(7, (south, 140), 900, 10, 10);
+        tracks.on_hurt(north, 25);
+        let mut combat = Combat::new(Temperament::Opportunist);
+        combat.on_hurt(25, south);
+        combat.assess(&mut core, &body, &tracks, &mut route, &kit, 25);
+        assert!(combat.under_fire());
+        assert_eq!(combat.stats.shot_at, 1);
+        // A blow from the south with the twang in the north: a swing at my
+        // back, turned toward and walked back from...
+        let mut tracks = fresh();
+        tracks.on_shot(7, (south, 140), 900, 10, 10);
+        tracks.on_hurt(south, 25);
+        let mut combat = Combat::new(Temperament::Opportunist);
+        combat.on_hurt(25, north);
+        let a = combat.assess(&mut core, &body, &tracks, &mut route, &kit, 25);
+        assert_eq!(combat.mode(), Mode::Guard);
+        assert!(!combat.under_fire());
+        let Assess::Fight(walk) = a else {
+            panic!("{a:?}");
+        };
+        assert_eq!(walk.buttons & BTN_SPRINT, 0, "walked back, eyes round");
+        // ...until the eyes have looked and found nobody there: then it
+        // came from further off, and is run from to cover.
+        for tick in 26..25 + LOOKED_TICKS {
+            combat.assess(&mut core, &body, &tracks, &mut route, &kit, tick);
+            assert!(!combat.under_fire(), "at {tick}");
+        }
+        combat.assess(
+            &mut core,
+            &body,
+            &tracks,
+            &mut route,
+            &kit,
+            25 + LOOKED_TICKS,
+        );
+        assert!(combat.under_fire());
+        let (_, away) = combat.retreat().unwrap();
+        assert!(off(away, north) <= GLANCE_CONE);
+    }
+
+    /// A shot heard from where nobody was seen turns the eyes there while
+    /// the goal runs, once, as footsteps do; it is not an alarm.
+    #[test]
+    fn a_shot_heard_elsewhere_is_looked_at_not_run_from() {
+        let book = book();
+        let (west, north) = (yaw_toward(-1.0, 0.0), yaw_toward(0.0, 1.0));
+        let mut tracks = Tracks::new();
+        tracks.reset(1, 1);
+        tracks.place([0.0; 3]);
+        // Seen at the start, and not since: nobody known about there.
+        tracks.stand(7, [50.0, 0.0, 0.0], false);
+        let at = 1 + GLANCE_KNOWN_TICKS;
+        tracks.on_shot(7, (north, 128), 0, 500, at);
+        let mut combat = Combat::new(Temperament::Defensive);
+        let look = combat.watch(&tracks, &book, [0.0; 3], at + 1);
+        let Some(Look::Heading(y)) = look else {
+            panic!("{look:?}");
+        };
+        assert!(off(y, west.wrapping_add(1 << 15)) <= GLANCE_CONE, "{y}");
+        assert_eq!(
+            combat.watch(&tracks, &book, [0.0; 3], at + GLANCE_TICKS),
+            None
+        );
+        let kit = spear_kit(&book, Town::NONE);
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let mut route = Route::new();
+        for tick in at..at + 2 * STARTLE_TICKS {
+            let a = combat.assess(
+                &mut core,
+                &EntityState::default(),
+                &tracks,
+                &mut route,
+                &kit,
+                tick,
+            );
+            assert_eq!(a, Assess::Calm);
+        }
     }
 
     /// A swing seen is at me only where it could land: ahead of it, in

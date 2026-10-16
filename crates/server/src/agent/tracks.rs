@@ -6,8 +6,9 @@
 //! perception: inside a 90° cone of its own facing, within a range that
 //! shrinks at night and in fog, with a line of sight held for a few ticks.
 //! Once out of sight a track keeps the pose it was last seen in, and is
-//! forgotten after a while. Sounds (shots, swings, impacts, blows, deaths)
-//! arrive as a bearing and a distance band, never as a body.
+//! forgotten after a while. Sounds (shots, rounds cracking past, swings,
+//! impacts, blows, deaths) arrive as a bearing and a distance band, never as
+//! a body.
 //!
 //! Poses are sampled from this body's own interpolation of the snapshot
 //! ring at `newest − playout`: what a human's screen shows, and the pose
@@ -63,8 +64,12 @@ pub const AIM_MISS_M: f32 = 1.0;
 pub const COARSE_STEP_M: f32 = 2.0;
 /// Sounds kept, newest first out.
 pub const HEARD_ROWS: usize = 8;
-/// Beyond these a sound is not heard.
+/// Beyond these a sound is not heard. A gun carries as far as its body is
+/// sent (the human client plays its far layer out past this), a bow or a
+/// crossbow only as far as the client's release cue does (`sound::CUES`:
+/// the bow's 40 m against the gun's 100).
 pub const SHOT_HEAR_M: f32 = 150.0;
+pub const BOW_HEAR_M: f32 = 40.0;
 pub const SWING_HEAR_M: f32 = 20.0;
 pub const DEATH_HEAR_M: f32 = 60.0;
 /// Another player's footsteps, as the human client plays them
@@ -78,6 +83,10 @@ pub const STEP_MIN_GAIN: f32 = 0.45;
 pub const STEP_EVERY_TICKS: u32 = 8;
 /// An arrow landing this close is "shot at".
 pub const IMPACT_NEAR_M: f32 = 6.0;
+/// A round whose line passes this close to my chest cracked past me: what
+/// the tracer streaking by and the report tell a person about a shot at
+/// them that missed. An arrow says so only where it lands.
+pub const WHIZ_M: f32 = 3.0;
 /// A heard bearing is off by up to this much either way (wire yaw units,
 /// about 10°); a heard distance by up to a quarter.
 pub const HEAR_BEARING_NOISE: u32 = 1820;
@@ -212,6 +221,9 @@ pub enum Sound {
     Swing,
     /// An arrow landed near me.
     Impact,
+    /// A round cracked past me (or into me): a shot at me, heard from
+    /// where it was fired.
+    Whiz,
     /// A blow landed on me.
     Hurt,
     Death,
@@ -267,6 +279,10 @@ pub struct TrackStats {
     pub heard: u64,
 }
 
+/// Bodies a track list spares at once: a full team, and a friend, a crew
+/// and a guild beside it (`agent::society`).
+pub const FRIEND_SLOTS: usize = 2 * protocol::TEAM_MAX + crate::agent::society::MAX_ALLIES;
+
 pub struct Tracks {
     interp: Interp,
     rows: [Option<Row>; TRACK_ROWS],
@@ -282,9 +298,10 @@ pub struct Tracks {
     stepped: Option<u32>,
     playout: u8,
     rng: Pcg32,
-    /// Its teammates (wire v108), as its client was last told: never a
-    /// threat, a quarry or a rival, but still a body to keep a swing off.
-    friends: [u32; protocol::TEAM_MAX],
+    /// Its teammates (wire v108), as its client was last told, and whoever
+    /// else it spares (its friend, its crew and guild): never a threat, a
+    /// quarry or a rival, but still a body to keep a swing off.
+    friends: [u32; FRIEND_SLOTS],
     pub stats: TrackStats,
 }
 
@@ -308,7 +325,7 @@ impl Tracks {
             stepped: None,
             playout: INTERP_DELAY_TICKS,
             rng: Pcg32::new(0, 0),
-            friends: [0; protocol::TEAM_MAX],
+            friends: [0; FRIEND_SLOTS],
             stats: TrackStats::default(),
         }
     }
@@ -320,7 +337,7 @@ impl Tracks {
         self.fed = None;
         self.me = player;
         self.rng = Pcg32::new(seed, u64::from(player));
-        self.friends = [0; protocol::TEAM_MAX];
+        self.friends = [0; FRIEND_SLOTS];
         self.forget();
     }
 
@@ -532,12 +549,7 @@ impl Tracks {
             }
         }
         self.cast_rays(core, haven, eye, tick);
-        let chest_y = if own.crouched {
-            CROUCH_CHEST_Y_M
-        } else {
-            CHEST_Y_M
-        };
-        let chest = [own.pos[0], own.pos[1] + chest_y, own.pos[2]];
+        let chest = chest(own);
         for slot in self.rows.iter_mut() {
             let Some(row) = slot.as_mut() else {
                 continue;
@@ -693,7 +705,7 @@ impl Tracks {
 
     /// Who its team is, from what its client was told (`EventMsg::Team`).
     pub fn befriend(&mut self, team: &protocol::TeamView) {
-        self.friends = [0; protocol::TEAM_MAX];
+        self.friends = [0; FRIEND_SLOTS];
         for (out, m) in self.friends.iter_mut().zip(team.members()) {
             if m.id != self.me {
                 *out = m.id;
@@ -702,8 +714,8 @@ impl Tracks {
     }
 
     /// Spare `id` as a teammate is spared, team or not: its friend
-    /// (`--friend`) is never a quarry. A team of eight leaves its own slot
-    /// free, so there is always room for one more.
+    /// (`--friend`), its crew and its guild (`agent::society`) are never a
+    /// quarry. Past the team's own eight there is room for all of them.
     pub fn spare(&mut self, id: u32) {
         if id == 0 || id == self.me || self.friend(id) {
             return;
@@ -794,13 +806,22 @@ impl Tracks {
         (0..HEARD_ROWS).filter_map(move |k| self.heard[(self.heard_next + k) % HEARD_ROWS].as_ref())
     }
 
+    /// The sounds heard since [`TrackStats::heard`] stood at `mark`, oldest
+    /// first: no more than the ring still holds.
+    pub fn heard_since(&self, mark: u64) -> impl Iterator<Item = &Heard> + '_ {
+        let new = self.stats.heard.saturating_sub(mark).min(HEARD_ROWS as u64) as usize;
+        let held = self.heard().count();
+        self.heard().skip(held.saturating_sub(new))
+    }
+
     /// Where the snapshots put a body when a sound came from it. Only ever
-    /// turned into a bearing and a band, with noise.
-    fn source(&self, id: u32) -> Option<[f32; 3]> {
+    /// turned into a bearing and a band, with noise (and, for a shot, into
+    /// whether its line came by me).
+    fn source(&self, id: u32) -> Option<RemoteState> {
         let mut s = RemoteState::default();
         self.interp
             .sample(id, f64::from(self.fed?), &mut s)
-            .then_some([s.x, s.y, s.z])
+            .then_some(s)
     }
 
     fn hear(&mut self, sound: Sound, from: [f32; 3], max_m: f32, noisy: bool, tick: u32) {
@@ -842,8 +863,12 @@ impl Tracks {
             .map(|r| &mut r.track)
     }
 
-    /// A shot was fired. Seen if its shooter is in sight; heard either way.
-    pub fn on_shot(&mut self, shooter: u32, tick: u32) {
+    /// A shot was fired along `aim` (wire yaw and pitch): a round when
+    /// `speed_mmpt` is 0, reaching `low` decimetres, else an arrow (the
+    /// wire's `EV_SHOT`). Seen if its shooter is in sight; heard either
+    /// way, a gun further than a bow, and a round whose line comes by me
+    /// as one at me. A teammate's is no threat, and is not listened for.
+    pub fn on_shot(&mut self, shooter: u32, aim: (u16, u8), speed_mmpt: u16, low: u16, tick: u32) {
         if shooter == self.me {
             self.own_shot = Some(tick);
             return;
@@ -851,9 +876,26 @@ impl Tracks {
         if let Some(t) = self.in_sight_mut(shooter) {
             t.last_shot = Some(tick);
         }
-        if let Some(at) = self.source(shooter) {
-            self.hear(Sound::Shot, at, SHOT_HEAR_M, true, tick);
+        if self.friend(shooter) {
+            return;
         }
+        let Some(s) = self.source(shooter) else {
+            return;
+        };
+        let from = [s.x, s.y, s.z];
+        let gun = protocol::shot_is_instant(speed_mmpt);
+        let past = |o: Own| {
+            let reach = f32::from(low) * 0.1;
+            passes(from, s.crouched, aim, chest(o), WHIZ_M, reach)
+        };
+        let (sound, max_m) = if !gun {
+            (Sound::Shot, BOW_HEAR_M)
+        } else if self.own.is_some_and(past) {
+            (Sound::Whiz, SHOT_HEAR_M)
+        } else {
+            (Sound::Shot, SHOT_HEAR_M)
+        };
+        self.hear(sound, from, max_m, true, tick);
     }
 
     pub fn on_swing(&mut self, swinger: u32, tick: u32) {
@@ -863,8 +905,8 @@ impl Tracks {
         if let Some(t) = self.in_sight_mut(swinger) {
             t.last_swing = Some(tick);
         }
-        if let Some(at) = self.source(swinger) {
-            self.hear(Sound::Swing, at, SWING_HEAR_M, true, tick);
+        if let Some(s) = self.source(swinger) {
+            self.hear(Sound::Swing, [s.x, s.y, s.z], SWING_HEAR_M, true, tick);
         }
     }
 
@@ -896,8 +938,8 @@ impl Tracks {
         if let Some(t) = self.in_sight_mut(victim) {
             t.dead = true;
         }
-        if let Some(at) = self.source(victim) {
-            self.hear(Sound::Death, at, DEATH_HEAR_M, true, tick);
+        if let Some(s) = self.source(victim) {
+            self.hear(Sound::Death, [s.x, s.y, s.z], DEATH_HEAR_M, true, tick);
         }
     }
 
@@ -938,20 +980,52 @@ pub fn night(tick: u32, env: &Env) -> bool {
     t as f32 / DAY_TICKS as f32 >= DAY_PORTION
 }
 
+/// Where a look ray or a round is tested against this body, standing or
+/// crouched.
+fn chest(own: Own) -> [f32; 3] {
+    let y = if own.crouched {
+        CROUCH_CHEST_Y_M
+    } else {
+        CHEST_Y_M
+    };
+    [own.pos[0], own.pos[1] + y, own.pos[2]]
+}
+
 /// Does a look ray from a body at `feet`, in that stance, pass within
 /// [`AIM_MISS_M`] of `chest`, ahead of it?
 fn aimed_at(feet: [f32; 3], crouched: bool, yaw: u16, pitch: u8, chest: [f32; 3]) -> bool {
+    passes(
+        feet,
+        crouched,
+        (yaw, pitch),
+        chest,
+        AIM_MISS_M,
+        f32::INFINITY,
+    )
+}
+
+/// Does a ray from the eye of a body at `feet`, in that stance, along `aim`
+/// (wire yaw and pitch), pass within `miss_m` of `chest`, ahead of it and
+/// no further along than `max_m`?
+fn passes(
+    feet: [f32; 3],
+    crouched: bool,
+    aim: (u16, u8),
+    chest: [f32; 3],
+    miss_m: f32,
+    max_m: f32,
+) -> bool {
     let eye_y = feet[1] + eye_m(crouched);
-    let (fx, fz) = yaw_dir(yaw);
-    let (h, v) = pitch_dir(pitch);
+    let (fx, fz) = yaw_dir(aim.0);
+    let (h, v) = pitch_dir(aim.1);
     let dir = [fx * h, v, fz * h];
     let to = [chest[0] - feet[0], chest[1] - eye_y, chest[2] - feet[2]];
     let along = to[0] * dir[0] + to[1] * dir[1] + to[2] * dir[2];
-    if along <= 0.0 {
+    if along <= 0.0 || along > max_m {
         return false;
     }
     let len2 = to[0] * to[0] + to[1] * to[1] + to[2] * to[2];
-    len2 - along * along <= AIM_MISS_M * AIM_MISS_M
+    len2 - along * along <= miss_m * miss_m
 }
 
 /// What a sight line met.
@@ -1028,6 +1102,24 @@ pub fn clear_line(
 
 #[cfg(test)]
 impl Tracks {
+    /// Stand this body here, as its own snapshot would: where sounds are
+    /// heard from.
+    pub(crate) fn place(&mut self, pos: [f32; 3]) {
+        self.own = Some(Own {
+            pos,
+            ..Own::default()
+        });
+    }
+
+    /// A track to set what it holds and where it looks.
+    pub(crate) fn track_mut(&mut self, id: u32) -> Option<&mut Track> {
+        self.rows
+            .iter_mut()
+            .flatten()
+            .map(|r| &mut r.track)
+            .find(|t| t.id == id)
+    }
+
     /// Put a body where the next snapshot has it, in sight or not, with
     /// no playout behind it: for tests of what aims at bodies.
     pub(crate) fn stand(&mut self, id: u32, pos: [f32; 3], visible: bool) {
@@ -1081,6 +1173,7 @@ impl Tracks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::intent::yaw_toward;
 
     #[test]
     fn a_look_ray_is_aimed_only_when_it_passes_close_ahead() {
@@ -1181,11 +1274,55 @@ mod tests {
     #[test]
     fn my_own_arrow_landing_near_me_is_not_heard_as_being_shot_at() {
         let mut t = one(None);
-        t.on_shot(1, 10);
+        t.on_shot(1, (0, 128), 900, 10, 10);
         t.on_impact([1.0, 0.0, 1.0], 12);
         assert_eq!(t.heard().count(), 0);
         t.on_impact([1.0, 0.0, 1.0], 12 + OWN_SHOT_QUIET_TICKS + 1);
         assert_eq!(t.heard().map(|h| h.sound).last(), Some(Sound::Impact));
+    }
+
+    /// A round whose line comes by me is heard as one at me, from the
+    /// shooter's side; one fired elsewhere, or that falls short, is a
+    /// report. A bow carries as far as the human client's release cue and
+    /// no further, a gun much further, and a teammate's is not listened
+    /// for at all.
+    #[test]
+    fn a_round_past_me_is_heard_as_one_at_me_and_a_bow_only_near() {
+        let mut t = Tracks::new();
+        t.reset(1, 1);
+        t.place([0.0; 3]);
+        let (west, north) = (yaw_toward(-1.0, 0.0), yaw_toward(0.0, 1.0));
+        let shot = |t: &mut Tracks, x: f32, aim: u16, speed: u16, low: u16| {
+            t.stand(7, [x, 0.0, 0.0], false);
+            let mark = t.stats.heard;
+            t.on_shot(7, (aim, 128), speed, low, 10);
+            t.heard_since(mark).last().map(|h| (h.sound, h.bearing))
+        };
+        let east = yaw_toward(1.0, 0.0);
+        let (sound, bearing) = shot(&mut t, 30.0, west, 0, 500).unwrap();
+        assert_eq!(sound, Sound::Whiz);
+        let off = (bearing.wrapping_sub(east) as i16).unsigned_abs();
+        assert!(u32::from(off) <= HEAR_BEARING_NOISE, "heard from {bearing}");
+        assert_eq!(shot(&mut t, 30.0, north, 0, 500).unwrap().0, Sound::Shot);
+        assert_eq!(
+            shot(&mut t, 30.0, west, 0, 200).unwrap().0,
+            Sound::Shot,
+            "fell short"
+        );
+        assert_eq!(shot(&mut t, 120.0, north, 0, 500).unwrap().0, Sound::Shot);
+        assert_eq!(shot(&mut t, 30.0, west, 900, 10).unwrap().0, Sound::Shot);
+        assert_eq!(shot(&mut t, BOW_HEAR_M + 10.0, west, 900, 10), None);
+        t.spare(7);
+        assert_eq!(shot(&mut t, 30.0, west, 0, 500), None, "a teammate's");
+        // What was heard since a mark, and no more than the ring holds.
+        assert_eq!(t.heard_since(t.stats.heard).count(), 0);
+        assert_eq!(t.heard_since(0).count(), 5);
+        for i in 0..HEARD_ROWS as u32 {
+            t.on_hurt(0, 20 + i);
+        }
+        assert_eq!(t.heard_since(0).count(), HEARD_ROWS);
+        let last2: Vec<u32> = t.heard_since(t.stats.heard - 2).map(|h| h.tick).collect();
+        assert_eq!(last2, [18 + HEARD_ROWS as u32, 19 + HEARD_ROWS as u32]);
     }
 
     #[test]

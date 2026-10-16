@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 172] = [
+const GOLDEN: [&[u8]; 175] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -234,6 +234,9 @@ const GOLDEN: [&[u8]; 172] = [
     include_bytes!("golden/event_report.bin"),
     include_bytes!("golden/event_dead.bin"),
     include_bytes!("golden/event_death_mark.bin"),
+    include_bytes!("golden/action_shop.bin"),
+    include_bytes!("golden/event_shop.bin"),
+    include_bytes!("golden/event_shop_result.bin"),
     include_bytes!("golden/event_achievement.bin"),
 ];
 
@@ -522,10 +525,14 @@ fn test_protocol_golden() {
     // The death screen on the server (v116).
     g!(seen, golden_event, 169);
     g!(seen, golden_event, 170);
-    // Achievements (v118).
-    g!(seen, golden_event, 171);
+    // The compound shop (v118).
+    g!(seen, golden_action, 171);
+    g!(seen, golden_event, 172);
+    g!(seen, golden_event, 173);
+    // Achievements (v119).
+    g!(seen, golden_event, 174);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 172, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 175, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -657,6 +664,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_treat(slot, target, &mut buf).unwrap()
+        }
+        "action_shop.bin" => {
+            let (key, act) = protocol::goldens::action_shop();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Shop { key, act },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_shop(key, act, &mut buf).unwrap()
         }
         "action_team.bin" => {
             let (op, target) = protocol::goldens::action_team();
@@ -1313,6 +1329,30 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_dead(killer, cause, item, range_cm, alive_s, &mut buf).unwrap()
+        }
+        "event_shop.bin" => {
+            let view = protocol::goldens::event_shop();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Shop(view),
+                "{name}"
+            );
+            protocol::encode_event_shop(&view, &mut buf).unwrap()
+        }
+        "event_shop_result.bin" => {
+            let (key, op, row, times, code) = protocol::goldens::event_shop_result();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::ShopResult {
+                    key,
+                    op,
+                    row,
+                    times,
+                    code
+                },
+                "{name}"
+            );
+            protocol::encode_event_shop_result(key, op, row, times, code, &mut buf).unwrap()
         }
         "event_achievement.bin" => {
             let a = protocol::goldens::event_achievement();

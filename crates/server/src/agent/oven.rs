@@ -137,6 +137,9 @@ pub enum Work {
         sample: u16,
         cost: u16,
     },
+    /// Keep the crew's vending machine (`agent::shop`): its takings out,
+    /// the wares in, its offers set.
+    Shop,
 }
 
 impl Work {
@@ -146,6 +149,7 @@ impl Work {
             Work::Cook => FIRE_ITEM,
             Work::Recycle => RECYCLER_ITEM,
             Work::Research { .. } => TABLE_ITEM,
+            Work::Shop => crate::agent::shop::SHOP_ITEM,
         }
     }
 
@@ -198,6 +202,13 @@ pub enum Tend {
         at: OpAddr,
         intent: Intent,
     },
+    /// Set or clear one of a vending machine's offers
+    /// (`encode_action_shop`).
+    Offer {
+        key: u32,
+        act: protocol::ShopAct,
+        intent: Intent,
+    },
     /// Shut the panel: the session is over once this is sent.
     Close(Intent),
     Done,
@@ -244,11 +255,12 @@ pub fn raw(book: &Book, item: u16) -> bool {
 }
 
 /// What a session puts into the device for its work, from the pack.
-fn feeds(work: Work, book: &Book, item: u16) -> bool {
+fn feeds(work: Work, core: &ClientCore, book: &Book, item: u16) -> bool {
     match work {
         Work::Cook => raw(book, item),
         Work::Recycle => book.page(item).recycles,
         Work::Research { sample, .. } => item == sample,
+        Work::Shop => crate::agent::shop::ware(core, item),
     }
 }
 
@@ -257,12 +269,12 @@ fn feeds(work: Work, book: &Book, item: u16) -> bool {
 pub fn held_for(work: Work, core: &ClientCore, book: &Book, keep: &Keep) -> u32 {
     let held: u32 = core.inv[..INV_SLOTS]
         .iter()
-        .filter(|s| s.count > 0 && feeds(work, book, s.item))
+        .filter(|s| s.count > 0 && feeds(work, core, book, s.item))
         .map(|s| u32::from(s.count))
         .sum();
     let kept: u32 = keep.rows[..usize::from(keep.n)]
         .iter()
-        .filter(|&&(item, _)| feeds(work, book, item))
+        .filter(|&&(item, _)| feeds(work, core, book, item))
         .map(|&(item, units)| units.min(carried(core, item)))
         .sum();
     held.saturating_sub(kept)
@@ -537,6 +549,29 @@ pub fn plan(
             }
             None
         }
+        Work::Shop => {
+            // Its takings out first, then the wares in: onto their own
+            // stack, or a free slot while another stays free for the next
+            // buyer's junk.
+            let junk = item_named(core, crate::agent::gate::JUNK)?;
+            for (i, s) in slots.iter().enumerate() {
+                if s.count > 0 && s.item == junk {
+                    if let Some(shift) = take(i, s) {
+                        return Some(shift);
+                    }
+                }
+            }
+            let free = slots.iter().filter(|s| s.count == 0).count();
+            let spare = |item: u16| carried(core, item).saturating_sub(keep.units(item));
+            let from = from_pack(&|item| crate::agent::shop::ware(core, item) && spare(item) > 0)?;
+            let item = pack[from].item;
+            let want = u32::from(pack[from].count).min(spare(item)) as u16;
+            let (to, count) = land(slots, 0..slots.len(), item, want, cap(item))?;
+            if slots[usize::from(to)].count == 0 && free <= 1 {
+                return None;
+            }
+            Some((true, from as u8, to, count))
+        }
     }
 }
 
@@ -557,6 +592,8 @@ pub fn should_run(work: Work, core: &ClientCore, book: &Book, slots: &[ItemStack
                 && coin.item == core.research.coin
                 && coin.count >= cost
         }
+        // A machine is never switched: it sells while it stands.
+        Work::Shop => false,
     }
 }
 
@@ -569,6 +606,8 @@ enum Wait {
     Move,
     /// A switch, wanting it on or off.
     Switch(bool),
+    /// A shop press, sent when the answers stood at this count.
+    Offer(u32),
     Close,
 }
 
@@ -672,6 +711,7 @@ impl Session {
                     .is_lit(self.at.cx, self.at.cz, self.at.level, self.at.loc);
                 Some(Wait::Switch(!lit))
             }
+            Tend::Offer { .. } => Some(Wait::Offer(core.shop_last_result().0)),
             Tend::Close(_) => Some(Wait::Close),
             _ => None,
         };
@@ -746,6 +786,20 @@ impl Session {
                         return Tend::Go(look);
                     }
                 }
+                Wait::Offer(seq) => {
+                    let (now, answer) = core.shop_last_result();
+                    if now != seq {
+                        self.waiting = None;
+                        if answer.is_some_and(|a| a.code != 0) {
+                            self.tries += 1;
+                        }
+                    } else if late {
+                        self.waiting = None;
+                        self.tries += 1;
+                    } else {
+                        return Tend::Go(look);
+                    }
+                }
                 Wait::Close => {
                     self.waiting = None;
                     return Tend::Done;
@@ -797,6 +851,29 @@ impl Session {
                 to,
                 count,
                 intent: look,
+            };
+        }
+        // A machine: its offers, once what moves has moved.
+        if work == Work::Shop {
+            return match crate::agent::shop::next_offer(core, key, slots) {
+                crate::agent::shop::Next::Press(act) => Tend::Offer {
+                    key,
+                    act,
+                    intent: look,
+                },
+                crate::agent::shop::Next::Wait => {
+                    // The view comes with the open; one that never came is
+                    // a try spent, and the panel shut at the last.
+                    let since = *self.held.get_or_insert(tick);
+                    if tick.wrapping_sub(since) >= VERDICT_TICKS {
+                        self.held = None;
+                        Tend::Close(look)
+                    } else {
+                        Tend::Go(look)
+                    }
+                }
+                crate::agent::shop::Next::NotOurs => Tend::Fail(Why::Refused),
+                crate::agent::shop::Next::Done => Tend::Close(look),
             };
         }
         let run = should_run(work, core, book, slots);
