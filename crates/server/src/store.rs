@@ -657,6 +657,110 @@ fn rotate_backups(path: &Path) {
     let _ = std::fs::copy(path, at(1));
 }
 
+/// The header's checks, in the order a boot makes them: magic, format,
+/// record size, slot count, seed and content. One body for [`open`] and for
+/// [`check`], so the deploy's question and the boot's answer cannot drift.
+fn check_head(
+    path: &Path,
+    head: &[u8; SAVE_HEADER_BYTES],
+    seed: u64,
+    content_hash: u64,
+    layout_hash: u64,
+) -> Result<ContentMatch, String> {
+    if head[0..8] != SAVE_MAGIC {
+        return Err(format!(
+            "save file {} is not a gates save file (bad magic) — check the \
+             `save_file` path in shard.toml before anything else",
+            path.display()
+        ));
+    }
+    let got_format = u16::from_le_bytes([head[8], head[9]]);
+    if got_format != SAVE_FORMAT {
+        return Err(format!(
+            "save file {} was written in format {got_format}; this shard \
+             speaks {SAVE_FORMAT}. There is no migrator: move the file aside \
+             (that is what a wipe is) or run a build that speaks its format.",
+            path.display()
+        ));
+    }
+    let got_record = u16::from_le_bytes([head[10], head[11]]) as usize;
+    if got_record != SAVE_RECORD_BYTES {
+        return Err(format!(
+            "save file {} has {got_record}-byte records; this build writes \
+             {SAVE_RECORD_BYTES}. The record layout moved without the format \
+             version — that is the bug, not the file (store.rs SAVE_FORMAT).",
+            path.display()
+        ));
+    }
+    let got_cap = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
+    if got_cap != MAX_SAVED_PLAYERS {
+        return Err(format!(
+            "save file {} holds {got_cap} slots; this build holds \
+             {MAX_SAVED_PLAYERS}. MAX_SAVED_PLAYERS moved, which changes \
+             every record offset: move the file aside or restore the old cap.",
+            path.display()
+        ));
+    }
+    let got_seed = u64::from_le_bytes(head[16..24].try_into().expect("8 bytes"));
+    if got_seed != seed {
+        return Err(format!(
+            "save file {} was written on seed {got_seed}; this shard runs \
+             {seed}. Every saved position is a point on the other island — \
+             run the old seed, or move the file aside to start this one clean.",
+            path.display()
+        ));
+    }
+    let got_content = u64::from_le_bytes(head[24..32].try_into().expect("8 bytes"));
+    let got_layout = u64::from_le_bytes(head[H_LAYOUT..H_LAYOUT + 8].try_into().expect("8 bytes"));
+    match_content(
+        &format!("save file {}", path.display()),
+        got_content,
+        got_layout,
+        content_hash,
+        layout_hash,
+    )
+}
+
+/// Would a shard with this build's content load the player store at `path`?
+/// The checks [`open`] makes before it reads a record, and nothing else: no
+/// backup is rotated and the file is opened read-only, so a deploy can ask it
+/// of the live store under a running shard (`shard --check-saves`).
+/// `Ok(None)` is no file (or an empty one), which any build starts fresh.
+pub fn check(
+    path: &Path,
+    seed: u64,
+    content_hash: u64,
+    layout_hash: u64,
+) -> Result<Option<ContentMatch>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut file = File::open(path).map_err(|e| format!("save file {}: {e}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("save file {}: {e}", path.display()))?
+        .len();
+    if len == 0 {
+        return Ok(None);
+    }
+    let mut head = [0u8; SAVE_HEADER_BYTES];
+    file.read_exact(&mut head).map_err(|e| {
+        format!(
+            "save file {}: reading header: {e} — too short to be a gates save file",
+            path.display()
+        )
+    })?;
+    let matched = check_head(path, &head, seed, content_hash, layout_hash)?;
+    let want_len = record_offset(MAX_SAVED_PLAYERS);
+    if len != want_len {
+        return Err(format!(
+            "save file {} is {len} bytes; the header describes {want_len}",
+            path.display()
+        ));
+    }
+    Ok(Some(matched))
+}
+
 /// Open (or create) the save file and load its records.
 ///
 /// Every refusal names what to do about it, because every one of them is an
@@ -744,58 +848,7 @@ pub fn open(
     let mut head = [0u8; SAVE_HEADER_BYTES];
     file.read_exact(&mut head)
         .map_err(|e| format!("save file {}: reading header: {e}", path.display()))?;
-    if head[0..8] != SAVE_MAGIC {
-        return Err(format!(
-            "save file {} is not a gates save file (bad magic) — check the \
-             `save_file` path in shard.toml before anything else",
-            path.display()
-        ));
-    }
-    let got_format = u16::from_le_bytes([head[8], head[9]]);
-    if got_format != SAVE_FORMAT {
-        return Err(format!(
-            "save file {} was written in format {got_format}; this shard \
-             speaks {SAVE_FORMAT}. There is no migrator: move the file aside \
-             (that is what a wipe is) or run a build that speaks its format.",
-            path.display()
-        ));
-    }
-    let got_record = u16::from_le_bytes([head[10], head[11]]) as usize;
-    if got_record != SAVE_RECORD_BYTES {
-        return Err(format!(
-            "save file {} has {got_record}-byte records; this build writes \
-             {SAVE_RECORD_BYTES}. The record layout moved without the format \
-             version — that is the bug, not the file (store.rs SAVE_FORMAT).",
-            path.display()
-        ));
-    }
-    let got_cap = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
-    if got_cap != MAX_SAVED_PLAYERS {
-        return Err(format!(
-            "save file {} holds {got_cap} slots; this build holds \
-             {MAX_SAVED_PLAYERS}. MAX_SAVED_PLAYERS moved, which changes \
-             every record offset: move the file aside or restore the old cap.",
-            path.display()
-        ));
-    }
-    let got_seed = u64::from_le_bytes(head[16..24].try_into().expect("8 bytes"));
-    if got_seed != seed {
-        return Err(format!(
-            "save file {} was written on seed {got_seed}; this shard runs \
-             {seed}. Every saved position is a point on the other island — \
-             run the old seed, or move the file aside to start this one clean.",
-            path.display()
-        ));
-    }
-    let got_content = u64::from_le_bytes(head[24..32].try_into().expect("8 bytes"));
-    let got_layout = u64::from_le_bytes(head[H_LAYOUT..H_LAYOUT + 8].try_into().expect("8 bytes"));
-    let matched = match_content(
-        &format!("save file {}", path.display()),
-        got_content,
-        got_layout,
-        content_hash,
-        layout_hash,
-    )?;
+    let matched = check_head(path, &head, seed, content_hash, layout_hash)?;
     if len != want_len {
         return Err(format!(
             "save file {} is {len} bytes; the header describes {want_len}. \
