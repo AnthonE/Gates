@@ -1,7 +1,8 @@
-//! The achievement popup: Steam's corner toast for an unlock (wire v118,
+//! The achievement popup: Steam's corner toast for an unlock (wire v119,
 //! `SUB_ACHIEVEMENT`). The achievement's icon, ACHIEVEMENT UNLOCKED, its
 //! name and line, and where the set stands; a finished set gets SET COMPLETE
-//! in gold. It slides in at the bottom right, holds, and goes, one at a time,
+//! in gold. It slides in at the top right (the bottom right is the vitals
+//! and the pickup notices stacked over them), holds, and goes, one at a time,
 //! with any that arrive together waiting their turn.
 //!
 //! HUD only: it reads what the server said was earned (`Feed`), decides
@@ -200,7 +201,7 @@ fn spawn_popup(commands: &mut Commands, a: &protocol::Achieved, icons: Option<&I
             PopEdge(EDGE),
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(24.0),
+                top: Val::Px(24.0),
                 right: Val::Px(24.0 - SLIDE_PX),
                 width: Val::Px(WIDTH_PX),
                 flex_direction: FlexDirection::Row,
