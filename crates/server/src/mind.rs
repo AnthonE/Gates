@@ -2326,23 +2326,21 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
             })
     };
     // The founder's job is the playbook itself — the base, its stations,
-    // the cooking and recycling — and, the base done, the crew's shop put
-    // down outside it.
+    // the cooking and recycling — and, the base done, the crew's shop: put
+    // down outside it, stocked with what the base can spare, its junk taken.
     if soc.role == Role::Founder {
         if s.milestone != Milestone::Done {
             return None;
         }
         if s.offers(Goal::KeepShop) {
-            return Some((
-                Goal::KeepShop,
-                "society: the crew's shop goes up by the base",
-            ));
+            return Some((Goal::KeepShop, "society: keeping the crew's shop"));
         }
         return make_shop();
     }
     // What it carries for the base goes to its founder's hands, base or no
-    // base yet: a runner's goes to the shop instead.
-    if soc.role != Role::Runner && s.offers(Goal::HandOver) {
+    // base yet; a runner's too once the crew's shop stands, for the founder
+    // to sell (before then a runner sells at THE GATE).
+    if (soc.role != Role::Runner || soc.shop) && s.offers(Goal::HandOver) {
         return Some((Goal::HandOver, "society: my founder can use what I carry"));
     }
     if s.team.home.count == 0 {
@@ -2389,14 +2387,8 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
             if s.count_of("Junk") >= RUNNER_BANK_AT && s.offers(Goal::Deliver) {
                 return Some((Goal::Deliver, "society: the takings to the crew's boxes"));
             }
-            // The crew's shop sells for more than THE GATE pays: stocked
-            // while it stands, made when the crew has none.
-            if s.offers(Goal::KeepShop) {
-                return Some((Goal::KeepShop, "society: stocking the crew's shop"));
-            }
-            if let Some(pick) = make_shop() {
-                return Some(pick);
-            }
+            // With the crew's shop standing its stuff sells there, through
+            // the founder's hands (above); before then, at THE GATE.
             for name in ["Wood", "Stone"] {
                 if soc.shop {
                     break;

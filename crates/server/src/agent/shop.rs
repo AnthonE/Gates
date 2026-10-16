@@ -5,9 +5,13 @@
 //! what THE GATE asks, and the crew earns several times what THE GATE's
 //! SALVAGE stall would have paid it.
 //!
-//! The work at it is a device session (`agent::oven`, `Work::Shop`): open
-//! it, take the junk it took out, put the wares in (a slot always left for
-//! the next takings), then set an offer for each ware it holds a lot of.
+//! The founder keeps it: the machine stands in its cupboard's claim, so it
+//! is the one body sure to be allowed to stock it (`sim_core::shop`'s rule
+//! is the owner or the cupboard's crew), and what the crew hands it is what
+//! it sells, past what the base keeps. The work at it is a device session
+//! (`agent::oven`, `Work::Shop`): open it, take the junk it took out, put
+//! the wares in (a slot always left for the next takings), then set an
+//! offer for each ware it holds a lot of.
 //! Prices are read off THE GATE's own stalls, as a player reads them, so a
 //! change to `content/sites.toml` moves them too.
 
@@ -30,8 +34,18 @@ pub const PRICE_PCT: u32 = 50;
 pub const FROM_HOME_M: f32 = 12.0;
 /// A machine near the spot is the crew's, within this many metres.
 pub const SPOT_NEAR_M: f32 = 8.0;
-/// A body stocks the shop once it carries this many lots of one ware.
+/// The founder stocks the shop once it carries this many lots of one ware
+/// past [`RESERVE`].
 pub const STOCK_LOTS: u32 = 2;
+/// What the founder keeps of each ware for the base (its upkeep, the next
+/// door, the next bench) and never sells.
+pub const RESERVE: [(&str, u32); 4] = [
+    ("Wood", 3000),
+    ("Stone", 3000),
+    ("Metal Fragments", 500),
+    ("Cloth", 100),
+];
+const _: () = assert!(RESERVE.len() == WARES.len());
 /// A shop is looked in on this often for its takings, with nothing to put
 /// in it.
 pub const VISIT_SECS: u32 = 10 * 60;
@@ -150,10 +164,11 @@ pub fn next_offer(core: &ClientCore, key: u32, slots: &[ItemStack]) -> Next {
     Next::Done
 }
 
-/// Lots of the most-carried ware the pack holds, as a reason to go.
+/// Lots of the most-carried ware the pack holds past [`RESERVE`], as a
+/// reason to go.
 pub fn lots_carried(core: &ClientCore) -> u32 {
     let mut best = 0;
-    for name in WARES {
+    for (name, keep) in RESERVE {
         let Some(item) = item_named(core, name) else {
             continue;
         };
@@ -165,7 +180,7 @@ pub fn lots_carried(core: &ClientCore) -> u32 {
             .filter(|s| s.count > 0 && s.item == item)
             .map(|s| u32::from(s.count))
             .sum();
-        best = best.max(held / u32::from(lot.max(1)));
+        best = best.max(held.saturating_sub(keep) / u32::from(lot.max(1)));
     }
     best
 }
@@ -242,6 +257,48 @@ mod tests {
         assert_eq!(price(&core, STONE), Some((500, 10)));
         assert_eq!(price(&core, BAT), None, "not a ware");
         assert!(ware(&core, WOOD) && !ware(&core, JUNK));
+    }
+
+    /// The session's moves: the takings come out first; then what the pack
+    /// holds past the base's reserve goes in, and the last free slot is
+    /// left for the next buyer's junk.
+    #[test]
+    fn the_takings_come_out_and_only_the_spare_goes_in() {
+        use crate::agent::oven::{plan, Keep, Work};
+        let mut core = core();
+        core.inv[sim_core::limits::HOTBAR_SLOTS] = ItemStack {
+            item: WOOD,
+            count: 1000,
+            ..ItemStack::default()
+        };
+        core.inv[sim_core::limits::HOTBAR_SLOTS + 1] = ItemStack {
+            item: WOOD,
+            count: 1000,
+            ..ItemStack::default()
+        };
+        let book = crate::agent::wiki::Book::EMPTY;
+        let mut keep = Keep::NONE;
+        keep.add(WOOD, 1500);
+        let mut slots = stock(JUNK, 21);
+        let out = plan(Work::Shop, &core, &book, &slots, false, &keep);
+        assert!(
+            matches!(out, Some((false, 0, _, 21))),
+            "the junk out first: {out:?}"
+        );
+        slots[0] = ItemStack::default();
+        let (into, _, _, count) = plan(Work::Shop, &core, &book, &slots, false, &keep).unwrap();
+        assert!(into);
+        assert_eq!(count, 500, "2000 carried, 1500 kept");
+        // Every slot but one full of something else: no room is taken from
+        // the takings.
+        for s in slots.iter_mut().skip(1) {
+            *s = ItemStack {
+                item: STONE,
+                count: 10,
+                ..ItemStack::default()
+            };
+        }
+        assert_eq!(plan(Work::Shop, &core, &book, &slots, false, &keep), None);
     }
 
     #[test]

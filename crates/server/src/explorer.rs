@@ -5294,14 +5294,11 @@ impl Survivor {
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let go_to = self.device_near(core, work, x, z);
         if work == Work::Shop {
-            // A founder puts the machine down and keeps its own stuff for
-            // the base; whoever stocks it sells what it carries.
+            // What the base keeps is never sold.
             let mut keep = Keep::NONE;
-            if self.society.is_some_and(|s| s.founder()) {
-                for name in crate::agent::shop::WARES {
-                    if let Some(item) = crate::agent::build::item_named(core, name) {
-                        keep.add(item, u32::MAX);
-                    }
+            for (name, units) in crate::agent::shop::RESERVE {
+                if let Some(item) = crate::agent::build::item_named(core, name) {
+                    keep.add(item, units);
                 }
             }
             self.oven_job.keep(keep);
@@ -6069,24 +6066,22 @@ impl Survivor {
                     && self
                         .recycle_failed
                         .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
-            // The crew's shop (`agent::shop`): a machine carried and none
-            // standing is put down (a founder does no more); one standing
-            // is stocked when the pack has lots of a ware, and looked in on
-            // for its takings now and then.
+            // The crew's shop (`agent::shop`), its founder's to keep: a
+            // machine carried and none standing is put down; one standing is
+            // stocked when the pack has lots of a ware past what the base
+            // keeps, and looked in on for its takings now and then.
             let machine = self.society.and_then(|_| self.shop_machine(core));
             self.memory.shop_stands = machine.is_some();
             let carried_machine = oven::device_row(core, crate::agent::shop::SHOP_ITEM)
                 .is_some_and(|(_, item)| count_item(core, item) > 0);
             let placing = machine.is_none() && carried_machine && self.shop_spot(core).is_some();
-            let founder = self.society.is_some_and(|s| s.founder());
             let stocking = machine.is_some()
-                && !founder
                 && (crate::agent::shop::lots_carried(core) >= crate::agent::shop::STOCK_LOTS
                     || self.shop_kept.is_none_or(|at| {
                         tick.wrapping_sub(at) >= crate::agent::shop::VISIT_SECS * TICK_HZ
                     }));
             self.memory.hand = self.hand_due(core, body, tick);
-            self.memory.shop = self.society.is_some()
+            self.memory.shop = self.society.is_some_and(|s| s.founder())
                 && (placing || stocking)
                 && self
                     .shop_failed
