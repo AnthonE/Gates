@@ -18,6 +18,9 @@ use sim_core::terrain::{self, Haven, ScatterTable};
 
 use crate::Session;
 
+// The browser's asset reader: Bevy's, retrying a broken download instead of
+// panicking on it. The policy is pure and on every target; the reader is wasm.
+pub mod asset_fetch;
 // The Bevy half of the client's audio. The MODEL is `crate::sound`, which is
 // pure and not feature-gated for the same reason `ui` is not: a mixer testable
 // only by a windowed run with a sound card is a mixer with no gate.
