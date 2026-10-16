@@ -913,7 +913,17 @@ pub const EV_EXTRACTED: u8 = 62;
 /// how far a node is mined is visible to anyone looking at it.
 pub const EV_NODE_STAGE: u8 = 63;
 
-pub const EV_MAX: u8 = EV_NODE_STAGE;
+/// EV_SHOP: a = player id, b = the vending machine's box key, c = op << 16
+/// | row << 8 | times (`shop::ShopAct::packed`). A shop press went through:
+/// an offer set or cleared, or a purchase. Own-fact: the presser's answer;
+/// the pack and the machine's slots arrive on their own lanes.
+pub const EV_SHOP: u8 = 64;
+
+/// EV_SHOP_REFUSED: a = player id, b = the box key, c = `shop::REFUSE_SH_*`
+/// << 24 | op << 16 | row << 8 | times. Own-fact.
+pub const EV_SHOP_REFUSED: u8 = 65;
+
+pub const EV_MAX: u8 = EV_SHOP_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2071,6 +2081,14 @@ pub enum Command {
         offer: u8,
         times: u8,
     },
+    /// A press at a player's vending machine (`shop.rs`), the one at box
+    /// address `key`: set or clear an offer, or buy. The sim checks the
+    /// machine, reach, who may edit, stock, funds and room.
+    Shop {
+        id: u32,
+        key: u32,
+        act: crate::shop::ShopAct,
+    },
     /// Swipe a keycard at one of the ziggurat's doors, or pull its inside
     /// lever (`monument.rs`). The sim checks reach and the card.
     Swipe {
@@ -3080,6 +3098,15 @@ impl World {
                 // verb it refused.
                 let b = self.deploys.boxes()[i];
                 if !self.deploys.lock_passes(b.cx, b.cz, b.level, b.loc, pid) {
+                    self.events
+                        .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
+                    return;
+                }
+                // A vending machine's stock and takings move only for the
+                // hands it answers to (`shop.rs`); anyone may look and buy.
+                if self.deploys.oven_states()[i].arch == deploy::ARCH_VENDING
+                    && !crate::shop::may_edit(&self.pieces, &self.deploys, i, pid)
+                {
                     self.events
                         .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
                     return;
@@ -5780,6 +5807,25 @@ impl World {
                     );
                 }
             }
+            Command::Shop { id, key, act } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let reach = self
+                        .deploys
+                        .vending_index(key)
+                        .map(|i| self.box_reachable(i, slot));
+                    crate::shop::apply(
+                        &self.deploy,
+                        &self.gather,
+                        &self.pieces,
+                        &mut self.deploys,
+                        &mut self.players[slot],
+                        key,
+                        act,
+                        reach,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::Extract { id, target, max } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     crate::works::extract(
@@ -8161,6 +8207,11 @@ impl World {
             if *t != crate::turret::Turret::default() {
                 h.update(&t.hash_bytes());
             }
+        }
+        // The vending machines' offers (`shop.rs`), on the arrow idiom: no
+        // length prefix, so a world without a shop hashes as it did.
+        for r in self.deploys.shops().entries() {
+            h.update(&r.hash_bytes());
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

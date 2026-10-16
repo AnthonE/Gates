@@ -92,6 +92,7 @@ pub use event::{
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
 pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
+pub use event::{encode_event_shop, encode_event_shop_result, ShopRow, ShopView};
 pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
     STANDING_TICKER_BYTES, STANDING_TOP,
@@ -106,6 +107,7 @@ pub use event::{
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
+pub use sim_core::shop::ShopAct;
 pub use voice::{
     decode_voice, decode_voice_up, encode_voice, encode_voice_up, VoiceFrame, VOICE_DATAGRAM_MAX,
     VOICE_END, VOICE_MAX_BYTES,
@@ -1201,7 +1203,11 @@ pub use voice::{
 /// (`DEATH_BY_FEL`); and it spreads: `Welcome` carries the wipe's blight salt
 /// after the dev bit, and `MAX_ITEM_DEFS` is 112 (the held field's seven bits
 /// still hold it beside `HELD_NONE`).
-pub const PROTO_VER: u16 = 117;
+/// v118 — the compound shop: `ACT_SHOP` (36) sets, clears or buys an offer at
+/// a player's vending machine (`ARCH_VENDING`, 19, which both ends admit);
+/// `SUB_SHOP` (101) tells the viewer a machine's offers and stock, and
+/// `SUB_SHOP_RESULT` (102) answers the presser.
+pub const PROTO_VER: u16 = 118;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2063,6 +2069,10 @@ const ACT_FASTTRACK: u32 = 34;
 /// it names (0 where the op names nobody). Never a `Command`: a team is
 /// who you talk to and see on the map, not sim state.
 const ACT_TEAM: u32 = 35;
+/// One press at a player's vending machine (wire v118, `Command::Shop`,
+/// `sim_core::shop`): the machine's box key, an op and its fields. Reach,
+/// who may edit, stock, funds and room are the sim's verdict.
+const ACT_SHOP: u32 = 36;
 /// Width of `ActionMsg::Team`'s op.
 const TEAM_OP_BITS: u32 = 3;
 /// Ask `target` to join the asker's team, making one if the asker has none.
@@ -2091,7 +2101,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_TEAM;
+const ACT_MAX: u32 = ACT_SHOP;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2231,6 +2241,9 @@ pub enum ActionMsg {
     /// One team verb (v108): a `TEAM_OP_*` and the player it names.
     /// Whether it may happen is the shard's verdict (`server::team`).
     Team { op: u8, target: u32 },
+    /// A press at the vending machine with box key `key` (v118): set or
+    /// clear an offer row, or buy `times` lots of one (`sim_core::shop`).
+    Shop { key: u32, act: ShopAct },
     /// Enqueue `count` crafts of recipe row `recipe`, minted wearing skin
     /// `skin` (a catalog id; 0 for the item's own look).
     Craft { recipe: u16, count: u16, skin: u16 },
@@ -2766,6 +2779,47 @@ pub fn encode_action_team(op: u8, target: u32, buf: &mut [u8]) -> Result<usize, 
     w.write(op as u32, TEAM_OP_BITS)?;
     w.write(target, 32)?;
     Ok(w.finish())
+}
+
+/// A vending machine press — see [`ActionMsg::Shop`]. Refuses a row past
+/// `SHOP_ROWS`, a set with no lot or an item past the table, a buy of no lots
+/// or past `SHOP_TIMES_MAX`, and the null key.
+pub fn encode_action_shop(key: u32, act: ShopAct, buf: &mut [u8]) -> Result<usize, WireError> {
+    if key == 0 || !shop_act_ok(&act) {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_SHOP, ACTION_SUB_BITS)?;
+    w.write(key, 32)?;
+    w.write(act.op() as u32, 2)?;
+    w.write(act.row() as u32, 3)?;
+    match act {
+        ShopAct::Set {
+            item, lot, price, ..
+        } => {
+            w.write(item as u32, 16)?;
+            w.write(lot as u32, 16)?;
+            w.write(price as u32, 16)?;
+        }
+        ShopAct::Clear { .. } => {}
+        ShopAct::Buy { times, .. } => w.write(times as u32, 5)?,
+    }
+    Ok(w.finish())
+}
+
+/// The shape both ends hold a shop press to.
+fn shop_act_ok(act: &ShopAct) -> bool {
+    const _: () = assert!(sim_core::limits::SHOP_ROWS <= 8);
+    const _: () = assert!(sim_core::shop::SHOP_TIMES_MAX < 32);
+    if act.row() as usize >= sim_core::limits::SHOP_ROWS {
+        return false;
+    }
+    match *act {
+        ShopAct::Set { item, lot, .. } => lot > 0 && (item as usize) < MAX_ITEM_DEFS,
+        ShopAct::Clear { .. } => true,
+        ShopAct::Buy { times, .. } => times > 0 && times <= sim_core::shop::SHOP_TIMES_MAX,
+    }
 }
 
 pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
@@ -3583,6 +3637,29 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_ASSIST => ActionMsg::Assist {
             target: r.read(32)?,
         },
+        ACT_SHOP => {
+            let key = r.read(32)?;
+            let op = r.read(2)? as u8;
+            let row = r.read(3)? as u8;
+            let act = match op {
+                sim_core::shop::SHOP_OP_SET => ShopAct::Set {
+                    row,
+                    item: r.read(16)? as u16,
+                    lot: r.read(16)? as u16,
+                    price: r.read(16)? as u16,
+                },
+                sim_core::shop::SHOP_OP_CLEAR => ShopAct::Clear { row },
+                sim_core::shop::SHOP_OP_BUY => ShopAct::Buy {
+                    row,
+                    times: r.read(5)? as u8,
+                },
+                _ => return Err(WireError::Malformed),
+            };
+            if key == 0 || !shop_act_ok(&act) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Shop { key, act }
+        }
         ACT_TEAM => {
             let op = r.read(TEAM_OP_BITS)? as u8;
             if op > TEAM_OP_MAX {
@@ -5237,11 +5314,11 @@ mod tests {
         // respawn point (v92) 28, the arc's one verb (v95) 29, drop
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
-        // and fast-track 34, and teams (v108) 35.
-        assert_eq!(ACT_MAX, ACT_TEAM);
+        // and fast-track 34, teams (v108) 35, and the shop (v118) 36.
+        assert_eq!(ACT_MAX, ACT_SHOP);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            28,
+            27,
             "the spare action codes moved — say so where the count is written"
         );
     }

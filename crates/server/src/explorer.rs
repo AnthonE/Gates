@@ -42,6 +42,7 @@ use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
+use crate::agent::society::{self, Hand, Kinship, Patrol, Society};
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
 use crate::agent::supply::{self, Deliver, HomeJob, TeamHome, Trip, WANT_ROWS};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
@@ -317,6 +318,8 @@ pub enum Phase {
     Trading,
     /// At a stone, a lock or a card door (`agent::lore`).
     Ancients,
+    /// Round the ring of posts about home (`agent::society`).
+    Patrolling,
     LoggingOff,
 }
 
@@ -359,6 +362,7 @@ impl Phase {
             Phase::Delivering => "Seeing to the team's boxes",
             Phase::Trading => "At the gate or a work",
             Phase::Ancients => "At a stone, a lock or a card door",
+            Phase::Patrolling => "Walking the ring round home",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -475,6 +479,10 @@ pub struct Senses {
     /// Its friend (`--friend`), and where its eyes have them.
     pub friend: crate::mind::FriendSense,
     pub friend_at: Option<[f32; 2]>,
+    /// Its society (`agent::society`), and whether a walk to THE GATE to
+    /// bring its crew together is worth offering.
+    pub society: crate::mind::SocietySense,
+    pub society_meet: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -537,6 +545,16 @@ pub struct Memory {
     /// Its temperament raids; a raid came to nothing a moment ago.
     pub raids: bool,
     pub raid_held: bool,
+    /// It knows a home to walk a patrol round (`agent::society`).
+    pub patrol_home: bool,
+    /// It carries enough for the base to hand its founder, who is near or
+    /// says where it is; no hand-over came to nothing a moment ago.
+    pub hand: bool,
+    /// Its crew's vending machine stands, and keeping it is worth a walk:
+    /// one to put down, wares to stock it with, or takings due a look
+    /// (`agent::shop`).
+    pub shop_stands: bool,
+    pub shop: bool,
     /// A blow, blast or shot at the base fresh enough to call it back
     /// (`defend::DEFEND_ALARM_TICKS`).
     pub alarm: bool,
@@ -649,6 +667,9 @@ pub struct SurvivorOpts {
     /// The one wallet it plays with (`--friend`): invited first, never
     /// fought, met at THE GATE (`Goal::Meet`).
     pub friend: Option<protocol::Address>,
+    /// The clan it lives in (`jev-bot --society`, `agent::society`): its
+    /// job, its crew and its guild.
+    pub society: Option<Society>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -845,9 +866,14 @@ pub struct Survivor {
     oven_job: DeviceJob,
     fire: Option<(u16, u16)>,
     recycler: Option<(u16, u16)>,
+    /// The crew's vending machine it put down, and when it last kept it
+    /// (`agent::shop`).
+    shop: Option<(u16, u16)>,
+    shop_kept: Option<u32>,
     pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
     recycle_failed: Option<u32>,
+    shop_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
     /// When a build goal last could not reach its work.
@@ -954,6 +980,16 @@ pub struct Survivor {
     friend_id: u32,
     friend_since: u32,
     friend_seen: u32,
+    /// Its society (`agent::society`): who it is in it, who the rest are
+    /// on this island, the nearest crewmate in sight not yet on its team
+    /// (id, where, how far), and the patrol under way.
+    society: Option<Society>,
+    kin: Kinship,
+    crew_near: Option<(u32, [f32; 2], f32)>,
+    patrol: Patrol,
+    hand: Hand,
+    hand_failed: Option<u32>,
+    patrol_failed: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1019,9 +1055,12 @@ impl Survivor {
             oven_job: DeviceJob::new(Work::Cook),
             fire: None,
             recycler: None,
+            shop: None,
+            shop_kept: None,
             oven_stats: OvenStats::default(),
             cook_failed: None,
             recycle_failed: None,
+            shop_failed: None,
             home_failed: None,
             build_failed: None,
             defend_job: DefendJob::default(),
@@ -1089,6 +1128,13 @@ impl Survivor {
             friend_id: 0,
             friend_since: 0,
             friend_seen: 0,
+            society: opts.society,
+            kin: Kinship::default(),
+            crew_near: None,
+            patrol: Patrol::default(),
+            hand: Hand::default(),
+            hand_failed: None,
+            patrol_failed: None,
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -1193,6 +1239,19 @@ impl Survivor {
         self.deadline = ticks.zip(self.welcomed).map(|(t, w)| w.saturating_add(t));
     }
 
+    /// A new shift (`jev-bot --shift`): the next session ends `ticks` after
+    /// its own welcome, not the first one's, and this body goes home for it
+    /// the way it does at a run's end.
+    pub fn new_shift(&mut self, ticks: u32) {
+        self.welcomed = None;
+        self.set_deadline(Some(ticks));
+    }
+
+    /// Its society's job, if it is in one.
+    pub fn role(&self) -> Option<society::Role> {
+        self.society.map(|s| s.role)
+    }
+
     /// Sample other bodies this many ticks behind the newest snapshot: the
     /// session's playout delay, where one runs (`sim_core::limits::
     /// INTERP_DELAY_TICKS` until told).
@@ -1283,12 +1342,13 @@ impl Survivor {
                 && self.raid_job.at_checkpoint())
     }
 
-    /// The session's end is near and there is a home to sleep in.
+    /// The session's end is near and there is a home to sleep in: its
+    /// own, or (in a society) the crew's base it lives in.
     fn log_off_due(&self, core: &ClientCore, tick: u32) -> bool {
         self.deadline
             .is_some_and(|end| tick.saturating_add(LOG_OFF_SECS * TICK_HZ) >= end)
-            && self.builder.survey().hearth
-            && self.builder.walled(core)
+            && ((self.builder.survey().hearth && self.builder.walled(core))
+                || (self.society.is_some() && self.shared_home()))
     }
 
     /// The log-off: the goal in hand ends at its next checkpoint (a walk
@@ -1302,6 +1362,19 @@ impl Survivor {
             }
             Some(_) => self.end_goal(tick, Outcome::Interrupted(Why::LogOff)),
             None => {}
+        }
+        // A crewmate sleeps in the crew's base, by its first box.
+        if self.shared_home() {
+            let at_home = self.shared.anchor().is_some_and(|[hx, hz]| {
+                let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                (hx - x).hypot(hz - z) <= supply::STAY_NEAR_M + 1.5
+            });
+            if at_home || self.home_held(tick) {
+                self.stats.phase = Phase::LoggingOff;
+                return Intent::IDLE;
+            }
+            self.begin(Goal::GoHome, tick);
+            return self.run_goal(core, body, tick);
         }
         // The walk home came to nothing a moment ago: the session ends
         // where it stands rather than at a door that will not open.
@@ -1905,6 +1978,9 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
+        if goal == Goal::HandOver {
+            self.hand = Hand::default();
+        }
         self.bag_job = BagJob::default();
         self.bag_leg = BagLeg::Here;
         self.bag_knocked = false;
@@ -1936,10 +2012,10 @@ impl Survivor {
         self.read_job.reset();
         self.solve_job.reset();
         self.swipe_job.reset();
-        self.oven_job = DeviceJob::new(if goal == Goal::Recycle {
-            Work::Recycle
-        } else {
-            Work::Cook
+        self.oven_job = DeviceJob::new(match goal {
+            Goal::Recycle => Work::Recycle,
+            Goal::KeepShop => Work::Shop,
+            _ => Work::Cook,
         });
         if goal == Goal::Loot {
             self.loot.stats.runs += 1;
@@ -2044,9 +2120,12 @@ impl Survivor {
             | Goal::Loot
             | Goal::Cook
             | Goal::Recycle
+            | Goal::KeepShop
             | Goal::Raid
             | Goal::Follow
             | Goal::Meet
+            | Goal::Patrol
+            | Goal::HandOver
             | Goal::Deliver
             | Goal::SupplyWood
             | Goal::SupplyStone
@@ -2179,12 +2258,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Stash => self.stash(core, body, tick),
-            Goal::Cook | Goal::Recycle if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
+            Goal::Cook | Goal::Recycle | Goal::KeepShop if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
                 self.oven_failed(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
             }
-            Goal::Cook | Goal::Recycle => self.tend(core, body, tick),
+            Goal::Cook | Goal::Recycle | Goal::KeepShop => self.tend(core, body, tick),
             Goal::Defend if elapsed >= DEFEND_GOAL_SECS * TICK_HZ => {
                 self.defend_failed = Some(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
@@ -2253,6 +2332,17 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Meet => self.meet(core, body, tick),
+            Goal::Patrol if elapsed >= society::PATROL_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Goal::Patrol => self.patrol(core, body, tick),
+            Goal::HandOver if elapsed >= society::HAND_GOAL_SECS * TICK_HZ => {
+                self.hand_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::HandOver => self.hand_over(core, body, tick),
             Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
                 self.deliver_over(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
@@ -2289,11 +2379,60 @@ impl Survivor {
     /// Meet (`--friend`): to THE GATE, and wait there until its friend is
     /// in reach of an invite or on its team; then it is done, and the next
     /// decision can invite them. Gone from the island, the meet is over.
+    ///
+    /// A society's meet (`agent::society`) is its crew coming together
+    /// there: the founder waits until a crewmate is in reach of its invite
+    /// or the whole crew is on its team; a crewmate walks up to its founder
+    /// once it sees them, and is done when the invite comes.
     fn meet(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
-        let f = self.senses.friend;
-        if !f.online || f.on_team || f.reachable || f.invited_me {
-            self.end_goal(tick, Outcome::Done);
-            return Intent::IDLE;
+        if let Some(soc) = self.society {
+            let sense = self.senses.society;
+            let over = if soc.founder() {
+                sense.crew_missing == 0 || sense.crew_reachable
+            } else {
+                sense.founded || sense.crew_invited_me
+            };
+            if over {
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
+            if !soc.founder() {
+                let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                // Its founder: in sight, else where its founder last said
+                // it is (a crewmate come late finds the crew at work).
+                let founder = self
+                    .tracks
+                    .get(self.kin.founder())
+                    .filter(|t| t.visible && t.active())
+                    .map(|t| [t.pos[0], t.pos[2]])
+                    .filter(|at| (at[0] - x).hypot(at[1] - z) <= society::GATHER_M)
+                    .or_else(|| soc.board.and_then(|b| b.founder(soc.crew_no)));
+                if let Some(at) = founder {
+                    self.stats.phase = Phase::Approaching;
+                    return match self
+                        .route
+                        .to(core, body, at, society::GATHER_STOP_M, false, tick)
+                    {
+                        step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                        // No plan yet this frame: straight at them meanwhile,
+                        // as the walk to THE GATE does.
+                        Step::Wait => Intent::walk(yaw_toward(at[0] - x, at[1] - z)),
+                        Step::Arrived | Step::Blocked => {
+                            let y = body.qy as f32 * POS_Y_Q + tracks::eye_m(false);
+                            Intent {
+                                look: Look::Point([at[0], y, at[1]]),
+                                ..Intent::IDLE
+                            }
+                        }
+                    };
+                }
+            }
+        } else {
+            let f = self.senses.friend;
+            if !f.online || f.on_team || f.reachable || f.invited_me {
+                self.end_goal(tick, Outcome::Done);
+                return Intent::IDLE;
+            }
         }
         match crate::agent::gate::approach(core, body, &mut self.route, MEET_STOP_M, tick) {
             Some(Ok(intent)) => {
@@ -2345,6 +2484,439 @@ impl Survivor {
         }
     }
 
+    /// Its society (`agent::society`) as its eyes and the team view have
+    /// it: the nearest crewmate in sight not yet on its team, the walk to
+    /// THE GATE that would bring the crew together, who is in the ward at
+    /// home, and — for a founder with room on its team — who an invite
+    /// goes to: a crewmate in reach first, else an ally. Allocation-free.
+    fn sense_society(
+        &mut self,
+        body: &EntityState,
+        team: &protocol::TeamView,
+        room: bool,
+        tick: u32,
+    ) -> Option<u32> {
+        let Some(soc) = self.society else {
+            self.crew_near = None;
+            self.senses.society = crate::mind::SocietySense::NONE;
+            self.senses.society_meet = false;
+            return None;
+        };
+        let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mut crew_near: Option<(u32, [f32; 2], f32)> = None;
+        let mut invite: Option<(bool, f32, u32)> = None;
+        let mut allies_in_sight = Sighting::default();
+        for t in self.tracks.all() {
+            if t.species != Species::Player || !t.visible || !t.active() {
+                continue;
+            }
+            let crew = self.kin.is_crew(t.id);
+            if !crew && !self.kin.is_ally(t.id) {
+                continue;
+            }
+            let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
+            if !crew {
+                let (_, b) = relative(body, t.pos[0], t.pos[2]);
+                allies_in_sight.add(d, b);
+            }
+            if team.has(t.id) || t.wounded {
+                continue;
+            }
+            if crew && d <= society::GATHER_M && crew_near.is_none_or(|c| d < c.2) {
+                crew_near = Some((t.id, [t.pos[0], t.pos[2]], d));
+            }
+            if soc.founder()
+                && room
+                && d <= INVITE_REACH_M
+                && invite.is_none_or(|(c, near, _)| (crew && !c) || (crew == c && d < near))
+            {
+                invite = Some((crew, d, t.id));
+            }
+        }
+        self.crew_near = crew_near;
+        let me = usize::from(soc.me);
+        let (mut on_team, mut missing) = (0u8, 0u8);
+        for (i, &id) in self.kin.crew[..usize::from(soc.crew_len)]
+            .iter()
+            .enumerate()
+        {
+            if i == me || id == 0 {
+                continue;
+            }
+            if team.has(id) {
+                on_team += 1;
+            } else {
+                missing += 1;
+            }
+        }
+        let founded = if soc.founder() {
+            on_team > 0
+        } else {
+            self.kin.founder() != 0 && team.has(self.kin.founder())
+        };
+        let invited_me = team.count == 0 && team.invite != 0 && self.kin.is_crew(team.invite);
+        let founding = soc.founder()
+            && self
+                .welcomed
+                .is_some_and(|w| tick.wrapping_sub(w) < society::FOUNDING_SECS * TICK_HZ);
+        let mut near = Sighting::default();
+        if let Some((_, [x, z], _)) = crew_near {
+            let (d, b) = relative(body, x, z);
+            near.add(d, b);
+        }
+        let mut intruders = Sighting::default();
+        if let Some(centre) = self.patrol_centre() {
+            for t in self.tracks.seen() {
+                if society::intruder(t, centre, self.armed_track(t), tick) {
+                    let (d, b) = relative(body, t.pos[0], t.pos[2]);
+                    intruders.add(d, b);
+                }
+            }
+        }
+        self.senses.society = crate::mind::SocietySense {
+            set: true,
+            role: soc.role,
+            crew: soc.crew_len.saturating_sub(1),
+            crew_on_team: on_team,
+            crew_missing: missing,
+            crew_near: near,
+            crew_reachable: invite.is_some_and(|(crew, ..)| crew),
+            crew_invited_me: invited_me,
+            founded,
+            founding,
+            allies: soc.allies_len,
+            allies_in_sight,
+            intruders,
+            shop: self.memory.shop_stands,
+        };
+        // The walk to THE GATE: a founder while some of its crew is not on
+        // its team and it is still founding (later a crewmate walks to
+        // where it says it is), a crewmate until its founder's invite comes.
+        self.senses.society_meet = if soc.founder() {
+            missing > 0 && founding
+        } else {
+            !founded && !invited_me
+        };
+        invite.map(|(_, _, id)| id)
+    }
+
+    /// What a body in sight is holding, as a guard sizes up a visitor: a
+    /// weapon (melee, a bow or a gun, a satchel), not a tool.
+    fn armed_track(&self, t: &crate::agent::tracks::Track) -> bool {
+        matches!(
+            t.held.map(|h| self.book.page(h).class),
+            Some(Class::Melee | Class::Ranged | Class::Throw)
+        )
+    }
+
+    /// Home's middle, for a patrol and its ward: the team's base it lives
+    /// in, else its own once a cupboard stands there.
+    fn patrol_centre(&self) -> Option<[f32; 2]> {
+        if self.shared_home() {
+            return self.shared.anchor();
+        }
+        self.builder
+            .stand()
+            .filter(|_| self.builder.survey().hearth)
+    }
+
+    /// The nearest intruder in the ward round `centre` the fight reflex has
+    /// not just let go (`society::intruder`).
+    fn intruder(&self, body: &EntityState, centre: [f32; 2], tick: u32) -> Option<u32> {
+        let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mut nearest: Option<(f32, u32)> = None;
+        for t in self.tracks.seen() {
+            if !society::intruder(t, centre, self.armed_track(t), tick)
+                || self.combat.shuns(t.id, tick)
+            {
+                continue;
+            }
+            let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
+            if nearest.is_none_or(|n| d < n.0) {
+                nearest = Some((d, t.id));
+            }
+        }
+        nearest.map(|(_, id)| id)
+    }
+
+    /// The guild's board (`society::Board`), once a second. Every member
+    /// says which body is its own; a founder says where it is and which box
+    /// is its crew's; the senior founder says
+    /// where its base stands, and every other founder chooses its plot a
+    /// step from there, so the guild's bases stand together. A crewmate on
+    /// its founder's team takes its word for which box is home.
+    fn post_board(&mut self, core: &ClientCore, body: &EntityState) {
+        let Some(soc) = self.society else {
+            return;
+        };
+        let Some(board) = soc.board else {
+            return;
+        };
+        board.set_member(soc.post(), core.player_id);
+        if soc.founder() {
+            board.set_founder(
+                soc.crew_no,
+                [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q],
+            );
+            board.set_chest(soc.crew_no, self.builder.box_addr(core));
+            if soc.senior() {
+                if let Some(at) = self.builder.stand() {
+                    board.set_seat(at);
+                }
+            } else {
+                self.builder.set_seat(
+                    board
+                        .seat()
+                        .map(|seat| society::seat_for(soc.crew_no, seat)),
+                );
+            }
+        } else if self.senses.society.founded {
+            if let Some(at) = board.chest(soc.crew_no) {
+                self.shared.tell(core, at);
+            }
+        }
+    }
+
+    /// Units of what a crewmate hands its founder that the pack carries.
+    fn hand_units(core: &ClientCore) -> u32 {
+        society::HAND_ITEMS
+            .iter()
+            .filter_map(|name| crate::agent::build::item_named(core, name))
+            .map(|item| count_item(core, item))
+            .sum()
+    }
+
+    /// Where its founder is, and whether it is in sight: in sight, else
+    /// where its eyes last had them a moment ago, else where the founder
+    /// says it is.
+    fn founder_at(&self, tick: u32) -> Option<([f32; 3], bool)> {
+        let soc = self.society?;
+        if let Some(t) = self.tracks.get(self.kin.founder()).filter(|t| {
+            t.active() && (t.visible || tick.wrapping_sub(t.last_seen) < FOLLOW_SEEN_TICKS)
+        }) {
+            return Some((t.pos, t.visible));
+        }
+        let [x, z] = soc.board?.founder(soc.crew_no)?;
+        Some(([x, 0.0, z], false))
+    }
+
+    /// A hand-over is worth a walk: a crewmate with a founder (not itself)
+    /// on its team or about to be, near or saying where it is, the pack
+    /// carrying [`society::HAND_AT`] of what the base takes, and no
+    /// hand-over came to nothing a moment ago.
+    fn hand_due(&self, core: &ClientCore, body: &EntityState, tick: u32) -> bool {
+        if self.society.is_none_or(|s| s.founder()) {
+            return false;
+        }
+        if !self.senses.society.founded
+            || self
+                .hand_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < society::HAND_RETRY_SECS * TICK_HZ)
+            || Self::hand_units(core) < society::HAND_AT
+        {
+            return false;
+        }
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        self.founder_at(tick).is_some_and(|(p, _)| {
+            (p[0] - x).hypot(p[2] - z) <= society::HAND_WALK_M
+                && !doors::walled_between(core, [x, z], [p[0], p[2]])
+        })
+    }
+
+    /// Hand over (`agent::society`): up to its founder, eyes on them at
+    /// arm's length, and the base's raw stuff out of the pack into theirs a
+    /// stack at a time — the give a player makes with a stack and a look.
+    /// What left the slot says a give landed; a founder whose pack has no
+    /// room says so, and the hand-over is over.
+    fn hand_over(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let founder = self.kin.founder();
+        let Some((at, seen)) = self.founder_at(tick).filter(|_| founder != 0) else {
+            self.hand_failed = Some(tick);
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        // A give in flight.
+        if let Some((slot, before, sent, seq)) = self.hand.sent {
+            let now = core.inv[usize::from(slot)].count;
+            if now < before {
+                self.hand.sent = None;
+                self.hand.tries = 0;
+                self.hand.given += u32::from(before - now);
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained = a.gained.saturating_add(u32::from(before - now));
+                }
+            } else if core.move_seq != seq
+                && u32::from(core.last_move_refused) == sim_core::inventory::REFUSE_M_GIVE
+            {
+                // Their pack is full: what was handed is theirs, the rest
+                // keeps.
+                self.hand.sent = None;
+                let outcome = if self.hand.given > 0 {
+                    Outcome::Done
+                } else {
+                    self.hand_failed = Some(tick);
+                    Outcome::Failed(Why::BoxFull)
+                };
+                self.end_goal(tick, outcome);
+                return Intent::IDLE;
+            } else if tick.wrapping_sub(sent) >= VERDICT_SECS * TICK_HZ {
+                self.hand.sent = None;
+                self.hand.tries += 1;
+                if self.hand.tries >= society::HAND_TRIES {
+                    self.hand_failed = Some(tick);
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    return Intent::IDLE;
+                }
+            }
+        }
+        // Behind its walls the founder is not to be followed in: a crewmate
+        // in the airlock works its doors under the founder's own walk.
+        if doors::walled_between(core, [x, z], [at[0], at[2]]) {
+            self.hand_failed = Some(tick);
+            let outcome = if self.hand.given > 0 {
+                Outcome::Done
+            } else {
+                Outcome::Failed(Why::Locked)
+            };
+            self.end_goal(tick, outcome);
+            return Intent::IDLE;
+        }
+        let d = (at[0] - x).hypot(at[2] - z);
+        // Where the founder only says it is, its height is not known: eyes
+        // level, to find it.
+        let eye_y = if seen || at[1] != 0.0 {
+            at[1] + 1.0
+        } else {
+            body.qy as f32 * POS_Y_Q + tracks::eye_m(false)
+        };
+        let face = Intent {
+            look: Look::Point([at[0], eye_y, at[2]]),
+            ..Intent::IDLE
+        };
+        if d > society::HAND_STAND_M {
+            self.stats.phase = Phase::Approaching;
+            self.hand.aimed = None;
+            let hurry = d > FOLLOW_RUN_M;
+            return match self.route.to(
+                core,
+                body,
+                [at[0], at[2]],
+                society::HAND_STAND_M - 0.4,
+                hurry,
+                tick,
+            ) {
+                step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                // No plan yet, close but not close enough, or no way: straight
+                // at them, as a player walks up to a friend.
+                Step::Wait | Step::Arrived | Step::Blocked => {
+                    Intent::walk(yaw_toward(at[0] - x, at[2] - z))
+                }
+            };
+        }
+        if !seen && at[1] == 0.0 {
+            // Where it was said to be, and not here: looked round for there.
+            self.stats.phase = Phase::Approaching;
+            return face;
+        }
+        self.stats.phase = Phase::Delivering;
+        let look = face;
+        if self.hand.sent.is_some() {
+            return look;
+        }
+        // The next stack for the base, biggest first.
+        let mut next: Option<(u8, u16)> = None;
+        for name in society::HAND_ITEMS {
+            let Some(item) = crate::agent::build::item_named(core, name) else {
+                continue;
+            };
+            for (i, st) in core.inv[..INV_SLOTS].iter().enumerate() {
+                if st.count > 0 && st.item == item && next.is_none_or(|(_, c)| st.count > c) {
+                    next = Some((i as u8, st.count));
+                }
+            }
+        }
+        let Some((slot, count)) = next else {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        };
+        // The eyes settle on them first, as a player's would.
+        let aimed = *self.hand.aimed.get_or_insert(tick);
+        if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
+            && self.hands.settled()
+            && self.queue(|b| protocol::encode_action_give(slot, count, founder, b))
+        {
+            self.hand.sent = Some((slot, count, tick, core.move_seq));
+            self.hand.aimed = None;
+        }
+        look
+    }
+
+    /// Patrol (`agent::society`): round the ring of posts about home, a
+    /// stand at each looking out, and whoever comes into the ward armed or
+    /// fighting is taken on — the fight reflex runs it, and the walk goes
+    /// on when it is over. A visitor with empty hands is let be.
+    fn patrol(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let Some(centre) = self.patrol_centre() else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        if let Some(id) = self.intruder(body, centre, tick) {
+            if self.loadout.on_belt(core, Role::Melee).is_some() || self.shooter(core).0.is_some() {
+                self.combat.command(id, tick);
+            }
+        }
+        self.stats.phase = Phase::Patrolling;
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let k = match self.patrol.post {
+            Some(k) => usize::from(k),
+            None => {
+                let k = society::nearest_post(centre, [x, z]);
+                self.patrol.post = Some(k as u8);
+                k
+            }
+        };
+        let at = society::post(centre, k);
+        if let Some(from) = self.patrol.dwell_from {
+            if tick.wrapping_sub(from) >= society::PATROL_DWELL_TICKS {
+                self.patrol.next();
+                return Intent::IDLE;
+            }
+            // At the post, eyes out past it: the way somebody comes from.
+            let out = [2.0 * at[0] - centre[0], 2.0 * at[1] - centre[1]];
+            let y = body.qy as f32 * POS_Y_Q + tracks::eye_m(false);
+            return Intent {
+                look: Look::Point([out[0], y, out[1]]),
+                ..Intent::IDLE
+            };
+        }
+        match self
+            .route
+            .to(core, body, at, society::PATROL_STOP_M, false, tick)
+        {
+            step @ Step::Walk { yaw, .. } => {
+                self.heading = Some(yaw);
+                step.walk().unwrap_or(Intent::walk(yaw))
+            }
+            Step::Arrived => {
+                self.patrol.misses = 0;
+                self.patrol.dwell_from = Some(tick);
+                Intent::IDLE
+            }
+            Step::Wait => Intent::IDLE,
+            Step::Blocked => {
+                self.patrol.misses += 1;
+                if usize::from(self.patrol.misses) >= society::PATROL_POSTS.len() {
+                    self.patrol_failed = Some(tick);
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                } else {
+                    self.patrol.next();
+                }
+                Intent::IDLE
+            }
+        }
+    }
+
     /// Follow: stay within reach of the nearest awake teammate (the leader
     /// first), running to catch up, and fight whoever is going for them.
     /// Where they are comes from what its client was sent: its own eyes
@@ -2380,6 +2952,13 @@ impl Survivor {
             self.end_goal(tick, Outcome::Failed(Why::NotFound));
             return Intent::IDLE;
         };
+        // A crewmate (`agent::society`) only keeps up: within a stone's throw
+        // of its founder it goes back to work, rather than standing on the
+        // ground the base is going up on.
+        if self.society.is_some() && d <= society::KEEP_UP_M && self.guard.is_none() {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        }
         // Someone is going for them: the fight reflex takes it from here,
         // and the goal resumes when it is over.
         // One it just let go is left alone, as the fight goal leaves it.
@@ -4671,9 +5250,40 @@ impl Survivor {
     fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
         let (own, within) = match work {
             Work::Cook => (self.fire, oven::KEEP_M),
+            Work::Shop => return self.shop_machine(core),
             _ => (self.recycler, oven::SEEN_NEAR_M),
         };
         oven::nearest(core, work, own.into_iter(), x, z, within)
+    }
+
+    /// Where the crew's vending machine goes, with home's middle known.
+    fn shop_spot(&self, core: &ClientCore) -> Option<[f32; 2]> {
+        self.patrol_centre()
+            .map(|home| crate::agent::shop::spot(core, home))
+    }
+
+    /// The crew's vending machine: the one it put down, else one standing
+    /// at the crew's spot (a crewmate's, or its own from before a
+    /// reconnect; its view says whether this body may keep it).
+    fn shop_machine(&self, core: &ClientCore) -> Option<(u16, u16)> {
+        let [sx, sz] = self.shop_spot(core)?;
+        if let Some(own) = self.shop.filter(|&d| oven::stands(core, Work::Shop, d)) {
+            return Some(own);
+        }
+        let cells = core
+            .deploys
+            .entries()
+            .iter()
+            .filter(|d| d.level == 0 && d.loc == LOC_PLANE)
+            .map(|d| (d.cx, d.cz));
+        oven::nearest(
+            core,
+            Work::Shop,
+            cells,
+            sx,
+            sz,
+            crate::agent::shop::SPOT_NEAR_M,
+        )
     }
 
     /// Is a walk home not worth another try yet?
@@ -4685,6 +5295,7 @@ impl Survivor {
     fn oven_failed(&mut self, tick: u32) {
         match self.oven_job.work() {
             Work::Cook => self.cook_failed = Some(tick),
+            Work::Shop => self.shop_failed = Some(tick),
             _ => self.recycle_failed = Some(tick),
         }
     }
@@ -4696,10 +5307,10 @@ impl Survivor {
     /// switched off and the panel shut.
     fn tend(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let work = self.oven_job.work();
-        self.stats.phase = if work == Work::Cook {
-            Phase::Cooking
-        } else {
-            Phase::Recycling
+        self.stats.phase = match work {
+            Work::Cook => Phase::Cooking,
+            Work::Shop => Phase::Trading,
+            _ => Phase::Recycling,
         };
         let Some(haven) = self.haven else {
             return Intent::IDLE;
@@ -4707,7 +5318,37 @@ impl Survivor {
         let (seed, _) = core.island();
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let go_to = self.device_near(core, work, x, z);
-        self.oven_job.keep(self.keep);
+        if work == Work::Shop {
+            // What the base keeps is never sold.
+            let mut keep = Keep::NONE;
+            for (name, units) in crate::agent::shop::RESERVE {
+                if let Some(item) = crate::agent::build::item_named(core, name) {
+                    keep.add(item, units);
+                }
+            }
+            self.oven_job.keep(keep);
+            // No machine yet: to the crew's spot to put it down there.
+            if go_to.is_none() && self.oven_job.placed().is_none() {
+                if let Some(spot) = self.shop_spot(core) {
+                    if (spot[0] - x).hypot(spot[1] - z) > 1.5 {
+                        return match self.route.to(core, body, spot, 1.0, false, tick) {
+                            step @ Step::Walk { yaw, .. } => {
+                                step.walk().unwrap_or(Intent::walk(yaw))
+                            }
+                            Step::Wait => Intent::walk(yaw_toward(spot[0] - x, spot[1] - z)),
+                            Step::Arrived => Intent::IDLE,
+                            Step::Blocked => {
+                                self.oven_failed(tick);
+                                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                                Intent::IDLE
+                            }
+                        };
+                    }
+                }
+            }
+        } else {
+            self.oven_job.keep(self.keep);
+        }
         let builder = &self.builder;
         let step = self.oven_job.step(
             core,
@@ -4725,6 +5366,7 @@ impl Survivor {
         if let Some(at) = self.oven_job.placed() {
             match work {
                 Work::Cook => self.fire = Some(at),
+                Work::Shop => self.shop = Some(at),
                 _ => self.recycler = Some(at),
             }
         }
@@ -4779,6 +5421,10 @@ impl Survivor {
                 self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf)),
                 intent,
             ),
+            Tend::Offer { key, act, intent } => (
+                self.queue(|buf| protocol::encode_action_shop(key, act, buf)),
+                intent,
+            ),
             Tend::Close(intent) => (
                 self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
                 intent,
@@ -4786,6 +5432,9 @@ impl Survivor {
             Tend::Done => {
                 // The shut panel may still wait on its pace.
                 if self.outbox.is_none() {
+                    if work == Work::Shop {
+                        self.shop_kept = Some(tick);
+                    }
                     self.end_goal(tick, Outcome::Done);
                 }
                 return Intent::IDLE;
@@ -5148,6 +5797,14 @@ impl Survivor {
         // shooting near one of them is who `follow` goes for.
         let team = *core.team();
         self.tracks.befriend(&team);
+        // Its society: who its crew and guild are on this island, by their
+        // nametags; never a quarry, whatever team they are on.
+        if let Some(soc) = self.society {
+            self.kin.refresh(&soc, core, tick);
+            for id in self.kin.ids() {
+                self.tracks.spare(id);
+            }
+        }
         let mut guard: Option<(f32, u32)> = None;
         let recall = GUARD_RECALL_SECS * TICK_HZ;
         for m in team.members() {
@@ -5195,7 +5852,8 @@ impl Survivor {
             self.tracks.spare(id);
         }
         let mut invitee: Option<(f32, u32)> = None;
-        if let (true, Some(own)) = (room, self.tracks.own()) {
+        // A society invites its own crew and guild, never a passer-by.
+        if let (true, Some(own)) = (room && self.society.is_none(), self.tracks.own()) {
             for t in self.tracks.recent(tick, TICK_HZ) {
                 if t.species != Species::Player
                     || !t.visible
@@ -5228,6 +5886,9 @@ impl Survivor {
                     invitee = Some((0.0, t.id));
                 }
             }
+        }
+        if let Some(id) = self.sense_society(body, &team, room, tick) {
+            invitee = Some((0.0, id));
         }
         self.invitee = invitee.map(|(_, id)| id);
         self.senses.invitee = self.invitee.is_some();
@@ -5268,8 +5929,9 @@ impl Survivor {
         {
             self.memory.base.ready = false;
         }
-        // Living in the team's base, it builds none of its own.
-        if self.shared_home() {
+        // Living in the team's base, it builds none of its own; nor does a
+        // crewmate who is not its crew's founder, before it is shown home.
+        if self.shared_home() || self.society.is_some_and(|soc| !soc.founder()) {
             self.memory.base.ready = false;
         }
         self.home.set_base(self.builder.stand());
@@ -5332,7 +5994,16 @@ impl Survivor {
                 .is_some_and(|at| tick.wrapping_sub(at) < defend::DEFEND_RETRY_TICKS);
             self.memory.alarm = self.home.alarmed(tick, defend::DEFEND_ALARM_TICKS);
             let temperament = self.combat.temperament();
-            self.memory.raids = matches!(temperament, Temperament::Opportunist | Temperament::Kos);
+            // A society keeps the peace it asks of others: it raids nobody.
+            self.memory.raids = self.society.is_none()
+                && matches!(temperament, Temperament::Opportunist | Temperament::Kos);
+            // A patrol that could not reach its posts is not offered again
+            // at once: a body walled in would choose it every second.
+            self.memory.patrol_home = self.patrol_centre().is_some()
+                && self
+                    .patrol_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= society::PATROL_RETRY_SECS * TICK_HZ);
+            self.post_board(core, body);
             self.memory.raid_held = self
                 .raid_failed
                 .is_some_and(|at| tick.wrapping_sub(at) < RAID_HELD_TICKS);
@@ -5425,6 +6096,26 @@ impl Survivor {
                     && self
                         .recycle_failed
                         .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // The crew's shop (`agent::shop`), its founder's to keep: a
+            // machine carried and none standing is put down; one standing is
+            // stocked when the pack has lots of a ware past what the base
+            // keeps, and looked in on for its takings now and then.
+            let machine = self.society.and_then(|_| self.shop_machine(core));
+            self.memory.shop_stands = machine.is_some();
+            let carried_machine = oven::device_row(core, crate::agent::shop::SHOP_ITEM)
+                .is_some_and(|(_, item)| count_item(core, item) > 0);
+            let placing = machine.is_none() && carried_machine && self.shop_spot(core).is_some();
+            let stocking = machine.is_some()
+                && (crate::agent::shop::lots_carried(core) >= crate::agent::shop::STOCK_LOTS
+                    || self.shop_kept.is_none_or(|at| {
+                        tick.wrapping_sub(at) >= crate::agent::shop::VISIT_SECS * TICK_HZ
+                    }));
+            self.memory.hand = self.hand_due(core, body, tick);
+            self.memory.shop = self.society.is_some_and(|s| s.founder())
+                && (placing || stocking)
+                && self
+                    .shop_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
             for spot in self.loot.live(core, tick) {
@@ -6018,11 +6709,22 @@ impl BotDriver for Survivor {
         self.home_alarm = None;
         self.leave = Leave::default();
         self.deliver_failed = None;
-        self.team_code = None;
+        // A crewmate lives behind its founder's doors: the crew's code is
+        // what its clan would have told it, never printed.
+        self.team_code = self
+            .society
+            .filter(|soc| !soc.founder())
+            .and_then(|soc| soc.code)
+            .map(|code| code.code(welcome.seed));
+        self.kin.clear();
+        self.crew_near = None;
+        self.patrol = Patrol::default();
+        self.hand = Hand::default();
         self.shot_at = None;
         self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
         self.recycler = None;
+        self.shop = None;
         if self.welcomed.is_none() {
             self.welcomed = Some(welcome.tick);
             self.set_deadline(self.deadline_after);
@@ -6585,6 +7287,7 @@ pub fn observe(
         }
     }
     s.friend = senses.friend;
+    s.society = senses.society;
     if let (Some(b), Some([fx, fz])) = (body, senses.friend_at) {
         let (d, bearing) = relative(b, fx, fz);
         s.friend.in_sight.add(d, bearing);
@@ -6806,6 +7509,9 @@ pub fn observe(
     if memory.recycle && !senses.hostile {
         s.offer(Goal::Recycle);
     }
+    if memory.shop && !senses.hostile {
+        s.offer(Goal::KeepShop);
+    }
     // A visit home while there is something to see to there.
     if matches!(memory.home.state, HomeState::Built | HomeState::Inside)
         && !memory.stash_held
@@ -6832,7 +7538,8 @@ pub fn observe(
     {
         s.offer(Goal::Raid);
     }
-    if s.team.invited {
+    // In a society only a crewmate's invite is said yes to.
+    if s.team.invited && (!s.society.set || s.society.crew_invited_me) {
         s.offer(Goal::JoinTeam);
     }
     if senses.invitee {
@@ -6852,6 +7559,18 @@ pub fn observe(
         && !senses.hostile
     {
         s.offer(Goal::Meet);
+    }
+    // Its society's crew, coming together there (`agent::society`).
+    if senses.society_meet && s.gate.is_some() && !senses.hostile {
+        s.offer(Goal::Meet);
+    }
+    // A home to walk a ring round, and something in hand to meet an
+    // intruder with.
+    if armed && memory.patrol_home {
+        s.offer(Goal::Patrol);
+    }
+    if memory.hand && !senses.hostile {
+        s.offer(Goal::HandOver);
     }
     // The team's base, seen with a teammate at one of its boxes: a trip
     // there to stock it and take what the pack lacks, or a supply run for
