@@ -96,6 +96,39 @@ pub fn lines(a: &protocol::Achieved) -> (&'static str, String, String) {
     ("ACHIEVEMENT UNLOCKED", name, under)
 }
 
+/// Every piece of the popup that fades.
+pub type Inks<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PopInk,
+        Option<&'static mut TextColor>,
+        Option<&'static mut BackgroundColor>,
+        Option<&'static mut ImageNode>,
+        Option<(&'static PopEdge, &'static mut BorderColor)>,
+    ),
+>;
+
+/// Fade every piece to `alpha`. A UI node carries a background whether it
+/// draws one or not (`Node` requires one), so the ink goes to what the piece
+/// IS — its text, its picture, else its fill — and never to the fill behind a
+/// text or a picture, which would draw the line as a solid bar.
+pub fn paint(alpha: f32, inks: &mut Inks) {
+    for (ink, text, bg, image, edge) in inks {
+        let c = Color::srgba(ink.0[0], ink.0[1], ink.0[2], ink.1 * alpha);
+        if let Some(mut t) = text {
+            t.0 = c;
+        } else if let Some(mut i) = image {
+            i.color = c;
+        } else if let Some(mut b) = bg {
+            b.0 = c;
+        }
+        if let Some((edge, mut border)) = edge {
+            *border = BorderColor::all(Color::srgba(edge.0[0], edge.0[1], edge.0[2], alpha));
+        }
+    }
+}
+
 /// Take this frame's unlocks and run the popup. Unlocks that land while the
 /// island is still loading wait for it: an unlock at the join (a pack that
 /// already held 65 Junk) would otherwise pop up over the loading screen.
@@ -108,13 +141,7 @@ pub fn popup(
     time: Res<Time>,
     mut st: Local<PopState>,
     mut roots: Query<(Entity, &mut Node), With<PopRoot>>,
-    mut inks: Query<(
-        &PopInk,
-        Option<&mut TextColor>,
-        Option<&mut BackgroundColor>,
-        Option<&mut ImageNode>,
-        Option<(&PopEdge, &mut BorderColor)>,
-    )>,
+    mut inks: Inks,
 ) {
     for a in feed.achievements() {
         if st.queue.len() == QUEUE_CAP {
@@ -147,21 +174,7 @@ pub fn popup(
     for (_, mut node) in &mut roots {
         node.right = Val::Px(24.0 - SLIDE_PX * (1.0 - slide));
     }
-    for (ink, text, bg, image, edge) in &mut inks {
-        let c = Color::srgba(ink.0[0], ink.0[1], ink.0[2], ink.1 * alpha);
-        if let Some(mut t) = text {
-            t.0 = c;
-        }
-        if let Some(mut b) = bg {
-            b.0 = c;
-        }
-        if let Some(mut i) = image {
-            i.color = c;
-        }
-        if let Some((edge, mut border)) = edge {
-            *border = BorderColor::all(Color::srgba(edge.0[0], edge.0[1], edge.0[2], alpha));
-        }
-    }
+    paint(alpha, &mut inks);
 }
 
 fn spawn_popup(commands: &mut Commands, a: &protocol::Achieved, icons: Option<&Icons>) {
@@ -293,6 +306,48 @@ mod tests {
             let texts = world.query::<(&PopInk, &Text)>().iter(&world).count();
             assert_eq!(texts, 3, "eyebrow, name, line under");
         }
+    }
+
+    /// At full, the text is ink and the fill behind it stays clear; the
+    /// plate is the one fill that draws. (A UI text carries a background too,
+    /// and painting it drew every line as a solid bar.)
+    #[test]
+    fn a_fade_paints_the_text_and_never_the_fill_behind_it() {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::ecs::world::CommandQueue;
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let a = protocol::Achieved {
+            set: false,
+            name: text("Collect Wood"),
+            desc: Some(text("Collect 100 Wood")),
+            icon: None,
+            done: 3,
+            total: 40,
+        };
+        spawn_popup(&mut Commands::new(&mut queue, &world), &a, None);
+        queue.apply(&mut world);
+        world
+            .run_system_once(|mut q: Inks| paint(1.0, &mut q))
+            .expect("the fade runs");
+        let mut texts = 0;
+        for (t, bg) in world
+            .query::<(&TextColor, Option<&BackgroundColor>)>()
+            .iter(&world)
+        {
+            texts += 1;
+            assert_eq!(t.0.alpha(), 1.0, "the text is drawn");
+            assert!(
+                bg.is_none_or(|b| b.0.alpha() == 0.0),
+                "and nothing behind it"
+            );
+        }
+        assert_eq!(texts, 3);
+        let plate = world
+            .query_filtered::<&BackgroundColor, With<PopRoot>>()
+            .single(&world)
+            .expect("one plate");
+        assert!((plate.0.alpha() - PLATE_A).abs() < 1e-6);
     }
 
     #[test]
