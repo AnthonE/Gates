@@ -1,8 +1,9 @@
 //! Achievements through a real `ShardCore` tick: a wallet that crafts earns
-//! the row, hears it in chat, and a guest beside it earns nothing.
+//! the row and gets its popup, `/ach` says where it stands, and a guest
+//! beside it earns nothing.
 
-use protocol::{decode_event, ActionMsg, EventMsg};
-use server::achievements::{Achievements, Baked, Def, Rule, Set};
+use protocol::{decode_event, ActionMsg, Channel, ChatMsg, ChatText, EventMsg};
+use server::achievements::{Achievements, Baked, Def, Lookup, Rule, Set};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::store::PlayerKey;
@@ -16,13 +17,15 @@ const SETS: &[Set] = &[Set {
     id: "t",
     name: "Test",
     about: "",
+    icon: "ui_star",
     archived: false,
 }];
 const DEFS: &[Def] = &[Def {
     id: "CRAFT_P2",
     set: "t",
     name: "Made P2",
-    desc: "",
+    desc: "Craft a P2",
+    icon: "hammer",
     rule: Rule::Craft(&["p2"]),
     spoiler: false,
     archived: false,
@@ -45,12 +48,20 @@ fn a_wallet_that_crafts_earns_and_hears_it() {
     core.world.craft = craft;
     core.world.dev_spawn = Some(SPAWN);
     let items = ["p0", "p1", "p2", "p3", "p4"];
+    let item = |id: &str| items.iter().position(|i| *i == id).map(|i| i as u16);
     let baked = Baked::bake(
         DEFS,
         SETS,
-        items.len(),
-        |id| items.iter().position(|i| *i == id).map(|i| i as u16),
-        &[],
+        &Lookup {
+            n_items: items.len(),
+            item: &item,
+            deploy_items: &[],
+            works: &[],
+            mechs: &[],
+            cards: &[],
+            speakers: 0,
+            glyphs: 0,
+        },
     );
     core.achievements = Achievements::new(DEFS, SETS, baked);
 
@@ -61,9 +72,23 @@ fn a_wallet_that_crafts_earns_and_hears_it() {
     let tick = |core: &mut ShardCore, said: &mut Vec<(usize, String)>| {
         core.tick_bare(&stats, |lane, slot, bytes| {
             if lane == Lane::Event {
-                if let Ok(EventMsg::Chat { text, .. }) = decode_event(bytes) {
-                    said.push((slot, String::from_utf8_lossy(text.as_bytes()).into_owned()));
-                }
+                let line = match decode_event(bytes) {
+                    Ok(EventMsg::Chat { text, .. }) => {
+                        String::from_utf8_lossy(text.as_bytes()).into_owned()
+                    }
+                    Ok(EventMsg::Achievement(a)) => format!(
+                        "popup {} {} {}/{} {}",
+                        if a.set { "set" } else { "row" },
+                        String::from_utf8_lossy(a.name.as_bytes()),
+                        a.done,
+                        a.total,
+                        a.icon
+                            .map(|i| String::from_utf8_lossy(i.as_bytes()).into_owned())
+                            .unwrap_or_default()
+                    ),
+                    _ => return true,
+                };
+                said.push((slot, line));
             }
             true
         });
@@ -99,15 +124,36 @@ fn a_wallet_that_crafts_earns_and_hears_it() {
         tick(&mut core, &mut said);
     }
     assert_eq!(core.achievements.row(0).map(|r| r.got), Some(1));
-    let told: Vec<_> = said.iter().filter(|(_, l)| l.contains("Made P2")).collect();
-    assert_eq!(
-        told,
-        vec![&(0, "[server] Achievement: Made P2".to_string())],
-        "told once, to the crafter only"
-    );
-    assert!(said
+    let popups: Vec<_> = said
         .iter()
-        .any(|(s, l)| *s == 0 && l == "[server] Set complete: Test"));
+        .filter(|(_, l)| l.starts_with("popup"))
+        .collect();
+    assert_eq!(
+        popups,
+        vec![
+            &(0, "popup row Made P2 1/1 hammer".to_string()),
+            &(0, "popup set Test 1/1 ui_star".to_string())
+        ],
+        "popped once each, to the crafter only"
+    );
+
+    // `/ach`, asked in chat, answers the asker alone.
+    said.clear();
+    let ask = || ChatMsg {
+        channel: Channel::Global,
+        text: ChatText::sanitize(b"/ach").unwrap(),
+    };
+    core.push_chat(0, ask());
+    core.push_chat(1, ask());
+    tick(&mut core, &mut said);
+    assert!(
+        said.contains(&(0, "[server] Test: 1/1 - done".to_string())),
+        "{said:?}"
+    );
+    assert!(
+        said.contains(&(1, "[server] Achievements need a wallet sign-in".to_string())),
+        "{said:?}"
+    );
 }
 
 /// The writer thread lands the record, the status thread serves it, and a
@@ -123,7 +169,7 @@ fn the_record_is_served_and_survives_a_restart() {
     // The shipped list through the real writer: join, flush, close.
     let mut live = Achievements::open(server::achievements::Baked::default(), Some(base.as_path()));
     live.join(0, Some(&wallet));
-    live.close();
+    live.close(|_| None);
     let json = std::fs::read_to_string(server::achievements::json_path(&base)).expect("written");
     let v: serde_json::Value = serde_json::from_str(&json).expect("json");
     assert_eq!(v["players"], 1, "a joined wallet is a player on record");
@@ -143,7 +189,7 @@ fn the_record_is_served_and_survives_a_restart() {
         Some(1),
         "COLLECT_100_WOOD is row 0"
     );
-    again.close();
+    again.close(|_| None);
 
     let addr = server::status::spawn_status_with(
         "127.0.0.1:0".parse().expect("static addr"),

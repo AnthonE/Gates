@@ -243,6 +243,9 @@ fn main() {
     write_fixture(goldens::FIXTURES[169], &buf[..len]);
     let len = protocol::encode_event_death_mark(goldens::event_death_mark(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[170], &buf[..len]);
+    // Achievements (v118).
+    let len = protocol::encode_event_achievement(&goldens::event_achievement(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[171], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

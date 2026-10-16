@@ -161,6 +161,15 @@ pub enum Lane {
     Event,
 }
 
+/// What a tick's command did to the piece an `EV_PIECE_PLACED` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Piece {
+    /// Placed, as this building row.
+    Placed(u16),
+    /// Upgraded into this material.
+    Upgraded(u8),
+}
+
 pub struct ShardCore {
     pub world: World,
     pub clients: Box<[ClientNetState]>,
@@ -1110,17 +1119,24 @@ impl ShardCore {
     ///
     /// The cost is the point of the shape: nothing happens unless a wallet
     /// is connected; a tracked event costs a slot lookup (a scan of
-    /// `MAX_PLAYERS` ids) and a bit or counter set in place; the pack sweep
-    /// reads one body a tick. Nothing here allocates unless something was
-    /// earned, and the writer thread does the formatting.
+    /// `MAX_PLAYERS` ids) and a bit or counter set in place; an event that
+    /// names no actor (a piece, a charge, a corpse) is matched to the tick's
+    /// own command or hit; the pack sweep reads one body a tick. Nothing here
+    /// allocates unless something was earned, and the writer thread does the
+    /// formatting.
     fn note_achievements(&mut self, n: usize) {
+        use sim_core::works::WORK_EV_LIT;
         use sim_core::world::{
-            EV_CONSUMED, EV_CRAFT_DONE, EV_DEPLOY_PLACED, EV_DOOR, EV_DRANK, EV_GATHER,
-            EV_RESEARCH, EV_RESPAWN, EV_VEND, EV_VITALS,
+            EV_ARC_DID, EV_ASSIST, EV_BAG_DROPPED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CRAFT_DONE,
+            EV_DEATH, EV_DEPLOY_PLACED, EV_DOOR, EV_DRANK, EV_EXTRACTED, EV_GATHER, EV_GAVE,
+            EV_HIT, EV_PIECE_PLACED, EV_RESEARCH, EV_RESPAWN, EV_STOCK, EV_SWIPE, EV_VEND,
+            EV_VITALS,
         };
         let tick = self.world.tick;
         if tick.is_multiple_of(crate::achievements::FLUSH_SECS * sim_core::limits::TICK_HZ as u64) {
-            self.achievements.flush();
+            let standings = &self.standings;
+            self.achievements
+                .flush(|k| standings.label_of(k).map(str::to_string));
         }
         if !self.achievements.tracking() {
             return;
@@ -1129,12 +1145,33 @@ impl ShardCore {
             let ev = self.world.events.entries()[i];
             let who = match ev.code {
                 EV_GATHER | EV_CRAFT_DONE | EV_RESEARCH | EV_VEND | EV_CONSUMED | EV_DRANK
-                | EV_VITALS | EV_RESPAWN => ev.a,
+                | EV_VITALS | EV_RESPAWN | EV_STOCK | EV_GAVE | EV_EXTRACTED | EV_ARC_DID
+                | EV_SWIPE | EV_ASSIST | EV_HIT => ev.a,
                 EV_DEPLOY_PLACED => ev.c,
                 // A lock mints no deployable: its placement is a door
                 // announcement with the lock bit, matched to this tick's own
                 // `PlaceDeploy` of a lock at that address.
                 EV_DOOR if ev.b & 0b100 != 0 => ev.c,
+                EV_WORK if ev.b == WORK_EV_LIT => ev.c,
+                EV_MECH_SOLVED => ev.b,
+                // The killer of another player.
+                EV_DEATH if ev.b != ev.a && ev.b & sim_core::limits::MOB_ID_TAG == 0 => ev.b,
+                // A piece, a charge and a corpse name nobody: the tick's own
+                // command (or the killing hit) does.
+                EV_PIECE_PLACED => match self.piece_by(&self.cmd_buf[..n], ev) {
+                    Some((id, _)) => id,
+                    None => continue,
+                },
+                EV_CHARGE_PLACED => match self.charge_by(&self.cmd_buf[..n], ev) {
+                    Some(id) => id,
+                    None => continue,
+                },
+                EV_BAG_DROPPED if ev.b & sim_core::limits::MOB_ID_TAG != 0 => {
+                    match self.animal_killer(ev.b) {
+                        Some(id) => id,
+                        None => continue,
+                    }
+                }
                 _ => continue,
             };
             let Some(slot) = self.client_slot_of(who) else {
@@ -1143,19 +1180,53 @@ impl ShardCore {
             if !self.achievements.tracks(slot) {
                 continue;
             }
-            if ev.code == EV_DOOR {
-                if let Some(row) = self.lock_placed(&self.cmd_buf[..n], who, ev) {
-                    self.achievements.placed(slot, row);
+            match ev.code {
+                EV_DOOR => {
+                    if let Some(row) = self.lock_placed(&self.cmd_buf[..n], who, ev) {
+                        self.achievements.placed(slot, row);
+                    }
                 }
-            } else {
-                self.achievements.event(slot, ev);
+                EV_WORK => self.achievements.lit(slot, ev.a as usize),
+                EV_MECH_SOLVED => self.achievements.solved(slot, ev.a as usize),
+                EV_DEATH => {
+                    let range = self
+                        .world
+                        .players
+                        .iter()
+                        .find(|p| p.id == ev.a)
+                        .map_or(0, |p| p.death_range_cm);
+                    self.achievements.killed_player(slot, range);
+                }
+                EV_PIECE_PLACED => match self.piece_by(&self.cmd_buf[..n], ev) {
+                    Some((_, Piece::Placed(row))) => {
+                        let shape = self
+                            .world
+                            .build
+                            .pieces
+                            .get(usize::from(row))
+                            .map_or(u8::MAX, |d| d.shape);
+                        self.achievements.built(slot, shape);
+                    }
+                    Some((_, Piece::Upgraded(material))) => {
+                        self.achievements.upgraded(slot, material)
+                    }
+                    None => {}
+                },
+                EV_CHARGE_PLACED => self.achievements.thrown(slot),
+                EV_BAG_DROPPED => {
+                    let kind = sim_core::mob::slot_of_id(ev.b)
+                        .and_then(|m| self.world.mobs.m.get(m))
+                        .map_or(u8::MAX, |m| m.kind);
+                    self.achievements.killed_animal(slot, kind);
+                }
+                _ => self.achievements.event(slot, ev),
             }
         }
         let slot = self.achievements.sweep_next();
         if self.clients[slot].connected && self.achievements.tracks(slot) {
             let id = self.clients[slot].id;
             if let Some(p) = self.world.players.iter().find(|p| p.active && p.id == id) {
-                self.achievements.swept(slot, &p.inv, &p.worn);
+                self.achievements.swept(slot, &p.inv, &p.worn, p.glyphs);
             }
         }
     }
@@ -1192,18 +1263,93 @@ impl ShardCore {
         })
     }
 
-    /// What the achievements owe chat: each unlock, to the one who earned it.
+    /// Who placed or upgraded the piece `EV_PIECE_PLACED` announces, and
+    /// which: the tick's own `Place` or `Upgrade` at that address.
+    fn piece_by(&self, cmds: &[Command], ev: sim_core::world::SimEvent) -> Option<(u32, Piece)> {
+        let at = (
+            (ev.a >> 16) as u16,
+            ev.a as u16,
+            (ev.b >> 16) as u8,
+            (ev.b >> 8) as u8,
+        );
+        let row = (ev.b & 0xff) as u16;
+        cmds.iter().find_map(|c| match *c {
+            Command::Place {
+                id,
+                row: r,
+                cx,
+                cz,
+                level,
+                loc,
+                ..
+            } if (cx, cz, level, loc) == at && r == row => Some((id, Piece::Placed(r))),
+            Command::Upgrade {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+                material,
+            } if (cx, cz, level, loc) == at => Some((id, Piece::Upgraded(material))),
+            _ => None,
+        })
+    }
+
+    /// Who stuck the charge `EV_CHARGE_PLACED` announces: the tick's own
+    /// `Throw` at that address.
+    fn charge_by(&self, cmds: &[Command], ev: sim_core::world::SimEvent) -> Option<u32> {
+        let at = (
+            (ev.a >> 16) as u16,
+            ev.a as u16,
+            (ev.b >> 16) as u8,
+            (ev.b >> 8) as u8,
+        );
+        cmds.iter().find_map(|c| match *c {
+            Command::Throw {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+                ..
+            } if (cx, cz, level, loc) == at => Some(id),
+            _ => None,
+        })
+    }
+
+    /// Who killed the animal whose corpse is `mob`: the last player to hit
+    /// it this tick. A death with no hit this tick (a fire, a fall) is
+    /// nobody's.
+    fn animal_killer(&self, mob: u32) -> Option<u32> {
+        use sim_core::world::EV_HIT;
+        let evs = self.world.events.entries();
+        (0..self.world.events.len()).rev().find_map(|i| {
+            let e = evs[i];
+            (e.code == EV_HIT && e.b == mob && e.a & sim_core::limits::MOB_ID_TAG == 0)
+                .then_some(e.a)
+        })
+    }
+
+    /// What the achievements owe their earners: each unlock's popup
+    /// (`SUB_ACHIEVEMENT`), to the one who earned it.
     fn pump_achievements(
         &mut self,
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
-        let mut owed: Vec<(usize, String)> = Vec::new();
-        self.achievements
-            .take_tells(|slot, line| owed.push((slot, line)));
-        for (slot, line) in owed {
-            if self.clients[slot].connected {
-                self.answer(slot, line, stats, send);
+        let mut owed: Vec<(usize, protocol::Achieved)> = Vec::new();
+        self.achievements.take_tells(|slot, a| owed.push((slot, a)));
+        for (slot, a) in owed {
+            if !self.clients[slot].connected {
+                continue;
+            }
+            match protocol::encode_event_achievement(&a, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
         }
     }
@@ -3041,6 +3187,14 @@ impl ShardCore {
             return;
         }
 
+        // `/ach` is everybody's: their own achievements, to the asker.
+        if let AdminCmd::Achievements = cmd {
+            for line in self.achievements.lines(from_slot) {
+                self.answer(from_slot, line, stats, send);
+            }
+            return;
+        }
+
         // `/top` is everybody's: the standings, to the asker.
         if let AdminCmd::Top = cmd {
             let key = self.key_str(from_slot);
@@ -3246,9 +3400,11 @@ impl ShardCore {
                 self.answer(from_slot, format!("{n} on:{line}"), stats, send);
             }
             // Handled above, before the allowlist.
-            AdminCmd::Bug { .. } | AdminCmd::WipeWhen | AdminCmd::Top | AdminCmd::Team { .. } => {
-                return
-            }
+            AdminCmd::Bug { .. }
+            | AdminCmd::WipeWhen
+            | AdminCmd::Top
+            | AdminCmd::Achievements
+            | AdminCmd::Team { .. } => return,
         }
         ops.log.push(logged);
     }

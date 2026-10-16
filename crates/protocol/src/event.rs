@@ -571,7 +571,10 @@ const SUB_DEAD: u32 = 99;
 /// Where your body last fell (wire v116): Rust's death marker. Own-fact. See
 /// `EventMsg::DeathMark`.
 const SUB_DEATH_MARK: u32 = 100;
-const SUB_MAX: u32 = SUB_DEATH_MARK;
+/// An achievement earned, or a set of them finished (wire v118,
+/// `server::achievements`). Own-fact. See `EventMsg::Achievement`.
+const SUB_ACHIEVEMENT: u32 = 101;
+const SUB_MAX: u32 = SUB_ACHIEVEMENT;
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -2247,6 +2250,9 @@ pub enum EventMsg {
     /// and after a resync. `None` when the server has no death of yours on
     /// record.
     DeathMark { at: Option<(i32, i32)> },
+    /// You earned an achievement, or finished a set of them (v118). Own-fact,
+    /// sent once, at the unlock: the popup's whole content.
+    Achievement(Achieved),
     /// You woke up: `on_bag` is true if one of your own sleeping bags
     /// answered, false if the beach ring did. Own-fact, and the one message
     /// that closes the death screen.
@@ -5111,6 +5117,37 @@ pub fn encode_event_dead(
     Ok(w.finish())
 }
 
+/// One unlock, as the popup draws it (`EventMsg::Achievement`, v118).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Achieved {
+    /// A set finished rather than one achievement earned.
+    pub set: bool,
+    pub name: ChatText,
+    /// What it was for; `None` for a set.
+    pub desc: Option<ChatText>,
+    /// The icon's file stem (`assets/icons/<stem>.png`), if it has one.
+    pub icon: Option<ChatText>,
+    /// The set's progress counting this one: `done` of `total`.
+    pub done: u8,
+    pub total: u8,
+}
+
+/// An achievement earned — see [`EventMsg::Achievement`].
+pub fn encode_event_achievement(a: &Achieved, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_ACHIEVEMENT)?;
+    w.write_bit(a.set)?;
+    write_text(&mut w, &a.name)?;
+    for t in [a.desc, a.icon] {
+        w.write_bit(t.is_some())?;
+        if let Some(t) = t {
+            write_text(&mut w, &t)?;
+        }
+    }
+    w.write(a.done as u32, 8)?;
+    w.write(a.total as u32, 8)?;
+    Ok(w.finish())
+}
+
 /// Where the receiver last fell, own-fact — see `EventMsg::DeathMark`. A
 /// position off the entity lane's window is refused, `SUB_IMPACT`'s check.
 pub fn encode_event_death_mark(at: Option<(i32, i32)>, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -6912,6 +6949,28 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 range_cm,
                 alive_s,
             }
+        }
+        SUB_ACHIEVEMENT => {
+            let set = r.read_bit()?;
+            let name = read_text(&mut r)?;
+            let desc = if r.read_bit()? {
+                Some(read_text(&mut r)?)
+            } else {
+                None
+            };
+            let icon = if r.read_bit()? {
+                Some(read_text(&mut r)?)
+            } else {
+                None
+            };
+            EventMsg::Achievement(Achieved {
+                set,
+                name,
+                desc,
+                icon,
+                done: r.read(8)? as u8,
+                total: r.read(8)? as u8,
+            })
         }
         SUB_DEATH_MARK => {
             let at = if r.read_bit()? {

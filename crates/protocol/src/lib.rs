@@ -80,6 +80,7 @@ pub use event::{
     MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
     RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
+pub use event::{encode_event_achievement, Achieved};
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
@@ -1201,7 +1202,10 @@ pub use voice::{
 /// (`DEATH_BY_FEL`); and it spreads: `Welcome` carries the wipe's blight salt
 /// after the dev bit, and `MAX_ITEM_DEFS` is 112 (the held field's seven bits
 /// still hold it beside `HELD_NONE`).
-pub const PROTO_VER: u16 = 117;
+/// v118 — achievements: `SUB_ACHIEVEMENT` (101) tells a player they earned
+/// one, or finished a set: its name, its line, its icon's stem and the set's
+/// progress, own-fact, the in-game popup (`server::achievements`).
+pub const PROTO_VER: u16 = 118;
 
 /// This game's slug in the elo catalog.
 ///

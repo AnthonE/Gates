@@ -411,6 +411,9 @@ pub const APPLIED2_OWN_STRUCT_HIT: u32 = 1 << 10;
 /// that tints loose stacks re-reads them (`skins_gen` counts the same
 /// landings for readers that poll).
 pub const APPLIED2_SKINS: u32 = 1 << 12;
+/// An achievement popup was queued (`EventMsg::Achievement`, v118):
+/// [`ClientCore::pop_achievement`].
+pub const APPLIED2_ACHIEVEMENT: u32 = 1 << 13;
 
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
@@ -1734,6 +1737,11 @@ pub struct ClientCore {
     research_toasts: [(u16, u16); TOAST_RING],
     research_toast_head: usize,
     research_toast_len: usize,
+    /// Achievement popups not yet drawn (v118), oldest first; a full ring
+    /// drops the oldest.
+    achievements: [Option<protocol::Achieved>; TOAST_RING],
+    achievement_head: usize,
+    achievement_len: usize,
     research_refusals: [u8; REFUSAL_RING],
     /// The town's vendor offers (wire v85, `SUB_VEND_OFFERS`), offer order.
     pub vend: sim_core::vend::VendContent,
@@ -2458,6 +2466,9 @@ impl ClientCore {
             research_toasts: [(0, 0); TOAST_RING],
             research_toast_head: 0,
             research_toast_len: 0,
+            achievements: [None; TOAST_RING],
+            achievement_head: 0,
+            achievement_len: 0,
             research_refusals: [0; REFUSAL_RING],
             vend: sim_core::vend::VendContent::EMPTY,
             vendor_names: [[0; protocol::VENDOR_NAME_BYTES]; sim_core::limits::MAX_VENDORS],
@@ -3784,6 +3795,16 @@ impl ClientCore {
                 self.own_death_alive_s = alive_s;
                 flags |= APPLIED_RESPAWN;
             }
+            EventMsg::Achievement(a) => {
+                if self.achievement_len == TOAST_RING {
+                    self.achievement_head = (self.achievement_head + 1) % TOAST_RING;
+                    self.achievement_len -= 1;
+                }
+                self.achievements[(self.achievement_head + self.achievement_len) % TOAST_RING] =
+                    Some(a);
+                self.achievement_len += 1;
+                self.applied2 |= APPLIED2_ACHIEVEMENT;
+            }
             EventMsg::DeathMark { at } => {
                 let q = sim_core::movement::POS_XZ_Q;
                 self.death_marker = at.map(|(qx, qz)| (qx as f32 * q, qz as f32 * q));
@@ -4560,6 +4581,17 @@ impl ClientCore {
     /// shift is written, so nothing here re-implements it.
     pub fn known(&self) -> u64 {
         self.known
+    }
+
+    /// Oldest achievement popup not yet drawn (v118).
+    pub fn pop_achievement(&mut self) -> Option<protocol::Achieved> {
+        if self.achievement_len == 0 {
+            return None;
+        }
+        let a = self.achievements[self.achievement_head].take();
+        self.achievement_head = (self.achievement_head + 1) % TOAST_RING;
+        self.achievement_len -= 1;
+        a
     }
 
     /// Oldest buffered `(recipe, cost)` learned.

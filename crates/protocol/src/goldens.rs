@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 171] = [
+pub const FIXTURES: [&str; 172] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -310,6 +310,8 @@ pub const FIXTURES: [&str; 171] = [
     // comes back to a corpse, and where they fell.
     "event_dead.bin",
     "event_death_mark.bin",
+    // An achievement earned (v118): every optional field present.
+    "event_achievement.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1998,6 +2000,22 @@ pub fn event_dead() -> (u32, u8, u16, u16, Option<u32>) {
         4_130,
         Some(3_725),
     )
+}
+
+/// An achievement earned (v118): a set's line, both optionals present and
+/// `done` and `total` different, so a dropped or transposed field moves a
+/// byte. `set` is true for `event_respawn`'s reason: a one-bit field pinned
+/// at its default is a fixture an encoder that never wrote it would pass.
+pub fn event_achievement() -> crate::event::Achieved {
+    let t = |s: &str| crate::ChatText::sanitize(s.as_bytes()).expect("fixture text");
+    crate::event::Achieved {
+        set: true,
+        name: t("Collect 300 Metal Ore"),
+        desc: Some(t("Collect 300 Metal Ore")),
+        icon: Some(t("metal_ore")),
+        done: 12,
+        total: 40,
+    }
 }
 
 /// Where you fell (v116): x and z different and x past 17 bits, so a

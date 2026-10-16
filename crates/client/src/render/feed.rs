@@ -237,6 +237,9 @@ pub struct Feed {
     /// `(recipe, coin burned)` per blueprint learned this frame.
     learned: [(u16, u16); FEED_CAP],
     n_learned: usize,
+    /// Achievements earned this frame, oldest first (wire v118).
+    achievements: [Option<protocol::Achieved>; FEED_CAP],
+    n_achievements: usize,
     traded: [(u8, u8); FEED_CAP],
     n_traded: usize,
     /// Works that changed this frame (`EventMsg::Work`, wire v95): (work,
@@ -400,6 +403,10 @@ impl Feed {
     pub fn learned(&self) -> &[(u16, u16)] {
         &self.learned[..self.n_learned]
     }
+    /// Achievements earned this frame, oldest first: the popup's queue.
+    pub fn achievements(&self) -> impl Iterator<Item = &protocol::Achieved> {
+        self.achievements[..self.n_achievements].iter().flatten()
+    }
     /// `(item index, slot)` eaten or used this frame, oldest first.
     pub fn consumed(&self) -> &[(u16, u16)] {
         &self.consumed[..self.n_consumed]
@@ -544,6 +551,7 @@ impl Feed {
         self.n_crafted = 0;
         self.n_spills = 0;
         self.n_learned = 0;
+        self.n_achievements = 0;
         self.n_traded = 0;
         self.n_work_events = 0;
         self.n_arc_texts = 0;
@@ -637,6 +645,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     // there is nothing to cap: `take()` is the whole drain.
     feed.wounded = core.pop_wounded();
     feed.recovered = core.pop_recovered();
+    while let Some(a) = core.pop_achievement() {
+        if feed.n_achievements >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_achievements;
+            feed.achievements[n] = Some(a);
+            feed.n_achievements += 1;
+        }
+    }
     while let Some(t) = core.pop_research_toast() {
         if feed.n_learned < FEED_CAP {
             let n = feed.n_learned;

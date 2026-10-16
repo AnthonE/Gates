@@ -4591,7 +4591,9 @@ fn sim_thread(
         eprintln!("shard: standings at shutdown: {e}");
     }
     // The achievements' last flush, landed before the process ends.
-    core.achievements.close();
+    let standings = &core.standings;
+    core.achievements
+        .close(|k| standings.label_of(k).map(str::to_string));
     // Room for the shutdown's side files — the teams the save below takes,
     // and a gift ledger a full ring left dirty — on the ring the store thread
     // is draining right now. Bounded like the accept loop's drain; past the
