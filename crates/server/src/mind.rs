@@ -230,6 +230,9 @@ pub enum Goal {
     /// Keep the crew's vending machine (`agent::shop`): put it down outside
     /// the base, take its junk out, put the wares in, set its prices.
     KeepShop,
+    /// Walk up to its founder and hand over the wood, stone and ore the
+    /// pack carries for the base (`agent::society`).
+    HandOver,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -257,7 +260,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 38] = [
+    pub const FIXED: [Goal; 39] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -296,6 +299,7 @@ impl Goal {
         Goal::SwipeCard,
         Goal::Patrol,
         Goal::KeepShop,
+        Goal::HandOver,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -342,6 +346,7 @@ impl Goal {
             Goal::SwipeCard => "swipe_card",
             Goal::Patrol => "patrol",
             Goal::KeepShop => "keep_shop",
+            Goal::HandOver => "hand_over",
         }
     }
 
@@ -428,6 +433,7 @@ impl Goal {
             Goal::SwipeCard => "Swipe your keycard at its ziggurat door and walk into the room.".into(),
             Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
             Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
+            Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
         }
     }
 }
@@ -2334,6 +2340,11 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
         }
         return make_shop();
     }
+    // What it carries for the base goes to its founder's hands, base or no
+    // base yet: a runner's goes to the shop instead.
+    if soc.role != Role::Runner && s.offers(Goal::HandOver) {
+        return Some((Goal::HandOver, "society: my founder can use what I carry"));
+    }
     if s.team.home.count == 0 {
         return None;
     }
@@ -3399,6 +3410,10 @@ mod tests {
             s.offer(g);
         }
         assert_eq!(pick(&mut scripted, &s), Goal::SupplyStone);
+        // Carrying plenty, with its founder near: into the founder's hands.
+        s.offer(Goal::HandOver);
+        assert_eq!(pick(&mut scripted, &s), Goal::HandOver);
+        s.options_len -= 1;
         s.team.mate_attacked = true;
         assert_eq!(
             pick(&mut scripted, &s),

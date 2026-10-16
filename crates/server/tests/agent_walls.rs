@@ -72,7 +72,7 @@ const PUPPET: u32 = 257;
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 26] = [
+const EXPECTED_VERBS: [&str; 27] = [
     "craft",
     "consume",
     "drink",
@@ -99,6 +99,7 @@ const EXPECTED_VERBS: [&str; 26] = [
     "arc",
     "swipe",
     "shop",
+    "give",
 ];
 
 /// The verbs a lockstep life of gathering, crafting, eating, drinking and

@@ -42,7 +42,7 @@ use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::raid::{self, Bases, Means, Raid, RaidJob};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
-use crate::agent::society::{self, Kinship, Patrol, Society};
+use crate::agent::society::{self, Hand, Kinship, Patrol, Society};
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
 use crate::agent::supply::{self, Deliver, HomeJob, TeamHome, Trip, WANT_ROWS};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
@@ -547,6 +547,9 @@ pub struct Memory {
     pub raid_held: bool,
     /// It knows a home to walk a patrol round (`agent::society`).
     pub patrol_home: bool,
+    /// It carries enough for the base to hand its founder, who is near or
+    /// says where it is; no hand-over came to nothing a moment ago.
+    pub hand: bool,
     /// Its crew's vending machine stands, and keeping it is worth a walk:
     /// one to put down, wares to stock it with, or takings due a look
     /// (`agent::shop`).
@@ -984,6 +987,8 @@ pub struct Survivor {
     kin: Kinship,
     crew_near: Option<(u32, [f32; 2], f32)>,
     patrol: Patrol,
+    hand: Hand,
+    hand_failed: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
     say_at: u32,
@@ -1126,6 +1131,8 @@ impl Survivor {
             kin: Kinship::default(),
             crew_near: None,
             patrol: Patrol::default(),
+            hand: Hand::default(),
+            hand_failed: None,
             team_seen: (0, 0),
             say_at: 0,
             pace: Pace::default(),
@@ -1969,6 +1976,9 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
+        if goal == Goal::HandOver {
+            self.hand = Hand::default();
+        }
         self.bag_job = BagJob::default();
         self.bag_leg = BagLeg::Here;
         self.bag_knocked = false;
@@ -2113,6 +2123,7 @@ impl Survivor {
             | Goal::Follow
             | Goal::Meet
             | Goal::Patrol
+            | Goal::HandOver
             | Goal::Deliver
             | Goal::SupplyWood
             | Goal::SupplyStone
@@ -2324,6 +2335,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Patrol => self.patrol(core, body, tick),
+            Goal::HandOver if elapsed >= society::HAND_GOAL_SECS * TICK_HZ => {
+                self.hand_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::HandOver => self.hand_over(core, body, tick),
             Goal::Deliver if elapsed >= DELIVER_GOAL_SECS * TICK_HZ => {
                 self.deliver_over(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
@@ -2656,6 +2673,159 @@ impl Survivor {
                 self.shared.tell(core, at);
             }
         }
+    }
+
+    /// Units of what a crewmate hands its founder that the pack carries.
+    fn hand_units(core: &ClientCore) -> u32 {
+        society::HAND_ITEMS
+            .iter()
+            .filter_map(|name| crate::agent::build::item_named(core, name))
+            .map(|item| count_item(core, item))
+            .sum()
+    }
+
+    /// Where its founder is: in sight, else where the founder says it is.
+    fn founder_at(&self) -> Option<([f32; 3], bool)> {
+        let soc = self.society?;
+        if let Some(t) = self
+            .tracks
+            .get(self.kin.founder())
+            .filter(|t| t.visible && t.active())
+        {
+            return Some((t.pos, true));
+        }
+        let [x, z] = soc.board?.founder(soc.crew_no)?;
+        Some(([x, 0.0, z], false))
+    }
+
+    /// A hand-over is worth a walk: a crewmate with a founder (not itself)
+    /// on its team or about to be, near or saying where it is, the pack
+    /// carrying [`society::HAND_AT`] of what the base takes, and no
+    /// hand-over came to nothing a moment ago.
+    fn hand_due(&self, core: &ClientCore, body: &EntityState, tick: u32) -> bool {
+        if self.society.is_none_or(|s| s.founder()) {
+            return false;
+        }
+        if !self.senses.society.founded
+            || self
+                .hand_failed
+                .is_some_and(|at| tick.wrapping_sub(at) < society::HAND_RETRY_SECS * TICK_HZ)
+            || Self::hand_units(core) < society::HAND_AT
+        {
+            return false;
+        }
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        self.founder_at()
+            .is_some_and(|(p, _)| (p[0] - x).hypot(p[2] - z) <= society::HAND_WALK_M)
+    }
+
+    /// Hand over (`agent::society`): up to its founder, eyes on them at
+    /// arm's length, and the base's raw stuff out of the pack into theirs a
+    /// stack at a time — the give a player makes with a stack and a look.
+    /// What left the slot says a give landed; a founder whose pack has no
+    /// room says so, and the hand-over is over.
+    fn hand_over(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let founder = self.kin.founder();
+        let Some((at, seen)) = self.founder_at().filter(|_| founder != 0) else {
+            self.hand_failed = Some(tick);
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        // A give in flight.
+        if let Some((slot, before, sent, seq)) = self.hand.sent {
+            let now = core.inv[usize::from(slot)].count;
+            if now < before {
+                self.hand.sent = None;
+                self.hand.tries = 0;
+                self.hand.given += u32::from(before - now);
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained = a.gained.saturating_add(u32::from(before - now));
+                }
+            } else if core.move_seq != seq
+                && u32::from(core.last_move_refused) == sim_core::inventory::REFUSE_M_GIVE
+            {
+                // Their pack is full: what was handed is theirs, the rest
+                // keeps.
+                self.hand.sent = None;
+                let outcome = if self.hand.given > 0 {
+                    Outcome::Done
+                } else {
+                    self.hand_failed = Some(tick);
+                    Outcome::Failed(Why::BoxFull)
+                };
+                self.end_goal(tick, outcome);
+                return Intent::IDLE;
+            } else if tick.wrapping_sub(sent) >= VERDICT_SECS * TICK_HZ {
+                self.hand.sent = None;
+                self.hand.tries += 1;
+                if self.hand.tries >= society::HAND_TRIES {
+                    self.hand_failed = Some(tick);
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    return Intent::IDLE;
+                }
+            }
+        }
+        let d = (at[0] - x).hypot(at[2] - z);
+        if !seen || d > society::HAND_STAND_M {
+            self.stats.phase = Phase::Approaching;
+            self.hand.aimed = None;
+            let hurry = d > FOLLOW_RUN_M;
+            return match self.route.to(
+                core,
+                body,
+                [at[0], at[2]],
+                society::HAND_STAND_M - 0.4,
+                hurry,
+                tick,
+            ) {
+                step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                Step::Wait => Intent::walk(yaw_toward(at[0] - x, at[2] - z)),
+                // Close but not close enough, or no way: straight at them.
+                Step::Arrived | Step::Blocked if seen => {
+                    Intent::walk(yaw_toward(at[0] - x, at[2] - z))
+                }
+                Step::Arrived | Step::Blocked => {
+                    self.hand_failed = Some(tick);
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                    Intent::IDLE
+                }
+            };
+        }
+        self.stats.phase = Phase::Delivering;
+        let look = Intent {
+            look: Look::Point([at[0], at[1] + 1.0, at[2]]),
+            ..Intent::IDLE
+        };
+        if self.hand.sent.is_some() {
+            return look;
+        }
+        // The next stack for the base, biggest first.
+        let mut next: Option<(u8, u16)> = None;
+        for name in society::HAND_ITEMS {
+            let Some(item) = crate::agent::build::item_named(core, name) else {
+                continue;
+            };
+            for (i, st) in core.inv[..INV_SLOTS].iter().enumerate() {
+                if st.count > 0 && st.item == item && next.is_none_or(|(_, c)| st.count > c) {
+                    next = Some((i as u8, st.count));
+                }
+            }
+        }
+        let Some((slot, count)) = next else {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        };
+        // The eyes settle on them first, as a player's would.
+        let aimed = *self.hand.aimed.get_or_insert(tick);
+        if tick.wrapping_sub(aimed) >= home::HOLD_TICKS
+            && self.hands.settled()
+            && self.queue(|b| protocol::encode_action_give(slot, count, founder, b))
+        {
+            self.hand.sent = Some((slot, count, tick, core.move_seq));
+            self.hand.aimed = None;
+        }
+        look
     }
 
     /// Patrol (`agent::society`): round the ring of posts about home, a
@@ -5915,6 +6085,7 @@ impl Survivor {
                     || self.shop_kept.is_none_or(|at| {
                         tick.wrapping_sub(at) >= crate::agent::shop::VISIT_SECS * TICK_HZ
                     }));
+            self.memory.hand = self.hand_due(core, body, tick);
             self.memory.shop = self.society.is_some()
                 && (placing || stocking)
                 && self
@@ -6523,6 +6694,7 @@ impl BotDriver for Survivor {
         self.kin.clear();
         self.crew_near = None;
         self.patrol = Patrol::default();
+        self.hand = Hand::default();
         self.shot_at = None;
         self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
@@ -7371,6 +7543,9 @@ pub fn observe(
     // intruder with.
     if armed && memory.patrol_home {
         s.offer(Goal::Patrol);
+    }
+    if memory.hand && !senses.hostile {
+        s.offer(Goal::HandOver);
     }
     // The team's base, seen with a teammate at one of its boxes: a trip
     // there to stock it and take what the pack lacks, or a supply run for

@@ -40,8 +40,9 @@ pub const GATHER_M: f32 = 40.0;
 /// the agent's invite reach (`explorer::INVITE_REACH_M`).
 pub const GATHER_STOP_M: f32 = 2.0;
 /// A crewmate keeping up with its team stops this near them, metres: close
-/// enough to be shown home, far enough to stay off the building site.
-pub const KEEP_UP_M: f32 = 10.0;
+/// enough to be shown home, far enough to stay off the building site (a
+/// body standing where a wall goes stalls the founder's build).
+pub const KEEP_UP_M: f32 = 18.0;
 /// After a session's welcome the founder waits at THE GATE for its crew
 /// at most this long before it starts on the base; a crewmate who comes
 /// later walks to wherever its founder says it is ([`Board::founder`]).
@@ -457,6 +458,38 @@ fn find(core: &ClientCore, board: Option<&Board>, kin: &Kin, crew: bool) -> u32 
         .map(|b| b.member(kin.post))
         .filter(|&id| id != 0 && id != core.player_id && core.is_agent(id))
         .unwrap_or(0)
+}
+
+/// What a crewmate hands its founder (`hand_over`): the raw stuff a base is
+/// built, kept and smelted from. Handed rather than boxed: a give needs only
+/// a look at the founder, where a box behind the airlock needs the base's
+/// own doors walked, which a founder's fixed walk does and a crewmate's
+/// does not reliably.
+pub const HAND_ITEMS: [&str; 5] = ["Wood", "Stone", "Metal Ore", "Metal Fragments", "Cloth"];
+/// A crewmate hands over once it carries this many units of them.
+pub const HAND_AT: u32 = 1000;
+/// It hands over from this close, metres: well inside the give's reach
+/// (`sim_core::assist::ASSIST_REACH_M`).
+pub const HAND_STAND_M: f32 = 1.6;
+/// Its founder is walked to from this far off (where the founder says it
+/// is), metres.
+pub const HAND_WALK_M: f32 = 120.0;
+/// One hand-over lasts at most this long; one that came to nothing is not
+/// tried again for a while, seconds.
+pub const HAND_GOAL_SECS: u32 = 150;
+pub const HAND_RETRY_SECS: u32 = 120;
+/// Gives that change nothing before the hand-over is given up.
+pub const HAND_TRIES: u8 = 4;
+
+/// A hand-over under way: the give in flight (the slot, what it held, when
+/// it went, and the move answers' count then), gives that came to nothing,
+/// and since when the eyes have been on the founder.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hand {
+    pub sent: Option<(u8, u16, u32, u32)>,
+    pub tries: u8,
+    pub given: u32,
+    pub aimed: Option<u32>,
 }
 
 /// A patrol under way: the post it is walking to (`None` before the first
