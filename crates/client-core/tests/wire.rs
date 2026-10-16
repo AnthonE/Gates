@@ -45,11 +45,12 @@ use client_core::core::{
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_cont_sync, encode_event_death, encode_event_deploy_sync, encode_event_fire,
-    encode_event_hit, encode_event_impact, encode_event_move_refused, encode_event_moved,
-    encode_event_piece_defs, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_respawn, encode_event_shot, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
+    encode_event_cont_sync, encode_event_dead, encode_event_death, encode_event_death_mark,
+    encode_event_deploy_sync, encode_event_fire, encode_event_hit, encode_event_impact,
+    encode_event_move_refused, encode_event_moved, encode_event_piece_defs,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_respawn, encode_event_shot,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, InvSlot, WireBag,
+    MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO};
@@ -60,7 +61,7 @@ use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM}
 use sim_core::ranged::{
     IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, SURF_BUILT, SURF_GROUND, SURF_WORLD,
 };
-use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_HAND};
+use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_HAND};
 
 /// The player this core is. Distinct from every other id below, because
 /// "is this death mine" is a comparison against exactly this number.
@@ -568,7 +569,10 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     assert_eq!(c.pop_death(), None, "the death ring must drain");
 
     // Ours, by an arrow — the cause that has to decode rather than error,
-    // and the range and weapon the screen says.
+    // and the range and weapon the screen says. The server sends where it
+    // happened first, to us alone (v116).
+    let len = encode_event_death_mark(Some((40_000, 25_000)), &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
     let len = encode_event_death(ME, 0x4C, DEATH_BY_ARROW, 6, 1_337, 4_321, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert!(c.dead, "our own death must raise the screen");
@@ -579,8 +583,10 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
     );
     assert_eq!(c.own_death_item, 6, "the screen lost the weapon");
     assert_eq!(c.own_death_range_cm, 1_337, "the screen lost the range");
-    assert_eq!(c.own_death_alive_s, 4_321, "the screen lost the life");
-    let fell = c.death_marker.expect("our own death leaves a marker");
+    assert_eq!(c.own_death_alive_s, Some(4_321), "the screen lost the life");
+    let q = sim_core::movement::POS_XZ_Q;
+    let fell = (40_000.0 * q, 25_000.0 * q);
+    assert_eq!(c.death_marker, Some(fell), "the server's marker is ours");
 
     // A stranger's death while we are down must not rewrite our screen.
     let len = encode_event_death(0x5D, 0x6E, DEATH_BY_HAND, 1, 100, 9, &mut buf).unwrap();
@@ -590,7 +596,11 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
         c.own_death_killer, 0x4C,
         "a stranger's death rewrote our death screen"
     );
-    assert_eq!(c.own_death_alive_s, 4_321, "a stranger's life rewrote ours");
+    assert_eq!(
+        c.own_death_alive_s,
+        Some(4_321),
+        "a stranger's life rewrote ours"
+    );
 
     // The wake answers it. A beach wake leaves `woke_on_bag` false, and
     // that outlives the screen on purpose — it is the only moment the
@@ -605,6 +615,33 @@ fn a_death_feeds_everyone_and_only_our_own_raises_the_screen() {
         Some(fell),
         "the respawn took the death marker"
     );
+}
+
+/// **Coming back to a body that is already dead** (v116): logged off on the
+/// death screen, or killed asleep. The server says the screen again to us
+/// alone — the screen opens with its facts and the feed stays quiet, since
+/// nobody just died — and a marker of `None` clears a stale one.
+#[test]
+fn a_join_onto_a_corpse_opens_the_screen_without_a_feed_line() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let len = encode_event_dead(0x4C, DEATH_BY_BULLET, 21, 4_130, None, &mut buf).unwrap();
+    let flags = feed(&mut c, &buf[..len]);
+    assert!(c.dead, "the screen did not open");
+    assert_eq!(flags & APPLIED_DEATH, 0, "a join is not a kill");
+    assert_eq!(c.pop_death(), None, "a join put a line in the kill feed");
+    assert_eq!(c.own_death_killer, 0x4C);
+    assert_eq!(c.own_death_cause, DEATH_BY_BULLET);
+    assert_eq!(c.own_death_item, 21);
+    assert_eq!(c.own_death_range_cm, 4_130);
+    assert_eq!(c.own_death_alive_s, None, "an untimed life read as timed");
+
+    let len = encode_event_death_mark(Some((1, 2)), &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert!(c.death_marker.is_some());
+    let len = encode_event_death_mark(None, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(c.death_marker, None, "the server said no marker");
 }
 
 /// The bag set: dropped, repeated, replaced by a sync walk, removed, and

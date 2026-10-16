@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 169] = [
+const GOLDEN: [&[u8]; 171] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -232,6 +232,8 @@ const GOLDEN: [&[u8]; 169] = [
     include_bytes!("golden/voice_up.bin"),
     include_bytes!("golden/voice.bin"),
     include_bytes!("golden/event_report.bin"),
+    include_bytes!("golden/event_dead.bin"),
+    include_bytes!("golden/event_death_mark.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -516,8 +518,11 @@ fn test_protocol_golden() {
     g!(seen, golden_voice, 167);
     // A far report (v113).
     g!(seen, golden_event, 168);
+    // The death screen on the server (v116).
+    g!(seen, golden_event, 169);
+    g!(seen, golden_event, 170);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 169, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 171, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1290,6 +1295,30 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_report(kind, x, y, z, &mut buf).unwrap()
+        }
+        "event_dead.bin" => {
+            let (killer, cause, item, range_cm, alive_s) = protocol::goldens::event_dead();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Dead {
+                    killer,
+                    cause,
+                    item,
+                    range_cm,
+                    alive_s
+                },
+                "{name}"
+            );
+            protocol::encode_event_dead(killer, cause, item, range_cm, alive_s, &mut buf).unwrap()
+        }
+        "event_death_mark.bin" => {
+            let at = protocol::goldens::event_death_mark();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::DeathMark { at },
+                "{name}"
+            );
+            protocol::encode_event_death_mark(at, &mut buf).unwrap()
         }
         "event_agent.bin" => {
             let id = protocol::goldens::event_agent();

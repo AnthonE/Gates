@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 169] = [
+pub const FIXTURES: [&str; 171] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -306,6 +306,10 @@ pub const FIXTURES: [&str; 169] = [
     "voice.bin",
     // A far report (v113): a blast, below sea level and far from the origin.
     "event_report.bin",
+    // The death screen on the server (v116): said again to an owner who
+    // comes back to a corpse, and where they fell.
+    "event_dead.bin",
+    "event_death_mark.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1977,6 +1981,26 @@ pub fn event_death() -> (u32, u32, u8, u16, u16, u32) {
     // `alive_s` past 16 bits (v113): a life of a day and change, so a
     // decoder that read the field narrower would not round-trip it.
     (4_242, 7, 2, 13, 187, 93_784)
+}
+
+/// The death screen said again (v116): a bullet from 41.3 m after a life of
+/// an hour and change. Every field nonzero and none equal to `event_death`'s,
+/// and the life present, so a decoder that skipped its bit cannot
+/// round-trip it.
+pub fn event_dead() -> (u32, u8, u16, u16, Option<u32>) {
+    (
+        9_001,
+        sim_core::world::DEATH_BY_BULLET,
+        21,
+        4_130,
+        Some(3_725),
+    )
+}
+
+/// Where you fell (v116): x and z different and x past 17 bits, so a
+/// transposed pair or a narrowed field moves a byte.
+pub fn event_death_mark() -> Option<(i32, i32)> {
+    Some((0x0002_7A1C, 0x0000_C35B))
 }
 
 /// A wake on the player's own bag. `true` and not `false` for the reason

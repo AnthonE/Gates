@@ -1147,6 +1147,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             gate_spawn_at: 0,
             // Not on disk: a restored body's life clock starts at the load.
             born: tick,
+            // Nor how long a restored corpse's life was; but a corpse is
+            // its own death marker.
+            died: 0,
+            death_at: save.dead.then_some((save.body.qx, save.body.qz)),
             dead: save.dead,
             // **A world remembers a crawl** (wounded v0, format 13): the
             // body comes back down with its clock, for `mag`'s reason —

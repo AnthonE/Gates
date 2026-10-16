@@ -1,7 +1,9 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 96 kB — fixed-capacity by design (wall 4), and
-# (95 kB until the death screen's "alive for" put `born` on each player;
+# `World` is 97 kB — fixed-capacity by design (wall 4), and
+# (96 kB until the death marker put where and when each player last fell
+# on its record;
+# 95 kB until the death screen's "alive for" put `born` on each player;
 # 94 kB until a dropped stack's throw put its ring on the world;
 # (93 kB until comfort, the calm clock, the heat and the air joined each
 # player in one merge;

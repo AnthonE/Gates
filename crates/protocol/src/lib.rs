@@ -56,17 +56,17 @@ pub use event::{
     encode_event_build_refused, encode_event_card_doors, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_env, encode_event_exposure,
-    encode_event_gate_spawn, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_heard, encode_event_hit,
-    encode_event_hostile, encode_event_howl, encode_event_hurt, encode_event_impact,
-    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
-    encode_event_moved, encode_event_node_stage, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_planter, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_craft_refused, encode_event_dead, encode_event_death, encode_event_death_mark,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
+    encode_event_exposure, encode_event_gate_spawn, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_heard,
+    encode_event_hit, encode_event_hostile, encode_event_howl, encode_event_hurt,
+    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_planter, encode_event_recipes, encode_event_recovered,
+    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_sentry_lock, encode_event_shot, encode_event_skins, encode_event_skins_owned,
     encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
@@ -1192,7 +1192,11 @@ pub use voice::{
 /// seconds since its body stood up, after the range ("alive for"); and a
 /// `SUB_BAGS` entry that is not ready carries its seconds to go after the
 /// ready bit (`BagAnchor::wait_s`), the cooling bag's timer.
-pub const PROTO_VER: u16 = 115;
+/// v116 — the death screen on the server: `SUB_DEATH_MARK` (100) tells a
+/// player where their body last fell, ahead of their `Death` and at every
+/// join (Rust's death marker), and `SUB_DEAD` (99) says the death screen
+/// again to an owner who comes back to a body that is already dead.
+pub const PROTO_VER: u16 = 116;
 
 /// This game's slug in the elo catalog.
 ///
