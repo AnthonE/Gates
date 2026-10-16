@@ -1176,9 +1176,11 @@ impl Plugin for GatesRenderPlugin {
                     // would lose a frame of its own life to the counter.
                     prewarm::warm,
                     prewarm::warm_models,
+                    prewarm::warm_sites,
                     prewarm::retire
                         .after(prewarm::warm)
-                        .after(prewarm::warm_models),
+                        .after(prewarm::warm_models)
+                        .after(prewarm::warm_sites),
                     // Every photograph out of `assets/textures/` gets the mip
                     // chain Bevy will not build for it. `drain` after
                     // `enqueue`, so an image that finishes loading on this
