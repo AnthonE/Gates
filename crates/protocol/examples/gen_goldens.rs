@@ -243,6 +243,15 @@ fn main() {
     write_fixture(goldens::FIXTURES[169], &buf[..len]);
     let len = protocol::encode_event_death_mark(goldens::event_death_mark(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[170], &buf[..len]);
+    // The compound shop (v118).
+    let (key, act) = goldens::action_shop();
+    let len = protocol::encode_action_shop(key, act, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[171], &buf[..len]);
+    let len = protocol::encode_event_shop(&goldens::event_shop(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[172], &buf[..len]);
+    let (key, op, row, times, code) = goldens::event_shop_result();
+    let len = protocol::encode_event_shop_result(key, op, row, times, code, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[173], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

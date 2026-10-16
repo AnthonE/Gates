@@ -585,6 +585,19 @@ inputs = [
     { item = "item.gears", count = 4 },
 ]
 
+# The compound shop: a wooden cabinet with a steel front, at the first bench,
+# known from the start, so a compound sells its surplus early.
+[[recipe]]
+id = "recipe.vending_machine"
+output = "item.vending_machine"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.wood", count = 300 },
+    { item = "item.metal_frags", count = 75 },
+]
+
 [[recipe]]
 id = "recipe.pistol_ammo"
 output = "item.pistol_ammo"

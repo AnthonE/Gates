@@ -45,7 +45,7 @@ pub struct BuyButton(pub u8, pub u8);
 pub struct VendStep(pub u8, pub i8);
 
 /// One side of a row: the picture and how many, under a column head.
-fn ware(
+pub(super) fn ware(
     row: &mut ChildSpawnerCommands,
     core: &ClientCore,
     icons: &super::super::icons::Icons,

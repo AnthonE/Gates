@@ -57,6 +57,36 @@ pub const fn is_turret_slot(slot: usize) -> bool {
 /// The gun's height over the turret's base, metres.
 pub const GUN_M: f32 = 0.9;
 
+/// **Who a player's machine answers to**: its owner, and whoever is on the
+/// crew of every hearth whose claim covers `(x, z)`. Outside any claim, the
+/// owner alone. The turret spares exactly these; the vending machine
+/// (`shop.rs`) lets exactly these stock it and set its offers.
+pub fn spares(pieces: &Pieces, deploys: &Deploys, owner: u32, x: f32, z: f32, id: u32) -> bool {
+    id == owner
+        || spared_by_claim(
+            pieces,
+            deploys,
+            crate::claim::any_claim(pieces, deploys, x, z),
+            x,
+            z,
+            id,
+        )
+}
+
+/// [`spares`]' crew half, with the coverage asked once by the caller (a
+/// turret's look asks it of every player in range).
+#[inline]
+fn spared_by_claim(
+    pieces: &Pieces,
+    deploys: &Deploys,
+    covered: bool,
+    x: f32,
+    z: f32,
+    id: u32,
+) -> bool {
+    covered && !crate::claim::foreign_claim(pieces, deploys, x, z, id)
+}
+
 /// The baked `[turret]` table: the gun, and the round it spends out of its
 /// own box.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,7 +265,7 @@ pub fn step(
                     && p.hp > 0
                     && !crate::combat::protected(p)
                     && p.id != owner
-                    && !(covered && !crate::claim::foreign_claim(pieces, dref, x, z, p.id))
+                    && !spared_by_claim(pieces, dref, covered, x, z, p.id)
             };
             sentry::look(
                 seed,

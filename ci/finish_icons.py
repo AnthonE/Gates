@@ -156,6 +156,7 @@ PAINT = {
     "hemp_seed": dict(mat="organic", c=("#b9a77a", "#6c5c34")),
     "planter_box": dict(mat="plain", c=("#86c45a", "#3f7a2a")),
     "auto_turret": dict(c=DARK_STEEL, metal=True),
+    "vending_machine": dict(c=("#d8574a", "#7f2219"), metal=True, holes="#cfe6ee"),
     "raw_meat": dict(c=("#e5776d", "#9d2f33"), holes="#f3d8cc"),
     "cooked_meat": dict(c=("#c98449", "#6c3a1a")),
     "burnt_meat": dict(c=("#6a5448", "#241a16")),

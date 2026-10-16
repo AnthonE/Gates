@@ -789,6 +789,18 @@ slot = "hand"
 class = "construction"
 description = "Shoots strangers on sight. Load it with pistol rounds; your crew it spares."
 
+# The compound shop (`sim-core/src/shop.rs`): Rust's vending machine, priced in
+# junk. Its owner and their crew stock it and set its offers; anyone buys.
+[[item]]
+id = "item.vending_machine"
+name = "Vending Machine"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "construction"
+description = "Sells what your crew stocks it with, for junk. Anyone can buy."
+
 # Meat, un-cut 2026-08-08 (DECISIONS.md). It was cut because nothing dropped
 # it and nothing could cook it, and both halves stopped being true on one
 # day: the pig pays raw meat (`mobs.toml`) and the campfire turns it into

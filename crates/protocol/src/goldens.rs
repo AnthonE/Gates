@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 171] = [
+pub const FIXTURES: [&str; 174] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -310,6 +310,10 @@ pub const FIXTURES: [&str; 171] = [
     // comes back to a corpse, and where they fell.
     "event_dead.bin",
     "event_death_mark.bin",
+    // The compound shop (v118): an offer set, a machine's view, a refusal.
+    "action_shop.bin",
+    "event_shop.bin",
+    "event_shop_result.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2004,6 +2008,56 @@ pub fn event_dead() -> (u32, u8, u16, u16, Option<u32>) {
 /// transposed pair or a narrowed field moves a byte.
 pub fn event_death_mark() -> Option<(i32, i32)> {
     Some((0x0002_7A1C, 0x0000_C35B))
+}
+
+/// A shop press (v118): set row 5 (all three row bits) to 7 of item 0x4D for
+/// 0x1234 junk, at a key with every byte distinct.
+pub fn action_shop() -> (u32, sim_core::shop::ShopAct) {
+    (
+        0x1A2B_3C4D,
+        sim_core::shop::ShopAct::Set {
+            row: 5,
+            item: 0x4D,
+            lot: 7,
+            price: 0x1234,
+        },
+    )
+}
+
+/// A machine's view (v118): editable, two live rows apart (0 and 4) with
+/// every field different, so a shifted row or a transposed field moves a
+/// byte.
+pub fn event_shop() -> crate::ShopView {
+    let mut v = crate::ShopView {
+        key: 0x0A0B_0C0D,
+        coin: 0x0042,
+        may_edit: true,
+        ..Default::default()
+    };
+    v.rows[0] = crate::ShopRow {
+        item: 0x11,
+        lot: 3,
+        price: 0x0105,
+        have: 0x0208,
+    };
+    v.rows[4] = crate::ShopRow {
+        item: 0x5E,
+        lot: 0x0101,
+        price: 0,
+        have: 0xFFFF,
+    };
+    v
+}
+
+/// A refused buy (v118): row 3, 20 lots, funds (`REFUSE_SH_FUNDS`).
+pub fn event_shop_result() -> (u32, u8, u8, u8, u8) {
+    (
+        0x7F00_00A1,
+        sim_core::shop::SHOP_OP_BUY,
+        3,
+        sim_core::shop::SHOP_TIMES_MAX,
+        sim_core::shop::REFUSE_SH_FUNDS as u8,
+    )
 }
 
 /// A wake on the player's own bag. `true` and not `false` for the reason

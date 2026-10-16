@@ -52,6 +52,7 @@ pub mod inv;
 pub mod kit;
 pub mod lore;
 pub mod ring;
+pub mod shop;
 pub mod team;
 pub mod tech;
 pub mod vendor;
@@ -95,6 +96,9 @@ pub enum Panel {
     /// Your team and its verbs (`M`, `team.rs`): leave, promote, kick,
     /// join or decline an invite.
     Team,
+    /// A player's vending machine (`E` at one, `shop.rs`): its offers, and
+    /// for its owner's crew the editor. The machine is the open container.
+    Shop,
 }
 
 impl Panel {
@@ -120,7 +124,8 @@ impl Panel {
             | Panel::Island
             | Panel::Talk
             | Panel::Read
-            | Panel::Team => Page::Other,
+            | Panel::Team
+            | Panel::Shop => Page::Other,
         }
     }
 
@@ -228,6 +233,15 @@ pub struct Ui {
     pub opened: f32,
     /// The kiosk's per-row counts, by offer index (`vendor::VEND_MAX`).
     pub vend_n: [u8; sim_core::limits::MAX_VEND_OFFERS],
+    /// The vending machine the shop panel shows (its box key), whether the
+    /// server has been seen showing it, the editor's draft `(item, lot,
+    /// price)` per row and the machine they were drafted from, and the last
+    /// shop answer read (`shop::sync_status`).
+    pub shop_key: u32,
+    pub shop_open_seen: bool,
+    pub shop_draft: [(u16, u16, u16); sim_core::limits::SHOP_ROWS],
+    pub shop_draft_key: u32,
+    pub shop_seq: u32,
     /// Change detection against the core. A menu that rebuilt every frame
     /// would allocate a node tree per frame for a screen that changes when
     /// a player clicks — so the rebuild is driven by these snapshots, and
@@ -297,6 +311,9 @@ pub(crate) struct Seen {
     pub team_gen: u32,
     /// `ClientCore::bank_gen` at the last redraw: the way out moving.
     pub bank_gen: u32,
+    /// `ClientCore::shop_gen` at the last redraw: a machine's offers or a
+    /// shop answer arriving.
+    pub shop_gen: u32,
 }
 
 impl Default for Ui {
@@ -328,6 +345,11 @@ impl Default for Ui {
             sound: None,
             opened: 0.0,
             vend_n: [1; sim_core::limits::MAX_VEND_OFFERS],
+            shop_key: 0,
+            shop_open_seen: false,
+            shop_draft: [(0, 1, 1); sim_core::limits::SHOP_ROWS],
+            shop_draft_key: 0,
+            shop_seq: 0,
             seen: Seen::default(),
         }
     }
@@ -811,7 +833,7 @@ pub fn register(app: &mut App) {
                 craft::scroll,
                 tech::clicks,
                 tech::scroll,
-                vendor::clicks,
+                (vendor::clicks, shop::clicks, shop::follow).chain(),
                 (arc::clicks, team::clicks),
                 arc::tabs,
                 lore::clicks,
@@ -844,6 +866,7 @@ pub fn register(app: &mut App) {
                 tech::sync_status,
                 craft::sync_status,
                 vendor::sync_status,
+                shop::sync_status,
                 arc::sync_status,
                 lore::sync_status,
             )
@@ -932,7 +955,11 @@ pub fn keys(
     // zeroes movement, which would also stop the crawl to the door.
     let down = core.wounded;
     let holding_wheel = !down && hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
-    let was_inventory = ui.panel == Panel::Inventory;
+    // The two pages a ground container is open behind: the inventory, and
+    // the vending machine's shop panel (which hands the box to the
+    // inventory to be stocked, and keeps it open across the switch).
+    let cont_page = |p: Panel| matches!(p, Panel::Inventory | Panel::Shop);
+    let was_inventory = cont_page(ui.panel);
     if down {
         if binds.just_pressed(Action::Inventory, &keyboard, &mouse)
             || binds.just_pressed(Action::Crafting, &keyboard, &mouse)
@@ -1109,7 +1136,7 @@ pub fn keys(
     // container-state divergence `CLAUDE.md` names as the reference's own
     // worst bug on this verb. The close is sent when the panel that owned it
     // goes away, whichever key did it.
-    if was_inventory && ui.panel != Panel::Inventory {
+    if was_inventory && !cont_page(ui.panel) {
         super::verbs::close_container(&net, &mut toast);
     }
 
@@ -1142,6 +1169,7 @@ pub fn keys(
             | Panel::Talk
             | Panel::Read
             | Panel::Team
+            | Panel::Shop
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1374,6 +1402,11 @@ pub fn rebuild(
         Panel::Talk => lore::build_talk(&mut commands, &ui, core),
         Panel::Read => lore::build_read(&mut commands, &ui, core),
         Panel::Team => team::build_team(&mut commands, &ui, core),
+        Panel::Shop => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            shop::build_screen(&mut commands, &ui, core, icons)
+        }
     }
 }
 
@@ -1410,6 +1443,7 @@ fn detect_changes(
             || (ui.panel == Panel::Island && core.standings_gen != ui.seen.standings_gen)
             || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
             || (ui.panel == Panel::Team && core.team_gen != ui.seen.team_gen)
+            || (ui.panel == Panel::Shop && core.shop_gen != ui.seen.shop_gen)
         {
             ui.seen.inv = inv;
             ui.seen.cont = cont;
@@ -1432,6 +1466,7 @@ fn detect_changes(
             ui.seen.standings_gen = core.standings_gen;
             ui.seen.bank_gen = core.bank_gen;
             ui.seen.team_gen = core.team_gen;
+            ui.seen.shop_gen = core.shop_gen;
             ui.dirty = true;
         }
     }

@@ -75,6 +75,10 @@ pub enum Verb {
     Recycler,
     /// A planter box (crops v0): a container that grows. `E` opens it.
     Planter,
+    /// A player's vending machine (`sim_core::shop`): `E` opens its shop
+    /// panel, the offers and Buy for anyone, the slots and the offer editor
+    /// for its owner's crew. `handle` is its box key.
+    Shop,
     /// A research table (research v0). The one verb here that acts on what
     /// is in your HAND rather than on what is at the address — the table
     /// holds nothing — so the prompt names the held item and `E` spends it.
@@ -197,6 +201,7 @@ impl Verb {
             Verb::Turn => 18,
             Verb::Planter => 19,
             Verb::Sleeper => 20,
+            Verb::Shop => 21,
         }
     }
 
@@ -229,6 +234,7 @@ impl Verb {
             Verb::Turn => "DIAL",
             Verb::Planter => "PLANTER",
             Verb::Sleeper => "SLEEPING PLAYER",
+            Verb::Shop => "VENDING MACHINE",
         }
     }
 }
@@ -450,6 +456,7 @@ impl Pick {
             .to_string(),
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
+            Verb::Shop => "[E] SHOP".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => "[E] TALK".to_string(),
             Verb::Read => "[E] READ THE STONE".to_string(),
@@ -1070,6 +1077,7 @@ pub fn resolve(
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
             sim_core::deploy::ARCH_PLANTER => Verb::Planter,
+            sim_core::deploy::ARCH_VENDING => Verb::Shop,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
             _ => continue,
@@ -1084,6 +1092,7 @@ pub fn resolve(
             || verb == Verb::Fire
             || verb == Verb::Recycler
             || verb == Verb::Planter
+            || verb == Verb::Shop
             || verb == Verb::Research
         {
             handle = box_key(rec.cx, rec.cz, rec.level, rec.loc);
