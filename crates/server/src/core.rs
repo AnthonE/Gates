@@ -319,6 +319,15 @@ pub struct ShardCore {
     /// The clock reached zero: `Some(blueprints)` until the boundary loop
     /// takes it ([`Self::take_wipe`]) and stops the shard.
     wipe_fired: Option<bool>,
+    /// An admin's `/restart` countdown (`wipe::Restart`), polled beside the
+    /// wipe's off the same wall-clock second.
+    pub restart: crate::wipe::Restart,
+    /// A restart line owed to everyone, said by the next `pump_chat`. Its own
+    /// slot, so a wipe line in the same second does not eat it.
+    restart_say: Option<protocol::ChatText>,
+    /// The restart came due, until the boundary loop takes it
+    /// ([`Self::take_restart`]) and stops the shard.
+    restart_fired: bool,
     /// The wipe's standings (`standings.rs`), tallied here off the sim's
     /// events per wallet, recounted by the boundary loop once a minute.
     pub standings: crate::standings::Standings,
@@ -646,6 +655,9 @@ impl ShardCore {
             motd: Vec::new(),
             motd_tell: [0; MAX_PLAYERS],
             wipe_fired: None,
+            restart: crate::wipe::Restart::default(),
+            restart_say: None,
+            restart_fired: false,
             standings: crate::standings::Standings::off(),
             gifts: crate::gifts::Gifts::off(),
             online: crate::online::Online::off(),
@@ -698,6 +710,30 @@ impl ShardCore {
     /// The wipe that came due, once: `Some(blueprints)`.
     pub fn take_wipe(&mut self) -> Option<bool> {
         self.wipe_fired.take()
+    }
+
+    /// One poll of the restart clock, beside [`Self::wipe_poll`] and with the
+    /// same second.
+    pub fn restart_poll(&mut self, now: u64) {
+        match self.restart.poll(now) {
+            crate::wipe::RestartTick::Quiet => {}
+            crate::wipe::RestartTick::Say(line) => self.restart_say = crate::wipe::chat(&line),
+            crate::wipe::RestartTick::Go(line) => {
+                self.restart_say = crate::wipe::chat(&line);
+                self.restart_fired = true;
+            }
+        }
+    }
+
+    /// Restart `minutes` from `now`: the operator's SIGUSR1, which has no
+    /// chat line to arrive on (`bin/shard.rs`).
+    pub fn restart_in(&mut self, now: u64, minutes: u16) {
+        self.restart.set(now, minutes);
+    }
+
+    /// The restart that came due, once.
+    pub fn take_restart(&mut self) -> bool {
+        std::mem::take(&mut self.restart_fired)
     }
 
     /// Say a server line to one connected slot, or to all of them.
@@ -785,6 +821,9 @@ impl ShardCore {
     /// next-wipe line to whoever joined or asked.
     fn pump_wipe(&mut self, stats: &ShardStats, send: &mut impl FnMut(Lane, usize, &[u8]) -> bool) {
         if let Some(line) = self.wipe_say.take() {
+            self.say_server(None, &line, stats, send);
+        }
+        if let Some(line) = self.restart_say.take() {
             self.say_server(None, &line, stats, send);
         }
         for slot in 0..MAX_PLAYERS {
@@ -3002,6 +3041,19 @@ impl ShardCore {
                     return;
                 }
                 self.wipe_say = crate::wipe::chat("wipe cancelled");
+            }
+            AdminCmd::Restart { minutes } => {
+                // Said to everyone on the clock's next poll, like `/wipe`.
+                self.restart.set(self.wipe_now, minutes);
+                logged = logged.with(minutes as i64, 0, 0);
+            }
+            AdminCmd::RestartCancel => {
+                if !self.restart.cancel() {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who));
+                    return;
+                }
+                self.restart_say = crate::wipe::chat("restart cancelled");
             }
             AdminCmd::Teleport { id } => {
                 let Some(slot) = target_slot(self, id) else {

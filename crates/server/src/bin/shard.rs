@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 /// exit is `store_stopped` being raised, which is exact.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
 
+/// The countdown SIGUSR1 starts, minutes: a deploy's warning (`--warn`).
+const RESTART_SIGNAL_MIN: u16 = 2;
+
 /// **"The supervisor is stopping this service", whatever the OS calls it.**
 ///
 /// Ctrl-C is portable and `tokio::signal::ctrl_c` handles it on both
@@ -89,12 +92,17 @@ impl Stop {
 #[tokio::main]
 async fn main() {
     // `shard [config]` serves. `shard --close-wipe N [config]` closes wipe N
-    // on a stopped shard's files and exits (`close_only`).
+    // on a stopped shard's files and exits (`close_only`). `shard
+    // --check-saves [config]` says whether this build loads the live saves,
+    // touching nothing (`check_saves`).
     let mut path = None;
     let mut close = None;
+    let mut check = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        if a == "--close-wipe" {
+        if a == "--check-saves" {
+            check = true;
+        } else if a == "--close-wipe" {
             match args.next().and_then(|n| n.parse::<u32>().ok()) {
                 Some(n) if n > 0 => close = Some(n),
                 _ => {
@@ -139,6 +147,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    if check {
+        std::process::exit(check_saves(&cfg, &content));
+    }
     // Every table in one call, refusing the boot on the first that fails.
     // It was twelve separate `match` arms here and one of them was simply
     // never written — see `net::SimTables`.
@@ -593,6 +604,30 @@ async fn main() {
             handle.cert_hash
         ),
     }
+    // **SIGUSR1 is "restart in two minutes"**: the `/restart` countdown for an
+    // operator with no admin in game, which `ci/deploy_shard.sh --warn` sends
+    // after it stages a build. Installed before the status endpoint, because
+    // that endpoint's `restart_at` key is the deploy's word that this shard
+    // has the handler (SIGUSR1's default is to kill). Unix only.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::user_defined1()) {
+            Ok(mut usr1) => {
+                let stats = handle.stats.clone();
+                tokio::spawn(async move {
+                    while usr1.recv().await.is_some() {
+                        ShardStats::set(&stats.restart_asked, RESTART_SIGNAL_MIN as u64 + 1);
+                        println!("shard: SIGUSR1 — restarting in {RESTART_SIGNAL_MIN} min");
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!("shard: SIGUSR1 handler: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     // The status endpoint, only where the operator said (config.rs says why
     // absent-serves-nothing is the default). A bind failure refuses the boot
     // rather than running without it: a shard whose config names an endpoint
@@ -670,6 +705,16 @@ async fn main() {
             // bring up the fresh island.
             _ = wipe_watch.tick() => {
                 if !ShardStats::raised(&handle.stats.wipe_due) {
+                    // A `/restart` came due: the same flush, no wipe, and an
+                    // exit the supervisor answers by starting the shard again
+                    // (on whatever build `ci/deploy_shard.sh` staged).
+                    if ShardStats::raised(&handle.stats.restart_due) {
+                        shutdown(&handle, "RESTART").await;
+                        trust_down(trust_log.as_mut()).await;
+                        drain(pop.take()).await;
+                        println!("shard: restarting — exiting; the supervisor starts it again");
+                        return;
+                    }
                     continue;
                 }
                 shutdown(&handle, "WIPE").await;
@@ -895,6 +940,100 @@ fn close_only(cfg: &server::config::ShardConfig, n: u32) -> i32 {
         0
     } else {
         1
+    }
+}
+
+/// `shard --check-saves [config]`: would THIS build's shard load the saves
+/// the config names? The header checks a boot makes (formats, seed, content
+/// layout, the island's digest), read-only: no backup rotates and nothing is
+/// written, so `ci/release.sh` and `ci/deploy_shard.sh` ask it of the live
+/// files under the running shard, before anything moves. A deploy that fails
+/// it is a wipe, and finding that out from a shard refusing to boot means
+/// finding it out with the island down.
+///
+/// A scheduled wipe that has come due is a boot that ends the world before it
+/// opens a file (`main`'s missed-wipe path), so then the world file need not
+/// load. The player store still must: the wipe rewrites its records under
+/// this build and keeps its header.
+///
+/// Exit 0: a boot loads them, or starts fresh. 3: it would refuse (a wipe).
+/// 1: the question could not be asked (a file this user cannot read, or a
+/// wipe state the shard refuses too).
+fn check_saves(cfg: &server::config::ShardConfig, content: &content::Content) -> i32 {
+    let (hash, layout) = (content.hash(), content.layout_hash());
+    println!(
+        "check-saves: content {hash:016x} · layout {layout:016x} · seed {}",
+        cfg.seed
+    );
+    let due = match server::wipe::state_path(cfg.world_file.as_deref(), cfg.save_file.as_deref())
+        .map(|p| server::wipe::read_state(&p))
+    {
+        Some(Err(e)) => {
+            eprintln!("shard: {e}");
+            return 1;
+        }
+        Some(Ok(Some(st))) => cfg
+            .wipe
+            .and_then(|s| s.last_at_or_before(unix_now()))
+            .is_some_and(|at| st.last < at)
+            .then_some(st.wipes + 1),
+        _ => None,
+    };
+    let how = |m: server::store::ContentMatch| match m {
+        server::store::ContentMatch::Same => "",
+        server::store::ContentMatch::Balance => " (rebalanced, which loads)",
+        server::store::ContentMatch::Upgrade => " (its layout is pinned on this boot)",
+    };
+    // A file this user cannot read is a question not asked, never a wipe:
+    // the deploy is run as the shard's user or it is not run.
+    for path in [cfg.world_file.as_deref(), cfg.save_file.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if let Err(e) = std::fs::File::open(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "shard: --check-saves cannot read {path}: {e} (run it as the shard's user)"
+                );
+                return 1;
+            }
+        }
+    }
+    let mut wipe = false;
+    if let Some(path) = cfg.world_file.as_deref() {
+        if let Some(n) = due {
+            println!(
+                "world {path}: scheduled wipe {n} is due, so a boot ends that world \
+                 before opening it"
+            );
+        } else {
+            let digest = sim_core::probe::probe_terrain(cfg.seed);
+            match server::worldfile::check(Path::new(path), cfg.seed, hash, layout, digest) {
+                Ok(None) => println!("world {path}: none yet, a fresh island"),
+                Ok(Some(m)) => println!("world {path}: ok{}", how(m)),
+                Err(e) => {
+                    wipe = true;
+                    println!("world {path}: WIPE: {e}");
+                }
+            }
+        }
+    }
+    if let Some(path) = cfg.save_file.as_deref() {
+        match server::store::check(Path::new(path), cfg.seed, hash, layout) {
+            Ok(None) => println!("saves {path}: none yet, everyone starts fresh"),
+            Ok(Some(m)) => println!("saves {path}: ok{}", how(m)),
+            Err(e) => {
+                wipe = true;
+                println!("saves {path}: WIPE: {e}");
+            }
+        }
+    }
+    if wipe {
+        println!("check-saves: this build cannot load the live saves; deploying it is a wipe");
+        3
+    } else {
+        println!("check-saves: this build loads the live saves; no wipe");
+        0
     }
 }
 

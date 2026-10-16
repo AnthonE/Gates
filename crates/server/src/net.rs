@@ -4405,6 +4405,13 @@ fn sim_thread(
                 .map_or(0, |d| d.as_secs());
             core.wipe_poll(now);
             ShardStats::set(&stats.next_wipe, core.wipe.next().map_or(0, |p| p.at));
+            // The operator's SIGUSR1 (`bin/shard.rs`), as minutes + 1.
+            let asked = stats.restart_asked.swap(0, Ordering::Relaxed);
+            if asked > 0 {
+                core.restart_in(now, (asked - 1).min(60) as u16);
+            }
+            core.restart_poll(now);
+            ShardStats::set(&stats.restart_at, core.restart.pending().unwrap_or(0));
             let def = &core.world.works_def;
             let lit = core
                 .world
@@ -4492,6 +4499,12 @@ fn sim_thread(
                 ShardStats::raise(&stats.wipe_blueprints);
             }
             ShardStats::raise(&stats.wipe_due);
+            shutdown.store(true, Ordering::Relaxed);
+        }
+        // The restart came due: the same stop without the wipe. `bin/shard.rs`
+        // exits once the flush is down and the supervisor starts it again.
+        if core.take_restart() {
+            ShardStats::raise(&stats.restart_due);
             shutdown.store(true, Ordering::Relaxed);
         }
         // The anomaly log's counter sweep, once a second rather than once a

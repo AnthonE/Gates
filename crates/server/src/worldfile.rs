@@ -412,6 +412,120 @@ fn cond_violation(
     None
 }
 
+/// The header's identity checks, in the order a boot makes them: magic,
+/// formats, seed, content layout, and the island's digest. One body for
+/// [`open`] and for [`check`], so the deploy's question and the boot's answer
+/// cannot drift apart.
+fn check_head(
+    path: &Path,
+    head: &[u8; WORLD_HEADER_BYTES],
+    seed: u64,
+    content_hash: u64,
+    layout_hash: u64,
+    world_digest: u64,
+) -> Result<crate::store::ContentMatch, String> {
+    if head[H_MAGIC..H_MAGIC + 8] != WORLD_MAGIC {
+        return Err(format!(
+            "world file {} is not a gates world file (bad magic) — if it is the \
+             player save, that is a different key: `save_file`",
+            path.display()
+        ));
+    }
+    let at16 = |o: usize| u16::from_le_bytes([head[o], head[o + 1]]);
+    let at64 = |o: usize| {
+        u64::from_le_bytes([
+            head[o],
+            head[o + 1],
+            head[o + 2],
+            head[o + 3],
+            head[o + 4],
+            head[o + 5],
+            head[o + 6],
+            head[o + 7],
+        ])
+    };
+    let file_format = at16(H_FILE_FORMAT);
+    if file_format != WORLD_FILE_FORMAT {
+        return Err(format!(
+            "world file {} is format {file_format}, this build writes \
+             {WORLD_FILE_FORMAT} — it was written by a different build. Move it \
+             aside to start a fresh world; there is no converter",
+            path.display()
+        ));
+    }
+    let blob_format = at16(H_BLOB_FORMAT);
+    // The previous blob format still reads (`worldsave::decode_into`): it is
+    // this one minus a tail, so nothing in it means something else now.
+    if blob_format != WORLD_SAVE_FORMAT && blob_format != WORLD_SAVE_FORMAT_PREV {
+        return Err(format!(
+            "world file {} holds a v{blob_format} world, this build reads \
+             v{WORLD_SAVE_FORMAT} — the sim's state layout moved. Move it aside \
+             to start a fresh world; there is no converter",
+            path.display()
+        ));
+    }
+    let got_seed = at64(H_SEED);
+    if got_seed != seed {
+        return Err(format!(
+            "world file {} was generated on seed {got_seed}, this shard is seed \
+             {seed} — every base in it stands somewhere that is now a different \
+             island. Fix the `seed` key, or point `world_file` somewhere else",
+            path.display()
+        ));
+    }
+    let got_content = at64(H_CONTENT);
+    let got_layout = at64(H_LAYOUT - 2) >> 16; // six bytes, read as the top of eight
+    let matched = crate::store::match_content(
+        &format!("world file {}", path.display()),
+        got_content,
+        got_layout,
+        content_hash,
+        layout48(layout_hash),
+    )?;
+    // Last of the identity checks, and the only one the seed cannot make.
+    // Deliberately AFTER the seed test, so the common operator mistake
+    // (pointed at the wrong island) reports as itself rather than as this.
+    let got_world = at64(H_WORLD);
+    if got_world != world_digest {
+        return Err(format!(
+            "world file {} was written against island digest {got_world:#x}, this \
+             build generates {world_digest:#x} from the same seed — worldgen moved, \
+             so every base in it stands on ground that has changed shape. A worldgen \
+             change is a wipe (operator, 2026-08-10): move the file aside to start a \
+             fresh island. There is no converter and there cannot be one — the \
+             coordinates did not move, the ground under them did",
+            path.display()
+        ));
+    }
+    Ok(matched)
+}
+
+/// Would a shard with this build's content and island load the world file
+/// at `path`? The header checks [`open`] makes, and nothing else: no backup
+/// is rotated and nothing is written, so a deploy can ask it of the live file
+/// under a running shard (`shard --check-saves`). `Ok(None)` is no file, a
+/// fresh island either way.
+pub fn check(
+    path: &Path,
+    seed: u64,
+    content_hash: u64,
+    layout_hash: u64,
+    world_digest: u64,
+) -> Result<Option<crate::store::ContentMatch>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut f = File::open(path).map_err(|e| format!("world file {}: {e}", path.display()))?;
+    let mut head = [0u8; WORLD_HEADER_BYTES];
+    f.read_exact(&mut head).map_err(|e| {
+        format!(
+            "world file {}: reading header: {e} — too short to be a gates world file",
+            path.display()
+        )
+    })?;
+    check_head(path, &head, seed, content_hash, layout_hash, world_digest).map(Some)
+}
+
 /// Open the world file and read it into `world`.
 ///
 /// Every refusal names what to do about it, because every one of them is an
@@ -477,81 +591,11 @@ pub fn open(
     let mut head = [0u8; WORLD_HEADER_BYTES];
     f.read_exact(&mut head)
         .map_err(|e| format!("world file {}: reading header: {e}", path.display()))?;
-    if head[H_MAGIC..H_MAGIC + 8] != WORLD_MAGIC {
-        return Err(format!(
-            "world file {} is not a gates world file (bad magic) — if it is the \
-             player save, that is a different key: `save_file`",
-            path.display()
-        ));
-    }
+    let matched = check_head(path, &head, seed, content_hash, layout_hash, world_digest)?;
+    let balance = matched == crate::store::ContentMatch::Balance;
     let at16 = |o: usize| u16::from_le_bytes([head[o], head[o + 1]]);
     let at32 = |o: usize| u32::from_le_bytes([head[o], head[o + 1], head[o + 2], head[o + 3]]);
-    let at64 = |o: usize| {
-        u64::from_le_bytes([
-            head[o],
-            head[o + 1],
-            head[o + 2],
-            head[o + 3],
-            head[o + 4],
-            head[o + 5],
-            head[o + 6],
-            head[o + 7],
-        ])
-    };
-    let file_format = at16(H_FILE_FORMAT);
-    if file_format != WORLD_FILE_FORMAT {
-        return Err(format!(
-            "world file {} is format {file_format}, this build writes \
-             {WORLD_FILE_FORMAT} — it was written by a different build. Move it \
-             aside to start a fresh world; there is no converter",
-            path.display()
-        ));
-    }
-    let blob_format = at16(H_BLOB_FORMAT);
-    // The previous blob format still reads (`worldsave::decode_into`): it is
-    // this one minus a tail, so nothing in it means something else now.
-    if blob_format != WORLD_SAVE_FORMAT && blob_format != WORLD_SAVE_FORMAT_PREV {
-        return Err(format!(
-            "world file {} holds a v{blob_format} world, this build reads \
-             v{WORLD_SAVE_FORMAT} — the sim's state layout moved. Move it aside \
-             to start a fresh world; there is no converter",
-            path.display()
-        ));
-    }
-    let got_seed = at64(H_SEED);
-    if got_seed != seed {
-        return Err(format!(
-            "world file {} was generated on seed {got_seed}, this shard is seed \
-             {seed} — every base in it stands somewhere that is now a different \
-             island. Fix the `seed` key, or point `world_file` somewhere else",
-            path.display()
-        ));
-    }
-    let got_content = at64(H_CONTENT);
-    let got_layout = at64(H_LAYOUT - 2) >> 16; // six bytes, read as the top of eight
-    let matched = crate::store::match_content(
-        &format!("world file {}", path.display()),
-        got_content,
-        got_layout,
-        content_hash,
-        layout48(layout_hash),
-    )?;
-    let balance = matched == crate::store::ContentMatch::Balance;
-    // Last of the identity checks, and the only one the seed cannot make.
-    // Deliberately AFTER the seed test, so the common operator mistake
-    // (pointed at the wrong island) reports as itself rather than as this.
-    let got_world = at64(H_WORLD);
-    if got_world != world_digest {
-        return Err(format!(
-            "world file {} was written against island digest {got_world:#x}, this \
-             build generates {world_digest:#x} from the same seed — worldgen moved, \
-             so every base in it stands on ground that has changed shape. A worldgen \
-             change is a wipe (operator, 2026-08-10): move the file aside to start a \
-             fresh island. There is no converter and there cannot be one — the \
-             coordinates did not move, the ground under them did",
-            path.display()
-        ));
-    }
+    let at64 = |o: usize| u64::from_le_bytes(head[o..o + 8].try_into().expect("8 bytes"));
 
     let sleepers = at16(H_SLEEPERS) as usize;
     let blob_len = at32(H_BLOB_LEN) as usize;

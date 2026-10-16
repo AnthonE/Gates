@@ -5,6 +5,7 @@
 #   ./ci/release.sh               # the gates and the plan; changes nothing
 #   ./ci/release.sh --go          # ship it
 #   ./ci/release.sh --go --wipe   # ship it and end the world (you type to confirm)
+#   ./ci/release.sh --go --warn   # ship it after the island's /restart countdown
 #
 # **An OPERATOR ACT** (CLAUDE.md: deploying the public shard, publishing the
 # depot or the web page). A dry run by default, the same shape as
@@ -39,13 +40,14 @@ PAGE_URL=https://elopros.com/games/gates/play/build.json
 MANIFEST_URL=https://elopros.com/api/launcher/manifest/gates
 PULL_URL=https://elopros.com/api/store/repo/pull
 
-GO=0; WIPE=0
+GO=0; WIPE=0; WARN=""
 for a in "$@"; do
   case "$a" in
     --go) GO=1 ;;
     --wipe) WIPE=1 ;;
-    -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "release: unknown flag $a (it takes --go and --wipe)" >&2; exit 2 ;;
+    --warn) WARN=" --warn" ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "release: unknown flag $a (it takes --go, --wipe and --warn)" >&2; exit 2 ;;
   esac
 done
 run() { if [ "$GO" = 1 ]; then echo "+ $*"; "$@"; else echo "  would run: $*"; fi; }
@@ -176,6 +178,32 @@ if printf '%s\n' "$saves" | grep -q '^WIPE'; then
   fi
 elif ! printf '%s\n' "$saves" | grep -q '^ok'; then
   echo "  (no live saves here: not the shard box, or a fresh shard)"
+fi
+
+# The two the headers above cannot see, asked of HEAD's own shard: the
+# content layout and the island's digest (`shard --check-saves`, read-only,
+# and the boot's own checks). Built here, in the dry run too, because a
+# release whose shard refuses to boot is a release that takes the island down,
+# and this step exists to say so first. Step 3's build is then a no-op.
+if [ -n "$SAVE$WORLD" ]; then
+  echo "  HEAD's shard on them (cargo build --release -p server --bin shard):"
+  if cargo build --release -q -p server --bin shard; then
+    check=$(target/release/shard --check-saves "$CFG" 2>&1)
+    check_rc=$?
+    printf '%s\n' "$check" | sed 's/^/    /'
+    case "$check_rc" in
+      0) ;;
+      3)
+        if [ "$WIPE" = 1 ]; then
+          echo "  HEAD's shard cannot load them: this release is a wipe, and --wipe is set"
+        else
+          refuse "HEAD's shard cannot load the live saves (above): this release is a wipe. Hold it for the scheduled wipe, or re-run with --wipe"
+        fi ;;
+      *) refuse "the save check could not run (above)" ;;
+    esac
+  else
+    refuse "HEAD's shard did not build, so nothing can say whether it loads the live saves"
+  fi
 fi
 
 # The wipe, as a function so the dry run lists exactly what --go would do.
@@ -332,7 +360,7 @@ fi
 echo
 echo "== 4. publish: the shard first, because the page and the depots refuse a wire it does not speak =="
 STEPS=(
-  "./ci/deploy_shard.sh --go --strand-clients"
+  "./ci/deploy_shard.sh --go --strand-clients$WARN"
   "./ci/publish_web.sh --no-build"
   "./ci/publish_depot.py --platform linux-x86_64 --no-build --notarize"
   "./ci/publish_depot.py --platform win-x86_64 --no-build --notarize"

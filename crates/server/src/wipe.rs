@@ -535,6 +535,82 @@ impl Clock {
     }
 }
 
+// ---- the restart countdown ------------------------------------------------
+
+/// What one poll of the restart clock says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestartTick {
+    Quiet,
+    /// Tell everyone.
+    Say(String),
+    /// Time's up: say this and stop.
+    Go(String),
+}
+
+/// An admin's `/restart` (or the operator's SIGUSR1, `bin/shard.rs`): the
+/// shard stops at `at` the way a SIGTERM stops it, world and every player
+/// flushed, and the supervisor starts it again on whatever build is staged.
+/// That is how a mid-wipe deploy reaches the island with a warning rather
+/// than a dropped connection. The wipe's thresholds ([`WARN_AT`]), and like
+/// [`Clock`] it reads no clock of its own.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Restart {
+    at: Option<u64>,
+    warned: usize,
+    say_now: bool,
+    fired: bool,
+}
+
+impl Restart {
+    /// Restart `minutes` from `now`, replacing any restart already set.
+    pub fn set(&mut self, now: u64, minutes: u16) {
+        *self = Restart {
+            at: Some(now + minutes as u64 * 60),
+            say_now: true,
+            ..Restart::default()
+        };
+    }
+
+    /// `/restart cancel`. False ⇒ nothing was pending, or it already fired.
+    pub fn cancel(&mut self) -> bool {
+        if self.at.is_none() || self.fired {
+            return false;
+        }
+        *self = Restart::default();
+        true
+    }
+
+    /// When it is set for, unix seconds, until it fires.
+    pub fn pending(&self) -> Option<u64> {
+        self.at.filter(|_| !self.fired)
+    }
+
+    pub fn poll(&mut self, now: u64) -> RestartTick {
+        let Some(at) = self.at else {
+            return RestartTick::Quiet;
+        };
+        if self.fired {
+            return RestartTick::Quiet;
+        }
+        if now >= at {
+            self.fired = true;
+            return RestartTick::Go("RESTARTING NOW, back in a minute".into());
+        }
+        let left = at - now;
+        if self.say_now || (self.warned < WARN_AT.len() && left <= WARN_AT[self.warned]) {
+            self.say_now = false;
+            while self.warned < WARN_AT.len() && WARN_AT[self.warned] >= left {
+                self.warned += 1;
+            }
+            return RestartTick::Say(format!(
+                "RESTART in {}, you keep everything",
+                fmt_left(left)
+            ));
+        }
+        RestartTick::Quiet
+    }
+}
+
 /// A clock line as chat. `None` only for a line the chat lane refuses,
 /// which none of the above can be.
 pub fn chat(line: &str) -> Option<ChatText> {
@@ -544,6 +620,43 @@ pub fn chat(line: &str) -> Option<ChatText> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The restart's countdown speaks like the wipe's, fires once, and every
+    /// line it can say fits the chat lane with the server's prefix.
+    #[test]
+    fn the_restart_counts_down_then_fires_once() {
+        let mut r = Restart::default();
+        assert_eq!(r.poll(1_000), RestartTick::Quiet);
+        assert!(!r.cancel(), "nothing to cancel");
+        r.set(1_000, 2);
+        assert_eq!(r.pending(), Some(1_120));
+        let RestartTick::Say(first) = r.poll(1_000) else {
+            panic!("an admin's restart is said at once");
+        };
+        assert_eq!(first, "RESTART in 2 min, you keep everything");
+        assert_eq!(r.poll(1_001), RestartTick::Quiet);
+        assert!(
+            matches!(r.poll(1_060), RestartTick::Say(_)),
+            "the 60 s line"
+        );
+        assert!(matches!(r.poll(1_120), RestartTick::Go(_)));
+        assert_eq!(r.poll(1_121), RestartTick::Quiet, "fires once");
+        assert_eq!(r.pending(), None);
+        assert!(!r.cancel(), "too late to cancel");
+
+        r.set(5_000, 10);
+        assert!(r.cancel());
+        assert_eq!(r.poll(9_999), RestartTick::Quiet);
+
+        for line in [
+            "RESTART in 60 min, you keep everything".to_string(),
+            "RESTARTING NOW, back in a minute".to_string(),
+            "restart cancelled".to_string(),
+        ] {
+            let t = chat(&line).expect("a legal line");
+            assert!(t.as_bytes().ends_with(line.as_bytes()), "{line} was cut");
+        }
+    }
 
     #[test]
     fn the_default_anchor_is_thursday_evening() {
