@@ -1,0 +1,38 @@
+name: deploy kind
+
+# What a change takes to ship (`ci/deploy_kind.py`): CLIENT, SHARD, WIRE or
+# WIPE. Main has to stay deployable mid-wipe, so a WIPE into main is red;
+# wipe work goes to `next-wipe`, and only `next-wipe` itself may bring a wipe
+# into main (on wipe day). No path filter: a seed change in shard-public.toml
+# is a wipe too. No cargo, so it answers in seconds.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Every branch's history, for the merge base, but no file bodies
+          # until git asks for the handful the pins live in.
+          fetch-depth: 0
+          filter: blob:none
+      - name: what this change takes to ship
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            if [ "$BASE_REF" = main ] && [ "$HEAD_REF" != next-wipe ]; then
+              python3 ci/deploy_kind.py --base "origin/$BASE_REF" --forbid-wipe
+            else
+              python3 ci/deploy_kind.py --base "origin/$BASE_REF"
+            fi
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            python3 ci/deploy_kind.py --base "$BEFORE"
+          fi
