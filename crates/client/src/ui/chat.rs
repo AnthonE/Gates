@@ -42,13 +42,25 @@ pub const SHOW_S: f32 = 10.0;
 pub const FADE_S: f32 = 1.5;
 
 /// The line being typed.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Composer {
     pub text: String,
     pub open: bool,
     /// Where an unprefixed line goes. Sticky across opens, and `Tab` cycles
     /// it, the way Rust's chat remembers Team vs Global.
     pub channel: Channel,
+}
+
+/// Chat opens on Global, Rust's own default: a line typed with nobody
+/// near is otherwise a line nobody reads (operator, 2026-10-17).
+impl Default for Composer {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            open: false,
+            channel: Channel::Global,
+        }
+    }
 }
 
 impl Composer {
@@ -79,12 +91,12 @@ impl Composer {
         self.text.clear();
     }
 
-    /// `Tab`: Local → Team → Global → Local.
+    /// `Tab`: Global → Team → Local → Global.
     pub fn cycle(&mut self) {
         self.channel = match self.channel {
-            Channel::Local => Channel::Team,
-            Channel::Team => Channel::Global,
-            Channel::Global => Channel::Local,
+            Channel::Global => Channel::Team,
+            Channel::Team => Channel::Local,
+            Channel::Local => Channel::Global,
         };
     }
 
@@ -204,14 +216,14 @@ mod tests {
         Composer {
             text: s.to_string(),
             open: true,
-            channel: Channel::Local,
+            ..Composer::default()
         }
     }
 
     #[test]
-    fn a_plain_line_is_local() {
+    fn a_plain_line_is_global() {
         let (channel, text) = composed("hello").outgoing().expect("sends");
-        assert_eq!(channel, Channel::Local);
+        assert_eq!(channel, Channel::Global);
         assert_eq!(text.as_bytes(), b"hello");
     }
 
@@ -356,7 +368,7 @@ mod tests {
         assert_eq!(c.outgoing().map(|(ch, _)| ch), Some(Channel::Global));
         c.cycle();
         c.cycle();
-        assert_eq!(c.channel, Channel::Local, "three steps go round");
+        assert_eq!(c.channel, Channel::Global, "three steps go round");
         c.clear();
         c.cycle();
         assert_eq!(

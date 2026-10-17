@@ -673,6 +673,9 @@ pub struct SurvivorOpts {
     /// The clan it lives in (`jev-bot --society`, `agent::society`): its
     /// job, its crew and its guild.
     pub society: Option<Society>,
+    /// Its doors wait for code locks instead of taking key locks with the
+    /// doors: others come in by its code. Always so in a society.
+    pub code_doors: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -962,8 +965,9 @@ pub struct Survivor {
     /// shard's chat refill, kept on this side so a line is never sent into
     /// the limiter to be dropped there.
     say_line: Option<protocol::ChatText>,
-    /// The line above is for the team channel (`Say::Team`).
-    say_team: bool,
+    /// Where the line above goes (`Say`): a team line with no team to hear
+    /// it goes to whoever is near.
+    say_to: protocol::Channel,
     /// Its team has someone besides itself to hear the team channel.
     has_mates: bool,
     /// The stranger going for a teammate, nearest them (`perceive`).
@@ -1049,7 +1053,7 @@ impl Survivor {
             team_bag_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
-            builder: Builder::new(),
+            builder: Builder::new().keyed(!opts.code_doors && opts.society.is_none()),
             lock: opts
                 .lock
                 .unwrap_or_else(|| LockSecret::Code(LockCode::random())),
@@ -1122,7 +1126,7 @@ impl Survivor {
             heading: None,
             outbox: None,
             say_line: None,
-            say_team: false,
+            say_to: protocol::Channel::Local,
             has_mates: false,
             guard: None,
             wedge: Wedge::default(),
@@ -1995,8 +1999,12 @@ impl Survivor {
         match say {
             Say::Quiet => {}
             Say::Refused => self.stats.say_refused += 1,
-            Say::Line(line) | Say::Team(line) => {
-                self.say_team = matches!(say, Say::Team(_));
+            Say::Line(line) | Say::Team(line) | Say::Global(line) => {
+                self.say_to = match say {
+                    Say::Team(_) => protocol::Channel::Team,
+                    Say::Global(_) => protocol::Channel::Global,
+                    _ => protocol::Channel::Local,
+                };
                 if self.say_line.replace(line).is_some() {
                     self.stats.say_dropped += 1;
                 }
@@ -6037,6 +6045,22 @@ impl Survivor {
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
         {
             self.water_at = Some(tick);
+            // A new session knows no plot: the base from before is taken up
+            // again where its own bag lies in the airlock, not taken for a
+            // stranger's and walked away from. A crewmate's bag lies in its
+            // founder's base, which is not its own to build.
+            let adopted = self.builder.stats.adopted;
+            if self.builder.plan().is_none() && self.society.is_none_or(|soc| soc.founder()) {
+                if let Some(plan) = Builder::find_home(core, self.home.own_bags()) {
+                    self.builder.adopt(core, plan);
+                }
+            }
+            if self.builder.stats.adopted != adopted {
+                // What it saw of its own walls before it knew them, it took
+                // for somebody else's building, a raid's among them.
+                self.seen.clear();
+                self.bases.clear();
+            }
             // Once a second too: what stands of the base, what the next
             // part of it needs, and the chores waiting at home.
             let chest = self.builder.box_addr(core);
@@ -6904,12 +6928,11 @@ impl BotDriver for Survivor {
             return None;
         }
         let line = self.say_line.take()?;
-        // A body speaks to the bodies near it, or to its team when it asked
-        // to and has one; never to everyone.
-        let channel = if self.say_team && self.has_mates {
-            protocol::Channel::Team
-        } else {
-            protocol::Channel::Local
+        // A body speaks where it asked to: to everyone, to the bodies near
+        // it, or to its team when it has one.
+        let channel = match self.say_to {
+            protocol::Channel::Team if !self.has_mates => protocol::Channel::Local,
+            to => to,
         };
         match protocol::encode_chat(line.as_bytes(), channel, out) {
             Ok(len) => {

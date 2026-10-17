@@ -212,26 +212,22 @@ impl External {
 
     /// A reply's `say`: missing, null or blank is quiet; a string the chat
     /// rule takes (and that is not a `/command` for the shard) is a line;
-    /// any other string is refused rather than repaired. `to` is `"team"`
-    /// for the team channel; missing, null or `"local"` is local.
+    /// any other string is refused rather than repaired. `to` is
+    /// `"global"` for everyone (also when missing or null, as a person's chat
+    /// box), `"team"` for the team, `"local"` for whoever is near.
     fn say(value: &Value, to: &Value) -> Result<Say, String> {
-        let team = match to {
-            Value::Null => false,
-            Value::String(t) if t == "local" => false,
-            Value::String(t) if t == "team" => true,
-            _ => return Err("external agent to must be \"local\" or \"team\"".into()),
+        let to: fn(protocol::ChatText) -> Say = match to {
+            Value::Null => Say::Global,
+            Value::String(t) if t == "global" => Say::Global,
+            Value::String(t) if t == "local" => Say::Line,
+            Value::String(t) if t == "team" => Say::Team,
+            _ => return Err("external agent to must be \"global\", \"team\" or \"local\"".into()),
         };
         match value {
             Value::Null => Ok(Say::Quiet),
             Value::String(text) if text.trim().is_empty() => Ok(Say::Quiet),
             Value::String(text) => Ok(match protocol::ChatText::sanitize(text.as_bytes()) {
-                Some(line) if !protocol::admin::is_command(&line) => {
-                    if team {
-                        Say::Team(line)
-                    } else {
-                        Say::Line(line)
-                    }
-                }
+                Some(line) if !protocol::admin::is_command(&line) => to(line),
                 _ => Say::Refused,
             }),
             _ => Err("external agent say must be a string".into()),
@@ -468,7 +464,7 @@ mod tests {
             External::reply(&line, 3, &s).map(|c| c.unwrap().say)
         };
         let hello = protocol::ChatText::sanitize(b"hello there").unwrap();
-        assert_eq!(say(r#""  hello there ""#), Ok(Say::Line(hello)));
+        assert_eq!(say(r#""  hello there ""#), Ok(Say::Global(hello)));
         assert_eq!(say(r#""""#), Ok(Say::Quiet));
         assert_eq!(say("null"), Ok(Say::Quiet));
         let long = format!("\"{}\"", "x".repeat(protocol::CHAT_MAX_BYTES + 1));
@@ -483,8 +479,9 @@ mod tests {
         let omw = protocol::ChatText::sanitize(b"on my way").unwrap();
         assert_eq!(to(r#""team""#), Ok(Say::Team(omw)));
         assert_eq!(to(r#""local""#), Ok(Say::Line(omw)));
-        assert_eq!(to("null"), Ok(Say::Line(omw)));
-        assert!(to(r#""global""#).is_err(), "an agent has no global voice");
+        assert_eq!(to(r#""global""#), Ok(Say::Global(omw)));
+        assert_eq!(to("null"), Ok(Say::Global(omw)), "a chat box's default");
+        assert!(to(r#""shout""#).is_err());
         let code = |code: &str| {
             let line = format!(r#"{{"id":3,"goal":"explore","code":{code}}}"#);
             External::reply(&line, 3, &s).map(|c| c.unwrap().code)
