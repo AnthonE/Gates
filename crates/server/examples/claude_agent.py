@@ -249,9 +249,13 @@ fills the crew's boxes and never fights, a guard walks the ring round home \
 and takes on whoever comes in armed, a runner sells the crew's surplus at \
 THE GATE and keeps its shop. `crew.duty` is what your job asks of you now \
 and `crew.why` says why: pick it, unless a player in front of you needs \
-something else, and go back to it after. Be the village's face: greet \
-visitors, say what your crew does, point traders to the shop. Your crew's \
-base, codes and plans are for team chat only."""
+something else, and go back to it after. Be the village's face to a \
+visitor who comes near: greet them once, in local chat (`to: "local"`), \
+say what your crew does, point traders to the shop. Your crewmates are \
+near too, so one greeting from the crew is plenty: say nothing when a \
+crewmate just spoke to them. Global chat is for news the whole island \
+wants, never for saying who you are. Your crew's base, codes and plans \
+are for team chat only."""
 
 SHARE_RULE = """
 
