@@ -1343,6 +1343,8 @@ pub struct Summary {
     pub stored_len: u8,
     /// The box holds something the pack is short of for the base.
     pub take_out: bool,
+    /// A recycler stands within a recycle's walk: none is made.
+    pub recycler_near: bool,
     /// The cupboard's stock is running low, and the pack can feed it.
     pub feed: bool,
     /// Its team (wire v108).
@@ -1486,6 +1488,7 @@ impl Summary {
         stored: [(Name::EMPTY, 0); SUMMARY_STORED],
         stored_len: 0,
         take_out: false,
+        recycler_near: false,
         feed: false,
         team: TeamSense {
             mates: 0,
@@ -2415,7 +2418,10 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
             }
             // Nothing to fight with: a spear first, then the bow.
             for (item, want, needs) in crate::agent::loadout::ARM_UP {
-                if s.count_of(item) >= want || needs.is_some_and(|n| s.count_of(n) == 0) {
+                if s.count_of(item) >= want
+                    || needs.is_some_and(|n| s.count_of(n) == 0)
+                    || crate::agent::loadout::outclassed(item, |b| s.count_of(b) > 0)
+                {
                     continue;
                 }
                 if let Some(name) = s.craftable().iter().find(|n| n.as_str() == item) {
@@ -2874,6 +2880,7 @@ impl Scripted {
         if tooled
             && s.count_of("Gears") >= SCRIPTED_RECYCLER_GEARS
             && s.count_of(RECYCLER_ITEM) == 0
+            && !s.recycler_near
         {
             if let Some(name) = s.craftable().iter().find(|n| n.as_str() == RECYCLER_ITEM) {
                 return (Goal::Craft(*name), "scripted: a recycler for the gears");
@@ -2893,6 +2900,7 @@ impl Scripted {
             for (item, want, needs) in crate::agent::loadout::ARM_UP {
                 if s.count_of(item) >= want
                     || needs.is_some_and(|n| s.count_of(n) == 0)
+                    || crate::agent::loadout::outclassed(item, |b| s.count_of(b) > 0)
                     || (bag_wanted && item != spear)
                 {
                     continue;
@@ -2947,6 +2955,14 @@ impl Scripted {
                 };
                 if seen && s.offers(goal) {
                     return (goal, "scripted: materials for the base");
+                }
+                // What a loot run is for, THE GATE sells for the junk the
+                // pack carries anyway: fragments, fuel, rope, gears.
+                if LOOTED.contains(&name.as_str()) && s.offers(Goal::Buy(*name)) {
+                    return (
+                        Goal::Buy(*name),
+                        "scripted: buy what the base needs at the gate",
+                    );
                 }
                 // A loot run is a long way to go: what the pack already
                 // pays for goes up first.

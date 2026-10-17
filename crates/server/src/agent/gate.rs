@@ -80,9 +80,15 @@ pub fn trade_for(core: &ClientCore, item: u16, sell: bool) -> Option<(u8, u8)> {
     })
 }
 
-/// The trades it could make now, into `out` as `(item, sell)`: what it can
-/// sell, then what it can buy, dearest first. The rows filled.
-pub fn trades(core: &ClientCore, out: &mut [(u16, bool); TRADE_ROWS]) -> usize {
+/// The trades it could make now, into `out` as `(item, sell)`: what it
+/// `wants` (its base's shortfall) bought first, then what it can sell, then
+/// what it can buy, dearest first. The rows filled. With forty stalls and
+/// eight rows, a fragment it needed was never on the list.
+pub fn trades(
+    core: &ClientCore,
+    wants: impl Iterator<Item = u16>,
+    out: &mut [(u16, bool); TRADE_ROWS],
+) -> usize {
     let mut n = 0;
     let Some(junk) = junk(core) else {
         return 0;
@@ -93,6 +99,9 @@ pub fn trades(core: &ClientCore, out: &mut [(u16, bool); TRADE_ROWS]) -> usize {
             n += 1;
         }
     };
+    for item in wants {
+        push(out, (item, false));
+    }
     for k in 0..usize::from(core.vend.count) {
         if let Some(o) = core.vend.get(k).filter(|o| o.get == junk) {
             push(out, (o.pay, true));

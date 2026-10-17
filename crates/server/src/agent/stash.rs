@@ -48,8 +48,9 @@ const MAX_TRIES: u8 = 3;
 pub const STASH_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// Stacks of each food and med kept on the body.
 pub const PROVISION_STACKS: u32 = 2;
-/// Distinct items the summary reports from the box.
-pub const STORED_ROWS: usize = 6;
+/// Distinct items the summary reports from the box: enough that a mind
+/// choosing a craft can see the one it already has there.
+pub const STORED_ROWS: usize = 12;
 
 /// The box as its panel last showed it.
 #[derive(Clone, Copy, Debug)]
@@ -136,7 +137,9 @@ pub fn box_open(core: &ClientCore, key: u32) -> bool {
 /// Salvage and the recycler that takes it apart stay on the body too: the
 /// recycle works from the pack, and nothing takes them out of the box for
 /// it. Food and meds: [`PROVISION_STACKS`] stacks' worth, not a pack full
-/// of mushrooms. Nothing else.
+/// of mushrooms. One sleeping bag, which it carries until it lays it: a bag
+/// boxed left the pack without one, and it made another, and another
+/// (three in one box, 2026-10-17). Nothing else.
 pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
     let row = core.catalog.row(usize::from(item));
     let page = book.page(item);
@@ -146,6 +149,9 @@ pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
         _ => return u32::MAX,
     }
     let name = core.catalog.name(usize::from(item));
+    if name == crate::mind::BAG_ITEM.as_bytes() {
+        return 1;
+    }
     let kit = name == build::PLAN_ITEM.as_bytes()
         || name == build::HAMMER_ITEM.as_bytes()
         || name == oven::RECYCLER_ITEM.as_bytes()
