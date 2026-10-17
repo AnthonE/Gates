@@ -131,6 +131,11 @@ pub struct SurvivalContent {
     /// and disarms the module: no meter, no drain, no starvation.
     pub max_food: u16,
     pub max_water: u16,
+    /// What a fresh body starts with, Rust-style (a spawn is hungry,
+    /// thirsty and hurt). Zero is full.
+    pub spawn_hp: u16,
+    pub spawn_food: u16,
+    pub spawn_water: u16,
     /// Ticks from a full meter to an empty one. The bake derives these
     /// from `[survival]`'s minutes so the sim never multiplies a clock.
     pub food_span_ticks: u32,
@@ -171,6 +176,9 @@ impl SurvivalContent {
         revive: [false; MAX_ITEM_DEFS],
         max_food: 0,
         max_water: 0,
+        spawn_hp: 0,
+        spawn_food: 0,
+        spawn_water: 0,
         food_span_ticks: 0,
         water_span_ticks: 0,
         starve_hp_per_min: 0,
@@ -422,12 +430,15 @@ pub fn clear_heal(p: &mut Player) {
     p.heal_acc = 0;
 }
 
-/// Grant a fresh body its meters. Called at join and at respawn, so a
-/// player who starved does not respawn already starving.
+/// Grant a fresh body its meters and its starting hp. Called at join and
+/// at respawn, after `hp_max` is set, so a player who starved does not
+/// respawn already starving.
 #[inline]
 pub fn grant(sc: &SurvivalContent, p: &mut Player) {
-    p.food = sc.max_food;
-    p.water = sc.max_water;
+    let start = |spawn: u16, max: u16| if spawn == 0 { max } else { spawn.min(max) };
+    p.food = start(sc.spawn_food, sc.max_food);
+    p.water = start(sc.spawn_water, sc.max_water);
+    p.hp = start(sc.spawn_hp, p.hp_max);
     p.food_acc = 0;
     p.water_acc = 0;
     p.hurt_acc = 0;
