@@ -397,9 +397,9 @@ pub struct Eye {
     pub roll: f32,
 }
 
-/// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
-/// cosmetics — the same 1.6 the browser client stands at).
-pub const EYE_HEIGHT: f32 = 1.6;
+/// Eye height above the capsule's feet, metres: the sim's own
+/// (`ranged::ARROW_EYE_MM`), since a shot leaves from it.
+pub const EYE_HEIGHT: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 /// A crouched eye above the feet, metres: the sim's own
 /// (`ranged::CROUCH_EYE_MM`), since a crouched shot leaves from it.
@@ -1127,6 +1127,7 @@ impl Plugin for GatesRenderPlugin {
                     map::view,
                     map::track,
                     map::mates,
+                    map::heli,
                     map::blight_follow,
                     map::keys,
                 )
@@ -1746,7 +1747,7 @@ impl Plugin for GatesRenderPlugin {
                     // After `harvest`, which owns the discrete transition and
                     // arms the topple this integrates. Reversed, a tree would
                     // spend one frame at the pose the previous chop left it.
-                    props::fall,
+                    props::fall.after(props::harvest).after(props::harvest_new),
                     clutter::stream,
                     // Reconciles the whole piece/deploy/bag mirror, which is
                     // the right shape and the wrong cadence: it now runs only
@@ -1839,9 +1840,9 @@ impl Plugin for GatesRenderPlugin {
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
-                        (lore::spawn, lore::dials).chain(),
+                        (lore::spawn, lore::dials, lore::carve).chain(),
                     ),
-                    (hud::pad_overlay, hud::hearth_overlay, hud::lift_announce),
+                    (hud::pad_overlay, hud::lift_announce),
                 )
                     .in_set(Stream)
                     .run_if(world_placed),

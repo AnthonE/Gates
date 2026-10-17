@@ -54,7 +54,7 @@ const JUMP_PERIOD: u16 = 128;
 /// bot looking at the sky or its own feet two frames in three hit nothing
 /// it wandered past, and `test_replay`'s barrel-smash coverage went to
 /// zero. The band is where a person looks while walking — down enough to
-/// take a barrel (0.88 m) or a stone node (1.13 m) at a stride's distance
+/// take a barrel (0.96 m) or a stone node (1.13 m) at a stride's distance
 /// from a 1.6 m eye, up enough to still launch an arrow with some lift.
 /// Bounded, so every value is wire-legal by construction.
 pub const PITCH_LOW: u32 = 80;
@@ -630,12 +630,13 @@ const D: u8 = LOC_DIAG_B;
 ///   floor — that is why the second door is on the airlock and not between
 ///   the cells — and the stairwell has no floor (a floor there would stop
 ///   the climbing head).
-/// - **Graded before it is grown**: the core's walls first, then the rest of
-///   the shell, to stone while there is stone; then the second storey goes
-///   up in twig (stone and wood are separate purses, so the stone costs it
-///   nothing); then whatever stone missed goes to wood with the wood that is
-///   left, the ground floor before the upper. Twig rots in an hour, and
-///   nobody leaves the room with the cupboard in it that way.
+/// - **Roofed before it is graded**: the second storey and the roof go up
+///   in twig right after the doors (a few hundred wood), so the room is
+///   covered while the stone is gathered; then the core's walls, then the
+///   rest of the shell, to stone while there is stone; then whatever stone
+///   missed goes to wood with the wood that is left, the ground floor before
+///   the upper. A roofless base is an open one, and twig with a building
+///   over it rots at a tenth of the rate.
 /// - **Then the cupboard is stocked** with what is left, for upkeep.
 pub const STARTER: &[BaseOp] = &[
     // Claim it.
@@ -663,6 +664,18 @@ pub const STARTER: &[BaseOp] = &[
     Code(1, 1, 0, X),
     Deploy(Kit::Lock, 1, 1, 0, Z),
     Code(1, 1, 0, Z),
+    // Up, and the roof on, in twig.
+    Place(Part::Stairs, 1, 0, 0, LOC_RISER_ZLO),
+    Place(Part::Floor, 0, 0, 1, P),
+    Place(Part::Wall, 0, 0, 1, X),
+    Place(Part::Wall, 0, 0, 1, Z),
+    Place(Part::Wall, 0, 1, 1, Z),
+    Place(Part::Wall, 1, 0, 1, Z),
+    Place(Part::Wall, 2, 0, 1, X),
+    Place(Part::Wall, 1, 1, 1, Z),
+    Place(Part::Roof, 0, 0, 2, P),
+    Place(Part::Roof, 1, 0, 2, P),
+    Place(Part::TriRoof, 1, 1, 1, T),
     // Grade in stone: the core's walls first, then the rest of the shell.
     Upgrade(0, 0, 0, X, MAT_STONE),
     Upgrade(0, 0, 0, Z, MAT_STONE),
@@ -675,18 +688,6 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(0, 0, 0, P, MAT_STONE),
     Upgrade(1, 0, 0, P, MAT_STONE),
     Upgrade(1, 1, 0, T, MAT_STONE),
-    // Up.
-    Place(Part::Stairs, 1, 0, 0, LOC_RISER_ZLO),
-    Place(Part::Floor, 0, 0, 1, P),
-    Place(Part::Wall, 0, 0, 1, X),
-    Place(Part::Wall, 0, 0, 1, Z),
-    Place(Part::Wall, 0, 1, 1, Z),
-    Place(Part::Wall, 1, 0, 1, Z),
-    Place(Part::Wall, 2, 0, 1, X),
-    Place(Part::Wall, 1, 1, 1, Z),
-    Place(Part::Roof, 0, 0, 2, P),
-    Place(Part::Roof, 1, 0, 2, P),
-    Place(Part::TriRoof, 1, 1, 1, T),
     // Loot upstairs, over the cupboard.
     Deploy(Kit::Box, 0, 0, 1, P),
     // What stone did not reach goes to wood with what wood is left (refused

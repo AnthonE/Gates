@@ -75,6 +75,7 @@ every item either way, because the painted ones are derived works of it.
 | `map_bed.png` | `delapouite/sleeping-bag` |
 | `map_death.png` | `lorc/skull-mask` |
 | `map_hearth.png` | `delapouite/fireplace` |
+| `map_heli.png` | `delapouite/helicopter` |
 | `map_site.png` | `delapouite/hut` |
 | `medical_syringe.png` | `lorc/syringe` |
 | `medkit.png` | `delapouite/first-aid-kit` |
