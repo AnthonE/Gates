@@ -1,18 +1,23 @@
-# The research run: place a level-2 workbench, open its tech tree, unlock a
-# node, read the level-1 tab. Coordinates are for RES=1280x720 and today's
+# The research run: lay a foundation, set a level-2 workbench on it (benches
+# need one, `content/deployables.toml`), open its tech tree, unlock a node,
+# read the level-1 tab. Coordinates are for RES=1280x720 and today's
 # content/research.toml.
 #
-#   POP=0 KIT="item.workbench2:1, item.junk:200, item.wood:1000, item.metal_frags:500" \
+#   POP=0 KIT="item.building_plan:1, item.workbench2:1, item.junk:200, item.wood:1000, item.metal_frags:500" \
 #     ./ci/drive.sh shots/tech ci/drive/tech.txt
 # load (a cold join under lavapipe takes minutes)
 sleep 240
 moveto 640 360
 click 1
 sleep 3
-# the bench in hand, the ground in front, place it
+# a twig foundation a few metres out, then the bench on it
 key 1
 sleep 2
-move 0 260
+move 0 150
+sleep 2
+click 1
+sleep 4
+key 2
 sleep 2
 shot 01-ghost
 click 1
