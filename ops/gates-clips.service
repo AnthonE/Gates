@@ -31,10 +31,17 @@
 #
 #   sudo systemctl disable --now gates-clips@doctor-wood gates-clips-make@doctor-wood.timer
 #
-# Every start pulls main, so the recorder speaks the shard's wire after a
-# deploy: one on an old wire is refused, exits, and comes back through the
-# pull. Lavapipe draws a frame in about a second on every core, so this runs
-# at the bottom of the box's CPU and IO: the shard always comes first.
+# The checkout runs what was deployed, never what main is now: each
+# `ci/deploy_shard.sh` moves it to the commit it shipped and restarts this,
+# so the recorder speaks the shard's wire after a deploy. (It used to pull
+# main on every start, which ran whatever had merged since as master here.)
+# Lavapipe draws a frame in about a second on every core, so this runs at the
+# bottom of the box's CPU and IO: the shard always comes first.
+#
+# It runs as master (the checkout, its cargo and its venv are master's), in
+# the agents' group to write a buddy's clips and spend, with master's keys
+# and credentials and the other trees hidden from it, and nothing of this
+# box's private networks in reach.
 
 [Unit]
 Description=Highlight clips of the Gates buddies
@@ -52,13 +59,24 @@ EnvironmentFile=/etc/gates-clips/env
 Environment=CLIPS_DIR=/home/master/gates-clips
 Environment=CLIPS_QUEUE=/var/lib/gates-buddies/clips-queue.json
 Environment=PATH=/home/master/gates-clips/venv/bin:/home/master/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-ExecStartPre=-/usr/bin/git pull --ff-only --quiet
+SupplementaryGroups=gates-agents
 ExecStart=/home/master/gates-clips/venv/bin/python ops/buddy/clips.py auto --minutes 20
 Restart=always
 RestartSec=60
 Nice=19
 CPUWeight=10
 IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+InaccessiblePaths=-/home/master/.ssh -/home/master/.git-credentials -/home/master/.config/gh -/home/master/.claude -/home/master/.claude.json -/home/master/.gates -/home/master/gates-jev -/home/master/gates-target -/mnt/hive-data/gates -/mnt/hive-data/gates-loop -/mnt/hive-data/gates-lanes
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+IPAddressAllow=localhost
 StandardOutput=journal
 
 [Install]
