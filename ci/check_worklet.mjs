@@ -84,8 +84,9 @@ class FakePort {
 class AudioWorkletProcessor {
   constructor() { this.port = new FakePort(); }
 }
-let Processor = null;
-const registerProcessor = (_name, cls) => { Processor = cls; };
+/* By name: audio.js also registers "gates-mic" (voice chat), after this one. */
+const registered = {};
+const registerProcessor = (name, cls) => { registered[name] = cls; };
 
 /* `new Function` rather than an import: the served file is a classic script
    (the glue's `let wasm_bindgen` is top-level) and this is how a worklet runs
@@ -108,7 +109,8 @@ const src = readFileSync(audioJs, "utf8");
 new Function("AudioWorkletProcessor", "registerProcessor", ...ABSENT_IN_WORKLET, src)(
   AudioWorkletProcessor, registerProcessor,
 );
-if (!Processor) { console.error("FAIL: audio.js registered no processor"); process.exit(1); }
+const Processor = registered["gates-audio"];
+if (!Processor) { console.error("FAIL: audio.js registered no gates-audio processor"); process.exit(1); }
 
 const proc = new Processor();
 const deliver = (m) => proc.port.onmessage({ data: m });
