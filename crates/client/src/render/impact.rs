@@ -207,6 +207,7 @@ impl Matter {
             x if x == Occupant::BerryBush as u8 => Matter::Plant,
             x if x == Occupant::Hemp as u8 => Matter::Plant,
             x if x == Occupant::Shrub as u8 => Matter::Plant,
+            x if x == Occupant::Cactus as u8 => Matter::Plant,
             x if x == Occupant::StoneNode as u8 => Matter::Stone,
             x if x == Occupant::MetalNode as u8 => Matter::Metal,
             x if x == Occupant::SulfurNode as u8 => Matter::Stone,
@@ -294,6 +295,7 @@ pub fn strike_height(occupant: u8) -> f32 {
         x if x == Occupant::BarrelSlot as u8 => 0.80,
         x if x == Occupant::OilBarrel as u8 => 0.80,
         x if x == Occupant::RoadSign as u8 => 1.20,
+        x if x == Occupant::Cactus as u8 => 1.20,
         _ => 0.45,
     }
 }
@@ -523,6 +525,7 @@ pub fn skin_radius(occupant: u8) -> f32 {
         x if x == Occupant::SulfurNode as u8 => Occupant::SulfurNode,
         x if x == Occupant::BarrelSlot as u8 => Occupant::BarrelSlot,
         x if x == Occupant::OilBarrel as u8 => Occupant::OilBarrel,
+        x if x == Occupant::Cactus as u8 => Occupant::Cactus,
         // The post, not the plate's broad phase.
         x if x == Occupant::RoadSign as u8 => return terrain::ROAD_SIGN_BOXES[0][3] * 0.5,
         _ => return 0.0,

@@ -21,7 +21,8 @@ player_hp = 100
 # farmwalk.rs`, its meaning still the operator's knob (DECISIONS.md
 # §open, "the economy has never been measured").
 farm_per_min = { "item.wood" = 50, "item.stone" = 50, "item.metal_ore" = 30, "item.sulfur_ore" = 30, "item.cloth" = 20 }
-# Barrel-only drops (components, fat) priced as road-minutes per unit.
+# Drops nothing gathers (loot components, an animal's fat) priced as
+# road-minutes per unit.
 # Rust's components (2026-10-13) take the gear's rate per junk they recycle
 # into — a gear is 4 minutes for 12 junk, so one minute per 3 junk, never
 # under one.

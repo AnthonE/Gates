@@ -82,7 +82,10 @@ pub const CH_WOUND_ROLL: u32 = 102;
 #[inline]
 pub fn wounds(cause: u8, head: bool) -> bool {
     match cause {
-        DEATH_BY_HAND | DEATH_BY_MOB | crate::world::DEATH_BY_FALL => true,
+        DEATH_BY_HAND
+        | DEATH_BY_MOB
+        | crate::world::DEATH_BY_FALL
+        | crate::world::DEATH_BY_CACTUS => true,
         DEATH_BY_ARROW | DEATH_BY_BULLET => !head,
         _ => false,
     }

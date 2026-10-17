@@ -60,14 +60,18 @@ pub enum Prize {
 }
 
 impl Prize {
+    /// The roadside junk too: an oil barrel and a road sign come apart under
+    /// a swing like a barrel (`gather::SMASHABLES`), and a food box opens
+    /// like a crate (`worldcont::table_of`).
     pub fn of(occupant: Occupant) -> Option<Prize> {
         match occupant {
-            Occupant::BarrelSlot => Some(Prize::Barrel),
+            Occupant::BarrelSlot | Occupant::OilBarrel | Occupant::RoadSign => Some(Prize::Barrel),
             Occupant::CrateSlot
             | Occupant::CacheSlot
             | Occupant::GreenCrate
             | Occupant::BlueCrate
-            | Occupant::EliteCrate => Some(Prize::Crate),
+            | Occupant::EliteCrate
+            | Occupant::FoodCrate => Some(Prize::Crate),
             _ => None,
         }
     }
@@ -93,6 +97,15 @@ impl Spot {
 
     pub fn at(&self) -> [f32; 2] {
         [self.slot.x, self.slot.z]
+    }
+
+    /// Roadside junk (an oil barrel, a road sign, a food box): taken on a
+    /// run, never a detour of its own, since a road is lined with it.
+    pub fn roadside(&self) -> bool {
+        matches!(
+            self.slot.occupant,
+            Occupant::OilBarrel | Occupant::RoadSign | Occupant::FoodCrate
+        )
     }
 }
 

@@ -6367,7 +6367,7 @@ impl Survivor {
                     .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
-            for spot in self.loot.live(core, tick) {
+            for spot in self.loot.live(core, tick).filter(|s| !s.roadside()) {
                 let (d, b) = relative(body, spot.slot.x, spot.slot.z);
                 known.add(d, b);
             }
@@ -7346,7 +7346,7 @@ pub fn observe(
         let name = name.as_str();
         matches!(
             name,
-            "Wood" | "Stone" | crate::mind::BAG_ITEM | crate::mind::SATCHEL_ITEM
+            "Wood" | "Stone" | "Cloth" | crate::mind::BAG_ITEM | crate::mind::SATCHEL_ITEM
         ) || TREE_TOOLS.contains(&name)
             || NODE_TOOLS.contains(&name)
             || crate::mind::LOOTED.contains(&name)

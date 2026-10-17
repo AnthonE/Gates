@@ -109,7 +109,7 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 12;
+pub const GATHERABLE_KINDS: usize = 13;
 
 /// The felled tree's stump (`NOW.md` §0stump): the last gatherable row, and
 /// the one no `Occupant` names. It is the tree slot's second life — a
@@ -117,6 +117,11 @@ pub const GATHERABLE_KINDS: usize = 12;
 /// fell, until the stump is grubbed ([`STUMP_GRUBBED`]); the sapling still
 /// comes on the tree's own timer. No new occupant, no wire byte.
 pub const STUMP_NODE: usize = 11;
+
+/// The desert's cactus (`Occupant::Cactus`): swung at for cloth. After the
+/// stump because the stump's row was there first and a row is a save's
+/// address for nothing, but a test's for plenty.
+pub const CACTUS_NODE: usize = 12;
 
 /// A harvested tree's `SlotLife::hits` once its stump is spent: nothing left
 /// to swing at until the sapling. Not a count any budget reaches.
@@ -558,6 +563,7 @@ impl GatherContent {
             (3, 1, 10, 0, 0, NO_ITEM, 0, 0), // SulfurPile
             (4, 1, 3, 0, 0, NO_ITEM, 0, 0),  // MushroomPatch
             (0, 3, 0, 0, 0, 1, 5, 4),        // Stump: the tree's tool, a smaller pool
+            (5, 2, 0, 0, 0, 0, 6, 3),        // Cactus: hemp's item off a tool
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -606,6 +612,7 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
         Occupant::MetalPile => Some(8),
         Occupant::SulfurPile => Some(9),
         Occupant::MushroomPatch => Some(10),
+        Occupant::Cactus => Some(CACTUS_NODE),
         Occupant::None
         | Occupant::Rock
         | Occupant::BarrelSlot
@@ -669,6 +676,7 @@ fn occupant_of(target: usize) -> u32 {
                 8 => Occupant::MetalPile,
                 9 => Occupant::SulfurPile,
                 10 => Occupant::MushroomPatch,
+                CACTUS_NODE => Occupant::Cactus,
                 // STUMP_NODE: what stood here was a tree.
                 _ => Occupant::Tree,
             }) as u32

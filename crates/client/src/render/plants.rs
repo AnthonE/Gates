@@ -110,7 +110,6 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::Shrub, Scenery::Fern) => 0.85,
         (Occupant::Shrub, Scenery::Juniper) => 0.9,
         (Occupant::Shrub, Scenery::DeadScrub) => 0.45,
-        (Occupant::Shrub, Scenery::Cactus) => 0.3,
         (Occupant::Shrub, Scenery::Flowers) => 0.3,
         (Occupant::Shrub, Scenery::Shrub) if super::props::tall_bush(key) => 0.85,
         (Occupant::Shrub, Scenery::Shrub) => 0.8,
@@ -139,27 +138,28 @@ pub enum Scenery {
     DeadScrub,
     /// A clump of wildflowers over a leafy base.
     Flowers,
-    /// A saguaro: the desert's tall plant, over a player's head.
-    Cactus,
 }
 
 /// Per biome (`terrain::Biome`'s order) and slot species, per mille of shrub
-/// cells growing `[fern, juniper, dead scrub, wildflowers, cactus]`; the rest
-/// grow the leafy shrub. **(knob)**
-pub const SCENERY_SHARES: [[[u16; 5]; 2]; terrain::BIOMES] = [
+/// cells growing `[fern, juniper, dead scrub, wildflowers]`; the rest grow
+/// the leafy shrub. **(knob)** The desert's saguaros are not here: they are
+/// the sim's (`terrain::Occupant::Cactus`), solid and swung at, so the client
+/// draws the cells the sim says and no others.
+pub const SCENERY_SHARES: [[[u16; 4]; 2]; terrain::BIOMES] = [
     // Beach: dead scrub and flowers in the dunes, the odd low pine.
-    [[0, 100, 300, 250, 0], [0, 50, 400, 100, 0]],
+    [[0, 100, 300, 250], [0, 50, 400, 100]],
     // Meadow: wildflowers in drifts between the shrubs.
-    [[50, 50, 50, 550, 0], [100, 100, 50, 200, 0]],
+    [[50, 50, 50, 550], [100, 100, 50, 200]],
     // Forest: fern beds under the canopy.
-    [[650, 0, 50, 0, 0], [250, 50, 50, 0, 0]],
+    [[650, 0, 50, 0], [250, 50, 50, 0]],
     // Highland: low pines and dead scrub on the granite.
-    [[0, 550, 250, 0, 0], [50, 300, 350, 0, 0]],
-    // Desert: cactus stands and dry scrub, nothing leafy.
-    [[0, 50, 500, 50, 400], [0, 30, 620, 0, 350]],
+    [[0, 550, 250, 0], [50, 300, 350, 0]],
+    // Desert: dry scrub between the cacti, nothing leafy — every share
+    // spoken for.
+    [[0, 50, 900, 50], [0, 30, 970, 0]],
     // The Verdigris: dead scrub and nothing else — every share spoken for,
     // so not one leafy shrub grows in the ash.
-    [[0, 0, 1000, 0, 0], [0, 0, 1000, 0, 0]],
+    [[0, 0, 1000, 0], [0, 0, 1000, 0]],
 ];
 
 const _: () = {
@@ -168,7 +168,7 @@ const _: () = {
         let mut k = 0;
         while k < 2 {
             let r = SCENERY_SHARES[b][k];
-            assert!(r[0] + r[1] + r[2] + r[3] + r[4] <= 1000);
+            assert!(r[0] + r[1] + r[2] + r[3] <= 1000);
             k += 1;
         }
         b += 1;
@@ -185,7 +185,6 @@ pub fn scenery_of(b: Biome, species: u8, key: u32) -> Scenery {
         Scenery::Juniper,
         Scenery::DeadScrub,
         Scenery::Flowers,
-        Scenery::Cactus,
     ];
     let mut edge = 0;
     for (share, kind) in shares.into_iter().zip(kinds) {
@@ -1137,8 +1136,12 @@ const CACTUS_RIB_DEPTH: f32 = 0.08;
 pub fn cactus(variant: u32) -> Mesh {
     let seed = seed_of(0xcac7_0051, variant);
     let mut s = Soup::default();
-    let h = CACTUS_H * (0.75 + 0.4 * hash01(seed, 1));
-    let r = 0.2 + 0.07 * hash01(seed, 2);
+    // Off the sim's own cylinder (`terrain::CACTUS_R_M`, `_TOP_M`): the
+    // widest trunk is what stops a body and the shortest column is its top,
+    // so nothing drawn is thinner than what pricks you and nothing invisible
+    // stands over a short one.
+    let h = terrain::CACTUS_TOP_M + (CACTUS_H * 1.15 - terrain::CACTUS_TOP_M) * hash01(seed, 1);
+    let r = terrain::CACTUS_R_M - 0.07 * hash01(seed, 2);
     let col = |y: f32| lerp3(CACTUS_ROOT, CACTUS_TIP, smooth01(y / (CACTUS_H * 1.1)));
     cactus_stem(&mut s, -Vec3::Y * 0.1, Vec3::Y, h + 0.1, r, &col);
     // Most carry an arm or two; a quarter are a bare column.
