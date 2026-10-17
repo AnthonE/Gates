@@ -21,8 +21,8 @@
 //! has no such setting — and a one-level photograph minified across the
 //! island is the static that module exists to remove. The sampler below is
 //! already right for a chain (`linear()` sets `mipmap_filter` to Linear, and
-//! `anisotropy_clamp: 4` needs one to mean anything); what was missing was
-//! the chain itself.
+//! [`ANISOTROPY`] needs one to mean anything); what was missing was the chain
+//! itself.
 //!
 //! **The budget that shaped these files is gone.** They were fetched at 1K
 //! and re-encoded to fit a 12 MB *download* — a browser boot cost. A desktop
@@ -70,6 +70,19 @@ pub struct MapSet {
     pub ao: Option<Handle<Image>>,
 }
 
+/// Anisotropic filtering's ceiling, for every tiled map and atlas here.
+///
+/// **16 on the desktop, 4 in a browser.** `ART.md` §7's
+/// `BASE_ANISOTROPY_MAX = 4` was chosen against a software rasterizer and
+/// the integrated GPUs a page mostly runs on (`NOW.md` §0u item 3); a desktop
+/// card filters 16 for next to nothing, and from 1.6 m up the ground past a
+/// few metres is all grazing angle.
+#[cfg(not(target_arch = "wasm32"))]
+pub const ANISOTROPY: u16 = 16;
+/// See the desktop arm.
+#[cfg(target_arch = "wasm32")]
+pub const ANISOTROPY: u16 = 4;
+
 /// A tiling sampler. **Every map here is tiled and the default is not.**
 /// Bevy's default address mode is ClampToEdge, and a clamped map on a 64 m
 /// terrain chunk stretches one texel across the whole chunk — which reads as
@@ -88,10 +101,8 @@ fn tiling(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 'stat
             address_mode_w: ImageAddressMode::Repeat,
             // The maps are 1K over a 4 m tile and the camera stands 1.6 m up,
             // so the ground is seen at a grazing angle almost everywhere.
-            // Anisotropy is what stops that becoming a smear at the horizon;
-            // `ART.md` §7 registers the browser's ceiling as
-            // `BASE_ANISOTROPY_MAX = 4` and this holds to it.
-            anisotropy_clamp: 4,
+            // Anisotropy is what stops that becoming a smear at the horizon.
+            anisotropy_clamp: ANISOTROPY,
             ..ImageSamplerDescriptor::linear()
         });
     }
@@ -114,7 +125,7 @@ pub fn atlas(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 's
             address_mode_u: ImageAddressMode::ClampToEdge,
             address_mode_v: ImageAddressMode::ClampToEdge,
             address_mode_w: ImageAddressMode::ClampToEdge,
-            anisotropy_clamp: 4,
+            anisotropy_clamp: ANISOTROPY,
             ..ImageSamplerDescriptor::linear()
         });
     }

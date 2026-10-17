@@ -2931,13 +2931,13 @@ pub fn spawn_slot(
     // the number the draw uses and the number `tests/greybox.rs` checks
     // against `OCCUPANT_TOP_M` are the same number.
     let mut lift = archetype_lift(slot.occupant);
-    // How much bigger than its file the mesh draws: 1 but for a pickup's
-    // hand-sized model (`PICKUP_GLB`).
-    let mut grow = 1.0;
     // What a shrub cell grows, off its biome (`plants::scenery`).
     // `fel` is the spread's depth at the slot now (the caller's,
     // `render::blight::live_fel`), not the wipe-day heart.
     let scenery = plants::scenery_with(seed, slot, key, fel);
+    // How much bigger than its file the mesh draws: a pickup's hand-sized
+    // model (`PICKUP_GLB`), a scenery bush (`plants::SCENERY_GROW`), 1 else.
+    let mut grow = plants::grow(slot.occupant, scenery);
     // A tree in the Verdigris is dead: charred bark and no crown.
     let snag = slot.occupant == Occupant::Tree && fel >= FEL_SNAG_AT;
     let (mesh, material) = match slot.occupant {

@@ -8589,7 +8589,11 @@ pub fn clutter_channel(kind: Clutter) -> usize {
 /// comment names bits 0..7 as "this draw's one unspent slice"), and a second
 /// hash for a sub-kind would be a per-element cost on the densest population
 /// in the game.
-pub const BRUSH_SHARE_PERMILLE: u32 = 200;
+///
+/// 350, up from 200 (operator, 2026-10-17: "up the density of ... other
+/// shrubbery"), taken mostly from the sprigs so the twigs the ferns grow on
+/// keep most of their share.
+pub const BRUSH_SHARE_PERMILLE: u32 = 350;
 
 /// Share of the grass channel that lies as a [`Clutter::Stone`], per mille —
 /// spent the way [`BRUSH_SHARE_PERMILLE`] is. **(knob)**
@@ -8597,7 +8601,7 @@ pub const STONE_SHARE_PERMILLE: u32 = 30;
 
 /// Share of the forest-litter channel that grows as a [`Clutter::Sprig`],
 /// per mille, taken above the brush's share. **(knob)**
-pub const SPRIG_SHARE_PERMILLE: u32 = 300;
+pub const SPRIG_SHARE_PERMILLE: u32 = 220;
 
 /// One resolved clutter element. Deliberately the same shape as `Slot` minus
 /// the things clutter does not have (an occupant identity the sim knows, a

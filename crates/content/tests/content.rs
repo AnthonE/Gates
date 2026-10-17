@@ -1506,12 +1506,7 @@ fn bake_combat_plays_the_band_the_data_declares() {
         }
         melee_rows += 1;
         assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
-        assert_eq!(
-            baked.reach_cm as u32,
-            w.range_m * 100,
-            "`{}` reach in cm",
-            w.id
-        );
+        assert_eq!(baked.reach_cm as u32, w.reach_cm, "`{}` reach in cm", w.id);
         // Hits to kill, computed the way the sim computes it: whole
         // swings, each removing `damage` from `player_hp`.
         let mut hp = cc.player_hp;

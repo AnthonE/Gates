@@ -3270,12 +3270,18 @@ pub fn readout(
 /// loss on what this client sends (`up`: the only direction an endpoint can
 /// detect; the shard's `net_lost_packets` is the other) and the bytes the
 /// shard is sending, both smoothed over ~2 s by [`PathMeter`].
+///
+/// In front of all of it, the frame rate and the worst frame since the last
+/// print ([`FrameMeter`]): what a graphics row costs, read with the row open.
 pub fn net_line(
     net: NonSend<super::Net>,
-    time: Res<Time>,
+    // Real time, not virtual: virtual clamps a frame at 250 ms, and the
+    // worst-frame reading exists to show a hitch at its real length.
+    time: Res<Time<Real>>,
     mut since: Local<f32>,
     mut peak: Local<f32>,
     mut meter: Local<PathMeter>,
+    mut frames: Local<FrameMeter>,
     mut line: Query<&mut Text, With<NetLine>>,
 ) {
     // A new `Net` is a new session (`render::mod` removes it on the way
@@ -3285,11 +3291,14 @@ pub fn net_line(
     }
     let p = &net.session.core.predict;
     *peak = peak.max(p.error_magnitude());
-    *since += time.delta_secs();
+    let dt = time.delta_secs();
+    frames.tick(dt);
+    *since += dt;
     if *since < NET_LINE_PERIOD_S {
         return;
     }
     let path = meter.update(net.session.path_counts(), *since);
+    let (fps, worst_ms) = frames.take(*since);
     *since = 0.0;
     let Ok(mut text) = line.single_mut() else {
         return;
@@ -3312,7 +3321,7 @@ pub fn net_line(
     // the sub-quantum corrections, and snapshots the ring dropped.
     let core = &net.session.core;
     text.0 = format!(
-        "{ping} · {path} · net {:.2}% ok · {} miss · err {:.2} m\n\
+        "{fps:.0} fps · worst {worst_ms:.1} ms · {ping} · {path} · net {:.2}% ok · {} miss · err {:.2} m\n\
          buf {} · rep {} · playout {:.1} t · jit {:.1} ms · minor {} · drop {}",
         100.0 * p.confirmations as f64 / total as f64,
         p.mispredictions,
@@ -3451,6 +3460,33 @@ pub fn slot_keys(
 /// How often [`net_line`] rebuilds its string. The HUD's own cadence
 /// (`DECISIONS.md`, client render cosmetics: "HUD 250 ms").
 const NET_LINE_PERIOD_S: f32 = 0.25;
+
+/// Frames since [`net_line`]'s last print, and the slowest of them.
+///
+/// The worst frame rather than an average beside the rate, because a hitch
+/// is what a player feels and a 250 ms mean hides it. The only reader of
+/// native frame cost in the client (`NOW.md` §0u item 2).
+#[derive(Default)]
+pub struct FrameMeter {
+    frames: u32,
+    worst_s: f32,
+}
+
+impl FrameMeter {
+    fn tick(&mut self, dt: f32) {
+        self.frames += 1;
+        self.worst_s = self.worst_s.max(dt);
+    }
+
+    /// Frames per second over `window_s` and the worst frame in
+    /// milliseconds, then empty for the next window.
+    fn take(&mut self, window_s: f32) -> (f32, f32) {
+        let fps = self.frames as f32 / window_s.max(f32::EPSILON);
+        let worst_ms = self.worst_s * 1000.0;
+        *self = Self::default();
+        (fps, worst_ms)
+    }
+}
 
 /// The centre prompt and the compass.
 // Eight sources and each is a distinct input: the two picks, the swing,

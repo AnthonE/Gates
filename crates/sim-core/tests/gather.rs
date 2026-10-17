@@ -7,7 +7,7 @@
 use sim_core::gather::{
     cell_key, first_mark, mark8_of, next_mark, GatherContent, ItemStack, MARK_STEP_MIN,
     MARK_STEP_SPAN, NO_CELL, PLANT_GROW_TICKS, RESPAWN_MIN_TICKS, RESPAWN_RANGE_TICKS, SAPLING_PM,
-    SWING_INTERVAL_TICKS,
+    STRIKE_DELAY_TICKS, SWING_INTERVAL_TICKS,
 };
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement;
@@ -199,6 +199,15 @@ fn stand_still(aim: Aim, seq: u16) -> Command {
             sel: 0,
         },
         favour: 0,
+    }
+}
+
+/// The ticks between a swing being taken and its blow landing: the frame
+/// the swing was taken with is held through them, and the blow lands on the
+/// last one.
+fn wind_up(w: &mut World) {
+    for _ in 0..STRIKE_DELAY_TICKS {
+        w.tick(&[]);
     }
 }
 
@@ -488,6 +497,7 @@ fn a_tree_pays_once() {
     let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
     let mut w = world_at(pos);
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
     let gathers = w
         .events
         .entries()
@@ -558,6 +568,7 @@ fn tool_in_slot0_outyields_hand() {
         skin: 0,
     };
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
     let out = w.gather.nodes[0].output;
     assert_eq!(
         w.players[0].inv[1],
@@ -655,6 +666,7 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
     // and announces mark 1 to the swinger — a step round from the blow.
     let mut w = world_at(pos);
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
     assert_eq!(w.players[0].inv[0].count, def.hand_yield, "hit 1 is base");
     assert_eq!(w.players[0].ws_cell, cell_key(cxu, czu));
     let ws1 = w.players[0].ws_mark;
@@ -718,6 +730,7 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
     // and the mark stays where it was — only a hit on it moves it.
     let mut w2 = world_at(pos);
     w2.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w2);
     let face2 = stand_at_bearing(&mut w2, s.x, s.y, s.z, mark1.wrapping_add(128));
     for t in 0..SWING_INTERVAL_TICKS {
         w2.tick(&[hold_primary(face2, t as u16 + 1)]);
@@ -852,6 +865,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         skin: 0,
     };
     w.tick(&[hold_sel(3)]);
+    wind_up(&mut w);
     assert_eq!(
         w.players[0].inv[0],
         ItemStack {
@@ -872,6 +886,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         skin: 0,
     };
     w2.tick(&[hold_sel(7)]);
+    wind_up(&mut w2);
     assert_eq!(w2.players[0].frame.sel, 0, "invalid selector clamps to 0");
     assert_eq!(
         w2.players[0].inv[0],
@@ -917,8 +932,9 @@ fn strike_out(occ: Occupant, chase: bool) -> (u32, u32) {
     let mut w = world_at(pos);
     let mut face = yaw;
     let (mut swings, mut seq) = (0u32, 0u16);
-    // The first swing lands immediately; each later one waits a cadence.
-    // Bounded by the budget's own worst case so a stuck chase cannot spin.
+    // The first swing is taken immediately and lands after its wind-up;
+    // each later one waits out the rest of a cadence. Bounded by the
+    // budget's own worst case so a stuck chase cannot spin.
     for _ in 0..64 {
         if w.players[0].ws_cell != NO_CELL {
             let mark = mark8_of(w.players[0].ws_mark);
@@ -928,13 +944,14 @@ fn strike_out(occ: Occupant, chase: bool) -> (u32, u32) {
         let before = w.players[0].inv[0].count;
         seq = seq.wrapping_add(1);
         w.tick(&[hold_primary(face, seq)]);
+        wind_up(&mut w);
         if w.players[0].inv[0].count != before || w.slot_lives.is_harvested(cxu, czu) {
             swings += 1;
         }
         if w.slot_lives.is_harvested(cxu, czu) {
             break;
         }
-        for _ in 1..SWING_INTERVAL_TICKS {
+        for _ in 1 + STRIKE_DELAY_TICKS..SWING_INTERVAL_TICKS {
             seq = seq.wrapping_add(1);
             w.tick(&[stand_still(face, seq)]);
         }
@@ -1002,6 +1019,7 @@ fn the_finish_share_moves_when_yield_arrives_not_how_much() {
     for _ in 0..(stone.hits as u32 + 2) {
         seq = seq.wrapping_add(1);
         w.tick(&[hold_primary(yaw, seq)]);
+        wind_up(&mut w);
         let now = w.players[0].inv[0].count;
         if now != last {
             pays.push(now - last);
@@ -1010,7 +1028,7 @@ fn the_finish_share_moves_when_yield_arrives_not_how_much() {
         if w.slot_lives.is_harvested(cxu, czu) {
             break;
         }
-        for _ in 1..SWING_INTERVAL_TICKS {
+        for _ in 1 + STRIKE_DELAY_TICKS..SWING_INTERVAL_TICKS {
             seq = seq.wrapping_add(1);
             w.tick(&[stand_still(yaw, seq)]);
         }
@@ -1621,6 +1639,7 @@ fn a_dead_tool_gathers_at_the_hand_rate() {
         skin: 0,
     };
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
     let paid: Vec<u32> = w
         .events
         .entries()

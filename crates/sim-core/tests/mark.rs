@@ -44,7 +44,7 @@ use sim_core::build::{
 use sim_core::collide::WALL_THICKNESS_M;
 use sim_core::combat::CombatContent;
 use sim_core::deploy::DeployContent;
-use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::gather::{GatherContent, ItemStack, STRIKE_DELAY_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::ARROW_STEP_MM;
 use sim_core::melee::MELEE_PROBE_M;
@@ -269,7 +269,8 @@ fn walled(w: &mut World) -> ((u16, u16), f32) {
 }
 
 /// Hold the primary button at `(yaw, pitch)` until a swing is taken, and
-/// hand back that tick's events. Cadence, not the button, paces it.
+/// hand back the events of the tick its blow lands on,
+/// `STRIKE_DELAY_TICKS` later. Cadence, not the button, paces it.
 fn swing(w: &mut World, yaw: u16, pitch: u8) -> Vec<SimEvent> {
     let mut seq = w.players[0].frame.seq;
     for _ in 0..MAX_STEPS {
@@ -288,6 +289,9 @@ fn swing(w: &mut World, yaw: u16, pitch: u8) -> Vec<SimEvent> {
             favour: 0,
         }]);
         if w.events.entries().iter().any(|e| e.code == EV_SWING) {
+            for _ in 0..STRIKE_DELAY_TICKS {
+                w.tick(&[]);
+            }
             return w.events.entries().to_vec();
         }
     }

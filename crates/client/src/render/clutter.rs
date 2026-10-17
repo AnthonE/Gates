@@ -79,7 +79,10 @@ pub const TUFT_H: f32 = 0.40;
 /// cards exist to refuse (`plants::card`), avoided here for free. A leafy shrub wants the bush atlas
 /// and a third material per tile; that is a separate slice, and this one buys
 /// the layer's HEIGHT without it.
-pub const BRUSH_H: f32 = 0.75;
+///
+/// 0.9 since 2026-10-17 (operator: thicker shrubbery), still well inside the
+/// band and under a standing player's head.
+pub const BRUSH_H: f32 = 0.9;
 
 /// A fern clump's card height at scale 1, metres (it is twice as wide, the
 /// grass card's layout). **(knob)**
@@ -538,11 +541,12 @@ fn stone_of(e: &ClutterElem) -> Option<(Vec3, u32)> {
     match e.kind {
         Clutter::Pebble => Some((Vec3::new(0.06, 0.028, 0.05) * e.scale, PEBBLE_C)),
         // A stone in the grass: a pebble's shape at two to five times its
-        // size, most of them small.
+        // size, most of them small. 1.3× since 2026-10-17 (operator: "all
+        // rocks bigger"), and still under a shin: nothing collides with it.
         Clutter::Stone => {
             let seed = seed_of(e);
             let k = 0.6 + 1.4 * hash01(seed, 71) * hash01(seed, 72);
-            Some((Vec3::new(0.16, 0.08, 0.12) * e.scale * k, STONE_C))
+            Some((Vec3::new(0.21, 0.104, 0.156) * e.scale * k, STONE_C))
         }
         _ => None,
     }
@@ -600,6 +604,35 @@ pub fn fern_at(e: &ClutterElem) -> bool {
     }
     let colony = ((patch(e.x * 0.8 + 37.0, e.z * 0.8 - 11.0) - 0.30) / 0.2).clamp(0.0, 1.0);
     hash01(seed_of(e), 0xfe41) < FERN_SHARE * colony
+}
+
+/// The share of a flower patch's tufts that carry wildflowers. **(knob)**
+///
+/// Operator, 2026-10-17: "up the density of like flowers". The scatter's own
+/// clumps (`plants::Scenery::Flowers`) are one per shrub cell and the scatter
+/// is worldgen; these ride the turf on the client, in patches the way the
+/// ferns ride the litter in colonies ([`fern_at`]).
+pub const FLOWER_SHARE: f32 = 0.2;
+
+/// Whether a tuft carries wildflowers: a patch field (the meadow tint's noise
+/// at its own offset and a coarser scale, so a patch is metres across)
+/// times [`FLOWER_SHARE`], rolled on the element's own hash. Visual only.
+pub fn flower_at(e: &ClutterElem) -> bool {
+    if e.kind != Clutter::Tuft {
+        return false;
+    }
+    let field = ((patch(e.x * 0.12 + 91.0, e.z * 0.12 - 53.0) - 0.45) / 0.2).clamp(0.0, 1.0);
+    hash01(seed_of(e), 0xf10e) < FLOWER_SHARE * field
+}
+
+/// The colour a flower patch blooms in: one palette to a 9 m block, its
+/// edges dithered by the element's hash so two blocks meet as a mix rather
+/// than along a line.
+fn flower_palette(e: &ClutterElem) -> u32 {
+    let j = (hash01(seed_of(e), 0xf10f) - 0.5) * 6.0;
+    let bx = ((e.x + j) / 9.0).floor() as i32 as u32;
+    let bz = ((e.z - j) / 9.0).floor() as i32 as u32;
+    (hash01(bx, bz ^ 0xf10e_9a1e) * super::plants::FLOWER_PALETTES as f32) as u32
 }
 
 /// A fern clump: the grass card's crossed quads, wearing the fern atlas.
@@ -954,6 +987,21 @@ pub fn stream(
                 if fern_at(e) && fel < 0.3 {
                     n_ferns += 1;
                     fern(&mut ferns, e);
+                }
+                // Wildflowers over the turf, in the opaque soup: their heads
+                // are vertex colour and want no atlas. An overlay on the
+                // tuft, so `element_mesh`'s per-kind gates still measure the
+                // tuft alone. None in the ash either.
+                if flower_at(e) && fel < 0.3 {
+                    n_solid += 1;
+                    super::plants::turf_flowers(
+                        &mut solid,
+                        Vec3::new(e.x, e.y, e.z),
+                        e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+                        e.scale,
+                        flower_palette(e),
+                        seed_of(e),
+                    );
                 }
             }
             // The tile entity carries `Tile` and nothing drawable; each mesh

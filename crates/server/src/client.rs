@@ -804,7 +804,7 @@ impl ClientNetState {
     pub fn priced_playout(&self) -> (u8, bool) {
         let claim = self
             .reported_playout
-            .clamp(PLAYOUT_MIN_TICKS, PLAYOUT_MAX_TICKS);
+            .clamp(crate::stats::VIEW_LAG_MIN_TICKS, PLAYOUT_MAX_TICKS);
         let priced = claim.min(self.playout_cap);
         (priced, priced < claim)
     }
@@ -1470,7 +1470,7 @@ mod tests {
         for (claim, want) in [
             (15, (INTERP_DELAY_TICKS, true)),
             (3, (3, false)),
-            (0, (PLAYOUT_MIN_TICKS, false)),
+            (0, (crate::stats::VIEW_LAG_MIN_TICKS, false)),
         ] {
             c.reported_playout = claim;
             assert_eq!(c.priced_playout(), want, "claim {claim}");

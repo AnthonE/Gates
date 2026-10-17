@@ -794,7 +794,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 47] = [
+    pub const RE_DERIVED: [&str; 50] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // The life clock: the corpse keeps it for the death screen's
@@ -820,6 +820,11 @@ mod carried_through_death {
         // wrong way round.
         "worn",
         "next_swing",
+        // A swing on its way in dies with the arm that took it: a corpse
+        // lands no blow (`gather::strike_due`).
+        "strike_at",
+        "strike_sel",
+        "strike_favour",
         // **A corpse's cylinder does not follow it to the beach.** `worn`'s
         // argument one step on: the gun itself is on the other list by
         // being inside `inv`, so it goes to the death bag, and a magazine

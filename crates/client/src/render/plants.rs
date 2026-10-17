@@ -81,11 +81,32 @@ pub fn fade(e: &mut EntityCommands) {
     let _ = e;
 }
 
+/// How much bigger than its mesh a scenery bush draws. **(knob)**
+///
+/// Operator, 2026-10-17: "non collectible bushes bigger". Only what a shrub
+/// cell grows as scenery: the berry bush and hemp are picked, and the
+/// wildflowers and the saguaro were already their own size. A shrub is
+/// passable (`terrain::OCCUPANT_R_M` holds 0 for it), so this is the draw
+/// alone and moves nothing the sim or the golden reads.
+pub const SCENERY_GROW: f32 = 1.4;
+
+/// [`SCENERY_GROW`] where it applies, 1 elsewhere: `props::spawn_slot`'s
+/// scale and [`leaf_reach`]'s, so a bush rustles where it is drawn.
+pub fn grow(o: Occupant, scenery: Scenery) -> f32 {
+    match (o, scenery) {
+        (
+            Occupant::Shrub,
+            Scenery::Shrub | Scenery::Fern | Scenery::Juniper | Scenery::DeadScrub,
+        ) => SCENERY_GROW,
+        _ => 1.0,
+    }
+}
+
 /// How far from its stem a plant's leaves reach at scale 1, metres: where a
 /// body starts pushing through them (`audio::in_leaves`). `scenery` is what a
 /// shrub cell grows ([`scenery`]); `None` for any slot that is not a plant.
 pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
-    Some(match (o, scenery) {
+    let reach = match (o, scenery) {
         (Occupant::Shrub, Scenery::Fern) => 0.85,
         (Occupant::Shrub, Scenery::Juniper) => 0.9,
         (Occupant::Shrub, Scenery::DeadScrub) => 0.45,
@@ -95,7 +116,8 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::BerryBush, _) => 0.55,
         (Occupant::Hemp, _) => 0.4,
         _ => return None,
-    })
+    };
+    Some(reach * grow(o, scenery))
 }
 
 /// What a shrub cell grows. The sim knows one passable plant there
@@ -1349,6 +1371,38 @@ pub fn wildflowers(variant: u32, palette: u32) -> (Mesh, Mesh) {
         dome,
     );
     (heads.mesh(), base.mesh())
+}
+
+/// A turf flower's height at scale 1, metres: over a tuft's blades
+/// (`clutter::TUFT_H`) so the heads show above the grass.
+pub const TURF_FLOWER_H: f32 = 0.45;
+
+/// Two to four wildflowers standing in the turf, in world space: the clutter
+/// population's flower patches (`clutter::flower_at`). One stem and one head
+/// each — [`wildflowers`]' look at a tenth of its triangles, because these
+/// are counted per tile rather than per shrub cell.
+pub(super) fn turf_flowers(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, palette: u32, seed: u32) {
+    // Far below, so both faces of a petal shade as the sky-facing one.
+    let sky = at - Vec3::Y * 20.0;
+    let n = 2 + (hash01(seed, 1) * 3.0) as u32;
+    for k in 0..n {
+        let q = seed ^ (k + 1).wrapping_mul(0x51ed);
+        let a = yaw + hash01(q, 1) * TAU;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let root = at + out * (0.05 + 0.2 * hash01(q, 2)) - Vec3::Y * 0.02;
+        let h = TURF_FLOWER_H * scale * (0.6 + 0.4 * hash01(q, 3));
+        let tip = root + Vec3::Y * h + out * (0.1 * h);
+        twig(s, root, tip, 0.004, 0.003, FLOWER_STEM);
+        let p = if hash01(q, 5) < 0.2 {
+            palette + 1
+        } else {
+            palette
+        };
+        let petal = FLOWER_COLS[p as usize % FLOWER_PALETTES];
+        let face = (Vec3::Y + out * 0.4).normalize();
+        let r = (0.035 + 0.02 * hash01(q, 8)) * scale;
+        flower_head(s, tip, face, r, petal, hash01(q, 9) * TAU, sky);
+    }
 }
 
 /// One flower head at `c` facing `face`: five petals of radius `r` round an

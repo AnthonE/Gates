@@ -1252,6 +1252,17 @@ pub struct Player {
     /// reload, with no second clock to keep in step and nothing new in
     /// the hash.
     pub next_swing: u64,
+    /// The tick a taken swing lands on, or 0 for none: the strike the swing
+    /// animation draws, `gather::STRIKE_DELAY_TICKS` after the arm moved.
+    /// Sub-second, so hashed and not saved (arrows in flight are the
+    /// precedent): a world loaded mid-swing comes back with the arm at rest.
+    pub strike_at: u64,
+    /// The hotbar slot the swing was taken with: a swap during the wind-up
+    /// drops the blow.
+    pub strike_sel: u8,
+    /// The lag-comp favour the swing was taken under, spent when the strike
+    /// tick itself brings none (a starved tick).
+    pub strike_favour: u8,
     /// Rounds loaded, indexed by `RangedDef::mag_slot` — **not** by
     /// inventory slot and **not** by item index.
     ///
@@ -1536,6 +1547,9 @@ impl Default for Player {
             inv: [ItemStack::default(); INV_SLOTS],
             worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
+            strike_at: 0,
+            strike_sel: 0,
+            strike_favour: 0,
             mag: [0; MAX_MAGS],
             // `NO_ITEM` and not 0, for the reason `RangedDef::ammo` is
             // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
@@ -4727,6 +4741,9 @@ impl World {
                     assist_ticks: 0,
                     frame: InputFrame::default(),
                     next_swing: 0,
+                    strike_at: 0,
+                    strike_sel: 0,
+                    strike_favour: 0,
                     // From the save (store format 9): the rounds were
                     // debited from the pack at the reload, so a record
                     // that forgot them would make logging off a way to
@@ -6780,6 +6797,7 @@ impl World {
             // stopped falling when its owner disconnected would hang in the
             // air over a base that decayed out from under it.
             if self.players[i].sleeping {
+                gather::strike_due(tick, &mut self.players[i]);
                 if survival::step(&self.survival, &mut self.players[i], &mut self.events)
                     == survival::Step::Died
                 {
@@ -6827,6 +6845,7 @@ impl World {
             // a sleeper's are — a downed player has dropped what they
             // held, and `held` on the wire says so (`server/core.rs`).
             if self.players[i].wounded {
+                gather::strike_due(tick, &mut self.players[i]);
                 if survival::step(&self.survival, &mut self.players[i], &mut self.events)
                     == survival::Step::Died
                 {
@@ -6981,7 +7000,25 @@ impl World {
                     &mut self.events,
                     &mut self.players[i],
                 );
-            if !took_arm && gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
+            // The arm moves now and lands `STRIKE_DELAY_TICKS` later, on the
+            // tick the swing animation strikes, against what the swinger is
+            // looking at THEN — their aim and their favour at the strike,
+            // not at the click. Judged at the click, a sprinting body was
+            // 1.3 m from where the weapon was drawn landing.
+            if took_arm {
+                let p = &mut self.players[i];
+                p.strike_at = 0;
+                p.strike_sel = 0;
+                p.strike_favour = 0;
+            } else if gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
+                let p = &mut self.players[i];
+                p.strike_at = tick + gather::STRIKE_DELAY_TICKS;
+                p.strike_sel = p.frame.sel;
+                p.strike_favour = granted;
+            }
+            let taken_favour = self.players[i].strike_favour;
+            if !took_arm && gather::strike_due(tick, &mut self.players[i]) {
+                let back = if granted > 0 { granted } else { taken_favour };
                 let (body, crouched, yaw, pitch, held) = {
                     let p = &self.players[i];
                     (
@@ -7012,7 +7049,7 @@ impl World {
                     i,
                     &self.rewind,
                     tick,
-                    granted,
+                    back,
                     &ray,
                     &reaches,
                 );
@@ -7970,6 +8007,10 @@ impl World {
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);
+            // A swing on its way in, in its own update rather than widening
+            // the buffer above: it decides what the next ticks hit.
+            h.update(&p.strike_at.to_le_bytes());
+            h.update(&[p.strike_sel, p.strike_favour]);
             // The magazine, in its own update rather than widening the
             // buffer above — and hashed at all because it decides whether
             // a gun fires. Sim state outside the hash is the shape this
