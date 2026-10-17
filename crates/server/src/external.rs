@@ -62,6 +62,8 @@ pub struct External {
     /// Where its lines go to be spoken, when the body has a voice
     /// (`agent_voice.rs`): a reply's `speak`, else its `say`.
     speech: Option<crate::agent_voice::SpeechTx>,
+    /// The bug report the last reply carried, for the body to file.
+    note: Option<crate::bugs::Note>,
 }
 
 impl External {
@@ -167,6 +169,7 @@ impl External {
             next_id: 1,
             stale: 0,
             speech: None,
+            note: None,
         })
     }
 
@@ -233,6 +236,14 @@ impl External {
             }),
             _ => Err("external agent say must be a string".into()),
         }
+    }
+
+    /// A reply's `report` (`bugs.rs`). A bad one is refused on its own:
+    /// the goal beside it still stands.
+    pub(crate) fn note(line: &str) -> Result<Option<crate::bugs::Note>, String> {
+        let value: Value = serde_json::from_str(line.trim_end())
+            .map_err(|_| "external agent sent invalid JSON")?;
+        crate::bugs::Note::parse(&value["report"])
     }
 
     /// Parse one reply for request `id`. `Ok(None)` is a reply to an older
@@ -350,7 +361,15 @@ impl DecisionSource for External {
             // Full: a line is still being said; this one goes unsaid.
             let _ = tx.push(text);
         }
+        match Self::note(&reply) {
+            Ok(note) => self.note = note,
+            Err(e) => eprintln!("external agent report refused: {e}"),
+        }
         Ok(choice)
+    }
+
+    fn take_note(&mut self) -> Option<crate::bugs::Note> {
+        self.note.take()
     }
 }
 

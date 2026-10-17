@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-watch = ["dep:client", "client/render", "dep:bevy", "dep:image", "tokio/net"]
+watch = ["client/render", "dep:bevy", "dep:image", "tokio/net"]
 
 [[bin]]
 name = "jev-watch"
@@ -17,7 +17,9 @@ required-features = ["watch"]
 # Proximity voice's codec: an agent's ears decode it and its voice encodes it
 # (`agent_voice.rs`).
 voice = { path = "../voice" }
-client = { path = "../client", optional = true }
+# An agent's bug report is the player's document (`client::report`, `bugs.rs`).
+# The other direction stays forbidden: the client never depends on the server.
+client = { path = "../client" }
 bevy = { version = "0.18", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
 content = { path = "../content" }
@@ -82,11 +84,3 @@ base64 = "0.22"
 [dev-dependencies]
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
 tiny-keccak = { version = "2", features = ["keccak"] }
-# **A DEV-dependency, and the direction still holds.** `client` must never
-# depend on `server` (that would ship the authoritative sim inside the client
-# binary), and it does not; this is the other way round and only for tests.
-# `tests/tls_posture.rs` is the reason: what the client trusts can only be
-# proven against a real shard serving a real certificate, so the gate needs
-# both halves in one binary. Default features, so no Bevy — this costs the
-# server's test build one small rlib, not the renderer tier.
-client = { path = "../client" }

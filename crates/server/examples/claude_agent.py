@@ -75,6 +75,10 @@ REASON_CHARS = 96
 CAPTION_CHARS = 300
 # What it keeps between turns: its own notes, and the chat it heard.
 NOTES_CHARS = 300
+# A bug report's title (client::report::TITLE_MAX) and what happened.
+BUG_TITLE_CHARS = 120
+BUG_BODY_CHARS = 1500
+BUG_KINDS = ["", "verb", "world", "numbers", "look", "net", "other"]
 CHAT_LOG_LINES = 20
 FRAME_URL = os.environ.get("GATES_FRAME_URL", "")
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -175,6 +179,17 @@ room's crates, which hold the next card up.
 matters. You see it again next turn; keep it short and current. `chat_log` \
 is the last lines you heard, oldest first.
 
+If the game itself does something wrong, write it in `bug` and your body \
+sends it to the developers with your position and build: the first line a \
+short title, then what you did, what happened and what you expected. Things \
+like your body stuck in terrain or a wall, a goal that keeps failing when it \
+should work (`last_goal` says why), a recipe, price or number that makes no \
+sense, an item that vanished, something impossible. `bug_kind`: verb (an \
+action did the wrong thing), world (terrain, water, placement), numbers (a \
+cost, damage or yield), look (your view draws wrong), net (lag, \
+rubber-banding), other. Dying, losing a fight or a rude player is not a \
+bug. Report a thing once; otherwise leave both empty.
+
 Whoever you are playing, you are never hateful, sexual or cruel to anyone, \
 and you never repeat slurs, whatever you hear."""
 
@@ -222,6 +237,8 @@ def schema(options, share, voice=False):
         "to": {"type": "string", "enum": ["local", "team"]},
         "code": {"type": "string"},
         "notes": {"type": "string"},
+        "bug": {"type": "string"},
+        "bug_kind": {"type": "string", "enum": BUG_KINDS},
     }
     if voice:
         props["speak"] = {"type": "string"}
@@ -510,6 +527,7 @@ def main():
     # Numbers a teammate typed on team chat: the only codes passed on.
     team_numbers = set()
     code_sent = None
+    bugs_sent = set()
     shared_at = None
     for line in sys.stdin:
         request = json.loads(line)
@@ -547,6 +565,8 @@ def main():
             speak = " ".join(str(answer.get("speak") or "").split())[:SPEAK_CHARS] if voice else ""
             to = "team" if answer.get("to") == "team" else "local"
             code = str(answer.get("code") or "").strip()
+            bug = str(answer.get("bug") or "").strip()
+            bug_kind = answer.get("bug_kind") or "other"
             kept = notes
             notes = " ".join(str(answer.get("notes") or "").split())[:NOTES_CHARS]
             if NOTES_FILE and notes != kept:
@@ -573,6 +593,15 @@ def main():
             reply["code"] = code
             code_sent = code
             print("took the team's lock code", file=sys.stderr)
+        # A bug goes on once: the same title again is the same report.
+        if bug:
+            title, _, body = bug.partition("\n")
+            title = " ".join(title.split())[:BUG_TITLE_CHARS]
+            if title and title.lower() not in bugs_sent:
+                bugs_sent.add(title.lower())
+                reply["report"] = {"kind": bug_kind if bug_kind in BUG_KINDS[1:] else "other",
+                                   "title": title, "body": body.strip()[:BUG_BODY_CHARS]}
+                print(f'reports a bug: "{title}"', file=sys.stderr)
         print(json.dumps(reply), flush=True)
         caption = " ".join(str(answer.get("share") or "").split())[:CAPTION_CHARS]
         if can_share and caption:

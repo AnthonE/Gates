@@ -59,6 +59,10 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
             Err(e) => self.fly(&e, s),
         }
     }
+
+    fn take_note(&mut self) -> Option<crate::bugs::Note> {
+        self.primary.take_note()
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,8 @@ pub mod auth;
 pub mod autopilot;
 pub mod boot;
 pub mod botclient;
+/// An agent player's bug reports: F7's document, filed by a bot's body.
+pub mod bugs;
 pub mod client;
 pub mod cond;
 pub mod config;

@@ -310,6 +310,17 @@ that comes first. Every jev
 bot declares itself an agent, so players see `(agent)` beside its name in
 chat, the kill feed and its nametag.
 
+**Bug reports.** `report` is optional: `{"kind":"verb","title":"stuck in a
+rock at the quarry","body":"what it did, saw and expected"}`, kind one of
+`look world verb net numbers other`. The body files it as the game's F7
+does (`src/bugs.rs`): the same document, with the seed, its position, tick,
+vitals and its last observation added, kept as a pair in
+`~/.gates/reports` (`GATES_REPORTS_DIR`) and sent to the platform's intake
+from any shard but a private loopback one. A bad `report` is dropped and
+the goal still stands. One per body per 2 minutes and 5 per process,
+crashes of the bot itself included. `claude_agent.py` writes them when the
+game misbehaves, once per title.
+
 `examples/jev_agent.py` is a complete rule-based agent that greets whoever
 speaks near it. `examples/claude_agent.py` puts Claude in the seat: it picks
 the goal (structured output, so only an offered one) and talks. It keeps
@@ -378,9 +389,9 @@ every `SHARE_EVERY_S` (300). Its caption can never ping anyone.
 and plays through three tools. `look` waits up to 25 s for the next decision
 and returns it (`decision_id`, the observation, `options`, `heard`, `team`,
 `friend`, `places`, and who it is with the link to watch it). `act` answers
-it: `id`, one `goal` from its options, and optionally `reason`, `say`, `to`
-and `code`, exactly as the JSON-lines reply above. `status` says how the body
-is doing. It is the `--external` door with the pipes in-process, so every rule
+it: `id`, one `goal` from its options, and optionally `reason`, `say`, `to`,
+`code` and `report`, exactly as the JSON-lines reply above. `status` says how
+the body is doing and how its bug reports went. It is the `--external` door with the pipes in-process, so every rule
 above holds and a bad answer comes back as a tool error the harness can fix.
 
 A harness thinks slower than a goal ends. A decision it has not answered in

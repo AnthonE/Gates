@@ -367,6 +367,22 @@ impl Build {
     pub fn in_browser(&self) -> bool {
         self.runtime == "browser"
     }
+
+    /// An agent player's body (`jev-bot`): this binary, no window and no
+    /// GPU. Its own `gpu_api` keeps its reports in their own fingerprint
+    /// rows, apart from the desktop players' on the same build.
+    pub fn agent() -> Self {
+        Self {
+            runtime: "agent",
+            gpu_api: "none",
+            ..Self::here()
+        }
+    }
+
+    /// Was this filed by an agent player rather than a person?
+    pub fn in_agent(&self) -> bool {
+        self.runtime == "agent"
+    }
 }
 
 /// What the report ran on, read at the moment it was filed.
@@ -518,6 +534,21 @@ pub struct Crash {
     pub message: String,
 }
 
+/// Who filed it, when an agent player did (`jev-bot`): the body's name and
+/// mind, what it was doing, and what it last saw. `seen` is the observation
+/// its mind decided on, which quotes what strangers said near it, so the
+/// document fences it like any other prose.
+#[derive(Clone, Debug, Serialize)]
+pub struct Agent {
+    pub name: String,
+    /// `external`, `mcp`, `jev`: what decided for the body.
+    pub mind: String,
+    /// The goal it was running, and the one before with how it ended.
+    pub goal: Option<String>,
+    pub last: Option<String>,
+    pub seen: serde_json::Value,
+}
+
 /// One bug report.
 ///
 /// Construct through [`Report::new`], which is the only place the free text
@@ -549,6 +580,9 @@ pub struct Report {
     /// The screenshot's **file name**, never its path. See the module header.
     pub shot: Option<String>,
     pub crash: Option<Crash>,
+    /// Absent from a person's report, so theirs read as they always have.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Agent>,
     /// The address the launcher reported, if one was running.
     ///
     /// ⚠ **A claim, not authentication** — `elo.rs` says this in as many
@@ -582,6 +616,7 @@ impl Report {
             machine: None,
             shot: None,
             crash: None,
+            agent: None,
             wallet: None,
             truncated: t_cut || b_cut,
         }
@@ -785,6 +820,27 @@ impl Report {
         }
         s.push('\n');
 
+        if let Some(a) = &self.agent {
+            s.push_str("## The agent\n\n| | |\n|---|---|\n");
+            row(&mut s, "name", &code(&a.name));
+            row(&mut s, "mind", &a.mind);
+            if let Some(g) = &a.goal {
+                row(&mut s, "doing", &code(g));
+            }
+            if let Some(g) = &a.last {
+                row(&mut s, "before that", &code(g));
+            }
+            s.push_str("\nWhat it last saw (its observation; it quotes strangers' chat):\n\n");
+            let seen = sane(&serde_json::to_string_pretty(&a.seen).unwrap_or_default());
+            let fence = fence_for(&seen);
+            s.push_str(&fence);
+            s.push_str("json\n");
+            s.push_str(&seen);
+            s.push('\n');
+            s.push_str(&fence);
+            s.push_str("\n\n");
+        }
+
         if let Some(p) = &self.place {
             s.push_str("## Where\n\n| | |\n|---|---|\n");
             row(&mut s, "seed", &code(&p.seed.to_string()));
@@ -960,6 +1016,9 @@ impl Report {
     /// `desktop`, or which browser module — the WebGL2 and WebGPU modules are
     /// different builds, so the label names the one that ran.
     pub fn runtime_label(&self) -> String {
+        if self.build.in_agent() {
+            return format!("agent · jev-bot ({})", self.build.platform);
+        }
         match (self.build.in_browser(), self.build.gpu_api) {
             (false, _) => format!("desktop ({})", self.build.platform),
             (true, "webgl2") => "browser · the WebGL2 module".into(),
@@ -972,6 +1031,12 @@ impl Report {
     /// ran. A browser report reproduced on the desktop client is a different
     /// program — one thread, no disk, `cfg(webgl2)` downgrades — so it says so.
     fn repro_line(&self) -> String {
+        if self.build.in_agent() {
+            return "- It was filed by an **agent player** (`jev-bot`, no renderer): \
+                    `cargo run -p server --bin jev-bot -- --local --scripted` plays \
+                    the same build on a private island (`crates/server/JEV.md`).\n"
+                .into();
+        }
         if !self.build.in_browser() {
             return format!(
                 "- It ran on the **desktop** ({}): \
