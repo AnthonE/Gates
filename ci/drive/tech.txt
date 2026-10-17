@@ -4,8 +4,8 @@
 #
 #   POP=0 KIT="item.workbench2:1, item.junk:200, item.wood:1000, item.metal_frags:500" \
 #     ./ci/drive.sh shots/tech ci/drive/tech.txt
-# load
-sleep 75
+# load (a cold join under lavapipe takes minutes)
+sleep 240
 moveto 640 360
 click 1
 sleep 3
