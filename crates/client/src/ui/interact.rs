@@ -287,6 +287,9 @@ pub struct Pick {
     pub open: bool,
     pub locked: bool,
     pub has_lock: bool,
+    /// The lock is a key lock (wire v120): a padlock, so `L` names no
+    /// keypad.
+    pub keyed: bool,
     /// Fire state, and the one field of a pick the resolver does not
     /// fill: whether a fire is burning lives in `ClientCore`'s own lit
     /// set rather than on the mirrored deploy record (`core.rs` says
@@ -338,6 +341,19 @@ impl Pick {
             .flatten();
     }
 
+    /// The lock's half of a door's or a box's line: nothing bare, the
+    /// lock `L` opens when bolted on, and LOCKED ahead of it when armed. A
+    /// key lock is a padlock and has no keypad to name (wire v120).
+    fn lock_hint(&self) -> &'static str {
+        match (self.has_lock, self.keyed, self.locked) {
+            (false, _, _) => "",
+            (true, false, false) => "  ·  [L] KEYPAD",
+            (true, false, true) => "  ·  LOCKED  ·  [L] KEYPAD",
+            (true, true, false) => "  ·  [L] KEY LOCK",
+            (true, true, true) => "  ·  LOCKED  ·  [L] KEY LOCK",
+        }
+    }
+
     /// What the centre prompt says, or `""` for nothing in reach.
     ///
     /// The key is named in the text because that is the whole job: the
@@ -364,33 +380,19 @@ impl Pick {
                 "HOLD [E] HELP UP · {} s · STAY STILL",
                 sim_core::assist::ASSIST_TICKS / sim_core::limits::TICK_HZ as u16
             ),
+            // Three states, three sentences (lock v1): a bare door says
+            // nothing extra, a bolted-but-open one names its lock, and a
+            // shut one says so ([`Self::lock_hint`]).
             Verb::Door => format!(
                 "[E] {} DOOR{}",
                 if self.open { "CLOSE" } else { "OPEN" },
-                // Three states, three sentences (lock v1): a bare door
-                // says nothing extra, a bolted-but-open one advertises
-                // its keypad, and a shut one says so. Naming `[L]` on
-                // the middle case is the only place a player learns the
-                // key exists.
-                match (self.has_lock, self.locked) {
-                    (false, _) => "",
-                    (true, false) => "  ·  [L] KEYPAD",
-                    (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
-                }
+                self.lock_hint()
             ),
             // The box borrows the door's whole lock grammar (locks on
-            // boxes, `DOORS.md` §9.8): a bare lid says nothing extra, a
-            // bolted one advertises its keypad, an armed one says LOCKED
-            // too. `E` stays the open — whether it succeeds against a
-            // locked lid is the sim's verdict, never this line's.
-            Verb::Box => format!(
-                "[E] OPEN BOX{}",
-                match (self.has_lock, self.locked) {
-                    (false, _) => "",
-                    (true, false) => "  ·  [L] KEYPAD",
-                    (true, true) => "  ·  LOCKED  ·  [L] KEYPAD",
-                }
-            ),
+            // boxes, `DOORS.md` §9.8). `E` stays the open — whether it
+            // succeeds against a locked lid is the sim's verdict, never
+            // this line's.
+            Verb::Box => format!("[E] OPEN BOX{}", self.lock_hint()),
             // The crew keys ride the hearth's prompt because there is
             // nowhere else a player would look for them, and `L` is
             // already the access key at a door (hearth crew v1). A lock
@@ -399,7 +401,11 @@ impl Pick {
             // prompt naming a press the pad answers instead.
             Verb::Hearth => format!(
                 "[E] FEED HEARTH  ·  [L] {}  ·  [K] LEAVE  ·  [SHIFT+K] CLEAR CREW",
-                if self.has_lock { "KEYPAD" } else { "JOIN CREW" }
+                match (self.has_lock, self.keyed) {
+                    (false, _) => "JOIN CREW",
+                    (true, false) => "KEYPAD",
+                    (true, true) => "KEY LOCK",
+                }
             ),
             // Two verbs on one thing, and both named: the panel is where
             // the wood goes and `C` is the match. The state is stated the
@@ -1149,6 +1155,7 @@ pub fn resolve(
         out.open = rec.open;
         out.locked = rec.locked;
         out.has_lock = rec.has_lock;
+        out.keyed = rec.keyed;
     }
 
     let lying = aim.sight.as_ref().and_then(|s| s.lying);
@@ -1175,6 +1182,7 @@ pub fn resolve(
         out.open = false;
         out.locked = false;
         out.has_lock = false;
+        out.keyed = false;
     }
 
     out
@@ -1214,6 +1222,7 @@ mod tests {
             has_lock: false,
             dmg: 0,
             grow: 0,
+            keyed: false,
         }
     }
 
@@ -1452,6 +1461,12 @@ mod tests {
             p.prompt(&ItemCatalog::EMPTY).contains("[L] KEYPAD"),
             "{}",
             p.prompt(&ItemCatalog::EMPTY)
+        );
+        // A key lock is a padlock: LOCKED, and no keypad to offer.
+        p.keyed = true;
+        assert_eq!(
+            p.prompt(&ItemCatalog::EMPTY),
+            "[E] CLOSE DOOR  ·  LOCKED  ·  [L] KEY LOCK"
         );
     }
 

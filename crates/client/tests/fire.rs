@@ -171,6 +171,7 @@ fn a_burnable_deployable_spawns_with_a_light_and_a_box_does_not() {
         locked: false,
         dmg: 0,
         grow: 0,
+        keyed: false,
     };
 
     let spawn = |app: &mut App, arch: u8, cx: u16| -> Entity {
@@ -185,6 +186,7 @@ fn a_burnable_deployable_spawns_with_a_light_and_a_box_does_not() {
                 &sim_core::collide::ColIndex::new(),
                 &r,
                 arch,
+                sim_core::deploy::MATTER_WOOD,
                 0,
             )
         };

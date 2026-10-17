@@ -4591,6 +4591,9 @@ impl ShardCore {
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     let has_lock = ev.b & 4 != 0;
+                    // Which kind of lock, off the store at encode (v120):
+                    // the sim's event carries only the three bits.
+                    let keyed = has_lock && self.world.deploys.lock_keyed(cx, cz, level, loc);
                     match encode_event_door(
                         cx,
                         cz,
@@ -4599,6 +4602,7 @@ impl ShardCore {
                         open,
                         locked,
                         has_lock,
+                        keyed,
                         &mut self.ev_buf,
                     ) {
                         Ok(len) => {
@@ -6760,6 +6764,11 @@ impl ShardCore {
                 let dst = &mut wire[n];
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
+                dst.keyed = src.has_lock
+                    && self
+                        .world
+                        .deploys
+                        .lock_keyed(src.cx, src.cz, src.level, src.loc);
                 let oven = self
                     .world
                     .deploys
