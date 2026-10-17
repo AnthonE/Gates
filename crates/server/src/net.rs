@@ -2903,9 +2903,9 @@ impl<T> DelayLine<T> {
     }
 }
 
-/// Snapshots a delay line holds per second of delay: one per tick at the
-/// snapshot cadence, plus a second's slack.
-const DELAY_SNAPS_PER_S: usize = TICK_HZ as usize;
+/// Snapshot datagrams a delay line holds per second of delay: every part
+/// of one per tick at the snapshot cadence, plus a second's slack.
+const DELAY_SNAPS_PER_S: usize = TICK_HZ as usize * sim_core::limits::SNAPSHOT_PARTS;
 /// Event-lane messages a delay line holds per second of delay — the drips
 /// send at most a handful per tick, so eight a tick is a generous bound, and
 /// a watcher that outruns it is closed rather than shown a gap.
@@ -3006,14 +3006,19 @@ async fn delayed_writer_task(
                 return;
             }
         }
-        let mut newest = None;
+        let mut newest = crate::slot::TickGroup::default();
         while let Some(msg) = snaps.pop_due(now) {
-            newest = Some(msg);
+            newest.push(msg);
         }
-        if let Some(msg) = newest {
+        let mut gone = false;
+        for msg in newest.take() {
             if !send_snap(&connection, &msg, &stats) {
+                gone = true;
                 break;
             }
+        }
+        if gone {
+            break;
         }
         while let Some(msg) = events.pop_due(now) {
             let n = FRAME_PREFIX_BYTES + msg.bytes().len();
@@ -3450,12 +3455,15 @@ async fn writer_task(
                 Err(_) => ShardStats::bump(&stats.voice_out_drops),
             }
         }
-        // Drain to the newest — snapshots replace, never accumulate.
-        let mut newest: Option<SnapMsg> = None;
+        // Drain to the newest tick — snapshots replace, never accumulate —
+        // and send every datagram of it: a snapshot and its overflow
+        // (wire v121) are one tick.
+        let mut newest = crate::slot::TickGroup::default();
         while let Ok(msg) = snap_rx.pop() {
-            newest = Some(msg);
+            newest.push(msg);
         }
-        if let Some(msg) = newest {
+        let mut gone = false;
+        for msg in newest.take() {
             if let Some((ns, rng, tx)) = netsim_lane.as_mut() {
                 match netsim_verdict(ns, rng) {
                     None => ShardStats::bump(&stats.netsim_dropped),
@@ -3470,8 +3478,12 @@ async fn writer_task(
                 continue;
             }
             if !send_snap(&connection, &msg, &stats) {
+                gone = true;
                 break;
             }
+        }
+        if gone {
+            break;
         }
     }
     slots.mark_leaving(slot, generation);

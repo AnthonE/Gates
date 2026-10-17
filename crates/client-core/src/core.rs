@@ -1473,6 +1473,8 @@ pub enum Ingest {
     AppliedDelta = 2,
     Stale = 3,
     NoBaseline = 4,
+    /// A snapshot overflow datagram (wire v121), folded into its tick.
+    AppliedMore = 5,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5285,6 +5287,20 @@ impl ClientCore {
                 } else {
                     Ingest::Applied
                 }
+            }
+            Ok(Applied::More) => {
+                // The rest of the tick's bodies: interpolation samples at
+                // the tick they belong to, and nothing else — the clock,
+                // the jitter estimate and the reconcile all ran on the
+                // snapshot, and the own body is never in an overflow.
+                if let Some(more) = self.view.newest_more() {
+                    for e in more.entities() {
+                        if e.id != self.player_id || self.spectating {
+                            self.interp.push(more.tick, e);
+                        }
+                    }
+                }
+                Ingest::AppliedMore
             }
             Ok(Applied::Stale) => {
                 self.snapshots_stale += 1;

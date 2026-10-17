@@ -863,19 +863,22 @@ fn test_loot_storm() {
         s.peak_events, MAX_EVENTS_PER_TICK,
         "an overflowing ring must be exactly full"
     );
+    // Past the ring by a margin, not a whisker: at 256 the worst tick
+    // refused more than the ring held; at 500 (2026-10-17) it still refuses
+    // dozens, which is the overflow path this file exists to drive.
     assert!(
-        s.max_dropped_tick as usize > MAX_EVENTS_PER_TICK,
+        s.max_dropped_tick as usize > MAX_EVENTS_PER_TICK / 10,
         "the worst tick refused {} events against a {MAX_EVENTS_PER_TICK}-slot ring — \
          withdrawal stopped being the most event-expensive verb in the game",
         s.max_dropped_tick
     );
-    // And every burst reached the ring, not just the first. A schedule
-    // where only the opening transient overflowed would mean the store
-    // never refilled and bursts 2..n were looting an empty island.
+    // And a burst reached the ring. Every burst did while it was 256; at
+    // 500 (2026-10-17) the opening one does, and that the later ones loot
+    // a refilled island rather than an empty one is `bursts_from_full`'s
+    // to say, above.
     assert!(
-        s.overflow_burst >= BURSTS,
-        "only {} burst ticks overflowed the ring across {BURSTS} bursts",
-        s.overflow_burst
+        s.overflow_burst >= 1,
+        "no burst tick overflowed the ring across {BURSTS} bursts"
     );
 
     // 6 — drop-newest, with its consequence made observable. This is the
@@ -888,12 +891,17 @@ fn test_loot_storm() {
     // promises and what `event_ring_overflow_heals_by_resync` exists to
     // recover from. If these ever agree, the ring stopped overflowing and
     // assertion 5 is measuring something else.
+    //
+    // **Inverted 2026-10-17.** While the ring held 256 the gap was real and
+    // this asserted it. At 500 the opening burst still overflows on its
+    // gathers (above), but every removal is announced, so a client hears
+    // about every bag it lost — the point of the raise. The drop path
+    // itself is `trust_ledger.rs`'s flood and the resync test's now.
     let removed_truth = (s.bursts_to_zero * MAX_BACKPACKS) as u32;
     assert!(
-        removed_truth > s.emptied,
-        "the store lost at least {removed_truth} bags but announced {} removals — \
-         a saturated ring must drop some of them, so these agreeing means the \
-         withdrawal stopped saturating it",
+        s.emptied >= removed_truth,
+        "the store lost at least {removed_truth} bags but announced only {} \
+         removals — the ring is dropping removals again",
         s.emptied
     );
 }
