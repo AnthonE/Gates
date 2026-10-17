@@ -521,6 +521,11 @@ pub struct GroundSplatParams {
     /// x = [`ROCK_STREAK_W_M`], y = [`ROCK_STREAK_H_M`], z = [`ROCK_FACE_ON`],
     /// w = [`ROCK_FACE_FULL`].
     pub rock_d: Vec4,
+    /// x = [`ROCK_SEAM`], y = [`ROCK_FLAT_LEAN`], z/w =
+    /// [`ROCK_LEAN_ON`]/[`ROCK_LEAN_FULL`].
+    pub rock_e: Vec4,
+    /// x = [`MOTTLE_M`], y = [`MOTTLE_AMP`]. zw reserved and zero.
+    pub mottle: Vec4,
     /// x = [`AGGREGATE_GAIN`]: the road's layer is not an identity, so
     /// `gain` has no slot for it. yzw reserved and zero.
     pub aggregate: Vec4,
@@ -648,6 +653,8 @@ impl GroundSplatParams {
                 ROCK_FACE_ON,
                 ROCK_FACE_FULL,
             ),
+            rock_e: Vec4::new(ROCK_SEAM, ROCK_FLAT_LEAN, ROCK_LEAN_ON, ROCK_LEAN_FULL),
+            mottle: Vec4::new(MOTTLE_M, MOTTLE_AMP, 0.0, 0.0),
             aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
             cliff: Vec4::new(CLIFF_TAN_LO, CLIFF_TAN_HI, CLIFF_NOISE, CLIFF_NOISE_M),
             wall_planes: Vec4::new(WALL_PLANE_BLEND, 0.0, 0.0, 0.0),
@@ -832,6 +839,26 @@ pub const ROCK_STREAK_H_M: f32 = 14.0;
 /// down a face, it does not stripe a slope a player walks up.
 pub const ROCK_FACE_ON: f32 = 0.6;
 pub const ROCK_FACE_FULL: f32 = 0.85;
+/// How far into a block its own lean and value hold, in block units. Nearer
+/// a boundary than this they turn over to the neighbour's, and on it the two
+/// are even, so a block has no outline. Stepped at the boundary, every
+/// summit read as a camouflage of dark and pale blobs and every face as
+/// polygons pasted on (operator, 2026-10-17: "the rock doesnt blend well").
+pub const ROCK_SEAM: f32 = 0.25;
+/// The share of the facets' lean a gentle summit keeps: a scarp breaks into
+/// planes, a summit is not a field of slabs tipped at random…
+pub const ROCK_FLAT_LEAN: f32 = 0.35;
+/// …and `sin(tilt)` where the rest grows in (~20°) and is whole (~44°).
+pub const ROCK_LEAN_ON: f32 = 0.35;
+pub const ROCK_LEAN_FULL: f32 = 0.7;
+
+/// The ground's mid-scale break-up, per pixel: wavelength, metres (a second
+/// octave rides at 1/2.3 of it), and peak departure from the mean. It
+/// replaced a hash per mesh vertex, which interpolated across each triangle
+/// into blotches one vertex step wide — on sand, which has little grain of
+/// its own to hide them, a mottle the eye read before the sand.
+pub const MOTTLE_M: f32 = 6.0;
+pub const MOTTLE_AMP: f32 = 0.05;
 
 /// **The cliff is decided per pixel, not per vertex.** The classifier's cliff
 /// veto is near-binary, and a binary weight interpolated across triangles

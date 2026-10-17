@@ -1185,26 +1185,21 @@ pub fn macro_noise(x: f32, z: f32) -> f32 {
     a + (b - a) * v
 }
 
-/// Rule 1: no surface may be one flat value. `[0]` is the MACRO break-up
-/// (0.5–1 m) — the near ring's vertices are 1 m apart, so one hash per vertex
-/// is exactly that scale. The near-field grain under 5 cm is the photograph's
-/// job and the splat material is where it finally lands.
+/// Rule 1: no surface may be one flat value. `[0]` is the MACRO break-up,
+/// [`macro_noise`], the scale that breaks the tile lattice. The mid scale is
+/// the splat shader's (`ground_splat::MOTTLE_M`, per pixel) and the
+/// near-field grain under 5 cm is the photograph's.
 ///
-/// **Two scales, and they do different jobs.** The per-vertex hash is white
-/// noise at the vertex spacing — 1 m near, 8 m far — which satisfies rule 1 and
-/// is useless against a 4 m texture repeat, because it is neither correlated
-/// across a tile nor larger than one. [`macro_noise`] is the one that breaks
-/// the lattice. Both are mean 1 by construction (the hash term is
-/// `0.88 + 0.24u`, mean exactly 1.00; the macro term is `1 + A·n` with `n`
-/// mean 0), so their product is too and no gate that averages the island's
-/// albedo moves — `fill::GROUND_MIX` and the bounce are folded from the splat
-/// weights and the authored identities, and neither reads this slot.
+/// **No hash per vertex.** One rode here as `0.88 + 0.24u`: white noise at
+/// the vertex spacing, 1 m near and 8 m far, interpolated across each
+/// triangle into blotches that step with the mesh — on sand, which has
+/// little grain of its own, a mottle the eye read before the sand. The
+/// macro term is `1 + A·n` with `n` mean 0, so no gate that averages the
+/// island's albedo moves — `fill::GROUND_MIX` and the bounce are folded from
+/// the splat weights and the authored identities, and neither reads this
+/// slot.
 pub fn vertex_mods(y: f32, x: f32, z: f32, grad: f32) -> [f32; 2] {
-    let dither = 0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits());
-    [
-        dither * (1.0 + MACRO_AMP * macro_noise(x, z)),
-        wet_factor(y, grad),
-    ]
+    [1.0 + MACRO_AMP * macro_noise(x, z), wet_factor(y, grad)]
 }
 
 /// Build one heightfield patch. `n` vertices a side, `step` metres apart,
