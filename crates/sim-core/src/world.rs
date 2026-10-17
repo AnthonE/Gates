@@ -4480,7 +4480,9 @@ impl World {
         inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
         self.seed_air(slot);
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
-        self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
+        let fresh = &self.players[slot];
+        self.events
+            .push(EV_HEALTH, id, fresh.hp as u32, fresh.hp_max as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
         self.announce_known(slot);
     }
