@@ -19,6 +19,8 @@ const FACE_ORIGIN: &str = "https://elopros.com";
 /// Under `--mcp` stdout is the harness's JSON-RPC, so the run's report
 /// goes to stderr instead.
 static MCP: AtomicBool = AtomicBool::new(false);
+/// Ctrl-C closed the run's endpoint: a session ending now is not a refusal.
+static STOPPING: AtomicBool = AtomicBool::new(false);
 
 macro_rules! out {
     ($($arg:tt)*) => {
@@ -699,7 +701,10 @@ async fn run(options: Options) -> Result<(), String> {
                 let result = door.play(&endpoint, name, on, &mut survivor).await;
                 if let Err(e) = &result {
                     let spent = began.elapsed() + JOIN_RETRY;
-                    if began.elapsed() < JOIN_REFUSED_WITHIN && spent < left {
+                    if began.elapsed() < JOIN_REFUSED_WITHIN
+                        && spent < left
+                        && !STOPPING.load(Ordering::Relaxed)
+                    {
                         out!(
                             "{}: {e}; joining again in {} s",
                             name.as_str(),
@@ -733,6 +738,7 @@ async fn run(options: Options) -> Result<(), String> {
         } => false,
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|e| format!("Ctrl-C: {e}"))?;
+            STOPPING.store(true, Ordering::Relaxed);
             true
         }
     };
