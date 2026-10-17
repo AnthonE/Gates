@@ -1,11 +1,14 @@
 //! The attack helicopter (`heli.rs`): unarmed it never comes; armed, it
-//! arrives on schedule, finds a player standing in the open, shoots them,
-//! and when its patrol is over flies back out to sea and is gone.
+//! arrives on schedule, finds a player with a gun standing in the open,
+//! shoots them, and when its patrol is over flies back out to sea and is
+//! gone. A naked player it leaves alone, and it does not fly in the rain.
 
 use sim_core::combat::CombatContent;
+use sim_core::gather::ItemStack;
 use sim_core::heli::{Heli, HeliDef, HELI_SLOT};
 use sim_core::mob;
 use sim_core::movement::POS_Y_Q;
+use sim_core::weather;
 use sim_core::world::{Command, World, EV_HURT, EV_SHOT};
 
 /// `content/mobs.toml`'s shipped `[heli]` at 30 Hz, but arriving after one
@@ -31,6 +34,37 @@ fn def() -> HeliDef {
     }
 }
 
+/// The probe fixture's firearm (item 6) on the first player's hotbar.
+fn give_gun(w: &mut World) {
+    w.players[0].inv[0] = ItemStack {
+        item: 6,
+        count: 1,
+        ..ItemStack::default()
+    };
+}
+
+/// Runs a visit to its end: the heli's rounds fired, and whether it came
+/// and went.
+fn visit(w: &mut World) -> (bool, u32, bool) {
+    let heli_id = mob::mob_id(HELI_SLOT);
+    let (mut arrived, mut shots) = (false, 0u32);
+    for _ in 0..20_000 {
+        w.tick(&[]);
+        if w.mobs.m[HELI_SLOT].alive {
+            arrived = true;
+        } else if arrived {
+            return (true, shots, true);
+        }
+        shots += w
+            .events
+            .entries()
+            .iter()
+            .filter(|e| e.code == EV_SHOT && e.a == heli_id)
+            .count() as u32;
+    }
+    (arrived, shots, false)
+}
+
 #[test]
 fn unarmed_it_never_comes() {
     let mut w = World::new(11);
@@ -49,6 +83,7 @@ fn it_hunts_a_player_in_the_open_then_leaves() {
     w.combat = CombatContent::probe_fixture();
     // The spawn ring: open beach, nothing between the sky and the player.
     w.tick(&[Command::Join { id: 1 }]);
+    give_gun(&mut w);
     w.heli_def = def();
     let heli_id = mob::mob_id(HELI_SLOT);
 
@@ -95,4 +130,41 @@ fn it_hunts_a_player_in_the_open_then_leaves() {
     );
     assert!(departed, "the patrol ended and the heli never left");
     assert!(w.heli.next_at > w.tick, "no next visit is scheduled");
+}
+
+#[test]
+fn it_leaves_the_naked_alone() {
+    let mut w = World::new(11);
+    w.combat = CombatContent::probe_fixture();
+    w.tick(&[Command::Join { id: 1 }]);
+    w.heli_def = def();
+    let hp = w.players[0].hp;
+    let (arrived, shots, departed) = visit(&mut w);
+    assert!(arrived && departed, "the visit never ran its course");
+    assert_eq!(shots, 0, "it fired on a naked player");
+    assert_eq!(w.players[0].hp, hp);
+}
+
+#[test]
+fn it_waits_out_the_rain() {
+    let mut w = World::new(11);
+    w.combat = CombatContent::probe_fixture();
+    w.tick(&[Command::Join { id: 1 }]);
+    give_gun(&mut w);
+    // Due a minute in, and a storm by then.
+    w.heli_def = HeliDef {
+        first_ticks: 60 * 30,
+        ..def()
+    };
+    let (seed, tick) = (w.seed, w.tick);
+    w.env.force(seed, tick, weather::STORM);
+    for _ in 0..6_000 {
+        w.tick(&[]);
+        assert!(!w.mobs.m[HELI_SLOT].alive, "it flew in a storm");
+    }
+    let (seed, tick) = (w.seed, w.tick);
+    w.env.force(seed, tick, weather::CLEAR);
+    let (arrived, shots, _) = visit(&mut w);
+    assert!(arrived, "the sky cleared and it never came");
+    assert!(shots > 0, "it came and never fired on an armed player");
 }

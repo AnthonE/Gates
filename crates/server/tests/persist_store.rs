@@ -194,7 +194,8 @@ fn an_unknown_key_is_a_fresh_character() {
     );
     core.tick_bare(&stats, |_, _, _| true);
     let p = core.world.players[world_slot(&core, id_of(0))];
-    assert_eq!(p.hp, core.world.combat.player_hp, "a fresh body is whole");
+    assert_eq!(p.hp_max, core.world.combat.player_hp, "a fresh body");
+    assert!(p.hp > 0, "a fresh body is alive");
     assert!(p.inv.iter().all(|s| s.count == 0), "naked spawn");
 }
 

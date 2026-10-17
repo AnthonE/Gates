@@ -129,19 +129,14 @@ pub const PARTS: &[KitPart] = &[
     part([16.0, -1.0, -12.0, 22.0, 1.8, -7.0], M::Gilt),
     part([-22.0, -1.0, -10.0, -16.0, 2.2, -6.0], M::Obsidian),
     part([12.0, -1.0, 8.0, 16.0, 1.2, 10.5], M::Obsidian),
-    // Market: six container kiosks opening on the street, with counters.
+    // Market: six container kiosks opening on the street, a vending machine
+    // against each ([`MACHINES`]).
     part([-8.44, 0.0, 11.0, -6.0, 2.6, 17.1], M::Cargo),
     part([-8.44, 0.0, 19.0, -6.0, 2.6, 25.1], M::Cargo),
     part([-8.44, 0.0, 27.0, -6.0, 2.6, 33.1], M::Cargo),
     part([6.0, 0.0, 11.0, 8.44, 2.6, 17.1], M::Cargo),
     part([6.0, 0.0, 19.0, 8.44, 2.6, 25.1], M::Cargo),
     part([6.0, 0.0, 27.0, 8.44, 2.6, 33.1], M::Cargo),
-    part([-6.0, 0.0, 11.6, -5.4, 1.1, 16.5], M::Timber),
-    part([-6.0, 0.0, 19.6, -5.4, 1.1, 24.5], M::Timber),
-    part([-6.0, 0.0, 27.6, -5.4, 1.1, 32.5], M::Timber),
-    part([5.4, 0.0, 11.6, 6.0, 1.1, 16.5], M::Timber),
-    part([5.4, 0.0, 19.6, 6.0, 1.1, 24.5], M::Timber),
-    part([5.4, 0.0, 27.6, 6.0, 1.1, 32.5], M::Timber),
     part_f([-8.6, 2.7, 11.0, -4.2, 2.9, 17.1], M::Canvas, DECOR | ROOF),
     part_f([-8.6, 2.7, 19.0, -4.2, 2.9, 25.1], M::Canvas, DECOR | ROOF),
     part_f([-8.6, 2.7, 27.0, -4.2, 2.9, 33.1], M::Canvas, DECOR | ROOF),
@@ -155,8 +150,8 @@ pub const PARTS: &[KitPart] = &[
     part([18.0, 0.0, 24.0, 24.1, 2.6, 26.44], M::Cargo),
     part([26.0, 0.0, 30.0, 28.44, 2.6, 36.1], M::Cargo),
     part([26.0, 2.6, 30.0, 28.44, 5.2, 36.1], M::Cargo),
-    // Workshop (SW): a roof on posts over the public stations, and their
-    // plinths (a station stands at its column's band, floor + 0.5).
+    // Workshop (SW): a roof on posts over the public stations. No plinths:
+    // a station stands on the bare floor, and a plinth half buried it.
     part_f([-34.0, 3.5, -34.0, -16.0, 3.8, -18.0], M::Sheet, ROOF),
     part([-34.0, 0.0, -34.0, -33.7, 3.5, -33.7], M::Steel),
     part([-16.3, 0.0, -34.0, -16.0, 3.5, -33.7], M::Steel),
@@ -164,8 +159,6 @@ pub const PARTS: &[KitPart] = &[
     part([-16.3, 0.0, -18.3, -16.0, 3.5, -18.0], M::Steel),
     part([-25.15, 0.0, -34.0, -24.85, 3.5, -33.7], M::Steel),
     part([-25.15, 0.0, -18.3, -24.85, 3.5, -18.0], M::Steel),
-    part([-33.0, 0.0, -30.0, -18.0, 0.5, -27.0], M::Concrete),
-    part([-30.0, 0.0, -24.0, -21.0, 0.5, -21.0], M::Concrete),
     // Canteen (SE): a container bar, tables, and a tarp over the tables on
     // poles through them (`POLES`).
     part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Cargo),
@@ -233,6 +226,43 @@ pub const KIOSKS: [(f32, f32); 6] = [
     (4.6, 30.05),
 ];
 
+/// The kiosks' vending machines: one against each stall's container, facing
+/// the street, behind its trading spot — the thing a shopper walks up to.
+/// Collided, never dressed: they are not in [`PARTS`], so the Blender kit
+/// never sees them and the client's model (`render/town_signs.rs`) is the
+/// only thing drawn on each box. The box is that model's own size.
+pub const MACHINE_HALF_W: f32 = 0.53;
+pub const MACHINE_D: f32 = 0.82;
+pub const MACHINE_H: f32 = 1.8;
+/// The kiosk containers' street faces, |x|.
+const STALL_FACE_X: f32 = 6.0;
+
+pub const MACHINES: [KitPart; KIOSKS.len()] = {
+    let mut out = [part([0.0; 6], M::Steel); KIOSKS.len()];
+    let mut k = 0;
+    while k < KIOSKS.len() {
+        let (kx, kz) = KIOSKS[k];
+        let (x0, x1) = if kx < 0.0 {
+            (-STALL_FACE_X, -STALL_FACE_X + MACHINE_D)
+        } else {
+            (STALL_FACE_X - MACHINE_D, STALL_FACE_X)
+        };
+        out[k] = part(
+            [
+                x0,
+                0.0,
+                kz - MACHINE_HALF_W,
+                x1,
+                MACHINE_H,
+                kz + MACHINE_HALF_W,
+            ],
+            M::Steel,
+        );
+        k += 1;
+    }
+    out
+};
+
 /// Night lights, local (x, y, z) — drawn, never simulated.
 pub const LAMPS: [(f32, f32, f32); 12] = [
     (-5.8, 5.0, -30.0),
@@ -263,12 +293,56 @@ pub const SENTRY_POSTS: [(f32, f32, f32); 4] = [
     (35.0, 10.7, 35.0),
 ];
 
+/// THE GATE's guards' beats: closed loops, local (x, z), one guard to each,
+/// walked at [`GUARD_WALK_MPS`] with [`GUARD_PAUSE_S`] at every corner —
+/// drawn, never simulated (`render/guards.rs`; the sentries are the town's
+/// teeth). Each keeps a body's width clear of everything a body stops at
+/// and off the gate's dais (`tests/town.rs`), so no guard walks through the
+/// town.
+pub const GUARD_BEATS: [[(f32, f32); 4]; 6] = [
+    // The walls, all the way round inside them.
+    [(38.0, 38.0), (38.0, -38.0), (-38.0, -38.0), (-38.0, 38.0)],
+    // The market street, up one side and down the other.
+    [(1.5, 8.0), (1.5, 36.0), (-1.5, 36.0), (-1.5, 8.0)],
+    // The south street, past where the woken stand up.
+    [(-3.0, -36.0), (3.0, -36.0), (3.0, -8.5), (-3.0, -8.5)],
+    // Round the workshop.
+    [
+        (-13.0, -14.0),
+        (-36.0, -14.0),
+        (-36.0, -31.0),
+        (-13.0, -31.0),
+    ],
+    // Round the canteen.
+    [(13.0, -14.0), (36.0, -14.0), (36.0, -28.0), (13.0, -28.0)],
+    // Behind the west stalls.
+    [(-12.0, 10.0), (-34.0, 10.0), (-34.0, 26.0), (-12.0, 26.0)],
+];
+/// A guard's walk, m/s: an unhurried beat, under a player's walk.
+pub const GUARD_WALK_MPS: f32 = 1.3;
+/// How long a guard stands at each corner of the beat, seconds.
+pub const GUARD_PAUSE_S: f32 = 3.0;
+
 /// Where a player woken at THE GATE stands up (local x, z): the market
 /// street south of the gate, spread across its width by who they are.
 pub const SPAWN_STREET: (f32, f32) = (0.0, -24.0);
 
 const _: () = {
     assert!(kit::well_formed(PARTS));
+    assert!(kit::well_formed(&MACHINES));
+    // A shopper stands on the trading spot clear of the machine's face.
+    let mut i = 0;
+    while i < KIOSKS.len() {
+        let (kx, _) = KIOSKS[i];
+        let face = if kx < 0.0 {
+            -MACHINES[i].b[3]
+        } else {
+            MACHINES[i].b[0]
+        };
+        let spot = if kx < 0.0 { -kx } else { kx };
+        assert!(face - spot > crate::collide::CAPSULE_RADIUS_M);
+        i += 1;
+    }
     // Every part inside the carved floor, corners included.
     let e = kit::envelope(PARTS);
     assert!(e * e * 2.0 <= TOWN_FOOTPRINT.stamp_m * TOWN_FOOTPRINT.stamp_m);
@@ -327,6 +401,7 @@ pub fn blocks(t: &Town, x: f32, z: f32, feet: f32, r: f32, h: f32) -> bool {
     }
     let (lx, lz) = kit::to_local(&t.placed(), x, z);
     kit::blocks_local(PARTS, t.floor_y, 0, lx, lz, feet, r, h)
+        || kit::blocks_local(&MACHINES, t.floor_y, 0, lx, lz, feet, r, h)
 }
 
 /// The highest town surface within a step of `feet` under a disc of radius
@@ -337,6 +412,7 @@ pub fn ground(t: &Town, x: f32, z: f32, feet: f32, r: f32) -> f32 {
     }
     let (lx, lz) = kit::to_local(&t.placed(), x, z);
     kit::ground_local(PARTS, t.floor_y, 0, lx, lz, feet, r)
+        .max(kit::ground_local(&MACHINES, t.floor_y, 0, lx, lz, feet, r))
 }
 
 /// Whether a roof keeps the rain off a body here.

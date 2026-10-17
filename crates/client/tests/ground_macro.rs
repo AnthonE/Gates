@@ -92,11 +92,9 @@ fn the_break_up_does_not_move_the_islands_brightness() {
 /// Two points `MACRO_M` apart must see a different one, or it is a constant
 /// with a noise function's name.
 ///
-/// The factor is 4 rather than the ~12 the wavelength ratio suggests, because
-/// the per-vertex hash dither rides in the same slot and is white noise by
-/// design — it contributes the same expected difference at both separations,
-/// which drags the ratio toward 1. What is asserted is that the macro term is
-/// still clearly the larger of the two at its own scale.
+/// The factor is well under the ~12 the wavelength ratio suggests, which
+/// leaves room for a mid-scale term in this slot again; what is asserted is
+/// that the macro term is clearly the larger of the two at its own scale.
 #[test]
 fn the_break_up_varies_at_its_own_scale_and_not_the_tiles() {
     let mut near = 0.0f64;
@@ -131,10 +129,9 @@ fn the_break_up_varies_at_its_own_scale_and_not_the_tiles() {
 /// colour negative or blow one out.
 #[test]
 fn the_break_up_is_bounded_by_its_own_constants() {
-    // The dither is `0.88 + 0.24u`, so [0.88, 1.12]; the macro term is
-    // `1 ± MACRO_AMP`. The product cannot leave their product.
-    let lo = 0.88 * (1.0 - MACRO_AMP);
-    let hi = 1.12 * (1.0 + MACRO_AMP);
+    // The macro term is `1 ± MACRO_AMP` and is the whole modifier.
+    let lo = 1.0 - MACRO_AMP;
+    let hi = 1.0 + MACRO_AMP;
     let (mut worst_lo, mut worst_hi) = (f32::MAX, f32::MIN);
     let mut z = 1.0f32;
     while z < ISLAND_SIZE {
@@ -154,7 +151,7 @@ fn the_break_up_is_bounded_by_its_own_constants() {
     );
     // Non-vacuity: it must actually use the band, or this asserts nothing.
     assert!(
-        worst_hi - worst_lo > 0.25,
+        worst_hi - worst_lo > MACRO_AMP * 1.5,
         "the modifier only spans {:.4} — it is nearly a constant, and a \
          constant hides no tiling",
         worst_hi - worst_lo

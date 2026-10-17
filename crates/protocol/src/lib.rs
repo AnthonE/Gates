@@ -1211,7 +1211,12 @@ pub use voice::{
 /// v119 — achievements: `SUB_ACHIEVEMENT` (103) tells a player they earned
 /// one, or finished a set: its name, its line, its icon's stem and the set's
 /// progress, own-fact, the in-game popup (`server::achievements`).
-pub const PROTO_VER: u16 = 119;
+/// v120 — key locks: `SUB_DOOR` and the placed-deployable record each grew
+/// a `keyed` bit after `has_lock`, so a client draws a padlock and offers no
+/// keypad at a key lock.
+/// v121 — Rust's headshot crunch: `SUB_HURT` carries a head bit after the
+/// damage, set when the blow crossed the victim's head.
+pub const PROTO_VER: u16 = 121;
 
 /// This game's slug in the elo catalog.
 ///

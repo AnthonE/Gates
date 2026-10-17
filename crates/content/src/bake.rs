@@ -661,6 +661,17 @@ impl Content {
         if cc.player_hp == 0 {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
+        if let Some(f) = &self.balance.globals.fist {
+            let narrow = |v: u32, what: &str| {
+                u16::try_from(v).map_err(|_| format!("bake: fist {what} {v} overflows u16"))
+            };
+            cc.fist = MeleeDef {
+                damage: narrow(f.damage, "damage")?,
+                reach_cm: narrow(f.range_m.saturating_mul(100), "reach")?,
+                ..CombatContent::EMPTY.fist
+            };
+            cc.fist_self_damage = narrow(f.self_damage, "self_damage")?;
+        }
         // `validate::structural` has already pinned this to 0..=100, so the
         // narrow cannot fail on shipped content; it is written as a bake
         // refusal anyway for `repair_cost_pct`'s reason one function over —
@@ -1236,6 +1247,9 @@ impl Content {
         sc.dehydrate_hp_per_min = u16f(s.dehydrate_hp_per_min, "dehydrate_hp_per_min")?;
         sc.drink_water = u16f(s.drink_water, "drink_water")?;
         sc.drink_hp_cost = u16f(s.drink_hp_cost, "drink_hp_cost")?;
+        sc.spawn_hp = u16f(s.spawn_hp, "spawn_hp")?;
+        sc.spawn_food = u16f(s.spawn_food, "spawn_food")?;
+        sc.spawn_water = u16f(s.spawn_water, "spawn_water")?;
         match (&s.vessel, &s.vessel_full) {
             (Some(e), Some(f)) => {
                 let idx = |id: &str| {

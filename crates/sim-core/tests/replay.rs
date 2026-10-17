@@ -544,11 +544,9 @@ const TICKS: u64 = 900;
 /// at its age, so what the bots chop and walk past moved.
 /// **Moved → `0x49CF_78A3_FA86_FAFF` at the Verdigris** (2026-10-15): its ore
 /// rescales the island's, its spires stand, and no one spawns inside it.
-/// **Moved → `0xF9DB_5380_74CA_02E2` at the faces** (2026-10-17): a body
-/// slides off ground too steep to climb and cannot step up onto it from any
-/// bearing, and stands on the drawn rock (`face::surface`), so the bots'
-/// walks over the steep bits run differently.
-const GOLDEN_FINAL_HASH: u64 = 0xF9DB_5380_74CA_02E2;
+/// **Moved → `0x07E1_E50F_C295_4C13` at the travelling mark** (2026-10-17):
+/// the weak spot starts a step from the first blow and moves only when hit.
+const GOLDEN_FINAL_HASH: u64 = 0x07E1_E50F_C295_4C13;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -658,8 +656,9 @@ const GOLDEN_FINAL_HASH: u64 = 0xF9DB_5380_74CA_02E2;
 /// **Moved → `0x1DD9_CD7E_7537_564C` at the tree size classes and ages**
 /// (2026-10-15), with the final hash.
 /// **Moved → `0xA04E_9426_2556_114B` at the Verdigris** (2026-10-15), with the final hash.
-/// **Moved → `0x6C9B_5F02_D899_670B` at the faces** (2026-10-17), with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x6C9B_5F02_D899_670B;
+/// **Moved → `0xFEFF_1F4E_A700_FCCD` at the travelling mark** (2026-10-17), with
+/// the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0xFEFF_1F4E_A700_FCCD;
 
 /// Fold a stamped trace into one number.
 ///

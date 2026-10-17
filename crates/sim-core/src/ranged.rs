@@ -390,12 +390,14 @@ pub fn unload(
     true
 }
 
-/// Height above the feet an arrow leaves from, millimetres. The eye, not
-/// the chest: a shot that started at the navel would clear cover the
-/// shooter cannot see over. `CAPSULE_HEIGHT_M` is 1.7 m and this is 10 cm
-/// under it, the same relationship the client's camera has.
-/// Proposed default, DECISIONS.md §open (ranged v0).
-pub const ARROW_EYE_MM: i32 = 1600;
+/// Height above the feet an arrow leaves from, millimetres, and the
+/// client's camera height. The eye, not the chest: a shot that started at
+/// the navel would clear cover the shooter cannot see over. 1.5 m is
+/// Rust's own (`PlayerEyes.EyeOffset`); it was 1.6 until 2026-10-17, and
+/// ten centimetres too tall made every door, barrel and room read small. A
+/// half wall (1.5 m) is eye-level cover again and a low wall (1 m) is the
+/// one you shoot over, as in Rust.
+pub const ARROW_EYE_MM: i32 = 1500;
 /// A crouched eye, millimetres (v83): 10 cm under the crouched hit height
 /// (`collide::CROUCH_HEIGHT_M`), the same relationship the standing eye has.
 pub const CROUCH_EYE_MM: i32 = 950;
@@ -1396,7 +1398,7 @@ fn step_in(
                 EV_HURT,
                 vid,
                 crate::combat::bearing_sector(-(dx as i64), -(dz as i64)) as u32,
-                dmg as u32,
+                crate::world::hurt_c(part, dmg),
             );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
@@ -2667,7 +2669,7 @@ fn hitscan_in(
             // when the arc appears. At a favour of 7 the rewound bearing
             // would describe neither player's situation and is easily a
             // whole sector of the sixteen out.
-            events.push(EV_HURT, vid, sector as u32, dmg as u32);
+            events.push(EV_HURT, vid, sector as u32, crate::world::hurt_c(part, dmg));
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 // `EV_DEATH` is `die`'s (wounded v0), as for the arrow.

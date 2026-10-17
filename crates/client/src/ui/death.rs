@@ -72,6 +72,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_HAND => {
             let weapon = match item_name(catalog, d.item) {
                 Some(n) => format!(" with {n}"),
+                None if d.item == sim_core::gather::NO_ITEM => " with their fists".to_string(),
                 None => String::new(),
             };
             format!(

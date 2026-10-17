@@ -234,6 +234,21 @@ pub fn hit_part(c: u32) -> crate::collide::Part {
         .unwrap_or(crate::collide::Part::Chest)
 }
 
+/// [`EV_HURT`]'s `c` bit for a blow that crossed the victim's head: what
+/// the victim hears as Rust's headshot crunch. Above the `u16` damage.
+pub const HURT_HEAD: u32 = 1 << 16;
+
+/// `EV_HURT`'s `c`: the damage, with [`HURT_HEAD`] for a head blow.
+#[inline]
+pub fn hurt_c(part: crate::collide::Part, damage: u16) -> u32 {
+    let head = if part == crate::collide::Part::Head {
+        HURT_HEAD
+    } else {
+        0
+    };
+    head | damage as u32
+}
+
 /// The scaled damage out of an `EV_HIT` payload.
 #[inline]
 pub fn hit_damage(c: u32) -> u16 {
@@ -624,7 +639,8 @@ pub const EV_TRUST: u8 = 39;
 pub const EV_SWING: u8 = 40;
 
 /// EV_HURT: a = victim player id, b = the world bearing sector from the
-/// victim toward whatever hurt them, c = damage dealt.
+/// victim toward whatever hurt them, c = damage dealt, with [`HURT_HEAD`]
+/// set over it when the blow crossed the head (v121; [`hurt_c`]).
 ///
 /// **The victim's fact, and the mirror of `EV_HIT`.** A hit has two people
 /// in it and the wire only ever told one of them: `EV_HIT` is unicast to
@@ -1246,10 +1262,10 @@ pub struct Player {
     /// or not at all.
     pub mag_round: [u16; MAX_MAGS],
     /// Weak-spot chase: the cell this player last landed a hit on
-    /// (`NO_CELL` = none) and how many hits they've landed there. The mark
-    /// heading derives from these (gather.rs), so they are sim state.
+    /// (`NO_CELL` = none) and the mark there — its heading in the low byte,
+    /// which way round it travels in `gather::WS_MARK_CCW`. Sim state.
     pub ws_cell: u32,
-    pub ws_hits: u16,
+    pub ws_mark: u16,
     /// Craft queue, dense with the head at 0 (craft.rs). Sim state.
     pub jobs: [CraftJob; CRAFT_QUEUE],
     /// Tick the head job's current unit completes at; 0 = idle.
@@ -1511,7 +1527,7 @@ impl Default for Player {
             // array would say every empty magazine holds one.
             mag_round: [NO_ITEM; MAX_MAGS],
             ws_cell: NO_CELL,
-            ws_hits: 0,
+            ws_mark: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
             known: 0,
@@ -4480,7 +4496,9 @@ impl World {
         inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
         self.seed_air(slot);
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
-        self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
+        let fresh = &self.players[slot];
+        self.events
+            .push(EV_HEALTH, id, fresh.hp as u32, fresh.hp_max as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
         self.announce_known(slot);
     }
@@ -4649,7 +4667,7 @@ impl World {
                     // restore a player already half-way through chasing
                     // the weak spot on whatever stands at the origin.
                     ws_cell: NO_CELL,
-                    ws_hits: 0,
+                    ws_mark: 0,
                     craft_done_at: 0,
                     death_by: 0,
                     death_cause: 0,
@@ -6918,6 +6936,8 @@ impl World {
                     &ray,
                     &reaches,
                 );
+                // A punch that met anything at all hurts the hand.
+                let punched = held == NO_ITEM && !matches!(reached, melee::Reached::Nothing);
                 match reached {
                     melee::Reached::Node(hit) => {
                         swung = gather::land(
@@ -6995,17 +7015,20 @@ impl World {
                         // plank is up to one sample inside the face, exactly
                         // where an arrow's mark sits; `render/decal.rs`
                         // draws it facing the swinger as it draws theirs.
-                        let (mx, my, mz) = ray.at_m(t);
-                        self.events.push(
-                            EV_IMPACT,
-                            impact_a(
-                                surf,
-                                ranged::IMPACT_MELEE,
-                                crate::fmath::floor_i32(mx / POS_XZ_Q),
-                            ),
-                            crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
-                            crate::fmath::floor_i32(my / POS_Y_Q) as u32,
-                        );
+                        // A fist leaves no mark (operator, 2026-10-17).
+                        if held != NO_ITEM {
+                            let (mx, my, mz) = ray.at_m(t);
+                            self.events.push(
+                                EV_IMPACT,
+                                impact_a(
+                                    surf,
+                                    ranged::IMPACT_MELEE,
+                                    crate::fmath::floor_i32(mx / POS_XZ_Q),
+                                ),
+                                crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
+                                crate::fmath::floor_i32(my / POS_Y_Q) as u32,
+                            );
+                        }
                         // …and the wall takes it, priced by `World::chip` —
                         // the same door a bullet's chip goes through, so the
                         // hard/soft side rule (`build::structure_price`) is
@@ -7026,6 +7049,9 @@ impl World {
                         }
                     }
                     melee::Reached::Nothing => {}
+                }
+                if punched {
+                    combat::knuckles(&self.combat, &mut self.players[i], &mut self.events);
                 }
             }
             craft::step(
@@ -7315,6 +7341,8 @@ impl World {
             &self.haven,
             tick,
             &self.heli_def,
+            &self.combat,
+            &wx,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,
@@ -7857,7 +7885,7 @@ impl World {
             buf[29..37].copy_from_slice(&p.next_swing.to_le_bytes());
             buf[37] = p.frame.sel;
             buf[38..42].copy_from_slice(&p.ws_cell.to_le_bytes());
-            buf[42..44].copy_from_slice(&p.ws_hits.to_le_bytes());
+            buf[42..44].copy_from_slice(&p.ws_mark.to_le_bytes());
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);

@@ -122,7 +122,8 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
 /// this") or at a person — while eating was a `J` nothing on screen named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Click {
-    /// A tool, a weapon, a resource, an empty hand: the arm swings.
+    /// A tool, a weapon, a resource, an empty hand (a punch, which costs
+    /// the puncher hp: `CombatContent::fist`): the arm swings.
     #[default]
     Swing,
     /// The building plan places its ghost (`ghost::place_key`).
@@ -658,11 +659,11 @@ pub const HELD_MODELS: [HeldModelDef; 94] = [
         0.81,
         0.13,
     ),
-    HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.086, 0.50, 0.08),
+    HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.186, 0.50, 0.08),
     HeldModelDef::deploy(
         "metal_door",
         "models/deploy/door_locked.glb",
-        2.086,
+        2.186,
         0.50,
         0.08,
     ),

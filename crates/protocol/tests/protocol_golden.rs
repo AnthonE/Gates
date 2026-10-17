@@ -1722,7 +1722,7 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_stock(cx, cz, level, &rows, &mut buf).unwrap()
         }
         "event_door.bin" => {
-            let (cx, cz, level, loc, open, locked, has_lock) = event_door();
+            let (cx, cz, level, loc, open, locked, has_lock, keyed) = event_door();
             assert_eq!(
                 decode_event(fixture).unwrap(),
                 EventMsg::Door {
@@ -1733,10 +1733,11 @@ fn golden_event(fixture: &[u8], name: &str) {
                     open,
                     locked,
                     has_lock,
+                    keyed,
                 },
                 "{name}: decode mismatch"
             );
-            encode_event_door(cx, cz, level, loc, open, locked, has_lock, &mut buf).unwrap()
+            encode_event_door(cx, cz, level, loc, open, locked, has_lock, keyed, &mut buf).unwrap()
         }
         "event_knock.bin" => {
             let (cx, cz, level, loc, by) = event_knock();
@@ -1800,13 +1801,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_recovered(chance_pm, hp, &mut buf).unwrap()
         }
         "event_hurt.bin" => {
-            let (sector, damage) = event_hurt();
+            let (sector, damage, head) = event_hurt();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Hurt { sector, damage },
+                EventMsg::Hurt {
+                    sector,
+                    damage,
+                    head
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_hurt(sector, damage, &mut buf).unwrap()
+            encode_event_hurt(sector, damage, head, &mut buf).unwrap()
         }
         "event_hit.bin" => {
             let (victim, part, damage) = event_hit();

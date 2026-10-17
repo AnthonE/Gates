@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 
 use basis_universal::{sys, DecodeFlags, TranscoderBlockFormat};
 use client::render::props::{prop_models, OCCUPANTS};
-use client::render::structures::{BAG_ASSET, DEPLOY_ASSET, DOOR_LOCKED_ASSET};
+use client::render::structures::{BAG_ASSET, DEPLOY_ASSET, METAL_DOOR_ASSET};
 use client::ui::hold::{HeldSrc, HELD_MODELS, SKIN_MODELS};
 
 /// Every packed model with a normal map, as it stood on 2026-09-05: bent by
@@ -112,7 +112,7 @@ fn packed_models() -> Vec<&'static str> {
     for p in DEPLOY_ASSET.iter().flatten() {
         set.insert(*p);
     }
-    set.insert(DOOR_LOCKED_ASSET);
+    set.insert(METAL_DOOR_ASSET);
     set.insert(BAG_ASSET);
     for p in client::render::mobs::MOB_GLBS {
         set.insert(p);
