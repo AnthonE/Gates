@@ -146,6 +146,24 @@ const PRIORITY_HALF_SCALE_M: f32 = 32.0;
 /// at 96 m, which is the trade this weight is claiming.
 const PRIORITY_W_MOB: f32 = 25.0;
 
+/// The heli's place in the rank band: ahead of every body, so it always
+/// holds one of a client's `AOI_RANK_EXIT` records and the farthest body
+/// gives way to it. The cap is still the cap; the heli just never loses
+/// its seat (it is on the map, and a gunship nobody is sent is a gunship
+/// that shoots from nowhere).
+const HELI_RANK_KEY: i64 = -1;
+
+/// The distance a roster slot ranks at: its own, or the heli's
+/// [`HELI_RANK_KEY`].
+#[inline]
+fn rank_d2(slot: usize, d2: i64) -> i64 {
+    if slot == sim_core::heli::HELI_SLOT {
+        HELI_RANK_KEY
+    } else {
+        d2
+    }
+}
+
 /// Consecutive byte-overflow refusals before the fill loop stops trying
 /// smaller records (bounded work per snapshot, not a wire number).
 const FILL_OVERFLOW_STREAK: u32 = 3;
@@ -7638,16 +7656,17 @@ impl ShardCore {
             let dx = (m.body.qx - own.qx) as i64 * 3;
             let dz = (m.body.qz - own.qz) as i64 * 3;
             let mut d2 = dx * dx + dz * dz;
-            // The heli is heard from far off, so it is ranked as if it were
-            // `HELI_AOI_SCALE` times closer, and it is on everyone's map
+            // The heli is heard from far off, so its updates come as if it
+            // were `HELI_AOI_SCALE` times closer, and it is on everyone's map
             // (Rust's patrol heli is), so past the enter band it is held at
-            // its edge: subscribed island-wide, at a far body's rate.
+            // its edge: subscribed island-wide, at a far body's rate. And it
+            // ranks first ([`HELI_RANK_KEY`]), so a crowd cannot push it out.
             if s == sim_core::heli::HELI_SLOT {
                 d2 = (d2 / (sim_core::heli::HELI_AOI_SCALE * sim_core::heli::HELI_AOI_SCALE))
                     .min(AOI_ENTER_CM * AOI_ENTER_CM);
             }
             d2_of[MAX_PLAYERS + s] = d2;
-            ranked[n_ranked] = (d2, (MAX_PLAYERS + s) as u16);
+            ranked[n_ranked] = (rank_d2(s, d2), (MAX_PLAYERS + s) as u16);
             n_ranked += 1;
             n_near += usize::from(d2 <= AOI_EXIT_CM * AOI_EXIT_CM);
         }
@@ -7740,7 +7759,7 @@ impl ShardCore {
             if d2 == ABSENT {
                 continue;
             }
-            let key = (d2, (MAX_PLAYERS + s) as u16);
+            let key = (rank_d2(s, d2), (MAX_PLAYERS + s) as u16);
             if c.m_interest[s] {
                 if d2 > AOI_EXIT_CM * AOI_EXIT_CM || key > exit_key {
                     c.m_interest[s] = false;
