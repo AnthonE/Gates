@@ -78,10 +78,13 @@ placement = "any"
 matter = "stone"
 hp = 500
 
+# The benches and the research table stand on bare ground as well as a
+# floor (operator, 2026-10-17: like Rust, where a workbench goes down in a
+# field). `any` holds them to the terrain test a foundation passes.
 [[deployable]]
 id = "item.workbench1"
 archetype = "workbench"
-placement = "foundation"
+placement = "any"
 matter = "wood"
 hp = 500
 
@@ -94,14 +97,14 @@ hp = 500
 [[deployable]]
 id = "item.workbench2"
 archetype = "workbench2"
-placement = "foundation"
+placement = "any"
 matter = "metal"
 hp = 750
 
 [[deployable]]
 id = "item.workbench3"
 archetype = "workbench3"
-placement = "foundation"
+placement = "any"
 matter = "metal"
 hp = 1000
 
@@ -118,14 +121,13 @@ placement = "any"
 matter = "metal"
 hp = 300
 
-# The research table (research v0). `foundation` like the workbench it sits
-# beside — a table is furniture for a base, not something you drop in a
-# field — and hp 400 is the workbench's, because they are the same object
+# The research table (research v0). `any` like the workbench it sits
+# beside, and hp 400 is the workbench's, because they are the same object
 # to a raider: the thing that makes the base a workshop.
 [[deployable]]
 id = "item.research_table"
 archetype = "research"
-placement = "foundation"
+placement = "any"
 matter = "metal"
 hp = 200
 
