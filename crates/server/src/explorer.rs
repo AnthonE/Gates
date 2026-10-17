@@ -673,6 +673,9 @@ pub struct SurvivorOpts {
     /// The clan it lives in (`jev-bot --society`, `agent::society`): its
     /// job, its crew and its guild.
     pub society: Option<Society>,
+    /// Its doors wait for code locks instead of taking key locks with the
+    /// doors: others come in by its code. Always so in a society.
+    pub code_doors: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1050,7 +1053,7 @@ impl Survivor {
             team_bag_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
-            builder: Builder::new(),
+            builder: Builder::new().keyed(!opts.code_doors && opts.society.is_none()),
             lock: opts
                 .lock
                 .unwrap_or_else(|| LockSecret::Code(LockCode::random())),
