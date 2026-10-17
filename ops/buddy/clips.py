@@ -260,10 +260,11 @@ def timeline(rows, started):
     for i, r in enumerate(rows):
         e = {"i": i, "t": round(r["t"] - started, 1), "goal": r.get("goal"),
              "reason": r.get("reason")}
-        if r.get("say"):
+        # Clips are public: team chat (lock codes, where the base is) stays out.
+        if r.get("say") and r.get("to") != "team":
             e["say"], e["to"] = r["say"], r.get("to", "global")
         heard = [{"friend": bool(h.get("friend")), "channel": h.get("channel"), "text": h.get("text")}
-                 for h in r.get("heard") or []]
+                 for h in r.get("heard") or [] if h.get("channel") != "team"]
         if heard:
             e["heard"] = heard
         obs = r.get("obs") or {}
@@ -324,7 +325,7 @@ def clean(m, rows, started, length):
         return None
     lines = []
     for i in m["lines"]:
-        if isinstance(i, int) and 0 <= i < len(rows) and rows[i].get("say"):
+        if isinstance(i, int) and 0 <= i < len(rows) and rows[i].get("say") and rows[i].get("to") != "team":
             at = rows[i]["t"] - started
             text = screen_text(rows[i]["say"], 60)
             if start <= at < end - 1.0 and text:

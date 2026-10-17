@@ -156,7 +156,7 @@ def segments(rows):
         s["decisions"] += 1
         if r.get("reason") and "why" not in s:
             s["why"] = str(r["reason"])[:96]
-        if r.get("say"):
+        if r.get("say") and r.get("to") != "team":  # team chat is private; recaps are not
             said = s.setdefault("said", [])
             if len(said) < 4:
                 said.append({"t": round(r["t"]), "line": str(r["say"])[:48]})

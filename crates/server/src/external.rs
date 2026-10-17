@@ -43,6 +43,49 @@ const POLL: Duration = Duration::from_millis(EXTERNAL_POLL_MS);
 /// Protocol version carried on every observation line.
 pub const EXTERNAL_PROTOCOL: u32 = 1;
 
+/// The one site an agent may name in chat: where its friend tops it up.
+const OUR_SITE: &str = "elopros.com";
+/// Endings that make `word.ending` a web address in chat.
+const TLDS: [&str; 24] = [
+    "com", "net", "org", "io", "xyz", "gg", "app", "dev", "link", "ly", "me", "co", "ru", "cn",
+    "info", "site", "online", "shop", "top", "club", "live", "fun", "to", "sh",
+];
+
+/// Whether an agent's line carries a link or a wallet. A stranger can talk
+/// a house agent into anything, and everyone sees the agent as ours, so the
+/// one thing it must never be steered into is pointing people at a site or
+/// a wallet. A person's chat is theirs; this is the agents' rule only.
+pub fn peddles(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')')
+        .any(|w| {
+            let w = w.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            if w.contains("://") || w.starts_with("www.") {
+                return true;
+            }
+            if let Some(hex) = w.strip_prefix("0x") {
+                if hex.len() >= 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return true;
+                }
+            }
+            let host = w.split('/').next().unwrap_or("");
+            if host == OUR_SITE || host.ends_with(".elopros.com") {
+                return false;
+            }
+            match host.rsplit_once('.') {
+                Some((name, tld)) => {
+                    !name.is_empty()
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+                        && TLDS.contains(&tld)
+                }
+                None => false,
+            }
+        })
+}
+
 enum Line {
     Text(String),
     TooLong,
@@ -193,7 +236,7 @@ impl External {
             .into_iter()
             .filter_map(|t| t.as_str())
             .map(crate::agent_voice::clean)
-            .find(|t| !t.is_empty() && !t.starts_with('/'));
+            .find(|t| !t.is_empty() && !t.starts_with('/') && !peddles(t));
         said
     }
 
@@ -226,6 +269,7 @@ impl External {
         match value {
             Value::Null => Ok(Say::Quiet),
             Value::String(text) if text.trim().is_empty() => Ok(Say::Quiet),
+            Value::String(text) if peddles(text) => Ok(Say::Refused),
             Value::String(text) => Ok(match protocol::ChatText::sanitize(text.as_bytes()) {
                 Some(line) if !protocol::admin::is_command(&line) => to(line),
                 _ => Say::Refused,
@@ -318,6 +362,33 @@ mod voice_tests {
         assert_eq!(spoken(r#"{"say":"base is north","to":"team"}"#), None);
         assert_eq!(spoken(r#"{"speak":"  ","say":"/kick x"}"#), None);
         assert_eq!(spoken("not json"), None);
+        assert_eq!(spoken(r#"{"speak":"go to www.free-loot.gg now"}"#), None);
+    }
+
+    #[test]
+    fn an_agent_names_no_site_but_ours_and_no_wallet() {
+        use super::peddles;
+        for bad in [
+            "claim at elo-airdrop.com",
+            "discord.gg/raid",
+            "t.me/gatesfree",
+            "http://x",
+            "WWW.LOOT.NET",
+            "pay 0xDEADBEEF01",
+            "(see scam.xyz)",
+        ] {
+            assert!(peddles(bad), "{bad}");
+        }
+        for fine in [
+            "top me up at elopros.com/buddy",
+            "base is north of the gate",
+            "0x5 damage lol",
+            "ok... going home",
+            "3.5 hp left",
+            "",
+        ] {
+            assert!(!peddles(fine), "{fine}");
+        }
     }
 }
 
@@ -468,7 +539,14 @@ mod tests {
         assert_eq!(say(r#""""#), Ok(Say::Quiet));
         assert_eq!(say("null"), Ok(Say::Quiet));
         let long = format!("\"{}\"", "x".repeat(protocol::CHAT_MAX_BYTES + 1));
-        for refused in [long.as_str(), r#""two\nlines""#, r#""/kick 1""#] {
+        for refused in [
+            long.as_str(),
+            r#""two\nlines""#,
+            r#""/kick 1""#,
+            r#""free ELO at claim-elo.xyz""#,
+            r#""send 1 ELO to 0x1234abcd99""#,
+            r#""see https://x.y/z""#,
+        ] {
             assert_eq!(say(refused), Ok(Say::Refused), "{refused}");
         }
         assert!(say("7").is_err(), "a non-string say is a bad reply");

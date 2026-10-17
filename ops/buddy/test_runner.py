@@ -264,6 +264,12 @@ check("runs of one goal fold into one segment each", [s["goal"] for s in segs] =
       and segs[0]["decisions"] == 20 and segs[1]["said"][0]["line"] == "ouch!")
 check("other players' words never reach the model", "secret words" not in json.dumps(segs))
 check("deaths and low health are kept", segs[1]["deaths"] == 1 and segs[1]["lowest_health"] == 71)
+team_rows = [{"t": now - 600, "goal": "build", "say": "code is 4821", "to": "team"},
+             {"t": now - 590, "goal": "build", "say": "hello all", "to": "global",
+              "heard": [{"channel": "team", "text": "base at J8"}, {"channel": "global", "text": "hi"}]}]
+public = json.dumps([recap.segments(team_rows), clips.timeline(team_rows, now - 700)])
+check("team chat never reaches a recap or a clip",
+      "4821" not in public and "J8" not in public and "hello all" in public)
 
 
 class Usage:
