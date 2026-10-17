@@ -1355,7 +1355,7 @@ pub fn alpha_card(data: Vec<u8>, size: u32) -> Image {
     // wrapped mask bleeds the far edge into the near. (Spelled out rather
     // than `ImageSamplerDescriptor::linear()` so it survives the next upgrade.)
     //
-    // Anisotropic, at the grass atlas's 4 (`textures::atlas`): most canopy
+    // Anisotropic, at the grass atlas's ceiling (`textures::atlas`): most canopy
     // cards are seen at an angle, and at 1 the mip is picked by the card's
     // long axis on screen, so a tilted card drew from a level two or three
     // blurrier than its face needed and its leaves fused into a smear.
@@ -1363,7 +1363,7 @@ pub fn alpha_card(data: Vec<u8>, size: u32) -> Image {
         mag_filter: bevy::image::ImageFilterMode::Linear,
         min_filter: bevy::image::ImageFilterMode::Linear,
         mipmap_filter: bevy::image::ImageFilterMode::Linear,
-        anisotropy_clamp: 4,
+        anisotropy_clamp: super::textures::ANISOTROPY,
         ..default()
     });
     img
