@@ -1589,7 +1589,7 @@ fn the_swing_pick_is_stable() {
 #[test]
 fn the_prompt_reads_the_sims_own_bounds() {
     assert_eq!(SWING_REACH_M, 2.0);
-    assert_eq!(EYE_M, 1.6);
+    assert_eq!(EYE_M, 1.5);
     assert_eq!(CELL_SIZE, 8.0);
 }
 

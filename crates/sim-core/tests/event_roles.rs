@@ -1424,7 +1424,7 @@ fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
     w.loot = LootContent::probe_fixture();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::BarrelSlot);
     w.players[0].body = Body::at(SEED, hv(SEED), x, z);
-    // Standing on a barrel 0.88 m tall with a 1.6 m eye: the swing has to
+    // Standing on a barrel 0.96 m tall with a 1.5 m eye: the swing has to
     // look straight down to enter it (pitch 0 is the LUT's bottom).
     until_looking(&mut w, EV_SLOT_HARVESTED, 0);
     let ev = only(&w, EV_SLOT_HARVESTED);
