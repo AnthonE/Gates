@@ -81,7 +81,7 @@ pub enum Milestone {
     /// Whatever stone missed, graded to wood; the upper storey graded.
     Wood,
     /// A workbench behind the core, on a stone foundation of its own: its
-    /// 100 fragments are what the first loot runs are for.
+    /// 50 junk is what the first loot runs are for.
     Bench,
     /// A furnace on the floor over the cupboard, crafted at the bench; ore
     /// smelts there.

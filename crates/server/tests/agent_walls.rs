@@ -3480,6 +3480,7 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
         stack("item.stone", 1000),
         stack("item.cloth", 60),
         stack("item.metal_frags", 100),
+        stack("item.junk", 50),
         stack("item.lowgrade", 50),
     ];
     let (hatchet, pickaxe) = (
@@ -3523,10 +3524,10 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
             cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
         );
         assert_eq!(arch(yx, yz, 0), Some(ARCH_WORKBENCH), "the bench behind");
-        // The kit's fragments paid for the bench. A feed takes a chunk of
+        // The kit's fragments stayed in the pack. A feed takes a chunk of
         // everything the cupboard eats, and a base of wood and stone is
         // charged nothing in fragments: fed, they would have sat in its
-        // stock, and the bench waited on loot runs for a hundred more.
+        // stock for nothing.
         let frags = content.item_index("item.metal_frags").unwrap();
         let row = w.deploy.mats[..usize::from(w.deploy.mat_count)]
             .iter()
@@ -3643,6 +3644,7 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
         stack("item.cloth", 60),
         stack("item.metal_frags", 1000),
         stack("item.metal_frags", 1000),
+        stack("item.junk", 50),
         stack("item.lowgrade", 50),
     ]);
     let (hatchet, pickaxe) = (
@@ -3971,7 +3973,7 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
         stack("item.metal_frags", 1000),
         stack("item.metal_frags", 500),
         stack("item.lowgrade", 100),
-        stack("item.junk", 200),
+        stack("item.junk", 250),
         stack("item.rope", 4),
     ]);
     let (hatchet, pickaxe) = (
