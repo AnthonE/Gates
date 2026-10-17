@@ -476,9 +476,10 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// a forged one changes nothing but what its author sees.
 pub const EV_SHOT: u8 = 35;
 
-/// EV_KNOWN: a = the player who holds it, b = the blueprint mask's low 32
-/// bits, c = its high 32 bits. **Own-fact** — a blueprint is personal, so
-/// only the hand that holds it hears this.
+/// EV_KNOWN: a = the player who holds it, b = bits 0..32 of the blueprint
+/// mask, c = bits 32..64. **Own-fact** — a blueprint is personal, so only
+/// the hand that holds it hears this. [`EV_KNOWN_HI`] states bits 64..128
+/// right behind it (`research::state_known` pushes the pair).
 ///
 /// The whole mask, never a delta, and the reason is the one `SUB_KNOWN`
 /// was already written for: a dropped increment would grey a recipe the
@@ -497,10 +498,9 @@ pub const EV_SHOT: u8 = 35;
 /// driven, and a fact stated at only two of them is a fact that depends
 /// on how you arrived.
 ///
-/// Two `u32`s for one `u64` because an event field is a `u32` and
-/// `KNOWN_MASK_BITS` is 64. Low first: `b` is `mask as u32` and `c` is
-/// `(mask >> 32) as u32`, which is the order `encode_event_known` puts
-/// them back together in.
+/// Two `u32`s for one 64-bit word because an event field is a `u32`. Low
+/// first: `b` is `word as u32` and `c` is `(word >> 32) as u32`, which is
+/// the order `encode_event_known` puts them back together in.
 pub const EV_KNOWN: u8 = 36;
 
 /// EV_GATHER_REFUSED: a = player id, b = held item index << 16 |
@@ -939,7 +939,13 @@ pub const EV_SHOP: u8 = 64;
 /// << 24 | op << 16 | row << 8 | times. Own-fact.
 pub const EV_SHOP_REFUSED: u8 = 65;
 
-pub const EV_MAX: u8 = EV_SHOP_REFUSED;
+/// EV_KNOWN_HI: [`EV_KNOWN`] for the mask's second word, bits 64..128
+/// (Rust's tree items widened it past 64 recipes): a = the holder, b =
+/// bits 64..96, c = bits 96..128. Own-fact, and a whole word like its twin,
+/// so a lost one is repaired by the next statement.
+pub const EV_KNOWN_HI: u8 = 66;
+
+pub const EV_MAX: u8 = EV_KNOWN_HI;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1304,7 +1310,7 @@ pub struct Player {
     /// glyph `g` of `content/arc.toml`'s alphabet. Known, like `known`: a
     /// death does not take it, and the player file keeps it.
     pub glyphs: u64,
-    pub known: u64,
+    pub known: u128,
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
     pub hp: u16,
@@ -4837,8 +4843,7 @@ impl World {
     /// the client's copy a statement rather than a residue.
     fn announce_known(&mut self, slot: usize) {
         let (id, mask) = (self.players[slot].id, self.players[slot].known);
-        self.events
-            .push(EV_KNOWN, id, mask as u32, (mask >> 32) as u32);
+        crate::research::state_known(&mut self.events, id, mask);
     }
 
     /// The slot holding the sleeping body `id`, or `None` — the sleeper
@@ -8135,7 +8140,7 @@ impl World {
             // them and they decide what the next skinned craft mints, so
             // two replays that disagreed about them would diverge there.
             h.update(&p.skins.to_le_bytes());
-            let mut cb = [0u8; 16 + CRAFT_QUEUE * 6];
+            let mut cb = [0u8; 24 + CRAFT_QUEUE * 6];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
             // The blueprint mask (research v0). It belongs here for the
             // reason `[backpack]`'s ladder had to reach `canon::hash`, one
@@ -8144,9 +8149,9 @@ impl World {
             // then on. Two replays of one WAL that disagreed about a
             // player's blueprints would diverge on the first gated craft
             // — silently, because every other field still matched.
-            cb[8..16].copy_from_slice(&p.known.to_le_bytes());
+            cb[8..24].copy_from_slice(&p.known.to_le_bytes());
             for (j, job) in p.jobs.iter().enumerate() {
-                let at = 16 + j * 6;
+                let at = 24 + j * 6;
                 cb[at..at + 2].copy_from_slice(&job.recipe.to_le_bytes());
                 cb[at + 2..at + 4].copy_from_slice(&job.remaining.to_le_bytes());
                 cb[at + 4..at + 6].copy_from_slice(&job.skin.to_le_bytes());

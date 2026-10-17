@@ -75,6 +75,8 @@ use crate::world::Player;
 /// skinned rifle you log in holding. The magazine closes the record since
 /// `SAVE_FORMAT` 9 (reload v1): `MAX_MAGS` pairs of `u16`, 369 → 401. A
 /// loaded revolver you log off holding is a loaded revolver you log in holding.
+/// The blueprint mask's high word closes the head since `SAVE_FORMAT` 10,
+/// 401 → 409.
 pub const PLAYER_SAVE_BYTES: usize =
     SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8 + MAX_MAGS * 4;
 
@@ -84,7 +86,8 @@ pub const PLAYER_SAVE_BYTES: usize =
 /// wounded v0, each of which took `SAVE_FORMAT` with it (`store.rs`) — a
 /// record whose layout moves without the format version is the one bug the
 /// header check exists to catch. 81 → 89 at the glyph mask (`lore.rs`).
-const SCALARS_BYTES: usize = 89;
+/// 89 → 97 at the blueprint mask's high word (Rust's tree items).
+const SCALARS_BYTES: usize = 97;
 
 /// Vertical sanity bound on a decoded body, in centimetres of `POS_Y_Q`
 /// (±1000 m). Not a gameplay limit — the island's own heights are inside a
@@ -223,12 +226,12 @@ pub struct PlayerSave {
     /// Blueprints known: bit `i` = recipe `i` (`research.rs`). Saved for
     /// the reason research exists — a blueprint you paid a hoard of coin
     /// for and lost by closing the game would make the sink a punishment.
-    /// **Not validated on read, deliberately**: every one of the 64 bits
+    /// **Not validated on read, deliberately**: every one of the 128 bits
     /// is a legal value, and a bit set past `MAX_RECIPES` names no recipe
     /// and can never be read (`research::knows` bounds the shift and
     /// `craft::enqueue` only ever asks about a live index), so there is
     /// nothing a forged mask can do that refusing it would prevent.
-    pub known: u64,
+    pub known: u128,
     /// The ancients' glyphs this player reads (`lore.rs`): known, so a log
     /// off keeps them (store format 8).
     pub glyphs: u64,
@@ -391,12 +394,15 @@ impl PlayerSave {
         out[42..44].copy_from_slice(&self.heal_total.to_le_bytes());
         out[44..48].copy_from_slice(&self.heal_span.to_le_bytes());
         out[48..52].copy_from_slice(&self.heal_acc.to_le_bytes());
-        out[52..60].copy_from_slice(&self.known.to_le_bytes());
+        // The mask's low word where the u64 mask always sat, its high word
+        // after the glyphs (store format 10, Rust's tree items).
+        out[52..60].copy_from_slice(&(self.known as u64).to_le_bytes());
         out[60..64].copy_from_slice(&self.light_acc.to_le_bytes());
         out[64] = self.wounded as u8;
         out[65..73].copy_from_slice(&self.wound_until.to_le_bytes());
         out[73..81].copy_from_slice(&self.rewound_until.to_le_bytes());
         out[81..89].copy_from_slice(&self.glyphs.to_le_bytes());
+        out[89..97].copy_from_slice(&((self.known >> 64) as u64).to_le_bytes());
         let mut at = SCALARS_BYTES;
         for j in self.jobs.iter() {
             out[at..at + 2].copy_from_slice(&j.recipe.to_le_bytes());
@@ -547,7 +553,9 @@ impl PlayerSave {
             heal_total: u16_at(42),
             heal_span: u32_at(44),
             heal_acc: u32_at(48),
-            known: u64::from_le_bytes(src[52..60].try_into().expect("8 bytes at 52")),
+            known: u64::from_le_bytes(src[52..60].try_into().expect("8 bytes at 52")) as u128
+                | (u64::from_le_bytes(src[89..97].try_into().expect("8 bytes at 89")) as u128)
+                    << 64,
             // Unvalidated, deliberately, and for `known`'s reason: every
             // one of the 2^32 values is a legal remainder. A forged one
             // buys at most one extra point of torch before `tick_units`
@@ -596,7 +604,7 @@ mod tests {
             // Distinct in every byte, like everything else here: a mask of
             // all-ones or all-zeros could not catch a codec that wrote the
             // halves in the wrong order.
-            known: 0x0123_4567_89AB_CDEF,
+            known: 0x8877_6655_4433_2211_0123_4567_89AB_CDEF,
             glyphs: 0x0F1E_2D3C_4B5A_6978,
             hp: 71,
             hp_max: 100,
@@ -695,9 +703,10 @@ mod tests {
     /// 289 → 361 at `SAVE_FORMAT` 7: a skin on every slot and job (skins v0).
     /// 361 → 369 at `SAVE_FORMAT` 8: the glyph mask (`lore.rs`).
     /// 369 → 401 at `SAVE_FORMAT` 9: the magazine (reload v1).
+    /// 401 → 409 at `SAVE_FORMAT` 10: the blueprint mask's high word.
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 401, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 409, "the on-disk record size moved");
         assert_eq!(MAX_MAGS, 8);
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
@@ -747,7 +756,13 @@ mod tests {
         assert_eq!(
             &buf[52..60],
             &0x0123_4567_89AB_CDEFu64.to_le_bytes(),
-            "known at 52"
+            "known's low word at 52"
+        );
+        assert_eq!(
+            &buf[89..97],
+            &0x8877_6655_4433_2211u64.to_le_bytes(),
+            "known's high word at 89, after the glyphs — it closes the head \
+             (store format 10), and 97 is where the arrays start now"
         );
         // The two arrays start where the head ends, in declaration order.
         assert_eq!(
@@ -767,27 +782,26 @@ mod tests {
         assert_eq!(
             &buf[81..89],
             &0x0F1E_2D3C_4B5A_6978u64.to_le_bytes(),
-            "glyphs at 81 — the glyph mask closes the head (store format 8), \
-             and 89 is where the arrays start now"
+            "glyphs at 81 — the glyph mask closed the head at store format 8"
         );
-        assert_eq!(&buf[89..91], &2u16.to_le_bytes(), "jobs[0].recipe at 89");
-        assert_eq!(&buf[91..93], &5u16.to_le_bytes(), "jobs[0].remaining at 91");
+        assert_eq!(&buf[97..99], &2u16.to_le_bytes(), "jobs[0].recipe at 97");
+        assert_eq!(&buf[99..101], &5u16.to_le_bytes(), "jobs[0].remaining at 99");
         assert_eq!(
-            &buf[93..95],
+            &buf[101..103],
             &0x0C0Du16.to_le_bytes(),
-            "jobs[0].skin at 93 — the job stride is 6 since format 7"
+            "jobs[0].skin at 101 — the job stride is 6 since format 7"
         );
-        assert_eq!(&buf[113..115], &5u16.to_le_bytes(), "inv[0].item at 113");
-        assert_eq!(&buf[115..117], &42u16.to_le_bytes(), "inv[0].count at 115");
+        assert_eq!(&buf[121..123], &5u16.to_le_bytes(), "inv[0].item at 121");
+        assert_eq!(&buf[123..125], &42u16.to_le_bytes(), "inv[0].count at 123");
         assert_eq!(
-            &buf[117..119],
+            &buf[125..127],
             &0x2233u16.to_le_bytes(),
-            "inv[0].cond at 117"
+            "inv[0].cond at 125"
         );
         assert_eq!(
-            &buf[119..121],
+            &buf[127..129],
             &0x0A0Bu16.to_le_bytes(),
-            "inv[0].skin at 119 — the slot stride is 8 since format 7"
+            "inv[0].skin at 127 — the slot stride is 8 since format 7"
         );
         // The worn slots close the record (format 4), and they are pinned
         // here rather than left to the round trip for this block's stated
@@ -796,42 +810,42 @@ mod tests {
         // walk them with one shared `.chain()` — which means the two halves
         // agree about a wrong offset by construction and only an
         // independent decoder can say so.
-        assert_eq!(&buf[353..355], &9u16.to_le_bytes(), "worn[0].item at 353");
-        assert_eq!(&buf[355..357], &1u16.to_le_bytes(), "worn[0].count at 355");
-        assert_eq!(
-            &buf[357..359],
-            &0x4455u16.to_le_bytes(),
-            "worn[0].cond at 357"
-        );
-        assert_eq!(&buf[361..363], &11u16.to_le_bytes(), "worn[1].item at 361");
+        assert_eq!(&buf[361..363], &9u16.to_le_bytes(), "worn[0].item at 361");
+        assert_eq!(&buf[363..365], &1u16.to_le_bytes(), "worn[0].count at 363");
         assert_eq!(
             &buf[365..367],
+            &0x4455u16.to_le_bytes(),
+            "worn[0].cond at 365"
+        );
+        assert_eq!(&buf[369..371], &11u16.to_le_bytes(), "worn[1].item at 369");
+        assert_eq!(
+            &buf[373..375],
             &0x6677u16.to_le_bytes(),
-            "worn[1].cond at 365"
+            "worn[1].cond at 373"
         );
         assert_eq!(
-            &buf[367..369],
+            &buf[375..377],
             &0x0E0Fu16.to_le_bytes(),
-            "worn[1].skin at 367"
+            "worn[1].skin at 375"
         );
-        // The magazine closes the record (format 9): pairs from 369, the
+        // The magazine closes the record (format 9): pairs from 377, the
         // round written `+ 1` so an empty one is zero bytes.
-        assert_eq!(&buf[369..373], &[0, 0, 0, 0], "mag[0] empty at 369");
-        assert_eq!(&buf[377..379], &6u16.to_le_bytes(), "mag[2] at 377");
+        assert_eq!(&buf[377..381], &[0, 0, 0, 0], "mag[0] empty at 377");
+        assert_eq!(&buf[385..387], &6u16.to_le_bytes(), "mag[2] at 385");
         assert_eq!(
-            &buf[379..381],
+            &buf[387..389],
             &0x2123u16.to_le_bytes(),
-            "mag_round[2] + 1 at 379"
+            "mag_round[2] + 1 at 387"
         );
         assert_eq!(
-            &buf[391..393],
+            &buf[399..401],
             &0x3133u16.to_le_bytes(),
-            "mag_round[5] + 1 at 391"
+            "mag_round[5] + 1 at 399"
         );
         assert_eq!(
-            &buf[397..401],
+            &buf[405..409],
             &[0, 0, 0, 0],
-            "mag[7] closes the record at 401"
+            "mag[7] closes the record at 409"
         );
     }
 
@@ -881,33 +895,33 @@ mod tests {
         // not exist, indexed unchecked by `craft::step`. The arrays start
         // at `SCALARS_BYTES`, which moved 64 → 81 at format 6.
         assert_eq!(
-            bent(&|b| b[89..91].copy_from_slice(&(MAX_RECIPES as u16).to_le_bytes())),
+            bent(&|b| b[97..99].copy_from_slice(&(MAX_RECIPES as u16).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
         assert_eq!(
-            bent(&|b| b[91..93].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
+            bent(&|b| b[99..101].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
         // A gap before a live job: job 0 emptied (count AND skin, so the
         // job is a canonical empty), job 1 still live.
         assert_eq!(
-            bent(&|b| b[91..95].copy_from_slice(&[0, 0, 0, 0])),
+            bent(&|b| b[99..103].copy_from_slice(&[0, 0, 0, 0])),
             Err(SaveError::SparseCraftQueue)
         );
         // An empty job wearing a skin (format 7): job 2 is empty in the
         // fixture, its skin at 89 + 2 * 6 + 4 = 97.
         assert_eq!(
-            bent(&|b| b[105..107].copy_from_slice(&5u16.to_le_bytes())),
+            bent(&|b| b[113..115].copy_from_slice(&5u16.to_le_bytes())),
             Err(SaveError::BadCraftJob),
             "an empty job may not carry a skin"
         );
         // An item past the table, and a non-canonical empty.
         assert_eq!(
-            bent(&|b| b[113..115].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
+            bent(&|b| b[121..123].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         assert_eq!(
-            bent(&|b| b[115..117].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[123..125].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         // The cond half of canonical empty (format 3): inv[1] is a zeroed
@@ -917,13 +931,13 @@ mod tests {
         // emptied by a path that forgot to zero `cond` hashes differently
         // from the sim's own empty (wall 5).
         assert_eq!(
-            bent(&|b| b[125..127].copy_from_slice(&7u16.to_le_bytes())),
+            bent(&|b| b[133..135].copy_from_slice(&7u16.to_le_bytes())),
             Err(SaveError::BadItemStack),
             "an empty slot may not carry condition"
         );
         // And the skin half (format 7), for the same reason.
         assert_eq!(
-            bent(&|b| b[127..129].copy_from_slice(&7u16.to_le_bytes())),
+            bent(&|b| b[135..137].copy_from_slice(&7u16.to_le_bytes())),
             Err(SaveError::BadItemStack),
             "an empty slot may not carry a skin"
         );

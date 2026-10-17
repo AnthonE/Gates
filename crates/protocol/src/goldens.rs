@@ -1525,8 +1525,9 @@ pub fn event_research_refused() -> u8 {
 /// A known-mask restate. Bits 0, 4, 21, 33 and 63: both ends of the
 /// field and the two recipes the fixtures above unlock, so a halved or
 /// byte-swapped mask cannot reproduce it.
-pub fn event_known() -> u64 {
-    (1 << 0) | (1 << 4) | (1 << 21) | (1 << 33) | (1 << 63)
+/// The second word, so the word index is pinned as a set bit.
+pub fn event_known() -> (u8, u64) {
+    (1, (1 << 0) | (1 << 4) | (1 << 21) | (1 << 33) | (1 << 63))
 }
 
 /// Your own bags: a **partial** rack, so the count is pinned as something

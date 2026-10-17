@@ -34,7 +34,7 @@ use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS,
     MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, WEAR_SLOTS,
+    KNOWN_WORDS, MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, WEAR_SLOTS,
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
@@ -283,7 +283,15 @@ const SUB_RESEARCH_REFUSED: u32 = 45;
 /// `SUB_RESEARCH` would grey a recipe the player has paid for, forever,
 /// with no event left to correct it. Sixty-four bits is cheaper than that
 /// failure and it makes the state unloseable by construction.
+///
+/// **One 64-bit word of it per message since v123** (Rust's tree items took
+/// the mask to 128 bits): a word index, then the word. Each message is still
+/// the whole of its word, so a lost one is repaired by the next statement of
+/// that word, and the sim states both at every door (`research::state_known`).
 const SUB_KNOWN: u32 = 46;
+/// The word index `SUB_KNOWN` leads with: `KNOWN_WORDS` of them.
+const KNOWN_WORD_BITS: u32 = 1;
+const _: () = assert!(KNOWN_WORDS <= 1 << KNOWN_WORD_BITS);
 /// An arrow left a bow (`sim-core/ranged.rs`, wire v33). Broadcast — an
 /// arrow in the air is a world fact like a door swinging.
 ///
@@ -921,11 +929,15 @@ const CRAFT_Q_COUNT_BITS: u32 = 3;
 /// verb's parent and bench), and the decoder range-checks rather than
 /// trusting the width — the `BAG_GONE_BITS` posture.
 const RESEARCH_REFUSE_BITS: u32 = 3;
-const RECIPE_TOTAL_BITS: u32 = 7;
+/// 7 → 8 at v123: `MAX_RECIPES` went 64 → 128, and a total of 128 needs the
+/// eighth bit.
+const RECIPE_TOTAL_BITS: u32 = 8;
 const RECIPE_COUNT_BITS: u32 = 3;
 /// The research drip's header widths — the recipe drip's, because
 /// `MAX_RESEARCH_ROWS == MAX_RECIPES` (`limits.rs` ties them).
-const RESEARCH_TOTAL_BITS: u32 = 7;
+const RESEARCH_TOTAL_BITS: u32 = 8;
+const _: () = assert!(MAX_RECIPES < 1 << RECIPE_TOTAL_BITS);
+const _: () = assert!(MAX_RESEARCH_ROWS < 1 << RESEARCH_TOTAL_BITS);
 const RESEARCH_COUNT_BITS: u32 = 3;
 /// Craft time crosses as raw ticks (the value the sim runs), not seconds
 /// — no cadence coupling; 24 bits cover the bake's ceiling (65535 s ×
@@ -1670,9 +1682,10 @@ pub enum EventMsg {
     /// A research request bounced: `reason` is a
     /// `sim_core::research::REFUSE_R_*` code.
     ResearchRefused { reason: u8 },
-    /// Every blueprint this player knows, as a bitmask over recipe
-    /// indices. The whole mask, not a delta — see `SUB_KNOWN`.
-    Known { mask: u64 },
+    /// One 64-bit word of the blueprints this player knows, as a bitmask
+    /// over recipe indices `64 * word ..`. The whole word, not a delta —
+    /// see `SUB_KNOWN`.
+    Known { word: u8, bits: u64 },
     /// Every bag **this player** has placed, whole, with each one's
     /// cooldown state at send time — the death screen's data. See
     /// `SUB_BAGS` for why it is its own message and not a column on the
@@ -2838,14 +2851,18 @@ pub fn encode_event_research_refused(reason: u8, buf: &mut [u8]) -> Result<usize
     Ok(w.finish())
 }
 
-pub fn encode_event_known(mask: u64, buf: &mut [u8]) -> Result<usize, WireError> {
+/// One word of the blueprint mask: `word` 0 is recipes 0..64, 1 is 64..128.
+pub fn encode_event_known(word: u8, bits: u64, buf: &mut [u8]) -> Result<usize, WireError> {
+    if word as usize >= KNOWN_WORDS {
+        return Err(WireError::Range);
+    }
     let mut w = begin(buf, SUB_KNOWN)?;
+    w.write(word as u32, KNOWN_WORD_BITS)?;
     // Two halves rather than a 64-bit write: `BitWriter::write` takes a
-    // `u32`, and splitting here keeps the one place that knows the mask is
-    // wider than the writer's word next to the one place that reassembles
-    // it.
-    w.write((mask & 0xFFFF_FFFF) as u32, 32)?;
-    w.write((mask >> 32) as u32, 32)?;
+    // `u32`, and splitting here keeps the one place that knows the word is
+    // wider than the writer's next to the one place that reassembles it.
+    w.write((bits & 0xFFFF_FFFF) as u32, 32)?;
+    w.write((bits >> 32) as u32, 32)?;
     Ok(w.finish())
 }
 
@@ -5987,10 +6004,15 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::ResearchRefused { reason }
         }
         SUB_KNOWN => {
+            let word = r.read(KNOWN_WORD_BITS)? as u8;
+            if word as usize >= KNOWN_WORDS {
+                return Err(WireError::Malformed);
+            }
             let lo = r.read(32)?;
             let hi = r.read(32)?;
             EventMsg::Known {
-                mask: (hi as u64) << 32 | lo as u64,
+                word,
+                bits: (hi as u64) << 32 | lo as u64,
             }
         }
         SUB_BAGS => {
@@ -10901,14 +10923,21 @@ mod wire_domains {
     #[test]
     fn known_decodes_to_the_mask_that_was_encoded() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        for mask in [0u64, 1, 1 << 3 | 1 << 40, 1 << 63, u64::MAX] {
-            let len = encode_event_known(mask, &mut buf).unwrap();
-            assert_eq!(
-                decode_event(&buf[..len]).unwrap(),
-                EventMsg::Known { mask },
-                "the blueprint mask {mask:#x} did not survive the wire"
-            );
+        for word in [0u8, 1] {
+            for bits in [0u64, 1, 1 << 3 | 1 << 40, 1 << 63, u64::MAX] {
+                let len = encode_event_known(word, bits, &mut buf).unwrap();
+                assert_eq!(
+                    decode_event(&buf[..len]).unwrap(),
+                    EventMsg::Known { word, bits },
+                    "word {word} of the blueprint mask, {bits:#x}, did not survive the wire"
+                );
+            }
         }
+        // A word past the mask is refused at both ends.
+        assert_eq!(
+            encode_event_known(KNOWN_WORDS as u8, 1, &mut buf),
+            Err(WireError::Range)
+        );
     }
 }
 

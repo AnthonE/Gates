@@ -1789,8 +1789,9 @@ pub struct ClientCore {
     /// Blueprints this client's player knows, as the server last stated
     /// them (research v0). The **whole mask** every time, never a delta —
     /// `SUB_KNOWN` says why: a dropped success would otherwise grey a
-    /// recipe the player paid for with no event left to correct it.
-    known: u64,
+    /// recipe the player paid for with no event left to correct it. 128
+    /// bits, stated a 64-bit word at a time (wire v123).
+    known: u128,
     /// `(recipe, cost)` per blueprint learned, and the refusal reasons —
     /// both drop-oldest and cosmetic, `craft_toasts`' posture exactly.
     research_toasts: [(u16, u16); TOAST_RING],
@@ -3140,8 +3141,10 @@ impl ClientCore {
                 self.refusal_len += 1;
                 flags |= APPLIED_CRAFT_REFUSED;
             }
-            EventMsg::Known { mask } => {
-                self.known = mask;
+            EventMsg::Known { word, bits } => {
+                // The word replaces its half whole; the other half stands.
+                let shift = 64 * word as u32;
+                self.known = (self.known & !((u64::MAX as u128) << shift)) | (bits as u128) << shift;
                 self.applied2 |= APPLIED2_RESEARCH;
             }
             EventMsg::Research { recipe, cost } => {
@@ -4680,7 +4683,7 @@ impl ClientCore {
     /// Blueprints known, as the server last stated them. The craft panel
     /// asks this per row; `sim_core::research::knows` is the one place the
     /// shift is written, so nothing here re-implements it.
-    pub fn known(&self) -> u64 {
+    pub fn known(&self) -> u128 {
         self.known
     }
 

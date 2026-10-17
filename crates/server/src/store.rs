@@ -169,7 +169,9 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// clocks in the scalar head, 361 → 369.
 /// **9** — the magazine (reload v1): `MAX_MAGS` pairs of `u16` close the
 /// record, 369 → 401. A loaded cylinder you log off with is still loaded.
-pub const SAVE_FORMAT: u16 = 9;
+/// **10** — the blueprint mask is 128 bits (Rust's tree items): its high
+/// word closes the scalar head, 401 → 409.
+pub const SAVE_FORMAT: u16 = 10;
 
 /// Header bytes 32..40: the content layout hash. Spent out of the header's
 /// zero padding, so a file written before it reads 0 there and is checked

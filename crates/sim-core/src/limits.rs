@@ -435,8 +435,10 @@ pub const HOTBAR_SLOTS: usize = 6;
 
 /// Recipe definitions the sim preallocates for (the alpha ladder is ~34
 /// rows, CONTENT.md §2). The content bake refuses a set past this.
-/// Proposed default, DECISIONS.md §open (craft verb row).
-pub const MAX_RECIPES: usize = 64;
+/// Proposed default, DECISIONS.md §open (craft verb row). 64 → 128 when
+/// Rust's tree items arrived (operator, 2026-10-17): the 62 rows of the day
+/// left two for a tree that wanted twenty.
+pub const MAX_RECIPES: usize = 128;
 
 /// Inputs one recipe may carry (alpha data uses ≤ 3). The bake refuses
 /// past it. Structural cap like `MAX_TOOLS_PER_NODE`, not a knob.
@@ -1001,13 +1003,17 @@ pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
 
 /// The width of `Player::known`, and therefore the hard ceiling on how
 /// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
-/// rather than assumed: the mask is a `u64` in the sim, in the save file
-/// and on the wire, so a 65th recipe is a widening in three places and
-/// must fail here rather than silently become unlockable.
-pub const KNOWN_MASK_BITS: usize = 64;
+/// rather than assumed: the mask is a `u128` in the sim and the save file
+/// and two 64-bit words on the wire (`SUB_KNOWN`), so a 129th recipe is a
+/// widening in three places and must fail here rather than silently become
+/// unlockable.
+pub const KNOWN_MASK_BITS: usize = 128;
+/// The mask's 64-bit words, as `EV_KNOWN` / `EV_KNOWN_HI` and `SUB_KNOWN`
+/// state them.
+pub const KNOWN_WORDS: usize = KNOWN_MASK_BITS / 64;
 const _: () = assert!(
     MAX_RECIPES <= KNOWN_MASK_BITS,
-    "Player::known is a u64 mask over recipe indices — a recipe past bit 63 \
+    "Player::known is a u128 mask over recipe indices — a recipe past bit 127 \
      could never be researched, and nothing else would say so"
 );
 

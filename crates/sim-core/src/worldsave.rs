@@ -226,9 +226,13 @@ use crate::worldcont::WorldContRec;
 /// reads (with no offers): every byte it holds means what it meant when it
 /// was written, so reading it as 25 is not the reinterpretation this number
 /// refuses.
-pub const WORLD_SAVE_FORMAT: u16 = 26;
-/// The one older format [`decode_into`] still reads: 26 minus its tail.
-pub const WORLD_SAVE_FORMAT_PREV: u16 = 25;
+/// **27 — the blueprint mask is 128 bits** (store format 10): every body's
+/// `PlayerSave` grew its high word (+8), so no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 27;
+/// The one older format [`decode_into`] still reads. None since 27 moved
+/// every body's record: the current format stands in, so the check reads
+/// one format.
+pub const WORLD_SAVE_FORMAT_PREV: u16 = WORLD_SAVE_FORMAT;
 
 /// One vending machine's offers: its box key, then each row's item, lot
 /// and price (format 26).
