@@ -1,0 +1,59 @@
+# A village on the public shard: a guild of scripted agents (`jev-bot
+# --society`) that meets at THE GATE, founds a team, builds a compound and
+# lives in it. Farmers fill the boxes, guards walk a ring round home and take
+# on whoever comes in armed, a runner sells the surplus at THE GATE and keeps
+# a vending machine outside at half its price. `--scripted` makes no model
+# calls, so a village costs nothing but a few percent of a core. `--shift`
+# plays ON_S seconds, goes home and logs off for OFF_S, so the compound sleeps
+# the way a clan's does. Bots are named NAME-1..NAME-N, each with its own
+# wallet under /var/lib/gates-village/%i (made on first start).
+#
+# Once, as root (the instance name is the village's):
+#
+#   sudo cp ops/gates-village@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-village@millers
+#   journalctl -u gates-village@millers -f
+#
+# Optional, /etc/gates-village/<instance>.env overrides the defaults below:
+#
+#   VILLAGE_NAME=Miller        # 1-13 characters: the bots are Miller-1..
+#   VILLAGE_BOTS=12            # 2..16
+#   VILLAGE_SHIFT=5400,1800    # seconds on, seconds off
+#
+# `ci/deploy_shard.sh` restarts every gates-village@ unit on the binary it
+# copies to ~/gates-jev, so a wire bump never strands a village.
+
+[Unit]
+Description=Gates village %i on game.elopros.com:61234
+Documentation=https://github.com/AnthonE/Gates/blob/main/crates/server/JEV.md
+After=network-online.target
+Wants=network-online.target
+# A shard restart or deploy drops the connection; keep coming back.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-jev
+StateDirectory=gates-village/%i
+StateDirectoryMode=0700
+Environment=VILLAGE_NAME=%i
+Environment=VILLAGE_BOTS=12
+Environment=VILLAGE_SHIFT=5400,1800
+EnvironmentFile=-/etc/gates-village/%i.env
+# A run is at most a day (`--seconds`); systemd starts the next.
+ExecStart=/home/master/gates-jev/jev-bot --server game.elopros.com:61234 --scripted --society --bots ${VILLAGE_BOTS} --shift ${VILLAGE_SHIFT} --agent-keys /var/lib/gates-village/%i --agent-name ${VILLAGE_NAME} --seconds 86400
+Restart=always
+RestartSec=15
+
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gates-village-%i
+
+[Install]
+WantedBy=multi-user.target

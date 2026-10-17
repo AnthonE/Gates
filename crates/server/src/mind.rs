@@ -1023,6 +1023,11 @@ impl Heard {
     pub fn lines(&self) -> &[HeardLine] {
         &self.lines[..self.len as usize]
     }
+
+    /// A person (not an agent, not this body) said something.
+    pub fn from_human(&self) -> bool {
+        self.lines().iter().any(|l| !l.me && !l.agent)
+    }
 }
 
 impl Default for Heard {
@@ -1285,6 +1290,8 @@ pub struct Summary {
     pub bushes: Sighting,
     pub hemp: Sighting,
     pub players: Sighting,
+    /// The players in `players` that have not declared themselves agents.
+    pub humans: Sighting,
     pub animals: Sighting,
     pub water_near: Sighting,
     pub threats: [Threat; SUMMARY_THREATS],
@@ -1405,6 +1412,11 @@ impl Summary {
             bearing: 0,
         },
         players: Sighting {
+            count: 0,
+            nearest_m: 0,
+            bearing: 0,
+        },
+        humans: Sighting {
             count: 0,
             nearest_m: 0,
             bearing: 0,
@@ -1701,6 +1713,7 @@ impl Summary {
                 "berry_bushes": self.bushes.json(),
                 "hemp": self.hemp.json(),
                 "players": self.players.json(),
+                "humans": self.humans.json(),
                 "animals": self.animals.json(),
             },
             "water_nearby": self.water_near.json(),

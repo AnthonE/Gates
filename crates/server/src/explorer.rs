@@ -454,6 +454,8 @@ pub struct Senses {
     pub bushes: Sighting,
     pub hemp: Sighting,
     pub players: Sighting,
+    /// The players that have not declared themselves agents.
+    pub humans: Sighting,
     pub animals: Sighting,
     pub water: Sighting,
     /// Bodies in sight that could hurt this one, nearest first.
@@ -5814,12 +5816,16 @@ impl Survivor {
             self.scan_cell(core, body, &haven, tick);
         }
         let mut bodies = [Sighting::default(); 2];
+        let mut humans = Sighting::default();
         // The nearest bodies that could hurt this one, as a player would
         // size them up: what is in their hands, which way, how hurt.
         let mut threats = [(f32::INFINITY, Threat::default()); SUMMARY_THREATS];
         for t in self.tracks.recent(tick, BODY_RECALL_SECS * TICK_HZ) {
             let (d, b) = relative(body, t.pos[0], t.pos[2]);
             bodies[usize::from(t.species != Species::Player)].add(d, b);
+            if t.species == Species::Player && !core.is_agent(t.id) {
+                humans.add(d, b);
+            }
             let (arms, hp) = match t.species {
                 Species::Pig => continue,
                 Species::Wolf => (Arms::Teeth, u32::from(self.book.wolf().hp)),
@@ -5847,6 +5853,7 @@ impl Survivor {
             }
         }
         [self.senses.players, self.senses.animals] = bodies;
+        self.senses.humans = humans;
         self.senses.threats_len = threats.iter().filter(|(d, _)| d.is_finite()).count() as u8;
         self.senses.threats = threats.map(|(_, t)| t);
         self.senses.hostile = self
@@ -7259,6 +7266,7 @@ pub fn observe(
     s.bushes = senses.bushes;
     s.hemp = senses.hemp;
     s.players = senses.players;
+    s.humans = senses.humans;
     s.animals = senses.animals;
     s.water_near = senses.water;
     s.threats = senses.threats;
