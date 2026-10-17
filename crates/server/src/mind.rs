@@ -1843,6 +1843,11 @@ impl SourceKind {
 pub trait DecisionSource: Send + 'static {
     fn kind(&self) -> SourceKind;
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String>;
+    /// A bug report the last answer carried (`bugs.rs`), for the body to
+    /// file. Only an external or MCP mind writes them.
+    fn take_note(&mut self) -> Option<crate::bugs::Note> {
+        None
+    }
 }
 
 /// Fixed request windows. A window opens at its first request and closes
@@ -2007,6 +2012,8 @@ pub struct Mind {
     inline_reply: Option<Reply>,
     asks: Option<rtrb::Producer<Ask>>,
     replies: Option<rtrb::Consumer<Reply>>,
+    /// Bug reports from the worker's source, for the body to file.
+    notes: Option<rtrb::Consumer<crate::bugs::Note>>,
     worker: Option<std::thread::JoinHandle<()>>,
     cfg: MindConfig,
     next_allowed: Instant,
@@ -2031,6 +2038,8 @@ impl Mind {
         let kind = source.kind();
         let (asks, mut inbox) = rtrb::RingBuffer::<Ask>::new(1);
         let (mut outbox, replies) = rtrb::RingBuffer::<Reply>::new(1);
+        // Full: the body has not filed the last one yet; this one is dropped.
+        let (mut notes_out, notes) = rtrb::RingBuffer::<crate::bugs::Note>::new(2);
         let mut source = source;
         let worker = std::thread::Builder::new()
             .name("jev-decisions".into())
@@ -2060,20 +2069,18 @@ impl Mind {
                         source.kind().label()
                     ),
                 }
+                if let Some(note) = source.take_note() {
+                    let _ = notes_out.push(note);
+                }
                 // Error text is dropped here, never on the input loop.
                 if outbox.push((id, answer.ok())).is_err() {
                     break;
                 }
             })
             .map_err(|e| format!("decision worker: {e}"))?;
-        Ok(Self::with(
-            kind,
-            None,
-            Some(asks),
-            Some(replies),
-            Some(worker),
-            cfg,
-        ))
+        let mut mind = Self::with(kind, None, Some(asks), Some(replies), Some(worker), cfg);
+        mind.notes = Some(notes);
+        Ok(mind)
     }
 
     /// Decisions on the caller's thread. Only for a source whose `decide`
@@ -2107,6 +2114,7 @@ impl Mind {
             inline_reply: None,
             asks,
             replies,
+            notes: None,
             worker,
             cfg,
             next_allowed: now,
@@ -2154,6 +2162,15 @@ impl Mind {
             Mode::BackingOff
         } else {
             Mode::Ready
+        }
+    }
+
+    /// A bug report its source's answers carried, late answers' included:
+    /// a report does not go stale with the goal it came with.
+    pub fn take_note(&mut self) -> Option<crate::bugs::Note> {
+        match &mut self.inline {
+            Some(source) => source.take_note(),
+            None => self.notes.as_mut()?.pop().ok(),
         }
     }
 

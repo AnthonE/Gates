@@ -138,11 +138,11 @@ def build_of(r: dict) -> str:
 
 
 def runtime_of(r: dict) -> str:
-    """`browser` or `desktop`. A report from before the field existed came
-    from the desktop: the browser build could not file one."""
+    """`browser`, `desktop` or `agent` (a jev-bot). A report from before the
+    field existed came from the desktop: the browser build could not file one."""
     b = r.get("build")
     if isinstance(b, dict):
-        if b.get("runtime") in ("browser", "desktop"):
+        if b.get("runtime") in ("browser", "desktop", "agent"):
             return b["runtime"]
         if b.get("platform") == "web":
             return "browser"

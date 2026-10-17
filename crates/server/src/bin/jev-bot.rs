@@ -543,6 +543,37 @@ async fn run(options: Options) -> Result<(), String> {
             .map(|k| format!("{:?}", k.address()))
             .unwrap_or_else(|| "unsigned, loopback only".into())
     );
+    // Bug reports a mind writes, and this process's own panics (`bugs.rs`):
+    // kept on this machine, and sent to the platform from any shard but a
+    // private one here, whose build is nobody else's to triage.
+    let desk = server::bugs::Desk {
+        intake: (!door.loopback()).then(server::bugs::Desk::platform_intake),
+        dir: server::bugs::Desk::default_dir(),
+        shard: door.server.clone(),
+        name: options.agent_name.clone(),
+        wallet: door.key.as_ref().map(|k| {
+            let hex = k.address().to_hex();
+            String::from_utf8_lossy(&hex).into_owned()
+        }),
+        mind: match options.mind.source {
+            Source::Jev => "jev",
+            Source::Scripted => "scripted",
+            Source::External(..) => "external",
+            Source::Mcp => "mcp",
+        }
+        .into(),
+    };
+    out!(
+        "bug reports: {}, copies in {}",
+        desk.intake
+            .as_deref()
+            .unwrap_or("not sent from a private island"),
+        desk.dir
+            .as_ref()
+            .map_or("nowhere (no HOME)".into(), |d| d.display().to_string())
+    );
+    server::bugs::open(desk);
+    server::bugs::on_panic();
     // Where the owner watches its own view (NETCODE.md §2.3): the public
     // page off this machine, a named page on it, else the bare query.
     if let Some(url) = door.watch_url(options.spectate_page.as_deref()) {

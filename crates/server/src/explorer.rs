@@ -1006,6 +1006,8 @@ pub struct Survivor {
     learning: Option<(u16, u16, u16)>,
     /// Its ears and voice, when it has them (`--voice`, `agent_voice.rs`).
     pub voice: Option<Box<crate::agent_voice::AgentVoice>>,
+    /// When it last filed a bug report its mind wrote (`bugs.rs`).
+    bug_at: Option<Instant>,
 }
 
 impl Survivor {
@@ -1144,6 +1146,7 @@ impl Survivor {
             verdict: None,
             learning: None,
             voice: None,
+            bug_at: None,
         }
     }
 
@@ -1319,6 +1322,60 @@ impl Survivor {
         let frame = self.frame_with(&mut core, view, player, seq, now);
         self.core = Some(core);
         frame
+    }
+
+    /// File a bug report its mind wrote (`bugs.rs`), with what the body
+    /// knows and the mind is never shown: the seed and where it stands.
+    fn file_bug(
+        &mut self,
+        note: &crate::bugs::Note,
+        core: &mut ClientCore,
+        view: &ClientView,
+        player: u32,
+        body: &EntityState,
+        now: Instant,
+    ) {
+        if self
+            .bug_at
+            .is_some_and(|t| now.saturating_duration_since(t) < crate::bugs::GAP)
+        {
+            eprintln!(
+                "bug report dropped: a body files one per {} s",
+                crate::bugs::GAP.as_secs()
+            );
+            return;
+        }
+        self.bug_at = Some(now);
+        let (seed, _) = core.island();
+        let summary = self.summarize(core, view, player);
+        let mut seen = crate::external::External::observation(0, &summary);
+        if let Some(o) = seen.as_object_mut() {
+            o.remove("id");
+            o.remove("protocol");
+        }
+        let facts = crate::bugs::Facts {
+            seed,
+            tick: view.newest_applied.unwrap_or_default(),
+            pos: [
+                body.qx as f32 * POS_XZ_Q,
+                body.qy as f32 * POS_Y_Q,
+                body.qz as f32 * POS_XZ_Q,
+            ],
+            player_id: player,
+            vitals: ::client::report::Vitals {
+                hp: core.hp,
+                hp_max: core.hp_max,
+                food: core.food,
+                water: core.water,
+                dead: core.dead || body.dead,
+            },
+            goal: summary.current.map(|r| r.goal.label().as_str().to_owned()),
+            last: summary
+                .last
+                .map(|r| format!("{} ({})", r.goal.label().as_str(), r.outcome.word())),
+            seen,
+        };
+        eprintln!("{}", crate::bugs::file(note, facts));
     }
 
     /// Stop what this body was doing: down, dead, a stale link or a new
@@ -1516,6 +1573,9 @@ impl Survivor {
                 });
         }
         self.mind.expire(now);
+        if let Some(note) = self.mind.take_note() {
+            self.file_bug(&note, core, view, player, &body, now);
+        }
         if body.dead || core.dead {
             // The death screen's answer: one of its own ready bags, unless
             // home is where it was just fought over; else the beach.
