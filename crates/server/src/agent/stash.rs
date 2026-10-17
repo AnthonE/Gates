@@ -174,17 +174,32 @@ pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
 /// What a visit leaves in the pack: the [`loadout`], and while its own
 /// furnace stands, the ore it smelts. The mind's "smelt the ore at my
 /// furnace" works from the pack and nothing takes ore back out of the box,
-/// so a visit home that boxed it left the smelt nothing to smelt.
-pub fn keeps(core: &ClientCore, book: &Book, furnace: bool, item: u16) -> u32 {
+/// so a visit home that boxed it left the smelt nothing to smelt. A found
+/// thing bound for a research table (`oven::for_paper`) the same way: one
+/// of it, and the junk the table takes for it.
+pub fn keeps(core: &ClientCore, book: &Book, has: &build::Stations, item: u16) -> u32 {
     let name = core.catalog.name(usize::from(item));
-    if furnace
+    if has.furnace.is_some()
         && crate::mind::SMELTS
             .iter()
             .any(|&(ore, _)| name == ore.as_bytes())
     {
         return u32::MAX;
     }
-    loadout(core, book, item)
+    let paper = |item: u16| oven::for_paper(core, has.tier, item);
+    let mut keep = loadout(core, book, item);
+    if paper(item).is_some() {
+        keep = keep.max(1);
+    }
+    if item == core.research.coin {
+        let junk = core.inv[..INV_SLOTS]
+            .iter()
+            .filter(|s| s.count > 0)
+            .filter_map(|s| paper(s.item))
+            .max();
+        keep = keep.max(junk.map_or(0, u32::from));
+    }
+    keep
 }
 
 /// One stack's move, by slot: the only moves a visit makes.
@@ -782,14 +797,14 @@ impl StashJob {
         for row in bill[..n].iter_mut().filter(|r| waste(r.0)) {
             row.1 = 0;
         }
-        let furnace = builder.stations(core).furnace.is_some();
+        let has = builder.stations(core);
         plan(
             core,
             |item| {
                 if waste(item) {
                     0
                 } else {
-                    keeps(core, book, furnace, item)
+                    keeps(core, book, &has, item)
                 }
             },
             &bill[..n],

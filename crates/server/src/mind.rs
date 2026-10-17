@@ -182,6 +182,10 @@ pub enum Goal {
     /// Take salvaged parts apart at its recycler, putting it down if
     /// none stands near: junk, fragments and cloth.
     Recycle,
+    /// Take a found thing it has no blueprint for, and the junk it costs,
+    /// to THE GATE's research table, and read the paper it makes
+    /// (`agent::oven`, `Work::Research`).
+    Research,
     /// Home is under attack or damaged: in through the doors, the fight
     /// met from inside, then the damage mended and the doors shut.
     Defend,
@@ -260,7 +264,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 39] = [
+    pub const FIXED: [Goal; 40] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -282,6 +286,7 @@ impl Goal {
         Goal::Loot,
         Goal::Cook,
         Goal::Recycle,
+        Goal::Research,
         Goal::Defend,
         Goal::Raid,
         Goal::JoinTeam,
@@ -327,6 +332,7 @@ impl Goal {
             Goal::Loot => "loot",
             Goal::Cook => "cook",
             Goal::Recycle => "recycle",
+            Goal::Research => "research",
             Goal::Defend => "defend",
             Goal::Raid => "raid",
             Goal::JoinTeam => "join_team",
@@ -412,6 +418,7 @@ impl Goal {
             Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
             Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
             Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
+            Goal::Research => "Research a found thing you have no blueprint for at THE GATE's table, for junk.".into(),
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
@@ -1679,6 +1686,25 @@ impl Summary {
         })
     }
 
+    /// Its crew and job (`agent::society`), and what the job asks of it now
+    /// (`duty`, a goal off the options, and why): `null` outside a society.
+    /// Sent beside the observation, as `team` is. Worker only.
+    pub fn crew_json(&self) -> Value {
+        let soc = &self.society;
+        if !soc.set {
+            return Value::Null;
+        }
+        let duty = crew_work(self);
+        json!({
+            "job": soc.role.name(),
+            "crewmates": soc.crew,
+            "crewmates_on_team": soc.crew_on_team,
+            "intruders_at_home": soc.intruders.count,
+            "duty": duty.map(|(g, _)| g.label().as_str().to_owned()),
+            "why": duty.map(|(_, why)| why.trim_start_matches("society: ")),
+        })
+    }
+
     /// Who its team is and whose invite waits, by the labels a chat log
     /// shows. Sent to an external source beside the observation, as
     /// `heard` is, never inside it. Worker only (it allocates).
@@ -2337,6 +2363,19 @@ pub struct Scripted {
     code: Option<crate::agent::lock::LockCode>,
 }
 
+/// What a society member's crew asks of it now, as the scripted policy
+/// picks it: coming together at THE GATE, then its job (`Role`).
+pub fn crew_work(s: &Summary) -> Option<(Goal, &'static str)> {
+    founding(s).or_else(|| society_work(s))
+}
+
+/// Its crew is still coming together at THE GATE: the turns a mind other
+/// than the scripted policy never takes (`autopilot::ALONE`), since a crew
+/// that does not meet is no crew.
+pub fn crew_forming(s: &Summary) -> bool {
+    founding(s).is_some()
+}
+
 /// A society's crew coming together (`agent::society`): the founder
 /// invites a crewmate in reach, else waits at THE GATE while some of the
 /// crew is not on its team; a crewmate off its founder's team goes there
@@ -2874,6 +2913,11 @@ impl Scripted {
         // fragments for the base, at its own recycler.
         if s.offers(Goal::Recycle) {
             return (Goal::Recycle, "scripted: recycle the salvage");
+        }
+        // A found thing it has no blueprint for, and the junk: paper at a
+        // research table, so it can make its own from then on.
+        if s.offers(Goal::Research) {
+            return (Goal::Research, "scripted: research what it found");
         }
         // Gears enough for a recycler and some over for it to take apart,
         // and none to take them to: one is made at the bench.
