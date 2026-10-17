@@ -1,13 +1,19 @@
 //! The lore, drawn (`ARC.md` F5–F7): the speakers as people (the player
 //! rig at idle, the shopkeepers' shade), the inscriptions as black slabs
-//! ([`SLAB_GLB`]) with a gold ring on top, and each mechanism's dials as
+//! ([`SLAB_GLB`]) cut with the ancients' glyphs and a gold ring on top, and
+//! each mechanism's dials as
 //! stone drums ([`DIAL_GLB`]) whose notch turns as the dials do. Where each
 //! stands is `sim_core::spot`'s answer, so it is drawn where the sim
 //! measures reach from.
 
+use bevy::asset::RenderAssetUsages;
+use bevy::light::NotShadowCaster;
+use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use client_core::arc::LoreView;
 
 use super::{Net, WorldEntity, WorldId};
+use crate::ui::glyphs::{self, ADVANCE, GLYPH_COLS, GLYPH_ROWS, LEADING};
 
 /// An inscription's stone: a blank basalt stele on a footing, 1.31 m wide,
 /// 2.0 m tall, generated. The ring on top stays an exact torus.
@@ -17,11 +23,53 @@ const SLAB_SINK_M: f32 = 0.1;
 /// A dial's drum: a basalt drum 1.1 m across, its top at 1.0 m, generated.
 pub const DIAL_GLB: &str = "models/site/lore_dial.glb";
 
+/// The stele's broad faces, measured off [`SLAB_GLB`]: front +Z at 0.120 m,
+/// back −Z at −0.114 m, flat to ±3 mm over the carved field. The carving
+/// stands 6 mm proud of each so it never fights the stone.
+const FACE_FRONT_Z: f32 = 0.126;
+const FACE_BACK_Z: f32 = -0.120;
+/// The carved field on each face, in the slab's frame: 1.0 m by 1.2 m,
+/// its middle 1.125 m up, inside the chipped edges.
+const CARVE_W_M: f32 = 1.0;
+const CARVE_H_M: f32 = 1.2;
+const CARVE_MID_M: f32 = 1.125;
+/// The most a glyph's cell is cut, so a short text is not a billboard.
+const CARVE_MAX_CELL_M: f32 = 0.035;
+/// How much of a cell's top the groove's upper wall shades, and how dark.
+const LIP: f32 = 0.3;
+const LIP_SHADE: f32 = 0.05;
+/// How much of a stone not yet read has worn away, and how dull what is
+/// left is.
+const WORN_SHARE: f32 = 0.2;
+const WORN_SHADE: f32 = 0.7;
+
+/// The lore's gold, rings and notches and the works' rings: old and worn,
+/// a satin sheen rather than a mirror.
+pub fn worn_gold() -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgb(0.70, 0.55, 0.27),
+        metallic: 0.9,
+        perceptual_roughness: 0.6,
+        ..default()
+    }
+}
+
 /// A drawn speaker, inscription or dial; what it is and its index.
 #[derive(Component)]
 pub struct LoreMark {
     pub kind: u8,
     pub index: u16,
+}
+
+/// An inscription's carving: which stone, what it was last cut from (the
+/// text's length, 0 until this player reads it, and the alphabet's), and
+/// the cut drawn now.
+#[derive(Component)]
+pub struct Carving {
+    index: u16,
+    key: Option<(u16, u8)>,
+    cut: Option<Entity>,
+    material: Handle<StandardMaterial>,
 }
 
 /// A dial's notch: mechanism, dial.
@@ -56,12 +104,6 @@ pub fn spawn(
 ) {
     let Some(world) = world else { return };
     let lore = &net.session.core.lore;
-    let gold = || StandardMaterial {
-        base_color: Color::srgb(0.83, 0.64, 0.25),
-        metallic: 1.0,
-        perceptual_roughness: 0.3,
-        ..default()
-    };
     // People, once the rig has loaded (the shopkeepers' rule).
     if rig.ready() && rig.shaded() {
         if let Some(scene) = rig.scene.clone() {
@@ -118,13 +160,25 @@ pub fn spawn(
             continue;
         };
         let (slab, slab_material) = super::mobs::model(&server, SLAB_GLB);
-        let ring = materials.add(gold());
+        let ring = materials.add(worn_gold());
+        // Fresh-cut basalt: the grey under the black.
+        let cut = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.66, 0.65, 0.61),
+            perceptual_roughness: 0.95,
+            ..default()
+        });
         commands
             .spawn((
                 WorldEntity,
                 LoreMark {
                     kind: protocol::ARC_INSCRIPTION,
                     index: k as u16,
+                },
+                Carving {
+                    index: k as u16,
+                    key: None,
+                    cut: None,
+                    material: cut,
                 },
                 Transform::from_translation(p),
                 Visibility::default(),
@@ -158,7 +212,7 @@ pub fn spawn(
                 continue;
             };
             let (drum, drum_material) = super::mobs::model(&server, DIAL_GLB);
-            let notch = materials.add(gold());
+            let notch = materials.add(worn_gold());
             commands
                 .spawn((
                     WorldEntity,
@@ -200,6 +254,155 @@ pub fn dials(net: NonSend<Net>, mut q: Query<(&DialNotch, &mut Transform)>) {
         let want = Quat::from_rotation_y(-v / values * core::f32::consts::TAU);
         if tf.rotation.angle_between(want) > 1e-3 {
             tf.rotation = want;
+        }
+    }
+}
+
+/// Cut each stone's glyphs, and cut them again when what they are cut from
+/// changes: the alphabet arriving, or this player reading the stone.
+pub fn carve(
+    mut commands: Commands,
+    net: NonSend<Net>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut q: Query<(Entity, &mut Carving)>,
+) {
+    let lore = &net.session.core.lore;
+    for (stone, mut c) in q.iter_mut() {
+        let Some(ins) = lore.inscriptions.get(c.index as usize) else {
+            continue;
+        };
+        let key = (ins.len, lore.alphabet_len);
+        if c.key == Some(key) {
+            continue;
+        }
+        c.key = Some(key);
+        if let Some(old) = c.cut.take() {
+            commands.entity(old).despawn();
+        }
+        let Some(mesh) = carving_mesh(lore, c.index as usize) else {
+            continue;
+        };
+        c.cut = Some(
+            commands
+                .spawn((
+                    ChildOf(stone),
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(c.material.clone()),
+                    Transform::from_xyz(0.0, -SLAB_SINK_M, 0.0),
+                    NotShadowCaster,
+                ))
+                .id(),
+        );
+    }
+}
+
+/// What stone `k` shows before this player has read it: words of the
+/// alphabet's glyphs, fixed per stone, and worn (`WORN_SHARE`) past reading.
+fn worn_text(lore: &LoreView, k: usize) -> String {
+    let abc = lore.alphabet();
+    let mut out = String::new();
+    if abc.is_empty() {
+        return out;
+    }
+    let mut n = 0u32;
+    let mut roll = |m: usize| {
+        n += 1;
+        (super::props::hash2(k as u32 ^ 0x57_0E, n) as usize) % m
+    };
+    while out.len() < 48 {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        for _ in 0..2 + roll(6) {
+            out.push(abc[roll(abc.len())] as char);
+        }
+    }
+    out
+}
+
+/// Stone `k`'s carving, both faces, or `None` with nothing to cut. Each lit
+/// cell of each glyph is a quad, pale where the chisel cut and dark along
+/// its top where the groove's upper wall shades it (vertex colour over the
+/// cut's material).
+fn carving_mesh(lore: &LoreView, k: usize) -> Option<Mesh> {
+    let read = lore.inscriptions[k].len > 0;
+    let text = if read {
+        lore.inscriptions[k].text().to_string()
+    } else {
+        worn_text(lore, k)
+    };
+    let (lines, cell) = glyphs::fit(&text, CARVE_W_M, CARVE_H_M, CARVE_MAX_CELL_M);
+    let shade = if read { 1.0 } else { WORN_SHADE };
+    let (cut, lip) = (
+        [shade, shade, shade, 1.0],
+        [LIP_SHADE, LIP_SHADE, LIP_SHADE, 1.0],
+    );
+    let mut m = Cut::default();
+    let top = CARVE_MID_M + (lines.len() as f32 * LEADING as f32 - 2.0) * cell / 2.0;
+    for (j, line) in lines.iter().enumerate() {
+        let left = -(line.len() as f32 * ADVANCE as f32 - 1.0) * cell / 2.0;
+        let y0 = top - (j as u32 * LEADING) as f32 * cell;
+        for (i, ch) in line.bytes().enumerate() {
+            let Some(g) = lore.glyph_of(ch) else {
+                continue;
+            };
+            for r in 0..GLYPH_ROWS {
+                for c in 0..GLYPH_COLS {
+                    let at = ((j * 64 + i) as u32) * 16 + r * GLYPH_COLS + c;
+                    if !glyphs::lit(g, c, r)
+                        || (!read && super::props::hash01(k as u32, at) < WORN_SHARE)
+                    {
+                        continue;
+                    }
+                    let x = left + (i as u32 * ADVANCE + c) as f32 * cell;
+                    let y = y0 - r as f32 * cell;
+                    if r == 0 || !glyphs::lit(g, c, r - 1) {
+                        m.quad(x, x + cell, y - LIP * cell, y, lip);
+                        m.quad(x, x + cell, y - cell, y - LIP * cell, cut);
+                    } else {
+                        m.quad(x, x + cell, y - cell, y, cut);
+                    }
+                }
+            }
+        }
+    }
+    if m.idx.is_empty() {
+        return None;
+    }
+    let n = m.pos.len();
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.nor);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32; 2]; n]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, m.col);
+    mesh.insert_indices(Indices::U32(m.idx));
+    Some(mesh)
+}
+
+#[derive(Default)]
+struct Cut {
+    pos: Vec<[f32; 3]>,
+    nor: Vec<[f32; 3]>,
+    col: Vec<[f32; 4]>,
+    idx: Vec<u32>,
+}
+
+impl Cut {
+    /// One rectangle of the carving on both faces, mirrored behind so the
+    /// back reads left to right too.
+    fn quad(&mut self, x0: f32, x1: f32, y0: f32, y1: f32, col: [f32; 4]) {
+        for (z, s) in [(FACE_FRONT_Z, 1.0), (FACE_BACK_Z, -1.0)] {
+            let b = self.pos.len() as u32;
+            for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+                self.pos.push([x * s, y, z]);
+                self.nor.push([0.0, 0.0, s]);
+                self.col.push(col);
+            }
+            self.idx
+                .extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
         }
     }
 }
