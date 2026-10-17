@@ -1,8 +1,11 @@
-//! Where the animals are: `cargo run -p server --example mob_census [SEED] [SECONDS]`.
+//! Where the animals are:
+//! `cargo run -p server --example mob_census [SEED] [SECONDS] [ARC_HOUR] [lit]`.
 //!
 //! Boots the shipped content into a world, runs it, and prints every live
 //! animal by species with its position, then the densest 200 m cells for
 //! each. It is how a shot list (`ci/film/`) finds a meadow with pigs in it.
+//! `ARC_HOUR` and `lit` are the shard's `dev_arc_hour` and `dev_works_lit`:
+//! the animals hatch off the world clock, so a late wipe puts them elsewhere.
 
 use sim_core::mob::{MOB_PIG, MOB_STAG, MOB_WOLF};
 use sim_core::movement::POS_XZ_Q;
@@ -17,7 +20,17 @@ fn main() {
     let secs: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(30);
     let content = content::Content::load_dir(std::path::Path::new("content")).expect("content");
     let t = server::net::bake_all(&content).expect("bake");
+    let hour: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
     let mut w = sim_core::world::World::new(seed);
+    w.tick = hour * sim_core::blight::TICKS_PER_HOUR;
+    w.works_def = t.works;
+    if args.get(3).map(String::as_str) == Some("lit") {
+        for d in w.works_def.defs.iter_mut() {
+            d.opens_at = 0;
+            d.fallback_at = 0;
+        }
+    }
+    w.works.refresh(&w.works_def);
     w.mob = t.mobs;
     w.gather = t.gather;
     w.combat = t.combat;

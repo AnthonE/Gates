@@ -178,7 +178,7 @@ pub fn stream(
         }
         keep
     });
-    let mut budget = BUILDS_PER_FRAME;
+    let mut budget = BUILDS_PER_FRAME * super::stream_boost();
     // Rings outward, so the nearest rocks land first.
     for r in 0..=ROCK_RING {
         for dz in -r..=r {

@@ -259,6 +259,20 @@ pub mod weather;
 // surface fitted under the module's cap (WebGL2's 2048, WebGPU's 8192), and the page taking over where
 // `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
 pub mod web;
+
+/// How many times its per-frame build budget each ring streamer spends:
+/// terrain, props, clutter, boulders and cliffs. 1 for a player, raised by a
+/// film run (`film::FILM_STREAM_BOOST`), whose frames cost seconds anyway.
+/// Stream-out stays at one a frame: it never holds a shot back.
+static STREAM_BOOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+pub fn stream_boost() -> usize {
+    STREAM_BOOST.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_stream_boost(n: usize) {
+    STREAM_BOOST.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+}
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
 pub mod bow;
