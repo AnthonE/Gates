@@ -129,13 +129,26 @@ fn hash_f32(h: &mut Xxh3, v: f32) {
     h.update(&v.to_bits().to_le_bytes());
 }
 
+/// The occupant byte the golden hashes: what the DRAW placed. A cactus is a
+/// desert shrub refined after the draw (`terrain::cactus_at`) — the same
+/// cell, position and scale — so it hashes as the shrub it stands in. No
+/// save ever keyed anything on a shrub, so seeing it as one is what holds
+/// the golden to the question it answers: did worldgen move what a save
+/// points at.
+fn drawn(o: terrain::Occupant) -> u8 {
+    match o {
+        terrain::Occupant::Cactus => terrain::Occupant::Shrub as u8,
+        o => o as u8,
+    }
+}
+
 fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, z: f32) {
     let table = ScatterTable::alpha_default();
     let (cx0, cz0) = probe_window_origin(x, z);
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             let s = terrain::scatter(seed, &table, haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw, s.species]);
+            h.update(&[drawn(s.occupant), s.yaw, s.species]);
             hash_f32(h, s.x);
             hash_f32(h, s.y);
             hash_f32(h, s.z);
@@ -361,7 +374,7 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     for cz in mid - 8..mid + 8 {
         for cx in mid - 8..mid + 8 {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw, s.species]);
+            h.update(&[drawn(s.occupant), s.yaw, s.species]);
             h.update(&s.x.to_bits().to_le_bytes());
             h.update(&s.y.to_bits().to_le_bytes());
             h.update(&s.z.to_bits().to_le_bytes());

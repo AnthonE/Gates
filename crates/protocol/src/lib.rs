@@ -1211,7 +1211,10 @@ pub use voice::{
 /// v119 — achievements: `SUB_ACHIEVEMENT` (103) tells a player they earned
 /// one, or finished a set: its name, its line, its icon's stem and the set's
 /// progress, own-fact, the in-game popup (`server::achievements`).
-pub const PROTO_VER: u16 = 119;
+/// v120 — the desert's cactus: `terrain::Occupant::Cactus` is solid and
+/// swung at for cloth, so both ends must draw the same cacti to predict the
+/// same walk; and the death cause admits 11 (`DEATH_BY_CACTUS`).
+pub const PROTO_VER: u16 = 120;
 
 /// This game's slug in the elo catalog.
 ///

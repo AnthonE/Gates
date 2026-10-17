@@ -375,7 +375,8 @@ pub enum Kind {
     Wood = 0,
     Stone = 1,
     Ore = 2,
-    /// The berry bush: food and water.
+    /// The berry bush and the mushroom patch: food, and some water. The
+    /// patch is the forest floor's food since trees stopped paying any.
     Forage = 3,
     /// Hemp: cloth. Its own kind, so a thirsty body walks to berries and
     /// not to whichever plant is nearest.
@@ -391,7 +392,7 @@ impl Kind {
             Occupant::Tree => Some(Kind::Wood),
             Occupant::StoneNode => Some(Kind::Stone),
             Occupant::MetalNode | Occupant::SulfurNode => Some(Kind::Ore),
-            Occupant::BerryBush => Some(Kind::Forage),
+            Occupant::BerryBush | Occupant::MushroomPatch => Some(Kind::Forage),
             Occupant::Hemp => Some(Kind::Hemp),
             _ => None,
         }
@@ -6193,7 +6194,7 @@ impl Survivor {
                     .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
-            for spot in self.loot.live(core, tick) {
+            for spot in self.loot.live(core, tick).filter(|s| !s.roadside()) {
                 let (d, b) = relative(body, spot.slot.x, spot.slot.z);
                 known.add(d, b);
             }

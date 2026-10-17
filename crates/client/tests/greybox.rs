@@ -32,7 +32,7 @@ use sim_core::terrain::{
 /// Every occupant the sim can place. Written out rather than derived so §C can
 /// prove the list is complete — a new variant that nobody adds here is caught
 /// by the count assert, not by nothing.
-const ALL: [Occupant; 27] = [
+const ALL: [Occupant; 28] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -60,6 +60,7 @@ const ALL: [Occupant; 27] = [
     Occupant::MetalPile,
     Occupant::SulfurPile,
     Occupant::MushroomPatch,
+    Occupant::Cactus,
 ];
 
 /// `boxes_mesh` emits six faces a box, two triangles each, three unshared
@@ -231,6 +232,14 @@ fn excused(o: Occupant) -> Option<&'static str> {
         Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
             Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0")
         }
+        // A generated pool like the tree's, and its arms are passable as a
+        // tree's limbs are. Its trunk is drawn off the row itself
+        // (`plants::cactus` reads `CACTUS_R_M` and `_TOP_M`), so the widest
+        // column is the row and the shortest column's top is the row's top.
+        Occupant::Cactus => Some(
+            "a generated pool; plants::cactus draws its trunk off CACTUS_R_M \
+             and CACTUS_TOP_M, so no column is wider or a top shorter",
+        ),
         // The ground pickups are knee-high piles you walk over.
         o if o.is_pickup() => Some("a ground pickup, passable: OCCUPANT_R_M and _TOP_M are 0"),
         _ => None,

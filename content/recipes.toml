@@ -267,13 +267,12 @@ output = "item.workbench1"
 count = 1
 station = "none"
 seconds = 60
-# Theirs, whole: 500 wood, 100 stone, 50 scrap (2026-10-17). It was 100
-# fragments, which barrels paid until their loot went Rust's way: theirs
-# pay none.
+# Theirs, whole (wiki.facepunch.com/rust/item/workbench1, 2026-10-17): 500
+# wood, 100 fragments. No container pays fragments, so they are smelted:
+# the furnace comes first, theirs and ours.
 inputs = [
     { item = "item.wood", count = 500 },
-    { item = "item.stone", count = 100 },
-    { item = "item.junk", count = 50 },
+    { item = "item.metal_frags", count = 100 },
 ]
 
 # The bench ladder (bench ladder v0): each rung is crafted AT the rung

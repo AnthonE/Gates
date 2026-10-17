@@ -303,3 +303,24 @@ weak_spot_bonus_pct = 0
 [gatherable.yield_per_hit]
 hand = 3
 
+
+# The desert's cactus (`terrain::Occupant::Cactus`), swung at for cloth as
+# theirs is (rusthelp.com/world/cactus: 3–15 cloth by size, any blade or a
+# rock). Ours is one size, so it pays their middle. It pricks whoever walks
+# into it (`world::CACTUS_HP`), swinging or not.
+[[gatherable]]
+id = "gather.cactus"
+archetype = "cactus"
+output = "item.cloth"
+hits = 2
+weak_spot_bonus_pct = 0
+
+[gatherable.yield_per_hit]
+"item.bat" = 3
+"item.hatchet_stone" = 4
+"item.hatchet_metal" = 5
+
+[gatherable.condition_loss]
+"item.bat" = 30
+"item.hatchet_stone" = 30
+"item.hatchet_metal" = 30

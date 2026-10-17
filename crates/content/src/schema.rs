@@ -138,6 +138,8 @@ pub enum NodeArchetype {
     /// A felled tree's stump (`sim_core::gather::STUMP_NODE`): no occupant of
     /// its own, the tree slot's second harvest.
     Stump,
+    /// The desert's cactus (`terrain::Occupant::Cactus`), swung at.
+    Cactus,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its

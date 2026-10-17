@@ -1596,6 +1596,7 @@ pub fn swing_label(occupant: u8) -> &'static str {
         o if o == Occupant::BarrelSlot as u8 => "SMASH BARREL",
         o if o == Occupant::OilBarrel as u8 => "SMASH OIL BARREL",
         o if o == Occupant::RoadSign as u8 => "SMASH ROAD SIGN",
+        o if o == Occupant::Cactus as u8 => "CUT CACTUS",
         _ => "",
     }
 }

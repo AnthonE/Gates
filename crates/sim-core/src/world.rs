@@ -1042,8 +1042,23 @@ pub const DEATH_BY_HEAT: u8 = 9;
 /// The Verdigris took them (`exposure::corrode`): they stood in the
 /// corruption until it ate through them.
 pub const DEATH_BY_FEL: u8 = 10;
+/// A cactus pricked them to death (wire v120, [`World::prick_cacti`]):
+/// they kept walking into one.
+pub const DEATH_BY_CACTUS: u8 = 11;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_FEL;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_CACTUS;
+
+/// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
+/// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
+/// the reference publishes no figure — a little over a fire's two, since
+/// you walked into it.
+pub const CACTUS_HP: u16 = 3;
+/// A cactus pricks once a second, on the world's own stride, as a fire
+/// burns.
+pub const CACTUS_PERIOD_TICKS: u64 = crate::limits::TICK_HZ as u64;
+/// How near counts as pressed against one, metres past touching: the trunk
+/// holds a capsule off at touching, so contact is within a hand of it.
+pub const CACTUS_TOUCH_M: f32 = 0.1;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -3435,6 +3450,71 @@ impl World {
                 .push(EV_FIRE, fire_a(l.ticks, qx), qz as u32, qy as u32);
         }
         self.arrows.clear_lit();
+    }
+
+    /// Every cactus takes [`CACTUS_HP`] off each player pressed against it,
+    /// once a second: the 3×3 cells round the body, through the slot memo the
+    /// step just read, and a cactus swung down to nothing pricks no one.
+    fn prick_cacti(&mut self) {
+        if !self.tick.is_multiple_of(CACTUS_PERIOD_TICKS) {
+            return;
+        }
+        let seed = self.seed;
+        for j in 0..MAX_PLAYERS {
+            let v = &self.players[j];
+            if !v.active || v.dead || v.hp == 0 || combat::protected(v) {
+                continue;
+            }
+            let (x, y, z) = (
+                v.body.qx as f32 * POS_XZ_Q,
+                v.body.qy as f32 * POS_Y_Q,
+                v.body.qz as f32 * POS_XZ_Q,
+            );
+            let h = crate::collide::hit_height_m(v.crouched());
+            let (pcx, pcz) = (
+                crate::fmath::floor_i32(x / terrain::CELL_SIZE),
+                crate::fmath::floor_i32(z / terrain::CELL_SIZE),
+            );
+            let mut prick: Option<(f32, f32)> = None;
+            for dz in -terrain::OCCUPANT_PROBE_CELLS..=terrain::OCCUPANT_PROBE_CELLS {
+                for dx in -terrain::OCCUPANT_PROBE_CELLS..=terrain::OCCUPANT_PROBE_CELLS {
+                    let (cx, cz) = (pcx + dx, pcz + dz);
+                    let slot = self
+                        .slot_cache
+                        .slot(seed, &self.scatter, &self.haven, cx, cz);
+                    if slot.occupant != terrain::Occupant::Cactus
+                        || self.slot_lives.standing_pm(cx as u16, cz as u16) == 0
+                    {
+                        continue;
+                    }
+                    let (r, top) = terrain::occupant_volume(slot.occupant);
+                    let reach = crate::collide::CAPSULE_RADIUS_M + r * slot.scale + CACTUS_TOUCH_M;
+                    let (ox, oz) = (slot.x - x, slot.z - z);
+                    if ox * ox + oz * oz <= reach * reach
+                        && y < slot.y + top * slot.scale
+                        && y + h > slot.y
+                    {
+                        prick = Some((slot.x, slot.z));
+                    }
+                }
+            }
+            let Some((sx, sz)) = prick else {
+                continue;
+            };
+            let from = combat::bearing_sector(
+                i64::from((sx / POS_XZ_Q) as i32 - self.players[j].body.qx),
+                i64::from((sz / POS_XZ_Q) as i32 - self.players[j].body.qz),
+            );
+            let v = &mut self.players[j];
+            let hurt = combat::hurt(&self.combat, v, CACTUS_HP);
+            let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
+            self.events
+                .push(EV_HURT, vid, u32::from(from), u32::from(CACTUS_HP));
+            self.events.push(EV_HEALTH, vid, left, vmax);
+            if hurt.died {
+                self.down_or_die(j, vid, DEATH_BY_CACTUS, NO_ITEM, 0, false);
+            }
+        }
     }
 
     /// Every fire takes [`crate::fire::FIRE_HP`] off each player and animal
@@ -7606,6 +7686,7 @@ impl World {
         self.light_fires();
         self.fires.expire_due(tick);
         self.burn_fires();
+        self.prick_cacti();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
