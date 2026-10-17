@@ -2482,9 +2482,8 @@ pub fn animate(
     // a second reader of a pure function is two calls and not the
     // second-drain defect `feed.rs` narrates.
     //
-    // `None` is an empty hand, or a capture run with no session at all. An
-    // empty hand sends no swing (`ui::hold::Click::Empty`), so in a session
-    // it never punches; a capture run still draws the bash.
+    // `None` is an empty hand, or a capture run with no session at all, and
+    // it punches (`Stroke::Bash`).
     let def: Option<&'static HeldModelDef> = net
         .as_deref()
         .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))

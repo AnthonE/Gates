@@ -62,6 +62,9 @@ pub struct Pointer {
     /// Whether the left button now down is the press that captured the
     /// pointer. See [`Pointer::swallow`].
     capturing: bool,
+    /// Whether the left button now down began on a hand that does not
+    /// swing. See [`Pointer::spent`].
+    spending: bool,
 }
 
 impl Pointer {
@@ -115,11 +118,43 @@ impl Pointer {
         }
         self.capturing
     }
+
+    /// Is the left button, this frame, a press that began on a hand that
+    /// does not swing (a lock or a box put down, a piece placed, a meal, a
+    /// read), or that press still held? **It is not also a swing.** Putting
+    /// down the last lock empties the slot under a button still held, and
+    /// an empty hand punches, so the press that put a lock on a box punched
+    /// the box (operator, 2026-10-17: *"placing a lock makes me swing"*).
+    /// Swallowed until the button is let go.
+    ///
+    /// `swings` is what the hand in use does on a left click this frame
+    /// (`ui::hold::Click::swings`).
+    pub fn spent(&mut self, clicked: bool, held: bool, swings: bool) -> bool {
+        if clicked && !swings {
+            self.spending = true;
+        }
+        if !held {
+            self.spending = false;
+        }
+        self.spending
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The press that put down the last lock empties the slot under it, and
+    /// the empty hand it leaves must not punch until the button comes up.
+    #[test]
+    fn a_press_that_placed_something_does_not_punch() {
+        let mut p = Pointer::default();
+        assert!(p.spent(true, true, false), "the lock goes down");
+        assert!(p.spent(false, true, true), "the empty hand, still held");
+        assert!(!p.spent(false, false, true), "let go");
+        assert!(!p.spent(true, true, true), "the next press punches");
+        assert!(!p.spent(false, true, true), "and keeps punching");
+    }
 
     /// **The operator's own report, as a gate.** Lock the pointer, open the
     /// build wheel, pick a piece, close it — and be able to look around

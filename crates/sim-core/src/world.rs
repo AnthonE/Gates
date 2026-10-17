@@ -6918,6 +6918,8 @@ impl World {
                     &ray,
                     &reaches,
                 );
+                // A punch that met anything at all hurts the hand.
+                let punched = held == NO_ITEM && !matches!(reached, melee::Reached::Nothing);
                 match reached {
                     melee::Reached::Node(hit) => {
                         swung = gather::land(
@@ -6995,17 +6997,20 @@ impl World {
                         // plank is up to one sample inside the face, exactly
                         // where an arrow's mark sits; `render/decal.rs`
                         // draws it facing the swinger as it draws theirs.
-                        let (mx, my, mz) = ray.at_m(t);
-                        self.events.push(
-                            EV_IMPACT,
-                            impact_a(
-                                surf,
-                                ranged::IMPACT_MELEE,
-                                crate::fmath::floor_i32(mx / POS_XZ_Q),
-                            ),
-                            crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
-                            crate::fmath::floor_i32(my / POS_Y_Q) as u32,
-                        );
+                        // A fist leaves no mark (operator, 2026-10-17).
+                        if held != NO_ITEM {
+                            let (mx, my, mz) = ray.at_m(t);
+                            self.events.push(
+                                EV_IMPACT,
+                                impact_a(
+                                    surf,
+                                    ranged::IMPACT_MELEE,
+                                    crate::fmath::floor_i32(mx / POS_XZ_Q),
+                                ),
+                                crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
+                                crate::fmath::floor_i32(my / POS_Y_Q) as u32,
+                            );
+                        }
                         // …and the wall takes it, priced by `World::chip` —
                         // the same door a bullet's chip goes through, so the
                         // hard/soft side rule (`build::structure_price`) is
@@ -7026,6 +7031,9 @@ impl World {
                         }
                     }
                     melee::Reached::Nothing => {}
+                }
+                if punched {
+                    combat::knuckles(&self.combat, &mut self.players[i], &mut self.events);
                 }
             }
             craft::step(
