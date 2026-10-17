@@ -9593,6 +9593,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/depot.rs"),
         },
         Module {
+            file: "face.rs",
+            src: include_str!("../../sim-core/src/face.rs"),
+        },
+        Module {
             file: "fire.rs",
             src: include_str!("../../sim-core/src/fire.rs"),
         },

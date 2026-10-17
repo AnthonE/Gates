@@ -1,11 +1,9 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 101 kB — fixed-capacity by design (wall 4), and
-# (100 kB until a swing's wind-up put its strike on each player;
-# (97 kB on each side until the Verdigris' spread met main in one merge: the
-# `World` is 107 kB — fixed-capacity by design (wall 4), and
-# (100 kB until wire v121 grew the turret table to 64, the item tables to
-# 127 rows and the sim's event ring to 500;
+# `World` is 108 kB — fixed-capacity by design (wall 4), and
+# (100 kB until wire v121 and a swing's wind-up met in one merge: v121 grew
+# the turret table to 64, the item tables to 127 rows and the sim's event
+# ring to 500, and the wind-up put its strike on each player;
 # 97 kB on each side until the Verdigris' spread met main in one merge: the
 # spread put its outbreaks on the world and the item table grew to 112 rows;
 # on main, 96 kB until the death marker put where and when each player last

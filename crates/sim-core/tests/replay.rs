@@ -546,10 +546,12 @@ const TICKS: u64 = 900;
 /// rescales the island's, its spires stand, and no one spawns inside it.
 /// **Moved → `0x07E1_E50F_C295_4C13` at the travelling mark** (2026-10-17):
 /// the weak spot starts a step from the first blow and moves only when hit.
-/// **Moved → `0x6133_C200_5296_CD91` at the delayed strike** (2026-10-17): a
+/// **Moved → `0x251C_6F03_A043_0E96` at the delayed strike** (2026-10-17): a
 /// swing lands `gather::STRIKE_DELAY_TICKS` after it is taken, and the
 /// pending strike is hashed.
-const GOLDEN_FINAL_HASH: u64 = 0x251C_6F03_A043_0E96;
+/// **Moved → `0xF750_AF5D_3B27_AA04` at the bigger boulders** (2026-10-17, wipe): what
+/// stands where moved with the rocks and THE GATE's guards (#348).
+const GOLDEN_FINAL_HASH: u64 = 0xF750_AF5D_3B27_AA04;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -661,9 +663,11 @@ const GOLDEN_FINAL_HASH: u64 = 0x251C_6F03_A043_0E96;
 /// **Moved → `0xA04E_9426_2556_114B` at the Verdigris** (2026-10-15), with the final hash.
 /// **Moved → `0xFEFF_1F4E_A700_FCCD` at the travelling mark** (2026-10-17), with
 /// the final hash.
-/// **Moved → `0x6696_6FCF_BB2B_815C` at the delayed strike** (2026-10-17), with
+/// **Moved → `0x47FB_2E29_2A91_9869` at the delayed strike** (2026-10-17), with
 /// the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x47FB_2E29_2A91_9869;
+/// **Moved → `0x33F4_1E89_2C04_8BCC` at the bigger boulders** (2026-10-17, wipe), with the
+/// final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x33F4_1E89_2C04_8BCC;
 
 /// Fold a stamped trace into one number.
 ///
