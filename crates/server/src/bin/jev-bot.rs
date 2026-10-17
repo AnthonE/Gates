@@ -38,6 +38,14 @@ const MAX_SOCIETY_BOTS: usize = 2 * protocol::TEAM_MAX;
 /// enough to be one.
 const MIN_SHIFT_ON_S: u64 = 300;
 const MIN_SHIFT_OFF_S: u64 = 60;
+/// A fleet's bots join this far apart. All at once from one address, they
+/// trip the shard's per-source handshake cap (`net.rs` `ADMIT_PER_SOURCE`).
+const FLEET_JOIN_GAP: Duration = Duration::from_millis(1500);
+/// A session that fails this soon was refused at the door (a busy shard, or
+/// this address's handshakes capped while other agents join), so the bot
+/// tries again after `JOIN_RETRY` instead of sitting the run out.
+const JOIN_REFUSED_WITHIN: Duration = Duration::from_secs(30);
+const JOIN_RETRY: Duration = Duration::from_secs(20);
 
 const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S] [--agent-keys DIR]\n--society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
@@ -682,11 +690,26 @@ async fn run(options: Options) -> Result<(), String> {
             // has the body home with its doors shut when it comes, counted
             // in the shard's ticks from that session's welcome.
             let mut left = duration;
+            tokio::time::sleep(FLEET_JOIN_GAP * i as u32).await;
             loop {
                 let on = shift.map_or(left, |(on, _)| on.min(left));
                 let ticks = on.as_secs().saturating_mul(u64::from(TICK_HZ));
                 survivor.new_shift(ticks.min(u64::from(u32::MAX)) as u32);
+                let began = tokio::time::Instant::now();
                 let result = door.play(&endpoint, name, on, &mut survivor).await;
+                if let Err(e) = &result {
+                    let spent = began.elapsed() + JOIN_RETRY;
+                    if began.elapsed() < JOIN_REFUSED_WITHIN && spent < left {
+                        out!(
+                            "{}: {e}; joining again in {} s",
+                            name.as_str(),
+                            JOIN_RETRY.as_secs()
+                        );
+                        tokio::time::sleep(JOIN_RETRY).await;
+                        left = left.saturating_sub(spent);
+                        continue;
+                    }
+                }
                 left = left.saturating_sub(on);
                 let off = match shift {
                     Some((_, off)) if result.is_ok() && !left.is_zero() => off.min(left),
