@@ -625,8 +625,9 @@ const HAND_CURL_MAX: f32 = 1.45;
 fn both_views_of_one_swing_strike_at_the_same_moment() {
     // **The question `NOW.md` §0fp item 5 asked, answered by measuring it.**
     // One swing is drawn two ways: a remote body plays `Sword_Attack` over
-    // `SWING_CLIP_S` = 1.053 s, and the swinger's own hands run
-    // `viewmodel::swing_pose` over `VIEWMODEL_SWING_S` = 0.45 s. Stated as
+    // `SWING_CLIP_S` = 1.053 s (from `SWING_CLIP_LEAD_S` in), and the
+    // swinger's own hands run `viewmodel::swing_pose` over
+    // `VIEWMODEL_SWING_S` = 0.5 s. Stated as
     // durations that reads as a disagreement — two views of one event, more
     // than twice as long on one side as the other.
     //
@@ -642,7 +643,9 @@ fn both_views_of_one_swing_strike_at_the_same_moment() {
     // an accident: retime the clip, or move the wind-up split, and the two
     // strikes come apart with nothing else red.
     let glb = Glb::open(&asset_path(RIG));
-    let remote = glb.pose_apex(client::render::anim::Clip::Swing.name());
+    // As played: a remote swing starts `SWING_CLIP_LEAD_S` into the clip.
+    let remote = glb.pose_apex(client::render::anim::Clip::Swing.name())
+        - client::render::anim::SWING_CLIP_LEAD_S;
     let own = client::render::viewmodel::swing_apex_s();
     let tick = 1.0 / sim_core::limits::TICK_HZ as f32;
     assert!(
@@ -676,7 +679,8 @@ fn both_views_of_one_swing_strike_at_the_same_moment() {
 #[test]
 fn the_sim_strikes_when_the_swing_is_drawn_striking() {
     let glb = Glb::open(&asset_path(RIG));
-    let remote = glb.pose_apex(client::render::anim::Clip::Swing.name());
+    let remote = glb.pose_apex(client::render::anim::Clip::Swing.name())
+        - client::render::anim::SWING_CLIP_LEAD_S;
     let own = client::render::viewmodel::swing_apex_s();
     let tick = 1.0 / sim_core::limits::TICK_HZ as f32;
     let sim = sim_core::gather::STRIKE_DELAY_TICKS as f32 * tick;

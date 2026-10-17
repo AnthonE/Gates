@@ -78,6 +78,9 @@ const TRAIL: usize = 32;
 /// client draws other bodies at, which the server rewinds a blow by when
 /// the input acks the newest tick (`server::stats::favour_for`).
 pub const SEAT_FAVOUR: u32 = sim_core::limits::INTERP_DELAY_TICKS as u32;
+/// How far inside its reach the Aimbot swings at an agent free to back off:
+/// what a body backing out covers in a blow's wind-up.
+const AIMBOT_SURE_M: f32 = 0.35;
 /// A placed seat waits at most this long for the agent to see it.
 const SIGHT_WAIT_TICKS: u32 = 5 * TICK_HZ;
 const NOTICE_TICKS: u32 = TICK_HZ;
@@ -534,7 +537,13 @@ impl Arena {
                         }
                     }
                 }
-                if in_reach && ready {
+                // The Aimbot swings only at a blow that cannot be backed out
+                // of in its wind-up: the agent committed to its own, or
+                // deep inside reach.
+                let sure = s.seat != Seat::Aimbot
+                    || agent.strike_at > tick
+                    || d <= reach_m - AIMBOT_SURE_M;
+                if in_reach && ready && sure {
                     f.buttons |= BTN_PRIMARY;
                 }
             }

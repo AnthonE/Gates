@@ -162,13 +162,16 @@ pub const VIEWMODEL_SWAY_MAX: f32 = 0.16;
 ///   · the whole stroke recovers inside the sim's own cadence
 ///     (`SWING_INTERVAL_TICKS / TICK_HZ` = 1.267 s) with the arm back at
 ///     rest, so holding the button is a steady chop and never a wind-up
-///     that never resolves — 0.45 s is a third of it;
-///   · the arc's **apex** ([`swing_apex_s`]) lands 0.245 s in, which is
+///     that never resolves — 0.38 s is under a third of it;
+///   · the arc's **apex** ([`swing_apex_s`]) lands 0.133 s in, which is
 ///     where the sim lands the blow: a taken swing is cast
-///     `gather::STRIKE_DELAY_TICKS` (7) later, with the aim of that tick,
+///     `gather::STRIKE_DELAY_TICKS` (4) later, with the aim of that tick,
 ///     and `tests/rig_asset.rs` holds the two within a tick. Move the
-///     apex and the blow comes apart from the picture of it.
-pub const VIEWMODEL_SWING_S: f32 = 0.45;
+///     apex and the blow comes apart from the picture of it;
+///   · after the apex the arm stays out ([`VIEWMODEL_SWING_HOLD`]) before it
+///     comes back — the reference's swing is quick in and lingers with the
+///     force spent, hit or miss.
+pub const VIEWMODEL_SWING_S: f32 = 0.38;
 
 /// The point the whole viewmodel — arm, hand and item — turns about, in view
 /// space, metres.
@@ -182,13 +185,16 @@ pub const VIEWMODEL_SWING_S: f32 = 0.45;
 /// instead of into it.
 pub const VIEWMODEL_SWING_PIVOT: Vec3 = Vec3::new(0.05, -0.10, 0.30);
 
-/// What fraction of the stroke is the wind-up. The rest is the strike and its
-/// recovery.
-pub const VIEWMODEL_SWING_WINDUP: f32 = 0.30;
-/// How much of the STRIKE is the fall toward the apex; the remainder is the
-/// recovery back to rest. Under a half, so the blow is faster than the arm's
-/// return — a symmetric strike reads as a wave rather than a chop.
-pub const VIEWMODEL_SWING_ATTACK: f32 = 0.35;
+/// What fraction of the stroke is the wind-up. The rest is the strike, the
+/// hold and the recovery. A quick cock, not a draw: 89 ms, and the smallest
+/// fraction whose pulse `tests/viewmodel_arms.rs` still passes as smooth.
+pub const VIEWMODEL_SWING_WINDUP: f32 = 0.234;
+/// How much of the rest of the stroke is the fall toward the apex — set so
+/// the apex lands on `gather::STRIKE_DELAY_TICKS` ([`swing_apex_s`]).
+pub const VIEWMODEL_SWING_ATTACK: f32 = 0.1526;
+/// What fraction of the stroke the arm holds at the apex, the force spent,
+/// before it comes back: the linger. The recovery takes what is left.
+pub const VIEWMODEL_SWING_HOLD: f32 = 0.35;
 
 /// The chop's wind-up at its peak, as a turn of the whole arm about
 /// [`VIEWMODEL_SWING_PIVOT`], YXZ radians: up, and a little in toward the
@@ -910,16 +916,26 @@ pub fn bash_pose(s: f32) -> (Quat, Vec3) {
 /// the apex, overlapping the strike, so the arm comes down from the wind-up in
 /// one motion. It used to fall back to rest before the strike began, and a
 /// chop that comes down twice with a stop at rest between reads as a stutter.
-/// Both are zero, with zero slope, at the apex, so the apex pose is the
-/// strike's alone.
+/// The cock is zero, with zero slope, at the apex, so the apex pose is the
+/// strike's alone; the strike then holds there for [`VIEWMODEL_SWING_HOLD`]
+/// and eases back. `sin²` in, flat, `cos²` out: C¹ at every joint, so the
+/// hold reads as the arm stopping rather than a frame sticking.
 pub fn swing_phases(s: f32) -> (f32, f32) {
+    use std::f32::consts::FRAC_PI_2;
     let w = VIEWMODEL_SWING_WINDUP;
     let apex = swing_apex_s() / VIEWMODEL_SWING_S;
+    let held = (apex + VIEWMODEL_SWING_HOLD).min(1.0);
     let cock = bump(s / apex, 0.5 * w / apex);
-    let strike = if s < w {
+    let strike = if s <= w || s >= 1.0 {
         0.0
+    } else if s < apex {
+        let t = FRAC_PI_2 * (s - w) / (apex - w);
+        t.sin() * t.sin()
+    } else if s < held {
+        1.0
     } else {
-        bump((s - w) / (1.0 - w), VIEWMODEL_SWING_ATTACK)
+        let t = FRAC_PI_2 * (s - held) / (1.0 - held);
+        t.cos() * t.cos()
     };
     (cock, strike)
 }
@@ -2595,9 +2611,9 @@ pub fn animate(
         // `BTN_PRIMARY` is not set while a panel eats the click, so
         // `swinging` is false and the cadence never fires.
         //
-        // `swing_apex_s` is 0.16 s in and `synth::whoosh` peaks a third of
+        // `swing_apex_s` is 0.133 s in and `synth::whoosh` peaks a third of
         // the way through its 0.26 s, so starting the cue with the stroke
-        // puts its loudest sample within a frame of the arm's apex.
+        // puts its loudest sample in the strike, just ahead of the apex.
         if let Some(sound) = sound.as_deref_mut() {
             sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
             sound.music.bump(crate::sound::music::BUMP_SWING);

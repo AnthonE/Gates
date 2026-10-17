@@ -153,13 +153,15 @@ pub const MAX_TOOLS_PER_NODE: usize = 8;
 /// at 30 Hz, the melee-band cadence. Paid per swing, hit or whiff.
 pub const SWING_INTERVAL_TICKS: u64 = 38;
 
-/// Ticks from a swing being taken to its blow landing: **7 (233 ms)**, the
+/// Ticks from a swing being taken to its blow landing: **4 (133 ms)**, the
 /// strike both swing animations draw — the first-person arc's apex
-/// (`viewmodel::swing_apex_s`, 0.245 s) and the remote body's
-/// `Sword_Attack` (`client/tests/rig_asset.rs` holds both to this). The
-/// blow is cast with the aim and the lag-comp favour of the strike tick, so
-/// what is judged is what the swinger watched the weapon land on.
-pub const STRIKE_DELAY_TICKS: u64 = 7;
+/// (`viewmodel::swing_apex_s`) and the remote body's `Sword_Attack` as it is
+/// played (`client/tests/rig_asset.rs` holds both to this). Fast, the way
+/// the reference swings (operator, 2026-10-17: *"it swings pretty fast and
+/// almost seems to linger at most of the force is out"*). The blow is cast
+/// with the aim and the lag-comp favour of the strike tick, so what is
+/// judged is what the swinger watched the weapon land on.
+pub const STRIKE_DELAY_TICKS: u64 = 4;
 const _: () = assert!(STRIKE_DELAY_TICKS >= 1 && STRIKE_DELAY_TICKS < SWING_INTERVAL_TICKS);
 
 /// Budget one unmarked swing spends against a node's pool, and the
