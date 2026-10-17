@@ -7,7 +7,7 @@ use sim_core::limits::TICK_HZ;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const RUN_SECONDS: u64 = 120;
 /// An MCP harness's run: the longest `--seconds` allows. The harness ends
@@ -49,7 +49,51 @@ const FLEET_JOIN_GAP: Duration = Duration::from_millis(1500);
 const JOIN_REFUSED_WITHIN: Duration = Duration::from_secs(30);
 const JOIN_RETRY: Duration = Duration::from_secs(20);
 
-const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S] [--agent-keys DIR]\n--society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
+/// `--shift ON_S,OFF_S[,AT_S]`: play ON_S, log off for OFF_S. With AT_S the
+/// cycle is the clock's, one starting AT_S seconds past UTC midnight and
+/// every ON_S+OFF_S after, so a restart keeps it and two villages given
+/// different AT_S never sleep at once. Without, a shift starts at the join.
+#[derive(Clone, Copy)]
+struct Shift {
+    on: Duration,
+    off: Duration,
+    at: Option<u64>,
+}
+
+impl Shift {
+    /// What is left to play of the shift on now, or how long until the
+    /// next one starts. The tail of one too short to play is waited out.
+    fn clock(self) -> Result<Duration, Duration> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.clock_at(now)
+    }
+
+    /// [`Self::clock`] at `now`, seconds since the Unix epoch.
+    fn clock_at(self, now: u64) -> Result<Duration, Duration> {
+        let Some(at) = self.at else {
+            return Ok(self.on);
+        };
+        let (on, period) = (self.on.as_secs(), (self.on + self.off).as_secs());
+        let into = (now % period + period - at % period) % period;
+        if into + MIN_SHIFT_ON_S <= on {
+            Ok(Duration::from_secs(on - into))
+        } else {
+            Err(Duration::from_secs(period - into))
+        }
+    }
+
+    /// The log-off after a shift: OFF_S, or what the clock has left of it.
+    fn rest(self) -> Duration {
+        match self.at {
+            None => self.off,
+            Some(_) => self.clock().err().unwrap_or_default(),
+        }
+    }
+}
+
+const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR]\n--society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
 fn usage() -> String {
     format!(
@@ -77,7 +121,7 @@ struct Options {
     crews: Option<usize>,
     roles: Vec<Role>,
     allies: Vec<Kin>,
-    shift: Option<(Duration, Duration)>,
+    shift: Option<Shift>,
     agent_keys: Option<PathBuf>,
 }
 
@@ -190,19 +234,27 @@ impl Options {
                     }
                 }
                 "--shift" => {
-                    let spec = args.next().ok_or("--shift needs ON_S,OFF_S")?;
-                    let (on, off) = spec
-                        .split_once(',')
-                        .and_then(|(a, b)| {
-                            Some((a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?))
-                        })
-                        .ok_or("--shift needs ON_S,OFF_S in seconds")?;
+                    let spec = args.next().ok_or("--shift needs ON_S,OFF_S[,AT_S]")?;
+                    let secs: Vec<u64> = spec
+                        .split(',')
+                        .map(|n| n.trim().parse::<u64>())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| "--shift needs ON_S,OFF_S[,AT_S] in seconds")?;
+                    let (on, off, at) = match secs[..] {
+                        [on, off] => (on, off, None),
+                        [on, off, at] => (on, off, Some(at)),
+                        _ => return Err("--shift needs ON_S,OFF_S[,AT_S] in seconds".into()),
+                    };
                     if on < MIN_SHIFT_ON_S || off < MIN_SHIFT_OFF_S {
                         return Err(format!(
                             "--shift: on at least {MIN_SHIFT_ON_S} s, off at least {MIN_SHIFT_OFF_S} s"
                         ));
                     }
-                    options.shift = Some((Duration::from_secs(on), Duration::from_secs(off)));
+                    options.shift = Some(Shift {
+                        on: Duration::from_secs(on),
+                        off: Duration::from_secs(off),
+                        at,
+                    });
                 }
                 "--agent-keys" => {
                     options.agent_keys = Some(PathBuf::from(
@@ -659,11 +711,15 @@ async fn run(options: Options) -> Result<(), String> {
     } else {
         vec![None; options.bots]
     };
-    if let Some((on, off)) = options.shift {
+    if let Some(shift) = options.shift {
         out!(
-            "shifts: {} s on, {} s off{}",
-            on.as_secs(),
-            off.as_secs(),
+            "shifts: {} s on, {} s off{}{}",
+            shift.on.as_secs(),
+            shift.off.as_secs(),
+            shift
+                .at
+                .map(|at| format!(", by the clock from {at} s past midnight UTC"))
+                .unwrap_or_default(),
             if options.agent_keys.is_none() && door.key.is_none() {
                 " (guests come back as new bodies; --agent-keys DIR keeps them)"
             } else {
@@ -694,7 +750,26 @@ async fn run(options: Options) -> Result<(), String> {
             let mut left = duration;
             tokio::time::sleep(FLEET_JOIN_GAP * i as u32).await;
             loop {
-                let on = shift.map_or(left, |(on, _)| on.min(left));
+                let on = match shift.map(Shift::clock) {
+                    None => left,
+                    Some(Ok(on)) => on.min(left),
+                    // The clock's shift is off: asleep until the next, and
+                    // the fleet's joins spread again.
+                    Some(Err(wait)) if wait < left => {
+                        let wait = wait + FLEET_JOIN_GAP * i as u32;
+                        out!("{}: off shift for {} s", name.as_str(), wait.as_secs());
+                        tokio::time::sleep(wait).await;
+                        left = left.saturating_sub(wait);
+                        continue;
+                    }
+                    Some(Err(_)) => {
+                        return (
+                            i,
+                            survivor,
+                            Err("the run ends before its next shift".into()),
+                        )
+                    }
+                };
                 let ticks = on.as_secs().saturating_mul(u64::from(TICK_HZ));
                 survivor.new_shift(ticks.min(u64::from(u32::MAX)) as u32);
                 let began = tokio::time::Instant::now();
@@ -717,7 +792,15 @@ async fn run(options: Options) -> Result<(), String> {
                 }
                 left = left.saturating_sub(on);
                 let off = match shift {
-                    Some((_, off)) if result.is_ok() && !left.is_zero() => off.min(left),
+                    Some(shift) if result.is_ok() && !left.is_zero() => {
+                        // The clock's next shift starts for the whole fleet
+                        // at once: its joins spread again.
+                        let gap = match shift.at {
+                            Some(_) => FLEET_JOIN_GAP * i as u32,
+                            None => Duration::ZERO,
+                        };
+                        (shift.rest() + gap).min(left)
+                    }
                     _ => return (i, survivor, result),
                 };
                 // The run's report, so far: a service is stopped by a
@@ -911,5 +994,43 @@ async fn main() {
     if let Err(error) = result {
         eprintln!("jev-bot: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clock_kept_shift_holds_its_phase_and_waits_out_a_short_tail() {
+        let secs = Duration::from_secs;
+        let shift = |at| Shift {
+            on: secs(5400),
+            off: secs(1800),
+            at,
+        };
+        let midnight = 20_000 * 86_400;
+        // From midnight: on until 01:30, off until 02:00.
+        assert_eq!(shift(Some(0)).clock_at(midnight), Ok(secs(5400)));
+        assert_eq!(shift(Some(0)).clock_at(midnight + 600), Ok(secs(4800)));
+        assert_eq!(shift(Some(0)).clock_at(midnight + 5400), Err(secs(1800)));
+        assert_eq!(shift(Some(0)).clock_at(midnight + 7200), Ok(secs(5400)));
+        // Under MIN_SHIFT_ON_S left of a shift is not worth a join.
+        assert_eq!(shift(Some(0)).clock_at(midnight + 5300), Err(secs(1900)));
+        // An hour later the other village sleeps 02:30 to 03:00, never with
+        // the first.
+        assert_eq!(shift(Some(3600)).clock_at(midnight + 5400), Ok(secs(3600)));
+        assert_eq!(shift(Some(3600)).clock_at(midnight + 9000), Err(secs(1800)));
+        // Before AT_S on the day, the cycle runs back from it: 23:00 to
+        // 00:30 on, then off until 01:00.
+        assert_eq!(shift(Some(3600)).clock_at(midnight + 600), Ok(secs(1200)));
+        assert_eq!(shift(Some(3600)).clock_at(midnight + 2400), Err(secs(1200)));
+        assert_eq!(
+            shift(Some(3600)).rest(),
+            shift(Some(3600)).clock().err().unwrap_or_default()
+        );
+        // Without AT_S a shift starts at the join.
+        assert_eq!(shift(None).clock_at(midnight + 5300), Ok(secs(5400)));
+        assert_eq!(shift(None).rest(), secs(1800));
     }
 }
