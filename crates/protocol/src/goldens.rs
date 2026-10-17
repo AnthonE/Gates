@@ -1979,8 +1979,9 @@ pub fn event_hit() -> (u32, Part, u16) {
 /// sector 11 — west-north-west, a bearing that is on none of the four axes
 /// and in none of the four quadrant seams, so a transposed sign or a
 /// swapped quadrant in `bearing_sector` cannot land on it by accident.
-pub fn event_hurt() -> (u8, u16) {
-    (11, 25)
+/// To the head (v121), so the bit is set and a dropped one shows.
+pub fn event_hurt() -> (u8, u16, bool) {
+    (11, 25, true)
 }
 
 /// A health readout partway down the shipped 100-hp bar — three spear

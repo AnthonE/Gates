@@ -6413,7 +6413,7 @@ impl Survivor {
                 self.skipped = Some(t.key());
             }
         }
-        while let Some((sector, damage)) = core.pop_hurt() {
+        while let Some((sector, damage, _)) = core.pop_hurt() {
             if damage == 0 {
                 continue;
             }
@@ -8369,7 +8369,7 @@ mod tests {
         keyframe(&mut view, tick, &[me]);
         bot.frame_at(&view, 1, 7, now);
         assert!(!bot.home.under_attack(view.newest_applied.unwrap()));
-        let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+        let n = protocol::event::encode_event_hurt(0, 15, false, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         assert!(bot.home.under_attack(view.newest_applied.unwrap()));
         assert!(matches!(
@@ -8785,7 +8785,7 @@ mod tests {
             view.newest_applied = Some(1 + u32::from(sector));
             goal(&mut bot, Goal::GatherWood, 1 + u32::from(sector));
             bot.target = Some(target);
-            let n = protocol::event::encode_event_hurt(sector, 15, &mut buf).unwrap();
+            let n = protocol::event::encode_event_hurt(sector, 15, false, &mut buf).unwrap();
             event(&mut bot, n, &buf);
             // From the first frame the body backs away from the blow, while
             // the hands are still turning to face where it came from.
@@ -8841,7 +8841,7 @@ mod tests {
                 assert_eq!(bot.stats.phase, Phase::Fleeing);
                 assert!(bot.goal.is_some_and(|a| a.paused.is_some()));
             }
-            let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+            let n = protocol::event::encode_event_hurt(0, 15, false, &mut buf).unwrap();
             event(&mut bot, n, &buf);
         }
         // An answer chosen before all that is stale by the end of it.
@@ -8881,7 +8881,7 @@ mod tests {
         let now = Instant::now();
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
         let mut hurt = |bot: &mut Survivor| {
-            let n = protocol::event::encode_event_hurt(2, 15, &mut buf).unwrap();
+            let n = protocol::event::encode_event_hurt(2, 15, false, &mut buf).unwrap();
             event(bot, n, &buf);
         };
         let choice = |goal| Choice {
@@ -8986,7 +8986,7 @@ mod tests {
         let (mut bot, mut view, _) = fixture();
         let now = Instant::now();
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_hurt(4, 30, &mut buf).unwrap();
+        let n = protocol::event::encode_event_hurt(4, 30, false, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         view.entities[0].1.wounded = true;
         let (_, away) = bot.last_hurt.unwrap();

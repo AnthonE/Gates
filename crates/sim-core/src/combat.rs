@@ -1544,7 +1544,12 @@ pub fn strike_body(
         crate::world::hit_c(part, dmg),
     );
     // The other half of the same blow, addressed to the other person in it.
-    events.push(EV_HURT, victim_id, sector as u32, dmg as u32);
+    events.push(
+        EV_HURT,
+        victim_id,
+        sector as u32,
+        crate::world::hurt_c(part, dmg),
+    );
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
         // No `EV_DEATH` here (wounded v0): the world decides whether this

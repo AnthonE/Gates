@@ -1980,7 +1980,7 @@ pub struct ClientCore {
     /// absolute world bearing (`sim_core::combat::bearing_sector`); the
     /// renderer subtracts its own yaw, so the mark stays where the attacker
     /// is while you turn to look at them.
-    hurts: [(u8, u16); TOAST_RING],
+    hurts: [(u8, u16, bool); TOAST_RING],
     hurt_head: usize,
     hurt_len: usize,
     /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
@@ -2414,7 +2414,7 @@ impl ClientCore {
             }; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
-            hurts: [(0, 0); TOAST_RING],
+            hurts: [(0, 0, false); TOAST_RING],
             hurt_head: 0,
             hurt_len: 0,
             deaths: [(0, 0); TOAST_RING],
@@ -3792,12 +3792,16 @@ impl ClientCore {
                 self.hp_max = max;
                 flags |= APPLIED_HEALTH;
             }
-            EventMsg::Hurt { sector, damage } => {
+            EventMsg::Hurt {
+                sector,
+                damage,
+                head,
+            } => {
                 if self.hurt_len == TOAST_RING {
                     self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
                     self.hurt_len -= 1;
                 }
-                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage);
+                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage, head);
                 self.hurt_len += 1;
                 flags |= APPLIED_HIT;
             }
@@ -4552,12 +4556,13 @@ impl ClientCore {
         Some(r)
     }
 
-    /// The oldest blow landed on you: `(bearing sector, damage)`.
+    /// The oldest blow landed on you: `(bearing sector, damage, to the
+    /// head)`.
     ///
     /// Destructive, single-consumer, `pop_hit`'s contract exactly —
     /// `render/feed.rs` is the one drain and `client/tests/sound.rs` is what
     /// keeps it that way (`CLAUDE.md`'s clean-merge trap).
-    pub fn pop_hurt(&mut self) -> Option<(u8, u16)> {
+    pub fn pop_hurt(&mut self) -> Option<(u8, u16, bool)> {
         if self.hurt_len == 0 {
             return None;
         }

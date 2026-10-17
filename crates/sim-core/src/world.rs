@@ -234,6 +234,21 @@ pub fn hit_part(c: u32) -> crate::collide::Part {
         .unwrap_or(crate::collide::Part::Chest)
 }
 
+/// [`EV_HURT`]'s `c` bit for a blow that crossed the victim's head: what
+/// the victim hears as Rust's headshot crunch. Above the `u16` damage.
+pub const HURT_HEAD: u32 = 1 << 16;
+
+/// `EV_HURT`'s `c`: the damage, with [`HURT_HEAD`] for a head blow.
+#[inline]
+pub fn hurt_c(part: crate::collide::Part, damage: u16) -> u32 {
+    let head = if part == crate::collide::Part::Head {
+        HURT_HEAD
+    } else {
+        0
+    };
+    head | damage as u32
+}
+
 /// The scaled damage out of an `EV_HIT` payload.
 #[inline]
 pub fn hit_damage(c: u32) -> u16 {
@@ -624,7 +639,8 @@ pub const EV_TRUST: u8 = 39;
 pub const EV_SWING: u8 = 40;
 
 /// EV_HURT: a = victim player id, b = the world bearing sector from the
-/// victim toward whatever hurt them, c = damage dealt.
+/// victim toward whatever hurt them, c = damage dealt, with [`HURT_HEAD`]
+/// set over it when the blow crossed the head (v121; [`hurt_c`]).
 ///
 /// **The victim's fact, and the mirror of `EV_HIT`.** A hit has two people
 /// in it and the wire only ever told one of them: `EV_HIT` is unicast to
