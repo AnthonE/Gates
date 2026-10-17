@@ -532,7 +532,8 @@ pub struct GroundSplatParams {
     /// The per-pixel cliff: x/y = [`CLIFF_TAN_LO`]/[`CLIFF_TAN_HI`],
     /// z = [`CLIFF_NOISE`], w = [`CLIFF_NOISE_M`].
     pub cliff: Vec4,
-    /// x = [`WALL_PLANE_BLEND`]. yzw reserved and zero.
+    /// x = [`WALL_PLANE_BLEND`], y/z = [`PROJECT_TRI_COS`]/
+    /// [`PROJECT_NORMAL_COS`]. w reserved and zero.
     pub wall_planes: Vec4,
     /// x = `terrain::SEA_LEVEL`, y = [`CAUSTIC_GAIN`], z/w =
     /// [`CAUSTIC_FADE_FROM_M`]/[`CAUSTIC_FADE_TO_M`].
@@ -657,7 +658,7 @@ impl GroundSplatParams {
             mottle: Vec4::new(MOTTLE_M, MOTTLE_AMP, 0.0, 0.0),
             aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
             cliff: Vec4::new(CLIFF_TAN_LO, CLIFF_TAN_HI, CLIFF_NOISE, CLIFF_NOISE_M),
-            wall_planes: Vec4::new(WALL_PLANE_BLEND, 0.0, 0.0, 0.0),
+            wall_planes: Vec4::new(WALL_PLANE_BLEND, PROJECT_TRI_COS, PROJECT_NORMAL_COS, 0.0),
             caustics: Vec4::new(
                 sim_core::terrain::SEA_LEVEL,
                 CAUSTIC_GAIN,
@@ -927,6 +928,21 @@ pub const WALL_SHARPNESS: f32 = 16.0;
 /// its bearing, stretched at most 1.04× across it, so two thirds of a wall
 /// pays for one plane's taps.
 pub const WALL_PLANE_BLEND: f32 = 1.0 / 3.0;
+
+/// The cosine between a triangle's own plane and its smoothed normal past
+/// which the projection is chosen by the triangle (~20°), and within which
+/// by the normal (~10°).
+///
+/// The planar and wall taps are stretched by the triangle they are laid on,
+/// and the normal is a central difference across its neighbours. They agree
+/// to 4° on 90% of steep ground, and part by 15–25° where the cliff relief
+/// cuts a step one vertex wide: there the riser read the top plane, smeared
+/// three to ten times down the fall line, and the tread beside it a wall
+/// (operator, 2026-10-17: the smear at the foot of the faces). Inside 10° the
+/// normal still decides, because it is continuous across a triangle edge and
+/// a triangle's plane is not.
+pub const PROJECT_TRI_COS: f32 = 0.94;
+pub const PROJECT_NORMAL_COS: f32 = 0.985;
 
 /// Two arrays — albedo, and normal/roughness/AO — and one sampler.
 ///

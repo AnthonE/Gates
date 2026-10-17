@@ -128,7 +128,9 @@ struct GroundSplat {
     // starts / is full, z = how far the noise moves that, w = its wavelength (m).
     cliff: vec4<f32>,
     // x = `WALL_PLANE_BLEND`: the share of each 45° step between two wall
-    // planes over which both are read. yzw reserved and zero.
+    // planes over which both are read. y/z = the cosine between the
+    // triangle's plane and the normal below which the projection follows the
+    // triangle / above which it follows the normal. w reserved and zero.
     wall_planes: vec4<f32>,
     // Caustics (`ground_splat::CAUSTIC_*`): x = the sea level, y = strength,
     // z/w = the depth where they start to fade / are gone (m).
@@ -735,13 +737,34 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let wn = normalize(in.world_normal);
     let sin_tilt = length(wn.xz);
     let cos_tilt = abs(wn.y);
+    // **The projection follows the triangle the photograph is laid on, where
+    // that is not what the normal says.** A projection's stretch is the
+    // triangle's own, and the shading normal is smoothed across its
+    // neighbours. Where the cliff relief cuts a step one vertex wide, the
+    // central difference spreads it over two: the riser is shaded as a slope
+    // and read off the top plane, drawn three to ten times stretched down
+    // the fall line, and the tread beside it read off a wall. Where the two
+    // agree the normal still decides, because it is continuous across a
+    // triangle edge and the triangle's plane is not; where they part, the
+    // edge they part at is a crease in the drawn rock, and a seam along a
+    // crease reads as the rock's own.
+    var pn = wn;
+    let gc = cross(dp_dx, dp_dy);
+    if dot(gc, gc) > 0.0 {
+        var gn = normalize(gc);
+        if dot(gn, wn) < 0.0 {
+            gn = -gn;
+        }
+        pn = normalize(mix(gn, wn, smoothstep(splat.wall_planes.y, splat.wall_planes.z, dot(gn, wn))));
+    }
+    let p_sin = length(pn.xz);
     // `pow(cos, k)` against `pow(sin, k)`: the two foreshortenings are exact
     // complements, so this crosses over at 45° by construction rather than by a
     // tuned threshold.
-    let w_top = pow(cos_tilt, splat.wall.y);
-    let w_wall = pow(sin_tilt, splat.wall.y);
+    let w_top = pow(abs(pn.y), splat.wall.y);
+    let w_wall = pow(p_sin, splat.wall.y);
     var wall_mix = 0.0;
-    if sin_tilt > splat.wall.x {
+    if p_sin > splat.wall.x {
         wall_mix = w_wall / max(w_top + w_wall, 1e-6);
     }
 
@@ -812,7 +835,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         // its sides) and counted in the 45° steps between planes: plane `ka`
         // and the next one round share it, over the middle
         // `WALL_PLANE_BLEND` of each step and nowhere else.
-        var bearing = atan2(wn.z, wn.x);
+        var bearing = atan2(pn.z, pn.x);
         if bearing < 0.0 {
             bearing = bearing + 3.14159265;
         }
