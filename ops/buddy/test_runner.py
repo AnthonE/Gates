@@ -228,6 +228,7 @@ check("Doctor Wood goes to his friend and thinks without them",
       cmd[cmd.index("--friend") + 1] == "0x" + "2" * 40 and cmd[cmd.index("--friend-away") + 1] == "think"
       and "--external" in cmd)
 check("Doctor Wood is mute without an ElevenLabs key", "--voice" not in cmd)
+check("ours think only with a person near", cmd[cmd.index("--alone") + 1] == "autopilot")
 os.environ["ELEVENLABS_API_KEY"] = "el-test"
 runner.start("pot-doctor-wood", got["pot-doctor-wood"])
 cmd, env, _ = calls[-1]
@@ -237,6 +238,7 @@ runner.start("a000000001", got["a000000001"])
 cmd = calls[-1][0]
 check("a house buddy waits on its friend for free", "--friend" in cmd and "--friend-away" not in cmd)
 check("only ours speak", "--voice" not in cmd)
+check("an owner's buddy is never put on autopilot alone", "--alone" not in cmd)
 runner.start("a000000002", got["a000000002"])
 cmd, env, stdout = calls[-1]
 check("an own brain runs --mcp with its stdio held", cmd[-1] == "--mcp" and "--external" not in cmd

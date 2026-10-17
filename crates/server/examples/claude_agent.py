@@ -229,9 +229,12 @@ worth showing: a base finished, a fight, a find, a view. Otherwise leave \
 `share` empty."""
 
 
-def schema(options, share, voice=False):
+def schema(share, voice=False):
+    # The same schema every turn: it is part of the cached prefix, so an enum
+    # of this turn's options would miss the cache nearly every time. The
+    # options are in the turn, and `main` refuses a goal not among them.
     props = {
-        "goal": {"type": "string", "enum": options},
+        "goal": {"type": "string"},
         "reason": {"type": "string"},
         "say": {"type": "string"},
         "to": {"type": "string", "enum": ["local", "team"]},
@@ -394,7 +397,8 @@ def ask_api(client, system, blocks, out_schema, spend):
     response = client.beta.messages.create(
         model=MODEL,
         max_tokens=4096,
-        system=system,
+        # Cached: a mind's rules and character are the same every turn.
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": blocks}],
         output_config={
             "effort": "low",
@@ -556,7 +560,7 @@ def main():
         system += SHARE_RULE if can_share else ""
         try:
             answer = ask(system, turn_content(request, recent, frame, notes, chat_log),
-                         schema(request["options"], can_share, voice))
+                         schema(can_share, voice))
             goal = answer["goal"]
             if goal not in request["options"]:
                 raise RuntimeError(f"model chose {goal!r}, not on offer")

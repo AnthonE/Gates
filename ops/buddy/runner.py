@@ -269,6 +269,10 @@ def start(aid, a):
         # An owner's harness costs us nothing, so it decides whoever is on.
         if own or a.get("friend_away") == "think":
             cmd += ["--friend-away", "think"]
+    # Ours think only while a person is near; alone, the free scripted policy
+    # plays. An owner's agent thinks whenever it plays: its owner pays for it.
+    if a["kind"] == "community" and not own:
+        cmd += ["--alone", "autopilot"]
     cmd += ["--seconds", "86400", "--think-ms", str(THINK_MS),
             "--max-requests-hour", str(MAX_HOUR), "--max-requests-day", str(MAX_DAY)]
     log(f"{aid}: {a['name']} ({a['kind']}, {a['brain']} brain) joins")

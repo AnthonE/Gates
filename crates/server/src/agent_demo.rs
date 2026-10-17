@@ -233,7 +233,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -265,6 +265,10 @@ pub struct MindArgs {
     /// scripted policy (`autopilot`, the default): a character with a
     /// friend, rather than a buddy that waits for one.
     pub friend_away_think: bool,
+    /// With no person near (`autopilot::alone`), the free scripted policy
+    /// plays and the mind is not asked (`--alone autopilot`); the default
+    /// keeps it deciding.
+    pub alone_autopilot: bool,
     /// How long an MCP harness has to answer before the scripted policy
     /// plays that turn (`--autopilot-s`).
     pub autopilot: Duration,
@@ -290,6 +294,7 @@ impl Default for MindArgs {
             frame_url: None,
             friend: None,
             friend_away_think: false,
+            alone_autopilot: false,
             autopilot: AUTOPILOT_DEFAULT,
             voice: false,
         }
@@ -353,6 +358,13 @@ impl MindArgs {
                     _ => return Err("--friend-away is autopilot or think".into()),
                 };
             }
+            "--alone" => {
+                self.alone_autopilot = match args.next().as_deref() {
+                    Some("autopilot") => true,
+                    Some("think") => false,
+                    _ => return Err("--alone is autopilot or think".into()),
+                };
+            }
             "--external" => {
                 let program = args.next().ok_or("--external needs a program")?;
                 self.source = Source::External(program, args.collect());
@@ -402,16 +414,20 @@ impl MindArgs {
         };
         self.cfg.check()?;
         let buddy = self.friend.is_some();
-        // A buddy's mind costs nothing while its friend is away: those
-        // turns are the autopilot's and never reach the spend guard.
-        // `--friend-away think` keeps the mind deciding instead.
-        let gate = buddy && !self.friend_away_think;
-        let priced = |mind: Mind| {
-            if gate {
-                mind.free_when(crate::autopilot::friend_away)
-            } else {
-                mind
-            }
+        // A buddy's mind costs nothing while its friend is away, nor any
+        // mind with `--alone autopilot` while no person is near: those turns
+        // are the autopilot's and never reach the spend guard. `--friend-away
+        // think` keeps a buddy's mind deciding instead.
+        let gate = if buddy && !self.friend_away_think {
+            Some(crate::autopilot::FRIEND_AWAY)
+        } else if self.alone_autopilot {
+            Some(crate::autopilot::ALONE)
+        } else {
+            None
+        };
+        let priced = |mind: Mind| match gate {
+            Some(g) => mind.free_when(g.rule),
+            None => mind,
         };
         match &self.source {
             Source::Scripted => Mind::new(Scripted::default(), self.cfg),
@@ -430,7 +446,7 @@ impl MindArgs {
                     .iter()
                     .map(|url| ("GATES_FRAME_URL", url.clone()))
                     .collect();
-                if buddy {
+                if buddy || gate.is_some() {
                     // The autopilot's answer to a request the agent missed
                     // must land inside the mind's own deadline.
                     let inner = self.cfg.timeout.mul_f32(0.8);
@@ -553,6 +569,16 @@ mod tests {
         );
         assert!(parse("--friend-away nap").is_err());
         assert!(parse("--friend-away").is_err());
+        assert!(
+            !parse("--scripted").unwrap().alone_autopilot,
+            "think by default"
+        );
+        assert!(
+            parse("--alone autopilot --scripted")
+                .unwrap()
+                .alone_autopilot
+        );
+        assert!(parse("--alone nap").is_err());
     }
 
     /// Off this machine the owner is handed the public page, which takes

@@ -269,10 +269,11 @@ echo "== 6. the agents =="
 # buddies (`ops/gates-buddy@.service`, Claude-minded) run the same jev-bot,
 # so each one installed restarts on it too; a buddy's decision program rides
 # beside the binary. So does the buddies runner (`ops/gates-buddies.service`),
-# whose children are the same jev-bot.
+# whose children are the same jev-bot, and every village
+# (`ops/gates-village@.service`, a scripted guild).
 AGENT_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
-TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 2>/dev/null | awk '{print $1}')
+TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null | awk '{print $1}')
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
    || systemctl list-unit-files gates-watch.service >/dev/null 2>&1 \
    || [ -n "$TEAMMATES" ]; then
@@ -296,7 +297,7 @@ fi
 for unit in $TEAMMATES; do
   run sudo systemctl restart "$unit"
 done
-[ -n "$TEAMMATES" ] || echo "  no gates-teammate@, gates-buddy@ or gates-buddies units installed"
+[ -n "$TEAMMATES" ] || echo "  no gates-teammate@, gates-buddy@, gates-buddies or gates-village@ units installed"
 
 if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
   REL="$WATCH/releases/$(git rev-parse --short=12 HEAD)"

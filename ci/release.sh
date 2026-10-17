@@ -313,7 +313,7 @@ run cargo build --release -p server --bin shard || exit 1
 # deploy_shard.sh rebuilds the agents after the restart; built here, that is a no-op.
 if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
    || systemctl list-unit-files gates-watch.service >/dev/null 2>&1 \
-   || [ -n "$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 2>/dev/null)" ]; then
+   || [ -n "$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null)" ]; then
   run cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
 fi
 run ./ci/build_web.sh target/webdist || exit 1

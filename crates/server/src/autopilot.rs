@@ -21,19 +21,43 @@ pub fn friend_away(s: &Summary) -> bool {
     s.friend.set && !s.friend.online
 }
 
+/// No person to play for: no friend on the island, no human in view, and
+/// none heard since the last request (`--alone autopilot`). Other agents
+/// do not count, so a crowd of them costs nothing while the island is empty.
+pub fn alone(s: &Summary) -> bool {
+    !(s.friend.set && s.friend.online) && s.humans.count == 0 && !s.heard.from_human()
+}
+
+/// Which requests the scripted policy answers without asking the model,
+/// and what it says it is doing.
+#[derive(Clone, Copy)]
+pub struct Gate {
+    pub rule: fn(&Summary) -> bool,
+    pub why: &'static str,
+}
+
+pub const FRIEND_AWAY: Gate = Gate {
+    rule: friend_away,
+    why: "my friend is away",
+};
+pub const ALONE: Gate = Gate {
+    rule: alone,
+    why: "no one is near",
+};
+
 pub struct Autopilot<P> {
     primary: P,
     scripted: Scripted,
-    /// Answer [`friend_away`] requests without asking `primary`.
-    friend_gate: bool,
+    /// Requests it answers without asking `primary`.
+    gate: Option<Gate>,
 }
 
 impl<P: DecisionSource> Autopilot<P> {
-    pub fn new(primary: P, friend_gate: bool) -> Self {
+    pub fn new(primary: P, gate: Option<Gate>) -> Self {
         Self {
             primary,
             scripted: Scripted::default(),
-            friend_gate,
+            gate,
         }
     }
 
@@ -51,8 +75,8 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
     }
 
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
-        if self.friend_gate && friend_away(s) {
-            return self.fly("my friend is away", s);
+        if let Some(g) = self.gate.filter(|g| (g.rule)(s)) {
+            return self.fly(g.why, s);
         }
         match self.primary.decide(s) {
             Ok(choice) => Ok(choice),
@@ -110,7 +134,7 @@ mod tests {
 
     #[test]
     fn a_missing_answer_is_flown_and_said_so() {
-        let mut a = Autopilot::new(Fails(0), false);
+        let mut a = Autopilot::new(Fails(0), None);
         let c = a.decide(&summary()).unwrap();
         assert!(
             c.reason.as_str().starts_with("autopilot ("),
@@ -128,7 +152,7 @@ mod tests {
             set: true,
             ..FriendSense::NONE
         };
-        let mut gated = Autopilot::new(Answers(0), true);
+        let mut gated = Autopilot::new(Answers(0), Some(FRIEND_AWAY));
         let c = gated.decide(&s).unwrap();
         assert!(c.reason.as_str().contains("my friend is away"));
         assert_eq!(gated.primary.0, 0, "no model call while the friend is away");
@@ -139,6 +163,40 @@ mod tests {
         assert!(
             !friend_away(&Summary::EMPTY),
             "no friend named is never away"
+        );
+    }
+
+    #[test]
+    fn alone_it_asks_no_model_and_a_person_wakes_it() {
+        let mut s = summary();
+        s.players.add(10.0, 0);
+        let mut gated = Autopilot::new(Answers(0), Some(ALONE));
+        let c = gated.decide(&s).unwrap();
+        assert!(c.reason.as_str().contains("no one is near"));
+        assert_eq!(gated.primary.0, 0, "another agent in view is not a person");
+
+        s.humans.add(30.0, 2);
+        gated.decide(&s).unwrap();
+        assert_eq!(gated.primary.0, 1, "a person in view wakes the mind");
+
+        let mut heard = summary();
+        heard.heard.push(crate::mind::HeardLine {
+            agent: true,
+            ..crate::mind::HeardLine::EMPTY
+        });
+        assert!(alone(&heard), "an agent talking is not a person");
+        heard.heard.push(crate::mind::HeardLine::EMPTY);
+        assert!(!alone(&heard), "a person talking wakes it");
+
+        let mut friend = summary();
+        friend.friend = FriendSense {
+            set: true,
+            online: true,
+            ..FriendSense::NONE
+        };
+        assert!(
+            !alone(&friend),
+            "a friend on the island, anywhere, wakes it"
         );
     }
 }
