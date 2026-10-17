@@ -24,7 +24,7 @@ use bevy::prelude::*;
 
 use super::{
     font, font_bold, spawn_tip, Hover, Panel, PanelRoot, Tip, Ui, BADGE, CELL_HOVER, CELL_SEL,
-    LINE, PANEL_BG, SCRIM, SCROLL_PX_PER_LINE, STATUS, TEXT, TEXT_DIM, TEXT_SHORT,
+    LINE, PANEL_BG, SCROLL_PX_PER_LINE, STATUS, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::feed::{Feed, Refused};
 use crate::render::icons::{Icons, LOCK_TINT, PICTURE, PICTURE_DIM};
@@ -52,6 +52,10 @@ const BAR_H: f32 = 38.0;
 /// drawn through the board's foot is not part of it. Under the tooltip (45)
 /// and the death screen (`death::DEATH_Z`).
 const TREE_Z: i32 = 40;
+/// The backdrop. The reference blurs the world behind its tree and we have no
+/// blur, so the panels' [`super::SCRIM`] is too thin here: the HUD's prompt,
+/// hotbar and toasts read through it onto the board (measured, 2026-10-17).
+const TREE_SCRIM: Color = Color::srgba(0.035, 0.035, 0.031, 0.90);
 
 // ---- the board's paint, off the operator's frame -------------------------
 /// A learned node — the reference's olive.
@@ -130,7 +134,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                 flex_direction: FlexDirection::Row,
                 ..default()
             },
-            BackgroundColor(SCRIM),
+            BackgroundColor(TREE_SCRIM),
             GlobalZIndex(TREE_Z),
         ))
         .with_children(|root| {
