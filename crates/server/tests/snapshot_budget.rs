@@ -2180,3 +2180,38 @@ fn the_reload_lane_holds_when_everyone_holds_reload() {
         "a client's event ring refused a push under reload traffic alone"
     );
 }
+
+/// The heli is on everyone's map, so it is in every client's set wherever
+/// it is and however crowded the client is: a full shard herded into one
+/// square fills every rank, and a heli 2.9 km off still takes a seat
+/// without the set growing past the cap.
+#[test]
+fn the_heli_holds_its_seat_in_a_crowd() {
+    use sim_core::heli::HELI_SLOT;
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    for m in core.world.mobs.m.iter_mut() {
+        m.alive = false;
+        m.respawn_at = u64::MAX;
+    }
+    let heli = &mut core.world.mobs.m[HELI_SLOT];
+    heli.alive = true;
+    heli.body.qx = (4000.0 / 0.03) as i32;
+    heli.body.qz = (3500.0 / 0.03) as i32;
+    for _ in 0..4 {
+        snapshot_round(&mut core, &stats);
+    }
+    let id = sim_core::mob::mob_id(HELI_SLOT);
+    for slot in 0..MAX_PLAYERS {
+        let set = interest_of(&core, slot);
+        assert!(
+            set.contains(&id),
+            "client {slot} lost the heli to the crowd"
+        );
+        assert!(
+            set.len() <= AOI_RANK_EXIT,
+            "client {slot} holds {} entities: the heli's seat broke the cap",
+            set.len()
+        );
+    }
+}

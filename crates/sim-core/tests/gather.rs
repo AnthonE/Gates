@@ -5,8 +5,9 @@
 //! content crate's bake tests.
 
 use sim_core::gather::{
-    cell_key, weak_mark8, GatherContent, ItemStack, NO_CELL, PLANT_GROW_TICKS, RESPAWN_MIN_TICKS,
-    RESPAWN_RANGE_TICKS, SAPLING_PM, SWING_INTERVAL_TICKS,
+    cell_key, first_mark, mark8_of, next_mark, GatherContent, ItemStack, MARK_STEP_MIN,
+    MARK_STEP_SPAN, NO_CELL, PLANT_GROW_TICKS, RESPAWN_MIN_TICKS, RESPAWN_RANGE_TICKS, SAPLING_PM,
+    SWING_INTERVAL_TICKS,
 };
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement;
@@ -651,13 +652,23 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
     assert!(def.weak_pct > 0, "fixture tree must carry a weak bonus");
 
     // Hit 1 from the scan's stand point: never a bonus, starts the chase,
-    // and announces mark 1 to the swinger.
+    // and announces mark 1 to the swinger — a step round from the blow.
     let mut w = world_at(pos);
     w.tick(&[hold_primary(yaw, 0)]);
     assert_eq!(w.players[0].inv[0].count, def.hand_yield, "hit 1 is base");
     assert_eq!(w.players[0].ws_cell, cell_key(cxu, czu));
-    assert_eq!(w.players[0].ws_hits, 1);
-    let mark1 = weak_mark8(SEED, cxu, czu, 1, 1);
+    let ws1 = w.players[0].ws_mark;
+    let mark1 = mark8_of(ws1);
+    let (px, pz) = (
+        w.players[0].body.qx as f32 * movement::POS_XZ_Q,
+        w.players[0].body.qz as f32 * movement::POS_XZ_Q,
+    );
+    let stood = terrain::bearing_index(px - s.x, pz - s.z) as u8;
+    let gap = (mark1.wrapping_sub(stood) as i8).unsigned_abs();
+    assert!(
+        (MARK_STEP_MIN - 6..=MARK_STEP_MIN + MARK_STEP_SPAN + 6).contains(&gap),
+        "mark 1 ({mark1}) is not a step round from the first blow ({stood}): {gap}"
+    );
     let marks: u32 = w
         .events
         .entries()
@@ -672,7 +683,7 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
     assert_eq!(marks, 1, "a landed non-exhausting hit announces the mark");
 
     // Stand inside mark 1's sector: hit 2 pays hand × (100 + pct) / 100,
-    // the weak bit rides, and the mark moves to n = 2.
+    // the weak bit rides, and the mark moves one step on.
     let face = stand_at_bearing(&mut w, s.x, s.y, s.z, mark1);
     for t in 0..SWING_INTERVAL_TICKS {
         w.tick(&[hold_primary(face, t as u16 + 1)]);
@@ -684,7 +695,13 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
         def.hand_yield + bonus_pay,
         "aligned hit 2 pays the weak bonus"
     );
-    let mark2 = weak_mark8(SEED, cxu, czu, 1, 2);
+    let mark2 = mark8_of(next_mark(SEED, cxu, czu, 1, ws1));
+    assert_eq!(
+        mark8_of(w.players[0].ws_mark),
+        mark2,
+        "the hit moved the mark"
+    );
+    assert_ne!(mark2, mark1);
     let weak_marks: u32 = w
         .events
         .entries()
@@ -697,7 +714,8 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
         .sum();
     assert_eq!(weak_marks, 1);
 
-    // Same second hit stood opposite the mark: base pay, weak bit clear.
+    // Same second hit stood opposite the mark: base pay, weak bit clear,
+    // and the mark stays where it was — only a hit on it moves it.
     let mut w2 = world_at(pos);
     w2.tick(&[hold_primary(yaw, 0)]);
     let face2 = stand_at_bearing(&mut w2, s.x, s.y, s.z, mark1.wrapping_add(128));
@@ -711,9 +729,41 @@ fn weak_spot_pays_only_inside_the_marks_sector() {
     );
     for e in w2.events.entries() {
         if e.code == EV_WEAK_MARK {
-            assert_eq!(e.c, mark2 as u32, "weak bit clear when misaligned");
+            assert_eq!(e.c, mark1 as u32, "weak bit clear, mark unmoved");
         }
     }
+}
+
+/// The mark has a range (the reference's tree X, Devblog 187): every step
+/// is a bounded one, and a chase goes one way round the node and never
+/// doubles back. Both directions turn up across chases.
+#[test]
+fn the_mark_travels_one_way_round_a_step_at_a_time() {
+    let mut ways = [0u32; 2];
+    for impact in [0u8, 37, 128, 201] {
+        for pid in 1..=8u32 {
+            let mut ws = first_mark(SEED, 40, 90, pid, impact);
+            let mut prev = impact;
+            let mut sign = 0i32;
+            for _ in 0..12 {
+                let step = mark8_of(ws).wrapping_sub(prev) as i8;
+                assert!(
+                    (MARK_STEP_MIN..=MARK_STEP_MIN + MARK_STEP_SPAN).contains(&step.unsigned_abs()),
+                    "a step of {step} is out of the band"
+                );
+                let s = step.signum() as i32;
+                assert!(sign == 0 || s == sign, "the chase doubled back");
+                sign = s;
+                prev = mark8_of(ws);
+                ws = next_mark(SEED, 40, 90, pid, ws);
+            }
+            ways[(sign > 0) as usize] += 1;
+        }
+    }
+    assert!(
+        ways[0] > 0 && ways[1] > 0,
+        "every chase went the same way: {ways:?}"
+    );
 }
 
 #[test]
@@ -771,7 +821,7 @@ fn exhaustion_clears_the_chase_and_mutes_the_mark() {
         "a swing can never spend less than one hit's budget"
     );
     assert_eq!(w.players[0].ws_cell, NO_CELL, "chase cleared");
-    assert_eq!(w.players[0].ws_hits, 0);
+    assert_eq!(w.players[0].ws_mark, 0);
 }
 
 #[test]
@@ -870,8 +920,8 @@ fn strike_out(occ: Occupant, chase: bool) -> (u32, u32) {
     // The first swing lands immediately; each later one waits a cadence.
     // Bounded by the budget's own worst case so a stuck chase cannot spin.
     for _ in 0..64 {
-        if w.players[0].ws_hits > 0 {
-            let mark = weak_mark8(SEED, cxu, czu, 1, w.players[0].ws_hits);
+        if w.players[0].ws_cell != NO_CELL {
+            let mark = mark8_of(w.players[0].ws_mark);
             let bearing = if chase { mark } else { mark.wrapping_add(128) };
             face = stand_at_bearing(&mut w, s.x, s.y, s.z, bearing);
         }

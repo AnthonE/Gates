@@ -1589,7 +1589,7 @@ fn the_swing_pick_is_stable() {
 #[test]
 fn the_prompt_reads_the_sims_own_bounds() {
     assert_eq!(SWING_REACH_M, 2.0);
-    assert_eq!(EYE_M, 1.6);
+    assert_eq!(EYE_M, 1.5);
     assert_eq!(CELL_SIZE, 8.0);
 }
 
@@ -2280,7 +2280,9 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
 // the HUD quietly promising a bonus the server refuses.
 
 use client::ui::interact::{in_weak_sector, mark_is_for};
-use sim_core::gather::{cell_key, weak_mark8, NO_CELL, POINT_BLANK_M2 as PB, WEAK_COS};
+use sim_core::gather::{
+    cell_key, first_mark, mark8_of, next_mark, NO_CELL, POINT_BLANK_M2 as PB, WEAK_COS,
+};
 use sim_core::yaw_dir;
 
 /// Standing exactly on the announced bearing is inside; the opposite side is
@@ -2365,14 +2367,17 @@ fn the_mark_belongs_to_one_node() {
     assert!(!mark_is_for(cell_key(0, 0), &whiff));
 }
 
-/// The mark the server announces is a function of the chase, so it moves as
-/// hits land — a player who found it once cannot stand still and farm it.
+/// The mark the server announces moves on each hit that lands on it — a
+/// player who found it once cannot stand still and farm it.
 #[test]
 fn the_mark_moves_with_the_chase() {
     let (seed, cx, cz, pid) = (11u64, 40u16, 90u16, 7u32);
-    let marks: Vec<u8> = (1..=8u16)
-        .map(|n| weak_mark8(seed, cx, cz, pid, n))
-        .collect();
+    let marks: Vec<u8> = std::iter::successors(Some(first_mark(seed, cx, cz, pid, 0)), |&ws| {
+        Some(next_mark(seed, cx, cz, pid, ws))
+    })
+    .take(8)
+    .map(mark8_of)
+    .collect();
     assert!(
         marks.iter().collect::<std::collections::HashSet<_>>().len() > 1,
         "the weak mark never moved across 8 hits: {marks:?}"

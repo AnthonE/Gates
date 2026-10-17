@@ -374,22 +374,27 @@ def death_bag(k):
 
 
 def _door(k, leaf, strap):
-    # Thin along X, wide along Y, 2.1 tall: five boards, two ledges and a
-    # brace behind, strap hinges and a ring pull in front. The locked
-    # variant is this geometry under other surfaces, so the two share one
-    # unwrap and `build_kit` can swap materials on one mesh.
+    # Thin along X, wide along Y, 2.2 tall: five boards, two ledges and a
+    # brace behind, strap hinges and a ring pull in front. The metal door
+    # is this geometry under other surfaces, so the two share one unwrap
+    # and `build_kit` can swap materials on one mesh. Authored 0.9 x 2.08
+    # and stretched to the 1.2 x 2.19 doorway leaf (`W`, `H`): the shipped
+    # GLBs were stretched the same way on 2026-10-17.
+    W, H = 1.199 / 0.8996, 2.1858 / 2.0865
     for i in range(5):
-        k.box((0.05, 0.172, 2.08), (0, -0.36 + i * 0.18, 1.04), leaf, bevel=0.008)
+        k.box((0.05, 0.172 * W, 2.08 * H), (0, (-0.36 + i * 0.18) * W, 1.04 * H), leaf, bevel=0.008)
     for z in (0.35, 1.75):
-        k.box((0.035, 0.84, 0.14), (0.042, 0, z), leaf, bevel=0.006)
-    k.box((0.035, 0.12, 1.55), (0.042, 0, 1.05), leaf, rot=(-26.5, 0, 0), bevel=0.006)
+        k.box((0.035, 0.84 * W, 0.14), (0.042, 0, z * H), leaf, bevel=0.006)
+    brace = math.degrees(math.atan2(math.sin(math.radians(26.5)) * W, math.cos(math.radians(26.5)) * H))
+    span = 1.55 * math.hypot(math.sin(math.radians(26.5)) * W, math.cos(math.radians(26.5)) * H)
+    k.box((0.035, 0.12, span), (0.042, 0, 1.05 * H), leaf, rot=(-brace, 0, 0), bevel=0.006)
     for z in (0.35, 1.75):
-        k.box((0.012, 0.62, 0.05), (-0.031, 0.13, z), strap, bevel=0.003)
-        k.cyl(0.022, 0.10, (-0.012, 0.43, z), strap, n=10)
+        k.box((0.012, 0.62 * W, 0.05), (-0.031, 0.13 * W, z * H), strap, bevel=0.003)
+        k.cyl(0.022, 0.10, (-0.012, 0.43 * W, z * H), strap, n=10)
         for y in (-0.1, 0.1, 0.3):
-            k.cyl(0.009, 0.008, (-0.038, y, z), strap, axis="X", n=6, bevel=0.0)
-    k.cyl(0.03, 0.012, (-0.032, -0.33, 1.0), strap, axis="X", n=12)
-    k.torus(0.04, 0.007, (-0.045, -0.33, 0.97), strap, axis="X", n=14, m=5)
+            k.cyl(0.009, 0.008, (-0.038, y * W, z * H), strap, axis="X", n=6, bevel=0.0)
+    k.cyl(0.03, 0.012, (-0.032, -0.33 * W, 1.0 * H), strap, axis="X", n=12)
+    k.torus(0.04, 0.007, (-0.045, -0.33 * W, 0.97 * H), strap, axis="X", n=14, m=5)
 
 
 # Rust's wooden barricade: a row of sharpened logs on two crossbeams,
@@ -415,12 +420,12 @@ def barricade(k):
         k.cyl(0.045, 0.85, (x, 0.12, 0.38), "darkwood", rot=(28, 0, 0), n=8, bevel=0.008)
 
 
-@recipe("door", "models/deploy/door.glb", size=(0.12, 2.1, 0.9))
+@recipe("door", "models/deploy/door.glb", size=(0.12, 2.2, 1.2))
 def door(k):
     _door(k, "planks", "iron")
 
 
-@recipe("door_locked", "models/deploy/door_locked.glb", size=(0.12, 2.1, 0.9))
+@recipe("door_locked", "models/deploy/door_locked.glb", size=(0.12, 2.2, 1.2))
 def door_locked(k):
     _door(k, "sheet", "dark")
 

@@ -540,6 +540,8 @@ pub struct Memory {
     /// Salvage the base does not want whole and a recycler to take it
     /// apart at, and no recycle came to nothing a moment ago.
     pub recycle: bool,
+    /// A recycler stands within a recycle's walk, its own or anybody's.
+    pub recycler_near: bool,
     /// Something of its base is damaged and can be mended
     /// (`defend::mendable`), seen from near it (`defend::MEND_SIGHT_M`);
     /// a defence came to nothing a moment ago.
@@ -673,6 +675,9 @@ pub struct SurvivorOpts {
     /// The clan it lives in (`jev-bot --society`, `agent::society`): its
     /// job, its crew and its guild.
     pub society: Option<Society>,
+    /// Its doors wait for code locks instead of taking key locks with the
+    /// doors: others come in by its code. Always so in a society.
+    pub code_doors: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -962,8 +967,9 @@ pub struct Survivor {
     /// shard's chat refill, kept on this side so a line is never sent into
     /// the limiter to be dropped there.
     say_line: Option<protocol::ChatText>,
-    /// The line above is for the team channel (`Say::Team`).
-    say_team: bool,
+    /// Where the line above goes (`Say`): a team line with no team to hear
+    /// it goes to whoever is near.
+    say_to: protocol::Channel,
     /// Its team has someone besides itself to hear the team channel.
     has_mates: bool,
     /// The stranger going for a teammate, nearest them (`perceive`).
@@ -1049,7 +1055,7 @@ impl Survivor {
             team_bag_failed: None,
             recover_job: RecoverJob::default(),
             seen: Seen::new(),
-            builder: Builder::new(),
+            builder: Builder::new().keyed(!opts.code_doors && opts.society.is_none()),
             lock: opts
                 .lock
                 .unwrap_or_else(|| LockSecret::Code(LockCode::random())),
@@ -1122,7 +1128,7 @@ impl Survivor {
             heading: None,
             outbox: None,
             say_line: None,
-            say_team: false,
+            say_to: protocol::Channel::Local,
             has_mates: false,
             guard: None,
             wedge: Wedge::default(),
@@ -1995,8 +2001,12 @@ impl Survivor {
         match say {
             Say::Quiet => {}
             Say::Refused => self.stats.say_refused += 1,
-            Say::Line(line) | Say::Team(line) => {
-                self.say_team = matches!(say, Say::Team(_));
+            Say::Line(line) | Say::Team(line) | Say::Global(line) => {
+                self.say_to = match say {
+                    Say::Team(_) => protocol::Channel::Team,
+                    Say::Global(_) => protocol::Channel::Global,
+                    _ => protocol::Channel::Local,
+                };
                 if self.say_line.replace(line).is_some() {
                     self.stats.say_dropped += 1;
                 }
@@ -5315,14 +5325,20 @@ impl Survivor {
     }
 
     /// The device a work is done at that is worth walking to from here:
-    /// its own fire near, or its own recycler within a longer walk.
+    /// its own fire near, or a recycler within a longer walk, its own first.
+    /// Any recycler standing will do: the one it put down is forgotten with
+    /// the session, and taking it for gone made it build another.
     fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
         let (own, within) = match work {
             Work::Cook => (self.fire, oven::KEEP_M),
             Work::Shop => return self.shop_machine(core),
             _ => (self.recycler, oven::SEEN_NEAR_M),
         };
-        oven::nearest(core, work, own.into_iter(), x, z, within)
+        oven::nearest(core, work, own.into_iter(), x, z, within).or_else(|| {
+            (work == Work::Recycle)
+                .then(|| oven::nearest(core, work, oven::standing(core, work), x, z, within))
+                .flatten()
+        })
     }
 
     /// Where the crew's vending machine goes, with home's middle known.
@@ -6037,6 +6053,22 @@ impl Survivor {
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
         {
             self.water_at = Some(tick);
+            // A new session knows no plot: the base from before is taken up
+            // again where its own bag lies in the airlock, not taken for a
+            // stranger's and walked away from. A crewmate's bag lies in its
+            // founder's base, which is not its own to build.
+            let adopted = self.builder.stats.adopted;
+            if self.builder.plan().is_none() && self.society.is_none_or(|soc| soc.founder()) {
+                if let Some(plan) = Builder::find_home(core, self.home.own_bags()) {
+                    self.builder.adopt(core, plan);
+                }
+            }
+            if self.builder.stats.adopted != adopted {
+                // What it saw of its own walls before it knew them, it took
+                // for somebody else's building, a raid's among them.
+                self.seen.clear();
+                self.bases.clear();
+            }
             // Once a second too: what stands of the base, what the next
             // part of it needs, and the chores waiting at home.
             let chest = self.builder.box_addr(core);
@@ -6156,6 +6188,7 @@ impl Survivor {
             // the rest of the milestone costs, or the gear still to be made
             // takes.
             let recycler = self.device_near(core, Work::Recycle, x, z);
+            self.memory.recycler_near = recycler.is_some();
             let book = &self.book;
             let mut keep = self
                 .builder
@@ -6904,12 +6937,11 @@ impl BotDriver for Survivor {
             return None;
         }
         let line = self.say_line.take()?;
-        // A body speaks to the bodies near it, or to its team when it asked
-        // to and has one; never to everyone.
-        let channel = if self.say_team && self.has_mates {
-            protocol::Channel::Team
-        } else {
-            protocol::Channel::Local
+        // A body speaks where it asked to: to everyone, to the bodies near
+        // it, or to its team when it has one.
+        let channel = match self.say_to {
+            protocol::Channel::Team if !self.has_mates => protocol::Channel::Local,
+            to => to,
         };
         match protocol::encode_chat(line.as_bytes(), channel, out) {
             Ok(len) => {
@@ -7327,6 +7359,7 @@ pub fn observe(
         }
     }
     (s.take_out, s.feed) = (memory.take_out, memory.feed);
+    s.recycler_near = memory.recycler_near;
     s.trigger = memory.trigger;
     // Its team (wire v108), from the team view its client was sent.
     let who = |id: u32| {
@@ -7681,7 +7714,12 @@ pub fn observe(
     // and a feed for the nearest work that takes what the pack holds.
     if !senses.hostile && core.hostile_left() == 0 && s.gate.is_some() && !memory.trade_held {
         let mut rows = [(0u16, false); gate::TRADE_ROWS];
-        let n = gate::trades(core, &mut rows);
+        let wants = memory
+            .base
+            .needs()
+            .iter()
+            .chain(&memory.raw[..usize::from(memory.raw_len)]);
+        let n = gate::trades(core, wants.map(|&(item, _)| item), &mut rows);
         for &(item, sell) in &rows[..n] {
             if let Some(name) = Name::new(core.catalog.name(usize::from(item))) {
                 s.offer(if sell {

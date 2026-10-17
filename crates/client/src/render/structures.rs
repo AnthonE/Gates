@@ -44,7 +44,8 @@ use sim_core::build::{
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
-    ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
+    ColIndex, DOOR_HEAD_M, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M,
+    WINDOW_SILL_M,
 };
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_GARAGE_DOOR,
@@ -438,8 +439,11 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 20] = [
     // 5 · workbench. Length and height were already right (0.9 is bench
     // height); 0.9 deep was not — a bench you can reach across is ~0.7.
     ([1.6, 0.9, 0.7], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0), // workbench
+    // 6 · door. The leaf fills the doorway the sim blocks, 1.2 m between the
+    // posts and floor to lintel, as Rust's does. It drew 0.9 wide until
+    // 2026-10-17, a hand's width of daylight down each side of every door.
     (
-        [0.12, 2.1, 0.9],
+        [0.12, DOOR_HEAD_M, 1.2],
         Color::srgb(0.420, 0.290, 0.169),
         0.82,
         0.0,
@@ -548,6 +552,13 @@ pub const BAG_SIZE: [f32; 3] = [0.6, 0.35, 0.45];
 /// transform is unchanged. One primitive, one material.
 pub const BAG_ASSET: &str = "models/prop/death_bag.glb";
 
+/// Whether a bag's wire feet stand on the island's own ground rather than a
+/// floor or the seabed's water: then it is laid on the ground as drawn
+/// (`loot::surface_y`), which is not always the sim's to the centimetre.
+fn on_terrain(world: &WorldId, feet: Vec3) -> bool {
+    (feet.y - terrain::ground(world.seed, &world.haven, feet.x, feet.z)).abs() < 0.06
+}
+
 /// Fallback pouch envelope for items without a held model. Existing size;
 /// modelled tools share the geometry and scale used by the hand.
 const GITEM_SIZE: [f32; 3] = [0.3, 0.24, 0.3];
@@ -587,7 +598,8 @@ struct Live {
     seen: u64,
     row: u8,
     open: bool,
-    locked: bool,
+    /// The lock it was drawn with ([`lock_bits`]): bolted on, armed, keyed.
+    lock: u8,
     /// The damage band it was drawn at (wire v44). Without it here, a wall
     /// coming apart in front of the player would keep its first material
     /// forever: this loop redraws on a CHANGE, and a change nobody records
@@ -671,7 +683,16 @@ pub struct Kit {
     tier: [[[Handle<StandardMaterial>; PIECE_LOOKS]; DMG_BANDS as usize]; N_TIERS],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
-    door_locked: Handle<StandardMaterial>,
+    /// The metal door's surfaces, laid on `door.glb`'s mesh
+    /// ([`METAL_DOOR_ASSET`]).
+    door_metal: Handle<StandardMaterial>,
+    /// A bolted-on lock, drawn ([`spawn_lock`]): the code lock's keypad
+    /// and the key lock's padlock, in the prop kit's one material.
+    lock_mesh: [Handle<Mesh>; 2],
+    lock_mat: Handle<StandardMaterial>,
+    /// The code lock's light: green open, red locked.
+    led_mesh: Handle<Mesh>,
+    led_mat: [Handle<StandardMaterial>; 2],
     shutters_open: Handle<Mesh>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
@@ -2242,8 +2263,8 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/fire.glb"),      // 3 fire
     Some("models/deploy/furnace.glb"),   // 4 furnace
     Some("models/deploy/workbench.glb"), // 5 workbench
-    // 6 door — the one archetype whose material is state: locked, it wears
-    // [`DOOR_LOCKED_ASSET`]'s material, baked onto the same unwrap.
+    // 6 door — a metal one wears [`METAL_DOOR_ASSET`]'s material, baked
+    // onto the same unwrap.
     Some("models/deploy/door.glb"),
     None,                                     // 7 lock — never drawn
     Some("models/deploy/recycler.glb"),       // 8 recycler
@@ -2292,10 +2313,12 @@ pub fn piece_look(addr: Addr) -> usize {
     (h.wrapping_mul(0x2C1B_3C6D) >> 28) as usize % PIECE_LOOKS
 }
 
-/// The locked door: `door.glb`'s geometry built under iron surfaces by
-/// `ci/prop_kit.py`, which unwraps identical geometry identically, so its
-/// material lays onto `door.glb`'s mesh. Only the material is loaded.
-pub const DOOR_LOCKED_ASSET: &str = "models/deploy/door_locked.glb";
+/// The metal door: `door.glb`'s geometry built under sheet-metal surfaces
+/// by `ci/prop_kit.py`, which unwraps identical geometry identically, so its
+/// material lays onto `door.glb`'s mesh. Only the material is loaded. (A
+/// locked wooden door used to wear it too, which drew every lock as a
+/// change of door; the lock is drawn now, [`spawn_lock`].)
+pub const METAL_DOOR_ASSET: &str = "models/deploy/door_locked.glb";
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
 pub fn build_kit(
@@ -2513,13 +2536,29 @@ pub fn build_kit(
         tier,
         deploy_mesh,
         deploy_mat,
-        door_locked: assets.load(
+        door_metal: assets.load(
             GltfAssetLabel::Material {
                 index: 0,
                 is_scale_inverted: false,
             }
-            .from_asset(DOOR_LOCKED_ASSET),
+            .from_asset(METAL_DOOR_ASSET),
         ),
+        lock_mesh: ["code_lock", "key_lock"].map(|name| {
+            meshes.add(
+                super::heldkit::baked(name).unwrap_or_else(|| Cuboid::new(0.1, 0.15, 0.04).into()),
+            )
+        }),
+        // The kit's textures are fixed handles `viewmodel::load_models`
+        // fills at startup, so this material resolves once they land.
+        lock_mat: materials.add(super::heldkit::material()),
+        led_mesh: meshes.add(Sphere::new(LED_R_M).mesh().ico(1).unwrap()),
+        led_mat: [LED_OPEN, LED_LOCKED].map(|c: Color| {
+            materials.add(StandardMaterial {
+                base_color: c,
+                emissive: c.to_linear() * 4.0,
+                ..default()
+            })
+        }),
         bag_mesh: assets.load(
             GltfAssetLabel::Primitive {
                 mesh: 0,
@@ -2718,7 +2757,7 @@ pub fn stream(
                 seen: gen,
                 row: rec.row,
                 open: false,
-                locked: false,
+                lock: 0,
                 dmg: rec.dmg,
                 own,
                 plate: rec.plate,
@@ -2749,6 +2788,7 @@ pub fn stream(
         // is a ground placement and answers 0, the terrain rule.
         let plate = core.pieces.cols().plate(rec.cx, rec.cz).unwrap_or(0);
         let arch = core.deploy_defs.defs[rec.row as usize].arch;
+        let matter = core.deploy_defs.defs[rec.row as usize].matter;
         // Where a free-placed one stands now: the floor under it, or the
         // ground (`sim_core::deploy::body_base_y`, the collision's height).
         let base_y = if sim_core::deploy::is_edge_loc(rec.loc) {
@@ -2776,7 +2816,7 @@ pub fn stream(
             }
             if live.row == rec.row
                 && live.open == rec.open
-                && live.locked == rec.locked
+                && live.lock == lock_bits(rec)
                 && live.plate == plate
                 && live.base_y == base_y
             {
@@ -2814,6 +2854,7 @@ pub fn stream(
             core.pieces.cols(),
             rec,
             arch,
+            matter,
             plate,
         );
         ring.deploys.insert(
@@ -2823,7 +2864,7 @@ pub fn stream(
                 seen: gen,
                 row: rec.row,
                 open: rec.open,
-                locked: rec.locked,
+                lock: lock_bits(rec),
                 dmg: rec.dmg,
                 own: 0,
                 plate,
@@ -2866,7 +2907,23 @@ pub fn stream(
             );
             let turn = (bag.id.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
             let facing = Quat::from_rotation_y(turn * std::f32::consts::TAU);
-            let root = mid + facing * Vec3::new(0.0, 0.0, sim_core::backpack::CORPSE_BACK_M);
+            let mut root = mid + facing * Vec3::new(0.0, 0.0, sim_core::backpack::CORPSE_BACK_M);
+            // On open ground the body lies on the ground as drawn, along its
+            // slope: kept level at the feet's height, a body 0.1 m thick had
+            // its uphill half under a gentle slope. A floor is flat already.
+            let ground = |p: Vec3| super::loot::surface_y(world.seed, &world.haven, p.x, p.z);
+            let mut tilt = Quat::IDENTITY;
+            if on_terrain(&world, mid) {
+                // The clip lays the body back along its own -Z, ~1.9 m.
+                let back = facing * Vec3::NEG_Z;
+                let side = facing * Vec3::X;
+                let c = root + back;
+                let d_back = (ground(c + back * 0.8) - ground(c - back * 0.8)) / 1.6;
+                let d_side = (ground(c + side * 0.4) - ground(c - side * 0.4)) / 0.8;
+                let n = (Vec3::Y - back * d_back - side * d_side).normalize();
+                tilt = Quat::from_rotation_arc(Vec3::Y, n);
+                root.y = ground(root);
+            }
             let entity = commands
                 .spawn((
                     super::WorldEntity,
@@ -2877,8 +2934,9 @@ pub fn stream(
                     super::anim::Reshade::body(),
                     SceneRoot(scene),
                     Transform::from_translation(root)
-                        .with_rotation(facing)
+                        .with_rotation(tilt * facing)
                         .with_scale(Vec3::splat(rig.scale)),
+                    super::foliage::PressesGrass { len_m: 2.0 },
                 ))
                 .id();
             ring.bags.insert(
@@ -2888,7 +2946,7 @@ pub fn stream(
                     seen: gen,
                     row: 0,
                     open: false,
-                    locked: false,
+                    lock: 0,
                     dmg: 0,
                     own: 0,
                     plate: 0,
@@ -2901,11 +2959,15 @@ pub fn stream(
         }
         // The sim drops it at the body's FEET, so half its height lifts it
         // onto the ground rather than leaving it sunk to the waist.
-        let feet = Vec3::new(
+        let mut feet = Vec3::new(
             bag.qx as f32 * POS_XZ_Q,
             bag.qy as f32 * POS_Y_Q,
             bag.qz as f32 * POS_XZ_Q,
         );
+        // On open ground, on the ground as drawn rather than the sim's.
+        if on_terrain(&world, feet) {
+            feet.y = super::loot::surface_y(world.seed, &world.haven, feet.x, feet.z);
+        }
         // A killed animal's bag is its carcass, lying where it fell (v84),
         // at a bearing hashed off the bag id: the wire carries no facing,
         // and a field of dead pigs all pointing north reads as a pattern.
@@ -2937,6 +2999,7 @@ pub fn stream(
                         MeshMaterial3d(mat.clone()),
                         Transform::from_translation(feet)
                             .with_rotation(Quat::from_rotation_y(turn * std::f32::consts::TAU)),
+                        super::foliage::PressesGrass { len_m: 0.0 },
                     ))
                     .id()
             }
@@ -2946,6 +3009,7 @@ pub fn stream(
                     Mesh3d(kit.bag_mesh.clone()),
                     MeshMaterial3d(kit.bag_mat.clone()),
                     Transform::from_translation(feet + Vec3::Y * BAG_SIZE[1] * 0.5),
+                    super::foliage::PressesGrass { len_m: 0.0 },
                 ))
                 .id(),
         };
@@ -2956,7 +3020,7 @@ pub fn stream(
                 seen: gen,
                 row: 0,
                 open: false,
-                locked: false,
+                lock: 0,
                 dmg: 0,
                 own: 0,
                 // A bag carries a quantized world position, so it has no
@@ -3342,7 +3406,7 @@ pub fn deploy_transform(
     plate: i8,
 ) -> Transform {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
-    let [_, h, d] = DEPLOY[idx].0;
+    let [w, h, d] = DEPLOY[idx].0;
     let (cx, cz, level, loc) = addr;
     let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
@@ -3379,16 +3443,15 @@ pub fn deploy_transform(
         return root;
     }
 
+    // Open, the leaf stands against its hinge post's face, not in it.
+    let hinge = BUILD_CELL_M * 0.5 - d * 0.5 + w * 0.5;
     match (loc, open) {
         (LOC_EDGE_XLO, false) => Transform::from_xyz(x0, y, czm),
         (LOC_EDGE_XLO, true) => {
-            Transform::from_xyz(x0 + d * 0.5, y, z0 + BUILD_CELL_M * 0.5 - d * 0.5)
-                .with_rotation(quarter)
+            Transform::from_xyz(x0 + d * 0.5, y, z0 + hinge).with_rotation(quarter)
         }
         (LOC_EDGE_ZLO, false) => Transform::from_xyz(cxm, y, z0).with_rotation(quarter),
-        (LOC_EDGE_ZLO, true) => {
-            Transform::from_xyz(x0 + BUILD_CELL_M * 0.5 - d * 0.5, y, z0 + d * 0.5)
-        }
+        (LOC_EDGE_ZLO, true) => Transform::from_xyz(x0 + hinge, y, z0 + d * 0.5),
         _ => Transform::from_xyz(cxm, y, czm),
     }
 }
@@ -3499,6 +3562,7 @@ pub fn spawn_deploy(
     cols: &ColIndex,
     rec: &DeployRec,
     arch: u8,
+    matter: u8,
     plate: i8,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
@@ -3520,8 +3584,8 @@ pub fn spawn_deploy(
         body_transform(seed, haven, cols, rec, arch)
     };
 
-    let mat = if arch == ARCH_DOOR && rec.locked {
-        kit.door_locked.clone()
+    let mat = if arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL {
+        kit.door_metal.clone()
     } else {
         kit.deploy_mat[idx].clone()
     };
@@ -3541,6 +3605,14 @@ pub fn spawn_deploy(
             applied: Some(0),
         },
     ));
+    // A bolted-on lock is drawn where a hand would find it. A garage door
+    // rolled up into its header has nowhere to show one.
+    if rec.has_lock && !(arch == ARCH_GARAGE_DOOR && rec.open) {
+        let (mounts, n) = lock_mounts(arch);
+        for &(at, out) in &mounts[..n] {
+            spawn_lock(&mut e, kit, at, out, rec.keyed, rec.locked);
+        }
+    }
     // A planter carries one plant a bed, hidden until the sim says a bed is
     // sown (crops v1). See [`PlanterBed`].
     if arch == sim_core::deploy::ARCH_PLANTER {
@@ -3601,6 +3673,96 @@ pub fn spawn_deploy(
         ));
     }
     e.id()
+}
+
+/// How much bigger a lock is drawn on a door or a box than in the hand, so
+/// it reads across a room: the keypad, the padlock.
+const LOCK_SCALE: [f32; 2] = [1.25, 1.5];
+/// The code lock's light, in the prop kit's frame: over the baked LED
+/// (`heldkit::code_lock`), a hair proud of it so it is the one seen.
+const LED_AT: Vec3 = Vec3::new(0.042, 0.145, 0.024);
+const LED_R_M: f32 = 0.0085;
+const LED_OPEN: Color = Color::srgb(0.35, 1.0, 0.45);
+const LED_LOCKED: Color = Color::srgb(1.0, 0.18, 0.12);
+/// `door.glb`'s half thickness: the leaf's faces, where its lock sits.
+const DOOR_FACE_M: f32 = 0.056;
+/// Where on a leaf the lock goes: above the ring pull, on the handle side
+/// (the hinge is the leaf's −Z end, `deploy_transform`), at hand height.
+const DOOR_LOCK_Y_M: f32 = 1.08;
+const DOOR_LOCK_IN_M: f32 = 0.16;
+
+/// A deployable's lock as one redraw key: bolted on, armed, keyed.
+fn lock_bits(rec: &DeployRec) -> u8 {
+    rec.has_lock as u8 | (rec.locked as u8) << 1 | (rec.keyed as u8) << 2
+}
+
+/// Where a bolted-on lock is drawn on a lockable, in its mesh's own frame:
+/// the lock's feet on the face, and the face's outward normal. A door shows
+/// its lock on both faces, so whoever stands at it sees it; a box and a
+/// hearth on their fronts (+Z, the authored front, `footprint::Pose`).
+pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
+    let none = (Vec3::ZERO, Vec3::Z);
+    let both = |at: Vec3, face: f32| {
+        (
+            [
+                (Vec3::new(-face, at.y, at.z), Vec3::NEG_X),
+                (Vec3::new(face, at.y, at.z), Vec3::X),
+            ],
+            2,
+        )
+    };
+    match arch {
+        ARCH_DOOR => {
+            let d = deploy_size(ARCH_DOOR as usize).z;
+            both(
+                Vec3::new(0.0, DOOR_LOCK_Y_M, d * 0.5 - DOOR_LOCK_IN_M),
+                DOOR_FACE_M,
+            )
+        }
+        // The insert mesh is centred on its box (`insert_mesh`).
+        ARCH_GARAGE_DOOR => {
+            let size = deploy_size(ARCH_GARAGE_DOOR as usize);
+            both(
+                Vec3::new(
+                    0.0,
+                    DOOR_LOCK_Y_M - size.y * 0.5,
+                    (BUILD_CELL_M * 0.5 - FRAME_RIM_M) - 0.35,
+                ),
+                sim_core::deploy::insert_thickness(ARCH_GARAGE_DOOR) * 0.5,
+            )
+        }
+        // The chest's front under its lid; the cupboard's front, high.
+        ARCH_BOX => ([(Vec3::new(0.0, 0.36, 0.35), Vec3::Z), none], 1),
+        ARCH_HEARTH => ([(Vec3::new(0.0, 0.70, 0.255), Vec3::Z), none], 1),
+        _ => ([none; 2], 0),
+    }
+}
+
+/// Hang one drawn lock on a deployable: the keypad (with its light, green
+/// open and red locked — the client knows the lock bit and never who the
+/// lock remembers) or the padlock, its feet at `at`, facing `out`.
+fn spawn_lock(e: &mut EntityCommands, kit: &Kit, at: Vec3, out: Vec3, keyed: bool, locked: bool) {
+    let k = keyed as usize;
+    let scale = LOCK_SCALE[k];
+    // The kit authors a lock facing +Z, its body centred on its plane.
+    let turn = Quat::from_rotation_arc(Vec3::Z, out);
+    let t = Transform::from_translation(at + out * (0.02 * scale))
+        .with_rotation(turn)
+        .with_scale(Vec3::splat(scale));
+    let mut lock = e.commands_mut().spawn((
+        Mesh3d(kit.lock_mesh[k].clone()),
+        MeshMaterial3d(kit.lock_mat.clone()),
+        t,
+    ));
+    if !keyed {
+        lock.with_child((
+            Mesh3d(kit.led_mesh.clone()),
+            MeshMaterial3d(kit.led_mat[locked as usize].clone()),
+            Transform::from_translation(LED_AT),
+        ));
+    }
+    let lock = lock.id();
+    e.add_child(lock);
 }
 
 /// A deployable's damage, drawn: the material it was spawned in (`base`)

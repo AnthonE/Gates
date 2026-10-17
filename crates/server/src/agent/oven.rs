@@ -303,6 +303,19 @@ pub fn stands(core: &ClientCore, work: Work, (cx, cz): (u16, u16)) -> bool {
         .any(|d| (d.cx, d.cz, d.level, d.loc) == (cx, cz, 0, LOC_PLANE) && u16::from(d.row) == row)
 }
 
+/// Every ground cell the work's device stands on, per the mirror: whoever
+/// put it down.
+pub fn standing(core: &ClientCore, work: Work) -> impl Iterator<Item = (u16, u16)> + '_ {
+    let row = device_row(core, work.device()).map(|(row, _)| row);
+    core.deploys
+        .entries()
+        .iter()
+        .filter(move |d| {
+            d.level == 0 && d.loc == LOC_PLANE && row.is_some_and(|r| u16::from(d.row) == r)
+        })
+        .map(|d| (d.cx, d.cz))
+}
+
 /// The nearest of these cells holding the work's device within `within`
 /// metres of (`x`, `z`).
 pub fn nearest(

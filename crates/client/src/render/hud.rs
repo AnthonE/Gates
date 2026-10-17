@@ -64,9 +64,9 @@ const TOAST_PITCH_PX: f32 = 20.0;
 /// a centred line that must not sit on the toasts stands above.
 pub const ANNOUNCE_TOP_PX: f32 = TOAST_BOTTOM_PX + (TOAST_LINES as f32 + 1.0) * TOAST_PITCH_PX;
 
-/// Where the keypad and the hearth panel stand, px off the bottom: on the
-/// hotbar, which is where the announce stack lives, so the stack climbs
-/// over them while one is open ([`lift_announce`]).
+/// Where the keypad stands, px off the bottom: on the hotbar, which is
+/// where the announce stack lives, so the stack climbs over it while it is
+/// open ([`lift_announce`]).
 const OVERLAY_BOTTOM_PX: f32 = 76.0;
 
 /// How much dimmer each row is than the newer one below it. The stack has to read
@@ -326,12 +326,12 @@ fn readout_bottom_px() -> f32 {
     toast_row_bottom_px(TOAST_LINES)
 }
 
-/// Lift the announce stack over the keypad or the hearth panel while one is
-/// open, so a "wrong code" or a stock line is not drawn behind the panel it
-/// is about. Layout lands a frame late, so the lift does too.
+/// Lift the announce stack over the keypad while it is open, so a "wrong
+/// code" is not drawn behind the panel it is about. Layout lands a frame
+/// late, so the lift does too.
 #[allow(clippy::type_complexity)]
 pub fn lift_announce(
-    over: Query<&ComputedNode, Or<(With<PadRoot>, With<HearthRoot>)>>,
+    over: Query<&ComputedNode, With<PadRoot>>,
     mut rows: Query<(&ToastLine, &mut Node), Without<ReadoutLine>>,
     mut readout: Query<&mut Node, (With<ReadoutLine>, Without<ToastLine>)>,
 ) {
@@ -1615,11 +1615,6 @@ pub fn toggle_diagnostics(
 /// `crate::ui::keypad` has the argument).
 #[derive(Component)]
 pub struct PadRoot;
-
-/// The hearth's upkeep panel (`hearth_overlay`), a keypad-shaped HUD panel
-/// for the keypad's reason.
-#[derive(Component)]
-pub struct HearthRoot;
 
 /// The ammo readout — `loaded / ceiling` for the weapon in hand, blank for
 /// a hand that takes no magazine.
@@ -3718,7 +3713,7 @@ pub fn pad_overlay(
             ))
             .with_children(|panel| {
                 panel.spawn((
-                    Text::new("CODE"),
+                    Text::new(if pad.0.keyed { "KEY LOCK" } else { "CODE" }),
                     super::ui::font_bold(13.0),
                     TextColor(TEXT_DIM),
                     Pickable::IGNORE,
@@ -3727,173 +3722,45 @@ pub fn pad_overlay(
                 // HUD line never masked them and the panel keeps its
                 // information; the next empty cell wears the hot line, so
                 // where the fifth keystroke would be dropped is visible.
-                panel
-                    .spawn((
-                        Node {
-                            flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(6.0),
-                            ..default()
-                        },
-                        Pickable::IGNORE,
-                    ))
-                    .with_children(|digits| {
-                        for (i, c) in cells.iter().enumerate() {
-                            digits.spawn((
-                                Node {
-                                    width: Val::Px(30.0),
-                                    height: Val::Px(36.0),
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    border: UiRect::all(Val::Px(1.0)),
-                                    ..default()
-                                },
-                                BackgroundColor(if c.is_some() { CELL_FULL } else { CELL_BG }),
-                                BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
-                                Pickable::IGNORE,
-                                children![(
-                                    Text::new(match c {
-                                        Some(d) => d.to_string(),
-                                        None => String::new(),
-                                    }),
-                                    super::ui::font_bold(18.0),
-                                    TextColor(Color::srgb(0.98, 0.97, 0.95)),
-                                )],
-                            ));
-                        }
-                    });
-                panel.spawn((
-                    Text::new(crate::ui::keypad::OPS_HINT),
-                    super::ui::font(11.0),
-                    TextColor(TEXT_DIM),
-                    Pickable::IGNORE,
-                ));
-            });
-        });
-}
-
-/// The hearth's upkeep panel: per material what it holds and what a day
-/// costs, then how long the base stays protected (`crate::ui::hearth`).
-/// Rebuilt only when the view or the latched stock changes.
-/// What `hearth_overlay` last drew: the view, and the latched stock ack.
-type HearthSeen = (
-    Option<(u16, u16, u8)>,
-    (u16, u16, u8),
-    u8,
-    [(u16, u32, u32); sim_core::limits::HEARTH_STOCK_ROWS],
-);
-
-pub fn hearth_overlay(
-    mut commands: Commands,
-    view: Res<super::verbs::HearthView>,
-    net: NonSend<super::Net>,
-    roots: Query<Entity, With<HearthRoot>>,
-    mut seen: Local<Option<HearthSeen>>,
-) {
-    let core = &net.session.core;
-    let now = (view.0, core.stock_addr, core.stock_count, core.stock);
-    if *seen == Some(now) {
-        return;
-    }
-    *seen = Some(now);
-    for e in roots.iter() {
-        commands.entity(e).despawn();
-    }
-    let Some(at) = view.0 else {
-        return;
-    };
-    use super::panels::{LINE, PANEL_BG, TEXT_DIM};
-    let bright = Color::srgb(0.98, 0.97, 0.95);
-    let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
-    let known = core.stock_addr == at;
-    commands
-        .spawn((
-            super::WorldEntity,
-            HearthRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                bottom: Val::Px(OVERLAY_BOTTOM_PX),
-                width: Val::Percent(100.0),
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            Pickable::IGNORE,
-        ))
-        .with_children(|row| {
-            row.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(Val::Px(12.0)),
-                    row_gap: Val::Px(6.0),
-                    min_width: Val::Px(340.0),
-                    border: UiRect::all(Val::Px(1.0)),
-                    ..default()
-                },
-                BackgroundColor(PANEL_BG),
-                BorderColor::all(LINE),
-                Pickable::IGNORE,
-            ))
-            .with_children(|panel| {
-                panel.spawn((
-                    Text::new("HEARTH  ·  UPKEEP"),
-                    super::ui::font_bold(13.0),
-                    TextColor(TEXT_DIM),
-                    Pickable::IGNORE,
-                ));
-                if !known {
-                    panel.spawn((
-                        Text::new(crate::ui::hearth::NO_REPORT),
-                        super::ui::font(13.0),
-                        TextColor(bright),
-                        Pickable::IGNORE,
-                    ));
-                } else {
-                    for (i, r) in crate::ui::hearth::rows(rows).into_iter().enumerate() {
-                        // The key that takes this row back (`verbs::keys`).
-                        let name = format!(
-                            "[{}] {}",
-                            i + 1,
-                            crate::ui::craft::item_label(&core.catalog, r.item)
-                        );
-                        panel
-                            .spawn((
-                                Node {
-                                    flex_direction: FlexDirection::Row,
-                                    justify_content: JustifyContent::SpaceBetween,
-                                    column_gap: Val::Px(18.0),
-                                    ..default()
-                                },
-                                Pickable::IGNORE,
-                            ))
-                            .with_children(|line| {
-                                line.spawn((
-                                    Text::new(name.to_uppercase()),
-                                    super::ui::font_bold(14.0),
-                                    TextColor(bright),
+                // A key lock has no keypad and draws none.
+                if !pad.0.keyed {
+                    panel
+                        .spawn((
+                            Node {
+                                flex_direction: FlexDirection::Row,
+                                column_gap: Val::Px(6.0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|digits| {
+                            for (i, c) in cells.iter().enumerate() {
+                                digits.spawn((
+                                    Node {
+                                        width: Val::Px(30.0),
+                                        height: Val::Px(36.0),
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
+                                        border: UiRect::all(Val::Px(1.0)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(if c.is_some() { CELL_FULL } else { CELL_BG }),
+                                    BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
                                     Pickable::IGNORE,
+                                    children![(
+                                        Text::new(match c {
+                                            Some(d) => d.to_string(),
+                                            None => String::new(),
+                                        }),
+                                        super::ui::font_bold(18.0),
+                                        TextColor(Color::srgb(0.98, 0.97, 0.95)),
+                                    )],
                                 ));
-                                line.spawn((
-                                    Text::new(format!("{}  ·  {} / DAY", r.units, r.per_day)),
-                                    super::ui::font(14.0),
-                                    TextColor(bright),
-                                    Pickable::IGNORE,
-                                ));
-                            });
-                    }
-                    let status = crate::ui::hearth::status_line(rows);
-                    let warn = crate::ui::hearth::minutes_left(rows) == Some(0);
-                    panel.spawn((
-                        Text::new(status),
-                        super::ui::font_bold(15.0),
-                        TextColor(if warn {
-                            Color::srgb(0.95, 0.45, 0.35)
-                        } else {
-                            Color::srgb(0.60, 0.88, 0.55)
-                        }),
-                        Pickable::IGNORE,
-                    ));
+                            }
+                        });
                 }
                 panel.spawn((
-                    Text::new(crate::ui::hearth::HINT),
+                    Text::new(pad.0.hint()),
                     super::ui::font(11.0),
                     TextColor(TEXT_DIM),
                     Pickable::IGNORE,

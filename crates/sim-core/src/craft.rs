@@ -647,7 +647,7 @@ mod tests {
             inv: [ItemStack::default(); INV_SLOTS],
             next_swing: 0,
             ws_cell: NO_CELL,
-            ws_hits: 0,
+            ws_mark: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
             hp: 0,

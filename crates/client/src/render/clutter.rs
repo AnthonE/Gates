@@ -46,6 +46,10 @@ pub const CLUTTER_RING: i32 = 3;
 /// than shade. The reference game's "grass shadows" are a near-field effect
 /// for the same reason.
 pub const GRASS_SHADOW_TILES: i32 = 1;
+
+/// How far past a tile's edge the player goes before the shadow-casting
+/// tiles are re-chosen, metres.
+const SHADOW_SLACK_M: f32 = 2.0;
 /// Tiles filled per frame. The fill is 721 hash draws and a few thousand
 /// triangles; one a frame keeps the spike off the frame the player turns on.
 pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
@@ -789,13 +793,24 @@ pub fn stream(
     let ClutterRing { built, cards, .. } = &mut *ring;
     cards.retain(|k, _| built.contains_key(k));
 
-    // The near tiles' grass casts shadows; re-chosen when the player changes
-    // tile. A tile filled later is chosen as it spawns, below.
-    let near = |k: (i32, i32)| {
-        (k.0 - tx).abs() <= GRASS_SHADOW_TILES && (k.1 - tz).abs() <= GRASS_SHADOW_TILES
-    };
-    if ring.shadow_at != Some((tx, tz)) {
+    // The near tiles' grass casts shadows; re-chosen once the player is
+    // `SHADOW_SLACK_M` into another tile, so standing on an edge does not
+    // flip a strip of grass shadows on and off. A tile filled later is
+    // chosen as it spawns, below.
+    let left = ring.shadow_at.is_none_or(|(sx, sz)| {
+        let (x0, z0) = (sx as f32 * CLUTTER_TILE_M, sz as f32 * CLUTTER_TILE_M);
+        let out =
+            |p: f32, lo: f32| p < lo - SHADOW_SLACK_M || p > lo + CLUTTER_TILE_M + SHADOW_SLACK_M;
+        out(eye.pos.x, x0) || out(eye.pos.z, z0)
+    });
+    if left {
         ring.shadow_at = Some((tx, tz));
+    }
+    let (sx, sz) = ring.shadow_at.unwrap_or((tx, tz));
+    let near = |k: (i32, i32)| {
+        (k.0 - sx).abs() <= GRASS_SHADOW_TILES && (k.1 - sz).abs() <= GRASS_SHADOW_TILES
+    };
+    if left {
         for (k, e) in ring.cards.iter() {
             if near(*k) {
                 commands.entity(*e).remove::<NotShadowCaster>();

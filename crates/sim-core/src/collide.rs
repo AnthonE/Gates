@@ -285,13 +285,14 @@ pub fn floor_frame_solid(dx: f32, dz: f32, radius: f32) -> bool {
 pub const PLANE_THICKNESS_M: f32 = 0.3;
 
 /// The doorway opening's height, metres above the storey base — the
-/// lintel's underside. The client has always drawn the lintel at
-/// 2.1..3.0 (`render/structures.rs` derives it from `LINTEL_H_M`); the
+/// lintel's underside. 2.2 m, Rust's door leaf (it was 2.1 until
+/// 2026-10-17). The client draws the lintel from here to the storey top
+/// (`render/structures.rs` `lintel_band`); the
 /// sim never modelled it because a 1.7 m capsule cannot reach it without
 /// a jump, and that is still true for bodies. The **shot** walk is what
 /// finally reads it: an arrow is not a capsule, and an arrow through the
 /// drawn lintel was the frame lying to the other sense.
-pub const DOOR_HEAD_M: f32 = 2.1;
+pub const DOOR_HEAD_M: f32 = 2.2;
 
 /// The triangular floor frame's rim, measured in the same local half-cell
 /// as a triangle plane. Radius expands each rail for capsule/projectile tests.
