@@ -1,0 +1,97 @@
+{
+  "out": "film/ads/gates-trailer-whole-75s-16x9.mp4",
+  "size": [1280, 720],
+  "fps": 30,
+  "shots": ["film/whole/shots-camp", "film/whole/shots-wild", "film/whole/shots-fel", "film/whole/shots-stags", "film/whole/shots-town"],
+  "bank": "film/bank",
+  "fade": 0.4,
+  "fade_in": 1.2,
+  "fade_out": 1.0,
+  "loudness": -14,
+  "crf": 18,
+  "maxrate": "6M",
+  "grade": "eq=contrast=1.04:saturation=1.05,colorbalance=rs=-0.02:bs=0.03:rh=0.03:bh=-0.02",
+  "finish": {
+    "halation": 0.1,
+    "vignette": 0.3,
+    "grain": 3
+  },
+  "clips": [
+    {"shot": "dawn-sea", "in": 0.2, "len": 3.8, "game": 0.6},
+    {"shot": "beach-push", "in": 0.3, "len": 3.0, "game": 0.7, "transition": "cut"},
+    {"shot": "aerial-island", "in": 0.5, "len": 3.2, "game": 0.3, "transition": "cut"},
+    {"shot": "pig-root", "in": 0.2, "len": 3.0, "game": 0.9, "transition": "cut"},
+    {"shot": "stags", "in": 0.3, "len": 2.8, "game": 0.8, "transition": "cut"},
+    {"shot": "wolves-rest", "in": 0.5, "len": 3.0, "game": 0.8, "transition": "cut"},
+    {"shot": "fel-pack-run", "in": 0.6, "len": 3.4, "game": 1.0, "transition": "cut"},
+    {"shot": "fel-charge", "in": 0.8, "len": 4.0, "game": 1.0, "transition": "cut"},
+    {"shot": "verdigris", "in": 0.4, "len": 3.6, "game": 0.6, "transition": "cut"},
+    {"shot": "fel-pig", "in": 0.4, "len": 2.4, "game": 0.8, "transition": "cut"},
+    {"shot": "build-lapse", "in": 0.2, "len": 3.8, "game": 0.3, "transition": "cut"},
+    {"shot": "base-golden", "in": 0.4, "len": 2.8, "game": 0.5, "transition": "cut"},
+    {"shot": "gate-walkers", "in": 0.6, "len": 3.2, "game": 0.7, "transition": "cut"},
+    {"shot": "street", "in": 0.4, "len": 3.0, "game": 0.7, "transition": "cut"},
+    {"shot": "town-aerial", "in": 0.6, "len": 2.8, "game": 0.4, "transition": "cut"},
+    {"shot": "zig-reveal", "in": 0.6, "len": 3.2, "game": 0.4, "transition": "cut"},
+    {"shot": "heli-pass", "in": 0.6, "len": 3.8, "game": 1.0, "transition": "cut"},
+    {"shot": "base-storm", "in": 0.4, "len": 2.4, "game": 0.9, "transition": "cut", "grade": "eq=contrast=1.08:saturation=0.72:gamma=1.05,colorbalance=rs=-0.03:bs=0.04"},
+    {"shot": "wolves-close-in", "in": 0.6, "len": 2.6, "game": 0.9, "transition": "cut"},
+    {"shot": "raid-plant", "in": 0.4, "len": 2.4, "game": 0.7, "transition": "cut"},
+    {"shot": "raid-blast", "in": 0.6, "len": 4.4, "game": 1.0, "transition": "cut"},
+    {"shot": "aftermath", "in": 0.3, "len": 3.0, "game": 0.8, "transition": "cut"}
+  ],
+  "captions": [
+    {"at": 0.9, "len": 2.7, "text": "YOU WAKE ON A BEACH", "sub": "with a rock and a torch", "size": 0.06, "y": 0.74},
+    {"at": 10.2, "len": 2.6, "text": "THE ISLAND IS ALIVE", "size": 0.06, "y": 0.76},
+    {"at": 16.0, "len": 2.6, "text": "AND SOME OF IT HUNTS", "size": 0.06, "y": 0.76},
+    {"at": 26.4, "len": 3.0, "text": "THE GREEN IS SPREADING", "size": 0.06, "y": 0.76},
+    {"at": 32.4, "len": 3.2, "text": "BUILD", "size": 0.13, "y": 0.5},
+    {"at": 39.2, "len": 2.6, "text": "TRADE AT THE GATE", "size": 0.06, "y": 0.76},
+    {"at": 42.2, "len": 2.6, "text": "PLAYERS AND AGENTS, ONE ISLAND", "size": 0.055, "y": 0.76},
+    {"at": 48.0, "len": 2.6, "text": "EXPLORE THE RUINS", "size": 0.06, "y": 0.76},
+    {"at": 51.3, "len": 3.0, "text": "SOMETHING PATROLS THE SKY", "size": 0.055, "y": 0.76},
+    {"at": 63.4, "len": 2.4, "text": "RAID", "size": 0.15, "y": 0.5},
+    {"at": 66.9, "len": 2.5, "text": "TRUST NO ONE", "size": 0.09, "y": 0.5}
+  ],
+  "flashes": [
+    {"at": 63.3, "len": 0.2}
+  ],
+  "music": [
+    {"src": "trailer_drone.wav", "at": 0.0, "gain": 0.45},
+    {"src": "music_safe_zone.ogg", "at": 0.0, "in": 92.0, "gain": 0.9, "fade_in": 1.0, "cut": 76.0, "fade_out": 3.0}
+  ],
+  "sfx": [
+    {"src": "trailer_whoosh.wav", "at": 9.6, "gain": 0.4},
+    {"src": "29_Howl_1.wav", "at": 15.9, "gain": 0.8},
+    {"src": "29_Howl_2.wav", "at": 22.4, "gain": 0.7},
+    {"src": "trailer_boom.wav", "at": 26.2, "gain": 0.6},
+    {"src": "trailer_braam.wav", "at": 32.2, "gain": 0.7},
+    {"src": "trailer_whoosh.wav", "at": 38.4, "gain": 0.35},
+    {"src": "trailer_boom.wav", "at": 47.8, "gain": 0.5},
+    {"src": "trailer_riser.wav", "at": 56.0, "gain": 0.55},
+    {"src": "37_Thunder_0.wav", "at": 55.2, "gain": 0.6},
+    {"src": "trailer_pulse.wav", "at": 59.8, "gain": 0.7},
+    {"src": "trailer_pulse.wav", "at": 60.5, "gain": 0.75},
+    {"src": "trailer_pulse.wav", "at": 61.2, "gain": 0.8},
+    {"src": "trailer_boom.wav", "at": 63.3, "gain": 1.0},
+    {"src": "trailer_reverse.wav", "at": 67.1, "gain": 0.7},
+    {"src": "trailer_braam.wav", "at": 69.6, "gain": 0.9}
+  ],
+  "card": {
+    "len": 6.0,
+    "fade": 0.6,
+    "shot": "lake-sunset",
+    "at": 2.5,
+    "title": "GATES",
+    "lines": ["THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER", "PLAY NOW  ·  ELOPROS.COM/GAMES/GATES"]
+  },
+  "poster": {
+    "out": "film/ads/gates-trailer-whole-poster.png",
+    "shot": "fel-charge",
+    "at": 3.0,
+    "title": "GATES",
+    "lines": ["BUILD. RAID. SURVIVE."],
+    "dim": 0.25,
+    "y": 0.2
+  }
+}

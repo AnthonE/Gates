@@ -1,0 +1,17 @@
+{
+  "recording": "film/fel.rec",
+  "out": "film/whole/stills-fel",
+  "width": 1600,
+  "height": 900,
+  "fov": 42,
+  "settle": 16,
+  "hold": 18,
+  "look": {"saturation": 1.08, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 1, "gaussian": true},
+  "shots": [
+    {"name": "fel-pack", "at": 8, "still": true, "hour": 0.45, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [3521, 1.2, 1623], "look": [3511, 0.6, 1597]}], "look": {"focus": "look", "fstop": 2.8, "saturation": 1.1}},
+    {"name": "fel-pig", "at": 121, "still": true, "hour": 0.45, "weather": "clear", "fov": 38, "keys": [{"t": 0, "pos": [3504, 1.1, 1677], "look": [3510, 0.4, 1668]}], "look": {"focus": "look", "fstop": 2.8, "saturation": 1.1}},
+    {"name": "fel-charge", "at": 124, "still": true, "hour": 0.78, "weather": "clear", "fov": 34, "keys": [{"t": 0, "pos": [3466, 1.2, 1617], "look": [3489, 0.6, 1613]}], "look": {"focus": "look", "fstop": 2.4, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}},
+    {"name": "verdigris", "at": 200, "still": true, "hour": 0.78, "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [3380, 25, 1500], "look": [3138, 25, 1143]}], "look": {"exposure": 0.15, "temperature": 0.03, "saturation": 1.12}}
+  ]
+}
