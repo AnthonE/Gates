@@ -465,6 +465,15 @@ pub fn init(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 /// Everything that walks through grass: other players and the animals.
 type Walkers = Or<(With<super::bodies::Body>, With<super::mobs::Animal>)>;
 
+/// Something lying in the grass that keeps it pressed flat: a dropped pack,
+/// a carcass, a corpse. Knee-high turf otherwise swallowed a 0.3 m pack and
+/// a body lying 0.1 m deep, and the prompt offered a bag nobody could see.
+/// `len_m` is how far it lies along its own forward (-Z) from its origin.
+#[derive(Component, Clone, Copy)]
+pub struct PressesGrass {
+    pub len_m: f32,
+}
+
 /// How hard a blast's shock bends what it passes, in units of the plant's own
 /// wind bend at full wind (`foliage_common.wgsl::displace`).
 pub const BLAST_PUSH: f32 = 4.0;
@@ -527,6 +536,7 @@ pub fn update(
     eye: Res<Eye>,
     weather: Option<Res<WeatherNow>>,
     walkers: Query<(Entity, &GlobalTransform), Walkers>,
+    pressers: Query<(&GlobalTransform, &PressesGrass)>,
     mut trample: ResMut<Trample>,
     mut up: ResMut<FoliageUpload>,
     contacts: Option<Res<super::impact::Contacts>>,
@@ -557,6 +567,24 @@ pub fn update(
         let at = Vec2::new(p.x, p.z);
         if (at - feet).abs().max_element() < reach {
             trample.stamp(at, dt);
+        }
+    }
+    for (g, press) in &pressers {
+        let p = g.translation();
+        let at = Vec2::new(p.x, p.z);
+        if (at - feet).abs().max_element() >= reach + press.len_m {
+            continue;
+        }
+        let f = g.forward();
+        let along = Vec2::new(f.x, f.z).normalize_or_zero();
+        let steps = (press.len_m / STAMP_R_M).ceil() as i32;
+        for i in 0..=steps {
+            let k = if steps == 0 {
+                0.0
+            } else {
+                i as f32 / steps as f32
+            };
+            trample.stamp(at + along * press.len_m * k, dt);
         }
     }
 
