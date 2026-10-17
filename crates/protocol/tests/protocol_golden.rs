@@ -1801,13 +1801,17 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_recovered(chance_pm, hp, &mut buf).unwrap()
         }
         "event_hurt.bin" => {
-            let (sector, damage) = event_hurt();
+            let (sector, damage, head) = event_hurt();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Hurt { sector, damage },
+                EventMsg::Hurt {
+                    sector,
+                    damage,
+                    head
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_hurt(sector, damage, &mut buf).unwrap()
+            encode_event_hurt(sector, damage, head, &mut buf).unwrap()
         }
         "event_hit.bin" => {
             let (victim, part, damage) = event_hit();

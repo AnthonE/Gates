@@ -1214,7 +1214,9 @@ pub use voice::{
 /// v120 — key locks: `SUB_DOOR` and the placed-deployable record each grew
 /// a `keyed` bit after `has_lock`, so a client draws a padlock and offers no
 /// keypad at a key lock.
-pub const PROTO_VER: u16 = 120;
+/// v121 — Rust's headshot crunch: `SUB_HURT` carries a head bit after the
+/// damage, set when the blow crossed the victim's head.
+pub const PROTO_VER: u16 = 121;
 
 /// This game's slug in the elo catalog.
 ///

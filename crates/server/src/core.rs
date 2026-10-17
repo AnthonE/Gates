@@ -4222,7 +4222,8 @@ impl ShardCore {
                     // anyway; a widened `HURT_SECTORS` that outgrew the field
                     // lands here as a counted encode error rather than as a
                     // marker pointing the wrong way.
-                    match encode_event_hurt(ev.b as u8, ev.c as u16, &mut self.ev_buf) {
+                    let head = ev.c & sim_core::world::HURT_HEAD != 0;
+                    match encode_event_hurt(ev.b as u8, ev.c as u16, head, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);

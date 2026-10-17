@@ -1398,7 +1398,7 @@ fn step_in(
                 EV_HURT,
                 vid,
                 crate::combat::bearing_sector(-(dx as i64), -(dz as i64)) as u32,
-                dmg as u32,
+                crate::world::hurt_c(part, dmg),
             );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
@@ -2670,7 +2670,7 @@ fn hitscan_in(
             // when the arc appears. At a favour of 7 the rewound bearing
             // would describe neither player's situation and is easily a
             // whole sector of the sixteen out.
-            events.push(EV_HURT, vid, sector as u32, dmg as u32);
+            events.push(EV_HURT, vid, sector as u32, crate::world::hurt_c(part, dmg));
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 // `EV_DEATH` is `die`'s (wounded v0), as for the arrow.
