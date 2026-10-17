@@ -1473,6 +1473,8 @@ pub enum Ingest {
     AppliedDelta = 2,
     Stale = 3,
     NoBaseline = 4,
+    /// A snapshot overflow datagram (wire v121), folded into its tick.
+    AppliedMore = 5,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3432,11 +3434,9 @@ impl ClientCore {
                     }
                     self.applied2 |= APPLIED2_WORN;
                 } else if kind == CONT_SELF {
-                    // The server shut the panel: gone, or out of reach.
-                    self.cont_kind = CONT_SELF;
-                    self.cont_handle = 0;
-                    self.cont = [ItemStack::default(); INV_SLOTS];
-                    self.applied2 |= APPLIED2_CONT;
+                    // The server shut the panel: gone, out of reach, or
+                    // the answer to this client's own close.
+                    self.shut_container();
                 } else if reset {
                     // The whole container, and the only message that may
                     // change which container is open — so a diff can never
@@ -4840,6 +4840,17 @@ impl ClientCore {
             && sim_core::town::safe(&self.haven().town, x, z)
     }
 
+    /// Forget the open ground container. The server's close lands here, and
+    /// so does this client's own (`verbs::close_container`), so a box shut
+    /// with the panel is not drawn again on the next `Tab`: the server
+    /// stops feeding it the moment the close arrives.
+    pub fn shut_container(&mut self) {
+        self.cont_kind = CONT_SELF;
+        self.cont_handle = 0;
+        self.cont = [ItemStack::default(); INV_SLOTS];
+        self.applied2 |= APPLIED2_CONT;
+    }
+
     /// The selected hotbar slot, when what is in it stands a downed body up
     /// (the catalog's `revive` bit, v99): `E` on a downed body injects it
     /// (`ActionMsg::Treat`) instead of starting the hand revive.
@@ -5281,6 +5292,20 @@ impl ClientCore {
                 } else {
                     Ingest::Applied
                 }
+            }
+            Ok(Applied::More) => {
+                // The rest of the tick's bodies: interpolation samples at
+                // the tick they belong to, and nothing else — the clock,
+                // the jitter estimate and the reconcile all ran on the
+                // snapshot, and the own body is never in an overflow.
+                if let Some(more) = self.view.newest_more() {
+                    for e in more.entities() {
+                        if e.id != self.player_id || self.spectating {
+                            self.interp.push(more.tick, e);
+                        }
+                    }
+                }
+                Ingest::AppliedMore
             }
             Ok(Applied::Stale) => {
                 self.snapshots_stale += 1;

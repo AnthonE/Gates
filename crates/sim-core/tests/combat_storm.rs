@@ -483,14 +483,19 @@ fn test_combat_storm() {
         "{} deaths is not enough to have pressed a {MAX_BACKPACKS}-bag store",
         s.deaths
     );
+    // The other way round since 2026-10-17: the ring overflowed under this
+    // fight at 256 and was raised to 500 (`limits.rs`) so a full shard's
+    // battle drops nothing. The fight must still press it — a quiet storm
+    // would satisfy the first assert — and must fit. `loot_storm.rs` and
+    // `trust_ledger.rs` still drive the overflow path itself.
     assert!(
-        s.overflow_ticks > 0,
-        "the event ring never overflowed; {PLAYERS} bodies fighting is no longer a crowd, \
-         or MAX_EVENTS_PER_TICK moved"
+        s.peak_events > MAX_EVENTS_PER_TICK / 4,
+        "a peak of {} events is no crowd: {PLAYERS} bodies fighting should press the ring",
+        s.peak_events
     );
     assert_eq!(
-        s.peak_events, MAX_EVENTS_PER_TICK,
-        "an overflowing ring must be exactly full"
+        s.overflow_ticks, 0,
+        "{PLAYERS} bodies fighting overflowed a {MAX_EVENTS_PER_TICK}-slot ring"
     );
 }
 

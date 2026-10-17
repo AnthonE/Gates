@@ -52,10 +52,12 @@ hours.
 
 ## What CI will stop you on (so you know why)
 
-1. **`sim-core` is deterministic.** No I/O, clock, threads, `HashMap`
-   iteration or trig/libm, and floats are limited to `+ − × ÷ sqrt min max`.
-   Clippy enforces it on every PR. Native vs wasm must hash identically;
-   that probe runs nightly.
+1. **`sim-core` is deterministic.** No I/O, clock, threads or `HashMap`
+   iteration. Floats are `+ − × ÷ sqrt min max`, and trig, exp, log, pow,
+   floor and round go through `sim_core::fmath` (pure-Rust libm, the same
+   bits native and wasm), never `f32::sin` and friends. Clippy enforces it on
+   every PR. Native vs wasm must hash identically; that probe runs nightly
+   (`cargo run -p sim-core --example probe_math` checks just the math).
 2. **No allocation in the sim tick after warmup** (`test_alloc_zero`), and
    every queue has a cap in `sim-core/src/limits.rs`.
 3. **Bevy draws, it does not decide.** Gameplay state lives in `sim-core` and

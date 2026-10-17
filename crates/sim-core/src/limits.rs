@@ -47,6 +47,15 @@ pub const MAX_INPUT_FRAMES: usize = 10;
 /// the client depending on it being true.
 pub const MAX_SNAPSHOT_ENTITIES: usize = 64;
 
+/// Datagrams one client's snapshot may take per tick (wire v121): the
+/// snapshot itself, then up to two overflow datagrams of absolute records
+/// (`protocol::KIND_SNAPSHOT_MORE`), each a whole `DATAGRAM_BUDGET_BYTES`
+/// datagram, never a fragment. The interest set is this many snapshots'
+/// worth of bodies (`AOI_RANK_EXIT`); the worst case is this many times
+/// the single datagram's bandwidth, and only in a crowd that big.
+pub const SNAPSHOT_PARTS: usize = 3;
+const _: () = assert!(SNAPSHOT_PARTS >= 1 && SNAPSHOT_PARTS <= 4);
+
 /// `state_hash` cadence in ticks (DESIGN.md §7).
 pub const STATE_HASH_INTERVAL: u64 = 32;
 
@@ -91,9 +100,9 @@ pub const AOI_EXIT_CM: i64 = 20_800;
 /// The band width is **derived from the radii rather than picked**: at
 /// uniform density the count inside a radius goes as its square, so a rank
 /// band with the same forgiveness as the distance band is the same ratio in
-/// area — `AOI_ENTER_CM² / AOI_EXIT_CM²` of the exit rank, which is 45 of
-/// 64. A body must therefore improve by 19 places to re-enter after being
-/// crowded out, the rank equivalent of walking 32 m closer.
+/// area — `AOI_ENTER_CM² / AOI_EXIT_CM²` of the exit rank, which is 137
+/// of 192. A body must therefore improve by 55 places to re-enter after
+/// being crowded out, the rank equivalent of walking 32 m closer.
 ///
 /// Overflow policy: **evict by rank**, into the same pending-removal set a
 /// distance exit uses — one path out of a client's world, not two. The cost
@@ -103,7 +112,7 @@ pub const AOI_EXIT_CM: i64 = 20_800;
 /// at rank 60 is kept while a newcomer at rank 46 is refused, and only a body
 /// that improves 19 places takes a held slot.
 /// Proposed default, DECISIONS.md §open (interest rank cap v0).
-pub const AOI_RANK_EXIT: usize = MAX_SNAPSHOT_ENTITIES;
+pub const AOI_RANK_EXIT: usize = MAX_SNAPSHOT_ENTITIES * SNAPSHOT_PARTS;
 /// **Written as the number it is, with its derivation asserted beside it
 /// rather than substituted for it.** It shipped as the expression itself,
 /// which read well and cost the whole gate suite: `ci/knob_registry.mjs`
@@ -119,11 +128,11 @@ pub const AOI_RANK_EXIT: usize = MAX_SNAPSHOT_ENTITIES;
 /// `MAX_SNAPSHOT_ENTITIES` moves without this number moving with them,
 /// which is the drift the expression existed to prevent and the gate
 /// could not see.
-pub const AOI_RANK_ENTER: usize = 45;
+pub const AOI_RANK_ENTER: usize = 137;
 const _: () = assert!(
     AOI_RANK_ENTER
-        == (MAX_SNAPSHOT_ENTITIES as i64 * AOI_ENTER_CM * AOI_ENTER_CM
-            / (AOI_EXIT_CM * AOI_EXIT_CM)) as usize,
+        == (AOI_RANK_EXIT as i64 * AOI_ENTER_CM * AOI_ENTER_CM / (AOI_EXIT_CM * AOI_EXIT_CM))
+            as usize,
     "AOI_RANK_ENTER must stay the enter/exit area ratio of AOI_RANK_EXIT — \
      a radius or the entity cap moved and this number did not"
 );
@@ -156,7 +165,9 @@ pub const INPUT_RING_CAP: usize = 32;
 /// Per-connection outbound ring of encoded snapshots (sim → net).
 /// Overflow policy: **skip** — a client not draining skips a snapshot
 /// (DESIGN.md §4); the next one supersedes it anyway.
-pub const SNAPSHOT_RING_CAP: usize = 4;
+/// Two ticks of every part (`SNAPSHOT_PARTS`), so a writer one tick behind
+/// still finds the newest tick whole.
+pub const SNAPSHOT_RING_CAP: usize = 2 * SNAPSHOT_PARTS;
 
 /// The client's inbound datagram ring (netcode v2 S2): snapshots held
 /// between render frames, drained in arrival order every `Session::pump`.
@@ -167,7 +178,7 @@ pub const SNAPSHOT_RING_CAP: usize = 4;
 /// snapshot replaces its predecessor) and starved the interpolator of the
 /// in-between samples every other body's motion is reconstructed from —
 /// at ≤ 30 fps, half of a 30 Hz snapshot stream never reached it.
-pub const CLIENT_DG_RING: usize = 8;
+pub const CLIENT_DG_RING: usize = 8 * SNAPSHOT_PARTS;
 
 /// Connection-lifecycle control rings (accept loop → sim, and the
 /// graveyard back). Overflow policy: **refuse** the join / retry the
@@ -345,9 +356,10 @@ const _: () = assert!(
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
 /// Item definitions the sim preallocates for (the alpha set is ~48 rows,
-/// CONTENT.md §2). The content bake refuses a set past this. Proposed
-/// default, DECISIONS.md §open (gather bounds row).
-pub const MAX_ITEM_DEFS: usize = 112;
+/// CONTENT.md §2). The content bake refuses a set past this. 127 is the
+/// most the wire's 7-bit held field can name beside its empty-hand code
+/// (`protocol::HELD_NONE`); past it, that field widens.
+pub const MAX_ITEM_DEFS: usize = 127;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -572,7 +584,7 @@ pub const MAX_PIECE_COSTS: usize = 2;
 /// placement with an integer reason code (EV_BUILD_REFUSED) — a full world
 /// refuses loudly, never evicts someone's wall. Proposed default,
 /// DECISIONS.md §open (build grid row).
-pub const MAX_PIECES: usize = 8_192;
+pub const MAX_PIECES: usize = 32_768;
 
 /// Build-grid coordinate ceiling: cells index 0..MAX_BUILD_COORD on each
 /// axis, matching the wire's 11-bit cell fields (the 4,096 m island spans
@@ -592,7 +604,8 @@ const _: () = assert!(MAX_BUILD_SOCKETS == MAX_BUILD_LEVELS * 2);
 /// to occupancy masks, power of two, 2 × MAX_PIECES so it never passes
 /// half load (each piece occupies at most one column). Structural cap
 /// derived from MAX_PIECES, not a knob.
-pub const COL_INDEX_SLOTS: usize = 16_384;
+pub const COL_INDEX_SLOTS: usize = 2 * MAX_PIECES;
+const _: () = assert!(COL_INDEX_SLOTS.is_power_of_two());
 
 /// Deployable definitions the sim preallocates for (the alpha set is 9
 /// rows, content/deployables.toml). The content bake refuses a set past
@@ -611,7 +624,7 @@ pub const MAX_DEPLOY_COSTS: usize = MAX_RECIPE_INPUTS;
 /// placement with an integer reason code (EV_DEPLOY_REFUSED) — same
 /// posture as `MAX_PIECES`. Proposed default, DECISIONS.md §open
 /// (deployables row).
-pub const MAX_DEPLOYS: usize = 1_024;
+pub const MAX_DEPLOYS: usize = 4_096;
 
 /// Slots in the collision index's table of blocking deployables
 /// (`collide::SolidPose`): every free-placed solid deployable has its own
@@ -624,12 +637,21 @@ const _: () = assert!(SOLID_SLOTS.is_power_of_two());
 /// and the upkeep sweep scan hearths, never the whole deploy store.
 /// Overflow policy: **refuse** the hearth placement. Proposed default,
 /// DECISIONS.md §open (deployables row).
-pub const MAX_HEARTHS: usize = 256;
+pub const MAX_HEARTHS: usize = 512;
 
-/// Player auto turrets that shoot at once, shard-wide (`turret.rs`): each
-/// rides a roster slot below the town's sentries. Past it, a placed turret
-/// stands inert until one comes down.
-pub const MAX_TURRETS: usize = 24;
+/// Player auto turrets with a gun, shard-wide (`turret.rs`): each rides a
+/// roster slot below the town's sentries, taken from the animals' range —
+/// 64 leaves 187 animal slots, about three times what the shipped
+/// densities spawn. Past it, a placed turret stands inert until one comes
+/// down. Was 24 until wire v121, which a few bases on a full shard used up.
+pub const MAX_TURRETS: usize = 64;
+
+/// Rust's turret interference (2023): at most this many turrets within
+/// [`TURRET_INTERFERENCE_M`] of each other shoot; the rest stand idle with
+/// their guns up, first come first served in table order (`turret::step`).
+pub const TURRET_INTERFERENCE: usize = 12;
+/// The interference radius, metres.
+pub const TURRET_INTERFERENCE_M: f32 = 40.0;
 
 /// Stock rows per hearth — one per distinct upkeep material (the union
 /// of building-cost items; the alpha build table uses 3). The bake
@@ -701,8 +723,9 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// common one. Overflow policy is unchanged: **resync**.
 /// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
 ///
-/// 192 since wire v93, when the heard deeds became the third body arm.
-pub const EVENT_RING_CAP: usize = 192;
+/// 192 since wire v93, when the heard deeds became the third body arm; 576
+/// since wire v121, when snapshot overflow tripled the rank band.
+pub const EVENT_RING_CAP: usize = 576;
 
 /// How many `pump_events` arms broadcast a **body's** fact to the whole
 /// class-D interest set, each therefore able to fan in `AOI_RANK_EXIT`
@@ -795,7 +818,7 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// `REFUSE_D_FULL` — the same posture `MAX_HEARTHS` takes, and correct
 /// here for the same reason: nothing is lost by refusing a box that was
 /// never placed. Proposed default, DECISIONS.md §open (box v0).
-pub const MAX_BOXES: usize = 256;
+pub const MAX_BOXES: usize = 1_024;
 
 /// Authored world containers that have ever been opened at once
 /// (`worldcont.rs`: the haven pad's crates, a waystation's caches). Not a
@@ -866,9 +889,10 @@ pub const SHOP_ROWS: usize = 6;
 /// takes, and correct here for its reason — a lock that was never bolted
 /// on loses nothing, and the door stays exactly as usable as it was.
 /// Sized under `MAX_DEPLOYS` on purpose: every lock needs a door under
-/// it, and a shard with 512 locked doors is a shard with 512 bases.
+/// it, and a shard with 2,048 locked doors is a shard with hundreds of
+/// bases.
 /// Proposed default, DECISIONS.md §open (lock v1).
-pub const MAX_LOCKS: usize = 512;
+pub const MAX_LOCKS: usize = 2_048;
 
 /// Players one lock remembers with **full** rights — the ones who entered
 /// its main code, plus whoever bolted it on. The reference's list is
@@ -926,7 +950,8 @@ pub const PRIV_BFS_CELLS: usize = 256;
 /// none reachable — every probe terminates at an empty slot while load
 /// stays under half, and the pool insert beside it stops at `MAX_PIECES`
 /// regardless. Not a knob.
-pub const CLAIM_INDEX_SLOTS: usize = 16_384;
+pub const CLAIM_INDEX_SLOTS: usize = 2 * MAX_PIECES;
+const _: () = assert!(CLAIM_INDEX_SLOTS.is_power_of_two());
 
 /// Players one hearth remembers as its **crew** — who may build, upgrade,
 /// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten is
@@ -1042,7 +1067,14 @@ pub const MAX_HAVEN_CANDIDATES: usize = 256;
 /// policy: **drop newest**, counted; the late-join slot sync (the wire
 /// slice) re-derives anything a lost event failed to announce. Proposed
 /// default, DECISIONS.md §open (gather bounds row).
-pub const MAX_EVENTS_PER_TICK: usize = 256;
+///
+/// **500 since 2026-10-17**: at 256 the hundred-player firefight
+/// (`snapshot_budget.rs`, `the_event_lane_holds_at_population`) peaked at
+/// 264, overflowing it and resyncing every client at once. 500 is 1.9× that
+/// peak, and stays under the 510 that the stair-rotation overflow test
+/// (`server/src/core.rs`) can raise in one tick, so that test still reaches
+/// a real overflow.
+pub const MAX_EVENTS_PER_TICK: usize = 500;
 
 /// "Dropped at your feet" lines one give-back (a craft cancel, a demolish
 /// refund, a pick-up, an unbolt) may announce: one per distinct item, so a

@@ -35,9 +35,8 @@ use super::panels::Ui;
 use super::structures::{self, base_transform, deploy_transform};
 use super::{Net, WorldId, CROUCH_EYE_M, EYE_HEIGHT};
 
-/// Where the ghost aims, and at what: the LOOK ray — eye, yaw AND pitch,
-/// the tracer's own ray convention, so the ghost sits where a shot would
-/// land — marched into the world by [`place::aim_from_look`] against
+/// Where the ghost aims, and at what: the LOOK ray — eye, yaw AND pitch —
+/// marched into the world by [`place::aim_from_look`] against
 /// terrain, the predictor's piece surfaces, its wall faces and its floor
 /// sockets. The storey comes back with the point (aimed level v0): what the
 /// ray met says which one, the way the reference's sockets do.
@@ -55,8 +54,12 @@ fn aim_point(
     feet: [f32; 3],
     step: f32,
 ) -> place::Aim {
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
-    let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
+    // The look's own angles, not the wire's 256-step tables: nothing the
+    // server checks re-derives this ray (a placement carries its cell and
+    // pose), and the tables made the ghost hop up to 20 cm at a time under
+    // a crosshair that glides.
+    let (fx, fz) = look.yaw.sin_cos();
+    let (sv, ch) = look.pitch.sin_cos();
     place::aim_from_look_step(
         seed,
         haven,
@@ -341,6 +344,11 @@ pub fn track(
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
     let mut target = aim.target_for(shape);
+    // A wall only reaches for a diagonal a triangle stands under: across a
+    // square it takes the nearest straight edge instead.
+    if !place::diag_borne(core.pieces.entries(), target) {
+        target = place::target_at_straight(aim.at.0, aim.at.1, shape, level);
+    }
     if sim_core::circulation::is_riser(shape) {
         target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
     }
@@ -766,6 +774,7 @@ pub fn deploy_track(
             hide_deploy(&mut commands, ghost);
             return;
         };
+        let (t, pose) = place::body_slide(&site, def.placement, def.arch, t, pose);
         let probe = sim_core::deploy::DeployRec {
             cx: t.cx,
             cz: t.cz,

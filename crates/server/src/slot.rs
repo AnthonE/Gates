@@ -198,6 +198,45 @@ impl SnapMsg {
     pub fn bytes(&self) -> &[u8] {
         &self.buf[..self.len as usize]
     }
+
+    /// The tick this datagram belongs to: a snapshot and its overflow
+    /// datagrams (wire v121) share one, which is what the writer groups by.
+    pub fn tick(&self) -> Option<u32> {
+        protocol::peek_snapshot_tick(self.bytes())
+    }
+}
+
+/// The datagrams of the newest tick among those drained, in push order —
+/// the snapshot, then its overflow — so a sender supersedes an older tick
+/// whole and never sends half of one beside the next.
+#[derive(Default)]
+pub struct TickGroup {
+    msgs: [Option<SnapMsg>; sim_core::limits::SNAPSHOT_PARTS],
+    n: usize,
+    tick: Option<u32>,
+}
+
+impl TickGroup {
+    pub fn push(&mut self, msg: SnapMsg) {
+        let t = msg.tick();
+        if t != self.tick {
+            self.msgs = [None; sim_core::limits::SNAPSHOT_PARTS];
+            self.n = 0;
+            self.tick = t;
+        }
+        if self.n < self.msgs.len() {
+            self.msgs[self.n] = Some(msg);
+            self.n += 1;
+        }
+    }
+
+    /// Take the group, oldest part first, leaving it empty.
+    pub fn take(&mut self) -> impl Iterator<Item = SnapMsg> {
+        let msgs = std::mem::take(&mut self.msgs);
+        let n = std::mem::take(&mut self.n);
+        self.tick = None;
+        msgs.into_iter().take(n).flatten()
+    }
 }
 
 /// One encoded event-lane message crossing sim→net (the reliable bidi
