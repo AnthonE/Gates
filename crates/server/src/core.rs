@@ -2538,12 +2538,11 @@ impl ShardCore {
                     // spammed to jump the queue — which is also the only
                     // rate limit on the roll.
                     ActionMsg::Container { kind, cont } => {
+                        // A close keeps `cont_shown`, so the drip answers it
+                        // with a close of its own: one ordered after any
+                        // open still in flight, which would otherwise latch
+                        // a box on the client that nothing feeds.
                         c.open_container(kind, cont);
-                        // A close is the client's own press: its panel is
-                        // already shut, so it is owed no word back.
-                        if kind == CONT_SELF {
-                            c.cont_shown = false;
-                        }
                         if kind == sim_core::inventory::CONT_WORLD {
                             Command::OpenWorldCont { id: c.id, cont }
                         } else {
@@ -7269,6 +7268,19 @@ impl ShardCore {
                         }
                     }
                 }
+            }
+        } else if c.open_cont_kind == CONT_SELF && c.cont_shown {
+            // The client shut it. Say so back (see `ActionMsg::Container`).
+            match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].cont_shown = false;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
             }
         }
 

@@ -3532,7 +3532,7 @@ pub fn prompt(
                 s if !s.is_empty() => s,
                 _ => match swing_prompt_weak(&swung.0, in_weak.0) {
                     s if !s.is_empty() => s,
-                    _ => side_line(&near.0),
+                    _ => side_line(&near.0.filter(|_| near.1)),
                 },
             }
         };

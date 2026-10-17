@@ -925,7 +925,7 @@ pub fn forget(mut ui: ResMut<Ui>) {
 #[allow(clippy::too_many_arguments)]
 pub fn keys(
     mut ui: ResMut<Ui>,
-    net: NonSend<super::Net>,
+    mut net: NonSendMut<super::Net>,
     mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -976,7 +976,7 @@ pub fn keys(
             ui.dirty = true;
         }
         if was_inventory {
-            super::verbs::close_container(&net, &mut toast);
+            super::verbs::close_container(&mut net, &mut toast);
         }
         // Forced shut: a page the follow raised is not up any more, so a
         // later close must not shut one the watcher opens for themselves.
@@ -1137,7 +1137,7 @@ pub fn keys(
     // worst bug on this verb. The close is sent when the panel that owned it
     // goes away, whichever key did it.
     if was_inventory && !cont_page(ui.panel) {
-        super::verbs::close_container(&net, &mut toast);
+        super::verbs::close_container(&mut net, &mut toast);
     }
 
     // **Opening the panel no longer opens the body, because the body is
@@ -1256,6 +1256,7 @@ pub fn keys(
     // button `research::unlock` would refuse for want of a bench. Movement is
     // zeroed while a panel is up, so a walk-off is not the case this catches;
     // the bench leaving is.
+    let core = &net.session.core;
     if ui.panel == Panel::Tech
         && !crate::ui::techtree::bench_in_reach(
             core.deploys.entries(),

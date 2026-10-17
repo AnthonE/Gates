@@ -115,8 +115,10 @@ pub fn drop_give_hold(mut give: ResMut<Give>) {
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
+/// `.1` is whether the look ray found it, rather than it being merely the
+/// one nearest the feet: the side line names only what the crosshair is on.
 #[derive(Resource, Default)]
-pub struct Near(pub Option<Target>);
+pub struct Near(pub Option<Target>, pub bool);
 
 /// Resolve the pick from the predictor's own position and the sim's own
 /// bearing.
@@ -512,6 +514,7 @@ pub fn resolve(
             core.deploy_defs_have,
         )
     });
+    near.1 = seen.is_some() || built.is_some();
     near.0 = seen.or_else(|| match built {
         Some(hit) => structure::struck(
             hit,
@@ -1641,15 +1644,20 @@ fn open_panel(ui: Option<&mut Ui>) {
 /// Called when the inventory panel closes, because the server's idea of an
 /// open container outlives the panel that was drawing it — and a container
 /// left open is one the sim keeps syncing to a screen nobody is looking at.
-pub fn close_container(net: &Net, toast: &mut Toast) {
+pub fn close_container(net: &mut Net, toast: &mut Toast) {
     // A watcher's open container is its player's (NOW §5sp): there is
     // nothing of its own to close, and the send would only toast read-only.
     if net.session.core.cont_kind == CONT_SELF || net.session.watching.is_some() {
         return;
     }
-    send(net, toast, "close", |buf| {
+    if send(net, toast, "close", |buf| {
         protocol::encode_action_container(CONT_SELF, 0, buf)
-    });
+    }) {
+        // Shut here too, not only on the server's answer: a shard that
+        // sends none left the box latched, and the next `Tab` drew it
+        // wherever the player had walked to.
+        net.session.core.shut_container();
+    }
 }
 
 /// Encode and queue one action, reporting both failure modes rather than
