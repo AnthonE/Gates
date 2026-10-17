@@ -18,6 +18,7 @@
 //! | inventory page | `Tab` (or `I`) toggles, `Q` switches, `Esc` closes | the reference `inventory.jpeg` |
 //! | crafting page | `Q` toggles, `Tab` switches, `Esc` closes | the reference `crafting.png` |
 //! | container | the inventory page, opened by the sim | `storageandtoolchest.jpeg` |
+//! | hearth | the inventory page with the upkeep column (`hearth.rs`), opened by `E` | the reference's tool cupboard |
 //! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
 //! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |
 //!
@@ -48,6 +49,7 @@ use sim_core::gather::ItemStack;
 
 pub mod arc;
 pub mod craft;
+pub mod hearth;
 pub mod inv;
 pub mod kit;
 pub mod lore;
@@ -314,7 +316,17 @@ pub(crate) struct Seen {
     /// `ClientCore::shop_gen` at the last redraw: a machine's offers or a
     /// shop answer arriving.
     pub shop_gen: u32,
+    /// The latched hearth stock ack — address, live rows, rows — so the
+    /// hearth's column redraws when a feed, a take or the decay moves it.
+    pub stock: StockSeen,
 }
+
+/// The hearth stock ack as `Seen` keys it: address, live rows, rows.
+pub(crate) type StockSeen = (
+    (u16, u16, u8),
+    u8,
+    [(u16, u32, u32); sim_core::limits::HEARTH_STOCK_ROWS],
+);
 
 impl Default for Ui {
     fn default() -> Self {
@@ -828,7 +840,7 @@ pub fn register(app: &mut App) {
                 (inv::drag_pointer, inv::hover_loot).chain(),
                 inv::skin_keys,
                 inv::table_clicks,
-                (inv::fire_clicks, inv::take_all_clicks).chain(),
+                (inv::fire_clicks, inv::take_all_clicks, hearth::clicks).chain(),
                 (craft::clicks, craft::skin_store).chain(),
                 craft::scroll,
                 tech::clicks,
@@ -1333,6 +1345,7 @@ pub fn sync_refusals(
 /// changes when a player clicks or a sync lands, so the simple shape is also
 /// the cheap one. What is NOT cheap is rebuilding a still screen, which is
 /// what `Seen` exists to prevent.
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     mut commands: Commands,
     mut ui: ResMut<Ui>,
@@ -1344,10 +1357,14 @@ pub fn rebuild(
     icons: Option<Res<super::icons::Icons>>,
     near: Res<super::verbs::Near>,
     portrait: Option<Res<super::portrait::Portrait>>,
+    hearth: Option<Res<super::verbs::HearthView>>,
 ) {
     let core = &net.session.core;
 
     detect_changes(&mut ui, core, near.0);
+    if hearth.as_ref().is_some_and(|h| h.is_changed()) && ui.panel != Panel::None {
+        ui.dirty = true;
+    }
 
     if !ui.dirty {
         return;
@@ -1370,6 +1387,7 @@ pub fn rebuild(
                 icons,
                 net.sel,
                 portrait.as_deref(),
+                hearth.as_ref().and_then(|h| h.0),
             )
         }
         Panel::Craft => {
@@ -1444,6 +1462,7 @@ fn detect_changes(
             || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
             || (ui.panel == Panel::Team && core.team_gen != ui.seen.team_gen)
             || (ui.panel == Panel::Shop && core.shop_gen != ui.seen.shop_gen)
+            || (core.stock_addr, core.stock_count, core.stock) != ui.seen.stock
         {
             ui.seen.inv = inv;
             ui.seen.cont = cont;
@@ -1467,6 +1486,7 @@ fn detect_changes(
             ui.seen.bank_gen = core.bank_gen;
             ui.seen.team_gen = core.team_gen;
             ui.seen.shop_gen = core.shop_gen;
+            ui.seen.stock = (core.stock_addr, core.stock_count, core.stock);
             ui.dirty = true;
         }
     }

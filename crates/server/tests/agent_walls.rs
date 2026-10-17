@@ -1446,6 +1446,7 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
     let kit = [
         stack("item.wood", 1000),
         stack("item.wood", 1000),
+        stack("item.wood", 1000),
         stack("item.wood", 400),
         stack("item.stone", 1000),
         stack("item.stone", 1000),
@@ -1464,9 +1465,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         }
     });
 
-    // 1. The shell, the doors, the bag and box inside, the stone core.
-    let built = h.until(24_000, |b| {
-        b.builder().survey().milestone >= Milestone::Upstairs
+    // 1. The shell, the doors and their key locks, the bag and box inside,
+    // the roof, the stone core.
+    let built = h.until(30_000, |b| {
+        b.builder().survey().milestone > Milestone::Stone
     });
     if !built {
         let me = h.view.get(ID).copied().unwrap();
@@ -1524,6 +1526,28 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
             let d = w.deploys.find(cx + 1, cz + 1, 0, loc).unwrap();
             assert_eq!(w.deploy.defs[usize::from(d.row)].item, wood_door);
+            // Locked from the day it was hung, as a player's is.
+            assert!(
+                w.deploys
+                    .locks()
+                    .iter()
+                    .any(|l| (l.cx, l.cz, l.level, l.loc) == (cx + 1, cz + 1, 0, loc)
+                        && l.is_key()
+                        && l.locked),
+                "a key lock on the door at loc {loc}"
+            );
+        }
+        // Roofed over the core and the stairwell, and the airlock.
+        let tri = sim_core::build::LOC_TRI_XLO_ZLO;
+        for (x, z, level, loc) in [
+            (cx, cz, 2, LOC_PLANE),
+            (cx + 1, cz, 2, LOC_PLANE),
+            (cx + 1, cz + 1, 1, tri),
+        ] {
+            assert!(
+                w.pieces.find(x, z, level, loc).is_some(),
+                "a roof over {x},{z} at level {level}"
+            );
         }
         // The shell, and the core's walls in stone.
         for (x, z, loc) in [
@@ -1756,9 +1780,9 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
     assert_eq!(h.bot.mind.stats.requests, asked, "the mind is not asked");
     assert_eq!(h.heap_ops, 0);
 
-    // 2d. Somebody opens its front door from outside (doors go up with no
-    //     lock until lane C, so a plain use opens them): it walks out
-    //     through both doors and back in, shutting each behind it.
+    // 2d. Somebody tries its front door from outside: the key lock that
+    //     went on with it (`build::KEY_LOCK_ITEM`) keeps them out, and the
+    //     body asleep inside is not disturbed.
     h.with_puppet();
     h.step();
     let (fx, fz) = (
@@ -1778,32 +1802,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
             },
         );
     }
-    let opened = h.until(TICK_HZ, |_| false) || !shut(&h, LOC_EDGE_XLO);
-    assert!(opened, "the puppet never opened the front door");
-    // Out of the way again.
-    let away = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 25.0, fz + 25.0);
-    h.stage_puppet(move |p| p.body = away);
-    let uses = h.bot.builder().stats.uses;
-    let mut resealed = false;
-    for _ in 0..60 * TICK_HZ {
+    for _ in 0..2 * TICK_HZ {
         h.step();
-        let me = h.view.get(ID).copied().unwrap();
-        if h.bot.builder().stats.uses >= uses + 4
-            && h.bot.stats.phase == server::explorer::Phase::LoggingOff
-            && h.bot.builder().region(&me) == Region::Room
-            && shut(&h, LOC_EDGE_XLO)
-            && shut(&h, LOC_EDGE_ZLO)
-        {
-            resealed = true;
-            break;
-        }
+        assert!(shut(&h, LOC_EDGE_XLO), "a stranger opened its locked door");
     }
-    assert!(
-        resealed,
-        "the door left open was never shut again: {:?} {}",
-        h.bot.builder().stats,
-        h.explain()
-    );
     assert_eq!(h.bot.mind.stats.requests, asked, "the mind is not asked");
     assert_eq!(h.heap_ops, 0);
 
@@ -3627,9 +3629,12 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
     // It answers a blow but starts nothing: the stranger at its door below
     // is unarmed, and an opportunist would not leave him standing.
+    // Code locks on the doors, as a guild's founder hangs them: a body
+    // living alone puts key locks on with its doors and keeps them.
     let opts = server::explorer::SurvivorOpts {
         lock: Some(LockSecret::Code(code)),
         temperament: server::agent::combat::Temperament::Defensive,
+        code_doors: true,
         ..Default::default()
     };
     let mut h = Harness::with_opts(false, scene(), mind, opts);

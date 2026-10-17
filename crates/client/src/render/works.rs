@@ -65,12 +65,7 @@ pub fn spawn(
         };
         let y = sim_core::terrain::ground(world.seed, &world.haven, x, z);
         let (plinth, plinth_material) = super::mobs::model(&server, PLINTH_GLB);
-        let gold = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.83, 0.64, 0.25),
-            metallic: 1.0,
-            perceptual_roughness: 0.3,
-            ..default()
-        });
+        let gold = materials.add(super::lore::worn_gold());
         commands
             .spawn((
                 WorldEntity,

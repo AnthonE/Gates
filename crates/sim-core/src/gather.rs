@@ -1166,15 +1166,50 @@ pub fn cell_key(cx: u16, cz: u16) -> u32 {
     ((cx as u32) << 16) | cz as u32
 }
 
-/// The weak-spot mark after `n` landed hits by `pid` on the node at
-/// `(cx, cz)`: a heading over the 256-entry yaw LUT, pointing from the
-/// node toward where the swinger must stand. Per-player (the reference
-/// mechanic's mark is yours alone) and pure — server, replay, and any
-/// future client-side ghost all derive the same mark.
+/// How far the weak-spot mark travels round the node per step, in yaw-LUT
+/// entries (256 a turn): 20 + 0..=15, so 28°–49°. Against `WEAK_COS`'s
+/// 45° half-sector that is a step or two of footwork per mark, not a walk
+/// to the far side. The reference's tree X (Devblog 187): *"the first X
+/// appears relative to the first impact position"*, later ones *"rotate
+/// less each hit"* and *"will always go in the same direction"*.
+pub const MARK_STEP_MIN: u8 = 20;
+pub const MARK_STEP_SPAN: u8 = 15;
+
+/// `Player::ws_mark`'s bit naming which way round the mark travels; the
+/// low byte is the mark's heading over the yaw LUT.
+pub const WS_MARK_CCW: u16 = 1 << 8;
+
+/// The heading half of a `Player::ws_mark`.
 #[inline]
-pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
+pub fn mark8_of(ws_mark: u16) -> u8 {
+    ws_mark as u8
+}
+
+/// The mark one step on from `ws_mark` (heading | direction bit), for `pid`
+/// chasing the node at `(cx, cz)`: the same way round, by a hashed step in
+/// the [`MARK_STEP_MIN`] band. Pure, so a replay derives the same chase.
+#[inline]
+pub fn next_mark(seed: u64, cx: u16, cz: u16, pid: u32, ws_mark: u16) -> u16 {
     let h = cell_hash(seed, cx as i32, cz as i32, CH_WEAK);
-    (splitmix64(h ^ ((pid as u64) << 16) ^ n as u64) >> 32) as u8
+    let r = splitmix64(h ^ ((pid as u64) << 16) ^ ws_mark as u64) >> 32;
+    let step = MARK_STEP_MIN + (r % (MARK_STEP_SPAN as u64 + 1)) as u8;
+    let m = mark8_of(ws_mark);
+    let m = if ws_mark & WS_MARK_CCW != 0 {
+        m.wrapping_sub(step)
+    } else {
+        m.wrapping_add(step)
+    };
+    (ws_mark & WS_MARK_CCW) | m as u16
+}
+
+/// The first mark of a chase: one step on from `impact8`, the heading the
+/// first blow landed at, in a direction rolled for this chase.
+#[inline]
+pub fn first_mark(seed: u64, cx: u16, cz: u16, pid: u32, impact8: u8) -> u16 {
+    let h = cell_hash(seed, cx as i32, cz as i32, CH_WEAK);
+    let r = splitmix64(h ^ ((pid as u64) << 16) ^ (0x1_0000 | impact8 as u64));
+    let ccw = if r >> 63 != 0 { WS_MARK_CCW } else { 0 };
+    next_mark(seed, cx, cz, pid, ccw | impact8 as u16)
 }
 
 /// The cadence gate: does this body swing on this tick, and if so, pay it.
@@ -1318,22 +1353,32 @@ pub fn land(
     if stump && (life.respawn_at == 0 || life.hits == STUMP_GRUBBED) {
         return Swing::Absorbed;
     }
-    // The weak-spot chase: switching nodes restarts it; the mark only
-    // exists after the first landed hit. A hit landed while standing in
-    // the current mark's sector spends the content's extra budget;
-    // point-blank has no bearing to judge, so it never marks.
+    // The weak-spot chase: the first landed hit on a node puts the mark a
+    // step round from where that blow struck the skin; it then stays put
+    // until a hit lands while standing in its sector, which spends the
+    // content's extra budget and moves it one step on, always the same way
+    // round. Point-blank has no bearing to judge, so it never marks.
     let ck = cell_key(cx, cz);
-    if p.ws_cell != ck {
-        p.ws_cell = ck;
-        p.ws_hits = 0;
-    }
     let mut weak_hit = false;
-    if def.weak_pct > 0 && p.ws_hits > 0 && d2 > POINT_BLANK_M2 {
-        let mark = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
-        let (wx, wz) = yaw_dir((mark as u16) << 8);
+    if p.ws_cell != ck {
+        let (ix, iz) = hit
+            .skin(ray)
+            .map_or((ox, oz), |(x, _, z)| (x - slot.x, z - slot.z));
+        let (ix, iz) = if ix * ix + iz * iz > 0.0 {
+            (ix, iz)
+        } else {
+            (ox, oz)
+        };
+        let impact8 = crate::terrain::bearing_index(ix, iz) as u8;
+        p.ws_cell = ck;
+        p.ws_mark = first_mark(seed, cx, cz, p.id, impact8);
+    } else if def.weak_pct > 0 && d2 > POINT_BLANK_M2 {
+        let (wx, wz) = yaw_dir((mark8_of(p.ws_mark) as u16) << 8);
         weak_hit = ox * wx + oz * wz > WEAK_COS * d2.sqrt();
+        if weak_hit {
+            p.ws_mark = next_mark(seed, cx, cz, p.id, p.ws_mark);
+        }
     }
-    p.ws_hits = p.ws_hits.saturating_add(1);
 
     // Spend the swing's budget against the node's pool. A marked swing
     // takes a bigger bite (`weak_pct`) and is paid pro rata for it, so
@@ -1516,11 +1561,11 @@ pub fn land(
             events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
         }
         p.ws_cell = NO_CELL;
-        p.ws_hits = 0;
+        p.ws_mark = 0;
         return Swing::Absorbed;
     }
     if def.weak_pct > 0 {
-        let next = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
+        let next = mark8_of(p.ws_mark);
         events.push(
             EV_WEAK_MARK,
             p.id,
@@ -1673,7 +1718,7 @@ fn smash(
     // progress rather than leaving the mark pointed at a cell that pays no
     // bonus.
     p.ws_cell = NO_CELL;
-    p.ws_hits = 0;
+    p.ws_mark = 0;
 
     let Some(life) = lives.find_or_insert(cx, cz) else {
         return Swing::Absorbed; // store exhausted by harvested entries

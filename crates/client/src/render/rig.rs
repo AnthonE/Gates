@@ -813,6 +813,10 @@ pub fn sun_lux(frac: f32) -> f32 {
     daylight(frac).max(TWILIGHT_TAIL * t * t)
 }
 
+/// How often the sun's direction moves, ticks: once a second. See
+/// `day_night`.
+pub const SUN_STEP_TICKS: u64 = sim_core::limits::TICK_HZ as u64;
+
 /// The light's rotation as drawn: [`sun_rotation_at`], except that while
 /// the twilight tail is lit the light never points from below
 /// [`TWILIGHT_MIN_ELEV`]. Under the tail (deep dusk, the night) the light
@@ -989,7 +993,16 @@ pub fn day_night(
     let effective = super::quality::effective(settings.gfx);
     let mut sun_now = (0.0, false);
     if let Ok((mut t, mut d, disk)) = sun.single_mut() {
-        t.rotation = sun_rotation_render(frac);
+        // The light's direction moves in whole seconds, not every tick: the
+        // shadow cascades snap to a texel grid in the light's frame, and a
+        // sun that turned 30 times a second slid that grid under every
+        // shadow edge on the island, which read as edges crawling. A second
+        // of sun is 0.075°, a sixth of its own disc.
+        let step = day_tick - day_tick % SUN_STEP_TICKS;
+        let want = sun_rotation_render(sim_core::world::day_frac(step));
+        if t.rotation != want {
+            t.rotation = want;
+        }
         // The twilight tail lights the sky after sunset; cloud takes the
         // direct sun away and leaves a tenth of it through a full overcast.
         d.illuminance =

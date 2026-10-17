@@ -1087,6 +1087,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if s.max_food > u16::MAX as u32 || s.max_water > u16::MAX as u32 {
             return Err("survival: meter ceiling overflows u16".to_string());
         }
+        if s.spawn_food > s.max_food
+            || s.spawn_water > s.max_water
+            || s.spawn_hp > c.balance.globals.player_hp
+        {
+            return Err("survival: a spawn value is over its ceiling".to_string());
+        }
         // DESIGN §2 pairs hunger with thirst and the genre puts thirst
         // first; the data may retune the gap but not invert the shape,
         // because the HUD's row order and the module's doc both read it.

@@ -26,7 +26,8 @@ struct FoliageParams {
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> foliage: FoliageParams;
 // 8×1 texels written every frame from the CPU: [0] = (wind dir x, wind dir z,
-// strength, time), [1] = (trail window centre x, z, window edge m, 0),
+// strength, time), [1] = (trail window centre x, z, window edge m, the last
+// frame's seconds),
 // [2] = (blast x, z, push, seconds since), [3] = (helicopter x, z, wash, 0),
 // [4..7] = (body x, z, feet y, how hard it is pushing through, 0..1).
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var foliage_state: texture_2d<f32>;
@@ -55,13 +56,26 @@ fn origin_rand(origin: vec3<f32>) -> f32 {
 // the plant stands (its sway phase, so a whole tree swings as one); `rand` is
 // per plant (or per card), so neighbours do not move in lockstep.
 fn displace(root: vec3<f32>, anchor: vec3<f32>, h: f32, rand: f32) -> vec3<f32> {
+    return displace_at(root, anchor, h, rand, 0.0);
+}
+
+// Where `displace` put this vertex a frame ago, for the motion vectors TAA
+// reprojects by: a sway with no motion of its own smeared and shimmered.
+// The wind and the bodies are this frame's; only the clock is turned back.
+fn displace_prev(root: vec3<f32>, anchor: vec3<f32>, h: f32, rand: f32) -> vec3<f32> {
+    let back = textureLoad(foliage_state, vec2<i32>(1, 0), 0).w;
+    return displace_at(root, anchor, h, rand, back);
+}
+
+// `displace`, `back` seconds ago.
+fn displace_at(root: vec3<f32>, anchor: vec3<f32>, h: f32, rand: f32, back: f32) -> vec3<f32> {
     if h <= 0.0 {
         return vec3<f32>(0.0);
     }
     let s0 = textureLoad(foliage_state, vec2<i32>(0, 0), 0);
     let dir = s0.xy;
     let strength = s0.z;
-    let t = s0.w;
+    let t = s0.w - back;
     let perp = vec2<f32>(-dir.y, dir.x);
     let along = dot(anchor.xz, dir);
 
@@ -87,7 +101,7 @@ fn displace(root: vec3<f32>, anchor: vec3<f32>, h: f32, rand: f32) -> vec3<f32> 
     if s2.z > 0.0 {
         let rel = anchor.xz - s2.xy;
         let d = length(rel);
-        let since = s2.w - d / 60.0;
+        let since = s2.w - back - d / 60.0;
         if since > 0.0 && d < 45.0 {
             let fall = 1.0 - smoothstep(5.0, 45.0, d);
             let p = foliage.sway.x * k * k * s2.z * fall * exp(-since / 0.45) * cos(since * 9.0);

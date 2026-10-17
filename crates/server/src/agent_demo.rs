@@ -382,6 +382,7 @@ impl MindArgs {
             lock: None,
             friend: self.friend,
             society: None,
+            code_doors: false,
         }
     }
 

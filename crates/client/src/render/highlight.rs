@@ -1,4 +1,6 @@
-//! The blue wash over the piece a hammer is aimed at.
+//! The blue wash over the piece a hammer is aimed at — and, with no hammer
+//! out, over the thing `E` would act on: a box, a bench, a recycler, a
+//! kiosk's vending machine. A prompt says what; the wash says which one.
 //!
 //! **What it is for.** The reference's hammer acts on *the block you are
 //! looking at*, and it tells you which one before you commit: hold the
@@ -26,6 +28,7 @@ use bevy::prelude::*;
 use super::structures::StructRing;
 use super::Net;
 use crate::ui::hold::held_in_hand;
+use crate::ui::interact::{Pick, Verb};
 use crate::ui::structure::Store;
 
 /// How much larger than the piece the wash is drawn, as a fraction.
@@ -51,7 +54,7 @@ pub struct Highlight {
     on: Option<Entity>,
 }
 
-/// Wash the aimed piece while a hammer is held.
+/// Wash the aimed piece while a hammer is held, or what `E` acts on.
 ///
 /// Runs after `verbs::resolve`, which is what puts the target in `Near` —
 /// the same ordering `verbs::keys` needs and for the same reason: what is
@@ -67,6 +70,8 @@ pub fn track(
     ring: Res<StructRing>,
     pieces: Query<(&Transform, &Mesh3d)>,
     ui: Option<Res<super::panels::Ui>>,
+    aimed: Res<super::verbs::Aimed>,
+    machines: Query<(Entity, &super::town_signs::KioskMachine)>,
 ) {
     let core = &net.session.core;
     let hand = held_in_hand(&core.catalog, &core.inv, net.sel);
@@ -76,7 +81,9 @@ pub fn track(
         .map(|u| u.panel != super::panels::Panel::None)
         .unwrap_or(false);
 
-    let want = if hand.repairs() && !busy {
+    let want = if busy {
+        None
+    } else if hand.repairs() {
         near.0.as_ref().and_then(|t| {
             ring.entity_at(
                 (t.cx, t.cz, t.level, t.loc),
@@ -84,7 +91,7 @@ pub fn track(
             )
         })
     } else {
-        None
+        acted_on(&aimed.0, &ring, &machines)
     };
 
     if want == hi.on {
@@ -137,6 +144,32 @@ pub fn track(
                 .id();
             hi.entity = Some(e);
         }
+    }
+}
+
+/// The entity `E` would act on: a deployable's own, or kiosk `k`'s machine
+/// for a trade. Nothing for a pick with no single drawn thing to light (a
+/// loose stack, a bush, a bag that is a corpse).
+fn acted_on(
+    p: &Pick,
+    ring: &StructRing,
+    machines: &Query<(Entity, &super::town_signs::KioskMachine)>,
+) -> Option<Entity> {
+    match p.verb {
+        Verb::Trade => machines
+            .iter()
+            .find(|(_, m)| m.0 == p.handle as usize)
+            .map(|(e, _)| e),
+        Verb::Door
+        | Verb::Box
+        | Verb::Hearth
+        | Verb::Fire
+        | Verb::Recycler
+        | Verb::Planter
+        | Verb::Shop
+        | Verb::Research
+        | Verb::TechTree => ring.entity_at((p.cx, p.cz, p.level, p.loc), true),
+        _ => None,
     }
 }
 

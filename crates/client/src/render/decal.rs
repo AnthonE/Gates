@@ -41,7 +41,7 @@
 //! # The weak spot
 //!
 //! `EV_WEAK_MARK`'s cross on the node the sim marked is its own entity on the
-//! same mesh-mark path: it pulses and moves every hit, which a pooled mark
+//! same mesh-mark path: it pulses and moves when it is hit, which a pooled mark
 //! does not.
 
 use bevy::asset::RenderAssetUsages;
@@ -91,6 +91,13 @@ pub const MESH_MARK_LIFT_M: f32 = 0.01;
 /// Segments across the weak spot's curved patch ([`curved_patch`]): eight
 /// chords over a 30 cm arc on a 24 cm radius is a sagitta under a centimetre.
 pub const MESH_MARK_SEGMENTS: u32 = 8;
+
+/// How far a mark on a trunk tilts off level either way, radians (±45°).
+pub const TRUNK_TILT_RAD: f32 = std::f32::consts::FRAC_PI_4;
+
+/// How far the weak-spot X leans either way, radians (±14°): sprayed by
+/// hand, not stamped.
+pub const WEAK_MARK_LEAN_RAD: f32 = 0.25;
 
 /// Vertices across and up one mark — a grid, so a mark can follow a rock in
 /// both directions.
@@ -292,7 +299,9 @@ impl Default for Mark {
 /// A mark's grid, laid flat or bent about a trunk of radius `bend_r`: the
 /// patch's +u along `tangent`, its +v up the trunk (bent) or along
 /// `normal × tangent` (flat), and the atlas cell turned by `flip`'s dihedral
-/// bits (bit 0 swaps u/v, bits 1–2 mirror them).
+/// bits (bit 0 swaps u/v, bits 1–2 mirror them). A bent patch is also turned
+/// by `spin` radians on the bark before it is wrapped round the trunk; a flat
+/// one takes its turn in `tangent`.
 fn grid_of(
     at: Vec3,
     normal: Vec3,
@@ -300,26 +309,30 @@ fn grid_of(
     size: f32,
     bend_r: f32,
     flip: u8,
+    spin: f32,
 ) -> [MarkVert; VERTS_PER_MARK] {
     let mut out = [MarkVert::default(); VERTS_PER_MARK];
     let b = normal.cross(tangent);
+    let (ss, cs) = spin.sin_cos();
     let last = (MARK_GRID - 1) as f32;
     for j in 0..MARK_GRID {
         for i in 0..MARK_GRID {
             let (u, v) = (i as f32 / last, j as f32 / last);
-            let (off, n, du) = if bend_r > 0.0 {
-                let theta = (u - 0.5) * size / bend_r;
-                let (s, c) = theta.sin_cos();
+            let (x, y) = ((u - 0.5) * size, (v - 0.5) * size);
+            let (p, n, du, dv) = if bend_r > 0.0 {
+                // Round the trunk and up it, after the turn.
+                let (round, up) = (x * cs - y * ss, x * ss + y * cs);
+                let (s, c) = (round / bend_r).sin_cos();
+                let arc = tangent * c - normal * s;
                 (
-                    tangent * (bend_r * s) + normal * (bend_r * (c - 1.0)),
+                    at + tangent * (bend_r * s) + normal * (bend_r * (c - 1.0)) + Vec3::Y * up,
                     tangent * s + normal * c,
-                    tangent * c - normal * s,
+                    arc * cs + Vec3::Y * ss,
+                    Vec3::Y * cs - arc * ss,
                 )
             } else {
-                (tangent * ((u - 0.5) * size), normal, tangent)
+                (at + tangent * x + b * y, normal, tangent, b)
             };
-            let dv = if bend_r > 0.0 { Vec3::Y } else { b };
-            let p = at + off + dv * ((v - 0.5) * size);
             let (mut tu, mut tv, mut au, mut av) = (u, v, du, dv);
             if flip & 1 != 0 {
                 std::mem::swap(&mut tu, &mut tv);
@@ -487,18 +500,20 @@ impl Marks {
         let (first, variants) = kind.cells();
         let cell = first + ((self.roll() * variants as f32) as u32).min(variants - 1);
         let size = size * (0.8 + 0.4 * self.roll());
-        let (tangent, flip) = if bend_r > 0.0 {
-            // On a trunk the grain runs up it, so the cell keeps its own
-            // up and only mirrors — a gash across a trunk stays across it.
+        let (tangent, flip, tilt) = if bend_r > 0.0 {
+            // On a trunk the grain runs up it, so the cell mirrors and
+            // tilts up to `TRUNK_TILT_RAD` but never turns on end — a gash
+            // across a trunk stays roughly across it.
             (
                 Vec3::Y.cross(n).normalize_or(Vec3::X),
                 (self.roll() * 4.0) as u8 * 2,
+                (self.roll() * 2.0 - 1.0) * TRUNK_TILT_RAD,
             )
         } else {
             let base = if n.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
             let t = base.cross(n).normalize_or(Vec3::X);
             let spin = Quat::from_axis_angle(n, self.roll() * std::f32::consts::TAU);
-            (spin * t, 0)
+            (spin * t, 0, 0.0)
         };
         // A little brightness jitter so a row of holes is not one sticker.
         let lin = tint(kind, matter).to_linear();
@@ -512,7 +527,7 @@ impl Marks {
             size,
             cell,
             tint: [lin.red * j, lin.green * j, lin.blue * j],
-            grid: grid_of(at, n, tangent, size, bend_r, flip),
+            grid: grid_of(at, n, tangent, size, bend_r, flip, tilt),
         };
         self.placed += 1;
         self.dirty = true;
@@ -1418,9 +1433,9 @@ pub fn cross_texture() -> Image {
     img
 }
 
-/// The cross's colour: pale and warm, off bark, granite, ore and the marks
-/// the player has made.
-pub const WEAK_TINT: Color = Color::srgb(0.98, 0.86, 0.52);
+/// The cross's colour: the reference's red spray paint, which nothing else
+/// on bark is.
+pub const WEAK_TINT: Color = Color::srgb(0.86, 0.10, 0.07);
 
 /// Where the weak-spot cross for `slot` sits and which way it faces: on the
 /// occupant's collision skin, on the side the sector faces, at the height a
@@ -1539,6 +1554,7 @@ pub fn weak_spot(
             Some((h, *s, m.0.clone(), *tf))
         });
         let tangent = Vec3::Y.cross(n).normalize_or(Vec3::X);
+        let lean = (hash01(core.mark_cell, core.mark8 as u32) * 2.0 - 1.0) * WEAK_MARK_LEAN_RAD;
         let grid = match snapped {
             Some((h, s, mesh, tf)) => {
                 let bend_r = if s.tree && h.normal.y.abs() < 0.5 {
@@ -1548,7 +1564,7 @@ pub fn weak_spot(
                     0.0
                 };
                 let t = Vec3::Y.cross(h.normal).normalize_or(tangent);
-                let mut grid = grid_of(h.at, h.normal, t, WEAK_MARK_SIZE_M, bend_r, 0);
+                let mut grid = grid_of(h.at, h.normal, t, WEAK_MARK_SIZE_M, bend_r, 0, lean);
                 if let Some(m) = meshes.get(&mesh) {
                     conform_grid(
                         &mut grid,
@@ -1561,7 +1577,7 @@ pub fn weak_spot(
             }
             None => {
                 let bend_r = skin_radius(slot.occupant as u8) * slot.scale;
-                grid_of(at, n, tangent, WEAK_MARK_SIZE_M, bend_r, 0)
+                grid_of(at, n, tangent, WEAK_MARK_SIZE_M, bend_r, 0, lean)
             }
         };
         if let Some(m) = meshes.get_mut(&pool.weak_mesh) {

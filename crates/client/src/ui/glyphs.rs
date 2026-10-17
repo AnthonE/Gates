@@ -60,6 +60,30 @@ pub fn wrap(text: &str, width: usize) -> Vec<&str> {
     out
 }
 
+/// A carved line's pitch, in cells: a glyph and a cell of gap across, a
+/// glyph and two cells of gap down.
+pub const ADVANCE: u32 = GLYPH_COLS + 1;
+pub const LEADING: u32 = GLYPH_ROWS + 2;
+
+/// `text` laid out to fill a `w` × `h` field: the wrap whose lines give the
+/// biggest cell, and that cell's edge, never over `max_cell`.
+pub fn fit(text: &str, w: f32, h: f32, max_cell: f32) -> (Vec<&str>, f32) {
+    let mut best = (Vec::new(), 0.0f32);
+    for width in 4..=60 {
+        let lines = wrap(text, width);
+        let cols = lines.iter().map(|l| l.len()).max().unwrap_or(0) as f32;
+        if cols == 0.0 {
+            break;
+        }
+        let rows = lines.len() as f32;
+        let cell = (w / (cols * ADVANCE as f32 - 1.0)).min(h / (rows * LEADING as f32 - 2.0));
+        if cell > best.1 {
+            best = (lines, cell);
+        }
+    }
+    (best.0, best.1.min(max_cell))
+}
+
 /// How many of the alphabet's glyphs `mask` reads.
 pub fn known_count(mask: u64, alphabet_len: usize) -> u32 {
     let full = if alphabet_len >= 64 {
@@ -93,5 +117,38 @@ mod tests {
             ["THE FIRE", "SLEEPS", "UNDER"]
         );
         assert_eq!(wrap("SHORT", 20), ["SHORT"]);
+    }
+
+    #[test]
+    fn fit_stays_inside_the_field() {
+        let long = "AT THE RING OF STONES TURN THE THREE TO 3 1 4 ".repeat(6);
+        for text in [
+            "COUNT THE RINGS 0 1 2 3 4 5 6 7 8 9",
+            "FROM THE HIGH PLACE THEY WATCHED THE SKY AND KNEW THE WAY",
+            long.trim_end(),
+            "UNBROKENWORDLONGERTHANANYWRAPWIDTHTHISFUNCTIONTRIESATALL",
+        ] {
+            let (lines, cell) = fit(text, 1.0, 1.2, 0.035);
+            let cols = lines.iter().map(|l| l.len()).max().unwrap() as f32;
+            let rows = lines.len() as f32;
+            assert!(cell > 0.0, "{text}");
+            assert!(
+                (cols * ADVANCE as f32 - 1.0) * cell <= 1.0 + 1e-4,
+                "{text}: too wide"
+            );
+            assert!(
+                (rows * LEADING as f32 - 2.0) * cell <= 1.2 + 1e-4,
+                "{text}: too tall"
+            );
+        }
+        // A stone's worth of words is carved big enough to see from a few
+        // metres, not crushed onto one line.
+        let (_, cell) = fit(
+            "WHAT WAS DRAWN FROM THE DEEP WATER CLOSED EVERY WOUND",
+            1.0,
+            1.2,
+            0.035,
+        );
+        assert!(cell > 0.02, "cell {cell}");
     }
 }

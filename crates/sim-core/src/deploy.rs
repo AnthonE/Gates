@@ -908,6 +908,11 @@ pub struct DeployRec {
     /// posture — the sim keeps it on the planter's `OvenState::bank` and
     /// announces a change with `EV_GROW`. Zero for everything else.
     pub grow: u8,
+    /// The lock bolted on is a key lock, not a code lock (wire v120), so
+    /// the client draws a padlock and offers no keypad. Wire-only and
+    /// filled at encode from the lock store, `dmg`'s posture: not hashed,
+    /// not saved. False with no lock.
+    pub keyed: bool,
 }
 
 /// One of your own bags, as the death screen needs to know it: where it
@@ -1400,6 +1405,14 @@ impl Deploys {
     /// `worldsave`, and by the gates.
     pub fn locks(&self) -> &[LockRec] {
         self.locks.entries()
+    }
+
+    /// Whether the lock at this address is a key lock. The wire's
+    /// `DeployRec::keyed`, read at encode.
+    pub fn lock_keyed(&self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+        self.locks
+            .find(cx, cz, level, loc)
+            .is_some_and(|l| l.is_key())
     }
 
     /// The vending machines' offers (`shop.rs`). Read by `state_hash`, by
@@ -2658,6 +2671,7 @@ pub fn stand_authored(
         locked: false,
         dmg: 0,
         grow: 0,
+        keyed: false,
     };
     if !deploys.insert(rec, tick) {
         return false;
@@ -2909,6 +2923,7 @@ pub fn place_deploy(
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
         grow: 0,
+        keyed: false,
     };
     if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -5679,6 +5694,7 @@ mod tests {
                 locked: false,
                 dmg: 0,
                 grow: 0,
+                keyed: false,
             },
             0,
         ));

@@ -658,11 +658,11 @@ pub const HELD_MODELS: [HeldModelDef; 94] = [
         0.81,
         0.13,
     ),
-    HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.086, 0.50, 0.08),
+    HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.186, 0.50, 0.08),
     HeldModelDef::deploy(
         "metal_door",
         "models/deploy/door_locked.glb",
-        2.086,
+        2.186,
         0.50,
         0.08,
     ),

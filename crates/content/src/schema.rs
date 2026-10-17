@@ -1216,6 +1216,14 @@ pub struct StarterBase {
 pub struct Survival {
     pub max_food: u32,
     pub max_water: u32,
+    /// What a fresh body starts with (join and respawn), Rust-style: not
+    /// full. Zero or absent is a full meter / full hp.
+    #[serde(default)]
+    pub spawn_hp: u32,
+    #[serde(default)]
+    pub spawn_food: u32,
+    #[serde(default)]
+    pub spawn_water: u32,
     /// Minutes from a full meter to an empty one, at rest.
     pub food_minutes_to_empty: u32,
     pub water_minutes_to_empty: u32,

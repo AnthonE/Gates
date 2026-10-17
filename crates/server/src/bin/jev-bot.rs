@@ -915,6 +915,18 @@ fn print_report(label: &str, survivor: &Survivor) {
         "{label}chat: said {} ({} heard back), heard {} from others, {} refused, {} replaced unsent",
         s.said, s.echoed, s.heard, s.say_refused, s.say_dropped
     );
+    let b = survivor.builder();
+    out!(
+        "{label}base: plot {:?}, at {}; {} plots founded, {} taken up again; {} placed, {} deployed, {} graded, {} locks",
+        b.plan().map(|p| (p.cx, p.cz)),
+        b.survey().milestone.word(),
+        b.stats.sites,
+        b.stats.adopted,
+        b.stats.placed,
+        b.stats.deployed,
+        b.stats.graded,
+        b.stats.locks
+    );
     if let Some(v) = survivor.voice.as_ref() {
         let v = v.stats;
         out!(
