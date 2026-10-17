@@ -379,8 +379,7 @@ pub enum Kind {
     Wood = 0,
     Stone = 1,
     Ore = 2,
-    /// The berry bush and the mushroom patch: food, and some water. The
-    /// patch is the forest floor's food since trees stopped paying any.
+    /// The berry bush: food and water.
     Forage = 3,
     /// Hemp: cloth. Its own kind, so a thirsty body walks to berries and
     /// not to whichever plant is nearest.
@@ -396,7 +395,7 @@ impl Kind {
             Occupant::Tree => Some(Kind::Wood),
             Occupant::StoneNode => Some(Kind::Stone),
             Occupant::MetalNode | Occupant::SulfurNode => Some(Kind::Ore),
-            Occupant::BerryBush | Occupant::MushroomPatch => Some(Kind::Forage),
+            Occupant::BerryBush => Some(Kind::Forage),
             Occupant::Hemp => Some(Kind::Hemp),
             _ => None,
         }

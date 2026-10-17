@@ -50,12 +50,12 @@ pub const SCRIPTED_PLENTY: u32 = 3000;
 /// A barrel or crate known this near (metres) is worth taking on the way,
 /// whatever the base needs.
 pub const SCRIPTED_LOOT_NEAR_M: u8 = 40;
-/// What the playbook goes on a loot run for when the base is short of it,
-/// or buys at THE GATE with the junk a run pays. Junk, parts and fuel come
-/// off barrels, crates and oil barrels (`content/loot.toml`); since
-/// 2026-10-17 none of them pays the raw materials, as none of Rust's does,
-/// so fragments and fat are bought, or met on the way. Not cloth: a body
-/// short of it goes to the hemp.
+/// What the playbook goes on a loot run for when the base is short of it
+/// and THE GATE is not selling it. Junk, parts and fuel come off barrels,
+/// crates and oil barrels (`content/loot.toml`); since 2026-10-17 none of
+/// them pays the raw materials, as none of Rust's does, so a run for
+/// fragments or fat pays junk for the gate, or meets them on the way. Not
+/// cloth: a body short of it goes to the hemp.
 pub const LOOTED: [&str; 8] = [
     "Metal Fragments",
     "Low Grade Fuel",
@@ -2940,10 +2940,13 @@ impl Scripted {
             .any(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
         // While the bag is still to be made, its cloth is not spent on a bow
         // or bandages: only the spear, which takes none, goes first. The
-        // base's own bag (its doors milestone) counts: no container pays
-        // cloth, so cloth spent before it stands is a walk to the hemp.
+        // base's own bag (its doors milestone) counts, and so does any cloth
+        // the base is short of: no container pays it, so cloth spent before
+        // then is a walk to the hemp.
         let bag_wanted = tooled
-            && ((s.bags == 0 && s.count_of(BAG_ITEM) == 0) || s.milestone <= Milestone::Doors);
+            && ((s.bags == 0 && s.count_of(BAG_ITEM) == 0)
+                || s.milestone <= Milestone::Doors
+                || s.needs().iter().any(|(n, _)| n.as_str() == "Cloth"));
         if started {
             let [(spear, ..), ..] = crate::agent::loadout::ARM_UP;
             for (item, want, needs) in crate::agent::loadout::ARM_UP {
@@ -3005,9 +3008,10 @@ impl Scripted {
                 if seen && s.offers(goal) {
                     return (goal, "scripted: materials for the base");
                 }
-                // What a loot run is for, THE GATE sells for the junk the
-                // pack carries anyway: fragments, fuel, rope, gears.
-                if LOOTED.contains(&name.as_str()) && s.offers(Goal::Buy(*name)) {
+                // What the base is short of and THE GATE sells is bought
+                // there for the junk the pack carries anyway: fragments,
+                // fuel, rope, gears, cloth.
+                if s.offers(Goal::Buy(*name)) {
                     return (
                         Goal::Buy(*name),
                         "scripted: buy what the base needs at the gate",
