@@ -1848,6 +1848,8 @@ pub struct BuildStats {
     pub made: u64,
     /// Codes entered at its own locks, to be let through.
     pub entered: u64,
+    /// Bases from an earlier session taken up again (`Builder::adopt`).
+    pub adopted: u64,
 }
 
 /// The base this body is building, and the op it is on. Outlives goals:
@@ -1962,18 +1964,58 @@ impl Builder {
                 learned: 0,
                 made: 0,
                 entered: 0,
+                adopted: 0,
             },
         }
     }
 
-    /// A new session: the plot is chosen again (the mirror still shows
-    /// what stands, so what was built is not built twice).
+    /// A new session: no plot until [`Self::find_home`] finds the one from
+    /// before (or the body has none, and chooses one).
     pub fn reset(&mut self) {
         let (stats, code, keyed) = (self.stats, self.code, self.keyed);
         *self = Self::new();
         self.stats = stats;
         self.code = code;
         self.keyed = keyed;
+    }
+
+    /// Its base from an earlier session: the plot one of its own bags lies
+    /// in the airlock of (`EXTRAS`), with something standing on the
+    /// cupboard's spot. Its bags are the one thing the island tells a body
+    /// it owns. Without this a new session (every shift, every restart)
+    /// walked away from its base, which it took for somebody else's, and
+    /// founded another that never got its roof.
+    pub fn find_home(
+        core: &ClientCore,
+        mut bags: impl Iterator<Item = (u16, u16, u8)>,
+    ) -> Option<BasePlan> {
+        let bag = EXTRAS.iter().find(|e| e.0 == BAG_ITEM)?;
+        let hearth = (0..STARTER.len())
+            .map(spec)
+            .find(|s| s.op == Op::Kit(HEARTH_ITEM))?;
+        bags.find_map(|(bx, bz, level)| {
+            let cx = bx.checked_sub(u16::try_from(bag.1).ok()?)?;
+            let cz = bz.checked_sub(u16::try_from(bag.2).ok()?)?;
+            let plan = BasePlan::new(0, cx, cz);
+            (level == bag.3 && deploy_at(core, addr(&plan, &hearth)).is_some()).then_some(plan)
+        })
+    }
+
+    /// Take that base up again: its plot, and its kit standing there its
+    /// own again, as when it put each down.
+    pub fn adopt(&mut self, core: &ClientCore, plan: BasePlan) {
+        self.plan = Some(plan);
+        for i in 0..OPS {
+            let s = spec(i);
+            if s.stage.is_some()
+                && matches!(s.op, Op::Kit(_))
+                && deploy_at(core, addr(&plan, &s)).is_some()
+            {
+                self.mine |= bit(i);
+            }
+        }
+        self.reconcile(core, &plan);
+        self.stats.adopted += 1;
     }
 
     /// The code its locks are set to and opened with. Never printed.
@@ -3072,6 +3114,10 @@ impl Builder {
         wood: Option<[f32; 2]>,
         stone: Option<[f32; 2]>,
     ) -> Option<BasePlan> {
+        if let Some(plan) = Self::find_home(core, home.own_bags()) {
+            self.adopt(core, plan);
+            return Some(plan);
+        }
         let from = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
         let bad = self.bad;
         let (_, island) = core.island();
@@ -4023,6 +4069,58 @@ mod tests {
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
         let n = encode(&mut buf).unwrap();
         core.on_stream(&buf[..n]).unwrap();
+    }
+
+    /// A new session's builder knows no plot. Its bag in an airlock, with a
+    /// cupboard standing on that plot, is its base from before: taken up
+    /// again with its kit its own, not walked away from. A bag on open
+    /// ground is no base.
+    #[test]
+    fn a_new_session_takes_up_the_base_its_bag_lies_in() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let plan = BasePlan::new(0, 100, 100);
+        for i in
+            (0..OPS).filter(|&i| matches!(spec(i).stage, Some(Milestone::Shell | Milestone::Doors)))
+        {
+            let at = addr(&plan, &spec(i));
+            if matches!(spec(i).op, Op::Kit(_)) {
+                let rec = sim_core::deploy::DeployRec {
+                    cx: at.cx,
+                    cz: at.cz,
+                    level: at.level,
+                    loc: at.loc,
+                    ..Default::default()
+                };
+                stream(&mut core, |buf| {
+                    protocol::event::encode_event_deploy_placed(&rec, buf)
+                });
+            } else if matches!(spec(i).op, Op::Piece(_)) {
+                let rec = sim_core::build::PieceRec {
+                    cx: at.cx,
+                    cz: at.cz,
+                    level: at.level,
+                    loc: at.loc,
+                    ..Default::default()
+                };
+                stream(&mut core, |buf| {
+                    protocol::event::encode_event_piece_placed(&rec, buf)
+                });
+            }
+        }
+        let out_in_the_open = (140, 140, 0);
+        assert!(Builder::find_home(&core, [out_in_the_open].into_iter()).is_none());
+        let in_the_airlock = (101, 101, 0);
+        let found = Builder::find_home(&core, [out_in_the_open, in_the_airlock].into_iter());
+        assert_eq!(found.map(|p| (p.cx, p.cz)), Some((100, 100)));
+        let mut b = Builder::new();
+        b.adopt(&core, found.unwrap());
+        b.survey_now(&core, &Ledger::EMPTY);
+        assert!(b.survey().hearth, "its cupboard, its own again");
+        assert!(b.owns(101, 100, 0, LOC_PLANE));
+        // The doors stand and are its own: the key locks go on next, then
+        // the roof.
+        assert_eq!(b.survey().milestone, Milestone::Doors);
+        assert_eq!(b.stats.adopted, 1);
     }
 
     /// Twig rots within the upkeep hour it went down in, and a raid breaks

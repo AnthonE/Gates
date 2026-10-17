@@ -6045,6 +6045,22 @@ impl Survivor {
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
         {
             self.water_at = Some(tick);
+            // A new session knows no plot: the base from before is taken up
+            // again where its own bag lies in the airlock, not taken for a
+            // stranger's and walked away from. A crewmate's bag lies in its
+            // founder's base, which is not its own to build.
+            let adopted = self.builder.stats.adopted;
+            if self.builder.plan().is_none() && self.society.is_none_or(|soc| soc.founder()) {
+                if let Some(plan) = Builder::find_home(core, self.home.own_bags()) {
+                    self.builder.adopt(core, plan);
+                }
+            }
+            if self.builder.stats.adopted != adopted {
+                // What it saw of its own walls before it knew them, it took
+                // for somebody else's building, a raid's among them.
+                self.seen.clear();
+                self.bases.clear();
+            }
             // Once a second too: what stands of the base, what the next
             // part of it needs, and the chores waiting at home.
             let chest = self.builder.box_addr(core);
