@@ -470,6 +470,9 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.water_minutes_to_empty);
     h.u(sv.starve_hp_per_min);
     h.u(sv.dehydrate_hp_per_min);
+    h.u(sv.spawn_hp);
+    h.u(sv.spawn_food);
+    h.u(sv.spawn_water);
     h.s(sv.vessel.as_deref().unwrap_or(""));
     h.s(sv.vessel_full.as_deref().unwrap_or(""));
 

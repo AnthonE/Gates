@@ -265,6 +265,12 @@ impl Home {
                 .is_some_and(|(id, then)| id == core.own_bag && free <= then)
     }
 
+    /// Where its own bags lie, as the island last told it: `(cx, cz,
+    /// level)`.
+    pub fn own_bags(&self) -> impl Iterator<Item = (u16, u16, u8)> + '_ {
+        self.bags.iter().flatten().copied()
+    }
+
     /// Did this body build what stands at this address?
     pub fn owns(&self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
         loc == LOC_PLANE && self.bags.contains(&Some((cx, cz, level)))

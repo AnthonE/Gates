@@ -1,4 +1,4 @@
-//! Gate: a chopped tree topples, stays down, and stands back up on respawn.
+//! Gate: a chopped tree topples, sinks away, and stands back up on respawn.
 //!
 //! **Why this exists as a test rather than as a screenshot.** The sim has
 //! owned chopping for a long time — ten swings, a yield table, a harvested bit
@@ -250,12 +250,24 @@ fn a_chopped_tree_topples_and_stays_down() {
         (down - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
         "a felled trunk must come to rest exactly flat — got {down} rad"
     );
+    assert_eq!(
+        *app.world().get::<Visibility>(trunk).unwrap(),
+        Visibility::Inherited,
+        "a tree that just landed is still on the ground"
+    );
     tick(&mut app, 60.0);
     assert!(
         (tilt(&app, trunk) - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
         "the trunk must STAY down — a log that keeps rotating past flat is a \
          clamp that was never applied"
     );
+    // Then it is gone, as Rust's are: sunk and hidden, the stump left.
+    assert_eq!(
+        *app.world().get::<Visibility>(trunk).unwrap(),
+        Visibility::Hidden,
+        "a downed tree must not lie there until it regrows"
+    );
+    assert!(app.world().get::<Transform>(trunk).unwrap().translation.y < GROUND_Y);
 
     // **The invariant that makes persistence free.** A downed tree is the same
     // mesh lying down, so a felled forest costs exactly what a standing one
@@ -405,6 +417,15 @@ fn a_respawned_tree_stands_back_up_as_the_same_tree() {
     assert!(
         tilt(&app, trunk) < 1e-4,
         "a respawned tree must stand back up"
+    );
+    assert_eq!(
+        *app.world().get::<Visibility>(trunk).unwrap(),
+        Visibility::Inherited,
+        "a respawned tree is drawn again"
+    );
+    assert!(
+        (app.world().get::<Transform>(trunk).unwrap().translation.y - GROUND_Y).abs() < 1e-6,
+        "a respawned tree stands where it stood, not where it sank to"
     );
     let rot = app.world().get::<Transform>(trunk).unwrap().rotation;
     assert!(

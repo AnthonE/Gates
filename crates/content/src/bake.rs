@@ -1247,6 +1247,9 @@ impl Content {
         sc.dehydrate_hp_per_min = u16f(s.dehydrate_hp_per_min, "dehydrate_hp_per_min")?;
         sc.drink_water = u16f(s.drink_water, "drink_water")?;
         sc.drink_hp_cost = u16f(s.drink_hp_cost, "drink_hp_cost")?;
+        sc.spawn_hp = u16f(s.spawn_hp, "spawn_hp")?;
+        sc.spawn_food = u16f(s.spawn_food, "spawn_food")?;
+        sc.spawn_water = u16f(s.spawn_water, "spawn_water")?;
         match (&s.vessel, &s.vessel_full) {
             (Some(e), Some(f)) => {
                 let idx = |id: &str| {

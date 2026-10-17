@@ -20,7 +20,7 @@
 
 // How far in the rime reaches at full strength, in the rim measure below
 // (short-side units along a side, twice that down a corner's diagonal).
-const REACH: f32 = 0.13;
+const REACH: f32 = 0.10;
 // How ragged its front is, as a share of how far it has reached, and the
 // size of the front's lobes, per short side.
 const RAGGED: f32 = 0.5;
@@ -29,8 +29,10 @@ const FRONT_FREQ: f32 = 4.0;
 // reach, and how unevenly: each grain waits for its own share of that.
 const AHEAD: f32 = 1.3;
 const GRAIN_SPREAD: f32 = 0.5;
-const CRYSTAL_ALPHA: f32 = 0.65;
-const RIME_ALPHA: f32 = 0.6;
+const CRYSTAL_ALPHA: f32 = 0.35;
+const RIME_ALPHA: f32 = 0.3;
+// The most any pixel of it hides the world behind it.
+const MAX_ALPHA: f32 = 0.5;
 // The crosshair's clear disc and its soft edge, short-side units: no level
 // of frost reaches it, whatever the window's shape.
 const CLEAR: f32 = 0.15;
@@ -176,7 +178,7 @@ fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
         rime = cover * sqrt(cover) * (0.5 + 0.5 * fbm(p * 11.0));
     }
 
-    var alpha = max(rime * RIME_ALPHA, crystal * CRYSTAL_ALPHA) + crystal * rime * 0.25;
+    var alpha = max(rime * RIME_ALPHA, crystal * CRYSTAL_ALPHA) + crystal * rime * 0.1;
     // Faint while it is only starting, fuller as it bites.
     alpha = alpha * (0.6 + 0.4 * level);
     alpha = alpha * smoothstep(CLEAR, CLEAR + CLEAR_SOFT, length(p));
@@ -184,5 +186,5 @@ fn fragment(in: UiVertexOutput) -> @location(0) vec4<f32> {
     // Linear colour, as every UI colour reaches the pass: a pale blue rime,
     // the crystals nearly white.
     let ice = mix(vec3<f32>(0.60, 0.74, 0.90), vec3<f32>(0.92, 0.96, 1.0), crystal);
-    return vec4<f32>(ice * frost.y, clamp(alpha, 0.0, 0.92));
+    return vec4<f32>(ice * frost.y, clamp(alpha, 0.0, MAX_ALPHA));
 }

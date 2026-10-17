@@ -140,6 +140,11 @@ pub fn shard_with(
     core.world.combat = t.combat;
     core.world.backpack = t.backpack;
     core.world.survival = t.survival;
+    // The agent scenes start a whole body: they test what the agent does,
+    // not how it climbs out of the shipped hungry spawn (`spawn_*`).
+    core.world.survival.spawn_hp = 0;
+    core.world.survival.spawn_food = 0;
+    core.world.survival.spawn_water = 0;
     core.world.cook = t.cook;
     core.world.spawn_kit = t.spawn_kit;
     core.world.loot = t.loot;

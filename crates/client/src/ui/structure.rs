@@ -435,6 +435,7 @@ mod tests {
             // `deploy_table`'s own 200 — see `piece`.
             dmg: damage_band(hp, 200),
             grow: 0,
+            keyed: false,
         }
     }
 

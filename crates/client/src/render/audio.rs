@@ -85,9 +85,9 @@ pub const TOWN_BED_R_M: f32 = 90.0;
 // One held engine slot per bed (`engine::HELD_BEDS`); music follows them.
 const _: () = assert!(BEDS.len() == HELD_BEDS);
 
-/// How far the heli's rotor carries, metres: to the radius the server
-/// starts sending the heli from (`heli::HELI_AOI_SCALE` × the AOI's), so
-/// it is silent on the frame it first arrives and fades up from there.
+/// How far the heli's rotor carries, metres: `heli::HELI_AOI_SCALE` × the
+/// AOI's enter radius. The server sends the heli island-wide (it is on the
+/// map), so past this it is drawn but silent, and it fades up from here.
 pub const ROTOR_R_M: f32 =
     (sim_core::heli::HELI_AOI_SCALE * sim_core::limits::AOI_ENTER_CM) as f32 / 100.0;
 
