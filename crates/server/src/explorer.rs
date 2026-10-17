@@ -4672,7 +4672,7 @@ impl Survivor {
     fn heal(&mut self, core: &mut ClientCore, tick: u32) {
         self.stats.phase = Phase::Healing;
         self.medic = false;
-        match self.dose(core, tick, HEAL_TARGET_PCT) {
+        match self.dose(core, tick, HEAL_TARGET_PCT, false) {
             Dosed::Failed(why) => self.end_goal(tick, Outcome::Failed(why)),
             Dosed::Enough => self.end_goal(tick, Outcome::Done),
             Dosed::NoMeds => {
@@ -4689,8 +4689,10 @@ impl Survivor {
 
     /// One step of taking meds toward `target_pct` of health: judge the
     /// last one's answer, wait on the bar while what was taken is still
-    /// coming, else take the best med there is.
-    fn dose(&mut self, core: &ClientCore, tick: u32, target_pct: u32) -> Dosed {
+    /// coming, else take the best med there is — or, for a `reflex` top-up
+    /// at half health or better, the least, and never the best of them (a
+    /// medkit is for a wound, not a scratch).
+    fn dose(&mut self, core: &ClientCore, tick: u32, target_pct: u32, reflex: bool) -> Dosed {
         self.watch_dose(core, tick);
         let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ);
         match verdict {
@@ -4726,7 +4728,15 @@ impl Survivor {
         if owed * 100 >= max {
             return Dosed::Waiting;
         }
-        let Some((slot, item)) = self.loadout.best(core, Role::Meds) else {
+        let pick = if reflex && u32::from(core.hp) * 2 >= u32::from(core.hp_max) {
+            self.loadout
+                .least(core, Role::Meds)
+                .filter(|&(_, _, best)| !best)
+                .map(|(slot, item, _)| (slot, item))
+        } else {
+            self.loadout.best(core, Role::Meds)
+        };
+        let Some((slot, item)) = pick else {
             return Dosed::NoMeds;
         };
         let heal = self.book.page(item).heal;
@@ -4769,7 +4779,7 @@ impl Survivor {
             self.watch_dose(core, tick);
             return;
         }
-        match self.dose(core, tick, HEAL_TARGET_PCT) {
+        match self.dose(core, tick, HEAL_TARGET_PCT, true) {
             Dosed::Took => {
                 self.medic = true;
                 self.stats.reflex_heals += 1;
