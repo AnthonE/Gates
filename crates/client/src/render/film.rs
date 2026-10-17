@@ -56,6 +56,9 @@ pub const SETTLE_FRAMES: u32 = 45;
 /// The most a settle may run past [`SETTLE_FRAMES`] waiting for the rings
 /// before it rolls anyway and says so.
 pub const SETTLE_MAX_FRAMES: u32 = 300;
+/// Tape the boot plays before it holds the clock (`steer`): the welcome and
+/// the first snapshots, which are what place the eye.
+pub const BOOT_TAPE_MS: f64 = 2_000.0;
 /// The audio rate the film's mix is rendered at: video's, and a whole number
 /// of samples per frame at 24, 25, 30 and 60 fps.
 pub const FILM_RATE: u32 = 48_000;
@@ -745,6 +748,10 @@ impl Mix {
 /// rolls (none for a still), real time otherwise.
 pub fn steer(film: Res<Film>, mut time: ResMut<Time<Virtual>>) {
     let speed = match film.phase {
+        // The boot holds the tape once the world has arrived: a fast boot
+        // (`dark_boot`) runs hundreds of frames, and a tape that played
+        // through them all would be past a shot near its start.
+        Phase::Boot if film.replay.clock_ms >= BOOT_TAPE_MS => 0.0,
         Phase::Roll { .. } if film.cur().still => 0.0,
         Phase::Roll { frame } => {
             let shot = film.cur();
@@ -1187,6 +1194,20 @@ fn spline(path: &[(f32, Vec3, Vec3)], t: f32) -> (Vec3, Vec3) {
     (pick(|k| k.1), pick(|k| k.2))
 }
 
+/// The world camera is off while the film boots. The loading screen is drawn
+/// over it, so nothing it draws is seen, and on lavapipe drawing it is most of
+/// a frame: the ring builds the boot is waiting for run on the same cores.
+/// It comes back on for the first seek, and the settle frames that follow
+/// compile its pipelines and fill TAA's history before anything is written.
+pub fn dark_boot(film: Res<Film>, mut cams: Query<&mut Camera, With<EyeCam>>) {
+    let on = film.phase != Phase::Boot;
+    for mut cam in &mut cams {
+        if cam.is_active != on {
+            cam.is_active = on;
+        }
+    }
+}
+
 /// End the frame: render its slice of the mix, shoot it if the shot is
 /// rolling, and move the film on. After the audio flush, so this frame's cues
 /// are in the slice this frame's picture goes with.
@@ -1201,6 +1222,7 @@ pub fn roll(
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
     screen: Res<State<super::Screen>>,
+    backlog: Res<super::pipelines::PipelineBacklog>,
 ) {
     film.drawn += 1;
     let n = (FILM_RATE / film.script.fps) as usize * 2;
@@ -1212,7 +1234,11 @@ pub fn roll(
         && ring.is_full()
         && props.is_full()
         && props.stale_len() == 0
-        && clutter.is_full();
+        && clutter.is_full()
+        // The world camera was dark while the film booted (`dark_boot`), so
+        // its pipelines compile during the first settle; a mesh whose
+        // pipeline is still compiling is not drawn at all.
+        && backlog.pending() == 0;
 
     match film.phase {
         Phase::Boot => {

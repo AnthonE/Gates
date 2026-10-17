@@ -52,6 +52,12 @@ fn main() {
     for (i, s) in h.minor.iter().enumerate() {
         println!("minor site {i} {:.0},{:.0}", s.x, s.z);
     }
+    // Where a fresh body wakes: the beach ring, a few ids round it.
+    for id in [1u32, 2, 3, 4] {
+        let (x, z) = w.spawn_pos(id);
+        let y = sim_core::terrain::height(seed, x, z);
+        println!("beach spawn {id} {x:.0},{z:.0} height {y:.1}");
+    }
     for m in h.marks.iter().filter(|m| m.live) {
         println!("landmark {:?} {:.0},{:.0}", m.kind, m.x, m.z);
     }

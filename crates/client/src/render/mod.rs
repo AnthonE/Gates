@@ -2240,6 +2240,7 @@ impl Plugin for GatesRenderPlugin {
                     film::feed.before(input::place_eye),
                     film::aim.after(input::place_eye).before(Stream),
                     film::lens.after(film::aim),
+                    film::dark_boot,
                 )
                     .run_if(world_running),
             )
