@@ -1836,7 +1836,7 @@ impl Plugin for GatesRenderPlugin {
                         // Speakers, stones and dials (`ARC.md` F5–F7).
                         (lore::spawn, lore::dials).chain(),
                     ),
-                    (hud::pad_overlay, hud::hearth_overlay, hud::lift_announce),
+                    (hud::pad_overlay, hud::lift_announce),
                 )
                     .in_set(Stream)
                     .run_if(world_placed),
