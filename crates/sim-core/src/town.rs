@@ -155,8 +155,8 @@ pub const PARTS: &[KitPart] = &[
     part([18.0, 0.0, 24.0, 24.1, 2.6, 26.44], M::Cargo),
     part([26.0, 0.0, 30.0, 28.44, 2.6, 36.1], M::Cargo),
     part([26.0, 2.6, 30.0, 28.44, 5.2, 36.1], M::Cargo),
-    // Workshop (SW): a roof on posts over the public stations, and their
-    // plinths (a station stands at its column's band, floor + 0.5).
+    // Workshop (SW): a roof on posts over the public stations. No plinths:
+    // a station stands on the bare floor, and a plinth half buried it.
     part_f([-34.0, 3.5, -34.0, -16.0, 3.8, -18.0], M::Sheet, ROOF),
     part([-34.0, 0.0, -34.0, -33.7, 3.5, -33.7], M::Steel),
     part([-16.3, 0.0, -34.0, -16.0, 3.5, -33.7], M::Steel),
@@ -164,8 +164,6 @@ pub const PARTS: &[KitPart] = &[
     part([-16.3, 0.0, -18.3, -16.0, 3.5, -18.0], M::Steel),
     part([-25.15, 0.0, -34.0, -24.85, 3.5, -33.7], M::Steel),
     part([-25.15, 0.0, -18.3, -24.85, 3.5, -18.0], M::Steel),
-    part([-33.0, 0.0, -30.0, -18.0, 0.5, -27.0], M::Concrete),
-    part([-30.0, 0.0, -24.0, -21.0, 0.5, -21.0], M::Concrete),
     // Canteen (SE): a container bar, tables, and a tarp over the tables on
     // poles through them (`POLES`).
     part([16.0, 0.0, -34.0, 22.1, 2.6, -31.56], M::Cargo),

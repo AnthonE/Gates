@@ -1021,7 +1021,7 @@ its photographed surfaces on it (`render/town.rs`). The sidecar
 
 | file | kit | tris | size |
 |---|---|---|---|
-| `site/town.glb` | `ci/kits/town.json` | 60,940 | 7.1 MB |
+| `site/town.glb` | `ci/kits/town.json` | 60,852 | 7.0 MB |
 
 ## `site/ziggurat.glb` — the Black Ziggurat, dressed in Blender
 

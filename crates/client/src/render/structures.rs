@@ -3486,6 +3486,21 @@ pub fn body_transform(
     body_feet(seed, haven, cols, rec, arch) * Transform::from_xyz(0.0, lift, 0.0)
 }
 
+/// THE GATE's public stations draw this much over their own size, so they
+/// read across the yard. Render only: the sim's box is the row's.
+pub const TOWN_STATION_SCALE: f32 = 1.25;
+
+/// A recycler, for `audio::bed`: its motor is heard only while the sim says
+/// it runs (`LitOvens` holds a running recycler as lit). On the entity
+/// itself, whose transform is the machine's feet.
+#[derive(Component)]
+pub struct RecyclerHum {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -3519,6 +3534,14 @@ pub fn spawn_deploy(
     } else {
         body_transform(seed, haven, cols, rec, arch)
     };
+    let (x, z) = rec.xz();
+    let transform = if matches!(arch, ARCH_WORKBENCH | ARCH_RESEARCH | ARCH_RECYCLER)
+        && sim_core::town::safe(&haven.town, x, z)
+    {
+        transform.with_scale(Vec3::splat(TOWN_STATION_SCALE))
+    } else {
+        transform
+    };
 
     let mat = if arch == ARCH_DOOR && rec.locked {
         kit.door_locked.clone()
@@ -3541,6 +3564,14 @@ pub fn spawn_deploy(
             applied: Some(0),
         },
     ));
+    if arch == ARCH_RECYCLER {
+        e.insert(RecyclerHum {
+            cx: rec.cx,
+            cz: rec.cz,
+            level: rec.level,
+            loc: rec.loc,
+        });
+    }
     // A planter carries one plant a bed, hidden until the sim says a bed is
     // sown (crops v1). See [`PlanterBed`].
     if arch == sim_core::deploy::ARCH_PLANTER {
