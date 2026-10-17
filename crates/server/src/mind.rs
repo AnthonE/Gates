@@ -418,9 +418,7 @@ impl Goal {
             Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
             Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
             Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
-            Goal::Research => {
-                "Take a found thing you have no blueprint for, and its junk, to THE GATE's research table; read the blueprint it makes.".into()
-            }
+            Goal::Research => "Research a found thing you have no blueprint for at THE GATE's table, for junk.".into(),
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
