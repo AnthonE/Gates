@@ -7,8 +7,8 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::probe::{
-    probe_assist, probe_bags, probe_combat, probe_headroom, probe_parity, probe_rotation,
-    probe_sites, probe_terrain,
+    probe_assist, probe_bags, probe_combat, probe_headroom, probe_math, probe_parity,
+    probe_rotation, probe_sites, probe_terrain,
 };
 
 // Keep in lockstep with ci/parity.mjs — a mismatch shows up as a diff.
@@ -80,4 +80,6 @@ fn main() {
         rotation >> 32,
         rotation & 0xFFFF_FFFF
     );
+    let math = probe_math();
+    println!("math {} {:#010x}", math >> 32, math & 0xFFFF_FFFF);
 }
