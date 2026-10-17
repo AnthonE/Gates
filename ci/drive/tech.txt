@@ -17,6 +17,10 @@ move 0 150
 sleep 2
 click 1
 sleep 4
+# the foundation snaps to its grid with its edge under the crosshair: turn
+# onto it
+move -220 60
+sleep 2
 key 2
 sleep 2
 shot 01-ghost
