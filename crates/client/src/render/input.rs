@@ -431,9 +431,10 @@ pub fn gather(
     // **The swing is held-item modal** (`ui::hold::Click`): left click
     // places with a plan, repairs with a hammer, places a deployable
     // (`ghost::deploy_key`), and eats food or reads a blueprint
-    // (`verbs::keys`). Only a tool, a weapon or an empty hand swings —
-    // otherwise the same press would place a foundation, or eat a mushroom,
-    // AND send a gather at whatever is in front of you.
+    // (`verbs::keys`). Only a tool or a weapon swings — otherwise the same
+    // press would place a foundation, or eat a mushroom, AND send a gather
+    // at whatever is in front of you. An empty hand does nothing at all:
+    // Rust has no fists.
     let swings = crate::ui::hold::click_in_hand(
         &core.catalog,
         &core.research,

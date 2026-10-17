@@ -122,9 +122,14 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
 /// this") or at a person — while eating was a `J` nothing on screen named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Click {
-    /// A tool, a weapon, a resource, an empty hand: the arm swings.
+    /// A tool, a weapon, a resource: the arm swings.
     #[default]
     Swing,
+    /// An empty hand does nothing. Rust has no fists (operator, 2026-10-17:
+    /// *"bare hand should not leave marks"*), and the slot a lock or a box
+    /// was just placed from is empty while the button is still down, so a
+    /// fist here swung at the thing you had just put a lock on.
+    Empty,
     /// The building plan places its ghost (`ghost::place_key`).
     Build,
     /// The hammer's repair swing (`verbs::keys`).
@@ -164,7 +169,7 @@ pub fn click_of(
     stack: ItemStack,
 ) -> Click {
     if stack.count == 0 {
-        return Click::Swing;
+        return Click::Empty;
     }
     match held(catalog, stack) {
         Held::Plan => return Click::Build,
@@ -252,7 +257,7 @@ pub fn hand_hint(
                 format!("{}{left}   (F: light)", name())
             }
         }
-        Click::Build | Click::Deploy => String::new(),
+        Click::Build | Click::Deploy | Click::Empty => String::new(),
     }
 }
 
@@ -267,7 +272,7 @@ pub fn click_in_hand(
     sel: u8,
 ) -> Click {
     if inv.is_empty() {
-        return Click::Swing;
+        return Click::Empty;
     }
     let stack = inv[(sel as usize).min(inv.len() - 1)];
     click_of(catalog, research, deploys, deploys_have, stack)
@@ -1678,7 +1683,7 @@ mod tests {
             Click::Swing,
             "a torch swings; right click lights it"
         );
-        assert_eq!(click(ItemStack::default()), Click::Swing, "a fist");
+        assert_eq!(click(ItemStack::default()), Click::Empty, "no fists");
         // Rust's belt: a food slot's KEY eats; nothing else does.
         assert!(eats_on_key(&b.catalog, one(MUSHROOMS)));
         assert!(eats_on_key(&b.catalog, one(BANDAGE)));
@@ -1691,7 +1696,14 @@ mod tests {
         };
         assert!(!eats_on_key(&b.catalog, none_left), "an empty slot selects");
         // Only the swing sends `BTN_PRIMARY`.
-        for s in [one(MUSHROOMS), one(PAPER), one(BOX), one(PLAN), one(HAMMER)] {
+        for s in [
+            one(MUSHROOMS),
+            one(PAPER),
+            one(BOX),
+            one(PLAN),
+            one(HAMMER),
+            ItemStack::default(),
+        ] {
             assert!(!click(s).swings(), "{s:?} must not also swing");
         }
         // A deployable the defs have not dripped yet is not placeable, so
