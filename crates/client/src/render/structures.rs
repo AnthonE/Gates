@@ -548,6 +548,13 @@ pub const BAG_SIZE: [f32; 3] = [0.6, 0.35, 0.45];
 /// transform is unchanged. One primitive, one material.
 pub const BAG_ASSET: &str = "models/prop/death_bag.glb";
 
+/// Whether a bag's wire feet stand on the island's own ground rather than a
+/// floor or the seabed's water: then it is laid on the ground as drawn
+/// (`loot::surface_y`), which is not always the sim's to the centimetre.
+fn on_terrain(world: &WorldId, feet: Vec3) -> bool {
+    (feet.y - terrain::ground(world.seed, &world.haven, feet.x, feet.z)).abs() < 0.06
+}
+
 /// Fallback pouch envelope for items without a held model. Existing size;
 /// modelled tools share the geometry and scale used by the hand.
 const GITEM_SIZE: [f32; 3] = [0.3, 0.24, 0.3];
@@ -2866,7 +2873,23 @@ pub fn stream(
             );
             let turn = (bag.id.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
             let facing = Quat::from_rotation_y(turn * std::f32::consts::TAU);
-            let root = mid + facing * Vec3::new(0.0, 0.0, sim_core::backpack::CORPSE_BACK_M);
+            let mut root = mid + facing * Vec3::new(0.0, 0.0, sim_core::backpack::CORPSE_BACK_M);
+            // On open ground the body lies on the ground as drawn, along its
+            // slope: kept level at the feet's height, a body 0.1 m thick had
+            // its uphill half under a gentle slope. A floor is flat already.
+            let ground = |p: Vec3| super::loot::surface_y(world.seed, &world.haven, p.x, p.z);
+            let mut tilt = Quat::IDENTITY;
+            if on_terrain(&world, mid) {
+                // The clip lays the body back along its own -Z, ~1.9 m.
+                let back = facing * Vec3::NEG_Z;
+                let side = facing * Vec3::X;
+                let c = root + back;
+                let d_back = (ground(c + back * 0.8) - ground(c - back * 0.8)) / 1.6;
+                let d_side = (ground(c + side * 0.4) - ground(c - side * 0.4)) / 0.8;
+                let n = (Vec3::Y - back * d_back - side * d_side).normalize();
+                tilt = Quat::from_rotation_arc(Vec3::Y, n);
+                root.y = ground(root);
+            }
             let entity = commands
                 .spawn((
                     super::WorldEntity,
@@ -2877,8 +2900,9 @@ pub fn stream(
                     super::anim::Reshade::body(),
                     SceneRoot(scene),
                     Transform::from_translation(root)
-                        .with_rotation(facing)
+                        .with_rotation(tilt * facing)
                         .with_scale(Vec3::splat(rig.scale)),
+                    super::foliage::PressesGrass { len_m: 2.0 },
                 ))
                 .id();
             ring.bags.insert(
@@ -2901,11 +2925,15 @@ pub fn stream(
         }
         // The sim drops it at the body's FEET, so half its height lifts it
         // onto the ground rather than leaving it sunk to the waist.
-        let feet = Vec3::new(
+        let mut feet = Vec3::new(
             bag.qx as f32 * POS_XZ_Q,
             bag.qy as f32 * POS_Y_Q,
             bag.qz as f32 * POS_XZ_Q,
         );
+        // On open ground, on the ground as drawn rather than the sim's.
+        if on_terrain(&world, feet) {
+            feet.y = super::loot::surface_y(world.seed, &world.haven, feet.x, feet.z);
+        }
         // A killed animal's bag is its carcass, lying where it fell (v84),
         // at a bearing hashed off the bag id: the wire carries no facing,
         // and a field of dead pigs all pointing north reads as a pattern.
@@ -2937,6 +2965,7 @@ pub fn stream(
                         MeshMaterial3d(mat.clone()),
                         Transform::from_translation(feet)
                             .with_rotation(Quat::from_rotation_y(turn * std::f32::consts::TAU)),
+                        super::foliage::PressesGrass { len_m: 0.0 },
                     ))
                     .id()
             }
@@ -2946,6 +2975,7 @@ pub fn stream(
                     Mesh3d(kit.bag_mesh.clone()),
                     MeshMaterial3d(kit.bag_mat.clone()),
                     Transform::from_translation(feet + Vec3::Y * BAG_SIZE[1] * 0.5),
+                    super::foliage::PressesGrass { len_m: 0.0 },
                 ))
                 .id(),
         };
