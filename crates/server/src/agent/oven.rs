@@ -401,6 +401,22 @@ pub fn research(core: &ClientCore, tier: u8) -> Option<Work> {
         .map(|(sample, cost)| Work::Research { sample, cost })
 }
 
+/// A research of `sample` while its recipe is still unknown: the job that
+/// goes back for paper (or a sample) it left in a table.
+pub fn research_of(core: &ClientCore, sample: u16) -> Option<Work> {
+    unknown_row(core, sample).map(|r| Work::Research {
+        sample,
+        cost: r.cost,
+    })
+}
+
+/// A pack slot holding paper that teaches `item`.
+pub fn paper_of(core: &ClientCore, item: u16) -> Option<u8> {
+    (0..INV_SLOTS)
+        .find(|&i| sim_core::research::blueprint_target(&core.research, core.inv[i]) == Some(item))
+        .map(|i| i as u8)
+}
+
 /// A pack slot holding paper for a recipe this body does not know yet.
 pub fn unread(core: &ClientCore) -> Option<u8> {
     let rc = &core.research;
@@ -413,17 +429,21 @@ pub fn unread(core: &ClientCore) -> Option<u8> {
         .map(|i| i as u8)
 }
 
-/// A research table holds somebody else's work: running, or holding
-/// something besides this work's sample and the paper made of it. Found so
-/// before this session put anything in, it is left to them.
+/// A research table holds somebody else's work: running, or loaded with a
+/// sample or junk that is not this work's. Found so before this session put
+/// anything in, it is left to them. Paper left in an idle, unpaid table is
+/// anybody's, as at Rust's outpost, and comes off first: the player who ran
+/// it had the panel open when it landed, and a sheet left there would shut
+/// the table to everyone else for good.
 fn in_use(core: &ClientCore, work: Work, slots: &[ItemStack], lit: bool) -> bool {
     let Work::Research { sample, .. } = work else {
         return false;
     };
-    let item = slots[TABLE_ITEM_SLOT];
-    let ours = item.item == sample
-        || sim_core::research::blueprint_target(&core.research, item) == Some(sample);
-    lit || (item.count > 0 && !ours) || (item.count == 0 && slots[TABLE_COIN_SLOT].count > 0)
+    let (item, coin) = (slots[TABLE_ITEM_SLOT], slots[TABLE_COIN_SLOT]);
+    let paper = sim_core::research::blueprint_target(&core.research, item);
+    let ours = item.item == sample || paper == Some(sample);
+    let left = paper.is_some() && coin.count == 0;
+    lit || (item.count > 0 && !ours && !left) || (item.count == 0 && coin.count > 0)
 }
 
 /// Can a cook or a recycle go now: what the work takes, in the pack (and
@@ -1558,7 +1578,7 @@ mod tests {
     /// What goes to the table: a found thing with no blueprint and the junk
     /// for it, the cheapest first. One the bench's tree would teach for the
     /// same junk is kept for use, unless a second is carried; a table found
-    /// busy is somebody else's.
+    /// busy is somebody else's, and paper left in an idle one is anybody's.
     #[test]
     fn a_research_takes_what_the_tree_cannot_teach_and_leaves_a_busy_table() {
         let (mut core, _, id) = shipped();
@@ -1616,5 +1636,16 @@ mod tests {
         assert!(in_use(&core, work, &table, false));
         table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&core.research, hatchet);
         assert!(!in_use(&core, work, &table, false));
+        // Paper left in an idle, unpaid table is anybody's; junk beside it
+        // is somebody's.
+        table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&core.research, satchel);
+        assert!(!in_use(&core, work, &table, false));
+        table[TABLE_COIN_SLOT] = stack(junk, 5);
+        assert!(in_use(&core, work, &table, false));
+        table[TABLE_ITEM_SLOT] = ItemStack::default();
+        assert!(
+            in_use(&core, work, &table, false),
+            "junk loaded, sample to come"
+        );
     }
 }

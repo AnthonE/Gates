@@ -892,6 +892,11 @@ pub struct Survivor {
     /// A research goal's read of the paper is queued: the goal ends once
     /// it has gone out (an ended goal's outbox is dropped).
     paper_read: bool,
+    /// This research's sample is out of the pack and its paper not in it:
+    /// in the table, or paper there. A goal that ends so leaves it
+    /// `research_left`, and the next research goes back for it.
+    sample_in_table: Option<u16>,
+    research_left: Option<u16>,
     shop_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
@@ -1084,6 +1089,8 @@ impl Survivor {
             recycle_failed: None,
             research_failed: None,
             paper_read: false,
+            sample_in_table: None,
+            research_left: None,
             shop_failed: None,
             home_failed: None,
             build_failed: None,
@@ -2099,6 +2106,7 @@ impl Survivor {
         self.solve_job.reset();
         self.swipe_job.reset();
         self.paper_read = false;
+        self.sample_in_table = None;
         self.oven_job = DeviceJob::new(match goal {
             Goal::Recycle => Work::Recycle,
             Goal::KeepShop => Work::Shop,
@@ -2135,6 +2143,16 @@ impl Survivor {
         };
         self.memory.last = Some(report);
         self.history.push(report);
+        if active.goal == Goal::Research {
+            self.research_left = match outcome {
+                Outcome::Done => None,
+                _ => self.sample_in_table.take(),
+            };
+            // Not offered again before the hold is read, a second from now.
+            if matches!(outcome, Outcome::Failed(_)) {
+                self.memory.research = false;
+            }
+        }
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
             self.home_failed = Some(tick);
         }
@@ -5413,8 +5431,7 @@ impl Survivor {
     /// A research (`agent::oven`, `Work::Research`): paper it holds and
     /// has not read is read, here; else the cheapest found thing it has no
     /// blueprint for goes to THE GATE's research table with its junk, the
-    /// paper is taken off and read. The table is walked to until it is in
-    /// sight.
+    /// paper is taken off and read.
     fn research(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         self.stats.phase = Phase::Recycling;
         if self.paper_read {
@@ -5429,13 +5446,24 @@ impl Survivor {
                 return Intent::IDLE;
             }
             let tier = self.builder.stations(core).tier;
-            let Some(work) = oven::research(core, tier) else {
+            let left = self
+                .research_left
+                .take()
+                .and_then(|sample| oven::research_of(core, sample));
+            let Some(work) = left.or_else(|| oven::research(core, tier)) else {
                 self.research_failed = Some(tick);
                 self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
                 return Intent::IDLE;
             };
             self.oven_job = DeviceJob::new(work);
         }
+        if let Work::Research { sample, .. } = self.oven_job.work() {
+            self.sample_in_table = (count_item(core, sample) == 0
+                && oven::paper_of(core, sample).is_none())
+            .then_some(sample);
+        }
+        // To the table until it is in sight (the deployables' interest),
+        // then the job walks to it and works it.
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         if self.device_near(core, self.oven_job.work(), x, z).is_none() {
             let far = oven::town_table(core)
@@ -6290,13 +6318,23 @@ impl Survivor {
                         .recycle_failed
                         .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             // A research: paper to read, or a found thing and the junk for
-            // it while THE GATE's table is there to take them to.
+            // it (or what an earlier one left in the table) while THE GATE's
+            // table is there to take them to. Mid-research the sample is in
+            // the table rather than the pack: still on offer until it is done,
+            // or the next decision walks off and leaves the paper there.
             let tier = self.builder.stations(core).tier;
-            self.memory.research = (oven::unread(core).is_some()
-                || (oven::town_table(core).is_some() && oven::research(core, tier).is_some()))
-                && self
-                    .research_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= VISIT_RETRY_TICKS);
+            let researching = self.goal() == Some(Goal::Research)
+                && (self.paper_read || matches!(self.oven_job.work(), Work::Research { .. }));
+            let left = self
+                .research_left
+                .is_some_and(|sample| oven::research_of(core, sample).is_some());
+            let table = oven::town_table(core).is_some();
+            self.memory.research = researching
+                || ((oven::unread(core).is_some()
+                    || (table && (left || oven::research(core, tier).is_some())))
+                    && self
+                        .research_failed
+                        .is_none_or(|at| tick.wrapping_sub(at) >= VISIT_RETRY_TICKS));
             // The crew's shop (`agent::shop`), its founder's to keep: a
             // machine carried and none standing is put down; one standing is
             // stocked when the pack has lots of a ware past what the base
