@@ -303,9 +303,10 @@ pub enum Cue {
     Trade,
     /// Into THE GATE's safe zone, or out of it: a soft two-note bell.
     GateChime,
-    /// THE GATE's yard, as a bed: a generator's hum, a radio somewhere
-    /// playing nothing in particular, and now and then a clank of sheet
-    /// metal. `render/audio.rs` turns it up as you near the town.
+    /// A running recycler's motor, as a bed: a small diesel generator's
+    /// loop. `render/audio.rs` turns it up as you near one the sim says is
+    /// running, and only then (it was THE GATE's yard bed once, hence the
+    /// name).
     BedTown,
     /// A door (or shutter) swinging open, at the leaf. Appended, the enum's
     /// append-order rule, like everything below.
