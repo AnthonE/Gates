@@ -260,6 +260,17 @@ struct EventTally {
     hearth_row: Option<u16>,
 }
 
+/// The playout an agent's input datagrams report. A bot renders nothing, so
+/// this is a DECISION, not a measurement: the shipped default
+/// (`INTERP_DELAY_TICKS`), less the tick the server adds for a snapshot's
+/// poses trailing its stamp (`stats::SNAPSHOT_POSE_LAG_TICKS`). Agents' melee
+/// was tuned against the favour they had before that tick was found, and
+/// their reach model swings at the very edge (it reads the ground gap, not
+/// the slant from the eye), so they keep that favour rather than the exact
+/// one players get. Below the server's measured bound, so never capped.
+pub const AGENT_PLAYOUT_REPORT: u8 =
+    sim_core::limits::INTERP_DELAY_TICKS - crate::stats::SNAPSHOT_POSE_LAG_TICKS as u8;
+
 /// How many foreign hearths a bot remembers. A settling owner only needs the
 /// ones near it; the deploy walk hands over those within the class-S radius
 /// and re-arms as the bot travels (`interest.rs`).
@@ -1300,18 +1311,7 @@ async fn run_bot_inner(
                     tail.remove(0);
                 }
                 let (ack, ack_bits) = view.ack_fields();
-                // A bot renders nothing, so its playout report is a
-                // DECISION, not a measurement: the shipped default
-                // (`INTERP_DELAY_TICKS`), the same value the server
-                // assumed for every client before wire v61 carried one.
-                // It is also the floor of the server's measured bound
-                // (`ClientNetState::playout_cap`), so an agent's report is
-                // never capped: agents keep every tick of favour they had.
-                let mut dg = InputDatagram::new(
-                    ack,
-                    ack_bits,
-                    sim_core::limits::INTERP_DELAY_TICKS,
-                );
+                let mut dg = InputDatagram::new(ack, ack_bits, AGENT_PLAYOUT_REPORT);
                 for t in &tail {
                     if dg.push(*t).is_err() {
                         break;

@@ -1716,7 +1716,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 27] = [
+pub const OCCUPANTS: [Occupant; 28] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1744,6 +1744,7 @@ pub const OCCUPANTS: [Occupant; 27] = [
     Occupant::MetalPile,
     Occupant::SulfurPile,
     Occupant::MushroomPatch,
+    Occupant::Cactus,
 ];
 
 /// The roadside junk's colours, row for row with the sim's box tables.
@@ -1771,7 +1772,8 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         | Occupant::Tree
         | Occupant::BerryBush
         | Occupant::Hemp
-        | Occupant::Shrub => return None,
+        | Occupant::Shrub
+        | Occupant::Cactus => return None,
         // One blob serves all three ore nodes; they differ by material only.
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => {
             blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2)
@@ -1872,7 +1874,7 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
         // So do the plants (`plants.rs` builds them ground-rooted), which is
         // also the root height the foliage shader bends them from.
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => 0.0,
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => 0.0,
         // Centred meshes sat on the ground.
         Occupant::StonePile | Occupant::MetalPile | Occupant::SulfurPile => 0.1,
         Occupant::WoodPile => 0.11,
@@ -2929,13 +2931,13 @@ pub fn spawn_slot(
     // the number the draw uses and the number `tests/greybox.rs` checks
     // against `OCCUPANT_TOP_M` are the same number.
     let mut lift = archetype_lift(slot.occupant);
-    // How much bigger than its file the mesh draws: 1 but for a pickup's
-    // hand-sized model (`PICKUP_GLB`).
-    let mut grow = 1.0;
     // What a shrub cell grows, off its biome (`plants::scenery`).
     // `fel` is the spread's depth at the slot now (the caller's,
     // `render::blight::live_fel`), not the wipe-day heart.
     let scenery = plants::scenery_with(seed, slot, key, fel);
+    // How much bigger than its file the mesh draws: a pickup's hand-sized
+    // model (`PICKUP_GLB`), a scenery bush (`plants::SCENERY_GROW`), 1 else.
+    let mut grow = plants::grow(slot.occupant, scenery);
     // A tree in the Verdigris is dead: charred bark and no crown.
     let snag = slot.occupant == Occupant::Tree && fel >= FEL_SNAG_AT;
     let (mesh, material) = match slot.occupant {
@@ -2968,7 +2970,7 @@ pub fn spawn_slot(
         // A plant's wood (twigs, the hemp stalk, the berries) is the primary
         // entity and its leaves ride beside it, below. Indexed by yaw exactly
         // as the conifer pool is, so two plants side by side differ.
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => {
             variant = (slot.yaw as usize) % PLANT_POOL;
             match a.plant(slot.occupant, key, variant, tint, scenery) {
                 Some(p) => (p.wood.clone(), p.wood_mat.clone()),
@@ -3094,6 +3096,7 @@ pub fn spawn_slot(
             | Occupant::MetalPile
             | Occupant::SulfurPile
             | Occupant::MushroomPatch
+            | Occupant::Cactus
     );
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
@@ -3787,7 +3790,6 @@ impl PropAssets {
             (Occupant::Shrub, Scenery::DeadScrub) => {
                 plant(&self.dead_wood[v], &self.plant_wood, None)
             }
-            (Occupant::Shrub, Scenery::Cactus) => plant(&self.cactus[v], &self.plant_wood, None),
             (Occupant::Shrub, Scenery::Flowers) => {
                 let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
                     % plants::FLOWER_PALETTES;
@@ -3816,6 +3818,9 @@ impl PropAssets {
                 &self.hemp_wood,
                 Some((&self.hemp_leaves[v], &self.hemp_leaf[tint])),
             ),
+            // The sim's cactus (`terrain::cactus_at`), whatever the spread:
+            // it stands, and pricks, until it is swung down.
+            (Occupant::Cactus, _) => plant(&self.cactus[v], &self.plant_wood, None),
             _ => return None,
         })
     }

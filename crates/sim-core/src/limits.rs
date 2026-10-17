@@ -241,13 +241,13 @@ pub const INPUT_CATCHUP_CREDIT_CAP: u16 = INPUT_BUFFER_CAP as u16;
 /// Ticks per drift credit: one second at 30 Hz.
 pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
 
-/// Rewind ring depth in sim ticks — 8 rows of body history, 267 ms
+/// Rewind ring depth in sim ticks — 16 rows of body history, 533 ms
 /// (NETCODE.md §8, `findings/lagcomp-design-20260818.md` §1.4). A power of
 /// two so the ring index is a mask and never a modulo: wall 1 likes
 /// integers and wall 3 likes no division.
 ///
-/// Eight holds the seven `REWIND_MAX_TICKS` can reach plus the row being
-/// overwritten. During tick `T` the rows carry ticks `T-1 ..= T-8`, and the
+/// Sixteen holds the fifteen `REWIND_MAX_TICKS` can reach plus the row being
+/// overwritten. During tick `T` the rows carry ticks `T-1 ..= T-16`, and the
 /// row for `T` is written at the end of `World::tick` — so a rewind of 0 is
 /// **the live body**, never a row, and that is what makes a favour of zero
 /// bit-identical to the pre-rewind sim.
@@ -255,19 +255,25 @@ pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
 /// Overflow policy: **overwrite oldest**. It is a ring by construction and
 /// the row it overwrites is older than `REWIND_MAX_TICKS` can ask for, so
 /// nothing reachable is ever discarded. Cost:
-/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 16,000 B` of poses plus a
+/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 32,000 B` of poses plus a
 /// `[u64; REWIND_TICKS]` of stamps, all preallocated at construction —
 /// nothing allocates in the tick (wall 2).
 ///
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
-pub const REWIND_TICKS: usize = 8;
+pub const REWIND_TICKS: usize = 16;
 
-/// Favouring clamp, in ticks (NETCODE.md §8's 250 ms, Overwatch's bound).
-/// 250 ms is 7.5 ticks at `TICK_HZ` and a rewind is an integer number of
-/// ticks, so this is **7 (233.3 ms)** — under the doc's promise rather than
-/// over it, because that number is a promise to the *victim*: it bounds how
-/// far into their past a shooter may be handed a hit they have already run
+/// Favouring clamp, in ticks: **15 (500 ms)**, and it bounds how far into
+/// the victim's past a shooter may be handed a hit they have already run
 /// out of.
+///
+/// It was 7 (233 ms, NETCODE.md §8's 250 ms floored) until the operator's
+/// first moving fight over a real link (2026-10-17: *"hard to connect when
+/// it visually looked like a hit"*). The favour a frame needs is its age at
+/// the shard (RTT plus the input buffer) plus the playout delay plus one,
+/// and `tests/lagcomp_e2e.rs` measured 7 clamping every frame from ~100 ms
+/// of RTT and missing by ~3.4 ticks at 200 ms — a sprinting body judged
+/// 60 cm from where it was drawn. 15 covers ~300 ms of RTT at the playout
+/// floor; Source's `sv_maxunlag` default is a second.
 ///
 /// Overflow policy: **clamp**, and a value past it is *also* safe by
 /// construction — `Rewind::pose_at` resolves `tick - back` and checks the
@@ -277,7 +283,7 @@ pub const REWIND_TICKS: usize = 8;
 /// more (`findings/lagcomp-design-20260818.md` §4.2c, §6.2).
 ///
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
-pub const REWIND_MAX_TICKS: u8 = 7;
+pub const REWIND_MAX_TICKS: u8 = 15;
 
 /// The interpolation delay both ends agree on: remote bodies are drawn this
 /// many ticks in the past. **Unchanged at 4 across netcode v2 S2 on

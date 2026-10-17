@@ -207,7 +207,7 @@ fn card_atlas(images: &mut Assets<Image>, file: &str) -> Handle<Image> {
         mag_filter: bevy::image::ImageFilterMode::Linear,
         min_filter: bevy::image::ImageFilterMode::Linear,
         mipmap_filter: bevy::image::ImageFilterMode::Linear,
-        anisotropy_clamp: 4,
+        anisotropy_clamp: client::render::textures::ANISOTROPY,
         ..default()
     });
     images.add(img)

@@ -18,7 +18,9 @@ use sim_core::craft::{inv_count, CraftContent};
 use sim_core::deploy::{
     DeployContent, DeployDef, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE, ARCH_BOX, PLACE_FOUNDATION,
 };
-use sim_core::gather::{GatherContent, ItemStack, HIT_UNIT, SWING_INTERVAL_TICKS};
+use sim_core::gather::{
+    GatherContent, ItemStack, HIT_UNIT, STRIKE_DELAY_TICKS, SWING_INTERVAL_TICKS,
+};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::INV_SLOTS;
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -162,6 +164,14 @@ fn hold_primary(aim: Aim, seq: u16) -> Command {
     }
 }
 
+/// The ticks between a swing being taken and its blow landing; the held
+/// frame persists through them, and the last is the strike's tick.
+fn wind_up(w: &mut World) {
+    for _ in 0..STRIKE_DELAY_TICKS {
+        w.tick(&[]);
+    }
+}
+
 /// Player 1 at `pos`, gather and backpack fixtures armed, and every one of
 /// the 30 inventory slots walled off with filler at the ceiling — so the
 /// very first swing has nowhere to pay. Boxed for the reason
@@ -203,6 +213,7 @@ fn a_full_pack_drops_the_yield_at_your_feet() {
 
     assert_eq!(w.backpacks.len(), 0, "no bag before the swing");
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
 
     assert_eq!(
         inv_count(&w.players[0].inv, tree.output),
@@ -246,6 +257,7 @@ fn a_node_that_pays_twice_spills_twice_and_announces_both() {
     w.gather.nodes[0].secondary = (sec, sec_units);
 
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
 
     let gathers: Vec<_> = w
         .events
@@ -303,6 +315,7 @@ fn a_partial_spill_says_what_fit_and_what_fell() {
     };
 
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
 
     let gathers: Vec<_> = w
         .events
@@ -579,6 +592,7 @@ fn only_a_full_pack_makes_the_gather_event_say_zero() {
     w.tick(&[Command::Join { id: 1 }]);
     let thin = w.gather.nodes[0];
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
 
     // The positive control first, because everything below it is a
     // NEGATIVE. Half one builds its own world rather than inheriting
@@ -617,6 +631,7 @@ fn only_a_full_pack_makes_the_gather_event_say_zero() {
     let mut w = full_pack_world(pos);
     let tree = w.gather.nodes[0];
     w.tick(&[hold_primary(yaw, 0)]);
+    wind_up(&mut w);
 
     let gathers: Vec<_> = w
         .events

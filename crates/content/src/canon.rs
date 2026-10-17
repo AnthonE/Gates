@@ -124,6 +124,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.limb_pct);
         h.u(w.rate_per_min);
         h.u(w.range_m);
+        h.u(w.reach_cm);
         h.u(w.lit_damage.unwrap_or(0));
         h.u(w.condition_loss.unwrap_or(0));
         // The round list walks in **declared order, not sorted**, and that

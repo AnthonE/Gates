@@ -9525,8 +9525,8 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
-            file: "cliff.rs",
-            src: include_str!("../../sim-core/src/cliff.rs"),
+            file: "face.rs",
+            src: include_str!("../../sim-core/src/face.rs"),
         },
         Module {
             file: "light.rs",
@@ -9591,6 +9591,10 @@ mod wire_domains {
         Module {
             file: "depot.rs",
             src: include_str!("../../sim-core/src/depot.rs"),
+        },
+        Module {
+            file: "face.rs",
+            src: include_str!("../../sim-core/src/face.rs"),
         },
         Module {
             file: "fire.rs",
@@ -9776,8 +9780,9 @@ mod wire_domains {
             // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
-            // 10 = DEATH_BY_FEL at v113 (the Verdigris).
-            live_max: 10,
+            // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
+            // DEATH_BY_CACTUS at v122.
+            live_max: 11,
         },
         Domain {
             what: "move refusal",

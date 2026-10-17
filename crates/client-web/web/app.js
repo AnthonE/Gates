@@ -1253,13 +1253,29 @@ globalThis.gatesMic = {
   state: "off",
   rate: 0,
   queue: [],
+  /* Bumped by every start and stop, so an answer to a prompt that a stop
+     overtook lets the microphone go instead of turning it on. */
+  gen: 0,
   start() {
     if (this.state !== "off") return;
     this.state = "asking";
-    openMic(this).catch((err) => {
+    const gen = ++this.gen;
+    openMic(this, gen).catch((err) => {
       console.warn("gates mic: none -", (err && err.message) || err);
-      this.state = "none";
+      if (this.gen === gen) this.state = "none";
     });
+  },
+  /* Voice turned off in the settings: the browser stops showing the
+     microphone in use, and the next start asks again. */
+  stop() {
+    this.gen++;
+    if (this.stream) for (const t of this.stream.getTracks()) t.stop();
+    if (this.node) { this.node.port.onmessage = null; this.node.disconnect(); }
+    if (this.source) this.source.disconnect();
+    this.stream = this.node = this.source = null;
+    this.queue.length = 0;
+    this.rate = 0;
+    this.state = "off";
   },
   take() {
     if (this.queue.length === 0) return null;
@@ -1277,7 +1293,7 @@ globalThis.gatesMic = {
 for (const type of ["mousedown", "mouseup", "auxclick"]) {
   addEventListener(type, (e) => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
 }
-async function openMic(mic) {
+async function openMic(mic, gen) {
   await startAudio();
   const a = globalThis.gatesAudio;
   if (!a) throw new Error("no audio context");
@@ -1287,6 +1303,10 @@ async function openMic(mic) {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
   });
+  if (mic.gen !== gen) {
+    for (const t of stream.getTracks()) t.stop();
+    return;
+  }
   const source = a.context.createMediaStreamSource(stream);
   /* One output, connected and silent: a node wired to the destination is
      pulled on every engine, where an output-less one is not everywhere. */
@@ -1303,6 +1323,8 @@ async function openMic(mic) {
   node.connect(a.context.destination);
   mic.rate = a.context.sampleRate;
   mic.stream = stream;
+  mic.source = source;
+  mic.node = node;
   mic.state = "on";
   console.info(`gates mic: on at ${a.context.sampleRate} Hz`);
 }

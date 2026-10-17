@@ -1,7 +1,8 @@
 # Gates · content/loot.toml — container archetype → weighted entries
-# (CONTENT.md §5). Barrels are components-weighted (the coast-road reason);
-# the revolver rides as a rare barrel drop per DECISIONS.md §open
-# "revolver: barrel drop or craft-only". Respawn timing is the §open
+# (CONTENT.md §5). Barrels are components-weighted (the coast-road reason).
+# The revolver is a rare crate drop, theirs a brown crate's (it was a barrel
+# drop per DECISIONS.md §open "revolver: barrel drop or craft-only" until
+# 2026-10-17; their barrel carries no gun). Respawn timing is the §open
 # node/barrel knob, not a content field.
 #
 # `hits` is how many swings open the container. It IS a content field —
@@ -40,128 +41,130 @@
 # barrel, a waystation is their brown crate, the haven pad is their military
 # crate.
 #
-# **And their components, at their rates** (operator, 2026-10-13: *"the game
-# should match how Rust survival does scrap loot"*). Most of a Rust
-# container's scrap is not the certain row: it is the springs, pipes, sheet
-# metal, gun bodies and tech trash it drops, which their recycler turns into
-# scrap (`cooking.toml`). Each component row below is weighted so its chance
-# per container is the item page's (wiki.facepunch.com/rust/Item/<name>):
-# barrel 1.4 % for the metal parts and 8–15.4 % for the cloth parts and the
-# blade, brown crate 14.3 %, military crate 16.7 %, elite crate 27.7 %. A
-# row's chance is `mean rolls × weight ÷ total weight`. Our own rows keep
-# their chances (cloth, fat and fuel feed the survival loop) and the parts
-# ride on top: the barrel rolls 1–3 where it rolled 1–2, the waystation
-# 2–3 where it rolled 2, the elite room 3–5 where it rolled 3–4. Recycled, a barrel pays ~4.4
-# junk, a waystation ~25, the haven pad ~34 and the elite room ~92.
+# **And only what theirs carry** (operator, 2026-10-17: *"Fix loot table to
+# be like Rust survival"*; rusthelp.com/world/<container> and
+# wiki.facepunch.com, read 2026-10-17). Their containers pay scrap,
+# components, and gear: **no raw materials** — no cloth, fat, metal
+# fragments, sulfur or gunpowder (RIPLIST row 1i's "second finding"). Those
+# come from hemp, animals, the furnace and the bench, as theirs do; low
+# grade is the oil barrel's, and a tool crate's now and then. Each row is
+# weighted so its chance per container is about theirs. A row's chance is
+# `mean rolls × weight ÷ total weight`, and the tables below total 1,000.
+#
+# Their tables also carry clothing, deployables, HQM, blueprint fragments,
+# targeting computers and a long tail of guns we do not have. The guns'
+# share goes to the few we do (pistol rounds, arrows, the revolver, the
+# road sign jacket, medkits); the rest is simply left out, and the roll
+# counts are set so what remains still pays about what theirs does.
+# Recycled, a barrel pays ~4.4 junk, a waystation ~26, the haven pad ~33.
 
 [[loot_table]]
 id = "loot.barrel"
 container = "barrel"
 rolls_min = 1
-rolls_max = 3
+rolls_max = 1
 hits = 3
 
-# Their barrel: 2 scrap, certain, and their 44-row table's components at
-# their chances (weights over 1,000 at 2 mean rolls, so a row's chance is
-# weight ÷ 500).
+# Their blue and yellow barrel: 2 scrap, certain, and one part. Weights are
+# per-barrel chances in ‰: the metal parts, the blade and the propane tank
+# at theirs; the textiles take the third of their table that is clothing,
+# which their recycler turns into cloth as ours turns these.
 guaranteed = [{ item = "item.junk", count_min = 2, count_max = 2 }]
 
 entries = [
-    { item = "item.cloth", weight = 181, count_min = 10, count_max = 20 },
-    { item = "item.fat", weight = 136, count_min = 5, count_max = 10 },
-    { item = "item.metal_frags", weight = 136, count_min = 10, count_max = 25 },
-    { item = "item.lowgrade", weight = 90, count_min = 10, count_max = 20 },
-    { item = "item.metal_blade", weight = 77, count_min = 1, count_max = 1 },
-    { item = "item.rope", weight = 77, count_min = 1, count_max = 3 },
-    { item = "item.propane_tank", weight = 40, count_min = 1, count_max = 1 },
-    { item = "item.sewing_kit", weight = 40, count_min = 3, count_max = 5 },
-    { item = "item.tarp", weight = 40, count_min = 1, count_max = 2 },
-    { item = "item.gears", weight = 7, count_min = 2, count_max = 3 },
-    { item = "item.metal_spring", weight = 7, count_min = 1, count_max = 2 },
-    { item = "item.sheet_metal", weight = 7, count_min = 1, count_max = 2 },
-    { item = "item.metal_pipe", weight = 7, count_min = 1, count_max = 5 },
-    { item = "item.road_signs", weight = 7, count_min = 2, count_max = 4 },
-    { item = "item.semi_body", weight = 7, count_min = 1, count_max = 1 },
-    { item = "item.fuse", weight = 7, count_min = 1, count_max = 1 },
-    # Corn: the reference grows wild crops by its rivers and stocks its
-    # roadside food crates with the harvest; this island has neither a river
-    # nor a crop node, so the coast road's own container carries the ration
-    # (CONTENT §2). 2–4 corn is 50–100 food — one find pays about what a
-    # bush pickup pays (75).
-    { item = "item.corn", weight = 72, count_min = 2, count_max = 4 },
-    # Seed for a planter (crops v0): the first handful a farm starts from.
-    { item = "item.corn_seed", weight = 54, count_min = 2, count_max = 4 },
-    { item = "item.revolver", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.rope", weight = 328, count_min = 1, count_max = 3 },
+    { item = "item.tarp", weight = 170, count_min = 1, count_max = 2 },
+    { item = "item.sewing_kit", weight = 170, count_min = 3, count_max = 5 },
+    { item = "item.metal_blade", weight = 154, count_min = 1, count_max = 1 },
+    { item = "item.propane_tank", weight = 80, count_min = 1, count_max = 1 },
+    { item = "item.gears", weight = 14, count_min = 2, count_max = 3 },
+    { item = "item.metal_spring", weight = 14, count_min = 1, count_max = 2 },
+    { item = "item.sheet_metal", weight = 14, count_min = 1, count_max = 2 },
+    { item = "item.metal_pipe", weight = 14, count_min = 1, count_max = 5 },
+    { item = "item.road_signs", weight = 14, count_min = 2, count_max = 4 },
+    { item = "item.semi_body", weight = 14, count_min = 1, count_max = 1 },
+    { item = "item.fuse", weight = 14, count_min = 1, count_max = 1 },
 ]
 
-# The middle tier. A waystation is a stop on the route rather than the end of
-# it, so what it pays is the route's own currency in better quantities, plus
-# the first three things the shoulder never pays at all: sulfur, a bandage,
-# and wooden arrows. The crate keeps the ladder's top rungs — gunpowder, the
-# medkit, pistol ammunition, metal arrows — so each tier still reaches
-# something the one below it cannot.
+# The middle tier. A waystation is their roadside monument, and the crates
+# one stands among are a brown crate, a tool crate and a medical crate, so
+# the cache is the three at once: the brown crate's seven parts at about its
+# 14.3 %, the tool crate's metal tools, bows and arrows, the medical crate's
+# medkit, bandage and syringe at its 5 : 4 : 1, and the revolver and satchel
+# at the brown crate's 0.44 %.
 [[loot_table]]
 id = "loot.cache"
 container = "cache"
-rolls_min = 2
-rolls_max = 3
+rolls_min = 1
+rolls_max = 2
 hits = 4
 
-# Their brown crate: 5 scrap, certain, and its seven components at 14.3 %
-# each (no rope or tarp: theirs carries none). Weights over 2,500.
+# 5 scrap, certain. 1.5 mean rolls, so a row's chance is 0.15 % a weight.
 guaranteed = [{ item = "item.junk", count_min = 5, count_max = 5 }]
 
 entries = [
-    { item = "item.metal_frags", weight = 332, count_min = 15, count_max = 30 },
-    { item = "item.cloth", weight = 310, count_min = 10, count_max = 20 },
-    { item = "item.lowgrade", weight = 265, count_min = 15, count_max = 25 },
-    { item = "item.sulfur", weight = 221, count_min = 10, count_max = 20 },
-    { item = "item.bandage", weight = 221, count_min = 1, count_max = 2 },
-    { item = "item.arrow_wood", weight = 111, count_min = 5, count_max = 10 },
-    { item = "item.gears", weight = 143, count_min = 2, count_max = 3 },
-    { item = "item.metal_spring", weight = 143, count_min = 1, count_max = 2 },
-    { item = "item.sheet_metal", weight = 143, count_min = 1, count_max = 2 },
-    { item = "item.metal_pipe", weight = 143, count_min = 1, count_max = 5 },
-    { item = "item.road_signs", weight = 143, count_min = 2, count_max = 4 },
-    { item = "item.semi_body", weight = 143, count_min = 1, count_max = 1 },
-    { item = "item.fuse", weight = 143, count_min = 1, count_max = 1 },
-    # The first rung of the ziggurat's card loop: found out on the route.
-    { item = "item.keycard_green", weight = 39, count_min = 1, count_max = 1 },
+    { item = "item.gears", weight = 100, count_min = 2, count_max = 3 },
+    { item = "item.metal_spring", weight = 100, count_min = 1, count_max = 2 },
+    { item = "item.sheet_metal", weight = 100, count_min = 1, count_max = 2 },
+    { item = "item.metal_pipe", weight = 100, count_min = 1, count_max = 5 },
+    { item = "item.road_signs", weight = 100, count_min = 2, count_max = 4 },
+    { item = "item.semi_body", weight = 100, count_min = 1, count_max = 1 },
+    { item = "item.fuse", weight = 100, count_min = 1, count_max = 1 },
+    { item = "item.hatchet_metal", weight = 35, count_min = 1, count_max = 1 },
+    { item = "item.pickaxe_metal", weight = 35, count_min = 1, count_max = 1 },
+    { item = "item.arrow_wood", weight = 44, count_min = 5, count_max = 10 },
+    { item = "item.arrow_bone", weight = 25, count_min = 5, count_max = 10 },
+    { item = "item.arrow_fire", weight = 25, count_min = 3, count_max = 6 },
+    { item = "item.bow", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.crossbow", weight = 12, count_min = 1, count_max = 1 },
+    { item = "item.lowgrade", weight = 6, count_min = 20, count_max = 40 },
+    { item = "item.medkit", weight = 30, count_min = 1, count_max = 1 },
+    { item = "item.bandage", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.syringe", weight = 6, count_min = 1, count_max = 1 },
+    { item = "item.revolver", weight = 3, count_min = 1, count_max = 1 },
+    { item = "item.satchel_charge", weight = 3, count_min = 1, count_max = 1 },
+    # The first rung of the ziggurat's card loop, found out on the route.
+    # Theirs lies on a desk at the monument rather than in a crate; ours
+    # has no desk, so the cache holds it.
+    { item = "item.keycard_green", weight = 26, count_min = 1, count_max = 1 },
 ]
 
+# Their military crate: 8 scrap, certain — the top of the ladder a road walk
+# reaches — and its four parts at theirs (SMG body 18 %, rifle body 15 %,
+# pipe and tech trash 16.7 %), then the guns, rounds, armour and medicine
+# its tail carries, as ours.
 [[loot_table]]
 id = "loot.crate"
 container = "crate"
-rolls_min = 2
-rolls_max = 3
+rolls_min = 1
+rolls_max = 2
 hits = 5
 
-# Their military crate: 8 scrap, certain — the top of the ladder a road
-# walk reaches — and its four components at 16.7 % each: pipe, rifle body,
-# SMG body, tech trash (no gears, rope or tarp: theirs carries none).
-# Weights over 1,498.
+# 1.5 mean rolls, so a row's chance is 0.15 % a weight.
 guaranteed = [{ item = "item.junk", count_min = 8, count_max = 8 }]
 
 entries = [
-    { item = "item.metal_frags", weight = 255, count_min = 25, count_max = 50 },
-    { item = "item.gunpowder", weight = 170, count_min = 10, count_max = 30 },
-    { item = "item.sulfur", weight = 170, count_min = 20, count_max = 40 },
-    { item = "item.medkit", weight = 136, count_min = 1, count_max = 1 },
-    { item = "item.pistol_ammo", weight = 136, count_min = 4, count_max = 8 },
-    { item = "item.arrow_metal", weight = 170, count_min = 5, count_max = 10 },
-    { item = "item.keycard_green", weight = 61, count_min = 1, count_max = 1 },
-    { item = "item.metal_pipe", weight = 100, count_min = 5, count_max = 6 },
+    { item = "item.smg_body", weight = 120, count_min = 1, count_max = 1 },
     { item = "item.rifle_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.smg_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.tech_trash", weight = 100, count_min = 2, count_max = 4 },
+    { item = "item.metal_pipe", weight = 111, count_min = 5, count_max = 6 },
+    { item = "item.tech_trash", weight = 111, count_min = 2, count_max = 4 },
+    { item = "item.pistol_ammo", weight = 150, count_min = 5, count_max = 10 },
+    { item = "item.arrow_metal", weight = 130, count_min = 5, count_max = 10 },
+    { item = "item.medkit", weight = 90, count_min = 1, count_max = 1 },
+    { item = "item.syringe", weight = 60, count_min = 1, count_max = 1 },
+    { item = "item.armor_roadsign_body", weight = 40, count_min = 1, count_max = 1 },
+    { item = "item.revolver", weight = 20, count_min = 1, count_max = 1 },
+    # Theirs is dropped by the monument's scientists; ours by the pad.
+    { item = "item.keycard_green", weight = 68, count_min = 1, count_max = 1 },
 ]
 
 # The Black Ziggurat (`sim-core/src/monument.rs`): three rooms behind card
 # doors. Each pays more certain junk than the crate ladder and **guarantees
 # the next card** — Rust learned that players resent a random vault
 # (Meta Madness), so the loop is certain and the extras are the gamble.
-# The green and blue rooms carry their military crate's components (16.7 %
-# each) and the elite room their elite crate's (27.7 %).
+# A room is a room of crates, so it rolls more than one crate does. The
+# green and blue rooms carry their military crate's parts at its rates and
+# the elite room its elite crate's (27.7 % each); the rest is the gear.
 [[loot_table]]
 id = "loot.green"
 container = "green"
@@ -173,14 +176,14 @@ guaranteed = [
     { item = "item.keycard_blue", count_min = 1, count_max = 1 },
 ]
 entries = [
-    { item = "item.metal_frags", weight = 383, count_min = 40, count_max = 80 },
-    { item = "item.gunpowder", weight = 256, count_min = 20, count_max = 40 },
-    { item = "item.medkit", weight = 205, count_min = 1, count_max = 1 },
-    { item = "item.arrow_metal", weight = 256, count_min = 10, count_max = 15 },
-    { item = "item.metal_pipe", weight = 100, count_min = 5, count_max = 6 },
-    { item = "item.rifle_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.smg_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.tech_trash", weight = 100, count_min = 2, count_max = 4 },
+    { item = "item.smg_body", weight = 72, count_min = 1, count_max = 1 },
+    { item = "item.rifle_body", weight = 60, count_min = 1, count_max = 1 },
+    { item = "item.metal_pipe", weight = 67, count_min = 5, count_max = 6 },
+    { item = "item.tech_trash", weight = 67, count_min = 2, count_max = 4 },
+    { item = "item.arrow_metal", weight = 240, count_min = 10, count_max = 15 },
+    { item = "item.medkit", weight = 200, count_min = 1, count_max = 1 },
+    { item = "item.syringe", weight = 150, count_min = 1, count_max = 1 },
+    { item = "item.armor_roadsign_body", weight = 144, count_min = 1, count_max = 1 },
 ]
 
 [[loot_table]]
@@ -194,15 +197,15 @@ guaranteed = [
     { item = "item.keycard_red", count_min = 1, count_max = 1 },
 ]
 entries = [
-    { item = "item.metal_frags", weight = 427, count_min = 60, count_max = 100 },
-    { item = "item.gunpowder", weight = 341, count_min = 30, count_max = 60 },
-    { item = "item.pistol_ammo", weight = 285, count_min = 8, count_max = 16 },
-    { item = "item.medkit", weight = 227, count_min = 1, count_max = 2 },
-    { item = "item.satchel_charge", weight = 118, count_min = 1, count_max = 1 },
-    { item = "item.metal_pipe", weight = 100, count_min = 5, count_max = 6 },
-    { item = "item.rifle_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.smg_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.tech_trash", weight = 100, count_min = 2, count_max = 4 },
+    { item = "item.smg_body", weight = 60, count_min = 1, count_max = 1 },
+    { item = "item.rifle_body", weight = 50, count_min = 1, count_max = 1 },
+    { item = "item.metal_pipe", weight = 56, count_min = 5, count_max = 6 },
+    { item = "item.tech_trash", weight = 56, count_min = 2, count_max = 4 },
+    { item = "item.pistol_ammo", weight = 260, count_min = 8, count_max = 16 },
+    { item = "item.medkit", weight = 200, count_min = 1, count_max = 2 },
+    { item = "item.syringe", weight = 140, count_min = 1, count_max = 1 },
+    { item = "item.armor_roadsign_body", weight = 112, count_min = 1, count_max = 1 },
+    { item = "item.satchel_charge", weight = 66, count_min = 1, count_max = 1 },
 ]
 
 [[loot_table]]
@@ -211,36 +214,37 @@ container = "elite"
 rolls_min = 3
 rolls_max = 5
 hits = 5
-# Their elite crate: 25 scrap, certain.
+# Their elite crate: 25 scrap, certain. 4 mean rolls, so a row's chance is
+# 0.4 % a weight.
 guaranteed = [{ item = "item.junk", count_min = 25, count_max = 25 }]
 entries = [
-    { item = "item.revolver", weight = 248, count_min = 1, count_max = 1 },
-    { item = "item.pistol_ammo", weight = 372, count_min = 12, count_max = 24 },
-    { item = "item.satchel_charge", weight = 248, count_min = 1, count_max = 2 },
-    { item = "item.armor_roadsign_body", weight = 248, count_min = 1, count_max = 1 },
-    { item = "item.gunpowder", weight = 310, count_min = 50, count_max = 100 },
-    { item = "item.medkit", weight = 310, count_min = 1, count_max = 2 },
-    { item = "item.metal_pipe", weight = 166, count_min = 5, count_max = 12 },
-    { item = "item.rifle_body", weight = 166, count_min = 1, count_max = 2 },
-    { item = "item.smg_body", weight = 166, count_min = 1, count_max = 2 },
-    { item = "item.tech_trash", weight = 166, count_min = 2, count_max = 8 },
+    { item = "item.metal_pipe", weight = 69, count_min = 5, count_max = 12 },
+    { item = "item.rifle_body", weight = 69, count_min = 1, count_max = 2 },
+    { item = "item.smg_body", weight = 69, count_min = 1, count_max = 2 },
+    { item = "item.tech_trash", weight = 69, count_min = 2, count_max = 8 },
+    { item = "item.pistol_ammo", weight = 155, count_min = 12, count_max = 24 },
+    { item = "item.revolver", weight = 103, count_min = 1, count_max = 1 },
+    { item = "item.satchel_charge", weight = 103, count_min = 1, count_max = 2 },
+    { item = "item.armor_roadsign_body", weight = 103, count_min = 1, count_max = 1 },
+    { item = "item.medkit", weight = 130, count_min = 1, count_max = 2 },
+    { item = "item.syringe", weight = 130, count_min = 1, count_max = 1 },
 ]
 
 # --- Roadside junk (Rust's roadside spawns: oil barrels, road signs, food
 # boxes, junk piles; `terrain.rs` "Roadside junk"). ---------------------------
 
-# Rust's red oil barrel: smashed, pays fuel. Theirs is crude plus the low
-# grade devblog 145 added; we have no crude, so it is all low grade.
+# Rust's red oil barrel: smashed, pays fuel. Theirs is 5–10 low grade and
+# 15–20 crude, both certain; we have no crude, so its share is a second
+# stack of low grade.
 [[loot_table]]
 id = "loot.oil_barrel"
 container = "oil_barrel"
 rolls_min = 1
 rolls_max = 1
 hits = 3
-guaranteed = [{ item = "item.lowgrade", count_min = 8, count_max = 12 }]
+guaranteed = [{ item = "item.lowgrade", count_min = 5, count_max = 10 }]
 entries = [
-    { item = "item.lowgrade", weight = 10, count_min = 4, count_max = 8 },
-    { item = "item.fat", weight = 4, count_min = 5, count_max = 10 },
+    { item = "item.lowgrade", weight = 1, count_min = 5, count_max = 10 },
 ]
 
 # A road sign, smashed: theirs pays one Road Signs and one Metal Pipe, both
@@ -257,7 +261,9 @@ entries = [
     { item = "item.road_signs", weight = 1, count_min = 1, count_max = 1 },
 ]
 
-# Rust's roadside food box: opened, pays food and nothing else.
+# Rust's roadside food box: opened, pays food and nothing else — their corn
+# and their tins (the cooked meat). Forage is not in it: berries and
+# mushrooms are picked.
 [[loot_table]]
 id = "loot.food"
 container = "food"
@@ -266,7 +272,5 @@ rolls_max = 3
 hits = 1
 entries = [
     { item = "item.corn", weight = 10, count_min = 2, count_max = 4 },
-    { item = "item.berries", weight = 10, count_min = 3, count_max = 6 },
-    { item = "item.mushrooms", weight = 8, count_min = 2, count_max = 4 },
-    { item = "item.cooked_meat", weight = 6, count_min = 1, count_max = 3 },
+    { item = "item.cooked_meat", weight = 8, count_min = 1, count_max = 3 },
 ]

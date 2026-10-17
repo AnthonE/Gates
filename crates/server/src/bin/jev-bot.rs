@@ -927,6 +927,14 @@ fn print_report(label: &str, survivor: &Survivor) {
         b.stats.graded,
         b.stats.locks
     );
+    let o = survivor.oven_stats;
+    out!(
+        "{label}stations: {} sessions; {} cooked, {} stacks recycled, {} blueprints researched",
+        o.sessions,
+        o.cooked,
+        o.recycled,
+        o.papers
+    );
     if let Some(v) = survivor.voice.as_ref() {
         let v = v.stats;
         out!(

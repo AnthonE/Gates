@@ -1231,7 +1231,10 @@ pub use voice::{
 /// rather than 64.
 /// v121 — Rust's headshot crunch: `SUB_HURT` carries a head bit after the
 /// damage, set when the blow crossed the victim's head.
-pub const PROTO_VER: u16 = 121;
+/// v122 — the desert's cactus: `terrain::Occupant::Cactus` is solid and
+/// swung at for cloth, so both ends must draw the same cacti to predict the
+/// same walk; and the death cause admits 11 (`DEATH_BY_CACTUS`).
+pub const PROTO_VER: u16 = 122;
 
 /// This game's slug in the elo catalog.
 ///

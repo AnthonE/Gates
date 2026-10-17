@@ -1355,7 +1355,7 @@ pub fn alpha_card(data: Vec<u8>, size: u32) -> Image {
     // wrapped mask bleeds the far edge into the near. (Spelled out rather
     // than `ImageSamplerDescriptor::linear()` so it survives the next upgrade.)
     //
-    // Anisotropic, at the grass atlas's 4 (`textures::atlas`): most canopy
+    // Anisotropic, at the grass atlas's ceiling (`textures::atlas`): most canopy
     // cards are seen at an angle, and at 1 the mip is picked by the card's
     // long axis on screen, so a tilted card drew from a level two or three
     // blurrier than its face needed and its leaves fused into a smear.
@@ -1363,7 +1363,7 @@ pub fn alpha_card(data: Vec<u8>, size: u32) -> Image {
         mag_filter: bevy::image::ImageFilterMode::Linear,
         min_filter: bevy::image::ImageFilterMode::Linear,
         mipmap_filter: bevy::image::ImageFilterMode::Linear,
-        anisotropy_clamp: 4,
+        anisotropy_clamp: super::textures::ANISOTROPY,
         ..default()
     });
     img
@@ -1504,6 +1504,20 @@ pub const TREE_LOD_SWAP_M: f32 = 80.0;
 /// floor. A tree 14 m tall is still a tree at 50 m; the hull it becomes is
 /// `NOW.md` §0t's "hull pixels" item, which this makes worth more, not less.
 pub const TREE_LOD_CAP: usize = 180;
+
+/// The cap [`cap_swap`] holds at a tier's swap distance: [`TREE_LOD_CAP`]
+/// at the shipped 80 m and under, and on the desktop growing with the disc's
+/// area above it, so the FAR TREES rows past 80 m reach further in a stand
+/// instead of being pulled back to the same ~50-60 m (operator, 2026-10-17:
+/// "far tree distance"). 120 m holds 405, 160 m 720. The browser keeps 180
+/// at every rung: the 1.5 M budget above is its number.
+pub fn cap_at(tier_m: f32) -> usize {
+    if cfg!(target_arch = "wasm32") || tier_m <= TREE_LOD_SWAP_M {
+        return TREE_LOD_CAP;
+    }
+    let area = (tier_m / TREE_LOD_SWAP_M) * (tier_m / TREE_LOD_SWAP_M);
+    (TREE_LOD_CAP as f32 * area) as usize
+}
 
 /// The step [`cap_swap`] moves the swap in, metres. Not a knob: a
 /// quantization, so a walking eye in a stand does not reband the whole ring
@@ -1740,6 +1754,7 @@ pub fn cap_swap(
     mut d2: Local<Vec<f32>>,
 ) {
     let tier = lod.tier_m;
+    let cap = cap_at(tier);
     let reach = tier + TREE_LOD_FADE_M;
     d2.clear();
     for (f, gt) in trunks.iter() {
@@ -1754,8 +1769,8 @@ pub fn cap_swap(
             d2.push(d);
         }
     }
-    let want = if d2.len() > TREE_LOD_CAP {
-        let (_, nth, _) = d2.select_nth_unstable_by(TREE_LOD_CAP, f32::total_cmp);
+    let want = if d2.len() > cap {
+        let (_, nth, _) = d2.select_nth_unstable_by(cap, f32::total_cmp);
         let edge = nth.sqrt() - TREE_LOD_FADE_M;
         (edge / TREE_LOD_CAP_STEP_M).floor() * TREE_LOD_CAP_STEP_M
     } else {
@@ -1768,15 +1783,15 @@ pub fn cap_swap(
     // few frames: a dither jump on every near tree and tree shadows at the
     // reach blinking on and off, since shadows take no dither.
     let cur = lod.swap_m();
-    let out = want >= cur + 2.0 * TREE_LOD_CAP_STEP_M
-        || (want >= tier && d2.len() + CAP_SLACK <= TREE_LOD_CAP);
+    let out =
+        want >= cur + 2.0 * TREE_LOD_CAP_STEP_M || (want >= tier && d2.len() + CAP_SLACK <= cap);
     // `swap_m` reads through `Deref` and marks nothing; only the write does.
     if want < cur || (want > cur && out) {
         lod.contract(want);
     }
 }
 
-/// How far under [`TREE_LOD_CAP`] the trees in reach must fall before
+/// How far under the cap ([`cap_at`]) the trees in reach must fall before
 /// [`cap_swap`] lets the bands all the way back out to the tier.
 const CAP_SLACK: usize = 8;
 

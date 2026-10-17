@@ -1,8 +1,9 @@
 # Gates · content/recipes.toml — the craft ladder (CONTENT.md §1/§2).
 # station: none | workbench1 | workbench2 | workbench3 | furnace (the bench
 # ladder, bench ladder v0). `count` is the output quantity per
-# craft. Components (gears/rope/tarp) and fat have no recipe: barrel-only,
-# priced for the balance math by balance.toml `component_minutes`.
+# craft. Components (gears/rope/tarp) and fat have no recipe: loot and
+# animals only, priced for the balance math by balance.toml
+# `component_minutes`.
 
 # --- T0, station none ---------------------------------------------------
 
@@ -266,6 +267,9 @@ output = "item.workbench1"
 count = 1
 station = "none"
 seconds = 60
+# Theirs, whole (wiki.facepunch.com/rust/item/workbench1, 2026-10-17): 500
+# wood, 100 fragments. No container pays fragments, so they are smelted:
+# the furnace comes first, theirs and ours.
 inputs = [
     { item = "item.wood", count = 500 },
     { item = "item.metal_frags", count = 100 },

@@ -227,6 +227,7 @@ ITEMS = {
     "charcoal_tonic": "lorc/standing-potion",
     "berries": "delapouite/berries-bowl",
     "mushrooms": "delapouite/mushrooms",
+    "cactus_flesh": "delapouite/cactus",
     "corn": "delapouite/corn",
     "corn_seed": "delapouite/plant-seed",
     "hemp_seed": "delapouite/sesame",

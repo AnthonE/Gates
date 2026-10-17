@@ -48,7 +48,7 @@ use client_core::core::ClientCore;
 use protocol::{EntityState, BAG_KIND_PACK};
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::collide::{Part, CAPSULE_RADIUS_M};
-use sim_core::gather::SWING_INTERVAL_TICKS;
+use sim_core::gather::{STRIKE_DELAY_TICKS, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_AIM, BTN_CROUCH, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use sim_core::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q, SPRINT_SPEED, WALK_SPEED};
@@ -177,6 +177,16 @@ pub const STRAFE_SPAN_TICKS: u32 = 24;
 /// Their swing leaves time to step in, swing and step out when it is at
 /// least this far from being ready again.
 pub const STEP_IN_TICKS: u32 = 12;
+/// Reaches are content centimetres summed in metres: a tie is a tie.
+const REACH_EPS_M: f32 = 0.005;
+/// While their swing is ready, a bait: in at a walk to this far inside
+/// their reach, then out at a run to this far past it. A blow lands
+/// `STRIKE_DELAY_TICKS` after it is swung, so one swung at the dip lands
+/// on a body already on its way out, and their swing is a cadence spent.
+pub const BAIT_IN_M: f32 = 0.15;
+pub const BAIT_OUT_M: f32 = 0.6;
+/// A body that will not swing at a bait this long is fought blow for blow.
+pub const BAIT_MAX_TICKS: u32 = 2 * TICK_HZ;
 /// Out of their reach while their swing comes back no more than this after
 /// mine.
 pub const STEP_OUT_TICKS: u32 = 4;
@@ -513,6 +523,15 @@ pub struct Combat {
     strafe: (i8, u32),
     /// When my own next swing is ready, from the last one it felt.
     ready_at: u32,
+    /// When the swing it felt lands: until then the arm is on its way in,
+    /// and backing off or sidestepping takes the blow out of reach.
+    strike_at: u32,
+    /// The last frame that pressed with the swing ready: the server takes
+    /// the swing as it runs, so the frames after it are the wind-up's.
+    pressed_at: u32,
+    /// Baiting a ready swing: at which body, since when, and whether the
+    /// step is on its way back out.
+    bait: Option<(u32, u32, bool)>,
     /// Trying to close on the foe and not getting nearer: since when, and
     /// the nearest it has been since.
     stuck: Option<(u32, f32)>,
@@ -656,6 +675,9 @@ impl Combat {
             ears: 0,
             strafe: (1, 0),
             ready_at: 0,
+            strike_at: 0,
+            pressed_at: 0,
+            bait: None,
             stuck: None,
             shunned: [None; SHUN_MAX],
             last_end: None,
@@ -781,6 +803,7 @@ impl Combat {
     /// the rhythm.
     pub fn swung(&mut self, tick: u32) {
         self.ready_at = tick.wrapping_add(SWING_INTERVAL_TICKS as u32);
+        self.strike_at = tick.wrapping_add(STRIKE_DELAY_TICKS as u32);
     }
 
     /// A body a fight was let go with because it could not be reached:
@@ -866,6 +889,7 @@ impl Combat {
         self.retreat = None;
         self.foe = None;
         self.stuck = None;
+        self.bait = None;
         self.draw = None;
         self.held_shot = None;
         self.threat = None;
@@ -2005,23 +2029,71 @@ impl Combat {
             0.0
         };
         let d_now = (d - coming.max(0.0) * lag).max(0.0);
+        // And the gap their swing is judged on: where they are when it
+        // lands against where their screen had me, as late as mine has
+        // them. A body walking in has come that much nearer again.
+        let d_theirs = (d_now - coming.max(0.0) * lag).max(0.0);
         // Distances here are to the pose on my screen, the one the server
         // judges my swing against. Whoever is moving in when two swings
         // meet has the better of it: the other's picture of them is a
         // playout behind, further off than they are. So a ready swing is
         // carried in at a run, straight (a sidestep there only spoils the
         // aim), and a spent one is taken back out of their reach at a run.
-        let (want, lunge) = if !feared {
+        // My own blow on its way in: hold the ground it was swung from,
+        // from the frame that took it (the press with the swing ready) to
+        // the last one that runs before it lands, echoed or not.
+        let striking = tick.wrapping_sub(self.pressed_at) <= STRIKE_DELAY_TICKS as u32
+            || self.strike_at.wrapping_sub(tick.wrapping_add(trip)) < 1 << 31;
+        // Theirs on its way in: a swing is not spent when it is taken but
+        // when it lands, `STRIKE_DELAY_TICKS` later, so that is the moment
+        // to be out of its reach — not the moment to step in.
+        let incoming = feared
+            && t.last_swing
+                .is_some_and(|at| tick.wrapping_sub(at) <= STRIKE_DELAY_TICKS as u32);
+        // Theirs ready: bait it rather than trade into it, for as long as
+        // they keep biting. Theirs spent far enough out: step in on it.
+        if theirs_in > 0 || self.bait.is_some_and(|(id, ..)| id != t.id) {
+            self.bait = None;
+        }
+        let bait_over = self
+            .bait
+            .is_some_and(|(_, since, _)| tick.wrapping_sub(since) >= BAIT_MAX_TICKS);
+        let punish = theirs_in > mine_in + trip + STEP_IN_TICKS;
+        let mut baiting = false;
+        // Which gap a stand-off is kept on: mine to the screen, or theirs
+        // to where their blow would be judged.
+        let mut theirs_side = false;
+        let (want, lunge) = if striking {
+            (d.min(odds.my_reach - HOLD_M), false)
+        } else if incoming {
+            (odds.their_reach + WAIT_M, false)
+        } else if !feared {
             // Nothing to fear up close: in, and swing.
             (odds.my_reach - HOLD_M, true)
-        } else if odds.my_reach - HOLD_M > safe {
-            // Out-ranged by me, a spear against a rock: hold between the
-            // two reaches and let them walk onto the point.
-            (odds.my_reach - HOLD_M, false)
-        } else if ready || (mine_in <= LEAD_IN_TICKS && mine_in + trip < theirs_in) {
-            // Mine is ready, or will be as I get there and before theirs:
-            // in, and swing, their swing spent or not.
+        } else if (ready || mine_in <= LEAD_IN_TICKS) && (punish || bait_over) {
+            // Mine is ready, or will be as I get there, and theirs is spent
+            // (or will not be): in, and swing.
             (odds.my_reach - HOLD_M, d <= odds.my_reach + LUNGE_M)
+        } else if theirs_in == 0 && !bait_over && t.species == Species::Player {
+            let (id, since, out) = self.bait.unwrap_or((t.id, tick, false));
+            let out = if out {
+                d_theirs < odds.their_reach + BAIT_OUT_M
+            } else {
+                d_theirs <= odds.their_reach - BAIT_IN_M
+            };
+            self.bait = Some((id, since, out));
+            baiting = true;
+            if out {
+                (odds.their_reach + BAIT_OUT_M, false)
+            } else {
+                (odds.their_reach - BAIT_IN_M, false)
+            }
+        } else if odds.my_reach - HOLD_M >= safe - REACH_EPS_M {
+            // Out-ranged by me, a spear against a rock, and their swing
+            // spent: hold between the two reaches and let them walk onto
+            // the point.
+            theirs_side = true;
+            (odds.my_reach - HOLD_M, false)
         } else if theirs_in <= mine_in + STEP_OUT_TICKS {
             // Theirs comes back first, or near enough: out of their reach
             // until mine is ready.
@@ -2032,10 +2104,24 @@ impl Combat {
             (d.max(odds.my_reach), false)
         };
         // Coming in is judged on the screen; staying out on where they are.
-        let judged = if want >= safe { d_now } else { d };
-        let radial: f32 = if judged > want + 0.25 {
+        let judged = if baiting || theirs_side {
+            d_theirs
+        } else if want >= safe {
+            d_now
+        } else {
+            d
+        };
+        let radial: f32 = if baiting {
+            // The bait goes all the way in and all the way out.
+            if want > odds.their_reach {
+                -1.0
+            } else {
+                1.0
+            }
+        } else if judged > want + 0.25 {
             1.0
-        } else if judged < want - 0.25 {
+        } else if judged < want - 0.25 && !striking {
+            // Never back out of my own blow on its way in.
             -1.0
         } else {
             0.0
@@ -2048,7 +2134,7 @@ impl Combat {
         self.rhythm(tick);
         // Less sideways the closer: circling a body at arm's length turns
         // the bearing to it faster than a person's eyes follow.
-        let side = if lunge || radial < 0.0 {
+        let side = if lunge || striking || baiting || radial < 0.0 {
             0.0
         } else {
             f32::from(self.strafe.0) * STRAFE_SHARE * ((d - 0.5) / 2.5).clamp(0.2, 1.0)
@@ -2060,12 +2146,31 @@ impl Combat {
         let mut buttons = 0;
         // Run in to close, and run out: backing off at a walk, a body that
         // walks after me never leaves its reach.
-        if radial < 0.0 || (radial > 0.0 && (d > odds.my_reach || lunge)) {
+        if radial < 0.0 || (radial > 0.0 && !baiting && (d > odds.my_reach || lunge)) {
             buttons |= BTN_SPRINT;
         }
-        let in_reach = d <= odds.my_reach - 0.05;
-        if in_reach && mine_in <= PRESS_EARLY_TICKS && kit.on_target && kit.melee.is_some() {
+        // The blow lands `STRIKE_DELAY_TICKS` after the press, where they
+        // will be by then: swung at a body walking in, it meets them. A
+        // player is judged as my screen shows them; an animal where it
+        // truly is, a playout and a trip on from that.
+        let ahead_ticks = if t.species == Species::Player {
+            STRIKE_DELAY_TICKS as u32
+        } else {
+            STRIKE_DELAY_TICKS as u32 + kit.lead_ticks
+        };
+        let at_strike = (d - coming * ahead_ticks as f32 / TICK_HZ as f32).max(0.0);
+        let in_reach = at_strike <= odds.my_reach - 0.05;
+        // Not at a bait: a blow swung on the dip lands on the way back out.
+        if in_reach
+            && !baiting
+            && mine_in <= PRESS_EARLY_TICKS
+            && kit.on_target
+            && kit.melee.is_some()
+        {
             buttons |= BTN_PRIMARY;
+            if ready && !striking {
+                self.pressed_at = tick;
+            }
         }
         Intent {
             travel: (vx != 0.0 || vz != 0.0).then(|| yaw_toward(vx, vz)),
@@ -2654,7 +2759,9 @@ mod tests {
     fn the_odds_read_the_wiki() {
         let book = book();
         let spear = wire("Wooden Spear");
-        let rock = wire("Bat");
+        // The short tool: the bat reaches 1.35 m since reach follows the
+        // drawn weapon, too near a spear's 1.75 for an edge on reach alone.
+        let rock = wire("Stone Hatchet");
         let kit = |item: u16, hp: u16| Kit {
             book: &book,
             melee: Some((0, item)),

@@ -51,8 +51,8 @@ use client::render::viewmodel::{
     stroke_snap, swing_apex_s, swing_phases, swing_pose, swipe_pose, tap_pose, thrust_pose,
     thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M,
     VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M,
-    VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_PALM, VIEWMODEL_SWING_ATTACK,
-    VIEWMODEL_SWING_DROP, VIEWMODEL_SWING_S, VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX,
+    VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_PALM, VIEWMODEL_SWING_DROP,
+    VIEWMODEL_SWING_S, VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX,
     VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
 };
 use client::render::viewmodel::{
@@ -965,7 +965,10 @@ fn the_swing_pulse_is_smooth_at_both_ends_and_at_its_peak() {
     // Proven red under the shape it replaced — a bare `sin(π u)`, whose
     // derivative at u = 0 is π rather than 0.
     let h = 1e-3;
-    for attack in [0.5, VIEWMODEL_SWING_ATTACK] {
+    // The cock is the stroke's one `bump` (the strike rises, holds and falls
+    // on its own pieces, checked as a whole below): its rise is this share.
+    let cock = 0.5 * VIEWMODEL_SWING_WINDUP / (swing_apex_s() / VIEWMODEL_SWING_S);
+    for attack in [0.5, cock] {
         let d = |u: f32| (bump(u + h, attack) - bump(u - h, attack)) / (2.0 * h);
         for (u, what) in [(0.0, "the start"), (1.0, "the end"), (attack, "the peak")] {
             assert!(

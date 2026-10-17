@@ -1058,8 +1058,23 @@ pub const DEATH_BY_HEAT: u8 = 9;
 /// The Verdigris took them (`exposure::corrode`): they stood in the
 /// corruption until it ate through them.
 pub const DEATH_BY_FEL: u8 = 10;
+/// A cactus pricked them to death (wire v122, [`World::prick_cacti`]):
+/// they kept walking into one.
+pub const DEATH_BY_CACTUS: u8 = 11;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_FEL;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_CACTUS;
+
+/// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
+/// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
+/// the reference publishes no figure — a little over a fire's two, since
+/// you walked into it.
+pub const CACTUS_HP: u16 = 3;
+/// A cactus pricks once a second, on the world's own stride, as a fire
+/// burns.
+pub const CACTUS_PERIOD_TICKS: u64 = crate::limits::TICK_HZ as u64;
+/// How near counts as pressed against one, metres past touching: the trunk
+/// holds a capsule off at touching, so contact is within a hand of it.
+pub const CACTUS_TOUCH_M: f32 = 0.1;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1237,6 +1252,17 @@ pub struct Player {
     /// reload, with no second clock to keep in step and nothing new in
     /// the hash.
     pub next_swing: u64,
+    /// The tick a taken swing lands on, or 0 for none: the strike the swing
+    /// animation draws, `gather::STRIKE_DELAY_TICKS` after the arm moved.
+    /// Sub-second, so hashed and not saved (arrows in flight are the
+    /// precedent): a world loaded mid-swing comes back with the arm at rest.
+    pub strike_at: u64,
+    /// The hotbar slot the swing was taken with: a swap during the wind-up
+    /// drops the blow.
+    pub strike_sel: u8,
+    /// The lag-comp favour the swing was taken under, spent when the strike
+    /// tick itself brings none (a starved tick).
+    pub strike_favour: u8,
     /// Rounds loaded, indexed by `RangedDef::mag_slot` — **not** by
     /// inventory slot and **not** by item index.
     ///
@@ -1521,6 +1547,9 @@ impl Default for Player {
             inv: [ItemStack::default(); INV_SLOTS],
             worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
+            strike_at: 0,
+            strike_sel: 0,
+            strike_favour: 0,
             mag: [0; MAX_MAGS],
             // `NO_ITEM` and not 0, for the reason `RangedDef::ammo` is
             // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
@@ -3453,6 +3482,71 @@ impl World {
         self.arrows.clear_lit();
     }
 
+    /// Every cactus takes [`CACTUS_HP`] off each player pressed against it,
+    /// once a second: the 3×3 cells round the body, through the slot memo the
+    /// step just read, and a cactus swung down to nothing pricks no one.
+    fn prick_cacti(&mut self) {
+        if !self.tick.is_multiple_of(CACTUS_PERIOD_TICKS) {
+            return;
+        }
+        let seed = self.seed;
+        for j in 0..MAX_PLAYERS {
+            let v = &self.players[j];
+            if !v.active || v.dead || v.hp == 0 || combat::protected(v) {
+                continue;
+            }
+            let (x, y, z) = (
+                v.body.qx as f32 * POS_XZ_Q,
+                v.body.qy as f32 * POS_Y_Q,
+                v.body.qz as f32 * POS_XZ_Q,
+            );
+            let h = crate::collide::hit_height_m(v.crouched());
+            let (pcx, pcz) = (
+                crate::fmath::floor_i32(x / terrain::CELL_SIZE),
+                crate::fmath::floor_i32(z / terrain::CELL_SIZE),
+            );
+            let mut prick: Option<(f32, f32)> = None;
+            for dz in -terrain::OCCUPANT_PROBE_CELLS..=terrain::OCCUPANT_PROBE_CELLS {
+                for dx in -terrain::OCCUPANT_PROBE_CELLS..=terrain::OCCUPANT_PROBE_CELLS {
+                    let (cx, cz) = (pcx + dx, pcz + dz);
+                    let slot = self
+                        .slot_cache
+                        .slot(seed, &self.scatter, &self.haven, cx, cz);
+                    if slot.occupant != terrain::Occupant::Cactus
+                        || self.slot_lives.standing_pm(cx as u16, cz as u16) == 0
+                    {
+                        continue;
+                    }
+                    let (r, top) = terrain::occupant_volume(slot.occupant);
+                    let reach = crate::collide::CAPSULE_RADIUS_M + r * slot.scale + CACTUS_TOUCH_M;
+                    let (ox, oz) = (slot.x - x, slot.z - z);
+                    if ox * ox + oz * oz <= reach * reach
+                        && y < slot.y + top * slot.scale
+                        && y + h > slot.y
+                    {
+                        prick = Some((slot.x, slot.z));
+                    }
+                }
+            }
+            let Some((sx, sz)) = prick else {
+                continue;
+            };
+            let from = combat::bearing_sector(
+                i64::from((sx / POS_XZ_Q) as i32 - self.players[j].body.qx),
+                i64::from((sz / POS_XZ_Q) as i32 - self.players[j].body.qz),
+            );
+            let v = &mut self.players[j];
+            let hurt = combat::hurt(&self.combat, v, CACTUS_HP);
+            let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
+            self.events
+                .push(EV_HURT, vid, u32::from(from), u32::from(CACTUS_HP));
+            self.events.push(EV_HEALTH, vid, left, vmax);
+            if hurt.died {
+                self.down_or_die(j, vid, DEATH_BY_CACTUS, NO_ITEM, 0, false);
+            }
+        }
+    }
+
     /// Every fire takes [`crate::fire::FIRE_HP`] off each player and animal
     /// in its reach, once a second — the archer's doing, so a death by one is
     /// theirs, with the bow, from as far as the arrow flew.
@@ -4647,6 +4741,9 @@ impl World {
                     assist_ticks: 0,
                     frame: InputFrame::default(),
                     next_swing: 0,
+                    strike_at: 0,
+                    strike_sel: 0,
+                    strike_favour: 0,
                     // From the save (store format 9): the rounds were
                     // debited from the pack at the reload, so a record
                     // that forgot them would make logging off a way to
@@ -6700,6 +6797,7 @@ impl World {
             // stopped falling when its owner disconnected would hang in the
             // air over a base that decayed out from under it.
             if self.players[i].sleeping {
+                gather::strike_due(tick, &mut self.players[i]);
                 if survival::step(&self.survival, &mut self.players[i], &mut self.events)
                     == survival::Step::Died
                 {
@@ -6747,6 +6845,7 @@ impl World {
             // a sleeper's are — a downed player has dropped what they
             // held, and `held` on the wire says so (`server/core.rs`).
             if self.players[i].wounded {
+                gather::strike_due(tick, &mut self.players[i]);
                 if survival::step(&self.survival, &mut self.players[i], &mut self.events)
                     == survival::Step::Died
                 {
@@ -6901,7 +7000,25 @@ impl World {
                     &mut self.events,
                     &mut self.players[i],
                 );
-            if !took_arm && gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
+            // The arm moves now and lands `STRIKE_DELAY_TICKS` later, on the
+            // tick the swing animation strikes, against what the swinger is
+            // looking at THEN — their aim and their favour at the strike,
+            // not at the click. Judged at the click, a sprinting body was
+            // 1.3 m from where the weapon was drawn landing.
+            if took_arm {
+                let p = &mut self.players[i];
+                p.strike_at = 0;
+                p.strike_sel = 0;
+                p.strike_favour = 0;
+            } else if gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
+                let p = &mut self.players[i];
+                p.strike_at = tick + gather::STRIKE_DELAY_TICKS;
+                p.strike_sel = p.frame.sel;
+                p.strike_favour = granted;
+            }
+            let taken_favour = self.players[i].strike_favour;
+            if !took_arm && gather::strike_due(tick, &mut self.players[i]) {
+                let back = if granted > 0 { granted } else { taken_favour };
                 let (body, crouched, yaw, pitch, held) = {
                     let p = &self.players[i];
                     (
@@ -6932,7 +7049,7 @@ impl World {
                     i,
                     &self.rewind,
                     tick,
-                    granted,
+                    back,
                     &ray,
                     &reaches,
                 );
@@ -7634,6 +7751,7 @@ impl World {
         self.light_fires();
         self.fires.expire_due(tick);
         self.burn_fires();
+        self.prick_cacti();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -7889,6 +8007,10 @@ impl World {
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);
+            // A swing on its way in, in its own update rather than widening
+            // the buffer above: it decides what the next ticks hit.
+            h.update(&p.strike_at.to_le_bytes());
+            h.update(&[p.strike_sel, p.strike_favour]);
             // The magazine, in its own update rather than widening the
             // buffer above — and hashed at all because it decides whether
             // a gun fires. Sim state outside the hash is the shape this
