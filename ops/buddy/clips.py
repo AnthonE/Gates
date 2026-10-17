@@ -261,7 +261,7 @@ def timeline(rows, started):
         e = {"i": i, "t": round(r["t"] - started, 1), "goal": r.get("goal"),
              "reason": r.get("reason")}
         if r.get("say"):
-            e["say"], e["to"] = r["say"], r.get("to", "local")
+            e["say"], e["to"] = r["say"], r.get("to", "global")
         heard = [{"friend": bool(h.get("friend")), "channel": h.get("channel"), "text": h.get("text")}
                  for h in r.get("heard") or []]
         if heard:

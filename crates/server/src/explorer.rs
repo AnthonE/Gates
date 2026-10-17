@@ -962,8 +962,9 @@ pub struct Survivor {
     /// shard's chat refill, kept on this side so a line is never sent into
     /// the limiter to be dropped there.
     say_line: Option<protocol::ChatText>,
-    /// The line above is for the team channel (`Say::Team`).
-    say_team: bool,
+    /// Where the line above goes (`Say`): a team line with no team to hear
+    /// it goes to whoever is near.
+    say_to: protocol::Channel,
     /// Its team has someone besides itself to hear the team channel.
     has_mates: bool,
     /// The stranger going for a teammate, nearest them (`perceive`).
@@ -1122,7 +1123,7 @@ impl Survivor {
             heading: None,
             outbox: None,
             say_line: None,
-            say_team: false,
+            say_to: protocol::Channel::Local,
             has_mates: false,
             guard: None,
             wedge: Wedge::default(),
@@ -1995,8 +1996,12 @@ impl Survivor {
         match say {
             Say::Quiet => {}
             Say::Refused => self.stats.say_refused += 1,
-            Say::Line(line) | Say::Team(line) => {
-                self.say_team = matches!(say, Say::Team(_));
+            Say::Line(line) | Say::Team(line) | Say::Global(line) => {
+                self.say_to = match say {
+                    Say::Team(_) => protocol::Channel::Team,
+                    Say::Global(_) => protocol::Channel::Global,
+                    _ => protocol::Channel::Local,
+                };
                 if self.say_line.replace(line).is_some() {
                     self.stats.say_dropped += 1;
                 }
@@ -6904,12 +6909,11 @@ impl BotDriver for Survivor {
             return None;
         }
         let line = self.say_line.take()?;
-        // A body speaks to the bodies near it, or to its team when it asked
-        // to and has one; never to everyone.
-        let channel = if self.say_team && self.has_mates {
-            protocol::Channel::Team
-        } else {
-            protocol::Channel::Local
+        // A body speaks where it asked to: to everyone, to the bodies near
+        // it, or to its team when it has one.
+        let channel = match self.say_to {
+            protocol::Channel::Team if !self.has_mates => protocol::Channel::Local,
+            to => to,
         };
         match protocol::encode_chat(line.as_bytes(), channel, out) {
             Ok(len) => {

@@ -1044,10 +1044,14 @@ impl Default for Heard {
 pub enum Say {
     #[default]
     Quiet,
+    /// A line for whoever is near (the 20 m radius).
     Line(protocol::ChatText),
     /// A line for this body's team (wire v108), wherever they are. Said
     /// locally when it has no team.
     Team(protocol::ChatText),
+    /// A line for everyone on the island, as a person's chat box sends one
+    /// unless told otherwise.
+    Global(protocol::ChatText),
     /// Asked for a line the chat rule refuses (too long, a control
     /// character, a `/command`): counted, never repaired.
     Refused,
