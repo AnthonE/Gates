@@ -546,7 +546,9 @@ const TICKS: u64 = 900;
 /// rescales the island's, its spires stand, and no one spawns inside it.
 /// **Moved → `0x07E1_E50F_C295_4C13` at the travelling mark** (2026-10-17):
 /// the weak spot starts a step from the first blow and moves only when hit.
-const GOLDEN_FINAL_HASH: u64 = 0x07E1_E50F_C295_4C13;
+/// **Moved → `0xE4D0_90C3_4320_FBC7` at the cliff faces** (2026-10-17, #351):
+/// a body can no longer stand on a rock face and slides down one.
+const GOLDEN_FINAL_HASH: u64 = 0xE4D0_90C3_4320_FBC7;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -658,7 +660,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x07E1_E50F_C295_4C13;
 /// **Moved → `0xA04E_9426_2556_114B` at the Verdigris** (2026-10-15), with the final hash.
 /// **Moved → `0xFEFF_1F4E_A700_FCCD` at the travelling mark** (2026-10-17), with
 /// the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0xFEFF_1F4E_A700_FCCD;
+/// **Moved → `0xC11A_B959_9B71_4B20` at the cliff faces** (2026-10-17, #351),
+/// with the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0xC11A_B959_9B71_4B20;
 
 /// Fold a stamped trace into one number.
 ///

@@ -214,7 +214,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0x22CE_F629_3692_1DF3` at the Verdigris** (2026-10-15,
 /// `terrain::fel`): no height moved, but its row carries ore, so
 /// `Haven::ore_pm` rescales.
-const GOLDEN_TERRAIN_HASH: u64 = 0x22CE_F629_3692_1DF3;
+/// **Moved → `0xB74C_5F9F_6177_8168` at THE GATE's vending machines**
+/// (2026-10-17, #348): the workshop's plinths and the stalls' counters left
+/// the town kit, whose parts the town carves.
+const GOLDEN_TERRAIN_HASH: u64 = 0xB74C_5F9F_6177_8168;
 
 #[test]
 fn test_terrain_golden() {
