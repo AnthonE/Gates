@@ -461,19 +461,19 @@ fn ack_only(core: &mut ShardCore, tick_acked: u64) {
 
 /// **5 · The formula, exhaustively, at the one function that owns it.**
 ///
-/// `favour = min((T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS,
-/// REWIND_MAX_TICKS)`, which at the shipped constants is `min(raw + 4, 7)`
-/// (the flat add grew by one at netcode v2 S2: the bias floored to 0 with
-/// the 30 Hz interval while the interp delay deliberately held at 4).
+/// `favour = min((T − S) + INTERP_DELAY_TICKS + SNAPSHOT_POSE_LAG_TICKS −
+/// REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)`, which at the shipped constants
+/// is `min(raw + 5, 15)`: the interp delay, plus the tick a snapshot's
+/// stamp runs ahead of the poses it carries.
 /// Swept across the clamp rather than sampled either side of it, because
 /// the two defects this catches are an off-by-one at the ceiling and a
 /// dropped term — and a two-point test is green under both if the points
 /// are chosen badly.
 #[test]
-fn the_favour_is_the_measurement_plus_four_clamped_at_seven() {
-    let bias = INTERP_DELAY_TICKS - REWIND_ACK_BIAS_TICKS;
+fn the_favour_is_the_measurement_plus_five_clamped_at_fifteen() {
+    let bias = INTERP_DELAY_TICKS + stats::SNAPSHOT_POSE_LAG_TICKS as u8 - REWIND_ACK_BIAS_TICKS;
     assert_eq!(
-        bias, 4,
+        bias, 5,
         "the shipped constants moved; the sweep below is written against them"
     );
     for raw in 0..=20u16 {
@@ -484,11 +484,11 @@ fn the_favour_is_the_measurement_plus_four_clamped_at_seven() {
             "a {raw}-tick-old aim minted the wrong favour"
         );
     }
-    // The clamp is reached at raw 3 and never exceeded, which is the whole
+    // The clamp is reached at raw 10 and never exceeded, which is the whole
     // promise `REWIND_MAX_TICKS` makes to the victim.
-    assert_eq!(stats::favour_for(2, Some(0), INTERP_DELAY_TICKS), 6);
+    assert_eq!(stats::favour_for(9, Some(0), INTERP_DELAY_TICKS), 14);
     assert_eq!(
-        stats::favour_for(3, Some(0), INTERP_DELAY_TICKS),
+        stats::favour_for(10, Some(0), INTERP_DELAY_TICKS),
         REWIND_MAX_TICKS
     );
     assert_eq!(
@@ -541,32 +541,33 @@ fn an_unmeasurable_aim_mints_no_favour() {
 #[test]
 fn the_shard_mints_a_favour_through_the_real_path() {
     let (mut core, stats) = shard();
-    // A fresh aim — one tick of staleness — is still worth four ticks of
+    // A fresh aim — one tick of staleness — is still worth five ticks of
     // rewind, because the client drew its remotes INTERP_DELAY_TICKS back
-    // even on a perfect link. This is the case a "favour == staleness"
+    // (and a snapshot's poses a tick behind its stamp) even on a perfect
+    // link. This is the case a "favour == staleness"
     // mistake gets wrong while looking sane.
     let raw = measure_one(&mut core, &stats, 1, 1);
     assert_eq!(raw, 1);
     assert_eq!(
         favour_reading(&stats),
-        (1, 5, 0, 0),
+        (1, 6, 0, 0),
         "the shard executed a frame and granted it no rewind — lag compensation is off"
     );
 
-    // A slower link: raw 2 ⇒ 6, still under the clamp, so `favour_clamped`
+    // A slower link: raw 2 ⇒ 7, still under the clamp, so `favour_clamped`
     // must stay put. A mint that clamped everything would pass the line
     // above and fail here.
     let raw = measure_one(&mut core, &stats, 2, 2);
     assert_eq!(raw, 2);
-    assert_eq!(favour_reading(&stats), (2, 11, 0, 0));
+    assert_eq!(favour_reading(&stats), (2, 13, 0, 0));
 
-    // Past the clamp: granted 7, and counted as clamped.
-    let raw = measure_one(&mut core, &stats, 3, 9);
-    assert_eq!(raw, 9);
+    // Past the clamp: granted 15, and counted as clamped.
+    let raw = measure_one(&mut core, &stats, 3, 12);
+    assert_eq!(raw, 12);
     assert_eq!(
         favour_reading(&stats),
-        (3, 18, 1, 0),
-        "a 9-tick-old aim either got more than REWIND_MAX_TICKS or was not counted as clamped"
+        (3, 28, 1, 0),
+        "a 12-tick-old aim either got more than REWIND_MAX_TICKS or was not counted as clamped"
     );
 }
 
@@ -583,8 +584,8 @@ fn a_playout_claim_past_the_measured_bound_buys_only_the_bound() {
     assert_eq!(core.clients[0].playout_cap, INTERP_DELAY_TICKS);
     assert_eq!(
         favour_reading(&stats),
-        (1, 5, 0, 0),
-        "raw 1 + the bound, not the claim's 7"
+        (1, 6, 0, 0),
+        "raw 1 + the bound + 1, not the claim's 8"
     );
     assert_eq!(high(&stats), 1);
 
@@ -594,13 +595,13 @@ fn a_playout_claim_past_the_measured_bound_buys_only_the_bound() {
     );
     assert_eq!(
         favour_reading(&stats),
-        (2, 8, 0, 0),
+        (2, 10, 0, 0),
         "a low claim is priced as claimed"
     );
     assert_eq!(high(&stats), 1);
 
-    assert_eq!(measure_one_claiming(&mut core, &stats, 3, 5, 15), 5);
-    assert_eq!(favour_reading(&stats).1, 15, "7 either way");
+    assert_eq!(measure_one_claiming(&mut core, &stats, 3, 12, 15), 12);
+    assert_eq!(favour_reading(&stats).1, 25, "15 either way");
     assert_eq!(high(&stats), 1, "a cap that cost nothing accuses nobody");
 }
 
@@ -873,21 +874,22 @@ fn place_victim(core: &mut ShardCore, dist: f32) {
     v.qy = a.qy;
 }
 
-/// Stand the victim near for four ticks and far for four, so the rewind
-/// ring's eight rows split cleanly: `T-1..T-4` is out of reach and
-/// `T-5..T-8` is inside it. A favour of 4 or less therefore misses and 5 or
-/// more hits, with a whole tick of margin on each side of the boundary —
-/// wide enough that the gate is about the favour and not about counting
-/// ticks.
-fn victim_walked_out_of_reach(core: &mut ShardCore, stats: &ShardStats) {
+/// Stand the victim near for eight ticks and far for six, and return the
+/// stamp of the last snapshot that showed it near. Swinging six ticks later
+/// while acking that stamp mints `6 + 4 + 1 = 11`, which lands inside the
+/// near rows; acking the newest snapshot mints 5, which lands inside the
+/// far ones, with a tick of margin either side.
+fn victim_walked_out_of_reach(core: &mut ShardCore, stats: &ShardStats) -> u64 {
     place_victim(core, NEAR_M);
-    for _ in 0..4 {
+    for _ in 0..8 {
         tick(core, stats);
     }
+    let seen = core.world.tick;
     place_victim(core, FAR_M);
-    for _ in 0..4 {
+    for _ in 0..6 {
         tick(core, stats);
     }
+    seen
 }
 
 /// One swing, through the wire path, acking `snapshot` — which is what
@@ -919,24 +921,19 @@ fn swing_acking(core: &mut ShardCore, stats: &ShardStats, snapshot: u64) -> bool
 /// assertion is on `hp`, which is the only thing a player experiences.
 ///
 /// The control is the same fixture and the same swing under a **fresh**
-/// ack, which mints `0 + 3 = 3` and reaches only as far back as the victim
+/// ack, which mints `0 + 4 + 1 = 5` and reaches only as far back as the victim
 /// was already out of reach. Both halves are asserted, because "it hits"
 /// alone is satisfied by a fixture whose victim never left.
 #[test]
 fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
-    // ── Stale: ack a snapshot, then let the fixture's eight ticks age it.
+    // ── Stale: ack the last snapshot that showed the victim near.
     let (mut core, stats) = duel_shard();
-    let old = advance_to_snapshot(&mut core, &stats);
-    ack_only(&mut core, old);
-    victim_walked_out_of_reach(&mut core, &stats);
-    let raw = core.world.tick - old;
+    let seen = victim_walked_out_of_reach(&mut core, &stats);
+    let raw = core.world.tick - seen;
+    assert_eq!(raw, 6, "the fixture must age the ack by the far window");
     assert!(
-        raw >= 4,
-        "the fixture must age the ack past the clamp's knee; it aged {raw} ticks"
-    );
-    assert!(
-        swing_acking(&mut core, &stats, old),
-        "the victim stood {FAR_M} m away and {NEAR_M} m away four ticks earlier, the shard \
+        swing_acking(&mut core, &stats, seen),
+        "the victim stood {FAR_M} m away and {NEAR_M} m away six ticks earlier, the shard \
          minted a favour of {} for a {raw}-tick-old ack, and the swing still missed — \
          nothing rewound",
         stats::favour_for(raw as u16, Some(0), INTERP_DELAY_TICKS)
@@ -956,7 +953,7 @@ fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
     let raw = core.world.tick - recent;
     let favour = stats::favour_for(raw as u16, Some(0), INTERP_DELAY_TICKS);
     assert!(
-        favour <= 4,
+        favour <= 5,
         "a {raw}-tick-old ack minted {favour}, which reaches the near window — \
          this control cannot fail for the reason it exists to test"
     );

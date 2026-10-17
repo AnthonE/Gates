@@ -75,7 +75,7 @@
 //!   operator sees that lag compensation is on**, which is worth a field
 //!   because it was *off* for three passes with every gate green.
 //!   `favour_clamped` is the fraction of those that hit
-//!   `REWIND_MAX_TICKS`, i.e. how often the 233 ms ceiling is the binding
+//!   `REWIND_MAX_TICKS`, i.e. how often the 500 ms ceiling is the binding
 //!   constraint rather than the link — the evidence for moving that
 //!   number. `favour_disagree` is the cross-check: claims corrected down
 //!   to the server's own ack evidence, and one of the two favour counters

@@ -529,7 +529,7 @@ fn a_fight_replays_to_the_same_hash() {
 // and stays there while the ring fills. `Rewind::write_row` runs at the *end*
 // of a tick, so the tick numbered `T` records the pose the victim held during
 // `T`; the swing then happens `WALK_TICKS` ticks later, when the ring holds
-// `S-1 ..= S-7` and row `S - WALK_TICKS` is the near one.
+// `S-1 ..= S-WALK_TICKS` and row `S - WALK_TICKS` is the near one.
 //
 // The victim is teleported rather than driven with `move_z`, which is worth
 // saying out loud because it looks like the lazy choice. It is the honest
@@ -547,7 +547,7 @@ const NEAR_M: f32 = 1.0;
 const FAR_M: f32 = 4.5;
 /// How far back the near pose ends up. Equal to `REWIND_MAX_TICKS`, so these
 /// tests also pin that the deepest legal rewind actually reaches.
-const WALK_TICKS: u64 = 7;
+const WALK_TICKS: u64 = sim_core::limits::REWIND_MAX_TICKS as u64;
 
 /// Build the duel, park the victim near for one tick, then far for
 /// `WALK_TICKS - 1` more. Returns the world with the swing tick not yet run.
@@ -622,7 +622,7 @@ fn the_lag_comp_fixture_really_moves_the_victim_out_of_reach() {
 }
 
 /// **The feature.** The same swing, at the same tick, against the same
-/// standing bodies: it misses at favour 0 and lands at favour 7.
+/// standing bodies: it misses at favour 0 and lands at the ceiling.
 ///
 /// This is the only shape that proves lag compensation rather than the
 /// plumbing that carries it. A test that only asserted the hit would pass on
@@ -647,7 +647,7 @@ fn a_swing_lands_on_where_the_target_was_and_misses_where_it_is() {
 /// A favour deeper than the ring can honour buys the shooter *less* help,
 /// never more — and the clamp is where that is decided.
 ///
-/// `apply` clamps to `Rewind::max_back()`, so 255 and 7 are the same swing;
+/// `apply` clamps to `Rewind::max_back()`, so 255 and the ceiling are the same swing;
 /// `pose_at` would independently fall back to the live body on an aliased
 /// row, so this is belt and braces on purpose. What it pins is that the two
 /// mechanisms agree rather than cancel: if the clamp were dropped, 255 would
@@ -658,7 +658,7 @@ fn a_favour_past_the_ceiling_is_clamped_to_the_ceiling() {
     let mut clamped = victim_walked_out_of_reach();
     assert!(
         swing_with_favour(&mut clamped, u8::MAX),
-        "a favour of 255 must be clamped to the ceiling and hit exactly as 7 does"
+        "a favour of 255 must be clamped to the ceiling and hit exactly as the ceiling does"
     );
 
     // Same swing, same tick, same fixture — so the two must agree on damage

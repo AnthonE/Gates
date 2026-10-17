@@ -392,7 +392,9 @@ impl Arena {
     }
 
     fn push(&mut self, slot: usize, frame: InputFrame, ack: (u16, u32)) {
-        let mut dg = InputDatagram::new(ack.0, ack.1, sim_core::limits::INTERP_DELAY_TICKS);
+        // What an agent reports on the shard (`botclient`), for the seats
+        // too, so a seat's blow is rewound to `seen(SEAT_FAVOUR)`.
+        let mut dg = InputDatagram::new(ack.0, ack.1, server::botclient::AGENT_PLAYOUT_REPORT);
         dg.push(frame).unwrap();
         let mut bytes = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
         let len = encode_input(&dg, &mut bytes).unwrap();
