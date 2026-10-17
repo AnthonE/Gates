@@ -1556,6 +1556,10 @@ pub struct SwingPick {
     /// are: `render::impact` places a burst on the occupant's collision
     /// skin, which is `occupant_volume` × this. Zero when nothing is picked.
     pub scale: f32,
+    /// The swing lands on a felled tree's stump (`melee::OccupantHit::stump`),
+    /// not a standing tree: `occupant` still says `Tree`, the prompt says
+    /// STUMP.
+    pub stump: bool,
     /// The species of the carcass this swing would butcher instead
     /// (`WireBag::species`), or `None` (§0ray 2). A carcass is not scatter,
     /// so `occupant` stays 0 beside it, and every reader that throws a
@@ -1577,6 +1581,7 @@ impl SwingPick {
             Some(sim_core::mob::MOB_STAG) => "BUTCHER STAG",
             Some(BODY_SPECIES) => "BUTCHER BODY",
             Some(_) => "BUTCHER PIG",
+            None if self.stump => "CHOP STUMP",
             None => swing_label(self.occupant),
         }
     }
@@ -1716,6 +1721,14 @@ fn pick_of(at: SwingAim, cx: u16, cz: u16, s: Slot) -> SwingPick {
     }
 }
 
+/// [`pick_of`] for a swing's node hit, which may be a stump.
+fn node_pick(at: SwingAim, hit: &melee::NodeHit) -> SwingPick {
+    SwingPick {
+        stump: hit.ni == sim_core::gather::STUMP_NODE,
+        ..pick_of(at, hit.cx, hit.cz, hit.slot)
+    }
+}
+
 /// What a swing from `at` would land on: **the sim's own cast**, over the
 /// client's memo.
 ///
@@ -1736,7 +1749,7 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
     let ray = at.ray(SWING_REACH_M);
     let seed = island.seed;
     match melee::node_cast(seed, &mut island.occupants(), &ray) {
-        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        Some(hit) => node_pick(at, &hit),
         None => SwingPick::default(),
     }
 }
@@ -1918,7 +1931,7 @@ pub fn resolve_swing_shadowed(
         ..melee::Reaches::default()
     };
     match melee::nearest(&entered, &ray, &reaches) {
-        melee::Reached::Node(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        melee::Reached::Node(hit) => node_pick(at, &hit),
         melee::Reached::Carcass(c) => {
             let bag = shadows.bags[c.bag];
             SwingPick {

@@ -1743,7 +1743,10 @@ pub fn cap_swap(
     let reach = tier + TREE_LOD_FADE_M;
     d2.clear();
     for (f, gt) in trunks.iter() {
-        if f.part != super::props::FellPart::Trunk {
+        // A felled trunk is gone a few seconds after the cut
+        // (`props::fall`): counting it would pull the swap in for trees
+        // nobody draws.
+        if f.part != super::props::FellPart::Trunk || f.felled {
             continue;
         }
         let d = (gt.translation() - eye.pos).length_squared();
@@ -1776,11 +1779,13 @@ pub fn cap_swap(
 /// abruptly where the desktop fades over `TREE_LOD_FADE_M`, and that is
 /// written here rather than hidden.
 ///
-/// **Only the three banded parts.** The stump and a vanishing prop are the
-/// fell system's to show and hide (`props::apply_fell`), which never writes
-/// `Visibility` on a trunk or a canopy, and hides a felled tree's card — so
-/// this keeps a felled card hidden rather than fighting it. Written only on a
-/// change, because a `Visibility` write re-extracts the entity.
+/// **Only the three banded parts, and only while the tree stands.** The
+/// stump and a vanishing prop are the fell system's to show and hide
+/// (`props::apply_fell`), and so is every part of a felled tree: its card is
+/// hidden at the cut and its trunk and canopy once they have sunk
+/// (`props::fall`), so this leaves them alone rather than fighting it.
+/// Written only on a change, because a `Visibility` write re-extracts the
+/// entity.
 ///
 /// Compiled on every target and **gated to WebGL2 by its run condition**
 /// (`render/mod.rs`), so `tests/tree_swap.rs` can drive it natively.
@@ -1798,11 +1803,12 @@ pub fn swap_by_distance(
             | super::props::FellPart::Vanish
             | super::props::FellPart::Emptied => continue,
         };
+        // A felled tree is the fell system's to hide (`apply_fell`, `fall`).
+        if f.felled {
+            continue;
+        }
         let is_near = (gt.translation() - eye.pos).length_squared() < swap2;
-        // A felled tree's card is the fell system's to hide (`apply_fell`).
-        let want = if f.felled && !near_part {
-            Visibility::Hidden
-        } else if is_near == near_part {
+        let want = if is_near == near_part {
             Visibility::Inherited
         } else {
             Visibility::Hidden

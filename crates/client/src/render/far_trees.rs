@@ -30,8 +30,10 @@
 //!   the vertex stage hands it a rounded normal so a card is lit like a crown
 //!   rather than a sheet.
 //!
-//! Felled trees keep their island card until a rebuild; at this range they
-//! are a few pixels, and the rings own everything close enough to chop.
+//! A felled tree is not carded, and a tile whose trees were felled or have
+//! grown back since it was carded is carded again (`FELL_RECHECK_S`): a
+//! 33 m tree at 300 m is a hundred pixels, not a few, and a card standing
+//! where the rings show a stump read as chopped trees still standing.
 
 use bevy::asset::{Asset, RenderAssetUsages};
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
@@ -87,6 +89,10 @@ const BARK_MEAN: u32 = 0x5c4636;
 const BIRCH_MEAN: u32 = 0x989899;
 /// How far a card is sunk, metres: the far ground sits under the true one.
 const CARD_SINK_M: f32 = 0.3;
+/// How often, at most, the carded tiles are checked against the harvested
+/// set once the wire has moved it, seconds. Bots fell trees all day; this
+/// keeps that to one sweep of the island's tree keys a second.
+const FELL_RECHECK_S: f32 = 1.0;
 
 /// A card's extent at slot scale 1: half-width and height, metres.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -238,6 +244,34 @@ pub struct FarForest {
     seen: Option<sim_core::blight::Now>,
     /// The mask's window and bits as last written to the island material.
     masked: Option<(IVec4, UVec4)>,
+    /// Every tile's tree keys and which of them were felled when it was
+    /// carded, so a tile whose trees were cut or grew back is carded again.
+    fell: HashMap<(i32, i32), TileFell>,
+    /// The harvested set moved since the tiles were last checked.
+    fell_dirty: bool,
+    /// Seconds since the tiles were last checked.
+    fell_since: f32,
+}
+
+/// A carded tile's trees against the harvested set.
+struct TileFell {
+    keys: Vec<u32>,
+    /// [`fell_sig`] of the keys felled when it was carded.
+    sig: u64,
+}
+
+/// One felled key's share of a tile's signature: a sum of mixed keys, so
+/// the order the cells are walked in does not matter and one tree cut
+/// while another grows back still changes it.
+fn fell_mix(key: u32) -> u64 {
+    (key as u64 ^ 0x9e37_79b9_7f4a_7c15).wrapping_mul(0xbf58_476d_1ce4_e5b9)
+}
+
+/// The signature of the felled trees among `keys`.
+fn fell_sig(keys: &[u32], felled: &dyn Fn(u32) -> bool) -> u64 {
+    keys.iter()
+        .filter(|k| felled(**k))
+        .fold(0u64, |a, k| a.wrapping_add(fell_mix(*k)))
 }
 
 impl FarForest {
@@ -259,6 +293,9 @@ struct TileBuild {
     uv_b: Vec<[f32; 2]>,
     color: Vec<[f32; 4]>,
     taps: Vec<props::TreeTap>,
+    /// The tile's tree keys and the signature of those felled (`TileFell`).
+    keys: Vec<u32>,
+    sig: u64,
 }
 
 impl TileBuild {
@@ -272,6 +309,8 @@ impl TileBuild {
             uv_b: Vec::new(),
             color: Vec::new(),
             taps: Vec::new(),
+            keys: Vec::new(),
+            sig: 0,
         }
     }
 }
@@ -300,10 +339,15 @@ pub fn stream(
     ring: Res<PropRing>,
     cards: Option<Res<TreeCards>>,
     blight: Option<Res<super::blight::Blight>>,
+    net: Option<NonSend<super::Net>>,
+    feed: Option<Res<super::feed::Feed>>,
+    time: Res<Time>,
 ) {
     let Some(cards) = cards else {
         return;
     };
+    let harvested = net.as_deref().map(|n| &n.session.core.harvested);
+    let felled = |k: u32| harvested.is_some_and(|h| h.contains(k));
     let forest = &mut *forest;
     if forest.seed != Some(world.seed) {
         for (_, e) in forest.tiles.drain() {
@@ -313,6 +357,7 @@ pub fn stream(
         forest.current = None;
         forest.masked = None;
         forest.taps.clear();
+        forest.fell.clear();
         forest.seen = None;
         // Nearest last, so `pop` takes the nearest.
         let n = tiles_per_side();
@@ -368,6 +413,34 @@ pub fn stream(
         forest.queue.extend(flipped);
     }
 
+    // Trees felled or grown back: re-card the tiles they stand in, nearest
+    // first. The check waits out a tile mid-card, whose early cells may
+    // have asked the set before it moved.
+    if feed.is_some_and(|f| f.applied & props::HARVEST_APPLIED != 0) {
+        forest.fell_dirty = true;
+    }
+    forest.fell_since += time.delta_secs();
+    if forest.fell_dirty && forest.fell_since >= FELL_RECHECK_S {
+        forest.fell_since = 0.0;
+        forest.fell_dirty = forest.current.is_some();
+        let mut moved: Vec<(i32, i32)> = forest
+            .fell
+            .iter()
+            .filter(|(_, t)| fell_sig(&t.keys, &felled) != t.sig)
+            .map(|(k, _)| *k)
+            .filter(|k| !forest.queue.contains(k))
+            .filter(|k| forest.current.as_ref().is_none_or(|b| b.key != *k))
+            .collect();
+        let (ex, ez) = (eye.pos.x, eye.pos.z);
+        let d2 = |t: &(i32, i32)| {
+            let cx = (t.0 as f32 + 0.5) * TILE_M - ex;
+            let cz = (t.1 as f32 + 0.5) * TILE_M - ez;
+            cx * cx + cz * cz
+        };
+        moved.sort_by(|a, b| d2(b).total_cmp(&d2(a)));
+        forest.queue.extend(moved);
+    }
+
     // The carding.
     if forest.current.is_none() {
         match forest.queue.pop() {
@@ -413,6 +486,12 @@ pub fn stream(
             continue;
         }
         let key = cell_key(cell_x as u16, cell_z as u16);
+        build.keys.push(key);
+        // A felled tree is its stump, which no card stands for.
+        if felled(key) {
+            build.sig = build.sig.wrapping_add(fell_mix(key));
+            continue;
+        }
         push_card(&mut build, &cards.dims, &slot, key, &world);
     }
     build.next = end;
@@ -427,8 +506,21 @@ pub fn stream(
     } else {
         forest.taps.insert(key, taps);
     }
+    let keys = std::mem::take(&mut build.keys);
+    if keys.is_empty() {
+        forest.fell.remove(&key);
+    } else {
+        forest.fell.insert(
+            key,
+            TileFell {
+                keys,
+                sig: build.sig,
+            },
+        );
+    }
     if build.pos.is_empty() {
-        // Re-carded to nothing (every tree a snag now): the old cards go.
+        // Re-carded to nothing (every tree a snag or felled now): the old
+        // cards go.
         if let Some(old) = forest.tiles.remove(&key) {
             commands.entity(old).despawn();
         }

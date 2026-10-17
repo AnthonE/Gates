@@ -339,6 +339,8 @@ pub struct Fellable {
 
 /// How far through its topple a trunk or a canopy is, seconds. Negative means
 /// "not falling" — the resting state both before a chop and after a respawn.
+/// Past [`FELL_FALL_S`] it lies, then sinks, and at [`FELL_GONE_S`] it is
+/// hidden (`fall`).
 ///
 /// **Its own component, and that is not tidiness — it is a bug that was
 /// written and caught before it shipped.** `fall_t` lived on [`Fellable`]
@@ -3400,6 +3402,31 @@ pub const STUMP_LIFT_M: f32 = 0.17;
 /// looked at afterwards, and 1.1 s reads as a swat rather than as a tree.
 pub const FELL_FALL_S: f32 = 1.6;
 
+/// How long a felled tree lies on the ground once it lands, seconds, before
+/// it sinks away. Rust's tree falls and then is gone (operator, 2026-08-10
+/// and again 2026-10-17: a downed forest read as chopped trees still
+/// showing); the stump is what stays.
+pub const FELL_REST_S: f32 = 1.2;
+
+/// How long the downed tree takes to sink out of sight, seconds.
+pub const FELL_SINK_S: f32 = 1.5;
+
+/// When a felled tree's trunk and canopy are hidden, seconds from the cut.
+pub const FELL_GONE_S: f32 = FELL_FALL_S + FELL_REST_S + FELL_SINK_S;
+
+/// How far a downed tree has sunk below where it lay, metres, `t` seconds
+/// from the cut: none until it has rested, then eased down to `depth`.
+pub fn fell_sink(t: f32, depth: f32) -> f32 {
+    let p = ((t - FELL_FALL_S - FELL_REST_S) / FELL_SINK_S).clamp(0.0, 1.0);
+    depth * p * p
+}
+
+/// How deep a downed tree sinks: its crown's reach at its drawn scale, which
+/// is how far a canopy lying on its side stands off the ground.
+fn sink_depth(f: &Fellable, scale: f32) -> f32 {
+    tree::SPECIES[tree::species_of(f.variant)].max_r_m * scale
+}
+
 /// Hash channel for the fall bearing. Its own channel, never the scatter's:
 /// `spawn_slot` already derives the tree's YAW from `slot.yaw`, and a bearing
 /// sharing that source would make every tree fall the way it happens to face.
@@ -3441,22 +3468,22 @@ pub fn fell_rotation(yaw: f32, bearing: f32, t: f32) -> Quat {
     Quat::from_axis_angle(Vec3::new(cb, 0.0, -sb), angle) * Quat::from_rotation_y(yaw)
 }
 
-/// Advance every topple in flight.
+/// Advance every topple in flight: the fall, the rest, the sink, and then
+/// the trunk and canopy are hidden.
 ///
 /// **Only the ones in flight.** [`Topple::t`] is negative while a slot is
-/// standing and clamps at [`FELL_FALL_S`] once it is down, so this touches an
-/// entity
-/// on the ~96 frames of its fall and never again — a forest of felled trees
-/// costs this system one comparison each. That matters because the client is
-/// held to the sim thread's discipline (`CLAUDE.md`'s client trap) and this
-/// runs every frame over every prop in the ring.
+/// standing and clamps at [`FELL_GONE_S`] once it is gone, so this touches an
+/// entity for the few seconds after its cut and never again — a forest of
+/// felled trees costs this system one comparison each. That matters because
+/// the client is held to the sim thread's discipline (`CLAUDE.md`'s client
+/// trap) and this runs every frame over every prop in the ring.
 ///
 /// The trunk takes its marks with it as it goes (a hole must not hang where
 /// it stood) and throws dust and needles where it lands (`fx::world`).
 /// Optional so the topple still runs in a world that draws no effects.
 pub fn fall(
     time: Res<Time>,
-    mut q: Query<(&Fellable, &mut Topple, &mut Transform)>,
+    mut q: Query<(&Fellable, &mut Topple, &mut Transform, &mut Visibility)>,
     mut fx: Option<ResMut<super::fx::Fx>>,
     mut marks: Option<ResMut<super::decal::Marks>>,
     world: Option<Res<super::WorldId>>,
@@ -3464,13 +3491,22 @@ pub fn fall(
     mut shake: Option<ResMut<super::shake::Shake>>,
 ) {
     let dt = time.delta_secs();
-    for (f, mut top, mut t) in q.iter_mut() {
-        if top.t < 0.0 || top.t >= FELL_FALL_S {
+    for (f, mut top, mut t, mut vis) in q.iter_mut() {
+        if top.t < 0.0 || top.t >= FELL_GONE_S {
             continue;
         }
         let was = top.t;
-        top.t = (top.t + dt).min(FELL_FALL_S);
-        t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+        top.t = (top.t + dt).min(FELL_GONE_S);
+        if was < FELL_FALL_S {
+            t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+        }
+        let sink = fell_sink(top.t, sink_depth(f, t.scale.y));
+        if sink > 0.0 {
+            t.translation.y = f.base_y - sink;
+        }
+        if top.t >= FELL_GONE_S {
+            *vis = Visibility::Hidden;
+        }
         if f.part != FellPart::Trunk {
             continue;
         }
@@ -3479,7 +3515,7 @@ pub fn fall(
                 m.forget_later(t.translation + Vec3::Y * 1.2, 1.2);
             }
         }
-        if top.t >= FELL_FALL_S {
+        if was < FELL_FALL_S && top.t >= FELL_FALL_S {
             // The ground takes the trunk: felt as well as seen.
             if let (Some(shake), Some(eye)) = (shake.as_deref_mut(), eye.as_deref()) {
                 use super::shake::{TREE_FULL_M, TREE_TRAUMA, TREE_ZERO_M};
@@ -3638,19 +3674,22 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
                 // handle, so it leaves the pose alone instead of guessing.
                 let Some(mut top) = top else { continue };
                 if felled && arrived {
-                    // Already down: the topple's last pose, which `fall`
-                    // leaves alone.
-                    top.t = FELL_FALL_S;
+                    // Felled long ago: already gone, which `fall` leaves
+                    // alone. Only the stump says a tree stood here.
+                    top.t = FELL_GONE_S;
                     t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), FELL_FALL_S);
+                    *vis = Visibility::Hidden;
                 } else if felled {
                     // Start the topple. `fall` owns the pose from here.
                     top.t = 0.0;
                 } else {
-                    // Respawned: back upright, and back to "not falling" so
-                    // the next chop starts from the top of the curve rather
-                    // than from wherever the last one ended.
+                    // Respawned: back upright where it stood, and back to
+                    // "not falling" so the next chop starts from the top of
+                    // the curve rather than from wherever the last one ended.
                     top.t = -1.0;
                     t.rotation = Quat::from_rotation_y(f.yaw);
+                    t.translation.y = f.base_y;
+                    *vis = Visibility::Inherited;
                 }
             }
         }
