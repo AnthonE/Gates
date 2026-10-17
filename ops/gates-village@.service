@@ -18,7 +18,10 @@
 #
 #   VILLAGE_NAME=Miller        # 1-13 characters: the bots are Miller-1..
 #   VILLAGE_BOTS=12            # 2..16
-#   VILLAGE_SHIFT=5400,1800    # seconds on, seconds off
+#   VILLAGE_SHIFT=5400,1800,0  # seconds on, seconds off, and where the
+#                              # cycle starts (seconds past UTC midnight).
+#                              # Give each village its own start so they
+#                              # take turns asleep: millers 0, thatchers 3600.
 #
 # `ci/deploy_shard.sh` restarts every gates-village@ unit on the binary it
 # copies to ~/gates-jev, so a wire bump never strands a village.

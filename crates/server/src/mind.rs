@@ -2067,9 +2067,27 @@ impl Mind {
                 };
                 let start = Instant::now();
                 let answer = source.decide(&summary);
+                // How the goal before ended, when that is why it was asked:
+                // a goal that keeps ending at once is otherwise a line that
+                // only repeats.
+                let after = match (summary.trigger, summary.last) {
+                    (Trigger::Completed | Trigger::Failed | Trigger::Interrupted, Some(r)) => {
+                        format!(
+                            " [after {} {}{}, {} s]",
+                            r.goal.label().as_str(),
+                            r.outcome.word(),
+                            r.outcome
+                                .why()
+                                .map(|w| format!(": {}", w.text()))
+                                .unwrap_or_default(),
+                            r.secs
+                        )
+                    }
+                    _ => String::new(),
+                };
                 match &answer {
                     Ok(c) => eprintln!(
-                        "mind[{}]: {} ({:.3}), {} ms, {} input tokens; {}",
+                        "mind[{}]: {} ({:.3}), {} ms, {} input tokens; {}{after}",
                         source.kind().label(),
                         c.goal.label().as_str(),
                         c.confidence,

@@ -67,6 +67,8 @@ EnvironmentFile=/etc/gates-buddies/env
 StateDirectory=gates-buddies
 StateDirectoryMode=0755
 Environment="BUDDY_STATE=/var/lib/gates-buddies"
+# Bug reports the minds file (`jev-bot`'s copies): home is read-only here.
+Environment="GATES_REPORTS_DIR=/var/lib/gates-buddies/reports"
 ExecStart=/home/master/gates-jev/venv/bin/python /home/master/gates-jev/runner.py
 Restart=always
 RestartSec=15
