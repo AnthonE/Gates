@@ -1835,7 +1835,7 @@ impl Plugin for GatesRenderPlugin {
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
-                        (lore::spawn, lore::dials).chain(),
+                        (lore::spawn, lore::dials, lore::carve).chain(),
                     ),
                     (hud::pad_overlay, hud::lift_announce),
                 )
