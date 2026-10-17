@@ -531,6 +531,12 @@ pub const OUTER_RADIUS: i32 = 4;
 pub struct PropRing {
     built: HashMap<(i32, i32), Chunk>,
     outer: HashMap<(i32, i32), Chunk>,
+    /// Near chunks the eye has walked away from, still standing until the
+    /// outer ring builds their key — the outward twin of the inward hand-off
+    /// in `stream`. Dropped at once, a chunk 128–192 m off had no ring trees
+    /// for the frames the near ring took to fill, and its trees popped to the
+    /// island cards and back on every chunk edge crossed.
+    leaving: HashMap<(i32, i32), Chunk>,
     /// The blight's moment the rings last withered against
     /// (`render::blight::Blight::now`).
     seen: Option<sim_core::blight::Now>,
@@ -606,7 +612,11 @@ impl PropRing {
     /// Every chunk either ring has trees standing in — what the far cards
     /// step aside for (`far_trees`).
     pub fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
-        self.built.keys().chain(self.outer.keys()).copied()
+        self.built
+            .keys()
+            .chain(self.outer.keys())
+            .chain(self.leaving.keys())
+            .copied()
     }
     /// Chunks in the tree-only outer ring. Read by gates, not by the bar.
     pub fn outer_len(&self) -> usize {
@@ -2533,11 +2543,34 @@ pub fn stream(
     }
 
     let mut dropped = 0usize;
-    ring.built.retain(|(bx, bz), c| {
+    let PropRing { built, leaving, .. } = &mut *ring;
+    built.retain(|(bx, bz), c| {
         if dropped >= 1 || ((*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS) {
             return true;
         }
         dropped += 1;
+        if (*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS {
+            // The outer ring's now: it stands until that ring builds the key.
+            let taps = std::mem::take(&mut c.taps);
+            if let Some(old) = leaving.insert(
+                (*bx, *bz),
+                Chunk {
+                    e: c.e,
+                    taps,
+                    stale: true,
+                },
+            ) {
+                commands.entity(old.e).despawn();
+            }
+        } else {
+            commands.entity(c.e).despawn();
+        }
+        false
+    });
+    leaving.retain(|(bx, bz), c| {
+        if (*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS {
+            return true;
+        }
         commands.entity(c.e).despawn();
         false
     });
@@ -2561,6 +2594,9 @@ pub fn stream(
             // budget the ground pays every frame.
             if let Some(hulls) = ring.outer.remove(&key) {
                 commands.entity(hulls.e).despawn();
+            }
+            if let Some(old) = ring.leaving.remove(&key) {
+                commands.entity(old.e).despawn();
             }
             let parent = commands
                 .spawn((
@@ -2717,6 +2753,9 @@ pub fn stream(
             if let Some(old) = ring.outer.insert(key, built) {
                 commands.entity(old.e).despawn();
             }
+            if let Some(old) = ring.leaving.remove(&key) {
+                commands.entity(old.e).despawn();
+            }
             return;
         }
     }
@@ -2839,6 +2878,10 @@ pub fn spawn_outer_tree(
             Mesh3d(meshes[variant % meshes.len()].clone()),
             MeshMaterial3d(mats[tint_of(key)].clone()),
             transform,
+            // The card's corners sit on its axis until the vertex stage
+            // spreads them, so its bounds are a line: culled by that, a
+            // crown half on screen blinked out at the frame's edge.
+            bevy::camera::visibility::NoFrustumCulling,
         ));
         return;
     }
@@ -3279,6 +3322,8 @@ pub fn spawn_slot(
                 MeshMaterial3d(mats[tint].clone()),
                 tree::lod_band(&lod.far),
                 transform,
+                // Bounds of a line (`spawn_outer_tree` says why).
+                bevy::camera::visibility::NoFrustumCulling,
             ));
         } else {
             e.with_child((

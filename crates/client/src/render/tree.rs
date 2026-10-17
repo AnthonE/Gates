@@ -1762,11 +1762,23 @@ pub fn cap_swap(
         tier
     };
     let want = want.min(tier).max(0.0);
+    // In at once, out only a full step past where the bands sit (or all the
+    // way once the stand is plainly under the cap). Without the slack, an
+    // eye walking a stand's edge flipped the bands between two steps every
+    // few frames: a dither jump on every near tree and tree shadows at the
+    // reach blinking on and off, since shadows take no dither.
+    let cur = lod.swap_m();
+    let out = want >= cur + 2.0 * TREE_LOD_CAP_STEP_M
+        || (want >= tier && d2.len() + CAP_SLACK <= TREE_LOD_CAP);
     // `swap_m` reads through `Deref` and marks nothing; only the write does.
-    if want != lod.swap_m() {
+    if want < cur || (want > cur && out) {
         lod.contract(want);
     }
 }
+
+/// How far under [`TREE_LOD_CAP`] the trees in reach must fall before
+/// [`cap_swap`] lets the bands all the way back out to the tier.
+const CAP_SLACK: usize = 8;
 
 /// The LOD swap WebGL2 does by hand — [`lod_band`] says why it has to.
 ///

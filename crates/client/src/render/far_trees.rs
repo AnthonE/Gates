@@ -36,6 +36,8 @@
 //! where the rings show a stump read as chopped trees still standing.
 
 use bevy::asset::{Asset, RenderAssetUsages};
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::NoAutoAabb;
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
@@ -526,6 +528,7 @@ pub fn stream(
         }
         return;
     }
+    let aabb = tile_aabb(&build);
     let mesh = tile_mesh(build);
     let material = cards.island_material.clone();
     let e = commands
@@ -536,6 +539,8 @@ pub fn stream(
             Transform::IDENTITY,
             NotShadowCaster,
             NotShadowReceiver,
+            aabb,
+            NoAutoAabb,
         ))
         .id();
     if let Some(old) = forest.tiles.insert(key, e) {
@@ -616,6 +621,19 @@ fn push_quad(b: &mut TileBuild, base: Vec3, hw: f32, h: f32, ua: f32, ub: f32, t
         b.uv_b.push([s * hw, s]);
         b.color.push(c);
     }
+}
+
+/// A tile's bounds with its cards spread. Bevy's own box is off the
+/// positions, which sit on each card's axis until the vertex stage spreads
+/// them, so the edge cards of a tile half on screen were culled with it.
+fn tile_aabb(b: &TileBuild) -> Aabb {
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for (p, s) in b.pos.iter().zip(&b.uv_b) {
+        let w = Vec3::new(s[0].abs(), 0.0, s[0].abs());
+        lo = lo.min(Vec3::from_array(*p) - w);
+        hi = hi.max(Vec3::from_array(*p) + w);
+    }
+    Aabb::from_min_max(lo, hi)
 }
 
 fn tile_mesh(b: TileBuild) -> Mesh {

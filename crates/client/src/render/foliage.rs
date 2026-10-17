@@ -643,7 +643,7 @@ pub fn update(
         .unwrap_or([0.0; 4]);
     let fixed = [
         [dir.x, dir.y, trample.wind, clock],
-        [centre.x, centre.y, TRAMPLE_M, 0.0],
+        [centre.x, centre.y, TRAMPLE_M, time.delta_secs()],
         shock,
         wash,
     ];
