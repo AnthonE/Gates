@@ -1336,7 +1336,8 @@ pub struct Achievements {
     bars: [Bars; MAX_PLAYERS],
     moved: Vec<u32>,
     moved_flag: Vec<bool>,
-    tells: [(u8, u8); TELL_CAP],
+    /// (slot, row or set, the set's count as that row landed).
+    tells: [(u8, u8, u8); TELL_CAP],
     tells_n: usize,
     sweep: usize,
     out: Option<rtrb::Producer<Batch>>,
@@ -1374,7 +1375,7 @@ impl Achievements {
             bars: [Bars::default(); MAX_PLAYERS],
             moved: Vec::with_capacity(4 * MAX_PLAYERS),
             moved_flag: Vec::new(),
-            tells: [(0, 0); TELL_CAP],
+            tells: [(0, 0, 0); TELL_CAP],
             tells_n: 0,
             sweep: 0,
             out: None,
@@ -1532,29 +1533,35 @@ impl Achievements {
         if new == 0 {
             return;
         }
+        let mut so_far = row.got;
         row.got |= new;
         let got = row.got;
         self.mark(i);
+        // Each popup says where its set stood as that row landed (1/40,
+        // then 2/40), never the count once the whole tick is in.
         let mut left = new;
         while left != 0 {
             let bit = left.trailing_zeros() as u8;
             left &= left - 1;
-            self.tell(slot, bit);
+            so_far |= 1u128 << bit;
+            let m = self.baked.sets.iter().find(|&&m| m >> bit & 1 != 0);
+            let done = m.map_or(0, |m| (so_far & m).count_ones().min(255) as u8);
+            self.tell(slot, bit, done);
         }
         for s in 0..self.baked.sets.len() {
             let m = self.baked.sets[s];
             if m != 0 && m & new != 0 && got & m == m {
-                self.tell(slot, TELL_SET | s as u8);
+                self.tell(slot, TELL_SET | s as u8, m.count_ones().min(255) as u8);
             }
         }
     }
 
-    fn tell(&mut self, slot: usize, what: u8) {
+    fn tell(&mut self, slot: usize, what: u8, done: u8) {
         if self.tells_n == TELL_CAP {
             self.tells_dropped += 1;
             return;
         }
-        self.tells[self.tells_n] = (slot as u8, what);
+        self.tells[self.tells_n] = (slot as u8, what, done);
         self.tells_n += 1;
     }
 
@@ -1769,9 +1776,8 @@ impl Achievements {
     /// here, at most [`TELL_CAP`] a tick, and only when something was earned.
     pub fn take_tells(&mut self, mut f: impl FnMut(usize, protocol::Achieved)) {
         let n = std::mem::take(&mut self.tells_n);
-        for &(slot, what) in &self.tells[..n] {
+        for &(slot, what, done) in &self.tells[..n] {
             let slot = usize::from(slot);
-            let got = self.rows.get(self.slot[slot] as usize).map_or(0, |r| r.got);
             let text = |s: &str| protocol::ChatText::sanitize(s.as_bytes());
             if what & TELL_SET != 0 {
                 let s = usize::from(what & !TELL_SET);
@@ -1781,7 +1787,6 @@ impl Achievements {
                 let Some(name) = text(set.name) else {
                     continue;
                 };
-                let n = m.count_ones().min(255) as u8;
                 f(
                     slot,
                     protocol::Achieved {
@@ -1789,8 +1794,8 @@ impl Achievements {
                         name,
                         desc: None,
                         icon: text(set.icon),
-                        done: n,
-                        total: n,
+                        done,
+                        total: m.count_ones().min(255) as u8,
                     },
                 );
             } else if let Some(d) = self.defs.get(usize::from(what)) {
@@ -1811,7 +1816,7 @@ impl Achievements {
                         name,
                         desc: text(d.desc),
                         icon: text(d.icon),
-                        done: (got & m).count_ones().min(255) as u8,
+                        done,
                         total: m.count_ones().min(255) as u8,
                     },
                 );
@@ -2344,12 +2349,23 @@ mod tests {
         a.event(0, ev(EV_CRAFT_DONE, 1, pack(2, 1), 0));
         let mut seen = Vec::new();
         a.take_tells(|_, t| seen.push(t));
+        let rows: Vec<_> = seen.iter().filter(|t| !t.set).map(|t| t.done).collect();
+        assert_eq!(
+            rows,
+            [2, 3],
+            "two unlocks in one tick count up, not 3 and 3"
+        );
         let set = seen.iter().find(|t| t.set).expect("the set is told");
         assert_eq!((set.done, set.total), (3, 3));
         assert_eq!(
             set.icon.map(|d| d.as_bytes().to_vec()),
             Some(b"ui_star".to_vec())
         );
+        a.join(1, Some(W2));
+        a.event(1, ev(EV_GATHER, 1, pack(0, 20), 0));
+        let mut seen = Vec::new();
+        a.take_tells(|_, t| seen.push(t.done));
+        assert_eq!(seen, [1, 2], "two rows from one event count up too");
     }
 
     #[test]
