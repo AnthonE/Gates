@@ -1,5 +1,6 @@
 use sim_core::{
     assist::ASSIST_TICKS,
+    gather::STRIKE_DELAY_TICKS,
     input::{InputFrame, BTN_ASSIST},
     movement::{Body, POS_XZ_Q, POS_Y_Q},
     world::{Command, World, EV_ASSIST, EV_RECOVERED},
@@ -187,10 +188,12 @@ fn finishing_hit(healing: bool) {
     let mut w = fixture();
     w.combat = sim_core::combat::CombatContent::probe_fixture();
     w.gather = sim_core::gather::GatherContent::probe_fixture();
-    for _ in 1..ASSIST_TICKS {
+    // The swing is taken `STRIKE_DELAY_TICKS` before the finishing tick, so
+    // its blow lands on it.
+    let wind_up = STRIKE_DELAY_TICKS as u16;
+    for _ in 1..ASSIST_TICKS - wind_up {
         hold(&mut w);
     }
-    assert_eq!(w.players[1].assist_ticks, ASSIST_TICKS - 1);
     let a = w.players[0].body;
     w.players[2].body = Body::at(
         42,
@@ -204,18 +207,6 @@ fn finishing_hit(healing: bool) {
         cond: 400,
         skin: 0,
     };
-    if healing {
-        w.survival = sim_core::survival::SurvivalContent::probe_fixture();
-        for p in w.players.iter_mut().take(3) {
-            sim_core::survival::grant(&w.survival, p);
-        }
-        let p = &mut w.players[0];
-        p.hp = 20;
-        p.heal_rem = 80;
-        p.heal_total = 80;
-        p.heal_span = 1;
-    }
-    let hp = w.players[0].hp;
     w.tick(&[
         Command::Input {
             id: 1,
@@ -232,6 +223,27 @@ fn finishing_hit(healing: bool) {
             favour: 0,
         },
     ]);
+    for _ in 1..wind_up {
+        hold(&mut w);
+    }
+    assert_eq!(w.players[1].assist_ticks, ASSIST_TICKS - 1);
+    if healing {
+        w.survival = sim_core::survival::SurvivalContent::probe_fixture();
+        for p in w.players.iter_mut().take(3) {
+            sim_core::survival::grant(&w.survival, p);
+        }
+        let p = &mut w.players[0];
+        p.hp = 20;
+        p.heal_rem = 80;
+        p.heal_total = 80;
+        p.heal_span = 1;
+    }
+    let hp = w.players[0].hp;
+    w.tick(&[Command::Input {
+        id: 1,
+        frame: frame(&w, 0),
+        favour: 0,
+    }]);
     assert!(
         w.events
             .entries()

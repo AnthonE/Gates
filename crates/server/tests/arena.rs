@@ -70,9 +70,14 @@ fn meet(
     let (at, facing) = (a.player(ID).body, a.player(ID).frame.yaw);
     let (fx, fz) = sim_core::yaw_dir(facing);
     let off = if ahead { 8.0 } else { -8.0 };
+    // Two metres to one side of straight ahead: straight down the look is
+    // behind whatever the agent is chopping, hidden until it falls, and
+    // whether the eyes catch the body in the frames the trunk comes down is
+    // a race the scene is not about.
+    let side = 2.0;
     let (x, z) = (
-        at.qx as f32 * POS_XZ_Q + fx * off,
-        at.qz as f32 * POS_XZ_Q + fz * off,
+        at.qx as f32 * POS_XZ_Q + fx * off + fz * side,
+        at.qz as f32 * POS_XZ_Q + fz * off - fx * side,
     );
     let theirs = theirs.map(|id| stack(&content, id));
     let body = Body::at(SEED, &a.haven, x, z);
@@ -613,7 +618,7 @@ fn the_agent_heals_after_a_fight() {
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
     let spear = stack(&content, "item.spear_wood");
     // Already knocked about: the spear can win without taking a blow (it
-    // outreaches the rock), and a fight it walks out of untouched leaves
+    // outreaches the hatchet), and a fight it walks out of untouched leaves
     // nothing for this test to see healed.
     a.stage(ID, |p| {
         p.inv[0] = spear;
@@ -627,7 +632,9 @@ fn the_agent_heals_after_a_fight() {
         at.qx as f32 * POS_XZ_Q + fx * 8.0,
         at.qz as f32 * POS_XZ_Q + fz * 8.0,
     );
-    let rock = stack(&content, "item.bat");
+    // A stone hatchet, the short tool: the bat reaches 1.35 m since reach
+    // follows the drawn weapon, too near the spear for it to win on reach.
+    let rock = stack(&content, "item.hatchet_stone");
     let body = Body::at(SEED, &a.haven, x, z);
     a.stage(RUSHER, |p| {
         p.body = body;

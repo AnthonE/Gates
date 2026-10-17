@@ -546,9 +546,12 @@ const TICKS: u64 = 900;
 /// rescales the island's, its spires stand, and no one spawns inside it.
 /// **Moved → `0x07E1_E50F_C295_4C13` at the travelling mark** (2026-10-17):
 /// the weak spot starts a step from the first blow and moves only when hit.
-/// **Moved → `0xE4D0_90C3_4320_FBC7` at the bigger boulders** (2026-10-17, wipe): what
+/// **Moved → `0x251C_6F03_A043_0E96` at the delayed strike** (2026-10-17): a
+/// swing lands `gather::STRIKE_DELAY_TICKS` after it is taken, and the
+/// pending strike is hashed.
+/// **Moved → `0xF750_AF5D_3B27_AA04` at the bigger boulders** (2026-10-17, wipe): what
 /// stands where moved with the rocks and THE GATE's guards (#348).
-const GOLDEN_FINAL_HASH: u64 = 0xE4D0_90C3_4320_FBC7;
+const GOLDEN_FINAL_HASH: u64 = 0xF750_AF5D_3B27_AA04;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -660,9 +663,11 @@ const GOLDEN_FINAL_HASH: u64 = 0xE4D0_90C3_4320_FBC7;
 /// **Moved → `0xA04E_9426_2556_114B` at the Verdigris** (2026-10-15), with the final hash.
 /// **Moved → `0xFEFF_1F4E_A700_FCCD` at the travelling mark** (2026-10-17), with
 /// the final hash.
-/// **Moved → `0xC11A_B959_9B71_4B20` at the bigger boulders** (2026-10-17, wipe), with the
+/// **Moved → `0x47FB_2E29_2A91_9869` at the delayed strike** (2026-10-17), with
+/// the final hash.
+/// **Moved → `0x33F4_1E89_2C04_8BCC` at the bigger boulders** (2026-10-17, wipe), with the
 /// final hash.
-const GOLDEN_TRACE_HASH: u64 = 0xC11A_B959_9B71_4B20;
+const GOLDEN_TRACE_HASH: u64 = 0x33F4_1E89_2C04_8BCC;
 
 /// Fold a stamped trace into one number.
 ///
@@ -908,8 +913,13 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             // walking band never enters a 0.88 m drum from a 1.6 m eye
             // stood on top of it. Its yaw still wanders, and the roll it
             // drives is the weighted walk the golden is watching.
+            // And it keeps its hand: a swing lands `STRIKE_DELAY_TICKS`
+            // after it is taken and a hotbar change in between drops it, so
+            // the wandering slot every other bot keeps would land one blow
+            // in six and burst no barrel at all.
             if world.players[30].active && id == world.players[30].id {
                 f.pitch = 0;
+                f.sel = 0;
             }
             cmds.push(Command::Input {
                 id,

@@ -5184,11 +5184,18 @@ impl ClientCore {
         self.input_due = false;
         let (ack, ack_bits) = self.view.ack_fields();
         let tail = self.predict.tail();
-        // The playout report (wire v61): the delay this client actually
-        // renders remotes at, rounded to the tick, so the server's
-        // lag-comp favour prices the past THIS player sees rather than
-        // the old constant. The constructor saturates it to the field.
-        let mut dg = InputDatagram::new(ack, ack_bits, self.playout_ticks.round() as u8);
+        // The playout report (wire v61): how far behind the acked snapshot
+        // this client is drawing remotes right now, rounded to the tick, so
+        // the server's lag-comp favour prices the past THIS player sees.
+        // Measured against the ack rather than sent as the bare delay: the
+        // smoothed clock runs up to a tick past the newest snapshot between
+        // arrivals, and the bare delay left the shard rewinding half a tick
+        // short on average. The constructor saturates it to the field.
+        let view_lag = self
+            .view
+            .newest_applied
+            .map_or(self.playout_ticks, |s| f64::from(s) - self.render_tick());
+        let mut dg = InputDatagram::new(ack, ack_bits, view_lag.round().max(0.0) as u8);
         for f in tail {
             if dg.push(*f).is_err() {
                 break; // tail is wire-capped already; defensive only

@@ -135,7 +135,7 @@ impl RewindPose {
 /// posture with a smaller `World` — `world_conts` already does exactly this
 /// (*"Boxed inside, for `backpacks`' reason"*). `World` is built on the
 /// stack by `ShardCore::new`, every wire test and `probe_parity`, and
-/// wasm32's shadow stack has no guard page, so 16 kB belongs on the heap
+/// wasm32's shadow stack has no guard page, so 32 kB belongs on the heap
 /// however it is spelled. Nothing here allocates in the tick.
 pub struct Rewind {
     /// `rows[tick & (REWIND_TICKS - 1)][slot]`.

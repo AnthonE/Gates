@@ -916,7 +916,7 @@ fn pull_at(players: &mut [Player; MAX_PLAYERS], rw: &Rewind, back: u8) -> (bool,
 ///
 /// Without this, the feature check below is a pair of unfalsifiable claims —
 /// a "miss at favour 0" is satisfied by a target that was never in the line at
-/// any depth, and a "hit at favour 7" by a gun that ignores the ring and shoots
+/// any depth, and a "hit at the ceiling" by a gun that ignores the ring and shoots
 /// whatever is in front of it.
 #[test]
 fn the_gun_lag_comp_fixture_really_moves_the_target_out_of_the_line() {
@@ -939,7 +939,7 @@ fn the_gun_lag_comp_fixture_really_moves_the_target_out_of_the_line() {
 }
 
 /// **The feature.** The same trigger pull, on the same tick, against the same
-/// standing bodies: it misses at favour 0 and lands at favour 7.
+/// standing bodies: it misses at favour 0 and lands at the ceiling.
 ///
 /// Red under `Pose::Rewound { .. }` → `Pose::Live` at the `hitscan` scan (the
 /// whole slice), and under dropping `favour[i]` to a literal `0`.

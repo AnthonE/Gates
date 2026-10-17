@@ -46,9 +46,13 @@
 # rock is meaningfully worse than a spear is a knob, not a loop's call
 # (`DECISIONS.md` §open, "tools as weapons").
 #
-# What separates them instead is **reach**: 1 m against the spears' 2 m, so
-# a spear wins the fight it starts. Gather reach is `gather::REACH_M` and is
-# untouched — swinging at a tree is not affected by this table.
+# What separates them instead is **reach**, and the drawn weapon sets it:
+# `reach_cm` is eye to the struck body's skin, the rig's hand at the strike
+# (0.6 m out) plus the item's length ahead of the grip, so a bat reaches
+# 1.35 m, a hatchet 0.95, a spear 1.75 and a spear wins the fight it starts.
+# `client/tests/melee_reach.rs` holds every row to its model. Gather reach is
+# `gather::REACH_M` and is untouched — swinging at a tree is not affected by
+# this table.
 #
 # `structure` stays at or below the metal spear's 4 on every row, so the
 # best-melee anchor (`balance.rs`, the door and wall breach swings) still
@@ -65,7 +69,7 @@ structure = 1
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 1
+reach_cm = 135
 condition_loss = 100
 
 # **The torch hits** — the reference's does: 5 a blow against its rock's 10,
@@ -88,7 +92,7 @@ structure = 1
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 1
+reach_cm = 90
 
 [[weapon]]
 id = "item.hatchet_stone"
@@ -99,7 +103,7 @@ structure = 2
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 1
+reach_cm = 95
 
 [[weapon]]
 id = "item.pickaxe_stone"
@@ -110,7 +114,7 @@ structure = 1
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 1
+reach_cm = 105
 
 [[weapon]]
 id = "item.hatchet_metal"
@@ -121,7 +125,7 @@ structure = 3
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 1
+reach_cm = 95
 
 [[weapon]]
 id = "item.pickaxe_metal"
@@ -132,7 +136,7 @@ structure = 2
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 1
+reach_cm = 110
 
 # --- weapons proper ------------------------------------------------------
 
@@ -144,7 +148,7 @@ structure = 3
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 2
+reach_cm = 175
 
 # The stone head: between the wooden spear and the metal one.
 [[weapon]]
@@ -155,7 +159,7 @@ structure = 3
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 2
+reach_cm = 175
 
 [[weapon]]
 id = "item.spear_metal"
@@ -165,7 +169,7 @@ structure = 4
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-range_m = 2
+reach_cm = 190
 
 # **Neither bow carries a `range_m`**: an arrow flies until something stops
 # it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) — a

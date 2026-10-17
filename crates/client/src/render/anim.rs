@@ -350,6 +350,18 @@ impl Clip {
 /// that reason.
 pub const SWING_CLIP_S: f32 = 1.05333;
 
+/// How far into `Sword_Attack` a remote swing starts playing, seconds: the
+/// clip's own strike is 0.245 s in, the sim lands the blow
+/// `gather::STRIKE_DELAY_TICKS` (0.133 s) after the swing is taken, and
+/// starting here puts the two on one instant (`tests/rig_asset.rs`). What is
+/// skipped is the slow start of the draw; the follow-through, which lingers,
+/// plays whole.
+pub const SWING_CLIP_LEAD_S: f32 = 0.112;
+
+/// How long a remote swing takes to blend in, seconds: inside the strike, so
+/// the blow is drawn at full weight — `FLINCH_BLEND_S`'s rule.
+pub const SWING_BLEND_S: f32 = 0.1;
+
 /// How long the one-shot flinch runs, seconds.
 ///
 /// **Measured off the shipped file, not chosen** — the `ANIM_RIG_H_M`
@@ -1150,7 +1162,7 @@ impl BodyAnim {
     /// Start a one-shot swing on this body. Clears the other one-shots —
     /// see [`BodyAnim::flinch`] for why they are one slot and the newest wins.
     pub fn swing(&mut self) {
-        self.swing_s = SWING_CLIP_S;
+        self.swing_s = SWING_CLIP_S - SWING_CLIP_LEAD_S;
         self.flinch_s = 0.0;
         self.shoot_s = 0.0;
         self.begin();
@@ -1175,8 +1187,9 @@ impl BodyAnim {
     /// swing above the flinch would drop ~83% of flinches in a melee fight.
     ///
     /// **2. Truncating the arc removes no sim fact.** `EV_SWING` is pushed
-    /// after the swing has already resolved, so the drawn arc is a replay:
-    /// cutting it short predicts nothing and cancels nothing.
+    /// when the swing is taken and the blow lands on its own clock
+    /// (`gather::STRIKE_DELAY_TICKS`), so cutting the drawn arc short
+    /// predicts nothing and cancels nothing.
     ///
     /// **3. The loser's clock has to be stopped, not just outranked.** A
     /// swing still counting down under a flinch would be wanted again the
@@ -1715,6 +1728,7 @@ pub fn bind(
 fn blend(want: Clip) -> f32 {
     match want {
         Clip::Flinch => FLINCH_BLEND_S,
+        Clip::Swing => SWING_BLEND_S,
         _ => ANIM_BLEND_S,
     }
 }
@@ -1790,6 +1804,8 @@ pub fn drive(
                 } else if first {
                     active.set_seek_time(desync(owner.0) * d);
                 }
+            } else if want == Clip::Swing {
+                active.set_seek_time(SWING_CLIP_LEAD_S);
             } else if want == Clip::Death && from == Some(Clip::Sleep) {
                 // A sleeper killed where it lies is already down: straight
                 // to the fallen pose rather than standing up to fall.
@@ -1838,7 +1854,10 @@ fn upper(rig: &Rig, anim: &BodyAnim, playing: &mut Playing, player: &mut Animati
                 player.stop(old);
             }
             if let Some(node) = rig.upper_node(c) {
-                player.start(node);
+                let active = player.start(node);
+                if c == Clip::Swing {
+                    active.set_seek_time(SWING_CLIP_LEAD_S);
+                }
             }
             playing.upper = want;
             playing.upper_seq = anim.transient_seq;
@@ -2372,17 +2391,24 @@ mod tests {
     }
 
     #[test]
-    fn the_flinch_blends_in_faster_than_anything_else() {
+    fn a_one_shot_blends_in_by_its_own_apex() {
         // `FLINCH_BLEND_S`'s reason, as a rule rather than as a paragraph:
-        // the clip is 0.333 s long and the general 0.18 s cross-fade would
-        // still be running at its apex. `tests/rig_asset.rs` is where the
-        // number is checked against the file; this is where the ordering is.
-        assert!(blend(Clip::Flinch) < blend(Clip::Swing));
+        // a cross-fade still running at a one-shot's apex draws the moment
+        // the clip exists for at partial weight. The flinch peaks 0.167 s in
+        // and the swing, played from `SWING_CLIP_LEAD_S`, strikes on
+        // `gather::STRIKE_DELAY_TICKS` (0.133 s) — both well inside the
+        // general 0.18 s. `tests/rig_asset.rs` checks both against the file;
+        // this is where the ordering is.
+        let strike = sim_core::gather::STRIKE_DELAY_TICKS as f32 / sim_core::limits::TICK_HZ as f32;
+        assert!(blend(Clip::Swing) <= strike);
         assert!(blend(Clip::Flinch) < FLINCH_CLIP_S);
         for c in Clip::ALL {
+            if c != Clip::Swing && c != Clip::Flinch {
+                assert_eq!(blend(c), ANIM_BLEND_S, "{c:?} has a blend of its own");
+            }
             assert!(
-                blend(c) >= blend(Clip::Flinch),
-                "{c:?} blends in faster than the flinch"
+                blend(c) <= ANIM_BLEND_S,
+                "{c:?} blends slower than the general fade"
             );
         }
     }

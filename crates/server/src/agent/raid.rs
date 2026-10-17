@@ -76,8 +76,10 @@ pub const RAID_TRIP_M: f32 = 400.0;
 /// A base raided, or a raid on it that came to nothing, is let be this long.
 pub const RAID_RETRY_TICKS: u32 = 600 * TICK_HZ;
 /// Where it stands to plant a charge or swing: this far out from the
-/// face's middle, and on the last steps within this of the spot.
-pub const STAND_OUT_M: f32 = 1.0;
+/// face's middle, and on the last steps within this of the spot. Inside the
+/// shortest melee reach (`weapons.toml`'s torch, 0.9 m), with the eye's slant
+/// down to the face to spare.
+pub const STAND_OUT_M: f32 = 0.8;
 pub const STAND_NEAR_M: f32 = 0.15;
 pub const STALL_TICKS: u32 = 2 * TICK_HZ;
 /// Clear of a charge's blast by this much more than its radius.
