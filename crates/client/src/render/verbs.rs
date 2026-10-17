@@ -115,10 +115,11 @@ pub fn drop_give_hold(mut give: ResMut<Give>) {
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
-/// `.1` is whether the look ray found it, rather than it being merely the
-/// one nearest the feet: the side line names only what the crosshair is on.
+/// Always what the crosshair is on, never merely the nearest to the feet:
+/// a hammer, a charge or `Backspace` acting on a wall the player is not
+/// looking at is the wrong wall.
 #[derive(Resource, Default)]
-pub struct Near(pub Option<Target>, pub bool);
+pub struct Near(pub Option<Target>);
 
 /// Resolve the pick from the predictor's own position and the sim's own
 /// bearing.
@@ -492,8 +493,7 @@ pub fn resolve(
     }
     // The hammer's and the charge's target: the free-placed deployable the
     // crosshair is on, by `E`'s own ray, else the piece or solid deployable
-    // the look ray meets (in reach, or nothing), else — only when the
-    // crosshair is on no built thing at all — the structure nearest the feet.
+    // the look ray meets (in reach), else nothing.
     let span =
         |rec: &sim_core::deploy::DeployRec, arch: u8| body_span(world.as_deref(), core, rec, arch);
     let seen = world.as_deref().and_then(|w| {
@@ -514,10 +514,9 @@ pub fn resolve(
             core.deploy_defs_have,
         )
     });
-    near.1 = seen.is_some() || built.is_some();
-    near.0 = seen.or_else(|| match built {
-        Some(hit) => structure::struck(
-            hit,
+    near.0 = seen.or_else(|| {
+        structure::struck(
+            built?,
             (x, z),
             core.pieces.entries(),
             &core.piece_defs,
@@ -525,16 +524,7 @@ pub fn resolve(
             core.deploys.entries(),
             &core.deploy_defs,
             core.deploy_defs_have,
-        ),
-        None => structure::nearest(
-            (x, z),
-            core.pieces.entries(),
-            &core.piece_defs,
-            core.piece_defs_have,
-            core.deploys.entries(),
-            &core.deploy_defs,
-            core.deploy_defs_have,
-        ),
+        )
     });
 }
 
@@ -888,7 +878,7 @@ pub fn keys(
     if on(Action::SwitchOn) {
         light_aimed(&net, &aimed.0, &mut toast);
     }
-    // `Backspace` — take the nearest structure back down. A destructive
+    // `Backspace` — take the aimed structure back down. A destructive
     // verb gets a key nothing else is near, and one a hand resting on WASD
     // cannot reach by accident: the sim gates it on a ten-minute window
     // and a claim, but a misfire inside both is still a foundation gone.

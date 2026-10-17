@@ -929,7 +929,7 @@ pub fn keys(
     mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
-    // The hammer wheel's release fires at the nearest structure — the same
+    // The hammer wheel's release fires at the aimed structure — the same
     // `Near` the keyboard verbs read, resolved before this system so a
     // removed or upgraded structure cannot leave a stale wheel target.
     near: Res<super::verbs::Near>,
