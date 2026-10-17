@@ -29,13 +29,20 @@
 //! same way, with no hook in any of them. Past [`MAX_TURRETS`] a placed
 //! turret stands inert until one comes down. Not saved, like a sentry's
 //! brain: a restart forgets who it was after.
+//!
+//! ## Interference
+//!
+//! Rust's rule rather than a shard-wide one: of the turrets within
+//! [`TURRET_INTERFERENCE_M`] of each other, the first
+//! [`TURRET_INTERFERENCE`] in table order shoot and the rest stand idle,
+//! guns up. A wall of turrets is a wall of twelve.
 
 use crate::build::Pieces;
 use crate::collide::ColIndex;
 use crate::deploy::{box_key, DeployContent, Deploys, ARCH_TURRET};
 use crate::gather::ItemStack;
 use crate::heli::Round;
-use crate::limits::{MAX_PLAYERS, MAX_TURRETS};
+use crate::limits::{MAX_PLAYERS, MAX_TURRETS, TURRET_INTERFERENCE, TURRET_INTERFERENCE_M};
 use crate::mob::Mob;
 use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav;
@@ -211,12 +218,18 @@ pub fn step(
     if tick.is_multiple_of(LOOK_TICKS) {
         reconcile(dc, deploys, table, slots);
     }
+    let mut recs = [None; MAX_TURRETS];
+    for (r, t) in recs.iter_mut().zip(table.iter()) {
+        if t.live {
+            *r = deploys.find(t.cx, t.cz, t.level, t.loc).copied();
+        }
+    }
     for k in 0..MAX_TURRETS {
         let t = table[k];
         if !t.live {
             continue;
         }
-        let Some(rec) = deploys.find(t.cx, t.cz, t.level, t.loc).copied() else {
+        let Some(rec) = recs[k] else {
             continue;
         };
         let (x, z) = rec.xz();
@@ -248,12 +261,13 @@ pub fn step(
             })
         };
         let s = &mut table[k].gun;
-        // A dry gun lets its target go and looks at nobody.
-        if rounds_in(deploys) == 0 {
+        // A dry gun lets its target go and looks at nobody; so does one
+        // jammed by the turrets around it (module doc).
+        if rounds_in(deploys) == 0 || jammed(&recs, k, (x, z)) {
             *s = Sentry::default();
             continue;
         }
-        // Looks are spread over the cadence by index, so 24 turrets do not
+        // Looks are spread over the cadence by index, so the turrets do not
         // all walk their sight lines on one tick.
         if (tick + k as u64).is_multiple_of(LOOK_TICKS) {
             let (owner, dref) = (t.owner, &*deploys);
@@ -314,6 +328,27 @@ pub fn step(
     }
 }
 
+/// Whether turret `k` is past [`TURRET_INTERFERENCE`] among the turrets
+/// within [`TURRET_INTERFERENCE_M`] of it: the ones before it in table order
+/// win, which is stable for as long as they all stand.
+fn jammed(
+    recs: &[Option<crate::deploy::DeployRec>; MAX_TURRETS],
+    k: usize,
+    at: (f32, f32),
+) -> bool {
+    let r2 = TURRET_INTERFERENCE_M * TURRET_INTERFERENCE_M;
+    recs[..k]
+        .iter()
+        .flatten()
+        .filter(|r| {
+            let (x, z) = r.xz();
+            let (dx, dz) = (x - at.0, z - at.1);
+            dx * dx + dz * dz <= r2
+        })
+        .count()
+        >= TURRET_INTERFERENCE
+}
+
 /// Take one `item` out of box `i`, from the first stack holding it.
 fn spend_one(deploys: &mut Deploys, i: usize, item: u16) {
     for s in 0..crate::limits::BOX_SLOTS {
@@ -344,5 +379,34 @@ mod tests {
         }
         assert!(!is_turret_slot(TURRET_SLOT0 - 1));
         assert!(!is_turret_slot(SENTRY_SLOT0));
+    }
+
+    /// Rust's interference: fourteen turrets in one base, and the first
+    /// twelve in table order shoot; a fifteenth across the island is its
+    /// own base and shoots too.
+    #[test]
+    fn past_twelve_turrets_within_forty_metres_the_rest_stand_idle() {
+        let mut recs = [None; MAX_TURRETS];
+        for (k, r) in recs.iter_mut().take(14).enumerate() {
+            *r = Some(crate::deploy::DeployRec {
+                cx: 500 + (k % 4) as u16,
+                cz: 500 + (k / 4) as u16,
+                ..Default::default()
+            });
+        }
+        recs[20] = Some(crate::deploy::DeployRec {
+            cx: 900,
+            cz: 900,
+            ..Default::default()
+        });
+        let at = |k: usize| recs[k].unwrap().xz();
+        for k in 0..14 {
+            assert_eq!(
+                jammed(&recs, k, at(k)),
+                k >= TURRET_INTERFERENCE,
+                "turret {k}"
+            );
+        }
+        assert!(!jammed(&recs, 20, at(20)), "a far base is its own");
     }
 }

@@ -828,7 +828,8 @@ impl ColIndex {
     /// Fibonacci-hash home slot — pure integer, wasm-identical.
     #[inline]
     fn home(key: u32) -> usize {
-        (key.wrapping_mul(0x9E37_79B1) >> 18) as usize & (COL_INDEX_SLOTS - 1)
+        (key.wrapping_mul(0x9E37_79B1) >> (32 - COL_INDEX_SLOTS.trailing_zeros())) as usize
+            & (COL_INDEX_SLOTS - 1)
     }
 
     /// The solid table's home slot, the same hash at its own width.
@@ -3428,7 +3429,12 @@ mod tests {
         // rule's to the bit, filled or not, and every filled band belongs to
         // the cell its slot holds — which is what pins `remove_slot` moving
         // the two arrays together.
-        const W: u16 = 48;
+        //
+        // 128 a side so the table is a quarter full: at the 48 this had
+        // while the table was 16,384 slots, the 65,536-slot table spread a
+        // contiguous grid with no collisions at all, and the deletions
+        // below need probe chains to shift.
+        const W: u16 = 128;
         let (x0, z0) = (CX - W / 2, CZ - W / 2);
         // Every piece in a column carries the column's plate (`build::place`).
         let plate_of = |cx: u16, cz: u16| ((cx ^ cz) % 7) as i8 - 3;

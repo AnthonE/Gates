@@ -764,8 +764,9 @@ pub fn stick_at(x: f32, y: f32, z: f32) -> Option<(i32, i32, i32)> {
 
 /// Where something let go of at `(x, y, z)` metres comes to rest, in body
 /// quanta: straight down onto the first surface a body could stand on at
-/// that height — terrain, a built floor or stair, a crate, rock or plinth
-/// top — which is `movement::step`'s own ground. `None` off the island or
+/// that height — the ground or a face's rock (`face::surface`), a built
+/// floor or stair, a crate, rock or plinth top — which is `movement::step`'s
+/// own ground. `None` off the island or
 /// in water deeper than [`SINK_DEPTH_M`].
 pub fn rest_at(
     seed: u64,
@@ -779,7 +780,7 @@ pub fn rest_at(
     if !(0.0..terrain::ISLAND_SIZE).contains(&x) || !(0.0..terrain::ISLAND_SIZE).contains(&z) {
         return None;
     }
-    let g = terrain::ground(seed, haven, x, z)
+    let g = crate::face::surface(occ, seed, haven, x, z)
         .max(crate::collide::piece_ground(seed, haven, cols, x, z, y))
         .max(occ.ground(seed, x, z, y));
     if g < terrain::SEA_LEVEL - SINK_DEPTH_M {

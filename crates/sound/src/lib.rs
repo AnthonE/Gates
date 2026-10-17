@@ -231,7 +231,9 @@ pub enum Cue {
     /// (`reference/AUDIO.md` §9) and its radius is a hundred metres, which
     /// is why [`MAX_AUDIBLE_M`] is what it is.
     ShotGun,
-    /// The hitmarker for a **head** hit (v58).
+    /// The hitmarker for a **head** hit (v58). Played from the same crunch as
+    /// [`Cue::Headshot`]: in Rust the shooter hears the headshot too, which
+    /// is how they know it was one (operator, 2026-10-17).
     ///
     /// A separate cue rather than [`Cue::Hit`] pitched up, because
     /// `interface_cues_do_not_vary_in_pitch` is a rule this bank keeps for
@@ -432,11 +434,17 @@ pub enum Cue {
     MapPin,
     /// The Verdigris counter: one tube click, yours, so not positional.
     Geiger,
+    /// You took a headshot: Rust's big crunch, a crack over a smashed thud.
+    /// The only thing a hit body hears from its own skin (operator,
+    /// 2026-10-17: Rust makes no pain sound, *"if anything they make a big
+    /// smashy crunchy sound when you get head shot"*). Yours, so not
+    /// positional. Appended, the enum's append-order rule.
+    Headshot,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 102;
+pub const CUE_COUNT: usize = 103;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -547,6 +555,7 @@ impl Cue {
         Cue::CraftStart,
         Cue::MapPin,
         Cue::Geiger,
+        Cue::Headshot,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -696,6 +705,8 @@ impl Cue {
             // A click retriggered up to fourteen times a second is the
             // machine-gun tell this knob exists for.
             Cue::Geiger => 0.05,
+            // Heard once a fight at most; a nudge so two are never one take.
+            Cue::Headshot => 0.04,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -944,7 +955,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // deliberate floor and not a taper: quieter than the identity, still
     // plainly a hit — the judge's whole point is that a halved blow reads
     // as a MISS, and a cue fading toward silence would say exactly that.
-    row(GAME,  0.0, 0.60,  45, 6, false),  // hit, head
+    row(GAME,  0.0, 0.75,  45, 6, false),  // hit, head (the crunch)
     row(GAME,  0.0, 0.45,  45, 6, false),  // hit, limb
     // Weather v0. The rain is a bed like the wind; thunder is ambience —
     // a player who turns the scenery down turns the storm down with it —
@@ -1096,6 +1107,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // down must not mute it); a cooldown under a frame, so clicks on
     // consecutive frames both land; ducked under a near shot.
     row(GAME,  0.0, 0.36,   8, 2, false),  // geiger click
+    // A headshot taken: as loud and as high as being killed, because it is
+    // usually the first half of it.
+    row(GAME,  0.0, 0.95, 150, 8, false),  // headshot
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

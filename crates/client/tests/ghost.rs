@@ -1155,3 +1155,77 @@ fn the_tri_footing_matches_the_square_one() {
     assert_eq!(tri.size, sq.size);
     assert_eq!(tri.offset, sq.offset);
 }
+
+/// A box aimed into a wall slides back toward the placer until it clears
+/// (`place::body_slide`): the aimed pose hangs past the foundation's edge
+/// under the wall, the slid one is a pose the sim's own `body_site` takes,
+/// and it stands flush — two centimetres further back toward the wall is in
+/// the wall again.
+#[test]
+fn a_box_aimed_into_a_wall_slides_out_flush() {
+    use client::ui::place::body_slide;
+    use sim_core::deploy::body_site;
+    use sim_core::footprint::{centre, quantize, Pose};
+    let mut rig = Rig::new();
+    let mut p = rich(CX, CZ);
+    rig.founded(&mut p, CX, CZ);
+    rig.piece(&mut p, 1, CX, CZ, LOC_EDGE_XLO);
+    let def = rig.dc.defs[ROW_HEARTH as usize];
+    let feet = (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q);
+    let site = DeploySite {
+        seed: SEED,
+        haven: hv(SEED),
+        cols: rig.pieces.cols(),
+        at: feet,
+        pieces: rig.pieces.entries(),
+        piece_defs: &rig.bc,
+        piece_have: rig.bc.piece_count,
+        deploys: rig.deploys.entries(),
+        deploy_defs: &rig.dc,
+        deploy_have: rig.dc.def_count,
+        inv: &p.inv,
+    };
+    let check = |t: Target, pose: Pose| {
+        body_site(
+            SEED,
+            hv(SEED),
+            rig.pieces.cols(),
+            rig.deploys.entries(),
+            &rig.dc,
+            def.placement,
+            def.arch,
+            t.cx,
+            t.cz,
+            t.level,
+            pose,
+        )
+        .map(|_| ())
+    };
+    // On the wall's line, facing the feet (+x): yaw a quarter turn.
+    let wall_x = CX as f32 * BUILD_CELL_M;
+    let (cx, cz, ox, oz) = quantize(wall_x + 0.05, feet.1).expect("on the grid");
+    let aimed = (at(cx, cz, 0, LOC_PLANE), Pose { ox, oz, yaw: 64 });
+    assert_eq!(
+        check(aimed.0, aimed.1),
+        Err(REFUSE_D_SUPPORT),
+        "aimed into the wall, off the floor's edge under it"
+    );
+
+    let (t, pose) = body_slide(&site, def.placement, def.arch, aimed.0, aimed.1);
+    assert_eq!(check(t, pose), Ok(()), "the slid pose is one the sim takes");
+    assert_eq!(pose.yaw, aimed.1.yaw, "the slide never turns it");
+    let (x, z) = centre(t.cx, t.cz, pose);
+    assert!(x > wall_x + 0.05 && x < feet.0, "slid toward the feet: {x}");
+    assert!((z - feet.1).abs() < 0.02, "along the line to the feet: {z}");
+    let (bx, bz, box_, boz) = quantize(x - 0.02, z).expect("on the grid");
+    let back = Pose {
+        ox: box_,
+        oz: boz,
+        yaw: pose.yaw,
+    };
+    assert_eq!(
+        check(at(bx, bz, 0, LOC_PLANE), back),
+        Err(REFUSE_D_SPOT),
+        "flush: two centimetres back is in the wall again"
+    );
+}

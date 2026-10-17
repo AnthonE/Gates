@@ -301,7 +301,8 @@ const TBL_OCCUPIED: u32 = 1 << 31;
 /// `collide::ColIndex` uses.
 #[inline]
 fn tbl_home(key: u32) -> usize {
-    (key.wrapping_mul(0x9E37_79B1) >> 18) as usize & (CLAIM_INDEX_SLOTS - 1)
+    (key.wrapping_mul(0x9E37_79B1) >> (32 - CLAIM_INDEX_SLOTS.trailing_zeros())) as usize
+        & (CLAIM_INDEX_SLOTS - 1)
 }
 
 /// **The privilege volumes, cached per hearth** — the shape [`foreign_claim`]

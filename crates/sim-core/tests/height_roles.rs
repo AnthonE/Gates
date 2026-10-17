@@ -545,6 +545,7 @@ fn the_load_bearing_consumers_read_the_carved_ground() {
     const MUST_CARVE: &[(&str, &str)] = &[
         ("movement.rs", "the surface under a body"),
         ("ranged.rs", "a projectile's ground hit"),
+        ("face.rs", "the solid surface bodies and shots stand on"),
         ("terrain_mesh.rs", "the drawn ground"),
         ("structures.rs", "a foundation's skirt"),
         ("place.rs", "the placement ghost"),
@@ -561,9 +562,13 @@ fn the_load_bearing_consumers_read_the_carved_ground() {
         // caller-owned hash cache in front of it. The distinction this gate
         // exists to hold is `height` against `ground` — raw against carved —
         // and the memo is orthogonal to it.
+        // **`face::surface` counts as well** (2026-10-17): it is the carved
+        // ground off the faces and the rock drawn over it on them, and
+        // `face.rs` is pinned here to read the carved ground itself.
         assert!(
             text.contains("ground(seed")
                 || text.contains("terrain::ground(")
+                || (*file != "face.rs" && text.contains("face::surface("))
                 || text.contains("terrain::ground_memo(")
                 || text.contains("ground_in(c, seed")
                 || text.contains("ground_memo(&mut lat"),

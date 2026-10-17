@@ -10,9 +10,14 @@
 //! - a zero-state snapshot (`baseline_age == 0`) **clears the class-D
 //!   map** — it is the authoritative restart of the entity set;
 //! - the delta baseline is the *decoded content* of the applied snapshot
-//!   at `tick − baseline_age`, byte-identical to what the server recorded.
+//!   at `tick − baseline_age`, byte-identical to what the server recorded;
+//! - a snapshot overflow datagram (wire v121) is applied only on top of its
+//!   own tick's snapshot, once per part, and never becomes a baseline.
 
-use protocol::{decode_snapshot, peek_snapshot_header, EntityState, Nudge, Snapshot, WireError};
+use protocol::{
+    decode_snapshot, decode_snapshot_more, peek_kind, peek_snapshot_header, EntityState, Nudge,
+    Snapshot, SnapshotMore, WireError, KIND_SNAPSHOT_MORE,
+};
 use sim_core::limits::{SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS};
 
 fn ring_index(tick: u32) -> usize {
@@ -28,6 +33,9 @@ pub enum Applied {
     /// Named a baseline we no longer hold (anomaly: the server only
     /// baselines snapshots we acked, and our ring matches its depth).
     NoBaseline,
+    /// An overflow datagram for the newest applied tick, folded into the
+    /// render map ([`ClientView::newest_more`] holds its records).
+    More,
 }
 
 pub struct ClientView {
@@ -45,6 +53,10 @@ pub struct ClientView {
     /// Consecutive starved ticks the server covered with the decayed
     /// stand-in, as of that snapshot. 3-bit saturating; diagnostics.
     pub repeat_count: u8,
+    /// The newest overflow datagram applied, and which parts of the newest
+    /// tick have been (bit per part), so a duplicate is refused.
+    more: Option<Box<SnapshotMore>>,
+    more_seen: u8,
 }
 
 impl ClientView {
@@ -59,6 +71,8 @@ impl ClientView {
             nudge: Nudge::Ok,
             buffered_depth: 0,
             repeat_count: 0,
+            more: None,
+            more_seen: 0,
         }
     }
 
@@ -66,8 +80,11 @@ impl ClientView {
         self.entities.iter().find(|(e, _)| *e == id).map(|(_, s)| s)
     }
 
-    /// Apply one snapshot datagram.
+    /// Apply one snapshot datagram, or one of its overflow datagrams.
     pub fn apply(&mut self, bytes: &[u8]) -> Result<Applied, WireError> {
+        if peek_kind(bytes)? == KIND_SNAPSHOT_MORE {
+            return self.apply_more(bytes);
+        }
         let header = peek_snapshot_header(bytes)?;
         if let Some(newest) = self.newest_applied {
             if header.tick <= newest {
@@ -105,9 +122,39 @@ impl ClientView {
         self.buffered_depth = header.buffered_depth;
         self.repeat_count = header.repeat_count;
         self.ring[ring_index(header.tick)] = Some(snap);
+        self.more_seen = 0;
         Ok(Applied::Ok {
             delta: header.baseline_age != 0,
         })
+    }
+
+    /// The bodies a tick's snapshot had no room for. Only on top of that
+    /// tick's snapshot: before it (reordered) or after the next one there is
+    /// no tick to fold them into, and the server re-sends them anyway.
+    fn apply_more(&mut self, bytes: &[u8]) -> Result<Applied, WireError> {
+        let more = decode_snapshot_more(bytes)?;
+        let bit = 1u8 << more.part;
+        if self.newest_applied != Some(more.tick) || self.more_seen & bit != 0 {
+            return Ok(Applied::Stale);
+        }
+        self.more_seen |= bit;
+        for e in more.entities() {
+            match self.entities.iter_mut().find(|(id, _)| *id == e.id) {
+                Some((_, s)) => *s = *e,
+                None => self.entities.push((e.id, *e)),
+            }
+        }
+        match self.more.as_mut() {
+            Some(held) => **held = more,
+            None => self.more = Some(Box::new(more)),
+        }
+        Ok(Applied::More)
+    }
+
+    /// The overflow datagram [`Self::apply`] just answered [`Applied::More`]
+    /// for.
+    pub fn newest_more(&self) -> Option<&SnapshotMore> {
+        self.more.as_deref()
     }
 
     /// The most recently applied snapshot — the interpolation feed reads

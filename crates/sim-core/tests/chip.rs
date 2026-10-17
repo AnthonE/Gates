@@ -28,8 +28,8 @@
 //! reasoning for its 34, one table over.
 
 use sim_core::build::{
-    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B,
-    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
+    diag_pair, foundation_terrain_ok, BuildContent, PieceDef, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A,
+    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, MAT_TWIG, SHAPE_TRI_FOUNDATION,
 };
 use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef, HARD_SIDE_STRUCTURE};
@@ -49,6 +49,9 @@ const SHOOTER: u32 = 4;
 /// `BuildContent::probe_fixture`'s rows: 0 is the foundation, 1 the wall.
 const PIECE_FOUNDATION: u16 = 0;
 const PIECE_WALL: u16 = 1;
+/// A twig triangle foundation, added past the fixture's own rows
+/// ([`armed_shooter`]): a diagonal wall stands only on a triangle.
+const PIECE_TRI_FOUNDATION: u16 = 7;
 /// That wall's hp, which every damage assertion below is a fraction of.
 const WALL_HP: u32 = 100;
 const GROUND: u8 = 0;
@@ -218,6 +221,12 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
     w.gather = GatherContent::probe_fixture();
     w.combat = shooter_combat(structure);
     w.build = BuildContent::probe_fixture();
+    w.build.pieces[PIECE_TRI_FOUNDATION as usize] = PieceDef {
+        shape: SHAPE_TRI_FOUNDATION,
+        material: MAT_TWIG,
+        ..w.build.pieces[PIECE_FOUNDATION as usize]
+    };
+    w.build.piece_count = w.build.piece_count.max(PIECE_TRI_FOUNDATION + 1);
     w.deploy = DeployContent::probe_fixture();
     w.tick(&[Command::Join { id: SHOOTER }]);
     let (cx, cz) = buildable_cell(SEED);
@@ -310,7 +319,11 @@ fn seat_at(w: &mut World, cx: u16, cz: u16, dx: f32, dz: f32) {
 /// returns can only have come from the piece under test.
 fn walled_world_at(w: &mut World, structure: u16, loc: u8, dx: f32, dz: f32) -> (u16, u16) {
     let (cx, cz) = armed_shooter(w, structure, dx, dz);
-    place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    if loc == LOC_DIAG_A || loc == LOC_DIAG_B {
+        place(w, PIECE_TRI_FOUNDATION, cx, cz, GROUND, diag_pair(loc).0);
+    } else {
+        place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    }
     place(w, PIECE_WALL, cx, cz, GROUND, loc);
     let top = sim_core::build::column_floor_y(
         SEED,

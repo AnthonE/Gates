@@ -529,6 +529,13 @@ pub struct CombatContent {
     /// hundredths (`weapons.toml` `condition_loss` on a ranged row; the
     /// reference's 0.25 a pull, `BaseProjectile.UpdateItemCondition`).
     pub shot_wear: [u16; MAX_ITEM_DEFS],
+    /// The punch: an empty hand's row (`balance.toml` `globals.fist`). Body
+    /// damage and reach only, never structure or wear. `damage == 0` is the
+    /// inert default and an empty hand hits nothing, as before the fist.
+    pub fist: MeleeDef,
+    /// What a punch that landed takes off the puncher (`fist.self_damage`),
+    /// never the last hit point ([`knuckles`]).
+    pub fist_self_damage: u16,
 }
 
 /// A worn piece at condition zero protects at this per cent of its row —
@@ -616,6 +623,16 @@ impl CombatContent {
         arrow_lodge_ticks: 0,
         cond_max: [0; MAX_ITEM_DEFS],
         shot_wear: [0; MAX_ITEM_DEFS],
+        fist: MeleeDef {
+            damage: 0,
+            structure: 0,
+            reach_cm: 0,
+            head_pct: 100,
+            limb_pct: 100,
+            lit_bonus: 0,
+            wear: 0,
+        },
+        fist_self_damage: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -816,6 +833,18 @@ impl CombatContent {
     #[inline]
     pub fn held_struct(&self, held: u16) -> Option<MeleeDef> {
         self.held_row(held).filter(|d| d.structure > 0)
+    }
+
+    /// What a swing hits a body or an animal with: [`Self::held_melee`],
+    /// or the punch ([`Self::fist`]) for an empty hand. Only the swing's
+    /// own reads take the fist; everything that asks *is this a weapon*
+    /// keeps `held_melee`, where a bare hand is still none.
+    #[inline]
+    pub fn swing_melee(&self, held: u16) -> Option<MeleeDef> {
+        if held == NO_ITEM {
+            return Some(self.fist).filter(|d| d.damage > 0);
+        }
+        self.held_melee(held)
     }
 
     /// Condition one landed blow takes off `held` (`MeleeDef::wear`) —
@@ -1111,6 +1140,18 @@ pub fn protected(v: &Player) -> bool {
 pub fn shielded(attacker: &mut Player, victim: &Player) -> bool {
     attacker.hostile = HOSTILE_TICKS;
     attacker.safe || protected(victim)
+}
+
+/// A punch that landed hurts the hand that threw it: [`CombatContent::
+/// fist_self_damage`] off the puncher, armour or not, and never the last
+/// hit point, so a fistfight can leave you on one but cannot kill you.
+pub fn knuckles(cc: &CombatContent, p: &mut Player, events: &mut EventQueue) {
+    let cost = cc.fist_self_damage.min(p.hp.saturating_sub(1));
+    if cost == 0 {
+        return;
+    }
+    let Hurt { left, .. } = debit(p, cost);
+    events.push(EV_HEALTH, p.id, left as u32, cc.player_hp as u32);
 }
 
 #[inline]
@@ -1452,7 +1493,7 @@ pub fn strike_body(
     if !a.active || a.hp == 0 || hit.slot == attacker || hit.slot >= MAX_PLAYERS {
         return Strike::Missed;
     }
-    let Some(def) = cc.held_melee(held_item(a)) else {
+    let Some(def) = cc.swing_melee(held_item(a)) else {
         return Strike::Missed;
     };
     let attacker_id = a.id;
@@ -1503,7 +1544,12 @@ pub fn strike_body(
         crate::world::hit_c(part, dmg),
     );
     // The other half of the same blow, addressed to the other person in it.
-    events.push(EV_HURT, victim_id, sector as u32, dmg as u32);
+    events.push(
+        EV_HURT,
+        victim_id,
+        sector as u32,
+        crate::world::hurt_c(part, dmg),
+    );
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
         // No `EV_DEATH` here (wounded v0): the world decides whether this
@@ -1550,6 +1596,33 @@ mod tests {
             None,
             "an index past the table"
         );
+    }
+
+    /// The punch: only an empty hand's swing takes it, nothing that asks
+    /// whether a hand is armed sees it, and it never costs the last hp.
+    #[test]
+    fn a_punch_is_the_empty_hands_and_costs_the_puncher() {
+        let mut cc = CombatContent::probe_fixture();
+        assert_eq!(cc.swing_melee(NO_ITEM), None, "no fist row, no punch");
+        cc.fist = MeleeDef {
+            damage: 5,
+            reach_cm: 100,
+            ..cc.fist
+        };
+        cc.fist_self_damage = 2;
+        assert_eq!(cc.swing_melee(NO_ITEM).map(|d| d.damage), Some(5));
+        assert_eq!(cc.held_melee(NO_ITEM), None, "a fist is still no weapon");
+        assert_eq!(cc.held_struct(NO_ITEM), None, "and dents nothing");
+        assert_eq!(cc.swing_melee(0).map(|d| d.damage), Some(34));
+        let mut p = Player {
+            hp: 3,
+            ..Player::default()
+        };
+        let mut ev = EventQueue::default();
+        knuckles(&cc, &mut p, &mut ev);
+        assert_eq!(p.hp, 1);
+        knuckles(&cc, &mut p, &mut ev);
+        assert_eq!(p.hp, 1, "a punch never takes the last hit point");
     }
 
     #[test]

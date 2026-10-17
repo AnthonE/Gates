@@ -2176,8 +2176,9 @@ pub enum EventMsg {
     /// world bearing). The victim's fact and the victim's alone — the
     /// mirror of `Hit`, and the only thing on this wire that tells a body
     /// which way to turn. Quantized to sectors on purpose: enough to face,
-    /// not enough to aim (`sim_core::world`, `EV_HURT`).
-    Hurt { sector: u8, damage: u16 },
+    /// not enough to aim (`sim_core::world`, `EV_HURT`). `head`: the blow
+    /// crossed your head, and you hear Rust's headshot crunch (v121).
+    Hurt { sector: u8, damage: u16, head: bool },
     /// A magazine changed: `loaded` of `ceiling` now sit in the weapon, and
     /// `took` rounds left the pack to put them there. `took` is not the
     /// difference the client could compute — a partial reload off a nearly
@@ -5011,13 +5012,19 @@ pub fn encode_event_hit(
 /// is precisely the case where silently keeping the low nibble would put an
 /// arrow marker on the wrong side of a player's screen and no gate anywhere
 /// would notice.
-pub fn encode_event_hurt(sector: u8, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_hurt(
+    sector: u8,
+    damage: u16,
+    head: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     if sector >= HURT_SECTORS {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_HURT)?;
     w.write(sector as u32, HURT_SECTOR_BITS)?;
     w.write(damage as u32, 16)?;
+    w.write(head as u32, 1)?;
     Ok(w.finish())
 }
 
@@ -6864,6 +6871,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::Hurt {
                 sector,
                 damage: r.read(16)? as u16,
+                head: r.read(1)? != 0,
             }
         }
         SUB_IMPACT => {
@@ -9517,8 +9525,8 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
-            file: "cliff.rs",
-            src: include_str!("../../sim-core/src/cliff.rs"),
+            file: "face.rs",
+            src: include_str!("../../sim-core/src/face.rs"),
         },
         Module {
             file: "light.rs",
@@ -9769,7 +9777,7 @@ mod wire_domains {
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
-            // DEATH_BY_CACTUS at v121.
+            // DEATH_BY_CACTUS at v122.
             live_max: 11,
         },
         Domain {

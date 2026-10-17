@@ -25,7 +25,9 @@ disallowed-types = [
 ]
 
 disallowed-methods = [
-    # libm / transcendentals and every float op outside the wall-1 set
+    # The platform libm: its bits differ native vs wasm. Trig, exp, log,
+    # pow, floor and friends go through `sim_core::fmath` (pure-Rust libm,
+    # one source for every target, checked by the parity probe's math line).
     "f32::sin", "f32::cos", "f32::tan",
     "f32::asin", "f32::acos", "f32::atan", "f32::atan2",
     "f32::sin_cos", "f32::exp", "f32::exp2", "f32::ln",

@@ -3219,7 +3219,7 @@ impl server::mind::DecisionSource for VisitWhenOffered {
 
     fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
         let wood = Goal::Sell(server::mind::Name::new(b"Wood").unwrap());
-        let goal = [wood, Goal::FeedWork]
+        let goal = [wood, Goal::FeedWork, Goal::Research]
             .into_iter()
             .find(|g| s.offers(*g))
             .unwrap_or(Goal::Wait);
@@ -3274,6 +3274,73 @@ fn a_survivor_sells_its_surplus_wood_at_the_gate() {
     assert_eq!(units_of(h.me(), wood.item), 2000, "two lots kept");
     assert_eq!(units_of(h.me(), junk), 4, "a thousand wood is four junk");
     assert!(h.verbs.contains("vend"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// THE GATE's research table makes paper of what an agent found: carrying a
+/// revolver it has no blueprint for (its tree parent unlearned) and junk,
+/// the agent walks to the table, puts in the revolver and its price,
+/// switches it on, takes the paper off and reads it. From the south, round
+/// the workshop: long enough that the next decision falls mid-research,
+/// with the revolver in the table rather than the pack. Taken for done,
+/// that decision walked off and left the paper in the table, shut to
+/// everyone after (2026-10-17).
+#[test]
+fn a_survivor_researches_what_it_found_at_the_gate_s_table() {
+    let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+    let haven = sim_core::terrain::haven(SEED);
+    assert!(haven.town.live, "the fixture seed has a town");
+    let (_, tx, tz) = (0..sim_core::town::STATIONS.len())
+        .filter_map(|k| sim_core::town::station_world(&haven.town, k))
+        .find(|&(arch, ..)| arch == "research")
+        .unwrap();
+    let at = (tx, tz - 25.0);
+    let mut h = Harness::with_mind(false, at, mind);
+    for core in [&mut h.shard, &mut h.replay] {
+        core.world.seed_authored();
+    }
+    h.until(5, |_| false);
+    let content = common::content();
+    let revolver = common::stack(&content, "item.revolver");
+    let junk = sim_core::gather::ItemStack {
+        count: 100,
+        ..common::stack(&content, "item.junk")
+    };
+    h.stage(move |p| {
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        p.inv[HOTBAR_SLOTS] = revolver;
+        p.inv[HOTBAR_SLOTS + 1] = junk;
+    });
+    let done = h.until(120 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::Research && r.outcome == Outcome::Done)
+    });
+    assert!(done, "no research: {:?} {}", h.bot.oven_stats, h.explain());
+    let research = h.shard.world.research;
+    let row = *research.row_for(revolver.item).unwrap();
+    // The read goes out as the goal ends; its answer, a moment later.
+    h.until(3 * TICK_HZ, |_| false);
+    let me = h.me();
+    assert!(
+        sim_core::research::knows(me.known, row.recipe),
+        "the paper was not read: {:?} {:?} {:?}",
+        h.bot.oven_stats,
+        h.verbs,
+        me.inv.iter().filter(|s| s.count > 0).collect::<Vec<_>>()
+    );
+    assert_eq!(units_of(me, revolver.item), 0, "the revolver became paper");
+    assert_eq!(
+        units_of(me, research.blueprint),
+        0,
+        "and the paper was read"
+    );
+    assert_eq!(units_of(me, junk.item), 100 - u32::from(row.cost));
+    assert_eq!(h.bot.oven_stats.papers, 1);
+    assert_eq!(h.bot.oven_stats.placed, 0, "THE GATE's table, not its own");
+    for verb in ["container", "move", "use", "research"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 

@@ -486,7 +486,16 @@ fn both_events_report_the_multiplied_blow() {
         .iter()
         .find(|e| e.code == EV_HURT)
         .expect("a landed shot pushes EV_HURT");
-    assert_eq!(hurt.c, dealt, "EV_HURT must report the blow that arrived");
+    assert_eq!(
+        hurt.c & 0xffff,
+        dealt,
+        "EV_HURT must report the blow that arrived"
+    );
+    assert_ne!(
+        hurt.c & world::HURT_HEAD,
+        0,
+        "and tell the victim it was the head (v121)"
+    );
 }
 
 /// Every rung the ladder prices reaches the shooter as *itself* (v58).

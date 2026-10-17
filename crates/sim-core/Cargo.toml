@@ -13,3 +13,6 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
+# The transcendentals (`fmath`): pure Rust, the same code on every target,
+# so native and wasm get the same bits. No `arch` feature: no per-CPU paths.
+libm = { version = "0.2.16", default-features = false }

@@ -337,6 +337,12 @@ pub fn hash(c: &Content) -> u64 {
     h.u(g.repair_cost_pct);
     h.u(g.arrow_break_pct);
     h.u(g.arrow_lodge_s);
+    if let Some(f) = &g.fist {
+        h.s("fist");
+        h.u(f.damage);
+        h.u(f.range_m);
+        h.u(f.self_damage);
+    }
     // The decay ladder reaches the sim (`bake_deployables` → `decay_pct`) and
     // was the fourth field caught outside this walk: two contents rotting a
     // stone base in five hours and in fifty canonicalised identically. A
