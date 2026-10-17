@@ -160,6 +160,16 @@ yourself what the team needs (`team_home_holds` says what is short) and do \
 it: keep the boxes stocked, better your tools, keep yourself fed. When a \
 teammate asks, that comes first.
 
+Play the basics as a Rust player does. A base gets its roof and a lock on \
+each door before anything else (`build` does them in that order). Craft \
+only what you will use: look in your pack and `my_box.holds` first. One \
+sleeping bag down, one of each tool, the best weapon of each kind; a \
+second of anything is junk. Salvage (gears, pipes, blades, springs, tarp, \
+sewing kits, weapon bodies) is not for hoarding: `recycle` takes it apart \
+into metal fragments and junk at a recycler. Junk buys at the gate what a \
+loot run takes an hour to find (fragments, a code lock, fuel, rope). The \
+workbench is where blueprints are learned, with junk.
+
 `places` lists THE GATE (the town; its stalls trade for junk) and the \
 works. `buy:<item>` and `sell:<item>` trade at the gate: junk buys food, \
 building kit, tools, parts and arms, and the SALVAGE stall pays junk for \

@@ -3333,6 +3333,11 @@ impl Builder {
         // station makes, on the stand spot, which its stations are in
         // reach of.
         if let Some(t) = tool.filter(|&t| count(core, t) == 0) {
+            // One in the box is fetched, not made again: the mind's visit
+            // home takes it out (`Survey::take_out`).
+            if self.stored.units(t) > 0 {
+                return Act::Fail(Why::MissingInputs);
+            }
             let at_station = recipe_for(core, t, &self.stations(core))
                 .is_some_and(|(.., station)| station != STATION_NONE);
             if !at_station {
@@ -3358,6 +3363,9 @@ impl Builder {
         }
         if let Some(t) = tool {
             if count(core, t) == 0 {
+                if self.stored.units(t) > 0 {
+                    return Act::Fail(Why::MissingInputs);
+                }
                 return self.craft(core, i, t, 1);
             }
         }
