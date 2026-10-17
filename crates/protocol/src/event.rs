@@ -9449,6 +9449,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/assist.rs"),
         },
         Module {
+            file: "face.rs",
+            src: include_str!("../../sim-core/src/face.rs"),
+        },
+        Module {
             file: "spot.rs",
             src: include_str!("../../sim-core/src/spot.rs"),
         },
