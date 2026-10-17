@@ -1,27 +1,25 @@
-# The research run: lay a foundation, set a level-2 workbench on it (benches
-# need one, `content/deployables.toml`), open its tech tree, unlock a node,
-# read the level-1 tab. Coordinates are for RES=1280x720 and today's
-# content/research.toml.
+# The research run: set a level-2 workbench down, open its tech tree, read
+# the level-2 tab, unlock a level-1 node. Coordinates are for RES=1280x720 and
+# today's content/research.toml.
 #
-#   POP=0 KIT="item.building_plan:1, item.workbench2:1, item.junk:200, item.wood:1000, item.metal_frags:500" \
-#     ./ci/drive.sh shots/tech ci/drive/tech.txt
+# Benches need a foundation (`content/deployables.toml`), and aiming one onto
+# a foundation by pixel offsets is a coin toss, so the shard reads a copy of
+# the content where the level-2 bench stands on the ground:
+#
+#   cp -r content /tmp/c
+#   sed -i '/id = "item.workbench2"/,/placement/ s/"foundation"/"any"/' /tmp/c/deployables.toml
+#   POP=0 KIT="item.workbench2:1, item.junk:200, item.wood:1000, item.metal_frags:500" \
+#     ./ci/drive.sh shots/tech ci/drive/tech.txt 'content_dir = "/tmp/c"'
+#
 # load (a cold join under lavapipe takes minutes)
 sleep 240
 moveto 640 360
 click 1
 sleep 3
-# a twig foundation a few metres out, then the bench on it
+# the bench in hand, the ground in front, set it down
 key 1
 sleep 2
-move 0 150
-sleep 2
-click 1
-sleep 4
-# the foundation snaps to its grid with its edge under the crosshair: turn
-# onto it
-move -220 60
-sleep 2
-key 2
+move 0 260
 sleep 2
 shot 01-ghost
 click 1
