@@ -7638,10 +7638,13 @@ impl ShardCore {
             let dx = (m.body.qx - own.qx) as i64 * 3;
             let dz = (m.body.qz - own.qz) as i64 * 3;
             let mut d2 = dx * dx + dz * dz;
-            // The heli is heard from far off, so it is subscribed from far
-            // off: in both bands as if it were `HELI_AOI_SCALE` times closer.
+            // The heli is heard from far off, so it is ranked as if it were
+            // `HELI_AOI_SCALE` times closer, and it is on everyone's map
+            // (Rust's patrol heli is), so past the enter band it is held at
+            // its edge: subscribed island-wide, at a far body's rate.
             if s == sim_core::heli::HELI_SLOT {
-                d2 /= sim_core::heli::HELI_AOI_SCALE * sim_core::heli::HELI_AOI_SCALE;
+                d2 = (d2 / (sim_core::heli::HELI_AOI_SCALE * sim_core::heli::HELI_AOI_SCALE))
+                    .min(AOI_ENTER_CM * AOI_ENTER_CM);
             }
             d2_of[MAX_PLAYERS + s] = d2;
             ranked[n_ranked] = (d2, (MAX_PLAYERS + s) as u16);

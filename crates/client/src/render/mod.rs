@@ -1126,6 +1126,7 @@ impl Plugin for GatesRenderPlugin {
                     map::view,
                     map::track,
                     map::mates,
+                    map::heli,
                     map::blight_follow,
                     map::keys,
                 )
