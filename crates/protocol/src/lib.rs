@@ -80,6 +80,7 @@ pub use event::{
     MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
     RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
+pub use event::{encode_event_achievement, Achieved};
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
@@ -1207,7 +1208,10 @@ pub use voice::{
 /// a player's vending machine (`ARCH_VENDING`, 19, which both ends admit);
 /// `SUB_SHOP` (101) tells the viewer a machine's offers and stock, and
 /// `SUB_SHOP_RESULT` (102) answers the presser.
-pub const PROTO_VER: u16 = 118;
+/// v119 — achievements: `SUB_ACHIEVEMENT` (103) tells a player they earned
+/// one, or finished a set: its name, its line, its icon's stem and the set's
+/// progress, own-fact, the in-game popup (`server::achievements`).
+pub const PROTO_VER: u16 = 119;
 
 /// This game's slug in the elo catalog.
 ///

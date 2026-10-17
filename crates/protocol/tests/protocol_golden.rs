@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 174] = [
+const GOLDEN: [&[u8]; 175] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -237,6 +237,7 @@ const GOLDEN: [&[u8]; 174] = [
     include_bytes!("golden/action_shop.bin"),
     include_bytes!("golden/event_shop.bin"),
     include_bytes!("golden/event_shop_result.bin"),
+    include_bytes!("golden/event_achievement.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -528,8 +529,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 171);
     g!(seen, golden_event, 172);
     g!(seen, golden_event, 173);
+    // Achievements (v119).
+    g!(seen, golden_event, 174);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 174, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 175, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1350,6 +1353,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_shop_result(key, op, row, times, code, &mut buf).unwrap()
+        }
+        "event_achievement.bin" => {
+            let a = protocol::goldens::event_achievement();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Achievement(a),
+                "{name}"
+            );
+            protocol::encode_event_achievement(&a, &mut buf).unwrap()
         }
         "event_death_mark.bin" => {
             let at = protocol::goldens::event_death_mark();

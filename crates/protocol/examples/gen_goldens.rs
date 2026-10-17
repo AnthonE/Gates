@@ -252,6 +252,9 @@ fn main() {
     let (key, op, row, times, code) = goldens::event_shop_result();
     let len = protocol::encode_event_shop_result(key, op, row, times, code, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[173], &buf[..len]);
+    // Achievements (v119).
+    let len = protocol::encode_event_achievement(&goldens::event_achievement(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[174], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

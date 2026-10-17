@@ -155,6 +155,9 @@ pub enum AdminCmd {
     /// `/top` (or `/standings`, `/lb`): the wipe's standings and where the
     /// asker stands, said to the asker only. Anyone may ask.
     Top,
+    /// `/ach` (or `/achievements`): the asker's achievements, set by set,
+    /// said to the asker only. Anyone may ask.
+    Achievements,
     /// `/team <verb> [id]` (wire v108): the team verbs the action lane
     /// carries (`ActionMsg::Team`), typed. Anyone may. `target` is 0 where
     /// none was given; a leading `#` on the id is the chat's own label.
@@ -242,6 +245,7 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         "brain" => Some(AdminCmd::Brain),
         "who" => Some(AdminCmd::Who),
         "top" | "standings" | "lb" | "leaderboard" => Some(AdminCmd::Top),
+        "ach" | "achievements" => Some(AdminCmd::Achievements),
         "wipe" => match parts.next() {
             None => Some(AdminCmd::WipeWhen),
             Some("cancel") => (parts.next().is_none()).then_some(AdminCmd::WipeCancel),
@@ -383,6 +387,8 @@ mod tests {
         assert_eq!(parse(&text("/wipe")), Some(AdminCmd::WipeWhen));
         assert_eq!(parse(&text("/top")), Some(AdminCmd::Top));
         assert_eq!(parse(&text("/lb")), Some(AdminCmd::Top));
+        assert_eq!(parse(&text("/ach")), Some(AdminCmd::Achievements));
+        assert_eq!(parse(&text("/achievements")), Some(AdminCmd::Achievements));
         assert_eq!(parse(&text("/wipe cancel")), Some(AdminCmd::WipeCancel));
         assert_eq!(
             parse(&text("/wipe 10")),

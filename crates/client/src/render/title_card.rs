@@ -88,6 +88,31 @@ pub struct CardState {
     showing: bool,
 }
 
+/// Every piece of the card that fades.
+pub type Inks<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static CardInk,
+        Option<&'static mut TextColor>,
+        Option<&'static mut BackgroundColor>,
+    ),
+>;
+
+/// Fade every piece to `alpha`: a line's text, or a rule's or the diamond's
+/// fill. Never both — a UI text carries a background too (`Node` requires
+/// one), and inking it drew the line as a solid bar.
+pub fn paint(alpha: f32, inks: &mut Inks) {
+    for (ink, text, bg) in inks {
+        let c = Color::srgba(ink.0[0], ink.0[1], ink.0[2], alpha);
+        if let Some(mut t) = text {
+            t.0 = c;
+        } else if let Some(mut b) = bg {
+            b.0 = c;
+        }
+    }
+}
+
 /// Watch for a crossing and run the card.
 #[allow(clippy::type_complexity)]
 pub fn card(
@@ -96,11 +121,7 @@ pub fn card(
     time: Res<Time>,
     mut st: Local<CardState>,
     mut roots: Query<(Entity, &mut Node), (With<CardRoot>, Without<CardRule>)>,
-    mut inks: Query<(
-        &CardInk,
-        Option<&mut TextColor>,
-        Option<&mut BackgroundColor>,
-    )>,
+    mut inks: Inks,
     mut rules: Query<&mut Node, (With<CardRule>, Without<CardRoot>)>,
 ) {
     let core = &net.session.core;
@@ -145,15 +166,7 @@ pub fn card(
     for (_, mut node) in &mut roots {
         node.margin.top = Val::Px(RISE_PX * (1.0 - grow));
     }
-    for (ink, text, bg) in &mut inks {
-        let c = Color::srgba(ink.0[0], ink.0[1], ink.0[2], alpha);
-        if let Some(mut t) = text {
-            t.0 = c;
-        }
-        if let Some(mut b) = bg {
-            b.0 = c;
-        }
-    }
+    paint(alpha, &mut inks);
     for mut node in &mut rules {
         node.width = Val::Px(RULE_PX * grow);
     }
@@ -247,6 +260,40 @@ fn spawn_card(commands: &mut Commands, c: Crossing) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// At full, the lines are ink and the fill behind them stays clear; the
+    /// rules and the diamond are the fills that draw.
+    #[test]
+    fn a_fade_paints_the_lines_and_never_the_fill_behind_them() {
+        use bevy::ecs::system::RunSystemOnce;
+        use bevy::ecs::world::CommandQueue;
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        spawn_card(&mut Commands::new(&mut queue, &world), Crossing::In);
+        queue.apply(&mut world);
+        world
+            .run_system_once(|mut q: Inks| paint(1.0, &mut q))
+            .expect("the fade runs");
+        let mut lines = 0;
+        for (t, bg) in world
+            .query::<(&TextColor, Option<&BackgroundColor>)>()
+            .iter(&world)
+        {
+            lines += 1;
+            assert_eq!(t.0.alpha(), 1.0, "the line is drawn");
+            assert!(
+                bg.is_none_or(|b| b.0.alpha() == 0.0),
+                "and nothing behind it"
+            );
+        }
+        assert_eq!(lines, 3, "eyebrow, title, line under");
+        let fills = world
+            .query_filtered::<&BackgroundColor, (With<CardInk>, Without<TextColor>)>()
+            .iter(&world)
+            .filter(|b| b.0.alpha() == 1.0)
+            .count();
+        assert_eq!(fills, 3, "two rules and the diamond");
+    }
 
     #[test]
     fn the_card_comes_in_holds_and_goes() {

@@ -185,6 +185,8 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    // A finished set of achievements is posted where the wipe is.
+    tables.achievements.discord = cfg.discord_webhook.clone();
     if !cfg.dev_heli {
         println!("⚠ dev_heli = false: no patrol heli — a DEV shard, never a public one");
         tables.heli = sim_core::heli::HeliDef::INERT;

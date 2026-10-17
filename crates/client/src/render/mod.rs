@@ -170,6 +170,7 @@ pub mod map;
 // which a page has. In a browser the PAGE is the menu: it owns the shard
 // address, the wallet and the join, and hands the Bevy app a live
 // `Session`. See `render/screen.rs` for the half both targets keep.
+pub mod achievement;
 /// The pig and the wolf as skinned fel models, tiered by the wipe.
 pub mod beasts;
 /// The attack helicopter's drawing (`sim-core/src/heli.rs`): the roster's
@@ -2032,6 +2033,14 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             title_card::card
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // The achievement popup, bottom right. HUD, so not on a plate run.
+        .add_systems(
+            Update,
+            achievement::popup
                 .after(feed::drain)
                 .run_if(world_running)
                 .run_if(move || !plate),
