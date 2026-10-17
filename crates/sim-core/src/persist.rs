@@ -156,7 +156,7 @@ impl SaveError {
 ///   back ready; the craft queue is re-armed against the *current* tick at
 ///   restore (`craft::rearm`), which is why `jobs` IS saved and its timer
 ///   is not.
-/// - **`ws_cell` / `ws_hits`** — the weak-spot chase against one terrain
+/// - **`ws_cell` / `ws_mark`** — the weak-spot chase against one terrain
 ///   cell, which is a fact about an encounter you are no longer in. `die`
 ///   drops it too.
 /// - **the death screen's four facts** — see [`PlayerSave::dead`]. A corpse

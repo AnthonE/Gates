@@ -246,7 +246,7 @@ fn a_restore_carries_no_client_state_and_no_stale_clock() {
     let (mut w, _) = a_played_character();
     w.players[0].next_swing = 9_999;
     w.players[0].frame.seq = 4_242;
-    w.players[0].ws_hits = 5;
+    w.players[0].ws_mark = 5;
     let save = w.save_of(ID).expect("still there");
 
     let mut w2 = armed();
@@ -258,7 +258,7 @@ fn a_restore_carries_no_client_state_and_no_stale_clock() {
     );
     assert_eq!(p.next_swing, 0, "a cooldown from a dead clock came back");
     assert_eq!(
-        p.ws_hits, 0,
+        p.ws_mark, 0,
         "the weak-spot chase belongs to an old encounter"
     );
 }
@@ -841,7 +841,7 @@ mod carried_through_death {
         "mag",
         "mag_round",
         "ws_cell",
-        "ws_hits",
+        "ws_mark",
         "jobs",
         "craft_done_at",
         "hp",
