@@ -231,7 +231,9 @@ pub enum Cue {
     /// (`reference/AUDIO.md` §9) and its radius is a hundred metres, which
     /// is why [`MAX_AUDIBLE_M`] is what it is.
     ShotGun,
-    /// The hitmarker for a **head** hit (v58).
+    /// The hitmarker for a **head** hit (v58). Played from the same crunch as
+    /// [`Cue::Headshot`]: in Rust the shooter hears the headshot too, which
+    /// is how they know it was one (operator, 2026-10-17).
     ///
     /// A separate cue rather than [`Cue::Hit`] pitched up, because
     /// `interface_cues_do_not_vary_in_pitch` is a rule this bank keeps for
@@ -952,7 +954,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // deliberate floor and not a taper: quieter than the identity, still
     // plainly a hit — the judge's whole point is that a halved blow reads
     // as a MISS, and a cue fading toward silence would say exactly that.
-    row(GAME,  0.0, 0.60,  45, 6, false),  // hit, head
+    row(GAME,  0.0, 0.75,  45, 6, false),  // hit, head (the crunch)
     row(GAME,  0.0, 0.45,  45, 6, false),  // hit, limb
     // Weather v0. The rain is a bed like the wind; thunder is ambience —
     // a player who turns the scenery down turns the storm down with it —

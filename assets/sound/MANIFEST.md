@@ -46,7 +46,6 @@ which the decoder would clip), lightly high-passed, otherwise whole.
 |---|---|---|
 | `ui_click_0` | `UiClick` | Kenney, *UI Audio*: `Audio/click5.ogg` |
 | `hit_0` | `Hit` | Kenney, *Interface Sounds*: `Audio/tick_004.ogg` |
-| `hit_head_0` | `HitHead` | Kenney, *Interface Sounds*: `Audio/glass_001.ogg` |
 | `hit_limb_0` | `HitLimb` | Kenney, *Interface Sounds*: `Audio/drop_003.ogg` |
 | `refused_0` | `Refused` | Kenney, *Interface Sounds*: `Audio/error_006.ogg` |
 | `craft_done_0` | `CraftDone` | Kenney, *Interface Sounds*: `Audio/confirmation_001.ogg` |
@@ -155,7 +154,7 @@ recordings the take is the two layered.
 | `bed_rotor_0` | `BedRotor` | USC Red Library, *R03-02 Helicopter Flying in Place* (<https://archive.org/details/Red_Library_Aircraft_Misc>, CC0): a two-blade rotor close by, 11.6 slaps a second. Loop 6.0–28.1 s, the end moved +63 ms so the seam falls on the same point of the blade beat, 0.6 s linear crossfade. The tape is high-passed near 100 Hz, so the thump under it is rebuilt from its own slaps: the 100–600 Hz band's envelope, band-passed to 45–120 Hz and added so 50–100 Hz sits 10 dB under the whole (cut 2026-10-13). Replaces a Black Hawk's four-blade buzz |
 | `bed_rotor_far_0` | `BedRotorFar` | USC Gold Tape 36, *G36-07 Helicopter Flies In and Out and In* (<https://archive.org/details/GOLD_TAPE_36_Helicopters>, CC0): the two-blade helicopter holding off at a distance, steady to ±1 dB. Loop 40.5–60.5 s, 1 s equal-power crossfade, HP 30 Hz, LP 2.5 kHz (above it is tape hiss; a far rotor has nothing there) (cut 2026-10-13) |
 | `geiger_0`–`3` | `Geiger` | USC Red Library, *R11-44 Radiation Geiger Counter* (<https://archive.org/details/Red_Library_Machines_1>, CC0): four single tube clicks, at 1.114, 2.139, 2.217 and 7.322 s, 21 ms each with nothing above 2% of the peak from the next one (cut 2026-10-15). The Verdigris counter |
-| `headshot_0`–`2` | `Headshot` | USC Sunset Editorial (<https://archive.org/details/SSE_Library_FIGHT>, <https://archive.org/details/SSE_Library_CERAMICS>, CC0), three layered: a thump on the head from *Thumps on the head with steel pipe* (the hits at 0.515 / 2.150 / 3.510 s), *Fist crack; face punch* 3 ms ahead of it at 0.55 / 0.50 / 0.60, and a break from *Pottery fall and breaks; several takes* (0.115 / 1.585 / 7.690 s) 6 ms behind at 0.45 / 0.50 / 0.42, decaying over 70 ms; lined up on their peaks, 0.45 s, HP 70 Hz, faded over the last 150 ms (cut 2026-10-17). Rust's crunch when you take a headshot |
+| `headshot_0`–`2` | `Headshot`, `HitHead` | USC Sunset Editorial (<https://archive.org/details/SSE_Library_FIGHT>, <https://archive.org/details/SSE_Library_CERAMICS>, CC0), three layered: a thump on the head from *Thumps on the head with steel pipe* (the hits at 0.515 / 2.150 / 3.510 s), *Fist crack; face punch* 3 ms ahead of it at 0.55 / 0.50 / 0.60, and a break from *Pottery fall and breaks; several takes* (0.115 / 1.585 / 7.690 s) 6 ms behind at 0.45 / 0.50 / 0.42, decaying over 70 ms; lined up on their peaks, 0.45 s, HP 70 Hz, faded over the last 150 ms (cut 2026-10-17). Rust's crunch, heard by whoever took the headshot and whoever landed it |
 
 The USC library is the same Sunset/Red/Gold editorial collections, digitized
 by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).
