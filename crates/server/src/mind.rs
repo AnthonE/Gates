@@ -1686,6 +1686,25 @@ impl Summary {
         })
     }
 
+    /// Its crew and job (`agent::society`), and what the job asks of it now
+    /// (`duty`, a goal off the options, and why): `null` outside a society.
+    /// Sent beside the observation, as `team` is. Worker only.
+    pub fn crew_json(&self) -> Value {
+        let soc = &self.society;
+        if !soc.set {
+            return Value::Null;
+        }
+        let duty = crew_work(self);
+        json!({
+            "job": soc.role.name(),
+            "crewmates": soc.crew,
+            "crewmates_on_team": soc.crew_on_team,
+            "intruders_at_home": soc.intruders.count,
+            "duty": duty.map(|(g, _)| g.label().as_str().to_owned()),
+            "why": duty.map(|(_, why)| why.trim_start_matches("society: ")),
+        })
+    }
+
     /// Who its team is and whose invite waits, by the labels a chat log
     /// shows. Sent to an external source beside the observation, as
     /// `heard` is, never inside it. Worker only (it allocates).
@@ -2342,6 +2361,19 @@ pub struct Scripted {
     /// The answer to say with the next choice, and a code a teammate gave.
     say: Say,
     code: Option<crate::agent::lock::LockCode>,
+}
+
+/// What a society member's crew asks of it now, as the scripted policy
+/// picks it: coming together at THE GATE, then its job (`Role`).
+pub fn crew_work(s: &Summary) -> Option<(Goal, &'static str)> {
+    founding(s).or_else(|| society_work(s))
+}
+
+/// Its crew is still coming together at THE GATE: the turns a mind other
+/// than the scripted policy never takes (`autopilot::ALONE`), since a crew
+/// that does not meet is no crew.
+pub fn crew_forming(s: &Summary) -> bool {
+    founding(s).is_some()
 }
 
 /// A society's crew coming together (`agent::society`): the founder
