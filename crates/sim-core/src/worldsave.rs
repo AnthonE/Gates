@@ -666,7 +666,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(p.frame.sel);
         o.u64(p.next_swing);
         o.u32(p.ws_cell);
-        o.u16(p.ws_hits);
+        o.u16(p.ws_mark);
         o.u32(p.death_by);
         o.u8(p.death_cause);
         o.u16(p.death_item);
@@ -1106,7 +1106,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let sel = r.u8()?;
         let next_swing = r.u64()?;
         let ws_cell = r.u32()?;
-        let ws_hits = r.u16()?;
+        let ws_mark = r.u16()?;
         let death_by = r.u32()?;
         let death_cause = r.u8()?;
         let death_item = r.u16()?;
@@ -1153,7 +1153,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             mag: save.mag,
             mag_round: save.mag_round,
             ws_cell,
-            ws_hits,
+            ws_mark,
             death_by,
             death_cause,
             death_item,

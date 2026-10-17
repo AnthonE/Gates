@@ -10,7 +10,7 @@ use client_core::core::{ClientCore, APPLIED_MARK, APPLIED_RESET};
 use protocol::ItemCatalog;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::gather::{cell_key, weak_mark8, GatherContent, NO_CELL, SWING_INTERVAL_TICKS};
+use sim_core::gather::{cell_key, mark8_of, GatherContent, NO_CELL, SWING_INTERVAL_TICKS};
 use sim_core::input::{BTN_AIM, BTN_PRIMARY};
 
 /// Wire pitch for a level look. `InputFrame`'s pitch 0 is straight DOWN, and
@@ -193,10 +193,21 @@ fn gather_rides_the_wire() {
     let ticks = SWING_INTERVAL_TICKS * (tree.hits as u64 + 2);
     let mut mark_flags = [0u32; 2];
     let mut first_mark8 = None;
+    let mut sim_mark8 = None;
     for _ in 0..ticks {
         clients[0].1.set_input(BTN_PRIMARY, yaw, LEVEL, 0, 0, 2);
         clients[1].1.set_input(0, yaw, LEVEL, 0, 0, 0);
         let flags = pump(&mut core, &stats, &mut clients, &[]);
+        if let Some(p) = core
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == id_of(0))
+        {
+            if p.ws_cell == key {
+                sim_mark8.get_or_insert(mark8_of(p.ws_mark));
+            }
+        }
         mark_flags[0] |= flags[0];
         mark_flags[1] |= flags[1];
         if clients[0].1.mark_cell != NO_CELL {
@@ -205,8 +216,8 @@ fn gather_rides_the_wire() {
         }
     }
 
-    // The weak mark rode to the swinger alone, matched the sim's pure
-    // derivation for hit 1, and the harvest broadcast cleared it.
+    // The weak mark rode to the swinger alone, matched the sim's first
+    // mark, and the harvest broadcast cleared it.
     assert_ne!(mark_flags[0] & APPLIED_MARK, 0, "swinger never saw a mark");
     assert_eq!(
         mark_flags[1] & APPLIED_MARK,
@@ -214,8 +225,7 @@ fn gather_rides_the_wire() {
         "mark leaked to a bystander"
     );
     assert_eq!(
-        first_mark8,
-        Some(weak_mark8(SEED, cx, cz, id_of(0), 1)),
+        first_mark8, sim_mark8,
         "first mark heading drifted from the sim's derivation"
     );
     assert_eq!(

@@ -1246,10 +1246,10 @@ pub struct Player {
     /// or not at all.
     pub mag_round: [u16; MAX_MAGS],
     /// Weak-spot chase: the cell this player last landed a hit on
-    /// (`NO_CELL` = none) and how many hits they've landed there. The mark
-    /// heading derives from these (gather.rs), so they are sim state.
+    /// (`NO_CELL` = none) and the mark there — its heading in the low byte,
+    /// which way round it travels in `gather::WS_MARK_CCW`. Sim state.
     pub ws_cell: u32,
-    pub ws_hits: u16,
+    pub ws_mark: u16,
     /// Craft queue, dense with the head at 0 (craft.rs). Sim state.
     pub jobs: [CraftJob; CRAFT_QUEUE],
     /// Tick the head job's current unit completes at; 0 = idle.
@@ -1511,7 +1511,7 @@ impl Default for Player {
             // array would say every empty magazine holds one.
             mag_round: [NO_ITEM; MAX_MAGS],
             ws_cell: NO_CELL,
-            ws_hits: 0,
+            ws_mark: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
             known: 0,
@@ -4651,7 +4651,7 @@ impl World {
                     // restore a player already half-way through chasing
                     // the weak spot on whatever stands at the origin.
                     ws_cell: NO_CELL,
-                    ws_hits: 0,
+                    ws_mark: 0,
                     craft_done_at: 0,
                     death_by: 0,
                     death_cause: 0,
@@ -7859,7 +7859,7 @@ impl World {
             buf[29..37].copy_from_slice(&p.next_swing.to_le_bytes());
             buf[37] = p.frame.sel;
             buf[38..42].copy_from_slice(&p.ws_cell.to_le_bytes());
-            buf[42..44].copy_from_slice(&p.ws_hits.to_le_bytes());
+            buf[42..44].copy_from_slice(&p.ws_mark.to_le_bytes());
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);

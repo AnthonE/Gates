@@ -83,7 +83,7 @@ use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_CR_INPUTS, REFUSE_CR_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
-use sim_core::gather::{self, cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
+use sim_core::gather::{self, cell_key, mark8_of, next_mark, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::limits::{INV_SLOTS, TICK_HZ};
@@ -3708,8 +3708,8 @@ fn until_facing(w: &mut World, yaw: u16, code: u8) {
 /// Read on two consecutive hits — the first from point blank, which never
 /// bonuses and whose mark is only being announced now, then a second from
 /// inside the sector that announcement named — so the bit is seen clear
-/// AND set at one node while the heading matches `weak_mark8`'s pure
-/// function both times. A reversed pack cannot reproduce the sequence:
+/// AND set at one node while the heading matches the swinger's own chase
+/// state, and then `next_mark`'s step on from it. A reversed pack cannot reproduce the sequence:
 /// bit 8 as the heading would put the first mark's whole value in one
 /// flag, and the second event's low byte would stop tracking the chase.
 #[test]
@@ -3731,12 +3731,13 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
         "the first hit cannot be a weak hit — the mark it would have had \
          to stand in is only being announced by this event"
     );
-    let mark = weak_mark8(SEED, cx, cz, ATTACKER, 1);
+    let ws1 = w.players[0].ws_mark;
+    let mark = mark8_of(ws1);
     assert_eq!(
         first.c & 0xff,
         mark as u32,
         "EV_WEAK_MARK.c's low byte is the NEXT mark heading, \
-         `weak_mark8`'s own value after one landed hit"
+         the chase the first landed hit started"
     );
 
     // Stand where that heading points and face back at the node — the
@@ -3757,7 +3758,7 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     );
     assert_eq!(
         second.c & 0xff,
-        weak_mark8(SEED, cx, cz, ATTACKER, 2) as u32,
+        mark8_of(next_mark(SEED, cx, cz, ATTACKER, ws1)) as u32,
         "and the low byte is the heading for hit three — the chase moved on"
     );
 }
