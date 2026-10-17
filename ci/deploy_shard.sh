@@ -264,7 +264,9 @@ echo "== 6. the agents =="
 # The Jev services speak the wire too, so a deploy that moves PROTO_VER
 # strands them exactly as it strands a published client: gates-jev plays the
 # public shard, gates-watch runs its own private one but ships this tree's
-# content and renderer. Rebuild both from this commit whenever installed.
+# content and renderer. Rebuild both from this commit whenever enabled: a
+# disabled one (Jev out of credit, 2026-10-17) stays off, since a restart
+# would start it.
 # The house teammates (`ops/gates-teammate@.service`, one per bot) and the
 # buddies (`ops/gates-buddy@.service`, Claude-minded) run the same jev-bot,
 # so each one installed restarts on it too; a buddy's decision program rides
@@ -273,9 +275,10 @@ echo "== 6. the agents =="
 # (`ops/gates-village@.service`, a scripted guild).
 AGENT_BIN=/home/master/gates-jev
 WATCH=/mnt/hive-data/gates-watch
-TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null | awk '{print $1}')
-if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
-   || systemctl list-unit-files gates-watch.service >/dev/null 2>&1 \
+TEAMMATES=$(systemctl list-units --all --plain --no-legend 'gates-teammate@*.service' 'gates-buddy@*.service' 'gates-buddies.service' 'gates-village@*.service' 2>/dev/null \
+  | awk '{print $1}' | while read -r u; do systemctl is-enabled --quiet "$u" 2>/dev/null && echo "$u"; done)
+if systemctl is-enabled --quiet gates-jev.service 2>/dev/null \
+   || systemctl is-enabled --quiet gates-watch.service 2>/dev/null \
    || [ -n "$TEAMMATES" ]; then
   if [ "$GO" = 1 ]; then
     cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
@@ -283,23 +286,26 @@ if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
     echo "  would run: cargo build --release -p server --features watch --bin jev-bot --bin jev-watch"
   fi
 fi
-if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 || [ -n "$TEAMMATES" ]; then
+if systemctl is-enabled --quiet gates-jev.service 2>/dev/null || [ -n "$TEAMMATES" ]; then
   run cp -f target/release/jev-bot "$AGENT_BIN/jev-bot.new"
   run mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
   run cp -f crates/server/examples/claude_agent.py "$AGENT_BIN/claude_agent.py"
   run cp -f ops/buddy/runner.py ops/buddy/mind_bridge.py ops/buddy/recap.py "$AGENT_BIN/"
 fi
-if systemctl list-unit-files gates-jev.service >/dev/null 2>&1; then
+if systemctl is-enabled --quiet gates-jev.service 2>/dev/null; then
   run sudo systemctl restart gates-jev.service
 else
-  echo "  gates-jev.service not installed"
+  echo "  gates-jev.service not enabled"
 fi
+# A few seconds apart: every agent dials from this machine's address, and
+# the shard admits eight handshakes from one address at a time.
 for unit in $TEAMMATES; do
   run sudo systemctl restart "$unit"
+  [ "$GO" = 1 ] && sleep 5
 done
 [ -n "$TEAMMATES" ] || echo "  no gates-teammate@, gates-buddy@, gates-buddies or gates-village@ units installed"
 
-if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
+if systemctl is-enabled --quiet gates-watch.service 2>/dev/null; then
   REL="$WATCH/releases/$(git rev-parse --short=12 HEAD)"
   run mkdir -p "$REL"
   run cp -f target/release/jev-watch "$REL/jev-watch"
@@ -322,7 +328,7 @@ if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
   fi
   run sudo systemctl restart gates-watch.service
 else
-  echo "  gates-watch.service not installed"
+  echo "  gates-watch.service not enabled"
 fi
 
 echo
