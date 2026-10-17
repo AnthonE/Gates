@@ -49,7 +49,7 @@ use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
 
 use super::quality;
-use crate::config::{self, Ao, Persisted, Quality};
+use crate::config::{self, Ao, Persisted, Quality, TalkMode};
 use crate::ui::servers::Favourites;
 
 use super::binds::{self, Action, Bind, Binds};
@@ -87,6 +87,16 @@ pub const DEFAULT_PRESET: Quality = Quality::High;
 /// is a row of sliders over the same range. A tenth is the smallest step a
 /// player can hear as a step; a hundredth would be twenty clicks of nothing.
 pub const VOL_STEP: f32 = 0.1;
+
+/// The microphone's gain runs to double, in the volume step: a quiet
+/// microphone needs lifting more often than a loud one needs taming.
+pub const MIC_GAIN_MAX: f32 = 2.0;
+
+/// The open-microphone gate, dBFS: from a whisper in a quiet room to a voice
+/// over a fan.
+pub const GATE_DB_MIN: f32 = -70.0;
+pub const GATE_DB_MAX: f32 = -20.0;
+pub const GATE_DB_STEP: f32 = 5.0;
 
 /// The categories, in the reference's order. Every one is drawn whether or not
 /// it has rows — the rail is a map of the game's surface, and a category that
@@ -129,6 +139,23 @@ pub struct Settings {
     pub vol_music: f32,
     /// Players' voices (proximity voice chat, `render/voice.rs`), 0..1.
     pub vol_voice: f32,
+    /// Proximity voice at all. Off releases the microphone and plays nobody.
+    pub voice_chat: bool,
+    /// The microphone's gain before it is encoded, 0..[`MIC_GAIN_MAX`].
+    pub vol_mic: f32,
+    pub talk_mode: TalkMode,
+    /// What opens an open microphone, dBFS.
+    pub mic_gate_db: f32,
+    /// The input device by name; empty is the system's default. Desktop
+    /// only: a browser uses the one its permission prompt allowed.
+    pub mic_device: String,
+    /// Silence every bus while the window is not focused.
+    pub mute_unfocused: bool,
+    /// The window is not focused right now ([`follow_focus`]). Not saved.
+    pub background: bool,
+    /// The input devices the MICROPHONE row steps through, listed when it is
+    /// clicked. Not saved.
+    pub mic_devices: Vec<String>,
     /// Walls, floors and shut doors muffle what is behind them
     /// (`ui::occlusion`). On, as in the reference.
     pub occlusion: bool,
@@ -228,6 +255,15 @@ impl Default for Settings {
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
             vol_voice: 1.0,
+            voice_chat: true,
+            vol_mic: 1.0,
+            // Rust's: the key is held.
+            talk_mode: TalkMode::Hold,
+            mic_gate_db: -45.0,
+            mic_device: String::new(),
+            mute_unfocused: false,
+            background: false,
+            mic_devices: Vec::new(),
             occlusion: true,
             shake: 1.0,
             cat: 0,
@@ -270,6 +306,12 @@ pub enum Knob {
     VolAmbience,
     VolMusic,
     VolVoice,
+    VoiceChat,
+    VolMic,
+    TalkMode,
+    MicGate,
+    MicDevice,
+    MuteUnfocused,
     Occlusion,
     Shake,
 }
@@ -397,8 +439,50 @@ impl Settings {
             Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
             Knob::VolVoice => self.vol_voice = step_vol(self.vol_voice, delta),
             Knob::Shake => self.shake = step_vol(self.shake, delta),
+            Knob::VoiceChat => self.voice_chat = !self.voice_chat,
+            Knob::MuteUnfocused => self.mute_unfocused = !self.mute_unfocused,
+            Knob::VolMic => {
+                let steps = ((self.vol_mic + delta as f32 * VOL_STEP) / VOL_STEP).round();
+                self.vol_mic = (steps * VOL_STEP).clamp(0.0, MIC_GAIN_MAX);
+            }
+            Knob::TalkMode => {
+                let at = TalkMode::LADDER
+                    .iter()
+                    .position(|m| *m == self.talk_mode)
+                    .unwrap_or(0) as i32;
+                let want = (at + delta.signum()).clamp(0, TalkMode::LADDER.len() as i32 - 1);
+                self.talk_mode = TalkMode::LADDER[want as usize];
+            }
+            Knob::MicGate => {
+                self.mic_gate_db = (self.mic_gate_db + delta as f32 * GATE_DB_STEP)
+                    .clamp(GATE_DB_MIN, GATE_DB_MAX);
+            }
+            // Through the default first, then the listed devices; a device
+            // that has gone away steps from the default.
+            Knob::MicDevice => {
+                let at = self
+                    .mic_devices
+                    .iter()
+                    .position(|d| *d == self.mic_device)
+                    .map_or(0, |i| i as i32 + 1);
+                let want = (at + delta.signum()).clamp(0, self.mic_devices.len() as i32);
+                self.mic_device = match want {
+                    0 => String::new(),
+                    i => self.mic_devices[i as usize - 1].clone(),
+                };
+            }
         }
         self.dirty = true;
+    }
+
+    /// The master bus as the mixer gets it: nothing while the window is in
+    /// the background, if the player asked for that.
+    pub fn master(&self) -> f32 {
+        if self.mute_unfocused && self.background {
+            0.0
+        } else {
+            self.vol_master
+        }
     }
 
     /// The defaults with one preset applied to **both** graphics halves.
@@ -456,6 +540,12 @@ impl Settings {
                 Knob::VolMusic => self.vol_music = d.vol_music,
                 Knob::Shake => self.shake = d.shake,
                 Knob::VolVoice => self.vol_voice = d.vol_voice,
+                Knob::VoiceChat => self.voice_chat = d.voice_chat,
+                Knob::VolMic => self.vol_mic = d.vol_mic,
+                Knob::TalkMode => self.talk_mode = d.talk_mode,
+                Knob::MicGate => self.mic_gate_db = d.mic_gate_db,
+                Knob::MicDevice => self.mic_device = d.mic_device.clone(),
+                Knob::MuteUnfocused => self.mute_unfocused = d.mute_unfocused,
                 Knob::Occlusion => self.occlusion = d.occlusion,
             }
         }
@@ -514,6 +604,24 @@ impl Settings {
             Knob::VolMusic => pct(self.vol_music),
             Knob::VolVoice => pct(self.vol_voice),
             Knob::Shake => pct(self.shake),
+            Knob::VoiceChat => on_off(self.voice_chat),
+            Knob::MuteUnfocused => on_off(self.mute_unfocused),
+            Knob::VolMic => pct(self.vol_mic),
+            Knob::TalkMode => match self.talk_mode {
+                TalkMode::Hold => "HOLD",
+                TalkMode::Toggle => "TOGGLE",
+                TalkMode::Open => "OPEN MIC",
+            }
+            .to_string(),
+            Knob::MicGate => format!("{:.0} dB", self.mic_gate_db),
+            // The value box is narrow; the row under it has the full name.
+            Knob::MicDevice => {
+                if self.mic_device.is_empty() {
+                    "DEFAULT".to_string()
+                } else {
+                    self.mic_device.chars().take(8).collect()
+                }
+            }
         }
     }
 
@@ -534,6 +642,12 @@ impl Settings {
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
             vol_voice: self.vol_voice,
+            voice_chat: self.voice_chat,
+            vol_mic: self.vol_mic,
+            talk_mode: self.talk_mode,
+            mic_gate_db: self.mic_gate_db,
+            mic_device: self.mic_device.clone(),
+            mute_unfocused: self.mute_unfocused,
             occlusion: self.occlusion,
             shake: self.shake,
             discord_presence: self.discord_presence,
@@ -599,6 +713,12 @@ impl Settings {
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
             vol_voice: step(p.vol_voice, VOL_STEP).clamp(0.0, 1.0),
+            voice_chat: p.voice_chat,
+            vol_mic: step(p.vol_mic, VOL_STEP).clamp(0.0, MIC_GAIN_MAX),
+            talk_mode: p.talk_mode,
+            mic_gate_db: step(p.mic_gate_db, GATE_DB_STEP).clamp(GATE_DB_MIN, GATE_DB_MAX),
+            mic_device: p.mic_device,
+            mute_unfocused: p.mute_unfocused,
             occlusion: p.occlusion,
             shake: step(p.shake, VOL_STEP).clamp(0.0, 1.0),
             discord_presence: p.discord_presence,
@@ -1024,18 +1144,52 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Number("FIELD OF VIEW", Knob::Fov, "vertical degrees"),
             Row::Number("CAMERA SHAKE", Knob::Shake, "blasts, recoil, hits"),
         ],
-        "AUDIO" => vec![
-            Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
-            Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
-            Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
-            Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
-            Row::Number("VOICE VOLUME", Knob::VolVoice, "players talking nearby"),
-            // **There is only ONE music slider** where the reference
-            // has two - it ships `audio.musicvolume` and
-            // `audio.menumusicvolume` separately, and ours is one number for
-            // both until somebody wants the menu louder than the world.
-            Row::Toggle("SOUND OCCLUSION", Knob::Occlusion),
-        ],
+        "AUDIO" => {
+            let mut out = vec![
+                Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
+                Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
+                Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
+                Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
+                // **There is only ONE music slider** where the reference
+                // has two - it ships `audio.musicvolume` and
+                // `audio.menumusicvolume` separately, and ours is one number for
+                // both until somebody wants the menu louder than the world.
+                Row::Toggle("SOUND OCCLUSION", Knob::Occlusion),
+                Row::Toggle("MUTE IN BACKGROUND", Knob::MuteUnfocused),
+                Row::Group("VOICE CHAT"),
+                Row::Toggle("VOICE CHAT", Knob::VoiceChat),
+                Row::Number("VOICE VOLUME", Knob::VolVoice, "players talking nearby"),
+                Row::Number("MICROPHONE VOLUME", Knob::VolMic, "how loud you go out"),
+                Row::Number("TALK MODE", Knob::TalkMode, "hold, toggle or open mic"),
+                Row::Number(
+                    "OPEN MIC THRESHOLD",
+                    Knob::MicGate,
+                    "lower opens on quieter",
+                ),
+            ];
+            // A browser has no device list to step: its permission prompt
+            // picked the microphone.
+            if cfg!(target_arch = "wasm32") {
+                out.push(Row::Fact(
+                    "MICROPHONE",
+                    "the one your browser allows - change it in the address bar's site settings",
+                ));
+            } else {
+                out.push(Row::Number("MICROPHONE", Knob::MicDevice, "input device"));
+                out.push(Row::FactOf("  in use", |s| {
+                    if s.mic_device.is_empty() {
+                        "your system's default input".to_string()
+                    } else {
+                        s.mic_device.clone()
+                    }
+                }));
+            }
+            out.push(Row::Fact(
+                "  keys",
+                "PUSH TO TALK, MUTE MY MICROPHONE and MUTE ALL VOICES are on KEYBINDS",
+            ));
+            out
+        }
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),
             Row::Number("FPS LIMIT", Knob::MaxFps, "frames per second"),
@@ -1667,6 +1821,14 @@ pub fn click(
     for (interaction, adjust) in controls.iter() {
         if *interaction == Interaction::Pressed {
             settings.note.clear();
+            if adjust.knob == Knob::MicDevice {
+                // Listed on the click, not on the frame: a device plugged in
+                // since the screen opened is there on the next press.
+                settings.mic_devices = super::voice::input_devices();
+                if settings.mic_devices.is_empty() {
+                    settings.note = "no microphones found".to_string();
+                }
+            }
             settings.adjust(adjust.knob, adjust.delta);
         }
     }
@@ -1754,6 +1916,18 @@ pub fn keys(
 ) {
     if settings.capturing.is_none() && keyboard.just_pressed(KeyCode::Escape) {
         next.set(settings.back.clone());
+    }
+}
+
+/// Keeps [`Settings::background`] on the window's focus, for MUTE IN
+/// BACKGROUND. Past change detection: the mixers read it every frame, and an
+/// alt-tab is not a settings change for everything that watches for one.
+pub fn follow_focus(window: Query<&Window, With<PrimaryWindow>>, mut settings: ResMut<Settings>) {
+    let Ok(window) = window.single() else {
+        return;
+    };
+    if settings.background == window.focused {
+        settings.bypass_change_detection().background = !window.focused;
     }
 }
 
@@ -2078,10 +2252,58 @@ mod tests {
         s.adjust(Knob::VolMaster, -2);
         s.adjust(Knob::VolGame, -5);
         s.adjust(Knob::VolAmbience, -10);
+        s.adjust(Knob::VoiceChat, 0);
+        s.adjust(Knob::VolMic, 4);
+        s.adjust(Knob::TalkMode, 2);
+        s.adjust(Knob::MicGate, 3);
+        s.adjust(Knob::MuteUnfocused, 0);
+        s.mic_devices = vec!["Studio Mic \"XLR\" #2".to_string()];
+        s.adjust(Knob::MicDevice, 1);
         let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[], &[]);
         let back =
             Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
+        // The one value the writer has to clean: a quote and a `#` would
+        // break the line.
+        assert_eq!(back.mic_device, "Studio Mic XLR 2", "{text}");
+        s.mic_device = back.mic_device.clone();
         assert_eq!(back.persisted(), s.persisted(), "{text}");
+    }
+
+    #[test]
+    fn the_voice_rows_stop_at_their_ends() {
+        let mut s = Settings::default();
+        for _ in 0..40 {
+            s.adjust(Knob::VolMic, 1);
+            s.adjust(Knob::MicGate, 1);
+            s.adjust(Knob::TalkMode, 1);
+        }
+        assert_eq!(s.vol_mic, MIC_GAIN_MAX);
+        assert_eq!(s.mic_gate_db, GATE_DB_MAX);
+        assert_eq!(s.talk_mode, TalkMode::Open);
+        // No devices listed: the row stays on the default.
+        s.adjust(Knob::MicDevice, 1);
+        assert_eq!(s.value(Knob::MicDevice), "DEFAULT");
+        s.mic_devices = vec!["a".into(), "b".into()];
+        for _ in 0..5 {
+            s.adjust(Knob::MicDevice, 1);
+        }
+        assert_eq!(s.mic_device, "b");
+        s.adjust(Knob::MicDevice, -1);
+        s.adjust(Knob::MicDevice, -1);
+        assert_eq!(s.mic_device, "");
+    }
+
+    #[test]
+    fn mute_in_background_silences_only_in_the_background() {
+        let mut s = Settings {
+            background: true,
+            ..Settings::default()
+        };
+        assert_eq!(s.master(), 1.0, "off by default");
+        s.adjust(Knob::MuteUnfocused, 0);
+        assert_eq!(s.master(), 0.0);
+        s.background = false;
+        assert_eq!(s.master(), 1.0);
     }
 
     #[test]
@@ -2189,7 +2411,7 @@ mod tests {
         // a default off its own step would mean every boot "changed" a value
         // and the first click wrote a file the player never asked for.
         let d = Settings::default().persisted();
-        assert_eq!(Settings::from_persisted(d).persisted(), d);
+        assert_eq!(Settings::from_persisted(d.clone()).persisted(), d);
     }
 
     /// The fresh-install pair agrees with itself.

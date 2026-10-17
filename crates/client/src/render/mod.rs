@@ -1190,6 +1190,7 @@ impl Plugin for GatesRenderPlugin {
                         .after(settings::follow_browser_fullscreen),
                     settings::fullscreen_key,
                     settings::follow_browser_fullscreen,
+                    settings::follow_focus,
                     settings::save_on_change,
                     // The graphics tier, and it belongs beside the other two
                     // appliers rather than in the world schedule: a player
