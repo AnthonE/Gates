@@ -856,6 +856,14 @@ impl StructRing {
         kit.deploy_mesh.get(idx).cloned()
     }
 
+    /// [`StructRing::deploy_mesh`]'s material, under the same conditions.
+    pub fn deploy_mat(&self, arch: u8) -> Option<Handle<StandardMaterial>> {
+        let kit = self.kit.as_ref()?;
+        let idx = arch as usize;
+        DEPLOY_ASSET.get(idx)?.as_ref()?;
+        kit.deploy_mat.get(idx).cloned()
+    }
+
     /// Standing counts: pieces, deployables, bags. For the gates and for
     /// nothing on the hot path.
     pub fn counts(&self) -> (usize, usize, usize) {
@@ -2278,7 +2286,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/barricade.glb"),      // 16 barricade
     None,                                     // 17 planter — the cuboid until a model
     Some(TURRET_BASE_GLB),                    // 18 turret base; the gun is `sentry.rs`'s
-    None,                                     // 19 vending machine — the cuboid until a model
+    Some("models/deploy/vending.glb"),        // 19 vending machine
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too
@@ -3549,6 +3557,21 @@ pub fn body_transform(
     body_feet(seed, haven, cols, rec, arch) * Transform::from_xyz(0.0, lift, 0.0)
 }
 
+/// THE GATE's public stations draw this much over their own size, so they
+/// read across the yard. Render only: the sim's box is the row's.
+pub const TOWN_STATION_SCALE: f32 = 1.25;
+
+/// A recycler, for `audio::bed`: its motor is heard only while the sim says
+/// it runs (`LitOvens` holds a running recycler as lit). On the entity
+/// itself, whose transform is the machine's feet.
+#[derive(Component)]
+pub struct RecyclerHum {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -3583,6 +3606,14 @@ pub fn spawn_deploy(
     } else {
         body_transform(seed, haven, cols, rec, arch)
     };
+    let (x, z) = rec.xz();
+    let transform = if matches!(arch, ARCH_WORKBENCH | ARCH_RESEARCH | ARCH_RECYCLER)
+        && sim_core::town::safe(&haven.town, x, z)
+    {
+        transform.with_scale(Vec3::splat(TOWN_STATION_SCALE))
+    } else {
+        transform
+    };
 
     let mat = if arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL {
         kit.door_metal.clone()
@@ -3605,6 +3636,14 @@ pub fn spawn_deploy(
             applied: Some(0),
         },
     ));
+    if arch == ARCH_RECYCLER {
+        e.insert(RecyclerHum {
+            cx: rec.cx,
+            cz: rec.cz,
+            level: rec.level,
+            loc: rec.loc,
+        });
+    }
     // A bolted-on lock is drawn where a hand would find it. A garage door
     // rolled up into its header has nowhere to show one.
     if rec.has_lock && !(arch == ARCH_GARAGE_DOOR && rec.open) {

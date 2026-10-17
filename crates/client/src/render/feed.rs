@@ -215,6 +215,8 @@ pub struct Feed {
     n_hurt: usize,
     pub hurt_damage: u16,
     pub hurts: u16,
+    /// A blow this frame crossed your head: Rust's headshot crunch (v121).
+    pub hurt_head: bool,
     deaths: [(u32, u32); FEED_CAP],
     n_deaths: usize,
     refusals: [Refused; FEED_CAP],
@@ -545,6 +547,7 @@ impl Feed {
         self.n_hurt = 0;
         self.hurt_damage = 0;
         self.hurts = 0;
+        self.hurt_head = false;
         self.n_deaths = 0;
         self.n_refusals = 0;
         self.n_gathered = 0;
@@ -624,9 +627,10 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     }
     // The other half of the same blow. No sentinel to filter: a sector is
     // always a real direction, because a wall does not get hurt.
-    while let Some((sector, d)) = core.pop_hurt() {
+    while let Some((sector, d, head)) = core.pop_hurt() {
         feed.hurt_damage = feed.hurt_damage.saturating_add(d);
         feed.hurts = feed.hurts.saturating_add(1);
+        feed.hurt_head |= head;
         feed.note_hurt(sector, d);
     }
     while let Some(victim) = core.pop_death() {

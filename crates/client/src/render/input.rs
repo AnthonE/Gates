@@ -435,6 +435,13 @@ pub fn gather(
         sel,
     )
     .swings();
+    // A press that placed a lock (or anything) is not also a punch once the
+    // slot it emptied leaves the hand bare (`Pointer::spent`).
+    let spent = pointer.spent(
+        mouse.just_pressed(MouseButton::Left),
+        mouse.pressed(MouseButton::Left),
+        swings,
+    );
     // **A light is struck with the right hand** — the reference's own
     // binding for a torch — and with `F`, the flashlight key a player
     // reaches for. Right-click is already held-item modal in this
@@ -465,7 +472,7 @@ pub fn gather(
     // nothing fire there (`combat::holstered`), so the arm does not swing
     // and the bow does not draw — `hud::holster_hint` says why.
     let holstered = core.holstered();
-    if swings && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
+    if swings && !spent && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
     // **A bow is drawn with the right hand** (the reference's binding): held,

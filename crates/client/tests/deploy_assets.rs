@@ -263,3 +263,26 @@ fn the_death_bag_is_the_centred_box_it_replaced() {
         "{BAG_ASSET} is not centred on y"
     );
 }
+
+/// THE GATE's kiosk machines draw the vending model scaled up from its row,
+/// and what they draw is the box the sim stops a body at (`town::MACHINES`):
+/// its width along the street, its height, and its depth off the container,
+/// each within a centimetre.
+#[test]
+fn the_kiosk_machine_draws_its_box() {
+    use client::render::town_signs::KIOSK_MACHINE_SCALE;
+    use sim_core::town::{MACHINE_D, MACHINE_H, MACHINE_HALF_W};
+    let rel = DEPLOY_ASSET[sim_core::deploy::ARCH_VENDING as usize].expect("a vending model");
+    let [w, h, d] = Glb::open(&asset_path(rel)).extent();
+    let drawn = [w, h, d].map(|v| v * KIOSK_MACHINE_SCALE);
+    for (got, want, axis) in [
+        (drawn[0], MACHINE_HALF_W * 2.0, "width"),
+        (drawn[1], MACHINE_H, "height"),
+        (drawn[2], MACHINE_D, "depth"),
+    ] {
+        assert!(
+            (got - want).abs() < 0.01,
+            "the kiosk machine draws {got:.3} m of {axis} on a {want:.3} m box"
+        );
+    }
+}

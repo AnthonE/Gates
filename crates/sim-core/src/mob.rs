@@ -1495,7 +1495,7 @@ pub fn strike_slot(
     if !a.active || a.hp == 0 || slot >= mobs.m.len() {
         return false;
     }
-    let Some(def) = cc.held_melee(held_item(a)) else {
+    let Some(def) = cc.swing_melee(held_item(a)) else {
         return false;
     };
     hurt_slot(

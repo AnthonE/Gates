@@ -1229,6 +1229,8 @@ pub use voice::{
 /// `KIND_SNAPSHOT_MORE` (12) carries, the same tick, the bodies a snapshot
 /// had no room for, so a client's interest set is `SNAPSHOT_PARTS` × 64
 /// rather than 64.
+/// v121 — Rust's headshot crunch: `SUB_HURT` carries a head bit after the
+/// damage, set when the blow crossed the victim's head.
 pub const PROTO_VER: u16 = 121;
 
 /// This game's slug in the elo catalog.

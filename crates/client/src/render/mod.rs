@@ -90,6 +90,7 @@ pub mod feed;
 pub mod fx;
 /// THE GATE's ruin, alive: hanging fragments, arcs, motes, beacons.
 pub mod gate_fx;
+pub mod guards;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -1468,6 +1469,7 @@ impl Plugin for GatesRenderPlugin {
                 // it walks up to and the `Live` record it writes are both
                 // `bodies::stream`'s, spawned inside that set.
                 bodies::bind_hands.after(Stream),
+                guards::arm.after(Stream),
                 fingers::bind,
                 anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
@@ -1828,7 +1830,10 @@ impl Plugin for GatesRenderPlugin {
                         town::lamps,
                         landmarks::lamps,
                         town_signs::build,
-                        town_signs::shopkeepers,
+                        town_signs::machines,
+                        // THE GATE's guards, walked off the server's clock.
+                        guards::spawn,
+                        guards::walk,
                         ziggurat::dress,
                         ziggurat::doors,
                         // The works' terminals (`ARC.md` F1): stood up as

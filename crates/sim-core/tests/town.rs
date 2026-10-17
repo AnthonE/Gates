@@ -189,3 +189,53 @@ fn stations_and_kiosks_land_on_their_cells_and_inside_the_safe_zone() {
         }
     }
 }
+
+/// The guards' beats (`town::GUARD_BEATS`) are drawn, never collided, so
+/// nothing but this stops one walking through a wall: every point of every
+/// beat keeps a body's width off each box a body stops at, off the gate's
+/// dais (a step a drawn guard on the floor would wade through), and off the
+/// public stations and the kiosks' trading spots.
+#[test]
+fn guards_walk_clear_of_the_town() {
+    let solid = |b: [f32; 6]| b[4] > 0.05 && b[1] < 1.8;
+    let off = |b: [f32; 6], x: f32, z: f32| {
+        let dx = x - x.clamp(b[0], b[3]);
+        let dz = z - z.clamp(b[2], b[5]);
+        (dx * dx + dz * dz).sqrt()
+    };
+    for (n, beat) in town::GUARD_BEATS.iter().enumerate() {
+        for i in 0..beat.len() {
+            let (ax, az) = beat[i];
+            let (bx, bz) = beat[(i + 1) % beat.len()];
+            let len = ((bx - ax) * (bx - ax) + (bz - az) * (bz - az)).sqrt();
+            let steps = (len / 0.25) as usize + 1;
+            for s in 0..=steps {
+                let u = s as f32 / steps as f32;
+                let (x, z) = (ax + (bx - ax) * u, az + (bz - az) * u);
+                for p in town::PARTS.iter().chain(town::MACHINES.iter()) {
+                    if p.flags & kit::DECOR == 0 && solid(p.b) {
+                        assert!(
+                            off(p.b, x, z) > CAPSULE_RADIUS_M,
+                            "beat {n} at ({x:.1}, {z:.1}) walks into {:?}",
+                            p.b
+                        );
+                    }
+                }
+                for (_, sx, sz) in town::STATIONS {
+                    let d = ((x - sx) * (x - sx) + (z - sz) * (z - sz)).sqrt();
+                    assert!(
+                        d > 1.5,
+                        "beat {n} at ({x:.1}, {z:.1}) walks through a station"
+                    );
+                }
+                for (kx, kz) in town::KIOSKS {
+                    let d = ((x - kx) * (x - kx) + (z - kz) * (z - kz)).sqrt();
+                    assert!(
+                        d > 1.5,
+                        "beat {n} at ({x:.1}, {z:.1}) walks through a shopper"
+                    );
+                }
+            }
+        }
+    }
+}
