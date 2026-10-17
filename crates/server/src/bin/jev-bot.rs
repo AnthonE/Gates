@@ -720,6 +720,9 @@ async fn run(options: Options) -> Result<(), String> {
                     Some((_, off)) if result.is_ok() && !left.is_zero() => off.min(left),
                     _ => return (i, survivor, result),
                 };
+                // The run's report, so far: a service is stopped by a
+                // signal that never prints the one at the end.
+                print_report(&format!("{}: ", name.as_str()), &survivor);
                 out!("{}: off shift for {} s", name.as_str(), off.as_secs());
                 tokio::time::sleep(off).await;
                 left = left.saturating_sub(off);

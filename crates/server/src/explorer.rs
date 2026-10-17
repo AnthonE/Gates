@@ -163,7 +163,8 @@ pub const GO_HOME_GOAL_SECS: u32 = 120;
 /// code, say), this long before the next.
 pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// After a build goal could not reach its work (a spot nothing routes to,
-/// a passage that will not open), this long before the next.
+/// a passage that will not open) or failed as it began, this long before
+/// the next.
 pub const BUILD_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
@@ -2113,7 +2114,13 @@ impl Survivor {
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
             self.home_failed = Some(tick);
         }
-        if active.goal == Goal::Build && outcome == Outcome::Failed(Why::Stuck) {
+        // A build that failed the moment it began would fail the same way
+        // the next second; one that ran out of materials partway goes for
+        // more and is back when it has them.
+        if active.goal == Goal::Build
+            && (outcome == Outcome::Failed(Why::Stuck)
+                || matches!(outcome, Outcome::Failed(_)) && report.secs == 0)
+        {
             self.build_failed = Some(tick);
         }
         self.memory.trigger = match outcome {
@@ -5988,8 +5995,9 @@ impl Survivor {
         self.memory.recover_held = self.home.recover_held(core);
         let survey = *self.builder.survey();
         self.memory.base = survey;
-        // A build that could not reach its work is not offered again at
-        // once: two seconds a try, it would be all the body did.
+        // A build that could not reach its work, or failed as it began, is
+        // not offered again at once: a second a try, it would be all the body
+        // did (two village founders, an hour each, 2026-10-17).
         if self
             .build_failed
             .is_some_and(|at| tick.wrapping_sub(at) < BUILD_RETRY_TICKS)
