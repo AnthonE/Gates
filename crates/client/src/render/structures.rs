@@ -835,6 +835,14 @@ impl StructRing {
         kit.deploy_mesh.get(idx).cloned()
     }
 
+    /// [`StructRing::deploy_mesh`]'s material, under the same conditions.
+    pub fn deploy_mat(&self, arch: u8) -> Option<Handle<StandardMaterial>> {
+        let kit = self.kit.as_ref()?;
+        let idx = arch as usize;
+        DEPLOY_ASSET.get(idx)?.as_ref()?;
+        kit.deploy_mat.get(idx).cloned()
+    }
+
     /// Standing counts: pieces, deployables, bags. For the gates and for
     /// nothing on the hot path.
     pub fn counts(&self) -> (usize, usize, usize) {
@@ -2257,7 +2265,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/barricade.glb"),      // 16 barricade
     None,                                     // 17 planter — the cuboid until a model
     Some(TURRET_BASE_GLB),                    // 18 turret base; the gun is `sentry.rs`'s
-    None,                                     // 19 vending machine — the cuboid until a model
+    Some("models/deploy/vending.glb"),        // 19 vending machine
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too

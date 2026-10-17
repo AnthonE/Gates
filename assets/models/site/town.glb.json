@@ -5,8 +5,8 @@
   "blender": "4.5.14 LTS",
   "python": "3.11.17",
   "script_sha256": "6374fd9002d35013c0124609684acf3a3e667b286d4be835dd00b65e8e1a2901",
-  "kit_sha256": "e5683f9b735d268554c318909421b88d8aa7bb5f39350f18814bf084b8db2e31",
-  "triangles": 60852,
+  "kit_sha256": "08f78ab7b7705e431b067de9ef4a5da0173d869ef0bf6be10a6f45513e6cc859",
+  "triangles": 60324,
   "meshes": [
     "bulb",
     "canvas",
@@ -20,5 +20,5 @@
     "timber",
     "yard"
   ],
-  "bytes": 7044660
+  "bytes": 6976868
 }

@@ -954,7 +954,7 @@ pub struct RemoteSteps(pub Steps);
 /// One honest gap, the wire's: a teleport (death, respawn) reads as ground
 /// covered, which the odometer's own hitch cap bounds at ONE step. A
 /// sleeper stands still and the speed floor keeps it silent for free.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn remote_steps(
     world: Res<super::WorldId>,
     net: Option<NonSend<Net>>,
@@ -962,7 +962,7 @@ pub fn remote_steps(
     rig: Res<super::anim::Rig>,
     mut bodies: Query<
         (&Transform, &mut RemoteSteps, &super::anim::BodyAnim),
-        With<super::bodies::Body>,
+        Or<(With<super::bodies::Body>, With<super::guards::Guard>)>,
     >,
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
