@@ -42,6 +42,10 @@ const LIP_SHADE: f32 = 0.05;
 /// left is.
 const WORN_SHARE: f32 = 0.2;
 const WORN_SHADE: f32 = 0.7;
+/// A stone this player has read burns its glyphs the Verdigris' green: the
+/// spires' veins, linear, measured off their emissive map, and lit by the
+/// hour as they are (`boulders::spire_glow`).
+const RUNE_GREEN: [f32; 3] = [0.08, 0.66, 0.25];
 
 /// The lore's gold, rings and notches and the works' rings: old and worn,
 /// a satin sheen rather than a mirror.
@@ -62,14 +66,16 @@ pub struct LoreMark {
 }
 
 /// An inscription's carving: which stone, what it was last cut from (the
-/// text's length, 0 until this player reads it, and the alphabet's), and
-/// the cut drawn now.
+/// text's length, 0 until this player reads it, and the alphabet's), the
+/// cut drawn now, and its two looks: bare stone, and burning once read.
+/// Read is this client's word alone: the text arrives only at the stone.
 #[derive(Component)]
 pub struct Carving {
     index: u16,
     key: Option<(u16, u8)>,
     cut: Option<Entity>,
-    material: Handle<StandardMaterial>,
+    bare: Handle<StandardMaterial>,
+    lit: Handle<StandardMaterial>,
 }
 
 /// A dial's notch: mechanism, dial.
@@ -162,9 +168,14 @@ pub fn spawn(
         let (slab, slab_material) = super::mobs::model(&server, SLAB_GLB);
         let ring = materials.add(worn_gold());
         // Fresh-cut basalt: the grey under the black.
-        let cut = materials.add(StandardMaterial {
+        let bare = materials.add(StandardMaterial {
             base_color: Color::srgb(0.66, 0.65, 0.61),
             perceptual_roughness: 0.95,
+            ..default()
+        });
+        let lit = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.05, 0.12, 0.07),
+            perceptual_roughness: 0.6,
             ..default()
         });
         commands
@@ -178,7 +189,8 @@ pub fn spawn(
                     index: k as u16,
                     key: None,
                     cut: None,
-                    material: cut,
+                    bare,
+                    lit,
                 },
                 Transform::from_translation(p),
                 Visibility::default(),
@@ -259,15 +271,31 @@ pub fn dials(net: NonSend<Net>, mut q: Query<(&DialNotch, &mut Transform)>) {
 }
 
 /// Cut each stone's glyphs, and cut them again when what they are cut from
-/// changes: the alphabet arriving, or this player reading the stone.
+/// changes: the alphabet arriving, or this player reading the stone. A read
+/// stone's glyphs burn by the hour, in the spires' steps of 1/32 of the day.
 pub fn carve(
     mut commands: Commands,
     net: NonSend<Net>,
+    weather: Res<super::weather::WeatherNow>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(Entity, &mut Carving)>,
 ) {
     let lore = &net.session.core.lore;
+    let day = (weather.sun_lux.clamp(0.0, 1.0) * 32.0).round() / 32.0;
+    let (night, noon) = (
+        super::boulders::SPIRE_GLOW_NIGHT,
+        super::boulders::SPIRE_GLOW_DAY,
+    );
+    let glow = night + (noon - night) * day;
+    let [r, g, b] = RUNE_GREEN.map(|v| v * glow);
+    let burn = LinearRgba::rgb(r, g, b);
     for (stone, mut c) in q.iter_mut() {
+        if materials.get(&c.lit).is_some_and(|m| m.emissive != burn) {
+            if let Some(m) = materials.get_mut(&c.lit) {
+                m.emissive = burn;
+            }
+        }
         let Some(ins) = lore.inscriptions.get(c.index as usize) else {
             continue;
         };
@@ -282,12 +310,17 @@ pub fn carve(
         let Some(mesh) = carving_mesh(lore, c.index as usize) else {
             continue;
         };
+        let material = if ins.len > 0 {
+            c.lit.clone()
+        } else {
+            c.bare.clone()
+        };
         c.cut = Some(
             commands
                 .spawn((
                     ChildOf(stone),
                     Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(c.material.clone()),
+                    MeshMaterial3d(material),
                     Transform::from_xyz(0.0, -SLAB_SINK_M, 0.0),
                     NotShadowCaster,
                 ))
@@ -321,9 +354,9 @@ fn worn_text(lore: &LoreView, k: usize) -> String {
 }
 
 /// Stone `k`'s carving, both faces, or `None` with nothing to cut. Each lit
-/// cell of each glyph is a quad, pale where the chisel cut and dark along
-/// its top where the groove's upper wall shades it (vertex colour over the
-/// cut's material).
+/// cell of each glyph is a quad. Unread, it is pale where the chisel cut and
+/// dark along its top where the groove's upper wall shades it (vertex colour
+/// over the bare material); read, it burns whole, so it has no shade.
 fn carving_mesh(lore: &LoreView, k: usize) -> Option<Mesh> {
     let read = lore.inscriptions[k].len > 0;
     let text = if read {
@@ -356,7 +389,7 @@ fn carving_mesh(lore: &LoreView, k: usize) -> Option<Mesh> {
                     }
                     let x = left + (i as u32 * ADVANCE + c) as f32 * cell;
                     let y = y0 - r as f32 * cell;
-                    if r == 0 || !glyphs::lit(g, c, r - 1) {
+                    if !read && (r == 0 || !glyphs::lit(g, c, r - 1)) {
                         m.quad(x, x + cell, y - LIP * cell, y, lip);
                         m.quad(x, x + cell, y - cell, y - LIP * cell, cut);
                     } else {
