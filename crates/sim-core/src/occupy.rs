@@ -245,6 +245,10 @@ pub struct SlotCache {
     /// construction (a power of two; `crag_shift` takes the hash's top bits).
     crags: Box<[CragLine]>,
     crag_shift: u32,
+    /// The ground's grade (`movement::grade`), keyed by whole-metre point,
+    /// sized at construction like the crags.
+    grades: Box<[GradeLine]>,
+    grade_shift: u32,
     /// The worldgen memo a crag resolves through. It changes no answer.
     lat: Box<terrain::Lattice>,
 }
@@ -271,19 +275,32 @@ struct CragLine {
     c: crate::cliff::Crag,
 }
 
+#[derive(Clone, Copy)]
+struct GradeLine {
+    key: u32,
+    grade: (f32, f32),
+}
+
 impl SlotCache {
     /// A cache for one body's queries: a client's prediction, a fixture.
     pub fn new() -> Self {
-        Self::with_crag_lines(crate::limits::CRAG_CACHE_LINES_ONE)
+        Self::with_lines(
+            crate::limits::CRAG_CACHE_LINES_ONE,
+            crate::limits::GRADE_CACHE_LINES_ONE,
+        )
     }
 
     /// A cache for a whole shard's bodies.
     pub fn shard() -> Self {
-        Self::with_crag_lines(crate::limits::CRAG_CACHE_LINES)
+        Self::with_lines(
+            crate::limits::CRAG_CACHE_LINES,
+            crate::limits::GRADE_CACHE_LINES,
+        )
     }
 
-    fn with_crag_lines(n: usize) -> Self {
+    fn with_lines(n: usize, grades: usize) -> Self {
         assert!(n.is_power_of_two() && n >= 2);
+        assert!(grades.is_power_of_two() && grades >= 2);
         Self {
             seed: 0,
             resolves: 0,
@@ -304,6 +321,15 @@ impl SlotCache {
             ]
             .into_boxed_slice(),
             crag_shift: 32 - n.trailing_zeros(),
+            grades: vec![
+                GradeLine {
+                    key: NO_KEY,
+                    grade: (0.0, 0.0),
+                };
+                grades
+            ]
+            .into_boxed_slice(),
+            grade_shift: 32 - grades.trailing_zeros(),
             lat: Box::new(terrain::Lattice::new()),
         }
     }
@@ -330,6 +356,23 @@ impl SlotCache {
         let c = crate::cliff::crag(&mut self.lat, seed, haven, gi, gj);
         self.crags[ix] = CragLine { key, c };
         c
+    }
+
+    /// The ground's grade at whole-metre point (`ix`, `iz`)
+    /// (`movement::grade`), resolved once per seed.
+    #[inline]
+    pub(crate) fn grade(&mut self, seed: u64, haven: &Haven, ix: i32, iz: i32) -> (f32, f32) {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = ((ix as u32 & 0xFFFF) << 16) | (iz as u32 & 0xFFFF);
+        let i = (key.wrapping_mul(2_654_435_761) >> self.grade_shift) as usize;
+        if self.grades[i].key == key {
+            return self.grades[i].grade;
+        }
+        let grade = crate::movement::grade(&mut self.lat, seed, haven, ix as f32, iz as f32);
+        self.grades[i] = GradeLine { key, grade };
+        grade
     }
 
     /// The formation in rock cell (`bx`, `bz`), resolved once per seed.
@@ -372,6 +415,9 @@ impl SlotCache {
             i += 1;
         }
         for line in self.crags.iter_mut() {
+            line.key = NO_KEY;
+        }
+        for line in self.grades.iter_mut() {
             line.key = NO_KEY;
         }
     }

@@ -3,9 +3,9 @@
 //! the seed, so the sim collides with exactly the rocks the client draws.
 //!
 //! They were the client's alone until 2026-10-07 (`render/cliffs.rs`), drawn
-//! on the claim that nobody could reach one. The sim refuses only a RISE past
-//! the cliff ratio, so a body walks down a face and along it, and a player
-//! walked straight through a tooth standing at a lip. Now `occupy` asks these
+//! on the claim that nobody could reach one. A body comes down a face (it
+//! slides since 2026-10-17, `movement::SLIDE_SPEED`), and a player walked
+//! straight through a tooth standing at a lip. Now `occupy` asks these
 //! the way it asks a formation block: a crag's top is ground, its sides are
 //! walls.
 //!

@@ -548,6 +548,13 @@ pub const SLOT_CACHE_SLOTS: usize = 1_024;
 pub const CRAG_CACHE_LINES: usize = 32_768;
 /// The same memo for one predicted body (`ClientCore`, fixtures).
 pub const CRAG_CACHE_LINES_ONE: usize = 512;
+/// Lines in the direct-mapped memo of the ground's grade by whole-metre point
+/// (`movement::face_fall` reads a 3×3 of them), on the shard's `World`: a
+/// walking body asks a few points a tick and a new row every few ticks.
+/// 12 B a line. Must stay a power of two.
+pub const GRADE_CACHE_LINES: usize = 8_192;
+/// The same memo for one predicted body.
+pub const GRADE_CACHE_LINES_ONE: usize = 256;
 
 /// Building-piece definitions the sim preallocates for (the shipped set
 /// is 44 rows — 11 shapes × 4 materials, content/building.toml, since

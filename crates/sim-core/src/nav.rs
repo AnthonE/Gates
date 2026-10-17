@@ -70,6 +70,9 @@ const COST_BEACH: u32 = 12;
 /// it must be able to route out — but a route through a bay has to be a
 /// lot shorter than the way round before it wins.
 const COST_WATER: u32 = 40;
+/// Extra per cell of face, which a route off a ledge slides down: the
+/// shortest way off it is the least of it.
+const COST_FACE: u32 = 40;
 /// Extra per decimetre climbed. Mild on purpose: a hill is a detour only
 /// when the way round is short.
 const COST_CLIMB_PER_DM: u32 = 1;
@@ -103,6 +106,11 @@ const F_BEACH: u8 = 8;
 const F_CLOSED: u8 = 16;
 const F_SEEN: u8 = 32;
 const F_WATER: u8 = 64;
+/// The ground here is a face (`movement::face_fall`): bare, or under a
+/// crag's top (`F_HARD`).
+const F_STEEP: u8 = 128;
+/// Feet high enough that every top over a cell is within a step of them.
+const ANY_TOP_M: f32 = 1.0e4;
 
 /// `parent` of the start cell.
 const PARENT_NONE: u8 = 8;
@@ -318,9 +326,11 @@ impl Nav {
             return Plan::NoWay;
         };
         // The start is wherever the body stands, whatever a probe would
-        // make of its cell — being inside a veto must never be absorbing.
+        // make of its cell — being inside a veto must never be absorbing,
+        // nor a ledge or a pocket in a face, so a route may come down a
+        // face from it.
         self.stamp[si] = self.gen;
-        self.flags[si] = F_PROBED | F_SEEN;
+        self.flags[si] = F_PROBED | F_SEEN | F_STEEP;
         self.y[si] = y;
         self.g[si] = 0;
         self.parent[si] = PARENT_NONE;
@@ -538,12 +548,19 @@ impl Nav {
         let ya = self.y[ai];
         let yb = self.y[bi];
         let rise = yb - ya;
-        if rise < -MAX_DROP_M {
+        // Nobody walks onto a face. A route already in one (on it, or on a
+        // ledge in it) comes down it by sliding, however far: it has no
+        // other way off.
+        let face = fb & (F_STEEP | F_HARD) == F_STEEP;
+        let steep = self.flags[ai] & F_STEEP != 0;
+        if (face || rise < -MAX_DROP_M) && !steep {
             return false;
         }
         let run = if diag { 1.414 * NAV_CELL_M } else { NAV_CELL_M };
         let climb = if fb & F_HARD != 0 {
             rise <= STEP_UP
+        } else if face {
+            rise <= 0.0
         } else {
             rise <= run * CLIFF_SLOPE_RATIO
         };
@@ -651,6 +668,9 @@ impl Nav {
                 }
                 if self.flags[ni] & F_WATER != 0 {
                     cost += COST_WATER;
+                }
+                if self.flags[ni] & (F_STEEP | F_HARD) == F_STEEP {
+                    cost += COST_FACE;
                 }
                 let rise = self.y[ni] - self.y[i];
                 if rise > 0.0 {
@@ -831,13 +851,22 @@ fn probe(gr: &mut Ground, cx: i32, cz: i32, deck: Option<f32>) -> (u8, f32) {
     // The body's footprint, as `movement::step` reads it (`body_ground`):
     // the point would plan a cell beside a foundation at the dirt the
     // capsule never stands on there.
-    let hard = collide::body_ground(gr.seed, gr.haven, gr.cols, x, z, gy)
+    let mut hard = collide::body_ground(gr.seed, gr.haven, gr.cols, x, z, gy)
         .max(gr.occ.body_ground(gr.seed, x, z, gy));
+    let face = hard <= gy && crate::movement::face_fall(gr.occ, gr.seed, gr.haven, x, z).is_some();
+    if face {
+        // Nobody stands on a face: a crag's top over it is the footing
+        // there, however far above the face it stands.
+        hard = gr.occ.body_ground(gr.seed, x, z, ANY_TOP_M);
+    }
     let (y, mut f) = if hard > gy {
         (hard, F_PROBED | F_HARD)
     } else {
         (gy, F_PROBED)
     };
+    if face {
+        f |= F_STEEP;
+    }
     if gy <= terrain::BEACH_MAX_H {
         f |= F_BEACH;
     }

@@ -70,6 +70,13 @@ pub const STACK_SINK_M: f32 = 0.6;
 const SEG_M: f32 = 1.6;
 /// Vertical size of one side segment, metres — finer, so the strata show.
 const SEG_V_M: f32 = 0.9;
+/// Segments across each rounded edge, per face: one a face draws an edge as
+/// a bevel of two facets. The round was cut by the face grid alone until
+/// 2026-10-17, and a segment is wider than the round, so every edge was
+/// drawn nearly sharp (operator, of a cliff ledge: "looks bad with its sharp
+/// edges"). Two a face drew it rounder for 70% more triangles, on rocks
+/// drawn out to [`ROCK_RING`].
+const ROUND_SEGS: usize = 1;
 
 /// The Verdigris' spires: black glass with green veins
 /// (`assets/models/MANIFEST.md`), each fitted to a unit box standing on its
@@ -486,23 +493,25 @@ impl RockShape {
 /// Draw one rock into `soup`.
 pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
     let hgt = (r.y1 - r.y0).max(0.3);
+    // One rounding radius in metres on every axis, as a share of each axis.
+    let half_h = hgt * 0.5;
+    let rw = (ROCK_ROUND * r.hx.min(r.hz).min(half_h)).min(ROCK_ROUND_MAX_M);
+    // Face segments over the flat between the rounds (`lines` below).
     let seg = |m: f32, per: f32| ((m / per).ceil() as usize).clamp(r.min_seg, 8);
     let (nx, ny, nz) = if r.min_seg <= 1 {
         (1, 1, 1)
     } else {
+        let under = if r.underside { 2.0 } else { 1.0 };
         (
-            seg(2.0 * r.hx, SEG_M),
-            seg(hgt, SEG_V_M),
-            seg(2.0 * r.hz, SEG_M),
+            seg(2.0 * (r.hx - rw), SEG_M),
+            seg(hgt - under * rw, SEG_V_M),
+            seg(2.0 * (r.hz - rw), SEG_M),
         )
     };
     let amp = (0.16 * r.hx.min(r.hz).min(hgt * 0.5)).min(ROCK_FRACTURE_MAX_M);
     // A few metres a stratum, per rock.
     let layer = 0.9 + 1.4 * h01(r.key, 3);
     let chunk = r.min_seg <= 1;
-    // One rounding radius in metres on every axis, as a share of each axis.
-    let half_h = hgt * 0.5;
-    let rw = (ROCK_ROUND * r.hx.min(r.hz).min(half_h)).min(ROCK_ROUND_MAX_M);
     let rho = Vec3::new(rw / r.hx, rw / half_h, rw / r.hz).min(Vec3::splat(0.95));
     let taper =
         (ROCK_TAPER * (0.4 + 0.6 * h01(r.key, 9))).min(ROCK_TAPER_MAX_M / r.hx.min(r.hz).max(0.1));
@@ -566,11 +575,44 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         }
         (w + wn * push, push / amp.max(1e-3), wn)
     };
+    // Each axis' grid lines across the unit box: its `n` face segments over
+    // the flat middle and `ROUND_SEGS` more over the round at either end, so
+    // the round is drawn, and how many segments the low round took. A
+    // buried bottom's round is never seen and keeps one segment.
+    let lines = |n: usize, rho: f32, low: bool| -> (Vec<f32>, usize) {
+        if chunk {
+            return (
+                (0..=n).map(|i| -1.0 + 2.0 * i as f32 / n as f32).collect(),
+                0,
+            );
+        }
+        let flat = 1.0 - rho;
+        let round = |k: usize| rho * k as f32 / ROUND_SEGS as f32;
+        let mut v = Vec::with_capacity(n + 1 + 2 * ROUND_SEGS);
+        let lo = if low { ROUND_SEGS } else { 0 };
+        v.extend((0..lo).map(|k| -1.0 + round(k)));
+        let from = if low { -flat } else { -1.0 };
+        v.extend((0..=n).map(|i| from + (flat - from) * i as f32 / n as f32));
+        v.extend((1..=ROUND_SEGS).map(|k| flat + round(k)));
+        (v, lo)
+    };
+    let axes = [
+        lines(nx, rho.x, true),
+        lines(ny, rho.y, r.underside),
+        lines(nz, rho.z, true),
+    ];
+    // A segment's face segment: a round shades as the face it rounds off.
+    let flat_n = [nx, ny, nz];
+    let coarse = |a: usize, i: usize| i.saturating_sub(axes[a].1).min(flat_n[a] - 1);
     // The six faces as (normal axis, sign), each gridded along the other two
-    // axes with the same counts as its neighbours, so the edges they share
+    // axes on the same lines as its neighbours, so the edges they share
     // are the same points and the rock is closed. The bottom is buried and
     // skipped unless the rock stands on another (`underside`).
-    let counts = [nx, ny, nz];
+    let counts = [
+        axes[0].0.len() - 1,
+        axes[1].0.len() - 1,
+        axes[2].0.len() - 1,
+    ];
     let faces: [(usize, f32); 6] = [
         (1, 1.0),
         (0, 1.0),
@@ -592,8 +634,8 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         let at = |i: usize, j: usize| {
             let mut u = Vec3::ZERO;
             u[axis] = sg;
-            u[a] = -1.0 + 2.0 * i as f32 / na as f32;
-            u[b] = -1.0 + 2.0 * j as f32 / nb as f32;
+            u[a] = axes[a].0[i];
+            u[b] = axes[b].0[j];
             u
         };
         let mut grid = Vec::with_capacity((na + 1) * (nb + 1));
@@ -637,7 +679,8 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
                     } else {
                         0.0
                     };
-                    let face = 0.8 + 0.4 * h01(r.key ^ 0x9e, (i * 131 + j * 17 + axis) as u32);
+                    let (ci, cj) = (coarse(a, i), coarse(b, j));
+                    let face = 0.8 + 0.4 * h01(r.key ^ 0x9e, (ci * 131 + cj * 17 + axis) as u32);
                     let value = |k: usize| {
                         let up = ((p[k].y - r.y0) / hgt).clamp(0.0, 1.0);
                         // Recesses darker: the cheap half of occlusion.
