@@ -1,0 +1,43 @@
+# The research run: place a level-2 workbench, open its tech tree, unlock a
+# node, read the level-1 tab. Coordinates are for RES=1280x720 and today's
+# content/research.toml.
+#
+#   POP=0 KIT="item.workbench2:1, item.junk:200, item.wood:1000, item.metal_frags:500" \
+#     ./ci/drive.sh shots/tech ci/drive/tech.txt
+# load
+sleep 75
+moveto 640 360
+click 1
+sleep 3
+# the bench in hand, the ground in front, place it
+key 1
+sleep 2
+move 0 260
+sleep 2
+shot 01-ghost
+click 1
+sleep 4
+shot 02-placed
+key e
+sleep 3
+shot 03-tree-level2
+# the LEVEL 1 tab, then its first root (the metal hatchet)
+moveto 60 19
+click 1
+sleep 2
+moveto 314 186
+click 1
+sleep 2
+shot 04-level1-selected
+# UNLOCK
+moveto 1179 680
+click 1
+sleep 3
+shot 05-unlocked
+# the hatchet's child opens
+moveto 314 270
+click 1
+sleep 2
+shot 06-child
+key Escape
+sleep 2

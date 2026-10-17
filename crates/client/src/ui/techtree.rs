@@ -17,13 +17,16 @@
 
 use core::ops::RangeInclusive;
 
-use sim_core::craft::CraftContent;
+use protocol::event::ItemCatalog;
+use sim_core::craft::{CraftContent, RecipeDef};
 use sim_core::deploy::{best_bench_in, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::limits::INV_SLOTS;
 use sim_core::research::{
     knows, node_tier, ResearchContent, ResearchRow, NO_RECIPE, TABLE_RADIUS_M,
 };
+
+use crate::ui::craft::item_label;
 
 /// What a node is to this player, in the order the panel colours them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,6 +348,21 @@ pub fn layout(
     }
     // The bench stands over the middle of the whole board.
     cursor.max(1).saturating_sub(1) / 2
+}
+
+/// The sidebar's recipe line under the description — what one craft of the
+/// node's item takes, the reference's "500 Wood, 100 Metal Fragments, 50
+/// Scrap". Empty for a recipe with no inputs.
+pub fn craft_line(catalog: &ItemCatalog, def: &RecipeDef) -> String {
+    let n = (def.n_inputs as usize).min(def.inputs.len());
+    let mut out = String::new();
+    for (item, units) in def.inputs[..n].iter() {
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(&format!("{units} {}", item_label(catalog, *item)));
+    }
+    out
 }
 
 /// The tier headline over a group — the craft badge's phrasing, so the
