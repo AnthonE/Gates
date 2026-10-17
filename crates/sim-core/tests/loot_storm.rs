@@ -178,7 +178,7 @@ use sim_core::backpack::{BackpackContent, BAG_GONE_EMPTIED, BAG_GONE_EVICTED};
 use sim_core::bots::{brawl_step, BrawlPlan};
 use sim_core::build::{foundation_terrain_ok, BUILD_CELL_M};
 use sim_core::combat::CombatContent;
-use sim_core::gather::{GatherContent, ItemStack, NodeDef, GATHERABLE_KINDS};
+use sim_core::gather::{GatherContent, ItemStack, NodeDef, GATHERABLE_KINDS, STRIKE_DELAY_TICKS};
 use sim_core::limits::{
     INV_SLOTS, MAX_BACKPACKS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS,
 };
@@ -745,6 +745,12 @@ fn storm() -> Storm {
     // people still driving would fail on the sleeping bit.
     for plan in plans.iter() {
         w.tick(&[Command::Leave { id: plan.id }]);
+    }
+    // And let the last swings land: a strike still in its wind-up is
+    // sub-second state the save drops (`Player::strike_at`), as it drops
+    // arrows in flight.
+    for _ in 0..STRIKE_DELAY_TICKS {
+        w.tick(&[]);
     }
     s.hash = w.state_hash();
     let mut buf = vec![0u8; WORLD_SAVE_MAX_BYTES];

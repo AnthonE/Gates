@@ -48,9 +48,10 @@
 //! 3. **The event ring overflows and the world survives it.** A death is
 //!    five events on one tick — the swing or the shot, the hit, the
 //!    health, the death, the bag — so a tick on which a dozen duels
-//!    resolve together passes the 256-slot ring. Measured: 4 overflow
-//!    ticks of 600, and 188 of 256 at the ring's peak when this storm ran
-//!    64 bodies instead of 100, which is why it runs 100.
+//!    resolve together passes the 256-slot ring. Measured: the first knife
+//!    wave on a volley (`KNIFE_START`) overflows it by 42, and 188 of 256
+//!    at the ring's peak when this storm ran 64 bodies instead of 100,
+//!    which is why it runs 100.
 //! 4. **Both weapons actually fought** — the breadth check, so a storm
 //!    that silently stopped landing (a cone that closed, a magazine that
 //!    stopped feeding, a bag that stopped dropping) names which.
@@ -86,7 +87,7 @@ use sim_core::backpack::{BackpackContent, BAG_GONE_EVICTED};
 use sim_core::bots::{brawl_step, BrawlPlan};
 use sim_core::build::{foundation_terrain_ok, BUILD_CELL_M};
 use sim_core::combat::CombatContent;
-use sim_core::gather::ItemStack;
+use sim_core::gather::{ItemStack, STRIKE_DELAY_TICKS};
 use sim_core::limits::{MAX_BACKPACKS, MAX_COMMANDS_PER_TICK, MAX_EVENTS_PER_TICK, MAX_PLAYERS};
 use sim_core::movement::Body;
 use sim_core::rng::Pcg32;
@@ -138,11 +139,8 @@ const DUELS: usize = MAX_PLAYERS / 2;
 const PLAYERS: usize = DUELS * 2;
 const _: () = assert!(PLAYERS == MAX_PLAYERS);
 
-/// Long enough to fill a 256-bag store several times over. Measured: 954
-/// deaths, a bag store pinned at its cap and evicting, and the ring over
-/// its ceiling on 4 ticks. 400 ticks reached the cap too (629 deaths) and
-/// overflowed the ring on 2, which is a thinner margin than an assertion
-/// this cheap needs.
+/// Long enough to fill a 256-bag store several times over. Measured: 745
+/// deaths and a bag store pinned at its cap and evicting.
 const TICKS: u64 = 600;
 
 /// Commands each duellist issues per tick. Two, not four: this storm's
@@ -187,6 +185,14 @@ const ROUND: u16 = 7;
 
 /// The hotbar slot every duellist holds its weapon in.
 const WEAPON_SLOT: u8 = 0;
+
+/// The tick the knife duels start pressing: late enough that their first
+/// blows, all fifty at once, land on the guns' volley at t=12. The guns
+/// volley every 10 ticks from t=2 and a swing repeats every 38, but a blow
+/// lands `STRIKE_DELAY_TICKS` (7) after the swing — so knives started on
+/// t=0 strike only on odd ticks, never on a volley, and the ring peaked at
+/// 217 of 256. Measured from t=5: 42 events over the ring at t=12.
+const KNIFE_START: u64 = 12 - STRIKE_DELAY_TICKS;
 
 fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     (
@@ -383,6 +389,9 @@ fn storm() -> Storm {
         cmds.clear();
         for _ in 0..STEPS_PER_TICK {
             for (i, plan) in plans.iter_mut().enumerate() {
+                if t < KNIFE_START && !is_shooter(i) {
+                    continue;
+                }
                 cmds.push(brawl_step(plan, &mut rng, was_down[i]));
             }
         }
@@ -451,6 +460,12 @@ fn storm() -> Storm {
     // on the sleeping bit and say nothing about the fight.
     for plan in plans.iter() {
         w.tick(&[Command::Leave { id: plan.id }]);
+    }
+    // And let the last swings land: a strike still in its wind-up is
+    // sub-second state the save drops (`Player::strike_at`), as it drops
+    // arrows in flight.
+    for _ in 0..STRIKE_DELAY_TICKS {
+        w.tick(&[]);
     }
     s.hash = w.state_hash();
     let mut buf = vec![0u8; WORLD_SAVE_MAX_BYTES];

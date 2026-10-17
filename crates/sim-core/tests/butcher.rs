@@ -6,7 +6,7 @@
 
 use sim_core::backpack::BackpackContent;
 use sim_core::combat::CombatContent;
-use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::gather::{GatherContent, ItemStack, STRIKE_DELAY_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_MOBS};
 use sim_core::mob::{self, ButcherRow, MobContent, MOB_PIG};
@@ -127,7 +127,8 @@ fn aim(w: &World, id: u32) -> (u16, u8) {
     (yaw_toward(dx, dz, 0), pitch)
 }
 
-/// Hold the button until one swing is taken; return what it paid, by item.
+/// Hold the button until one swing is taken, then through its wind-up
+/// (`STRIKE_DELAY_TICKS`); return what its blow paid, by item.
 fn swing(w: &mut World, id: u32, seq: &mut u16) -> Vec<(u16, u16)> {
     let (yaw, pitch) = aim(w, id);
     for _ in 0..60 {
@@ -150,6 +151,9 @@ fn swing(w: &mut World, id: u32, seq: &mut u16) -> Vec<(u16, u16)> {
             .iter()
             .any(|e| e.code == sim_core::world::EV_SWING && e.a == 1);
         if swung {
+            for _ in 0..STRIKE_DELAY_TICKS {
+                w.tick(&[]);
+            }
             return w
                 .events
                 .entries()

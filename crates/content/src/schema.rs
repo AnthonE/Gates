@@ -425,6 +425,14 @@ pub struct Weapon {
     /// round's flight (`[[ammo]]`).
     #[serde(default)]
     pub range_m: u32,
+    /// A **melee** row's reach in centimetres, from the eye to the struck
+    /// body's skin — required there, in place of `range_m`, and refused on
+    /// every other kind. Centimetres because the drawn weapon sets it: the
+    /// rig's hand at the strike plus the item's length ahead of the grip
+    /// (`client/tests/melee_reach.rs`), and a whole metre cannot tell a bat
+    /// from a hatchet.
+    #[serde(default)]
+    pub reach_cm: u32,
     /// Rounds this weapon holds **loaded**, or absent for a weapon that
     /// spends straight out of the pack. Required on `firearm`, refused on
     /// every other kind (`validate.rs`).

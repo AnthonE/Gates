@@ -98,6 +98,19 @@ const _: () = assert!(JITTER_K_WHOLE as f64 == PLAYOUT_JITTER_K);
 const _: () =
     assert!(INTERP_DELAY_TICKS >= PLAYOUT_MIN_TICKS && INTERP_DELAY_TICKS <= PLAYOUT_MAX_TICKS);
 
+/// The lowest playout claim an honest client sends. The client reports how
+/// far behind its acked snapshot it is drawing (`ClientCore::poll_input`),
+/// which is its delay less the up-to-a-tick its clock has run past that
+/// snapshot, so at the delay's floor the claim can round one under it.
+pub const VIEW_LAG_MIN_TICKS: u8 = PLAYOUT_MIN_TICKS - 1;
+
+/// A snapshot stamped tick `L` carries the poses `World::tick` wrote for
+/// `L − 1`: it is encoded after the tick counter advances. So a client
+/// drawing a body at stamp `X` is looking at rewind row `X − 1`, one tick
+/// further back than the stamp arithmetic says. Without it every rewind
+/// landed a tick short (measured: `tests/lagcomp_e2e.rs`).
+pub const SNAPSHOT_POSE_LAG_TICKS: u16 = 1;
+
 /// The formula's two terms cannot underflow the raw staleness: it is added
 /// to, then subtracted from, and this is the order that keeps it in `u16`
 /// without a saturating call that would hide a constant moving. Compared
@@ -112,7 +125,8 @@ const _: () = assert!(INTERP_DELAY_TICKS as i32 >= REWIND_ACK_BIAS_TICKS as i32)
 /// (`findings/lagcomp-design-20260818.md` §7).
 ///
 /// ```text
-/// favour = min((T − S) + clamp(playout, rails) − REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)
+/// favour = min((T − S) + clamp(playout, rails) + SNAPSHOT_POSE_LAG_TICKS
+///              − REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)
 /// ```
 ///
 /// `now` is `T`, the low 16 bits of the tick this frame executes at, and
@@ -151,7 +165,7 @@ const _: () = assert!(INTERP_DELAY_TICKS as i32 >= REWIND_ACK_BIAS_TICKS as i32)
 ///
 /// `playout` is the delay the client REPORTS rendering at (wire v61) —
 /// a claim, so it is clamped to the shared rails before it prices
-/// anything: below `PLAYOUT_MIN_TICKS` no honest interpolator runs, and
+/// anything: below [`VIEW_LAG_MIN_TICKS`] no honest interpolator runs, and
 /// above `PLAYOUT_MAX_TICKS` no honest one buffers, so a forged value
 /// buys exactly what an honest client at that extreme would get and not
 /// a tick more. Before v61 this term was the `INTERP_DELAY_TICKS`
@@ -171,8 +185,8 @@ pub fn favour_for(now: u16, view: Option<u16>, playout: u8) -> u8 {
     if raw > AIM_STALE_CEILING_TICKS {
         return 0;
     }
-    let delay = playout.clamp(PLAYOUT_MIN_TICKS, PLAYOUT_MAX_TICKS);
-    let want = raw + delay as u16 - REWIND_ACK_BIAS_TICKS as u16;
+    let delay = playout.clamp(VIEW_LAG_MIN_TICKS, PLAYOUT_MAX_TICKS);
+    let want = raw + delay as u16 + SNAPSHOT_POSE_LAG_TICKS - REWIND_ACK_BIAS_TICKS as u16;
     // Clamped here and clamped again by the sim (`world.rs`'s `Input` arm),
     // deliberately: this one states the ceiling where the number is made,
     // and that one holds it for every command the sim ever applies —
@@ -904,10 +918,10 @@ pub struct ShardStats {
     pub favour_sum: AtomicU64,
     /// Frames whose computed favour hit [`REWIND_MAX_TICKS`] and was
     /// clamped down to it. **This is the operator's question, not a load
-    /// gauge**: it is the fraction of fights the 233 ms ceiling is actually
+    /// gauge**: it is the fraction of fights the 500 ms ceiling is actually
     /// binding, which is the evidence for moving that number and the only
     /// thing `aim_stale_hist`'s top bucket could not say (it counts raw
-    /// staleness ≥ 7; the favour clamps at 7 from a raw of 4).
+    /// staleness ≥ 7; the favour clamps at 15 from a raw of about 10).
     pub favour_clamped: AtomicU64,
     /// Frames whose claimed view sat more than
     /// [`FAVOUR_DISAGREE_BAND_TICKS`] behind the server's own evidence of

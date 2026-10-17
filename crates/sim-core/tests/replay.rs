@@ -546,7 +546,10 @@ const TICKS: u64 = 900;
 /// rescales the island's, its spires stand, and no one spawns inside it.
 /// **Moved → `0x07E1_E50F_C295_4C13` at the travelling mark** (2026-10-17):
 /// the weak spot starts a step from the first blow and moves only when hit.
-const GOLDEN_FINAL_HASH: u64 = 0x07E1_E50F_C295_4C13;
+/// **Moved → `0x6133_C200_5296_CD91` at the delayed strike** (2026-10-17): a
+/// swing lands `gather::STRIKE_DELAY_TICKS` after it is taken, and the
+/// pending strike is hashed.
+const GOLDEN_FINAL_HASH: u64 = 0x251C_6F03_A043_0E96;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -658,7 +661,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x07E1_E50F_C295_4C13;
 /// **Moved → `0xA04E_9426_2556_114B` at the Verdigris** (2026-10-15), with the final hash.
 /// **Moved → `0xFEFF_1F4E_A700_FCCD` at the travelling mark** (2026-10-17), with
 /// the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0xFEFF_1F4E_A700_FCCD;
+/// **Moved → `0x6696_6FCF_BB2B_815C` at the delayed strike** (2026-10-17), with
+/// the final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x47FB_2E29_2A91_9869;
 
 /// Fold a stamped trace into one number.
 ///
@@ -904,8 +909,13 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             // walking band never enters a 0.88 m drum from a 1.6 m eye
             // stood on top of it. Its yaw still wanders, and the roll it
             // drives is the weighted walk the golden is watching.
+            // And it keeps its hand: a swing lands `STRIKE_DELAY_TICKS`
+            // after it is taken and a hotbar change in between drops it, so
+            // the wandering slot every other bot keeps would land one blow
+            // in six and burst no barrel at all.
             if world.players[30].active && id == world.players[30].id {
                 f.pitch = 0;
+                f.sel = 0;
             }
             cmds.push(Command::Input {
                 id,
