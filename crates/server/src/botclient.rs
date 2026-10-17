@@ -810,6 +810,9 @@ impl Drop for EventPump {
 
 type DriverEvents = rtrb::Consumer<([u8; protocol::event::MAX_EVENT_MSG_BYTES], usize)>;
 
+/// How long the event pump waits for the frame loop to make room.
+const EVENT_LANE_WAIT: std::time::Duration = std::time::Duration::from_millis(5);
+
 fn drain_driver_events(rx: &mut DriverEvents, driver: &mut dyn BotDriver) -> Result<(), String> {
     for _ in 0..sim_core::limits::EVENT_RING_CAP {
         let Ok((buf, len)) = rx.pop() else { break };
@@ -818,7 +821,7 @@ fn drain_driver_events(rx: &mut DriverEvents, driver: &mut dyn BotDriver) -> Res
             .map_err(|_| "agent rejected an event frame")?;
     }
     if rx.is_abandoned() {
-        return Err("agent event lane ended or overflowed".into());
+        return Err("agent event lane ended".into());
     }
     Ok(())
 }
@@ -1046,8 +1049,11 @@ async fn run_bot_inner(
     if let Some(driver) = driver.as_deref_mut() {
         driver.welcome(&welcome);
     }
-    // Fixed storage, shared event-ring cap. Overflow terminates the agent's
-    // session: losing an inventory/harvest delta must never look like success.
+    // Fixed storage, shared event-ring cap. A full ring holds the pump until
+    // the frame loop drains it, as the game client's bounded lane does: an
+    // island's join burst (every player's tag, mark and worn set) can pass
+    // the cap, and dropping an inventory/harvest delta must never look like
+    // success, so nothing is dropped and the session goes on.
     let (events_tx, mut events_rx) = if driver.is_some() {
         let (tx, rx) = rtrb::RingBuffer::new(sim_core::limits::EVENT_RING_CAP);
         (Some(tx), Some(rx))
@@ -1073,11 +1079,15 @@ async fn run_bot_inner(
                         tally.decode_errors.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                if events_tx
-                    .as_mut()
-                    .is_some_and(|tx| tx.push((buf, len)).is_err())
-                {
-                    break;
+                if let Some(tx) = events_tx.as_mut() {
+                    let mut item = (buf, len);
+                    while let Err(rtrb::PushError::Full(back)) = tx.push(item) {
+                        if tx.is_abandoned() {
+                            return;
+                        }
+                        item = back;
+                        tokio::time::sleep(EVENT_LANE_WAIT).await;
+                    }
                 }
             }
         }))
