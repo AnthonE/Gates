@@ -1148,6 +1148,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 sel,
             },
             next_swing,
+            // A swing on its way in is sub-second and not saved.
+            strike_at: 0,
+            strike_sel: 0,
+            strike_favour: 0,
             // Unvalidated beyond the widths, `PlayerSave`'s reason: a save
             // file is not a client.
             mag: save.mag,

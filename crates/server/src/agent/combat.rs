@@ -48,7 +48,7 @@ use client_core::core::ClientCore;
 use protocol::{EntityState, BAG_KIND_PACK};
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::collide::{Part, CAPSULE_RADIUS_M};
-use sim_core::gather::SWING_INTERVAL_TICKS;
+use sim_core::gather::{STRIKE_DELAY_TICKS, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_AIM, BTN_CROUCH, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use sim_core::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q, SPRINT_SPEED, WALK_SPEED};
@@ -513,6 +513,9 @@ pub struct Combat {
     strafe: (i8, u32),
     /// When my own next swing is ready, from the last one it felt.
     ready_at: u32,
+    /// When the swing it felt lands: until then the arm is on its way in,
+    /// and backing off or sidestepping takes the blow out of reach.
+    strike_at: u32,
     /// Trying to close on the foe and not getting nearer: since when, and
     /// the nearest it has been since.
     stuck: Option<(u32, f32)>,
@@ -656,6 +659,7 @@ impl Combat {
             ears: 0,
             strafe: (1, 0),
             ready_at: 0,
+            strike_at: 0,
             stuck: None,
             shunned: [None; SHUN_MAX],
             last_end: None,
@@ -781,6 +785,7 @@ impl Combat {
     /// the rhythm.
     pub fn swung(&mut self, tick: u32) {
         self.ready_at = tick.wrapping_add(SWING_INTERVAL_TICKS as u32);
+        self.strike_at = tick.wrapping_add(STRIKE_DELAY_TICKS as u32);
     }
 
     /// A body a fight was let go with because it could not be reached:
@@ -2011,7 +2016,19 @@ impl Combat {
         // playout behind, further off than they are. So a ready swing is
         // carried in at a run, straight (a sidestep there only spoils the
         // aim), and a spent one is taken back out of their reach at a run.
-        let (want, lunge) = if !feared {
+        // My own blow on its way in: hold the ground it was swung from.
+        let striking = tick.wrapping_sub(self.strike_at) >= 1 << 31;
+        // Theirs on its way in: a swing is not spent when it is taken but
+        // when it lands, `STRIKE_DELAY_TICKS` later, so that is the moment
+        // to be out of its reach — not the moment to step in.
+        let incoming = feared
+            && t.last_swing
+                .is_some_and(|at| tick.wrapping_sub(at) <= STRIKE_DELAY_TICKS as u32);
+        let (want, lunge) = if striking {
+            (d.min(odds.my_reach - HOLD_M), false)
+        } else if incoming {
+            (odds.their_reach + WAIT_M, false)
+        } else if !feared {
             // Nothing to fear up close: in, and swing.
             (odds.my_reach - HOLD_M, true)
         } else if odds.my_reach - HOLD_M > safe {
@@ -2048,7 +2065,7 @@ impl Combat {
         self.rhythm(tick);
         // Less sideways the closer: circling a body at arm's length turns
         // the bearing to it faster than a person's eyes follow.
-        let side = if lunge || radial < 0.0 {
+        let side = if lunge || striking || radial < 0.0 {
             0.0
         } else {
             f32::from(self.strafe.0) * STRAFE_SHARE * ((d - 0.5) / 2.5).clamp(0.2, 1.0)
@@ -2063,7 +2080,10 @@ impl Combat {
         if radial < 0.0 || (radial > 0.0 && (d > odds.my_reach || lunge)) {
             buttons |= BTN_SPRINT;
         }
-        let in_reach = d <= odds.my_reach - 0.05;
+        // The blow lands `STRIKE_DELAY_TICKS` after the press, where they
+        // will be by then: swung at a body walking in, it meets them.
+        let at_strike = (d - coming * STRIKE_DELAY_TICKS as f32 / TICK_HZ as f32).max(0.0);
+        let in_reach = at_strike <= odds.my_reach - 0.05;
         if in_reach && mine_in <= PRESS_EARLY_TICKS && kit.on_target && kit.melee.is_some() {
             buttons |= BTN_PRIMARY;
         }
@@ -2654,7 +2674,9 @@ mod tests {
     fn the_odds_read_the_wiki() {
         let book = book();
         let spear = wire("Wooden Spear");
-        let rock = wire("Bat");
+        // The short tool: the bat reaches 1.35 m since reach follows the
+        // drawn weapon, too near a spear's 1.75 for an edge on reach alone.
+        let rock = wire("Stone Hatchet");
         let kit = |item: u16, hp: u16| Kit {
             book: &book,
             melee: Some((0, item)),

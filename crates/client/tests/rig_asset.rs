@@ -667,6 +667,29 @@ fn both_views_of_one_swing_strike_at_the_same_moment() {
     );
 }
 
+/// **The sim lands a swing on the tick both views draw it striking.** A
+/// taken swing is cast `STRIKE_DELAY_TICKS` later (`sim_core::gather`), with
+/// the aim of that tick; the first-person arc and the remote clip are what
+/// the swinger and the struck watch land. Retime either and the blow comes
+/// apart from the picture of it — the gap that made a sprinting body 1.3 m
+/// from where the weapon was drawn landing when the sim judged at the click.
+#[test]
+fn the_sim_strikes_when_the_swing_is_drawn_striking() {
+    let glb = Glb::open(&asset_path(RIG));
+    let remote = glb.pose_apex(client::render::anim::Clip::Swing.name());
+    let own = client::render::viewmodel::swing_apex_s();
+    let tick = 1.0 / sim_core::limits::TICK_HZ as f32;
+    let sim = sim_core::gather::STRIKE_DELAY_TICKS as f32 * tick;
+    for (view, at) in [("first-person arc", own), ("remote clip", remote)] {
+        assert!(
+            (at - sim).abs() < tick,
+            "the {view} strikes at {at:.3} s and the sim lands the blow at {sim:.3} s \
+             ({} ticks) — more than a tick apart",
+            sim_core::gather::STRIKE_DELAY_TICKS
+        );
+    }
+}
+
 #[test]
 fn the_bone_that_holds_is_in_the_file_and_in_the_skin() {
     // **The name two files resolve at runtime, checked at build.**

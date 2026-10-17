@@ -509,8 +509,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     w.id
                 ));
             }
+        } else if w.kind == WeaponKind::Melee {
+            if w.range_m != 0 || w.reach_cm == 0 {
+                return Err(format!(
+                    "weapon `{}`: a melee row's reach is `reach_cm`, not `range_m`",
+                    w.id
+                ));
+            }
         } else if w.range_m == 0 {
             return Err(format!("weapon `{}`: a weapon with no reach", w.id));
+        }
+        if w.kind != WeaponKind::Melee && w.reach_cm != 0 {
+            return Err(format!(
+                "weapon `{}`: `reach_cm` is a melee row's; this kind reaches by `range_m`",
+                w.id
+            ));
         }
         match w.kind {
             WeaponKind::Bow => {

@@ -36,7 +36,7 @@ use server::stats::{
     self, ShardStats, AIM_STALE_BUCKETS, AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS,
 };
 use sim_core::combat::CombatContent;
-use sim_core::gather::ItemStack;
+use sim_core::gather::{ItemStack, STRIKE_DELAY_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{
     INTERP_DELAY_TICKS, PLAYOUT_MIN_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS,
@@ -874,11 +874,13 @@ fn place_victim(core: &mut ShardCore, dist: f32) {
     v.qy = a.qy;
 }
 
-/// Stand the victim near for eight ticks and far for six, and return the
-/// stamp of the last snapshot that showed it near. Swinging six ticks later
-/// while acking that stamp mints `6 + 4 + 1 = 11`, which lands inside the
-/// near rows; acking the newest snapshot mints 5, which lands inside the
-/// far ones, with a tick of margin either side.
+/// Stand the victim near for eight ticks and far from then on, two ticks
+/// of it before the swing, and return the stamp of the first snapshot that
+/// shows it far. A swing lands `STRIKE_DELAY_TICKS` after it is taken, and
+/// its favour reaches back from there: acking `seen - 4` mints
+/// `(2 + 4) + 4 + 1 = 11` and lands on row `seen - 2`, inside the near
+/// stretch; acking the newest snapshot mints 5 and lands two ticks past the
+/// swing, far.
 fn victim_walked_out_of_reach(core: &mut ShardCore, stats: &ShardStats) -> u64 {
     place_victim(core, NEAR_M);
     for _ in 0..8 {
@@ -886,7 +888,7 @@ fn victim_walked_out_of_reach(core: &mut ShardCore, stats: &ShardStats) -> u64 {
     }
     let seen = core.world.tick;
     place_victim(core, FAR_M);
-    for _ in 0..6 {
+    for _ in 0..2 {
         tick(core, stats);
     }
     seen
@@ -909,6 +911,10 @@ fn swing_acking(core: &mut ShardCore, stats: &ShardStats, snapshot: u64) -> bool
     .expect("one frame fits");
     core.push_input(0, &dg);
     tick(core, stats);
+    // The blow lands on the tick the swing animation strikes.
+    for _ in 0..STRIKE_DELAY_TICKS {
+        tick(core, stats);
+    }
     core.world.players[1].hp < before
 }
 
@@ -926,16 +932,16 @@ fn swing_acking(core: &mut ShardCore, stats: &ShardStats, snapshot: u64) -> bool
 /// alone is satisfied by a fixture whose victim never left.
 #[test]
 fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
-    // ── Stale: ack the last snapshot that showed the victim near.
+    // ── Stale: ack a snapshot from while the victim stood near.
     let (mut core, stats) = duel_shard();
-    let seen = victim_walked_out_of_reach(&mut core, &stats);
-    let raw = core.world.tick - seen;
-    assert_eq!(raw, 6, "the fixture must age the ack by the far window");
+    let old = victim_walked_out_of_reach(&mut core, &stats) - 4;
+    let raw = core.world.tick - old;
+    assert_eq!(raw, 6, "the fixture must age the ack by six ticks");
     assert!(
-        swing_acking(&mut core, &stats, seen),
-        "the victim stood {FAR_M} m away and {NEAR_M} m away six ticks earlier, the shard \
-         minted a favour of {} for a {raw}-tick-old ack, and the swing still missed — \
-         nothing rewound",
+        swing_acking(&mut core, &stats, old),
+        "the victim stood {FAR_M} m away and {NEAR_M} m away when the acked snapshot was \
+         drawn, the shard minted a favour of {} for a {raw}-tick-old ack, and the swing \
+         still missed — nothing rewound",
         stats::favour_for(raw as u16, Some(0), INTERP_DELAY_TICKS)
     );
 

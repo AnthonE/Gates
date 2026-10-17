@@ -1,6 +1,7 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 100 kB — fixed-capacity by design (wall 4), and
+# `World` is 101 kB — fixed-capacity by design (wall 4), and
+# (100 kB until a swing's wind-up put its strike on each player;
 # (97 kB on each side until the Verdigris' spread met main in one merge: the
 # spread put its outbreaks on the world and the item table grew to 112 rows;
 # on main, 96 kB until the death marker put where and when each player last

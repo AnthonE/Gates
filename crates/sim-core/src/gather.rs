@@ -153,6 +153,15 @@ pub const MAX_TOOLS_PER_NODE: usize = 8;
 /// at 30 Hz, the melee-band cadence. Paid per swing, hit or whiff.
 pub const SWING_INTERVAL_TICKS: u64 = 38;
 
+/// Ticks from a swing being taken to its blow landing: **7 (233 ms)**, the
+/// strike both swing animations draw — the first-person arc's apex
+/// (`viewmodel::swing_apex_s`, 0.245 s) and the remote body's
+/// `Sword_Attack` (`client/tests/rig_asset.rs` holds both to this). The
+/// blow is cast with the aim and the lag-comp favour of the strike tick, so
+/// what is judged is what the swinger watched the weapon land on.
+pub const STRIKE_DELAY_TICKS: u64 = 7;
+const _: () = assert!(STRIKE_DELAY_TICKS >= 1 && STRIKE_DELAY_TICKS < SWING_INTERVAL_TICKS);
+
 /// Budget one unmarked swing spends against a node's pool, and the
 /// denominator every proportional payout divides by. A node holds
 /// `NodeDef::hits × HIT_UNIT`; `SlotLife::hits` counts budget SPENT, not
@@ -160,8 +169,7 @@ pub const SWING_INTERVAL_TICKS: u64 = 38;
 /// without paying more in total (`NodeDef::weak_pct`). 100 so a content
 /// percentage lands on it exactly. Structural, not a knob.
 pub const HIT_UNIT: u32 = 100;
-/// Reach at a node in metres, whatever is in hand (matches the melee
-/// weapon rows' range_m = 2). Since melee aim v1 (2026-09-05) this is the
+/// Reach at a node in metres, whatever is in hand. Since melee aim v1 (2026-09-05) this is the
 /// length of the swing's **ray** at a node — `melee::Reaches::node` — and
 /// no longer the radius of a planar cone; the cone (`CONE_COS`, 30°) and its
 /// ±3 m vertical window (`DY_MAX_M`) are gone with the planar pick, and
@@ -1226,6 +1234,21 @@ pub fn take_swing(tick: u64, events: &mut EventQueue, p: &mut Player) -> bool {
     p.next_swing = tick + SWING_INTERVAL_TICKS;
     events.push(crate::world::EV_SWING, p.id, 0, 0);
     true
+}
+
+/// Does the swing this body took land on this tick? Once, on exactly
+/// `Player::strike_at`, and only with the slot it was taken with still in
+/// hand. A strike whose tick passed with the arm skipped (downed, asleep,
+/// dead) is dropped rather than landing late.
+pub fn strike_due(tick: u64, p: &mut Player) -> bool {
+    if p.strike_at == 0 || tick < p.strike_at {
+        return false;
+    }
+    let due = tick == p.strike_at && p.frame.sel == p.strike_sel;
+    p.strike_at = 0;
+    p.strike_sel = 0;
+    p.strike_favour = 0;
+    due
 }
 
 /// Land a taken swing on the occupant the ray reached first.

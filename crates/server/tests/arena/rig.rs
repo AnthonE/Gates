@@ -514,7 +514,14 @@ impl Arena {
                         // reach at a run while the agent's is ready, and
                         // wait at its edge while neither is.
                         let safe = agent_reach + 0.3;
-                        if ready || agent_reach == 0.0 {
+                        if mine.strike_at > tick {
+                            // Its blow on the way in: hold, or it lands on air.
+                            fwd = if d > 0.9 { 1.0 } else { 0.0 };
+                        } else if agent.strike_at > tick && d < safe {
+                            // The agent's on the way in: out of its reach.
+                            fwd = -1.0;
+                            run = true;
+                        } else if ready || agent_reach == 0.0 {
                             fwd = if d > 0.9 { 1.0 } else { 0.0 };
                             run = true;
                         } else if agent_ready && d < safe {

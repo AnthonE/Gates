@@ -163,14 +163,11 @@ pub const VIEWMODEL_SWAY_MAX: f32 = 0.16;
 ///     (`SWING_INTERVAL_TICKS / TICK_HZ` = 1.267 s) with the arm back at
 ///     rest, so holding the button is a steady chop and never a wind-up
 ///     that never resolves — 0.45 s is a third of it;
-///   · the arc's **apex** lands at `VIEWMODEL_SWING_WINDUP + (1 −
-///     VIEWMODEL_SWING_WINDUP)·VIEWMODEL_SWING_ATTACK` = 0.35 of the
-///     stroke, so 0.16 s in. That is the half `SWING_CLIP_S` cannot
-///     satisfy: the sim resolves your own swing on the frame the button
-///     goes down and `animate` plays the cue there, so an apex a
-///     third of a second later reads as the picture lagging the sound.
-///     A remote body has no such constraint — nothing of theirs is
-///     synchronised to your speakers.
+///   · the arc's **apex** ([`swing_apex_s`]) lands 0.245 s in, which is
+///     where the sim lands the blow: a taken swing is cast
+///     `gather::STRIKE_DELAY_TICKS` (7) later, with the aim of that tick,
+///     and `tests/rig_asset.rs` holds the two within a tick. Move the
+///     apex and the blow comes apart from the picture of it.
 pub const VIEWMODEL_SWING_S: f32 = 0.45;
 
 /// The point the whole viewmodel — arm, hand and item — turns about, in view

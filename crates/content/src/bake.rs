@@ -724,16 +724,17 @@ impl Content {
                 .item_index(&w.id)
                 .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
                 as usize;
-            let reach_cm = w
-                .range_m
-                .checked_mul(100)
-                .and_then(|cm| u16::try_from(cm).ok())
-                .ok_or_else(|| {
-                    format!(
-                        "bake: `{}` range {} m overflows the cm reach",
-                        w.id, w.range_m
-                    )
-                })?;
+            let reach = if w.kind == WeaponKind::Melee {
+                Some(w.reach_cm)
+            } else {
+                w.range_m.checked_mul(100)
+            };
+            let reach_cm = reach.and_then(|cm| u16::try_from(cm).ok()).ok_or_else(|| {
+                format!(
+                    "bake: `{}` range {} m overflows the cm reach",
+                    w.id, w.range_m
+                )
+            })?;
             if reach_cm == 0 {
                 return Err(format!("bake: `{}` has no reach", w.id));
             }

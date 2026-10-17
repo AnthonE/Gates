@@ -11,7 +11,9 @@
 //! is about exactly that, which goes and finds a tree on purpose.
 
 use sim_core::combat::CombatContent;
-use sim_core::gather::{GatherContent, ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
+use sim_core::gather::{
+    GatherContent, ItemStack, NO_ITEM, STRIKE_DELAY_TICKS, SWING_INTERVAL_TICKS,
+};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::{self, Occupant};
@@ -152,13 +154,22 @@ fn place_in_front(w: &mut World, attacker: usize, victim: usize, yaw: u16, dist:
     w.players[victim].body = Body::at(SEED, hv(SEED), ax + fx * dist, az + fz * dist);
 }
 
-/// One tick where only `attacker` swings; nobody moves.
+/// One swing by `attacker`, through to the tick it lands on
+/// (`STRIKE_DELAY_TICKS` after the arm moves); nobody moves.
 fn swing_once(w: &mut World, attacker_id: u32, yaw: u16, seq: u16) {
     w.tick(&[Command::Input {
         id: attacker_id,
         frame: swing_frame(w, seq, yaw),
         favour: 0,
     }]);
+    wind_up(w);
+}
+
+/// The ticks between a swing being taken and its blow landing.
+fn wind_up(w: &mut World) {
+    for _ in 0..STRIKE_DELAY_TICKS {
+        w.tick(&[]);
+    }
 }
 
 /// Advance past the swing cooldown without swinging.
@@ -550,7 +561,9 @@ const FAR_M: f32 = 4.5;
 const WALK_TICKS: u64 = sim_core::limits::REWIND_MAX_TICKS as u64;
 
 /// Build the duel, park the victim near for one tick, then far for
-/// `WALK_TICKS - 1` more. Returns the world with the swing tick not yet run.
+/// `WALK_TICKS - 1` more, the last `STRIKE_DELAY_TICKS` of them the wind-up
+/// of the swing under test. Returns the world with the swing not yet taken:
+/// taken now, it lands `WALK_TICKS` after the near tick.
 fn victim_walked_out_of_reach() -> World {
     let mut w = duel_world();
     // The one near tick. Nobody swings — this tick exists only to be recorded.
@@ -558,7 +571,7 @@ fn victim_walked_out_of_reach() -> World {
     w.tick(&[]);
     // …and out, for the rest of the window.
     place_in_front(&mut w, 0, 1, 0, FAR_M);
-    for _ in 1..WALK_TICKS {
+    for _ in 1..WALK_TICKS - STRIKE_DELAY_TICKS {
         w.tick(&[]);
     }
     w
@@ -576,6 +589,7 @@ fn swing_with_favour(w: &mut World, favour: u8) -> bool {
         frame,
         favour,
     }]);
+    wind_up(w);
     w.players[1].hp < before
 }
 
@@ -664,19 +678,14 @@ fn a_favour_past_the_ceiling_is_clamped_to_the_ceiling() {
     // Same swing, same tick, same fixture — so the two must agree on damage
     // and not merely on landing.
     let mut at_ceiling = victim_walked_out_of_reach();
-    let frame = swing_frame_at(aim_at_body(&at_ceiling, 0, &near_body(&at_ceiling)), 0, 0);
-    at_ceiling.tick(&[Command::Input {
-        id: 1,
-        frame,
-        favour: WALK_TICKS as u8,
-    }]);
+    assert!(swing_with_favour(&mut at_ceiling, WALK_TICKS as u8));
     assert_eq!(
         clamped.players[1].hp, at_ceiling.players[1].hp,
         "a clamped favour must be the ceiling favour, not merely another hit"
     );
 }
 
-/// The favour is spent inside the tick it arrived in.
+/// The favour is spent on the swing it arrived with, and on nothing after.
 ///
 /// **The hole this closes is a production one, not a test-shaped one.**
 /// `Player::frame` persists: a client that sends one input with `BTN_PRIMARY`
@@ -719,9 +728,10 @@ fn a_favour_does_not_survive_into_the_next_tick() {
         let second = first + SWING_INTERVAL_TICKS;
 
         // Ride the cooldown with NO commands, parking the victim inside reach
-        // for exactly the one tick the deepest legal rewind will read.
+        // for exactly the one tick the deepest legal rewind will read from
+        // the second swing's strike.
         while w.tick < second {
-            if w.tick == second - WALK_TICKS {
+            if w.tick == second + STRIKE_DELAY_TICKS - WALK_TICKS {
                 place_in_front(&mut w, 0, 1, 0, NEAR_M);
                 w.tick(&[]);
                 place_in_front(&mut w, 0, 1, 0, FAR_M);
@@ -745,6 +755,7 @@ fn a_favour_does_not_survive_into_the_next_tick() {
                 favour: f,
             }]),
         }
+        wind_up(&mut w);
         (before, w.players[1].hp)
     };
 
@@ -810,6 +821,7 @@ fn the_attacker_does_not_rewind_with_the_target() {
         frame,
         favour: WALK_TICKS as u8,
     }]);
+    wind_up(&mut w);
     assert!(
         w.players[1].hp < before,
         "the swing must resolve from where the attacker IS ({NEAR_M} m away), not from where the ring says he was ({} m)",
