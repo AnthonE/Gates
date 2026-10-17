@@ -6,8 +6,8 @@
 #   POP=0 SPAWN=1819.5,2015.7 KIT="item.junk:200" ./ci/drive.sh shots/tech ci/drive/tech.txt
 #
 # A spawn faces north (+Z), so the bench is straight ahead.
-# load (a cold join under lavapipe takes minutes)
-sleep 240
+# load: a cold join at the town under lavapipe takes ~8 minutes
+sleep 600
 moveto 640 360
 click 1
 sleep 3
