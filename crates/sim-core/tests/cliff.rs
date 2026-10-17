@@ -4,7 +4,6 @@
 
 use sim_core::cliff::{self, Crag, SPOTS_PER_SIDE};
 use sim_core::collide::{ColIndex, CAPSULE_RADIUS_M};
-use sim_core::fmath::floor_i32;
 use sim_core::input::InputFrame;
 use sim_core::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::Scratch;
@@ -102,17 +101,16 @@ fn a_body_walking_down_a_face_at_a_crag_never_walks_into_it() {
     }
 }
 
-/// Whether bare ground at (`x`, `z`) is a face by the sim's law: too steep to
-/// climb at the nearest whole-metre point and all eight round it
+/// Whether the solid surface at (`x`, `z`) is a face by the sim's law
 /// (`movement::face_fall`).
-fn face(seed: u64, haven: &Haven, x: f32, z: f32) -> bool {
-    let (px, pz) = (floor_i32(x + 0.5) as f32, floor_i32(z + 0.5) as f32);
-    (-1..=1).all(|dz| {
-        (-1..=1).all(|dx| {
-            let (qx, qz) = (px + dx as f32, pz + dz as f32);
-            terrain::ground_slope(seed, haven, qx, qz) >= terrain::CLIFF_SLOPE_RATIO
-        })
-    })
+fn face<H: sim_core::occupy::Harvested>(
+    sc: &mut Scratch<H>,
+    seed: u64,
+    haven: &Haven,
+    x: f32,
+    z: f32,
+) -> bool {
+    movement::face_fall(&mut sc.occupants(), seed, haven, x, z).is_some()
 }
 
 /// Walked up a face on a diagonal from its foot, a body never stands on bare
@@ -144,7 +142,7 @@ fn a_body_cannot_climb_a_face_on_a_diagonal_or_stand_on_one() {
             let (ux, uz) = (gx / l, gz / l);
             let (mut fx, mut fz) = (x, z);
             let mut k = 0;
-            while face(seed, &haven, fx, fz) && k < 40 {
+            while face(&mut sc, seed, &haven, fx, fz) && k < 40 {
                 fx -= ux * 0.5;
                 fz -= uz * 0.5;
                 k += 1;
@@ -168,7 +166,7 @@ fn a_body_cannot_climb_a_face_on_a_diagonal_or_stand_on_one() {
                 let (bx, bz) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
                 let feet = b.qy as f32 * POS_Y_Q;
                 let bare = sc.occupants().body_ground(seed, bx, bz, feet) < feet - 0.01;
-                let at_face = bare && face(seed, &haven, bx, bz);
+                let at_face = bare && face(&mut sc, seed, &haven, bx, bz);
                 pressed += at_face as usize;
                 assert!(
                     !(b.grounded && at_face),

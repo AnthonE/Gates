@@ -9,10 +9,11 @@
 //! darkened through the macro channel (`UV_1.x`) the way weathered rock is.
 //! Loose stones lie around every seated block's foot.
 //!
-//! The mesh departs from the collision box by under a metre either way: the
-//! sim holds a body `occupy::ROCK_SKIN_M` off the box, so a rock drawn much
-//! wider would swallow a player and one drawn much narrower would stop them
-//! in the air.
+//! The mesh stands inside the collision box, never out of it: its rounding,
+//! taper, chisel and fracture all cut in (until 2026-10-17 a facet stood up
+//! to half a fracture proud of the box, rock a body walked into). Under a
+//! metre in, so a body held `occupy::ROCK_SKIN_M` off the box is not
+//! stopped in the air.
 //!
 //! One entity per formation, built in world space, streamed by formation cell
 //! out to [`ROCK_RING`] cells — rocks are landmarks, so they are drawn far
@@ -61,8 +62,8 @@ pub const ROCK_TAPER: f32 = 0.12;
 /// The most a taper may take from a side, metres: the collision box does not
 /// taper, and a body should not stand a metre past the drawn edge.
 pub const ROCK_TAPER_MAX_M: f32 = 0.6;
-/// Most a face is pushed in or out, metres. Under a metre, for the reason in
-/// the module note.
+/// Most a face is pushed in, metres. Under a metre, for the reason in the
+/// module note.
 pub const ROCK_FRACTURE_MAX_M: f32 = 0.9;
 /// How far a rock resting on another is drawn down into it, metres.
 pub const STACK_SINK_M: f32 = 0.6;
@@ -564,16 +565,20 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         let q = w * (1.0 / 2.6);
         let f = noise3(q, r.key) * 0.6 + noise3(q * 2.3, r.key ^ 0x5bd1) * 0.4;
         let stepped = ((f * 4.0).floor() / 3.0).clamp(0.0, 1.0);
-        let mut push = (stepped - 0.5) * amp;
         // A top is ground: pushed about less.
-        push *= 1.0 - 0.7 * n.y.max(0.0);
+        let flat = 1.0 - 0.85 * n.y.max(0.0);
+        // How proud the facet is, for the shading, about 0.
+        let mut proud = (stepped - 0.5) * flat;
         // Strata: a groove every `layer` metres up the sides, wandering.
         let side = 1.0 - n.y.abs();
         let band = (w.y - r.y0) / layer + noise3(q * 0.7, r.key ^ 0x77) * 0.6;
         if band - band.floor() < 0.2 {
-            push -= amp * 0.9 * side;
+            proud -= 0.9 * side;
         }
-        (w + wn * push, push / amp.max(1e-3), wn)
+        // Every facet pushed in, never out: the box is what the sim
+        // collides, so a facet proud of it is rock a body walks into.
+        let push = (proud - 0.5 * flat) * amp;
+        (w + wn * push, proud, wn)
     };
     // Each axis' grid lines across the unit box: its `n` face segments over
     // the flat middle and `ROUND_SEGS` more over the round at either end, so
@@ -729,8 +734,10 @@ fn chisel_planes(r: &RockShape, half_h: f32, chunk: bool) -> [(Vec3, f32); CHISE
     cuts
 }
 
-/// Loose stones around a seated block's foot: a handful to a dozen, a hand
-/// to a knee high, lying on the ground just off its sides.
+/// Loose stones around a seated block's foot: a handful to a dozen, no
+/// higher than an ankle, lying on the ground just off its sides. Clutter, as
+/// grass is: nothing collides with them, so none stands high enough to read
+/// as rock a body walks through (they ran to knee height until 2026-10-17).
 fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
     let n = ((r.hx + r.hz) * 1.1) as usize;
     for k in 0..n.clamp(3, 14) {
@@ -747,7 +754,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
         let (ox, oz) = (lx + lx.signum() * out * 0.7, lz + lz.signum() * out * 0.7);
         let (x, z) = r.world(ox, oz);
         let gy = terrain::height(seed, x, z);
-        let size = 0.12 + 0.36 * h(3) * h(3);
+        let size = 0.1 + 0.12 * h(3) * h(3);
         let (s, c) = (h(4) * std::f32::consts::TAU).sin_cos();
         rock_block(
             soup,
@@ -758,7 +765,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
                 hz: size * (0.6 + 0.4 * h(5)),
                 dir: (s, c),
                 y0: gy - size * 0.7,
-                y1: gy + size * (0.6 + 0.6 * h(6)),
+                y1: gy + size * (0.4 + 0.5 * h(6)),
                 tx: (h(7) - 0.5) * 0.6,
                 tz: (h(8) - 0.5) * 0.6,
                 key: r.key ^ (k as u32 + 1).wrapping_mul(0x9E37_79B9),

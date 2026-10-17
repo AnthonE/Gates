@@ -106,8 +106,8 @@ const F_BEACH: u8 = 8;
 const F_CLOSED: u8 = 16;
 const F_SEEN: u8 = 32;
 const F_WATER: u8 = 64;
-/// The ground here is a face (`movement::face_fall`): bare, or under a
-/// crag's top (`F_HARD`).
+/// The ground here is a face (`face::steep`): bare, or under a crag's top
+/// (`F_HARD`).
 const F_STEEP: u8 = 128;
 /// Feet high enough that every top over a cell is within a step of them.
 const ANY_TOP_M: f32 = 1.0e4;
@@ -826,7 +826,7 @@ fn probe(gr: &mut Ground, cx: i32, cz: i32, deck: Option<f32>) -> (u8, f32) {
     {
         return (F_PROBED | F_BLOCKED, 0.0);
     }
-    let gy = terrain::ground(gr.seed, gr.haven, x, z);
+    let gy = crate::face::drawn_surface(gr.occ, gr.seed, gr.haven, x, z);
     if let Some(d) = deck {
         let dirt = if gy <= d + STEP_UP {
             gy
@@ -853,7 +853,7 @@ fn probe(gr: &mut Ground, cx: i32, cz: i32, deck: Option<f32>) -> (u8, f32) {
     // capsule never stands on there.
     let mut hard = collide::body_ground(gr.seed, gr.haven, gr.cols, x, z, gy)
         .max(gr.occ.body_ground(gr.seed, x, z, gy));
-    let face = hard <= gy && crate::movement::face_fall(gr.occ, gr.seed, gr.haven, x, z).is_some();
+    let face = hard <= gy && crate::face::steep(gr.occ, gr.seed, gr.haven, x, z);
     if face {
         // Nobody stands on a face: a crag's top over it is the footing
         // there, however far above the face it stands.

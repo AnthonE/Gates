@@ -16,11 +16,10 @@
 //! spots to build its meshes and keeps the scree to itself: ankle-high
 //! stones, waded through like clutter.
 //!
-//! Every height here is the sim's. The client draws a ledge down a face by
-//! the cliff relief's offset there, as it draws the face (`terrain_mesh`), so
-//! a body is as far off a ledge as it is off the rock beside it. A tooth's
-//! top is the lip's height plus its rise, and the relief never moves a lip,
-//! so a tooth is drawn exactly where it collides.
+//! Every height here is the sim's, and the client draws a crag exactly
+//! there: a ledge's shelf stands over the drawn face (`face::drawn_y`, the
+//! relief), and a tooth's top is the lip's height plus its rise, which
+//! the relief never moves.
 
 use crate::fmath::{fabs, floor_i32};
 use crate::terrain::{self, Haven, Lattice, CLIFF_SLOPE_RATIO};
@@ -415,7 +414,13 @@ fn ledge(
     if y - yl.min(yr) > face {
         return Crag::NONE;
     }
-    let y1 = y + face;
+    // The face it juts from is the DRAWN face (`face.rs`): the shelf stands
+    // its height over the rock a body sees beside it, the relief read at the
+    // face's nearest whole metre.
+    let (px, pz) = (floor_i32(x + 0.5) as f32, floor_i32(z + 0.5) as f32);
+    let relief = crate::face::drawn_y(lat, seed, haven, px, pz, 1.0)
+        - terrain::ground_memo(lat, seed, haven, px, pz);
+    let y1 = y + relief + face;
     // A face that eases off behind the ledge would leave its back standing a
     // metre out of the rock.
     let (bx, bz) = (x - dx * 2.0 * hz, z - dz * 2.0 * hz);

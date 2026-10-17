@@ -121,26 +121,41 @@ fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
 /// (`render/cliff_skin.rs`).
 pub const SLIDE_SPEED: f32 = 4.0;
 
-/// The fall line at (`x`, `z`), a unit vector downhill, where the bare
-/// ground there is a face: too steep to climb at the nearest whole-metre
-/// point and at all eight round it. `None` where a body may stand. The
-/// client's skin stands out by that same law (`render/cliff_skin.rs`, its
-/// mask reads the gentlest of the 3×3), so a body is never kept off a steep
-/// bank no rock is drawn over, and never stands where rock is.
-pub(crate) fn face_fall(
+/// The fall line at (`x`, `z`), a unit vector downhill, where the solid
+/// surface there is a face: too steep to climb at the nearest whole-metre
+/// point and at all eight round it, the gentlest of the 3×3 that the skin's
+/// own mask reads (`face.rs`). `None` where a body may stand. Read off
+/// [`crate::face::surface`], so a shelf in the drawn rock is ground and a
+/// riser is a face; off the faces that is the sim's ground.
+pub fn face_fall(
     occ: &mut Occupants,
     seed: u64,
     haven: &terrain::Haven,
     x: f32,
     z: f32,
 ) -> Option<(f32, f32)> {
-    let (ix, iz) = (floor_i32(x + 0.5), floor_i32(z + 0.5));
-    let (sx, sz) = occ.cache.grade(seed, haven, ix, iz);
+    occ.cache
+        .fall(seed, haven, floor_i32(x + 0.5), floor_i32(z + 0.5))
+}
+
+/// [`face_fall`] at whole-metre (`ix`, `iz`), from the surface's heights
+/// there (`surf`).
+pub(crate) fn fall_at(
+    ix: i32,
+    iz: i32,
+    mut surf: impl FnMut(i32, i32) -> f32,
+) -> Option<(f32, f32)> {
+    let mut grade = |i: i32, j: i32| {
+        let sx = (surf(i + 1, j) - surf(i - 1, j)) * 0.5;
+        let sz = (surf(i, j + 1) - surf(i, j - 1)) * 0.5;
+        (sx, sz)
+    };
+    let (sx, sz) = grade(ix, iz);
     let mut gentlest = sx * sx + sz * sz;
     for dz in -1..=1 {
         for dx in -1..=1 {
             if dx != 0 || dz != 0 {
-                let (gx, gz) = occ.cache.grade(seed, haven, ix + dx, iz + dz);
+                let (gx, gz) = grade(ix + dx, iz + dz);
                 gentlest = gentlest.min(gx * gx + gz * gz);
             }
         }
@@ -150,24 +165,6 @@ pub(crate) fn face_fall(
     }
     let s = (sx * sx + sz * sz).sqrt();
     Some((-sx / s, -sz / s))
-}
-
-/// The ground's rise per metre along x and z at (`x`, `z`), uncached:
-/// `terrain::ground_slope`'s own taps.
-pub(crate) fn grade(
-    lat: &mut terrain::Lattice,
-    seed: u64,
-    haven: &terrain::Haven,
-    x: f32,
-    z: f32,
-) -> (f32, f32) {
-    let sx = (terrain::ground_memo(lat, seed, haven, x + 1.0, z)
-        - terrain::ground_memo(lat, seed, haven, x - 1.0, z))
-        * 0.5;
-    let sz = (terrain::ground_memo(lat, seed, haven, x, z + 1.0)
-        - terrain::ground_memo(lat, seed, haven, x, z - 1.0))
-        * 0.5;
-    (sx, sz)
 }
 
 /// Highest quantized feet position that keeps the head below a slab. Round
@@ -227,7 +224,9 @@ pub fn step(
     // stops it with. A point here let a body stand past a ledge with its
     // centre over air and fall down the face half inside it, which the
     // veto lifts then treated as "already inside" (`body_ground`'s doc).
-    let terrain_here = terrain::ground(seed, haven, x, z);
+    // The solid ground (`face::surface`): the sim's, or on a face the rock
+    // drawn over it.
+    let terrain_here = crate::face::surface(occ, seed, haven, x, z);
     let hard_here =
         collide::body_ground(seed, haven, cols, x, z, y).max(occ.body_ground(seed, x, z, y));
     let ground_here = terrain_here.max(hard_here);
@@ -372,7 +371,7 @@ pub fn step(
                     continue;
                 }
             }
-            let g = terrain::ground(seed, haven, cx, cz);
+            let g = crate::face::surface(occ, seed, haven, cx, cz);
             let pg = collide::body_ground(seed, haven, cols, cx, cz, y);
             let og = occ.body_ground(seed, cx, cz, y);
             // A built or hard surface accepts on the step rule alone; bare
