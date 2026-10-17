@@ -734,6 +734,18 @@ slot = "hand"
 class = "food"
 description = "Found on the forest floor. A little food."
 
+# Rust's cactus flesh: cut out of a desert cactus with its cloth
+# (`gather.cactus`). Their stack.
+[[item]]
+id = "item.cactus_flesh"
+name = "Cactus Flesh"
+stack = 10
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Cut from a cactus. Mostly water."
+
 [[item]]
 id = "item.corn"
 name = "Corn"

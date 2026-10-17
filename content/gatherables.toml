@@ -304,10 +304,11 @@ weak_spot_bonus_pct = 0
 hand = 3
 
 
-# The desert's cactus (`terrain::Occupant::Cactus`), swung at for cloth as
-# theirs is (rusthelp.com/world/cactus: 3–15 cloth by size, any blade or a
-# rock). Ours is one size, so it pays their middle. It pricks whoever walks
-# into it (`world::CACTUS_HP`), swinging or not.
+# The desert's cactus (`terrain::Occupant::Cactus`), swung at for cloth and
+# its flesh as theirs is (rusthelp.com/world/cactus: 3–15 cloth and 0–3
+# flesh by size, any blade or a rock). Ours is one size, so it pays their
+# middle. It pricks whoever walks into it (`world::CACTUS_HP`), swinging or
+# not.
 [[gatherable]]
 id = "gather.cactus"
 archetype = "cactus"
@@ -324,3 +325,8 @@ weak_spot_bonus_pct = 0
 "item.bat" = 30
 "item.hatchet_stone" = 30
 "item.hatchet_metal" = 30
+
+# A piece of flesh a swing: two a cactus.
+[gatherable.secondary]
+output = "item.cactus_flesh"
+per_hit = 1

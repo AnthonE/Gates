@@ -2352,8 +2352,8 @@ fn a_clock_with_no_answer_is_refused() {
         "is not an item",
     );
     // The honest version of the same defect — the rows simply absent: the
-    // bush and the mushroom patch, the island's two forage rows (the tree
-    // stopped paying mushrooms 2026-10-17).
+    // bush, the mushroom patch and the cactus's flesh, the island's forage
+    // (the tree stopped paying mushrooms 2026-10-17).
     let mut srcs = sources();
     let g = srcs
         .iter_mut()
@@ -2366,6 +2366,7 @@ fn a_clock_with_no_answer_is_refused() {
         "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
          output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 3\n",
+        "\n[gatherable.secondary]\noutput = \"item.cactus_flesh\"\nper_hit = 1\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2411,6 +2412,11 @@ fn a_clock_with_no_answer_is_refused() {
             *text = text.replace(
                 "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 20",
                 "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 0",
+            );
+            // And the cactus's flesh, the desert's drink.
+            *text = text.replace(
+                "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 20",
+                "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 0",
             );
         }
     }

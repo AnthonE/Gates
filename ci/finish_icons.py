@@ -151,6 +151,7 @@ PAINT = {
     "charcoal_tonic": dict(c=("#3b3f38", "#121411"), holes="#cfe0d8"),
     "berries": dict(c=("#caa476", "#7c5a36"), holes="#c2385e"),
     "mushrooms": dict(c=("#ecd6ae", "#a37a4c")),
+    "cactus_flesh": dict(mat="organic", c=("#a8cf6e", "#4d7a2e"), holes="#e4eeb8"),
     "corn": dict(c=("#f6d751", "#b1861a")),
     "corn_seed": dict(mat="organic", c=("#f2d27a", "#a9802a")),
     "hemp_seed": dict(mat="organic", c=("#b9a77a", "#6c5c34")),

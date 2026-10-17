@@ -15,13 +15,11 @@
 //! the stone core; the storey above; the wood grades. The job pauses when
 //! a milestone is done or the pack runs short, and the mind sends it off
 //! for what the next one needs ([`Survey::needs`]). Once the starter
-//! stands come its stations: a furnace on the upstairs floor first, since
-//! the workbench's fragments are smelted (no container pays any), then a
-//! workbench on a foundation behind the core, where `E` takes it, both in
-//! reach of the stand spot, where a station's recipes are crafted. Then
-//! code locks on both doors and the cupboard, armed with its own code
-//! ([`LockCode`]), and metal doors in place of the wooden ones when the
-//! fragments are spare.
+//! stands come its stations: a workbench on a foundation behind the core,
+//! where `E` takes it, and a furnace on the upstairs floor, both in reach
+//! of the stand spot, where a station's recipes are crafted. Then code locks on both doors and
+//! the cupboard, armed with its own code ([`LockCode`]), and metal doors in
+//! place of the wooden ones when the fragments are spare.
 //!
 //! After the base comes the gear a player works through at its benches
 //! ([`Milestone::MetalTools`] on): blueprints learned ([`Op::Learn`]: the
@@ -84,13 +82,12 @@ pub enum Milestone {
     Stone,
     /// Whatever stone missed, graded to wood; the upper storey graded.
     Wood,
-    /// A furnace on the floor over the cupboard, crafted from the pack (no
-    /// station); ore smelts there. Before the bench, as theirs: the bench's
-    /// fragments are smelted, since no container pays any.
-    Furnace,
     /// A workbench behind the core, on a stone foundation of its own: its
-    /// 100 fragments are ore smelted at the furnace.
+    /// 100 fragments are bought at THE GATE with the first loot runs' junk.
     Bench,
+    /// A furnace on the floor over the cupboard, crafted at the bench; ore
+    /// smelts there.
+    Furnace,
     /// Code locks on both doors and the cupboard, armed with its code; a
     /// metal front door, and the inner one in metal whenever the fragments
     /// are spare.
@@ -123,8 +120,8 @@ impl Milestone {
         Milestone::Upstairs,
         Milestone::Stone,
         Milestone::Wood,
-        Milestone::Furnace,
         Milestone::Bench,
+        Milestone::Furnace,
         Milestone::Locks,
         Milestone::MetalTools,
         Milestone::Crossbow,
@@ -188,17 +185,18 @@ pub const HAMMER_ITEM: &str = "Hammer";
 /// stands in the stair cell, the one plane inside the room the cupboard
 /// does not take (a box is solid, and the airlock's walk passes beside
 /// it); the bag in the airlock, where a walk-over mat blocks nobody. Then
-/// the stations (`LATER`): the furnace, within `craft::STATION_RADIUS_M`
-/// of the stand spot (the gate is planar, so the floor above counts), on
-/// the floor over the cupboard, the blueprint's own box spot: it is worked
-/// as a station and never opened, so that `E` there takes the cupboard
-/// costs nothing. A workbench is opened (`E` shows its tree), so each rung
-/// stands where `E` takes it from the stand spot, on a stone foundation of
-/// its own behind the core: the first on `YARD`, the second on `ANNEX`.
-/// The plot is chosen to take both foundations.
-const EXTRAS: [(&str, i8, i8, u8, Milestone); 2] = [
+/// the furnace, within `craft::STATION_RADIUS_M` of the stand spot (the
+/// gate is planar, so the floor above counts), on the floor over the
+/// cupboard, the blueprint's own box spot: it is worked as a station and
+/// never opened, so that `E` there takes the cupboard costs nothing. A
+/// workbench is opened (`E` shows its tree), so each rung stands where `E`
+/// takes it from the stand spot, on a stone foundation of its own behind
+/// the core (`LATER`): the first on `YARD`, the second on `ANNEX`. The plot
+/// is chosen to take both foundations.
+const EXTRAS: [(&str, i8, i8, u8, Milestone); 3] = [
     (BOX_ITEM, 1, 0, 0, Milestone::Doors),
     (BAG_ITEM, 1, 1, 0, Milestone::Doors),
+    (FURNACE_ITEM, 0, 0, 1, Milestone::Furnace),
 ];
 /// Where in its cell a kit item goes (free placement). Everything stands at
 /// its cell's centre but the bag: the airlock is a triangle foundation (the
@@ -237,13 +235,8 @@ fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
 }
 
 /// What it does after the starter and its stations, in order, as `(op, dx,
-/// dz, level, loc, milestone, optional)`: the first bench's stone
-/// foundation behind the core (`YARD`) and then the furnace upstairs, both
-/// before the bench itself, whose fragments are smelted. The foundation
-/// goes first because the stairs do not stand while the box holds the stair
-/// cell (`deploy::piece_crosses_deploys`), and a body gets up to the floor
-/// the furnace stands on without them only once the foundation is down.
-/// Then the first bench on its foundation; the cupboard's lock and code
+/// dz, level, loc, milestone, optional)`: the first bench on its stone
+/// foundation behind the core (`YARD`); the cupboard's lock and code
 /// (the doors' are the blueprint's own), the inner door swapped for metal
 /// like the front one, the second bench rung on a stone foundation of its
 /// own behind the stair cell (`ANNEX`: every plane inside is taken, and
@@ -254,7 +247,7 @@ fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
 /// the blueprint's code locks wait for fragments, and a door anybody can
 /// open is no door. An optional op holds no milestone back: it is done when
 /// the pack pays for it on top of what the milestone in hand costs.
-const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 30] = [
+const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 29] = [
     (
         Op::Lock(KEY_LOCK_ITEM),
         FRONT.0,
@@ -279,7 +272,7 @@ const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 30] = [
         YARD.1,
         0,
         LOC_PLANE,
-        Milestone::Furnace,
+        Milestone::Bench,
         false,
     ),
     (
@@ -288,16 +281,7 @@ const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 30] = [
         YARD.1,
         0,
         LOC_PLANE,
-        Milestone::Furnace,
-        false,
-    ),
-    (
-        Op::Kit(FURNACE_ITEM),
-        0,
-        0,
-        1,
-        LOC_PLANE,
-        Milestone::Furnace,
+        Milestone::Bench,
         false,
     ),
     (
@@ -4010,10 +3994,10 @@ mod tests {
         assert_eq!(seen[Milestone::Doors as usize], 6);
         assert_eq!(seen[Milestone::Stone as usize], 11);
         assert!(seen[Milestone::Upstairs as usize] >= 10);
-        // Its stations in reach of the stand spot: the bench's stone
-        // foundation and the furnace, then the bench on its foundation.
-        assert_eq!(seen[Milestone::Furnace as usize], 3);
-        assert_eq!(seen[Milestone::Bench as usize], 1);
+        // Its stations in reach of the stand spot, the bench on a stone
+        // foundation of its own.
+        assert_eq!(seen[Milestone::Bench as usize], 3);
+        assert_eq!(seen[Milestone::Furnace as usize], 1);
         // A lock and its code on both doors and the cupboard, the front
         // door in metal, and the inner one when the fragments are spare.
         assert_eq!(seen[Milestone::Locks as usize], 8);
@@ -4284,9 +4268,8 @@ mod tests {
         assert!(matches!(b.want, Some(Await::Craft { op: 0, .. })));
     }
 
-    /// A kit made at a bench (here a made-up furnace recipe at the first
-    /// rung): once the bench is given up, so is the kit, and the milestones
-    /// move past it rather than stall.
+    /// The furnace is made at the bench: once the bench is given up, so is
+    /// the furnace, and the milestones move past it rather than stall.
     #[test]
     fn a_station_made_at_a_bench_given_up_is_given_up_too() {
         let mut core = Box::new(ClientCore::new(1, 1, 0));

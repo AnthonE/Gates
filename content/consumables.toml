@@ -61,6 +61,15 @@ food = 15
 water = 5
 seconds = 2
 
+# Theirs, whole: 5 calories, 20 water, 3 health over time
+# (rusthelp.com/items/cactus-flesh). The desert's drink.
+[[consumable]]
+id = "item.cactus_flesh"
+health = 3
+food = 5
+water = 20
+seconds = 2
+
 [[consumable]]
 id = "item.corn"
 health = 0
@@ -87,13 +96,14 @@ seconds = 5
 # food in the set — the repo's reference notes name the burnt state's
 # SHAPE (a cook row whose input is the cooked item) and say nothing about
 # its numbers, so this is the conservative call: burnt sits between
-# nothing and a meal, it never heals, and 5 food against the cooked 40 is
-# the price of walking away from a lit fire. Raw meat stays inedible —
+# nothing and a meal, it never heals, and 4 food against the cooked 40 is
+# the price of walking away from a lit fire (5 until cactus flesh took
+# Rust's 5: burnt stays strictly the worst). Raw meat stays inedible —
 # burnt is what the FIRE does to food, not what the eat verb refuses.
 [[consumable]]
 id = "item.burnt_meat"
 health = 0
-food = 5
+food = 4
 water = 0
 seconds = 2
 

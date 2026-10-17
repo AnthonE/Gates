@@ -50,12 +50,13 @@ pub const SCRIPTED_PLENTY: u32 = 3000;
 /// A barrel or crate known this near (metres) is worth taking on the way,
 /// whatever the base needs.
 pub const SCRIPTED_LOOT_NEAR_M: u8 = 40;
-/// What the playbook goes on a loot run for when the base is short of it
-/// and nothing in view pays it. Junk, parts and fuel come off barrels,
-/// crates and oil barrels (`content/loot.toml`); no container pays the raw
-/// materials since 2026-10-17, as none of theirs does, but a run down the
-/// road walks past the hemp, the animals and the ore that do.
-pub const LOOTED: [&str; 9] = [
+/// What the playbook goes on a loot run for when the base is short of it,
+/// or buys at THE GATE with the junk a run pays. Junk, parts and fuel come
+/// off barrels, crates and oil barrels (`content/loot.toml`); since
+/// 2026-10-17 none of them pays the raw materials, as none of Rust's does,
+/// so fragments and fat are bought, or met on the way. Not cloth: a body
+/// short of it goes to the hemp.
+pub const LOOTED: [&str; 8] = [
     "Metal Fragments",
     "Low Grade Fuel",
     "Junk",
@@ -63,7 +64,6 @@ pub const LOOTED: [&str; 9] = [
     "Tarp",
     "Gears",
     "Animal Fat",
-    "Cloth",
     "Sulfur",
 ];
 /// The recycler, by catalog name (`agent::oven`), and the gears held before
@@ -2895,8 +2895,11 @@ impl Scripted {
             .iter()
             .any(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
         // While the bag is still to be made, its cloth is not spent on a bow
-        // or bandages: only the spear, which takes none, goes first.
-        let bag_wanted = tooled && s.bags == 0 && s.count_of(BAG_ITEM) == 0;
+        // or bandages: only the spear, which takes none, goes first. The
+        // base's own bag (its doors milestone) counts: no container pays
+        // cloth, so cloth spent before it stands is a walk to the hemp.
+        let bag_wanted = tooled
+            && ((s.bags == 0 && s.count_of(BAG_ITEM) == 0) || s.milestone <= Milestone::Doors);
         if started {
             let [(spear, ..), ..] = crate::agent::loadout::ARM_UP;
             for (item, want, needs) in crate::agent::loadout::ARM_UP {
@@ -3829,14 +3832,13 @@ mod tests {
         assert_eq!(v["raid_targets"]["bearing"], "right");
     }
 
-    /// The stations, furnace first: its fuel is crafted from what the pack
-    /// holds, its fat hunted where an animal is in view, else the fuel
-    /// looted whole off an oil barrel; the bench's fragments are ore, mined
-    /// where a node is in view and never looted (no container pays any);
-    /// ore is smelted at the furnace before anything else is built; and a
-    /// barrel or crate close by is taken on the way.
+    /// The stations: fragments for the bench come from loot until a
+    /// furnace stands; the furnace's fuel is crafted from what the pack
+    /// holds, its fat hunted where an animal is in view; ore is smelted at
+    /// the furnace before anything else is built; and a barrel or crate
+    /// close by is taken on the way.
     #[test]
-    fn the_playbook_builds_the_furnace_then_smelts_for_the_bench() {
+    fn the_playbook_loots_for_the_bench_and_smelts_at_the_furnace() {
         let mut scripted = Scripted::default();
         let mut s = Summary::EMPTY;
         (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
@@ -3845,20 +3847,19 @@ mod tests {
         s.items_len = 2;
         s.bags = 1;
         s.free_slots = 20;
-        for g in [
-            Goal::Explore,
-            Goal::GatherWood,
-            Goal::GatherOre,
-            Goal::Hunt,
-            Goal::Loot,
-        ] {
+        for g in [Goal::Explore, Goal::GatherWood, Goal::Hunt, Goal::Loot] {
             s.offer(g);
         }
         s.trees.add(10.0, 0);
+        s.milestone = Milestone::Bench;
+        s.needs[0] = (name("Metal Fragments"), 100);
+        s.needs_len = 1;
+        s.raw[0] = s.needs[0];
+        s.raw_len = 1;
+        assert_eq!(scripted.pick(&s).0, Goal::Loot, "fragments are loot");
         // The furnace: fuel made from the pack when it can be...
         s.milestone = Milestone::Furnace;
         s.needs[0] = (name("Low Grade Fuel"), 50);
-        s.needs_len = 1;
         s.raw[0] = (name("Animal Fat"), 39);
         s.raw[1] = (name("Cloth"), 13);
         s.raw_len = 2;
@@ -3867,25 +3868,14 @@ mod tests {
         s.craftable_len = 1;
         s.offer(Goal::Craft(fuel));
         assert_eq!(scripted.pick(&s).0, Goal::Craft(fuel));
-        // ...else its fat hunted, with an animal in view, or the fuel
-        // looted whole.
+        // ...else its fat hunted, with an animal in view, or looted.
         s.craftable_len = 0;
         s.animals.add(20.0, 1);
         assert_eq!(scripted.pick(&s).0, Goal::Hunt);
         s.animals = Sighting::default();
-        assert_eq!(scripted.pick(&s).0, Goal::Loot, "fuel is loot");
-        // The bench, the furnace standing: its fragments come down to ore,
-        // mined where a node is in view, and never to a loot run.
-        s.furnace = true;
-        s.milestone = Milestone::Bench;
-        s.needs[0] = (name("Metal Fragments"), 100);
-        s.raw[0] = (name("Metal Ore"), 100);
-        s.raw_len = 1;
-        assert_ne!(scripted.pick(&s).0, Goal::Loot, "fragments are not loot");
-        s.ore_nodes.add(30.0, 2);
-        assert_eq!(scripted.pick(&s).0, Goal::GatherOre);
-        s.ore_nodes = Sighting::default();
+        assert_eq!(scripted.pick(&s).0, Goal::Loot);
         // Ore and a furnace: smelted first.
+        s.furnace = true;
         s.items[2] = (name("Metal Ore"), 60);
         s.items_len = 3;
         let frags = name("Metal Fragments");

@@ -43,6 +43,7 @@ every item either way, because the painted ones are derived works of it.
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
+| `cactus_flesh.png` | `delapouite/cactus` |
 | `camp_fire.png` | `lorc/campfire` |
 | `charcoal.png` | `delapouite/coal-pile` |
 | `charcoal_tonic.png` | `lorc/standing-potion` |

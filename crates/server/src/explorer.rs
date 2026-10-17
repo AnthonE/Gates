@@ -7206,7 +7206,7 @@ pub fn observe(
         let name = name.as_str();
         matches!(
             name,
-            "Wood" | "Stone" | crate::mind::BAG_ITEM | crate::mind::SATCHEL_ITEM
+            "Wood" | "Stone" | "Cloth" | crate::mind::BAG_ITEM | crate::mind::SATCHEL_ITEM
         ) || TREE_TOOLS.contains(&name)
             || NODE_TOOLS.contains(&name)
             || crate::mind::LOOTED.contains(&name)

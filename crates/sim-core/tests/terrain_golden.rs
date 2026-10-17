@@ -214,7 +214,11 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0x22CE_F629_3692_1DF3` at the Verdigris** (2026-10-15,
 /// `terrain::fel`): no height moved, but its row carries ore, so
 /// `Haven::ore_pm` rescales.
-const GOLDEN_TERRAIN_HASH: u64 = 0x22CE_F629_3692_1DF3;
+/// **Moved → `0xB74C_5F9F_6177_8168` at Rust's barrel** (2026-10-17, lock
+/// v1's 12/11 drum): a barrel's wider radius clears more of the side roads,
+/// so road-side cells move. Main took the size and not the golden; the
+/// cactus wipe that followed pasted it.
+const GOLDEN_TERRAIN_HASH: u64 = 0xB74C_5F9F_6177_8168;
 
 #[test]
 fn test_terrain_golden() {

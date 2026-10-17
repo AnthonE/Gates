@@ -3450,11 +3450,10 @@ fn a_survivor_empties_a_crate_through_its_panel() {
     );
 }
 
-/// The starter stands, the pack holds what the stations cost: the furnace
-/// goes on the floor over the cupboard first (the bench's fragments are
-/// smelted, as theirs are), the workbench on a stone foundation behind the
-/// core, and ore staged afterwards is smelted there into fragments, a batch
-/// at a time.
+/// The starter stands, the pack holds what the stations cost: the
+/// workbench goes on a stone foundation behind the core, the furnace is
+/// crafted at it and goes on the floor over the cupboard, and ore staged
+/// afterwards is smelted there into fragments, a batch at a time.
 #[test]
 fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
     use server::agent::build::{Milestone, YARD};
@@ -3497,13 +3496,11 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
         }
     });
 
-    // 1. The starter, then the furnace, then the bench.
+    // 1. The starter, then the bench, then the furnace crafted at it.
     let stations = h.until(60_000, |b| {
         b.builder().survey().milestone >= Milestone::Done
-            || b.core().is_some_and(|c| {
-                let s = b.builder().stations(c);
-                s.furnace.is_some() && s.bench.is_some()
-            })
+            || b.core()
+                .is_some_and(|c| b.builder().stations(c).furnace.is_some())
     });
     assert!(
         stations,
@@ -3573,8 +3570,9 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
             *free = ore;
         }
     });
-    // Smelted, not merely held: the ore itself goes, so a body that came by
-    // fragments some other way with the ore untouched in its pack fails.
+    // Smelted, not merely held: a road sign pays fragments too
+    // (`loot.roadsign`), and a body whose base stands by the road can
+    // smash its way to the count with the ore untouched in its pack.
     let smelted = h.until(5 * 60 * TICK_HZ, |b| {
         b.held("Metal Fragments") >= before + 40 && b.held("Metal Ore") <= 20
     });
