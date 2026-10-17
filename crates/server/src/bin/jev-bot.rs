@@ -454,6 +454,15 @@ async fn run(options: Options) -> Result<(), String> {
         .as_deref()
         .map(Door::load_key)
         .transpose()?;
+    // `--agent-keys`: the run's own door is its first bot's wallet, so a
+    // fleet joins a shard off this machine as wallet agents, not guests.
+    let key = match (key, &options.agent_keys) {
+        (None, Some(dir)) => Some(bot_key(
+            dir,
+            bot_name(&options.agent_name, 0, options.bots)?.as_str(),
+        )?),
+        (key, _) => key,
+    };
     if key.is_none() {
         if let Some(server) = &options.server {
             // A guest must name a loopback shard; say so before anything runs.
