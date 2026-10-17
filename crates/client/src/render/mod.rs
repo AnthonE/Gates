@@ -396,9 +396,9 @@ pub struct Eye {
     pub roll: f32,
 }
 
-/// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
-/// cosmetics — the same 1.6 the browser client stands at).
-pub const EYE_HEIGHT: f32 = 1.6;
+/// Eye height above the capsule's feet, metres: the sim's own
+/// (`ranged::ARROW_EYE_MM`), since a shot leaves from it.
+pub const EYE_HEIGHT: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 /// A crouched eye above the feet, metres: the sim's own
 /// (`ranged::CROUCH_EYE_MM`), since a crouched shot leaves from it.

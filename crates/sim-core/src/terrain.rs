@@ -9779,8 +9779,10 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// Row 7 read 0.45 and cited `CylinderGeometry(0.45, 0.45, 0.95)` — the
 /// deleted browser client's geometry, a guess carried forward — and 0.9 m
 /// across by 0.95 tall is near-spherical where a 55-gallon drum is half again
-/// taller than it is wide. It is the measured object now: **0.585 m across by
-/// 0.88 tall**, so 0.585/2 here, 0.88 in `OCCUPANT_TOP_M`, and the client's
+/// taller than it is wide. It was the measured object, 0.585 m across by
+/// 0.88 tall, and that read small beside a Rust-sized player; it is Rust's
+/// drum now, grown 12/11 on 2026-10-17: **0.638 m across by 0.96 tall**, so
+/// 0.638/2 here, 0.96 in `OCCUPANT_TOP_M`, and the client's
 /// `archetype_lift` set to the half-height so the drum's base is the slot's
 /// ground. Two independent sources agree on the pair — the reference set's
 /// `barrelroad`, and Meshy's `auto_size` vision estimate, which returned it
@@ -9825,7 +9827,7 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
     1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
-    0.2925,             // BarrelSlot — the drum is 0.585 m across, so 0.585/2
+    0.3191,             // BarrelSlot — the drum is 0.638 m across, so 0.638/2
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
@@ -9837,7 +9839,7 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     0.6801,        // GreenCrate — the crate's box
     0.6801,        // BlueCrate
     0.6801,        // EliteCrate
-    0.2925,        // OilBarrel — the barrel's drum
+    0.3191,        // OilBarrel — the barrel's drum
     ROAD_SIGN_R_M, // RoadSign — broad phase; ROAD_SIGN_BOXES is the volume
     0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
     CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
@@ -9876,7 +9878,7 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     1.1269,         // SulfurNode
     0.0,            // Bush
     1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
-    0.88,           // BarrelSlot — lift 0.44 + half-height 0.44
+    0.96,           // BarrelSlot — lift 0.48 + half-height 0.48
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
@@ -9888,7 +9890,7 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.8,              // GreenCrate
     0.8,              // BlueCrate
     0.8,              // EliteCrate
-    0.88,             // OilBarrel
+    0.96,             // OilBarrel
     ROAD_SIGN_PEAK_M, // RoadSign — the plate's top
     0.4,              // FoodCrate — lift 0.2 + half-height 0.2
     CAR_WRECK_PEAK_M, // CarWreck — the roof
@@ -9988,13 +9990,13 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::BerryBush => (0.0, 0.0),
         Occupant::Rock => (1.1145, 1.5403),
-        Occupant::BarrelSlot => (0.2925, 0.88),
+        Occupant::BarrelSlot => (0.3191, 0.96),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
-        Occupant::OilBarrel => (0.2925, 0.88),
+        Occupant::OilBarrel => (0.3191, 0.96),
         Occupant::RoadSign => (ROAD_SIGN_R_M, ROAD_SIGN_PEAK_M),
         Occupant::FoodCrate => (0.5831, 0.4),
         Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),

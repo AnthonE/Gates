@@ -1321,6 +1321,7 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, ask: A
     }
     match lock_target(pick) {
         LockTarget::Pad(cx, cz, level, loc) => pad.0.open(cx, cz, level, loc),
+        LockTarget::Key(cx, cz, level, loc) => pad.0.open_key(cx, cz, level, loc),
         LockTarget::Bare => toast.warn(format!(
             "no lock on that {} — deploy one",
             // "DOOR"/"BOX", said the toast's way. The label is never
@@ -1392,7 +1393,9 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
     if keys.just_pressed(KeyCode::KeyT) {
         want = Some(KeypadKey::Take);
     }
-    let Some(k) = want else { return };
+    let Some(k) = want.filter(|&k| pad.0.offers(k)) else {
+        return;
+    };
     let Some((op, needs)) = op_for(k) else { return };
     let code = match needs {
         Needs::Code => match pad.0.code() {

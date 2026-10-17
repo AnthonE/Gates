@@ -25,7 +25,7 @@
 #![cfg(feature = "render")]
 
 use client::render::structures::{
-    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, DOOR_LOCKED_ASSET,
+    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, METAL_DOOR_ASSET,
 };
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
@@ -214,7 +214,7 @@ fn attr<'a>(g: &'a Glb, name: &str) -> &'a serde_json::Value {
 }
 
 #[test]
-fn the_locked_door_shares_the_doors_unwrap() {
+fn the_metal_door_shares_the_doors_unwrap() {
     // `build_kit` lays `door_locked.glb`'s MATERIAL onto `door.glb`'s MESH,
     // which is only right while the two are one geometry under one unwrap —
     // `ci/prop_kit.py` builds both from `_door`, and this notices if one is
@@ -222,7 +222,7 @@ fn the_locked_door_shares_the_doors_unwrap() {
     let door = DEPLOY_ASSET[sim_core::deploy::ARCH_DOOR as usize].expect("the door has a model");
     let (a, b) = (
         Glb::open(&asset_path(door)),
-        Glb::open(&asset_path(DOOR_LOCKED_ASSET)),
+        Glb::open(&asset_path(METAL_DOOR_ASSET)),
     );
     for name in ["POSITION", "TEXCOORD_0"] {
         let (x, y) = (attr(&a, name), attr(&b, name));

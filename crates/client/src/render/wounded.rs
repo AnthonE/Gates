@@ -35,7 +35,7 @@ use super::feed::Feed;
 use super::{Net, WorldEntity};
 
 /// Eye height above the feet while down, metres — a body on its side has
-/// its eyes about a forearm off the ground. Against `EYE_HEIGHT = 1.6`.
+/// its eyes about a forearm off the ground. Against `EYE_HEIGHT = 1.5`.
 /// Proposed default, `DECISIONS.md` §open ("wounded v0").
 pub const CRAWL_EYE_M: f32 = 0.45;
 /// The view's roll while down, radians (~12.6°): enough that the horizon

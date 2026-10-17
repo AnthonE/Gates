@@ -3713,7 +3713,7 @@ pub fn pad_overlay(
             ))
             .with_children(|panel| {
                 panel.spawn((
-                    Text::new("CODE"),
+                    Text::new(if pad.0.keyed { "KEY LOCK" } else { "CODE" }),
                     super::ui::font_bold(13.0),
                     TextColor(TEXT_DIM),
                     Pickable::IGNORE,
@@ -3722,42 +3722,45 @@ pub fn pad_overlay(
                 // HUD line never masked them and the panel keeps its
                 // information; the next empty cell wears the hot line, so
                 // where the fifth keystroke would be dropped is visible.
-                panel
-                    .spawn((
-                        Node {
-                            flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(6.0),
-                            ..default()
-                        },
-                        Pickable::IGNORE,
-                    ))
-                    .with_children(|digits| {
-                        for (i, c) in cells.iter().enumerate() {
-                            digits.spawn((
-                                Node {
-                                    width: Val::Px(30.0),
-                                    height: Val::Px(36.0),
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    border: UiRect::all(Val::Px(1.0)),
-                                    ..default()
-                                },
-                                BackgroundColor(if c.is_some() { CELL_FULL } else { CELL_BG }),
-                                BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
-                                Pickable::IGNORE,
-                                children![(
-                                    Text::new(match c {
-                                        Some(d) => d.to_string(),
-                                        None => String::new(),
-                                    }),
-                                    super::ui::font_bold(18.0),
-                                    TextColor(Color::srgb(0.98, 0.97, 0.95)),
-                                )],
-                            ));
-                        }
-                    });
+                // A key lock has no keypad and draws none.
+                if !pad.0.keyed {
+                    panel
+                        .spawn((
+                            Node {
+                                flex_direction: FlexDirection::Row,
+                                column_gap: Val::Px(6.0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|digits| {
+                            for (i, c) in cells.iter().enumerate() {
+                                digits.spawn((
+                                    Node {
+                                        width: Val::Px(30.0),
+                                        height: Val::Px(36.0),
+                                        justify_content: JustifyContent::Center,
+                                        align_items: AlignItems::Center,
+                                        border: UiRect::all(Val::Px(1.0)),
+                                        ..default()
+                                    },
+                                    BackgroundColor(if c.is_some() { CELL_FULL } else { CELL_BG }),
+                                    BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
+                                    Pickable::IGNORE,
+                                    children![(
+                                        Text::new(match c {
+                                            Some(d) => d.to_string(),
+                                            None => String::new(),
+                                        }),
+                                        super::ui::font_bold(18.0),
+                                        TextColor(Color::srgb(0.98, 0.97, 0.95)),
+                                    )],
+                                ));
+                            }
+                        });
+                }
                 panel.spawn((
-                    Text::new(crate::ui::keypad::OPS_HINT),
+                    Text::new(pad.0.hint()),
                     super::ui::font(11.0),
                     TextColor(TEXT_DIM),
                     Pickable::IGNORE,
