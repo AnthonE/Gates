@@ -5,6 +5,14 @@
 //! circles them and fires bursts from a heavy gun, then heads back out to
 //! sea. It cannot be hurt yet.
 //!
+//! **It leaves the naked alone** — Rust's own rule: its heli targets only a
+//! player whose threat level is over 0.5 (`BasePlayer.GetThreatLevel`: a
+//! gun on the belt, or more than two pieces of clothing). Ours is a gun on
+//! the hotbar, or both armour slots worn ([`threat`]). **And it does not fly
+//! in the rain** ([`RAIN_GROUNDED_PM`]): it waits out a wet arrival and
+//! heads home when the rain comes, because a rotor you cannot hear over the
+//! rain is a gun with no warning.
+//!
 //! **It rides the animal roster's last slot** ([`HELI_SLOT`], species
 //! [`mob::MOB_HELI`]), so on the wire it is a mob record like a pig: the same
 //! interest band, priority fill and interpolator, and no new entity class.
@@ -26,9 +34,9 @@
 //! whose boot did not arm it.
 
 use crate::collide::ColIndex;
-use crate::combat;
+use crate::combat::{self, CombatContent};
 use crate::fmath::fabs;
-use crate::limits::{ARROW_STEP_MM, MAX_MOBS, MAX_PLAYERS};
+use crate::limits::{ARROW_STEP_MM, HOTBAR_SLOTS, MAX_MOBS, MAX_PLAYERS};
 use crate::mob::{self, Mob};
 use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use crate::nav;
@@ -37,6 +45,7 @@ use crate::pitch_lut::pitch_dir;
 use crate::ranged::{self, ARROW_EYE_MM, ARROW_R_M, MM_PER_M};
 use crate::rng::cell_hash;
 use crate::terrain::{self, Haven};
+use crate::weather::Wx;
 use crate::world::{EventQueue, Player, EV_SHOT};
 use crate::yaw_lut::yaw_dir;
 
@@ -45,10 +54,10 @@ use crate::yaw_lut::yaw_dir;
 /// wire, so a client knows what it is drawing from the id alone.
 pub const HELI_SLOT: usize = MAX_MOBS - 1;
 
-/// How many times further than an animal the heli is subscribed from: the
-/// AOI bands divided by this (704 m in, 832 m out at 4). A gunship is heard
-/// long before it is near, and a client can only hear what it is sent. It
-/// still ranks in the same capped set, as if it were this much closer.
+/// How many times closer than it is the heli ranks in a client's interest
+/// set, and so how far its rotor carries (704 m at 4): a gunship is heard
+/// long before it is near. It is subscribed island-wide on top of that, so
+/// it is on everyone's map (`server::core`'s interest pass).
 pub const HELI_AOI_SCALE: i64 = 4;
 
 /// No player.
@@ -98,6 +107,10 @@ const ARRIVE_MM: f32 = 60_000.0;
 const WAY_MARGIN_M: f32 = 400.0;
 /// Draws one waypoint takes before falling back to the centre.
 const WAY_TRIES: i32 = 8;
+/// Rain at or past this (per mille, `weather::Wx::rain`) keeps it away, or
+/// sends it home: the first of a fading-in shower, well under a mild rain's
+/// 350.
+pub const RAIN_GROUNDED_PM: u16 = 100;
 
 const CH_HELI_WAY: u32 = 200;
 const CH_HELI_AIM: u32 = 201;
@@ -294,6 +307,8 @@ pub fn step(
     haven: &Haven,
     tick: u64,
     def: &HeliDef,
+    cc: &CombatContent,
+    wx: &Wx,
     cols: &ColIndex,
     occ: &mut Occupants,
     heli: &mut Heli,
@@ -304,23 +319,25 @@ pub fn step(
     if !def.armed() {
         return None;
     }
+    let wet = wx.rain >= RAIN_GROUNDED_PM;
     if !heli.flying {
         if heli.next_at == 0 {
             heli.next_at = tick + def.first_ticks;
         }
-        if tick < heli.next_at {
+        // Due in the rain, it waits for the rain to stop.
+        if tick < heli.next_at || wet {
             return None;
         }
-        arrive(seed, haven, tick, def, heli, players);
+        arrive(seed, haven, tick, def, cc, heli, players);
     }
 
-    if !heli.leaving && tick >= heli.leave_at {
+    if !heli.leaving && (tick >= heli.leave_at || wet) {
         leave(heli);
     }
     if tick.is_multiple_of(LOOK_TICKS) && !heli.leaving {
-        look(seed, haven, tick, def, cols, occ, heli, slot, players);
+        look(seed, haven, tick, def, cc, cols, occ, heli, slot, players);
     }
-    fly(seed, haven, def, heli, players);
+    fly(seed, haven, def, cc, heli, players);
 
     if heli.leaving {
         let (dx, dz) = ((heli.wx - heli.x) as f32, (heli.wz - heli.z) as f32);
@@ -365,6 +382,7 @@ fn arrive(
     haven: &Haven,
     tick: u64,
     def: &HeliDef,
+    cc: &CombatContent,
     heli: &mut Heli,
     players: &[Player; MAX_PLAYERS],
 ) {
@@ -387,7 +405,7 @@ fn arrive(
     };
     heli.y = ((floor_m(seed, haven, heli.x, heli.z) * MM_PER_M) as i32 + def.cruise_mm as i32)
         .min(Y_CEIL_Q * (POS_Y_Q * MM_PER_M) as i32);
-    (heli.wx, heli.wz) = waypoint(seed, haven, heli, players);
+    (heli.wx, heli.wz) = waypoint(seed, haven, cc, heli, players);
 }
 
 /// Out to sea: the nearest point on the square's border.
@@ -423,17 +441,23 @@ fn depart(tick: u64, def: &HeliDef, heli: &mut Heli, slot: &mut Mob) {
     slot.alive = false;
 }
 
-/// The next waypoint. Odd legs go looking for somebody — a live player
-/// outside the town, picked by the draw — which is the reference heli's
-/// "seek out targets" rather than a sightseeing tour; even legs, and odd
-/// ones with nobody to find, are a land point the draw picks.
-fn waypoint(seed: u64, haven: &Haven, heli: &Heli, players: &[Player; MAX_PLAYERS]) -> (i32, i32) {
+/// The next waypoint. Odd legs go looking for somebody — a live, armed
+/// player outside the town, picked by the draw — which is the reference
+/// heli's "seek out targets" rather than a sightseeing tour; even legs, and
+/// odd ones with nobody to find, are a land point the draw picks.
+fn waypoint(
+    seed: u64,
+    haven: &Haven,
+    cc: &CombatContent,
+    heli: &Heli,
+    players: &[Player; MAX_PLAYERS],
+) -> (i32, i32) {
     let h = cell_hash(seed, heli.sortie as i32, heli.leg as i32, CH_HELI_WAY);
     if heli.leg % 2 == 1 {
-        let n = players.iter().filter(|p| huntable(p)).count();
+        let n = players.iter().filter(|p| huntable(cc, p)).count();
         if n > 0 {
             let pick = (h % n as u64) as usize;
-            if let Some(p) = players.iter().filter(|p| huntable(p)).nth(pick) {
+            if let Some(p) = players.iter().filter(|p| huntable(cc, p)).nth(pick) {
                 return (
                     (p.body.qx as f32 * POS_XZ_Q * MM_PER_M) as i32,
                     (p.body.qz as f32 * POS_XZ_Q * MM_PER_M) as i32,
@@ -459,10 +483,27 @@ fn waypoint(seed: u64, haven: &Haven, heli: &Heli, players: &[Player; MAX_PLAYER
     (c, c)
 }
 
-/// A player the heli may hunt: alive, awake, standing, and outside the
-/// town's safe zone (`combat::protected`, the bite's own rule).
-fn huntable(p: &Player) -> bool {
-    p.active && !p.dead && p.hp > 0 && !p.sleeping && !p.wounded && !combat::protected(p)
+/// A player the heli may hunt: alive, awake, standing, outside the town's
+/// safe zone (`combat::protected`, the bite's own rule), and a [`threat`].
+fn huntable(cc: &CombatContent, p: &Player) -> bool {
+    p.active
+        && !p.dead
+        && p.hp > 0
+        && !p.sleeping
+        && !p.wounded
+        && !combat::protected(p)
+        && threat(cc, p)
+}
+
+/// Worth the heli's while: a gun (a firearm, not a bow) on the hotbar, or
+/// both armour slots worn. Rust's threat level counts a gun on the belt or
+/// more than two of seven clothing slots; ours has two, so a full set.
+/// Read at every look, so a target that puts its gun away is let go.
+pub fn threat(cc: &CombatContent, p: &Player) -> bool {
+    let gun = p.inv[..HOTBAR_SLOTS]
+        .iter()
+        .any(|s| s.count > 0 && cc.held_ranged(s.item).is_some_and(|d| d.hitscan));
+    gun || p.worn.iter().all(|s| s.count > 0)
 }
 
 /// The look: confirm the target, or scan for one.
@@ -472,6 +513,7 @@ fn look(
     haven: &Haven,
     tick: u64,
     def: &HeliDef,
+    cc: &CombatContent,
     cols: &ColIndex,
     occ: &mut Occupants,
     heli: &mut Heli,
@@ -481,7 +523,7 @@ fn look(
     let gun = gun_mm(heli);
     if heli.engaged() {
         let p = &players[heli.target as usize];
-        if p.id != heli.target_id || !huntable(p) {
+        if p.id != heli.target_id || !huntable(cc, p) {
             heli.drop_target();
         } else if sees(seed, haven, cols, occ, gun, p) {
             heli.seen_at = tick;
@@ -500,7 +542,7 @@ fn look(
     for t in 0..LOOK_TRIES {
         let mut best: Option<(f32, usize)> = None;
         for (i, p) in players.iter().enumerate() {
-            if !huntable(p) || tried[..t].contains(&i) {
+            if !huntable(cc, p) || tried[..t].contains(&i) {
                 continue;
             }
             let (px, pz) = feet_xz_mm(p);
@@ -534,7 +576,14 @@ fn look(
 }
 
 /// One tick of flight: steer toward the goal, hold the height.
-fn fly(seed: u64, haven: &Haven, def: &HeliDef, heli: &mut Heli, players: &[Player; MAX_PLAYERS]) {
+fn fly(
+    seed: u64,
+    haven: &Haven,
+    def: &HeliDef,
+    cc: &CombatContent,
+    heli: &mut Heli,
+    players: &[Player; MAX_PLAYERS],
+) {
     let (gx, gz, speed) = if heli.engaged() {
         // Round where it last saw them, at the engage speed. The bearing
         // advances by the arc the engage speed covers on the circle.
@@ -558,7 +607,7 @@ fn fly(seed: u64, haven: &Haven, def: &HeliDef, heli: &mut Heli, players: &[Play
         let (dx, dz) = ((heli.wx - heli.x) as f32, (heli.wz - heli.z) as f32);
         if !heli.leaving && dx * dx + dz * dz < ARRIVE_MM * ARRIVE_MM {
             heli.leg += 1;
-            (heli.wx, heli.wz) = waypoint(seed, haven, heli, players);
+            (heli.wx, heli.wz) = waypoint(seed, haven, cc, heli, players);
         }
         (heli.wx as f32, heli.wz as f32, def.speed_mmpt as f32)
     };

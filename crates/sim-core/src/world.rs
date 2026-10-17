@@ -7317,6 +7317,8 @@ impl World {
             &self.haven,
             tick,
             &self.heli_def,
+            &self.combat,
+            &wx,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,
