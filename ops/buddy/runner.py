@@ -56,6 +56,7 @@ Environment (defaults in brackets):
     BUDDY_MIND_PORT       [8433] the own-brain bridge, on loopback
     BUDDY_OWN_IDLE_S      [1800]
     ANTHROPIC_API_KEY     passed through to each house mind, and recaps
+    ELEVENLABS_API_KEY    the voices in VOICES speak with it; mute without
 """
 import json
 import os
@@ -99,6 +100,10 @@ WALLET = re.compile(r"^0x[0-9a-f]{40}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
 CLIP_FILE = re.compile(r"^[0-9A-Za-z._-]{1,80}\.mp4$")
 NAME = re.compile(r"^[\x20-\x7e]{1,16}$")
+# Which of ours speak aloud on the island (`jev-bot --voice`), in which
+# ElevenLabs voice. The house's key pays per line, so only these; they talk
+# and do not hear (no transcriber key).
+VOICES = {"pot-doctor-wood": "s2wvuS7SwITYg8dqsJdn"}
 RATES = {"claude-fable-5-1": (10, 50), "claude-opus-5-5": (4, 20),
          "claude-sonnet-5-5": (2, 10), "claude-haiku-5-5": (0.1, 0.5)}
 
@@ -280,6 +285,9 @@ def start(aid, a):
         "GATES_JOURNAL": path("journal", aid + ".jsonl"),
         "GATES_PERSONA": str(a.get("persona") or "")[:600],
     })
+    if aid in VOICES and os.environ.get("ELEVENLABS_API_KEY"):
+        cmd += ["--voice"]
+        env["GATES_ELEVEN_VOICE"] = VOICES[aid]
     cmd += ["--timeout-ms", "20000", "--external", sys.executable, AGENT]
     return subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
 
