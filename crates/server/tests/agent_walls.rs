@@ -3280,7 +3280,11 @@ fn a_survivor_sells_its_surplus_wood_at_the_gate() {
 /// THE GATE's research table makes paper of what an agent found: carrying a
 /// revolver it has no blueprint for (its tree parent unlearned) and junk,
 /// the agent walks to the table, puts in the revolver and its price,
-/// switches it on, takes the paper off and reads it.
+/// switches it on, takes the paper off and reads it. From the south, round
+/// the workshop: long enough that the next decision falls mid-research,
+/// with the revolver in the table rather than the pack. Taken for done,
+/// that decision walked off and left the paper in the table, shut to
+/// everyone after (2026-10-17).
 #[test]
 fn a_survivor_researches_what_it_found_at_the_gate_s_table() {
     let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
@@ -3290,7 +3294,7 @@ fn a_survivor_researches_what_it_found_at_the_gate_s_table() {
         .filter_map(|k| sim_core::town::station_world(&haven.town, k))
         .find(|&(arch, ..)| arch == "research")
         .unwrap();
-    let at = (tx + 25.0, tz);
+    let at = (tx, tz - 25.0);
     let mut h = Harness::with_mind(false, at, mind);
     for core in [&mut h.shard, &mut h.replay] {
         core.world.seed_authored();
