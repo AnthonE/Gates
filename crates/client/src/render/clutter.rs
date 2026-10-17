@@ -541,11 +541,12 @@ fn stone_of(e: &ClutterElem) -> Option<(Vec3, u32)> {
     match e.kind {
         Clutter::Pebble => Some((Vec3::new(0.06, 0.028, 0.05) * e.scale, PEBBLE_C)),
         // A stone in the grass: a pebble's shape at two to five times its
-        // size, most of them small.
+        // size, most of them small. 1.3× since 2026-10-17 (operator: "all
+        // rocks bigger"), and still under a shin: nothing collides with it.
         Clutter::Stone => {
             let seed = seed_of(e);
             let k = 0.6 + 1.4 * hash01(seed, 71) * hash01(seed, 72);
-            Some((Vec3::new(0.16, 0.08, 0.12) * e.scale * k, STONE_C))
+            Some((Vec3::new(0.21, 0.104, 0.156) * e.scale * k, STONE_C))
         }
         _ => None,
     }
