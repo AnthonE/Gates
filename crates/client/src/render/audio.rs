@@ -2644,10 +2644,10 @@ pub struct Reported {
     said_none: bool,
 }
 
-/// The settings screen's three sliders as a [`Mix`].
+/// The settings screen's sliders as a [`Mix`].
 fn mix_of(s: &super::Settings) -> Mix {
     Mix {
-        master: s.vol_master,
+        master: s.master(),
         game: s.vol_game,
         ambience: s.vol_ambience,
         music: s.vol_music,
