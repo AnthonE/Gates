@@ -45,6 +45,20 @@ pub const ARM_UP: [(&str, u32, Option<&str>); 4] = [
     ("Bandage", 3, None),
 ];
 
+/// What makes an [`ARM_UP`] entry needless: a better one of its kind,
+/// carried. A wooden spear beside a metal one is junk.
+const OUTCLASSED_BY: [(&str, &[&str]); 2] = [
+    ("Wooden Spear", &["Metal Spear"]),
+    ("Hunting Bow", &["Crossbow", "Revolver"]),
+];
+
+/// Is `item` needless beside what `held` says is carried?
+pub fn outclassed(item: &str, held: impl Fn(&str) -> bool) -> bool {
+    OUTCLASSED_BY
+        .iter()
+        .any(|&(i, better)| i == item && better.iter().any(|b| held(b)))
+}
+
 /// A belt role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {

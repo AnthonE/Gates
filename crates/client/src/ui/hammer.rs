@@ -106,7 +106,7 @@ pub fn pick(dx: f32, dy: f32, rings: Rings) -> Option<usize> {
     super::build::pick_in(dx, dy, rings, VERBS.len())
 }
 
-/// What releasing over a segment does with the nearest structure: the send
+/// What releasing over a segment does with the aimed structure: the send
 /// it names, or the sentence saying why not.
 ///
 /// The addresses ride verbatim and the store bit is [`Store::is_deploy`]'s
@@ -152,7 +152,7 @@ pub enum Act {
     Say(&'static str),
 }
 
-/// Resolve a released verb against the nearest structure. Pure, gated in
+/// Resolve a released verb against the aimed structure. Pure, gated in
 /// `tests/ui.rs` §K; `render/verbs.rs::hammer_fire` translates the answer
 /// into the same `send` the keys use.
 pub fn act(verb: Verb, near: Option<&Target>, piece_defs: &BuildContent, have: u16) -> Act {

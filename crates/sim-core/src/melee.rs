@@ -254,7 +254,7 @@ impl Reaches {
         Self {
             node: REACH_M * MM_PER_M,
             body: cc
-                .held_melee(held)
+                .swing_melee(held)
                 .map_or(0.0, |d| f32::from(d.reach_cm) * 10.0),
             structure: cc
                 .held_struct(held)

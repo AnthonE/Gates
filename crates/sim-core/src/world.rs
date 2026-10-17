@@ -234,6 +234,21 @@ pub fn hit_part(c: u32) -> crate::collide::Part {
         .unwrap_or(crate::collide::Part::Chest)
 }
 
+/// [`EV_HURT`]'s `c` bit for a blow that crossed the victim's head: what
+/// the victim hears as Rust's headshot crunch. Above the `u16` damage.
+pub const HURT_HEAD: u32 = 1 << 16;
+
+/// `EV_HURT`'s `c`: the damage, with [`HURT_HEAD`] for a head blow.
+#[inline]
+pub fn hurt_c(part: crate::collide::Part, damage: u16) -> u32 {
+    let head = if part == crate::collide::Part::Head {
+        HURT_HEAD
+    } else {
+        0
+    };
+    head | damage as u32
+}
+
 /// The scaled damage out of an `EV_HIT` payload.
 #[inline]
 pub fn hit_damage(c: u32) -> u16 {
@@ -624,7 +639,8 @@ pub const EV_TRUST: u8 = 39;
 pub const EV_SWING: u8 = 40;
 
 /// EV_HURT: a = victim player id, b = the world bearing sector from the
-/// victim toward whatever hurt them, c = damage dealt.
+/// victim toward whatever hurt them, c = damage dealt, with [`HURT_HEAD`]
+/// set over it when the blow crossed the head (v121; [`hurt_c`]).
 ///
 /// **The victim's fact, and the mirror of `EV_HIT`.** A hit has two people
 /// in it and the wire only ever told one of them: `EV_HIT` is unicast to
@@ -6957,6 +6973,8 @@ impl World {
                     &ray,
                     &reaches,
                 );
+                // A punch that met anything at all hurts the hand.
+                let punched = held == NO_ITEM && !matches!(reached, melee::Reached::Nothing);
                 match reached {
                     melee::Reached::Node(hit) => {
                         swung = gather::land(
@@ -7034,17 +7052,20 @@ impl World {
                         // plank is up to one sample inside the face, exactly
                         // where an arrow's mark sits; `render/decal.rs`
                         // draws it facing the swinger as it draws theirs.
-                        let (mx, my, mz) = ray.at_m(t);
-                        self.events.push(
-                            EV_IMPACT,
-                            impact_a(
-                                surf,
-                                ranged::IMPACT_MELEE,
-                                crate::fmath::floor_i32(mx / POS_XZ_Q),
-                            ),
-                            crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
-                            crate::fmath::floor_i32(my / POS_Y_Q) as u32,
-                        );
+                        // A fist leaves no mark (operator, 2026-10-17).
+                        if held != NO_ITEM {
+                            let (mx, my, mz) = ray.at_m(t);
+                            self.events.push(
+                                EV_IMPACT,
+                                impact_a(
+                                    surf,
+                                    ranged::IMPACT_MELEE,
+                                    crate::fmath::floor_i32(mx / POS_XZ_Q),
+                                ),
+                                crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
+                                crate::fmath::floor_i32(my / POS_Y_Q) as u32,
+                            );
+                        }
                         // …and the wall takes it, priced by `World::chip` —
                         // the same door a bullet's chip goes through, so the
                         // hard/soft side rule (`build::structure_price`) is
@@ -7065,6 +7086,9 @@ impl World {
                         }
                     }
                     melee::Reached::Nothing => {}
+                }
+                if punched {
+                    combat::knuckles(&self.combat, &mut self.players[i], &mut self.events);
                 }
             }
             craft::step(
@@ -7354,6 +7378,8 @@ impl World {
             &self.haven,
             tick,
             &self.heli_def,
+            &self.combat,
+            &wx,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 doors: self.card_door_bits,

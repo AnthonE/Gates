@@ -172,6 +172,10 @@ pub const LOOT_GOAL_SECS: u32 = 240;
 /// fire's grill is one slot, so a full stack of raw meat (20 × 20 s) cooks
 /// for 400 s on its own.
 pub const COOK_GOAL_SECS: u32 = 480;
+/// THE GATE's research table is walked to until it is this near, well
+/// inside the deployables' sight (`AOI_ENTER_CM`); this near and not
+/// standing, there is none to use.
+pub const TABLE_SIGHT_M: f32 = 40.0;
 /// A defence (the walk home, the wait, the repairs) or a raid ends by then.
 pub const DEFEND_GOAL_SECS: u32 = 300;
 pub const RAID_GOAL_SECS: u32 = 300;
@@ -540,6 +544,11 @@ pub struct Memory {
     /// Salvage the base does not want whole and a recycler to take it
     /// apart at, and no recycle came to nothing a moment ago.
     pub recycle: bool,
+    /// A recycler stands within a recycle's walk, its own or anybody's.
+    pub recycler_near: bool,
+    /// A found thing to research and the junk for it, or paper to read
+    /// (`oven::research`), and no research came to nothing a moment ago.
+    pub research: bool,
     /// Something of its base is damaged and can be mended
     /// (`defend::mendable`), seen from near it (`defend::MEND_SIGHT_M`);
     /// a defence came to nothing a moment ago.
@@ -879,6 +888,15 @@ pub struct Survivor {
     pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
     recycle_failed: Option<u32>,
+    research_failed: Option<u32>,
+    /// A research goal's read of the paper is queued: the goal ends once
+    /// it has gone out (an ended goal's outbox is dropped).
+    paper_read: bool,
+    /// This research's sample is out of the pack and its paper not in it:
+    /// in the table, or paper there. A goal that ends so leaves it
+    /// `research_left`, and the next research goes back for it.
+    sample_in_table: Option<u16>,
+    research_left: Option<u16>,
     shop_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
@@ -1069,6 +1087,10 @@ impl Survivor {
             oven_stats: OvenStats::default(),
             cook_failed: None,
             recycle_failed: None,
+            research_failed: None,
+            paper_read: false,
+            sample_in_table: None,
+            research_left: None,
             shop_failed: None,
             home_failed: None,
             build_failed: None,
@@ -2083,6 +2105,8 @@ impl Survivor {
         self.read_job.reset();
         self.solve_job.reset();
         self.swipe_job.reset();
+        self.paper_read = false;
+        self.sample_in_table = None;
         self.oven_job = DeviceJob::new(match goal {
             Goal::Recycle => Work::Recycle,
             Goal::KeepShop => Work::Shop,
@@ -2119,6 +2143,16 @@ impl Survivor {
         };
         self.memory.last = Some(report);
         self.history.push(report);
+        if active.goal == Goal::Research {
+            self.research_left = match outcome {
+                Outcome::Done => None,
+                _ => self.sample_in_table.take(),
+            };
+            // Not offered again before the hold is read, a second from now.
+            if matches!(outcome, Outcome::Failed(_)) {
+                self.memory.research = false;
+            }
+        }
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
             self.home_failed = Some(tick);
         }
@@ -2197,6 +2231,7 @@ impl Survivor {
             | Goal::Loot
             | Goal::Cook
             | Goal::Recycle
+            | Goal::Research
             | Goal::KeepShop
             | Goal::Raid
             | Goal::Follow
@@ -2341,6 +2376,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Cook | Goal::Recycle | Goal::KeepShop => self.tend(core, body, tick),
+            Goal::Research if elapsed >= VISIT_GOAL_SECS * TICK_HZ => {
+                self.research_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Research => self.research(core, body, tick),
             Goal::Defend if elapsed >= DEFEND_GOAL_SECS * TICK_HZ => {
                 self.defend_failed = Some(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
@@ -5333,14 +5374,23 @@ impl Survivor {
     }
 
     /// The device a work is done at that is worth walking to from here:
-    /// its own fire near, or its own recycler within a longer walk.
+    /// its own fire near, or a recycler within a longer walk, its own first.
+    /// Any recycler standing will do: the one it put down is forgotten with
+    /// the session, and taking it for gone made it build another. A
+    /// research table is THE GATE's, once in sight: a table in somebody's
+    /// base is behind their walls, and what is in it is theirs.
     fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
         let (own, within) = match work {
             Work::Cook => (self.fire, oven::KEEP_M),
             Work::Shop => return self.shop_machine(core),
-            _ => (self.recycler, oven::SEEN_NEAR_M),
+            Work::Research { .. } => (oven::town_table(core), f32::MAX),
+            Work::Recycle => (self.recycler, oven::SEEN_NEAR_M),
         };
-        oven::nearest(core, work, own.into_iter(), x, z, within)
+        oven::nearest(core, work, own.into_iter(), x, z, within).or_else(|| {
+            (work == Work::Recycle)
+                .then(|| oven::nearest(core, work, oven::standing(core, work), x, z, within))
+                .flatten()
+        })
     }
 
     /// Where the crew's vending machine goes, with home's middle known.
@@ -5383,8 +5433,72 @@ impl Survivor {
         match self.oven_job.work() {
             Work::Cook => self.cook_failed = Some(tick),
             Work::Shop => self.shop_failed = Some(tick),
-            _ => self.recycle_failed = Some(tick),
+            Work::Research { .. } => self.research_failed = Some(tick),
+            Work::Recycle => self.recycle_failed = Some(tick),
         }
+    }
+
+    /// A research (`agent::oven`, `Work::Research`): paper it holds and
+    /// has not read is read, here; else the cheapest found thing it has no
+    /// blueprint for goes to THE GATE's research table with its junk, the
+    /// paper is taken off and read.
+    fn research(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Recycling;
+        if self.paper_read {
+            if self.outbox.is_none() {
+                self.end_goal(tick, Outcome::Done);
+            }
+            return Intent::IDLE;
+        }
+        if !matches!(self.oven_job.work(), Work::Research { .. }) {
+            if let Some(slot) = oven::unread(core) {
+                self.paper_read = self.queue(|buf| protocol::encode_action_research(slot, buf));
+                return Intent::IDLE;
+            }
+            let tier = self.builder.stations(core).tier;
+            let left = self
+                .research_left
+                .take()
+                .and_then(|sample| oven::research_of(core, sample));
+            let Some(work) = left.or_else(|| oven::research(core, tier)) else {
+                self.research_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
+                return Intent::IDLE;
+            };
+            self.oven_job = DeviceJob::new(work);
+        }
+        if let Work::Research { sample, .. } = self.oven_job.work() {
+            self.sample_in_table = (count_item(core, sample) == 0
+                && oven::paper_of(core, sample).is_none())
+            .then_some(sample);
+        }
+        // To the table until it is in sight (the deployables' interest),
+        // then the job walks to it and works it.
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        if self.device_near(core, self.oven_job.work(), x, z).is_none() {
+            let far = oven::town_table(core)
+                .map(|(cx, cz)| cell_center(cx, cz))
+                .filter(|&(mx, mz)| (mx - x).hypot(mz - z) > TABLE_SIGHT_M);
+            let Some((mx, mz)) = far else {
+                // At THE GATE, and no table there to be seen; or no town.
+                self.research_failed = Some(tick);
+                self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                return Intent::IDLE;
+            };
+            return match self
+                .route
+                .to(core, body, [mx, mz], TABLE_SIGHT_M - 2.0, false, tick)
+            {
+                step @ Step::Walk { yaw, .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+                Step::Wait | Step::Arrived => Intent::walk(yaw_toward(mx - x, mz - z)),
+                Step::Blocked => {
+                    self.research_failed = Some(tick);
+                    self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                    Intent::IDLE
+                }
+            };
+        }
+        self.tend(core, body, tick)
     }
 
     /// A cook at a fire or a recycle at a recycler (`agent::oven`): its own
@@ -5521,6 +5635,13 @@ impl Survivor {
                 if self.outbox.is_none() {
                     if work == Work::Shop {
                         self.shop_kept = Some(tick);
+                    }
+                    // The paper a research made, read where it stands.
+                    if let Some(slot) = oven::unread(core).filter(|_| work != Work::Recycle) {
+                        if self.queue(|buf| protocol::encode_action_research(slot, buf)) {
+                            self.paper_read = true;
+                            return Intent::IDLE;
+                        }
                     }
                     self.end_goal(tick, Outcome::Done);
                 }
@@ -6190,6 +6311,7 @@ impl Survivor {
             // the rest of the milestone costs, or the gear still to be made
             // takes.
             let recycler = self.device_near(core, Work::Recycle, x, z);
+            self.memory.recycler_near = recycler.is_some();
             let book = &self.book;
             let mut keep = self
                 .builder
@@ -6205,6 +6327,24 @@ impl Survivor {
                     && self
                         .recycle_failed
                         .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // A research: paper to read, or a found thing and the junk for
+            // it (or what an earlier one left in the table) while THE GATE's
+            // table is there to take them to. Mid-research the sample is in
+            // the table rather than the pack: still on offer until it is done,
+            // or the next decision walks off and leaves the paper there.
+            let tier = self.builder.stations(core).tier;
+            let researching = self.goal() == Some(Goal::Research)
+                && (self.paper_read || matches!(self.oven_job.work(), Work::Research { .. }));
+            let left = self
+                .research_left
+                .is_some_and(|sample| oven::research_of(core, sample).is_some());
+            let table = oven::town_table(core).is_some();
+            self.memory.research = researching
+                || ((oven::unread(core).is_some()
+                    || (table && (left || oven::research(core, tier).is_some())))
+                    && self
+                        .research_failed
+                        .is_none_or(|at| tick.wrapping_sub(at) >= VISIT_RETRY_TICKS));
             // The crew's shop (`agent::shop`), its founder's to keep: a
             // machine carried and none standing is put down; one standing is
             // stocked when the pack has lots of a ware past what the base
@@ -6284,12 +6424,12 @@ impl Survivor {
         let book = &self.book;
         let mut bill = [(0, 0); stash::VISIT_ROWS];
         let n = stash::visit_bill(survey.bill(), &self.home, grades, tick, &mut bill);
-        let furnace = self.builder.stations(core).furnace.is_some();
+        let has = self.builder.stations(core);
         let next = (chest && book.ready())
             .then(|| {
                 stash::plan(
                     core,
-                    |item| stash::keeps(core, book, furnace, item),
+                    |item| stash::keeps(core, book, &has, item),
                     &bill[..n],
                     self.ledger.slots(),
                 )
@@ -6423,7 +6563,7 @@ impl Survivor {
                 self.skipped = Some(t.key());
             }
         }
-        while let Some((sector, damage)) = core.pop_hurt() {
+        while let Some((sector, damage, _)) = core.pop_hurt() {
             if damage == 0 {
                 continue;
             }
@@ -7360,6 +7500,7 @@ pub fn observe(
         }
     }
     (s.take_out, s.feed) = (memory.take_out, memory.feed);
+    s.recycler_near = memory.recycler_near;
     s.trigger = memory.trigger;
     // Its team (wire v108), from the team view its client was sent.
     let who = |id: u32| {
@@ -7618,6 +7759,10 @@ pub fn observe(
     if memory.recycle && !senses.hostile {
         s.offer(Goal::Recycle);
     }
+    // The gate's guns shoot whoever fought a player lately.
+    if memory.research && !senses.hostile && core.hostile_left() == 0 {
+        s.offer(Goal::Research);
+    }
     if memory.shop && !senses.hostile {
         s.offer(Goal::KeepShop);
     }
@@ -7714,7 +7859,12 @@ pub fn observe(
     // and a feed for the nearest work that takes what the pack holds.
     if !senses.hostile && core.hostile_left() == 0 && s.gate.is_some() && !memory.trade_held {
         let mut rows = [(0u16, false); gate::TRADE_ROWS];
-        let n = gate::trades(core, &mut rows);
+        let wants = memory
+            .base
+            .needs()
+            .iter()
+            .chain(&memory.raw[..usize::from(memory.raw_len)]);
+        let n = gate::trades(core, wants.map(|&(item, _)| item), &mut rows);
         for &(item, sell) in &rows[..n] {
             if let Some(name) = Name::new(core.catalog.name(usize::from(item))) {
                 s.offer(if sell {
@@ -8379,7 +8529,7 @@ mod tests {
         keyframe(&mut view, tick, &[me]);
         bot.frame_at(&view, 1, 7, now);
         assert!(!bot.home.under_attack(view.newest_applied.unwrap()));
-        let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+        let n = protocol::event::encode_event_hurt(0, 15, false, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         assert!(bot.home.under_attack(view.newest_applied.unwrap()));
         assert!(matches!(
@@ -8795,7 +8945,7 @@ mod tests {
             view.newest_applied = Some(1 + u32::from(sector));
             goal(&mut bot, Goal::GatherWood, 1 + u32::from(sector));
             bot.target = Some(target);
-            let n = protocol::event::encode_event_hurt(sector, 15, &mut buf).unwrap();
+            let n = protocol::event::encode_event_hurt(sector, 15, false, &mut buf).unwrap();
             event(&mut bot, n, &buf);
             // From the first frame the body backs away from the blow, while
             // the hands are still turning to face where it came from.
@@ -8851,7 +9001,7 @@ mod tests {
                 assert_eq!(bot.stats.phase, Phase::Fleeing);
                 assert!(bot.goal.is_some_and(|a| a.paused.is_some()));
             }
-            let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+            let n = protocol::event::encode_event_hurt(0, 15, false, &mut buf).unwrap();
             event(&mut bot, n, &buf);
         }
         // An answer chosen before all that is stale by the end of it.
@@ -8891,7 +9041,7 @@ mod tests {
         let now = Instant::now();
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
         let mut hurt = |bot: &mut Survivor| {
-            let n = protocol::event::encode_event_hurt(2, 15, &mut buf).unwrap();
+            let n = protocol::event::encode_event_hurt(2, 15, false, &mut buf).unwrap();
             event(bot, n, &buf);
         };
         let choice = |goal| Choice {
@@ -8996,7 +9146,7 @@ mod tests {
         let (mut bot, mut view, _) = fixture();
         let now = Instant::now();
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_hurt(4, 30, &mut buf).unwrap();
+        let n = protocol::event::encode_event_hurt(4, 30, false, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         view.entities[0].1.wounded = true;
         let (_, away) = bot.last_hurt.unwrap();

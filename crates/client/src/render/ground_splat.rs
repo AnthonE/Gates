@@ -521,13 +521,19 @@ pub struct GroundSplatParams {
     /// x = [`ROCK_STREAK_W_M`], y = [`ROCK_STREAK_H_M`], z = [`ROCK_FACE_ON`],
     /// w = [`ROCK_FACE_FULL`].
     pub rock_d: Vec4,
+    /// x = [`ROCK_SEAM`], y = [`ROCK_FLAT_LEAN`], z/w =
+    /// [`ROCK_LEAN_ON`]/[`ROCK_LEAN_FULL`].
+    pub rock_e: Vec4,
+    /// x = [`MOTTLE_M`], y = [`MOTTLE_AMP`]. zw reserved and zero.
+    pub mottle: Vec4,
     /// x = [`AGGREGATE_GAIN`]: the road's layer is not an identity, so
     /// `gain` has no slot for it. yzw reserved and zero.
     pub aggregate: Vec4,
     /// The per-pixel cliff: x/y = [`CLIFF_TAN_LO`]/[`CLIFF_TAN_HI`],
     /// z = [`CLIFF_NOISE`], w = [`CLIFF_NOISE_M`].
     pub cliff: Vec4,
-    /// x = [`WALL_PLANE_BLEND`]. yzw reserved and zero.
+    /// x = [`WALL_PLANE_BLEND`], y/z = [`PROJECT_TRI_COS`]/
+    /// [`PROJECT_NORMAL_COS`]. w reserved and zero.
     pub wall_planes: Vec4,
     /// x = `terrain::SEA_LEVEL`, y = [`CAUSTIC_GAIN`], z/w =
     /// [`CAUSTIC_FADE_FROM_M`]/[`CAUSTIC_FADE_TO_M`].
@@ -648,9 +654,11 @@ impl GroundSplatParams {
                 ROCK_FACE_ON,
                 ROCK_FACE_FULL,
             ),
+            rock_e: Vec4::new(ROCK_SEAM, ROCK_FLAT_LEAN, ROCK_LEAN_ON, ROCK_LEAN_FULL),
+            mottle: Vec4::new(MOTTLE_M, MOTTLE_AMP, 0.0, 0.0),
             aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
             cliff: Vec4::new(CLIFF_TAN_LO, CLIFF_TAN_HI, CLIFF_NOISE, CLIFF_NOISE_M),
-            wall_planes: Vec4::new(WALL_PLANE_BLEND, 0.0, 0.0, 0.0),
+            wall_planes: Vec4::new(WALL_PLANE_BLEND, PROJECT_TRI_COS, PROJECT_NORMAL_COS, 0.0),
             caustics: Vec4::new(
                 sim_core::terrain::SEA_LEVEL,
                 CAUSTIC_GAIN,
@@ -832,6 +840,26 @@ pub const ROCK_STREAK_H_M: f32 = 14.0;
 /// down a face, it does not stripe a slope a player walks up.
 pub const ROCK_FACE_ON: f32 = 0.6;
 pub const ROCK_FACE_FULL: f32 = 0.85;
+/// How far into a block its own lean and value hold, in block units. Nearer
+/// a boundary than this they turn over to the neighbour's, and on it the two
+/// are even, so a block has no outline. Stepped at the boundary, every
+/// summit read as a camouflage of dark and pale blobs and every face as
+/// polygons pasted on (operator, 2026-10-17: "the rock doesnt blend well").
+pub const ROCK_SEAM: f32 = 0.25;
+/// The share of the facets' lean a gentle summit keeps: a scarp breaks into
+/// planes, a summit is not a field of slabs tipped at random…
+pub const ROCK_FLAT_LEAN: f32 = 0.35;
+/// …and `sin(tilt)` where the rest grows in (~20°) and is whole (~44°).
+pub const ROCK_LEAN_ON: f32 = 0.35;
+pub const ROCK_LEAN_FULL: f32 = 0.7;
+
+/// The ground's mid-scale break-up, per pixel: wavelength, metres (a second
+/// octave rides at 1/2.3 of it), and peak departure from the mean. It
+/// replaced a hash per mesh vertex, which interpolated across each triangle
+/// into blotches one vertex step wide — on sand, which has little grain of
+/// its own to hide them, a mottle the eye read before the sand.
+pub const MOTTLE_M: f32 = 6.0;
+pub const MOTTLE_AMP: f32 = 0.05;
 
 /// **The cliff is decided per pixel, not per vertex.** The classifier's cliff
 /// veto is near-binary, and a binary weight interpolated across triangles
@@ -900,6 +928,21 @@ pub const WALL_SHARPNESS: f32 = 16.0;
 /// its bearing, stretched at most 1.04× across it, so two thirds of a wall
 /// pays for one plane's taps.
 pub const WALL_PLANE_BLEND: f32 = 1.0 / 3.0;
+
+/// The cosine between a triangle's own plane and its smoothed normal past
+/// which the projection is chosen by the triangle (~20°), and within which
+/// by the normal (~10°).
+///
+/// The planar and wall taps are stretched by the triangle they are laid on,
+/// and the normal is a central difference across its neighbours. They agree
+/// to 4° on 90% of steep ground, and part by 15–25° where the cliff relief
+/// cuts a step one vertex wide: there the riser read the top plane, smeared
+/// three to ten times down the fall line, and the tread beside it a wall
+/// (operator, 2026-10-17: the smear at the foot of the faces). Inside 10° the
+/// normal still decides, because it is continuous across a triangle edge and
+/// a triangle's plane is not.
+pub const PROJECT_TRI_COS: f32 = 0.94;
+pub const PROJECT_NORMAL_COS: f32 = 0.985;
 
 /// Two arrays — albedo, and normal/roughness/AO — and one sampler.
 ///

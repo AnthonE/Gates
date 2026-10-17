@@ -3,10 +3,10 @@
   "seed": 1,
   "label": "THE GATE",
   "blender": "4.5.14 LTS",
-  "python": "3.11.15",
-  "script_sha256": "05b6e3d252264480c1fa596c61278c60d99394376b818422cf7801f8e07790d7",
-  "kit_sha256": "ea405932a431a29e7bbc01df17b1a4f454cb5a4f82c077b58e363126f3b7f8af",
-  "triangles": 60940,
+  "python": "3.11.17",
+  "script_sha256": "6374fd9002d35013c0124609684acf3a3e667b286d4be835dd00b65e8e1a2901",
+  "kit_sha256": "08f78ab7b7705e431b067de9ef4a5da0173d869ef0bf6be10a6f45513e6cc859",
+  "triangles": 60324,
   "meshes": [
     "bulb",
     "canvas",
@@ -20,5 +20,5 @@
     "timber",
     "yard"
   ],
-  "bytes": 7056004
+  "bytes": 6976868
 }

@@ -78,16 +78,16 @@ pub const BEDS: [Cue; 8] = [
     Cue::BedRotorFar,
 ];
 
-/// How far past THE GATE's safe zone its yard is still heard, metres: full
-/// inside the walls, gone by the time the town is a silhouette. **(knob)**
-pub const TOWN_BED_R_M: f32 = 90.0;
+/// How far a running recycler's motor is heard, metres: full at the machine,
+/// gone at this. **(knob)**
+pub const RECYCLER_HUM_R_M: f32 = 16.0;
 
 // One held engine slot per bed (`engine::HELD_BEDS`); music follows them.
 const _: () = assert!(BEDS.len() == HELD_BEDS);
 
-/// How far the heli's rotor carries, metres: to the radius the server
-/// starts sending the heli from (`heli::HELI_AOI_SCALE` × the AOI's), so
-/// it is silent on the frame it first arrives and fades up from there.
+/// How far the heli's rotor carries, metres: `heli::HELI_AOI_SCALE` × the
+/// AOI's enter radius. The server sends the heli island-wide (it is on the
+/// map), so past this it is drawn but silent, and it fades up from here.
 pub const ROTOR_R_M: f32 =
     (sim_core::heli::HELI_AOI_SCALE * sim_core::limits::AOI_ENTER_CM) as f32 / 100.0;
 
@@ -954,7 +954,7 @@ pub struct RemoteSteps(pub Steps);
 /// One honest gap, the wire's: a teleport (death, respawn) reads as ground
 /// covered, which the odometer's own hitch cap bounds at ONE step. A
 /// sleeper stands still and the speed floor keeps it silent for free.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn remote_steps(
     world: Res<super::WorldId>,
     net: Option<NonSend<Net>>,
@@ -962,7 +962,7 @@ pub fn remote_steps(
     rig: Res<super::anim::Rig>,
     mut bodies: Query<
         (&Transform, &mut RemoteSteps, &super::anim::BodyAnim),
-        With<super::bodies::Body>,
+        Or<(With<super::bodies::Body>, With<super::guards::Guard>)>,
     >,
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
@@ -2038,13 +2038,14 @@ pub struct LastHp(pub u16);
 
 /// Being hurt, as a **blow** rather than as a health bar.
 ///
-/// Two witnesses, up to two voices. The fall carries coverage — see
-/// [`crate::sound::hurt`] for why reading `EV_HURT` alone would silence
-/// starvation, thirst and the keypad shock — and this frame's announced blows
-/// carry the weight, and a second voice when there were two. `Feed` is taken
-/// immutably, which is the shape `CLAUDE.md`'s two-drains trap requires of
-/// every reader that is not `feed::drain` itself; scheduling puts this after
-/// it.
+/// **Silent, as Rust is** (operator, 2026-10-17: *"get rid of any sound we
+/// make when we take damage rust doesnt do that"*): no pain grunt. A blow
+/// that crossed your head is Rust's headshot crunch, and taking damage
+/// still tenses the score. [`crate::sound::hurt::request`] is the decision that it did,
+/// the fall and the announced blows alike, for the reason that module gives.
+/// `Feed` is taken immutably, which is the shape `CLAUDE.md`'s two-drains
+/// trap requires of every reader that is not `feed::drain` itself;
+/// scheduling puts this after it.
 pub fn hurt(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
@@ -2060,9 +2061,10 @@ pub fn hurt(
         0
     };
     last.0 = core.hp;
-    if let Some(req) = crate::sound::hurt::request(fall, feed.hurt_damage, feed.hurts, core.hp_max)
-    {
-        sound.play(req);
+    if feed.hurt_head {
+        sound.play(Request::own(Cue::Headshot));
+    }
+    if crate::sound::hurt::request(fall, feed.hurt_damage, feed.hurts, core.hp_max).is_some() {
         // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
         // published order: a weapon in play < a bullet past your head <
         // taking damage). Two of these inside two sections is what puts the
@@ -2070,12 +2072,6 @@ pub fn hurt(
         // blow armor ate whole now tenses the music too — it is the shooting
         // that matters to the score, not the bookkeeping.
         sound.music.bump(music::BUMP_HURT);
-    }
-    // Two blows in one frame are two voices, not one heavier one: the second
-    // is its own row, so the per-row cooldown that binds inside a frame
-    // does not fold it into the first (`sound::hurt::again`).
-    if let Some(req) = crate::sound::hurt::again(feed.hurt_damage, feed.hurts, core.hp_max) {
-        sound.play(req);
     }
 }
 
@@ -2091,9 +2087,10 @@ pub fn hurt(
 /// The forest layer rides along: [`bed`] already walks the props and already
 /// scores the cover, so a bird costs a countdown and an index. See
 /// `sound::birds` for why a layer is not a bed turned down.
-// Nine: the mix state to write, where the ears are, which island this is, the
-// cover query, the clock, the player's sliders, the tick, the day pin, and
-// the engine the levels leave through.
+// The mix state to write, where the ears are, which island this is, the
+// cover query, the clock, the player's sliders, the tick, the day pin, the
+// weather, the engine the levels leave through, the heli, and the recyclers
+// with the sim's word on which are running.
 #[allow(clippy::too_many_arguments)]
 pub fn bed(
     mut sound: ResMut<Sound>,
@@ -2107,6 +2104,8 @@ pub fn bed(
     mut weather: ResMut<super::weather::WeatherNow>,
     mut engine: ResMut<Engine>,
     helis: Query<&GlobalTransform, With<super::heli::HeliBody>>,
+    net: NonSend<Net>,
+    recyclers: Query<(&GlobalTransform, &super::structures::RecyclerHum)>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
     // inside the radius is "in the woods"; none is "on the beach".
@@ -2213,21 +2212,18 @@ pub fn bed(
     });
     sound.bed_target[ROTOR_SLOT as usize] = near;
     sound.bed_target[ROTOR_FAR_SLOT as usize] = far;
-    // THE GATE's yard, by how far outside the safe square you stand: the
-    // square's own edge is full, and it fades over `TOWN_BED_R_M`.
+    // The motor loop (`Cue::BedTown`) at the nearest RUNNING recycler, by
+    // distance, and silent when none runs. It was THE GATE's yard bed, and
+    // a yard that always droned read as recyclers nobody was using.
     sound.bed_target[5] = {
-        let t = &world.haven.town;
-        if t.live {
-            let half = sim_core::town::SAFE_HALF_M;
-            let (dx, dz) = (
-                ((eye.pos.x - t.x).abs() - half).max(0.0),
-                ((eye.pos.z - t.z).abs() - half).max(0.0),
-            );
-            let near = (1.0 - (dx * dx + dz * dz).sqrt() / TOWN_BED_R_M).clamp(0.0, 1.0);
-            near * near
-        } else {
-            0.0
-        }
+        let ovens = net.session.core.ovens();
+        let d = recyclers
+            .iter()
+            .filter(|(_, r)| ovens.is_lit(r.cx, r.cz, r.level, r.loc))
+            .map(|(g, _)| g.translation().distance(eye.pos))
+            .fold(f32::INFINITY, f32::min);
+        let near = (1.0 - d / RECYCLER_HUM_R_M).clamp(0.0, 1.0);
+        near * near
     };
     // The night's crickets, the birds' other half: up as the light goes,
     // quiet in the rain, duller under a roof.
@@ -2648,10 +2644,10 @@ pub struct Reported {
     said_none: bool,
 }
 
-/// The settings screen's three sliders as a [`Mix`].
+/// The settings screen's sliders as a [`Mix`].
 fn mix_of(s: &super::Settings) -> Mix {
     Mix {
-        master: s.vol_master,
+        master: s.master(),
         game: s.vol_game,
         ambience: s.vol_ambience,
         music: s.vol_music,

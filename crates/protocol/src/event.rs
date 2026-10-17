@@ -975,13 +975,14 @@ const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + DMG_BAND_BITS
     + PLATE_BITS
     + STRUCT_HP_BITS) as usize;
-/// `write_deploy_rec`'s: address, row, the three state bits, band, the
-/// pose's three bytes, the beds, and the exact hp (v102).
+/// `write_deploy_rec`'s: address, row, the four state bits (v120's key
+/// bit the fourth), band, the pose's three bytes, the beds, and the exact
+/// hp (v102).
 const DEPLOY_REC_BITS: usize = (2 * BUILD_CELL_BITS
     + BUILD_LEVEL_BITS
     + BUILD_LOC_BITS
     + DEPLOY_ROW_BITS
-    + 3
+    + 4
     + DMG_BAND_BITS
     + 4 * 8
     + STRUCT_HP_BITS) as usize;
@@ -1842,6 +1843,9 @@ pub enum EventMsg {
     /// could not tell the first two apart would offer a keypad at a door
     /// with no keypad (lock v1).
     ///
+    /// `keyed` says the lock is a key lock (v120): a padlock with no
+    /// keypad, so neither the drawing nor the prompt may offer one.
+    ///
     /// **Who the lock remembers is not on the wire, and neither is the
     /// code.** The client presses and learns from the outcome, which is
     /// `DESIGN.md` §5.6's own mispredict example — the alternative is a
@@ -1854,6 +1858,7 @@ pub enum EventMsg {
         open: bool,
         locked: bool,
         has_lock: bool,
+        keyed: bool,
     },
     /// Somebody knocked on the door at the address (broadcast). The one
     /// event in this enum whose *whole* purpose is to be heard by people
@@ -2171,8 +2176,9 @@ pub enum EventMsg {
     /// world bearing). The victim's fact and the victim's alone — the
     /// mirror of `Hit`, and the only thing on this wire that tells a body
     /// which way to turn. Quantized to sectors on purpose: enough to face,
-    /// not enough to aim (`sim_core::world`, `EV_HURT`).
-    Hurt { sector: u8, damage: u16 },
+    /// not enough to aim (`sim_core::world`, `EV_HURT`). `head`: the blow
+    /// crossed your head, and you hear Rust's headshot crunch (v121).
+    Hurt { sector: u8, damage: u16, head: bool },
     /// A magazine changed: `loaded` of `ceiling` now sit in the weapon, and
     /// `took` rounds left the pack to put them there. `took` is not the
     /// difference the client could compute — a partial reload off a nearly
@@ -3235,7 +3241,7 @@ pub fn encode_event_piece_defs(
     Ok((w.finish(), count))
 }
 
-/// One placed-deployable record on the wire: 89 bits (`DEPLOY_REC_BITS`),
+/// One placed-deployable record on the wire: 90 bits (`DEPLOY_REC_BITS`),
 /// shared by the placed broadcast and the sync batches — the address, the
 /// row, the three state bits, the damage band, since wire v100 a planter's
 /// beds, since v102 the exact hp, and since wire v89 the **pose** (free
@@ -3267,6 +3273,8 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.open)?;
     w.write_bit(rec.locked)?;
     w.write_bit(rec.has_lock)?;
+    // Key lock or code lock (v120).
+    w.write_bit(rec.keyed)?;
     // The damage band (wire v44) — `write_piece_rec`'s note applies here.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
     // The pose (v89). Three whole bytes, so every value is a legal pose and
@@ -3300,6 +3308,7 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         open: r.read_bit()?,
         locked: r.read_bit()?,
         has_lock: r.read_bit()?,
+        keyed: r.read_bit()?,
         // Width is the range check — see `read_piece_rec`.
         dmg: r.read(DMG_BAND_BITS)? as u8,
         pose: sim_core::footprint::Pose {
@@ -3527,6 +3536,7 @@ pub fn encode_event_door(
     open: bool,
     locked: bool,
     has_lock: bool,
+    keyed: bool,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if !door_addr_ok(cx, cz, level, loc) {
@@ -3540,6 +3550,7 @@ pub fn encode_event_door(
     w.write_bit(open)?;
     w.write_bit(locked)?;
     w.write_bit(has_lock)?;
+    w.write_bit(keyed)?;
     Ok(w.finish())
 }
 
@@ -5001,13 +5012,19 @@ pub fn encode_event_hit(
 /// is precisely the case where silently keeping the low nibble would put an
 /// arrow marker on the wrong side of a player's screen and no gate anywhere
 /// would notice.
-pub fn encode_event_hurt(sector: u8, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_hurt(
+    sector: u8,
+    damage: u16,
+    head: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     if sector >= HURT_SECTORS {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_HURT)?;
     w.write(sector as u32, HURT_SECTOR_BITS)?;
     w.write(damage as u32, 16)?;
+    w.write(head as u32, 1)?;
     Ok(w.finish())
 }
 
@@ -6336,6 +6353,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 open: r.read_bit()?,
                 locked: r.read_bit()?,
                 has_lock: r.read_bit()?,
+                keyed: r.read_bit()?,
             };
             // A door hangs on a straight edge and nowhere else (v40).
             if matches!(m, EventMsg::Door { loc, .. } if loc > loc_max(true)) {
@@ -6853,6 +6871,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             EventMsg::Hurt {
                 sector,
                 damage: r.read(16)? as u16,
+                head: r.read(1)? != 0,
             }
         }
         SUB_IMPACT => {

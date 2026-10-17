@@ -43,6 +43,9 @@ const ROW_FOUNDATION: u16 = 0;
 const ROW_WALL: u16 = 1;
 const ROW_FLOOR: u16 = 2;
 const ROW_DOORWAY: u16 = 3;
+/// A twig triangle foundation, past the probe fixture's own rows
+/// ([`Rig::new`]): the SE cell's halves, which the diagonal stands on.
+const ROW_TRI_FOUNDATION: u16 = 7;
 
 fn hv() -> &'static terrain::Haven {
     use std::sync::OnceLock;
@@ -58,8 +61,14 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
+        let mut bc = BuildContent::probe_fixture();
+        bc.pieces[ROW_TRI_FOUNDATION as usize] = sim_core::build::PieceDef {
+            shape: sim_core::build::SHAPE_TRI_FOUNDATION,
+            ..bc.pieces[ROW_FOUNDATION as usize]
+        };
+        bc.piece_count = bc.piece_count.max(ROW_TRI_FOUNDATION + 1);
         Self {
-            bc: BuildContent::probe_fixture(),
+            bc,
             pieces: Pieces::new(),
             deploys: Deploys::new(),
         }
@@ -114,12 +123,18 @@ impl Rig {
 
 /// A base with every join this file is about: a 2×2 of foundations, walls all
 /// round and one down the middle, a doorway in the ring, floors over two
-/// cells, walls stacked on the storey above, and a diagonal in a corner.
+/// cells, walls stacked on the storey above, and a diagonal in a corner —
+/// over the SE cell's two triangles, the only thing a diagonal stands on.
 fn base() -> Rig {
     let mut r = Rig::new();
-    for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+    for (dx, dz) in [(0, 0), (1, 0), (0, 1)] {
         r.place(ROW_FOUNDATION, CX + dx, CZ + dz, 0, LOC_PLANE)
             .expect("foundation");
+    }
+    let (t1, t2) = sim_core::build::diag_pair(LOC_DIAG_A);
+    for half in [t1, t2] {
+        r.place(ROW_TRI_FOUNDATION, CX + 1, CZ + 1, 0, half)
+            .expect("triangle");
     }
     // The ring: west and east edges of both rows, north and south of both
     // columns; the east edge of the north row is a doorway.
@@ -153,7 +168,7 @@ fn base() -> Rig {
         .expect("upper west 2");
     r.place(ROW_WALL, CX, CZ, 1, LOC_EDGE_ZLO)
         .expect("upper north");
-    // A diagonal across the SE cell.
+    // The SE cell's triangles' shared hypotenuse.
     r.place(ROW_WALL, CX + 1, CZ + 1, 0, LOC_DIAG_A)
         .expect("diagonal");
     r
@@ -215,6 +230,9 @@ impl Aabb {
 fn drawn(r: &Rig) -> (Vec<Aabb>, Vec<(f32, Transform)>) {
     let mut boxes = Vec::new();
     let mut diagonals = Vec::new();
+    // A box cannot draw half a cell: a pair of triangles is the one slab
+    // they cover together, counted once.
+    let mut tri_cells = Vec::new();
     for rec in r.pieces.entries() {
         let shape = r.bc.pieces[rec.row as usize].shape;
         let addr = (rec.cx, rec.cz, rec.level, rec.loc);
@@ -223,6 +241,12 @@ fn drawn(r: &Rig) -> (Vec<Aabb>, Vec<(f32, Transform)>) {
             shape,
             SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
         ) {
+            if shape == sim_core::build::SHAPE_TRI_FOUNDATION {
+                if tri_cells.contains(&(rec.cx, rec.cz)) {
+                    continue;
+                }
+                tri_cells.push((rec.cx, rec.cz));
+            }
             let part = foundation_part(
                 SEED,
                 hv(),

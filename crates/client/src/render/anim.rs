@@ -1234,7 +1234,7 @@ pub struct Reshade(pub Shade);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Shade {
     Awake,
-    /// One of THE GATE's shopkeepers — never a player.
+    /// THE GATE's guards (and the lore's speakers) — never a player.
     Keeper,
 }
 

@@ -1,11 +1,13 @@
 //! Proximity voice (wire v113): hold the talk key and the players near you
 //! hear you; the players near you who talk come out of where they stand.
 //!
-//! - **Talk**: hold `` ` `` (the key under Esc) or a side mouse button. The
-//!   first press opens the microphone, which is when a browser asks the
-//!   player for it. Samples go to 16 kHz, into 20 ms Opus frames
-//!   (`crates/voice`), and out as datagrams; letting go sends the last frame
-//!   with the end flag.
+//! - **Talk**: hold `V` (Rust's key) or a side mouse button. The first press
+//!   opens the microphone, which is when a browser asks the player for it.
+//!   Samples go to 16 kHz, into 20 ms Opus frames (`crates/voice`), and out
+//!   as datagrams; letting go sends the last frame with the end flag.
+//!   SETTINGS > AUDIO can make the key a toggle, or open the microphone
+//!   whenever it hears more than a threshold; it also sets the microphone's
+//!   gain and device, or turns voice off altogether.
 //! - **Hear**: the shard relays a talker's frames only to players within
 //!   `VOICE_RADIUS_CM` (`ShardCore::voice_reach`), so who can hear whom is
 //!   never this client's call. Each talker gets a lane of `sound::talk`: the
@@ -13,18 +15,21 @@
 //!   talker's body, quieter with distance and panned by where they stand.
 //! - **Mute**: `/mute NAME` and `/unmute NAME` in chat, or `/mute` alone for
 //!   whoever is talking right now. This client stops playing them; nothing
-//!   is said to anyone.
+//!   is said to anyone. MUTE MY MICROPHONE and MUTE ALL VOICES are binds
+//!   (unbound by default) for the rest of the session.
 //!
 //! Voice is never game state: it does not pass `ClientCore`, and a frame
 //! that never arrives costs a gap, never a desync.
 
 use bevy::prelude::*;
 
+use crate::config::TalkMode;
 use crate::sound::talk::{TalkMsg, TALKERS, TALK_CHUNK};
 use protocol::VoiceFrame;
 use sim_core::limits::VOICE_RADIUS_CM;
 
 use super::audio;
+use super::binds::{Action, Binds};
 use super::bodies::Body;
 use super::chat::Chat;
 use super::hud::Toast;
@@ -43,6 +48,9 @@ const LANE_IDLE_S: f64 = 5.0;
 const TALKING_S: f64 = 0.35;
 /// Speech sits a little under the game's cues at parity; this lifts it.
 const VOICE_GAIN: f32 = 1.2;
+/// An open microphone stays on the air this long after the last sound over
+/// its threshold, so the gaps between words do not cut it.
+const GATE_HOLD_S: f64 = 0.4;
 
 /// Who this player has muted, by player id, for this session.
 #[derive(Resource, Default)]
@@ -88,6 +96,10 @@ pub enum MicState {
 pub struct VoiceHud {
     pub on_air: bool,
     pub mic: MicState,
+    /// MUTE MY MICROPHONE: nothing goes out, in any talk mode.
+    pub mic_muted: bool,
+    /// MUTE ALL VOICES: nobody is played.
+    pub deaf: bool,
     /// Talkers sounding right now, by name.
     pub talking: Vec<(u32, String)>,
     dirty: bool,
@@ -114,6 +126,13 @@ const WALLS_EVERY_S: f64 = 0.25;
 /// a `cpal::Stream`, a browser's a `JsValue`, and neither is `Send`.
 pub struct Voice {
     mic: Option<mic::Mic>,
+    /// The device `mic` was opened on (the setting's name; empty is the
+    /// default).
+    device: String,
+    /// TOGGLE mode: the talk key last turned it on.
+    toggled: bool,
+    /// OPEN mode: on the air until this, seconds of real time.
+    gate_until: f64,
     talker: ::voice::Talker,
     /// The microphone's rate down to the codec's, built when the rate is known.
     down: Option<(u32, ::voice::Resampler)>,
@@ -131,6 +150,9 @@ impl Voice {
     fn new() -> Self {
         Self {
             mic: None,
+            device: String::new(),
+            toggled: false,
+            gate_until: f64::MIN,
             talker: ::voice::Talker::new(),
             down: None,
             raw: Vec::with_capacity(4_096),
@@ -153,7 +175,7 @@ pub fn talk_held(
     binds.pressed(super::binds::Action::Talk, keys, mouse)
 }
 
-/// The talking half: the key, the microphone, the encoder, the send.
+/// The talking half: the keys, the microphone, the encoder, the send.
 #[allow(clippy::too_many_arguments)]
 pub fn talk(
     mut voice: NonSendMut<Voice>,
@@ -163,17 +185,80 @@ pub fn talk(
     chat: Option<Res<Chat>>,
     mut hud: ResMut<VoiceHud>,
     mut toast: ResMut<Toast>,
-    binds: Res<super::binds::Binds>,
+    binds: Res<Binds>,
+    settings: Option<Res<Settings>>,
+    time: Res<Time<Real>>,
 ) {
     let v = &mut *voice;
-    // A watcher has no voice, and a line being typed owns the keyboard.
-    let can = net.session.watching.is_none() && !chat.is_some_and(|c| c.open());
-    let held = can && talk_held(&binds, &keys, &mouse);
-    if held && v.mic.is_none() {
-        v.mic = Some(mic::Mic::open());
+    let now = time.elapsed_secs_f64();
+    let (enabled, mode, gain, gate_db, device) = match settings.as_deref() {
+        Some(s) => (
+            s.voice_chat,
+            s.talk_mode,
+            s.vol_mic,
+            s.mic_gate_db,
+            s.mic_device.as_str(),
+        ),
+        None => (true, TalkMode::Hold, 1.0, -45.0, ""),
+    };
+    // A line being typed owns the keyboard.
+    let typing = chat.is_some_and(|c| c.open());
+    if !typing {
+        if binds.just_pressed(Action::MuteMic, &keys, &mouse) {
+            hud.mic_muted = !hud.mic_muted;
+            hud.dirty = true;
+            toast.say(if hud.mic_muted {
+                "voice: your microphone is muted"
+            } else {
+                "voice: your microphone is on"
+            });
+        }
+        if binds.just_pressed(Action::MuteVoices, &keys, &mouse) {
+            hud.deaf = !hud.deaf;
+            hud.dirty = true;
+            toast.say(if hud.deaf {
+                "voice: all voices muted"
+            } else {
+                "voice: voices on"
+            });
+        }
+    }
+    let pressed = !typing && binds.just_pressed(Action::Talk, &keys, &mouse);
+    if pressed && !enabled {
+        toast.warn("voice chat is off - turn it on in SETTINGS > AUDIO");
+    } else if pressed && hud.mic_muted {
+        toast.warn("voice: your microphone is muted");
+    }
+
+    // A watcher has no voice.
+    let can = enabled && !hud.mic_muted && net.session.watching.is_none();
+    let held = can && !typing && talk_held(&binds, &keys, &mouse);
+    if mode != TalkMode::Toggle || !can {
+        v.toggled = false;
+    } else if pressed {
+        v.toggled = !v.toggled;
+    }
+
+    // Voice off, or another device picked: let the microphone go. It opens
+    // again when it is next wanted.
+    if v.mic.is_some() && (!enabled || v.device != device) {
+        v.mic = None;
+        v.down = None;
+        v.told = false;
+    }
+    let want = can
+        && match mode {
+            TalkMode::Hold => held,
+            TalkMode::Toggle => v.toggled,
+            // Listening for speech is what an open microphone is.
+            TalkMode::Open => true,
+        };
+    if want && v.mic.is_none() {
+        v.mic = Some(mic::Mic::open(device));
+        v.device = device.to_string();
     }
     let state = v.mic.as_ref().map(|m| m.state()).unwrap_or_default();
-    if state == MicState::None && held && !v.told {
+    if state == MicState::None && want && !v.told {
         v.told = true;
         toast.warn("no microphone: you hear the players near you, but cannot talk");
     }
@@ -184,15 +269,27 @@ pub fn talk(
         m.take(&mut v.raw);
         rate = m.rate();
     }
-    let on_air = held && state == MicState::On;
-    if on_air && rate > 0 && !v.raw.is_empty() {
+    v.pcm16.clear();
+    if rate > 0 && !v.raw.is_empty() {
         if v.down.as_ref().map(|(r, _)| *r) != Some(rate) {
             v.down = Some((rate, ::voice::Resampler::new(rate, ::voice::RATE)));
         }
         let (_, rs) = v.down.as_mut().expect("built above");
-        v.pcm16.clear();
         let out = &mut v.pcm16;
-        rs.process(&v.raw, |s| out.push(s));
+        rs.process(&v.raw, |s| out.push(s * gain));
+    }
+    if mode == TalkMode::Open && level_db(&v.pcm16).is_some_and(|db| db >= gate_db) {
+        v.gate_until = now + GATE_HOLD_S;
+    }
+    let keyed = match mode {
+        TalkMode::Hold => held,
+        TalkMode::Toggle => v.toggled,
+        TalkMode::Open => held || now < v.gate_until,
+    };
+    let on_air = can && keyed && state == MicState::On;
+    if on_air {
+        // A frame the microphone delivered nothing on is still on the air:
+        // the end flag waits for the key, or the gate, to let go.
         let session = &mut net.session;
         v.talker.push(&v.pcm16, |seq, _, packet| {
             if let Some(f) = VoiceFrame::new(seq, 0, packet) {
@@ -200,7 +297,7 @@ pub fn talk(
             }
         });
     } else {
-        // The key came up: whatever is buffered goes out with the end flag
+        // Off the air: whatever is buffered goes out with the end flag
         // (nothing at all when nothing was said).
         let session = &mut net.session;
         v.talker.finish(|seq, _, packet| {
@@ -214,6 +311,21 @@ pub fn talk(
         hud.mic = state;
         hud.dirty = true;
     }
+}
+
+/// The loudness of `pcm` in dBFS (RMS), or `None` for no samples.
+pub fn level_db(pcm: &[f32]) -> Option<f32> {
+    if pcm.is_empty() {
+        return None;
+    }
+    let mean = pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len() as f32;
+    Some(10.0 * mean.max(1e-12).log10())
+}
+
+/// The microphones this machine has, by name, for the settings screen. A
+/// browser lists none: it uses the one its permission prompt allowed.
+pub fn input_devices() -> Vec<String> {
+    mic::devices()
 }
 
 /// The hearing half: every relayed frame decoded into its talker's lane,
@@ -242,6 +354,22 @@ pub fn hear(
                 engine.push_talk(TalkMsg::Stop { lane: lane as u8 });
             }
         }
+    }
+
+    // Voice off, or every voice muted: what arrives is dropped, and every
+    // lane falls silent.
+    if hud.deaf || settings.as_ref().is_some_and(|s| !s.voice_chat) {
+        net.session.drain_voice(|_| {});
+        for (lane, slot) in v.lanes.iter_mut().enumerate() {
+            if slot.take().is_some() {
+                engine.push_talk(TalkMsg::Stop { lane: lane as u8 });
+            }
+        }
+        if !hud.talking.is_empty() {
+            hud.talking.clear();
+            hud.dirty = true;
+        }
+        return;
     }
 
     let lanes = &mut v.lanes;
@@ -296,7 +424,7 @@ pub fn hear(
 
     // The gains: master and VOICE, the distance, the pan, and the walls.
     let occlude = settings.as_ref().is_none_or(|s| s.occlusion);
-    let level = settings.map(|s| s.vol_master * s.vol_voice).unwrap_or(1.0) * VOICE_GAIN;
+    let level = settings.map(|s| s.master() * s.vol_voice).unwrap_or(1.0) * VOICE_GAIN;
     let (rx, rz) = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
     let mut talking: Vec<(u32, String)> = Vec::new();
     for (i, slot) in v.lanes.iter_mut().enumerate() {
@@ -462,6 +590,12 @@ fn draw(mut commands: Commands, mut hud: ResMut<VoiceHud>, root: Query<Entity, W
         )),
         _ => {}
     }
+    if hud.mic_muted {
+        rows.push(("MICROPHONE MUTED".into(), Color::srgb(0.95, 0.6, 0.3)));
+    }
+    if hud.deaf {
+        rows.push(("VOICES MUTED".into(), Color::srgb(0.95, 0.6, 0.3)));
+    }
     for (_, name) in &hud.talking {
         rows.push((format!("{name} is talking"), Color::srgb(0.55, 0.95, 0.55)));
     }
@@ -491,6 +625,7 @@ fn draw(mut commands: Commands, mut hud: ResMut<VoiceHud>, root: Query<Entity, W
 fn forget(mut voice: NonSendMut<Voice>, mut mutes: ResMut<Mutes>, mut hud: ResMut<VoiceHud>) {
     voice.lanes = Default::default();
     voice.talker = ::voice::Talker::new();
+    voice.toggled = false;
     mutes.clear();
     hud.talking.clear();
     hud.on_air = false;
@@ -525,8 +660,8 @@ mod mic {
     }
 
     impl Mic {
-        pub fn open() -> Self {
-            match open() {
+        pub fn open(device: &str) -> Self {
+            match open(device) {
                 Ok(live) => Self { live: Some(live) },
                 Err(why) => {
                     bevy::log::info!("voice: no microphone - {why}");
@@ -556,10 +691,42 @@ mod mic {
         }
     }
 
-    fn open() -> Result<(cpal::Stream, rtrb::Consumer<f32>, u32), String> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or("no input device")?;
+    pub fn devices() -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if let Ok(all) = cpal::default_host().input_devices() {
+            for name in all.filter_map(|d| d.name().ok()) {
+                let name = crate::config::device_name(&name);
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// The device called `want`, else the default (`want` empty, or that
+    /// device gone).
+    fn open(want: &str) -> Result<(cpal::Stream, rtrb::Consumer<f32>, u32), String> {
+        let host = cpal::default_host();
+        let named = if want.is_empty() {
+            None
+        } else {
+            let found = host.input_devices().ok().and_then(|mut all| {
+                // By the form the settings file keeps (`config::device_name`).
+                all.find(|d| {
+                    d.name()
+                        .is_ok_and(|n| crate::config::device_name(&n) == want)
+                })
+            });
+            if found.is_none() {
+                bevy::log::info!("voice: no microphone called {want:?}; the default instead");
+            }
+            found
+        };
+        let device = match named {
+            Some(d) => d,
+            None => host.default_input_device().ok_or("no input device")?,
+        };
         let config = device.default_input_config().map_err(|e| e.to_string())?;
         let rate = config.sample_rate().0;
         let channels = config.channels().max(1) as usize;
@@ -627,8 +794,22 @@ mod mic {
         f.call0(obj).ok()
     }
 
+    pub fn devices() -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Voice off lets the microphone go, so the browser stops showing it in
+    /// use.
+    impl Drop for Mic {
+        fn drop(&mut self) {
+            if let Some(o) = self.obj.as_ref() {
+                call(o, "stop");
+            }
+        }
+    }
+
     impl Mic {
-        pub fn open() -> Self {
+        pub fn open(_device: &str) -> Self {
             let obj = get(&js_sys::global(), "gatesMic");
             match obj.as_ref() {
                 Some(o) => {
@@ -689,6 +870,16 @@ mod tests {
         let (fl, _) = ears(Vec3::new(0.0, 0.0, -80.0), 1.0, 0.0);
         assert!(fl < 0.03 && fl > 0.0, "80 m is a murmur: {fl}");
         assert_eq!(ears(Vec3::new(0.0, 0.0, -RADIUS_M), 1.0, 0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn level_reads_full_scale_and_silence() {
+        assert_eq!(level_db(&[]), None);
+        let full = level_db(&[1.0, -1.0, 1.0, -1.0]).unwrap();
+        assert!(full.abs() < 1e-3, "{full}");
+        let tenth = level_db(&[0.1, -0.1]).unwrap();
+        assert!((tenth + 20.0).abs() < 1e-3, "{tenth}");
+        assert!(level_db(&[0.0; 8]).unwrap() < -100.0);
     }
 
     #[test]

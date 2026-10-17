@@ -25,7 +25,7 @@
 #![cfg(feature = "render")]
 
 use client::render::structures::{
-    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, DOOR_LOCKED_ASSET,
+    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, METAL_DOOR_ASSET,
 };
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
@@ -214,7 +214,7 @@ fn attr<'a>(g: &'a Glb, name: &str) -> &'a serde_json::Value {
 }
 
 #[test]
-fn the_locked_door_shares_the_doors_unwrap() {
+fn the_metal_door_shares_the_doors_unwrap() {
     // `build_kit` lays `door_locked.glb`'s MATERIAL onto `door.glb`'s MESH,
     // which is only right while the two are one geometry under one unwrap —
     // `ci/prop_kit.py` builds both from `_door`, and this notices if one is
@@ -222,7 +222,7 @@ fn the_locked_door_shares_the_doors_unwrap() {
     let door = DEPLOY_ASSET[sim_core::deploy::ARCH_DOOR as usize].expect("the door has a model");
     let (a, b) = (
         Glb::open(&asset_path(door)),
-        Glb::open(&asset_path(DOOR_LOCKED_ASSET)),
+        Glb::open(&asset_path(METAL_DOOR_ASSET)),
     );
     for name in ["POSITION", "TEXCOORD_0"] {
         let (x, y) = (attr(&a, name), attr(&b, name));
@@ -262,4 +262,27 @@ fn the_death_bag_is_the_centred_box_it_replaced() {
         (g.min_y() + ext[1] * 0.5).abs() < 1e-3,
         "{BAG_ASSET} is not centred on y"
     );
+}
+
+/// THE GATE's kiosk machines draw the vending model scaled up from its row,
+/// and what they draw is the box the sim stops a body at (`town::MACHINES`):
+/// its width along the street, its height, and its depth off the container,
+/// each within a centimetre.
+#[test]
+fn the_kiosk_machine_draws_its_box() {
+    use client::render::town_signs::KIOSK_MACHINE_SCALE;
+    use sim_core::town::{MACHINE_D, MACHINE_H, MACHINE_HALF_W};
+    let rel = DEPLOY_ASSET[sim_core::deploy::ARCH_VENDING as usize].expect("a vending model");
+    let [w, h, d] = Glb::open(&asset_path(rel)).extent();
+    let drawn = [w, h, d].map(|v| v * KIOSK_MACHINE_SCALE);
+    for (got, want, axis) in [
+        (drawn[0], MACHINE_HALF_W * 2.0, "width"),
+        (drawn[1], MACHINE_H, "height"),
+        (drawn[2], MACHINE_D, "depth"),
+    ] {
+        assert!(
+            (got - want).abs() < 0.01,
+            "the kiosk machine draws {got:.3} m of {axis} on a {want:.3} m box"
+        );
+    }
 }

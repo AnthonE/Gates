@@ -2955,31 +2955,31 @@ fn the_second_hurt_row_keeps_hurts_clock_across_frames() {
     );
 }
 
-/// **One owner for the hurt cue, and the producer must still read both
-/// witnesses.** Everything above this test is arithmetic, and every bit of it
-/// stays green if the Bevy system that calls it stops passing the feed — the
-/// cue would simply go back to being a health bar with a speaker on it, and
-/// no assertion about a pure function can see that. It is a call site rather
-/// than a value, which is `CLAUDE.md`'s single-drain trap one layer out and
-/// the shape [`the_remote_swing_has_a_producer_and_the_local_one_is_not_it`]
-/// already gates for the swing.
+/// **Being hurt makes no sound, as in Rust, and a headshot taken crunches**
+/// (operator, 2026-10-17: *"get rid of any sound we make when we take damage
+/// rust doesnt do that. if anything they make a big smashy crunchy sound when
+/// you get head shot"*). `sound::hurt::request` still decides that a blow
+/// landed, from both witnesses, because the score's bump rides on it; nothing
+/// plays its cue any more.
 ///
 /// Text, because the producer is behind `--features render`.
 #[test]
-fn the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses() {
+fn being_hurt_is_silent_and_a_headshot_crunches() {
     const AUDIO: &str = include_str!("../src/render/audio.rs");
     const REGISTER: &str = include_str!("../src/render/mod.rs");
 
     assert!(
         AUDIO.contains("crate::sound::hurt::request("),
-        "render/audio.rs no longer asks sound::hurt what to play - the split \
-         between the four announcing routes and the three silent ones is back \
-         in a Bevy system where nothing headless can check it"
+        "render/audio.rs no longer asks sound::hurt whether a blow landed - \
+         taking damage stopped tensing the score"
     );
     assert!(
-        AUDIO.contains("crate::sound::hurt::again("),
-        "render/audio.rs no longer asks for the second blow's voice - two \
-         blows in one frame are one voice again"
+        !AUDIO.contains("crate::sound::hurt::again("),
+        "render/audio.rs plays the second blow's grunt again - Rust has none"
+    );
+    assert!(
+        AUDIO.contains("feed.hurt_head") && AUDIO.contains("Request::own(Cue::Headshot)"),
+        "a headshot taken is silent again"
     );
     assert!(
         REGISTER.contains("audio::hurt,"),
@@ -3186,7 +3186,7 @@ fn the_rung_markers_are_signal_cues_like_the_one_they_join() {
 
 /// The hitmarker cue has exactly one producer, and it reads the rung.
 ///
-/// `the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses`'
+/// `being_hurt_is_silent_and_a_headshot_crunches`'
 /// shape, for the same reason: the judgement lives in a pure function so a
 /// headless test can drive it, and a second producer would bypass that
 /// without touching a line this file otherwise reads.

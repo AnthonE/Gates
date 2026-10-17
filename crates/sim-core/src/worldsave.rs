@@ -1240,7 +1240,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     // --- pieces ---------------------------------------------------------
-    let mut pieces = [PieceRec::default(); MAX_PIECES];
+    let mut pieces = crate::boxed_array::<PieceRec, MAX_PIECES>(PieceRec::default());
     let mut placed = crate::boxed_array::<u64, MAX_PIECES>(0);
     // Indexed rather than `iter_mut`, because the plate check below has to
     // read the records already decoded while this one is still being built.
@@ -1307,8 +1307,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     // --- deployables, with their bag cooldowns --------------------------
-    let mut deploys = [DeployRec::default(); MAX_DEPLOYS];
-    let mut bag_ready = [0u64; MAX_DEPLOYS];
+    let mut deploys = crate::boxed_array::<DeployRec, MAX_DEPLOYS>(DeployRec::default());
+    let mut bag_ready = crate::boxed_array::<u64, MAX_DEPLOYS>(0);
     for i in 0..n_deploys {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -1365,6 +1365,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // Not saved — see the piece load above.
             dmg: 0,
             grow: 0,
+            keyed: false,
         };
         bag_ready[i] = ready;
     }
@@ -1377,7 +1378,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         *slot = r.u64()?;
     }
 
-    let mut hearths = [HearthRec::default(); MAX_HEARTHS];
+    let mut hearths = crate::boxed_array::<HearthRec, MAX_HEARTHS>(HearthRec::default());
     for h in hearths.iter_mut().take(n_hearths) {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -1410,8 +1411,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         };
     }
 
-    let mut boxes = [BoxRec::default(); MAX_BOXES];
-    let mut ovens = [OvenState::default(); MAX_BOXES];
+    let mut boxes = crate::boxed_array::<BoxRec, MAX_BOXES>(BoxRec::default());
+    let mut ovens = crate::boxed_array::<OvenState, MAX_BOXES>(OvenState::default());
     for (b, ov) in boxes.iter_mut().zip(ovens.iter_mut()).take(n_boxes) {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -1466,7 +1467,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     // --- code locks -------------------------------------------------------
-    let mut locks = [LockRec::default(); MAX_LOCKS];
+    let mut locks = crate::boxed_array::<LockRec, MAX_LOCKS>(LockRec::default());
     for l in locks.iter_mut().take(n_locks) {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -2041,11 +2042,11 @@ mod tests {
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
             + 100 * 499                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24)
-            + 8_192 * 21                    // pieces + plate + placement tick
-            + 1_024 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
-            + 256 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
-            + 256 * 139                     // containers: 13 + 12 eight-byte stacks + the oven's 30
-            + 512 * 106                     // code locks (format 17: ten auth ids)
+            + 32_768 * 21                   // pieces + plate + placement tick
+            + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
+            + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
+            + 1_024 * 139                   // containers: 13 + 12 eight-byte stacks + the oven's 30
+            + 2_048 * 106                   // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
             + 64 * 25                       // charges
@@ -2169,8 +2170,11 @@ mod tests {
         // 3_560_728 at format 24: the Verdigris, six bytes on 100 bodies.
         // 3_560_732 at format 25: the blight's salt in the head.
         // 3_563_294 at format 26: the vending offers' tail, 2 + 64 × 40.
+        // 4_476_702 with no format change: the caps on pieces (32,768),
+        // deploys (4,096), hearths (512), containers (1,024) and locks
+        // (2,048) raised — counts, not strides, so old saves still load.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_563_294,
+            WORLD_SAVE_MAX_BYTES, 4_476_702,
             "the world save ceiling moved"
         );
     }

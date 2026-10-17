@@ -48,8 +48,9 @@ const MAX_TRIES: u8 = 3;
 pub const STASH_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// Stacks of each food and med kept on the body.
 pub const PROVISION_STACKS: u32 = 2;
-/// Distinct items the summary reports from the box.
-pub const STORED_ROWS: usize = 6;
+/// Distinct items the summary reports from the box: enough that a mind
+/// choosing a craft can see the one it already has there.
+pub const STORED_ROWS: usize = 12;
 
 /// The box as its panel last showed it.
 #[derive(Clone, Copy, Debug)]
@@ -130,22 +131,32 @@ pub fn box_open(core: &ClientCore, key: u32) -> bool {
 }
 
 /// The belt loadout: how many of an item a player keeps on the body
-/// whatever else it puts away. Weapons and tools by what the game's rules
-/// say they are for, armour by the slot it is worn in, the plan and hammer
-/// it builds with, and the rounds a weapon it carries fires: all of them.
+/// whatever else it puts away. One of each weapon and tool (by what the
+/// game's rules say they are for); armour by the slot it is worn in, the
+/// plan and hammer it builds with, and the rounds a weapon it carries
+/// fires: all of them.
 /// Salvage and the recycler that takes it apart stay on the body too: the
 /// recycle works from the pack, and nothing takes them out of the box for
 /// it. Food and meds: [`PROVISION_STACKS`] stacks' worth, not a pack full
-/// of mushrooms. Nothing else.
+/// of mushrooms. One sleeping bag, which it carries until it lays it: a bag
+/// boxed left the pack without one, and it made another, and another
+/// (three in one box, 2026-10-17). Nothing else.
 pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
     let row = core.catalog.row(usize::from(item));
     let page = book.page(item);
     match page.class {
         Class::Food | Class::Med => return PROVISION_STACKS * u32::from(row.stack_max.max(1)),
+        // One of each weapon and tool: a pack of four bats and four
+        // torches (a respawn's kit every life, each backpack recovered)
+        // is a pack with no room, and the spares keep in the box.
+        Class::Melee | Class::Ranged | Class::Tool => return 1,
         Class::Other => {}
         _ => return u32::MAX,
     }
     let name = core.catalog.name(usize::from(item));
+    if name == crate::mind::BAG_ITEM.as_bytes() {
+        return 1;
+    }
     let kit = name == build::PLAN_ITEM.as_bytes()
         || name == build::HAMMER_ITEM.as_bytes()
         || name == oven::RECYCLER_ITEM.as_bytes()
@@ -163,17 +174,32 @@ pub fn loadout(core: &ClientCore, book: &Book, item: u16) -> u32 {
 /// What a visit leaves in the pack: the [`loadout`], and while its own
 /// furnace stands, the ore it smelts. The mind's "smelt the ore at my
 /// furnace" works from the pack and nothing takes ore back out of the box,
-/// so a visit home that boxed it left the smelt nothing to smelt.
-pub fn keeps(core: &ClientCore, book: &Book, furnace: bool, item: u16) -> u32 {
+/// so a visit home that boxed it left the smelt nothing to smelt. A found
+/// thing bound for a research table (`oven::for_paper`) the same way: one
+/// of it, and the junk the table takes for it.
+pub fn keeps(core: &ClientCore, book: &Book, has: &build::Stations, item: u16) -> u32 {
     let name = core.catalog.name(usize::from(item));
-    if furnace
+    if has.furnace.is_some()
         && crate::mind::SMELTS
             .iter()
             .any(|&(ore, _)| name == ore.as_bytes())
     {
         return u32::MAX;
     }
-    loadout(core, book, item)
+    let paper = |item: u16| oven::for_paper(core, has.tier, item);
+    let mut keep = loadout(core, book, item);
+    if paper(item).is_some() {
+        keep = keep.max(1);
+    }
+    if item == core.research.coin {
+        let junk = core.inv[..INV_SLOTS]
+            .iter()
+            .filter(|s| s.count > 0)
+            .filter_map(|s| paper(s.item))
+            .max();
+        keep = keep.max(junk.map_or(0, u32::from));
+    }
+    keep
 }
 
 /// One stack's move, by slot: the only moves a visit makes.
@@ -771,14 +797,14 @@ impl StashJob {
         for row in bill[..n].iter_mut().filter(|r| waste(r.0)) {
             row.1 = 0;
         }
-        let furnace = builder.stations(core).furnace.is_some();
+        let has = builder.stations(core);
         plan(
             core,
             |item| {
                 if waste(item) {
                     0
                 } else {
-                    keeps(core, book, furnace, item)
+                    keeps(core, book, &has, item)
                 }
             },
             &bill[..n],

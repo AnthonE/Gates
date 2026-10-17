@@ -149,6 +149,9 @@ pub struct MateDot(pub usize);
 /// The name under a teammate's dot.
 #[derive(Component)]
 pub struct MateName(pub usize);
+/// The attack helicopter, placed by [`heli`] while it is over the island.
+#[derive(Component)]
+pub struct HeliMark;
 
 /// The line above the island: which square you are in, and which way you are
 /// facing. Its own component because [`track`] rewrites it every frame — see
@@ -773,6 +776,27 @@ pub fn setup(
                             ));
                         });
                 }
+                // The attack helicopter, over the team and under the arrow;
+                // [`heli`] places and shows it.
+                let mut mark = frame.spawn((
+                    HeliMark,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: Val::Px(HELI_PX),
+                        height: Val::Px(HELI_PX),
+                        margin: UiRect::all(Val::Px(-HELI_PX * 0.5)),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                ));
+                match icons.and_then(|i| i.glyph("map_heli")) {
+                    Some(h) => {
+                        mark.insert(ImageNode::new(h).with_color(HELI_INK));
+                    }
+                    None => {
+                        mark.insert(BackgroundColor(HELI_INK));
+                    }
+                }
                 let arrow = icons.and_then(|i| i.glyph("map_player"));
                 // With no icon baked, or before the asset server settles: the
                 // small square this screen shipped for a year, so the panel
@@ -1224,6 +1248,35 @@ pub fn mates(
             .unwrap_or_default();
         if text.0 != want {
             text.0 = want;
+        }
+    }
+}
+
+/// The attack helicopter's mark, pixels.
+const HELI_PX: f32 = 20.0;
+/// Its ink: a warning amber, apart from the player's red and the team's
+/// green.
+const HELI_INK: Color = Color::srgb(1.0, 0.72, 0.18);
+
+/// The attack helicopter on the map (Rust shows its patrol heli there):
+/// wherever the interpolator has it, which is the whole island while it is
+/// flying — the server subscribes everyone to it (`heli::HELI_AOI_SCALE`'s
+/// note in `core.rs`). Gone back out to sea, the mark goes too.
+pub fn heli(net: NonSend<Net>, mut marks: Query<(&mut Node, &mut Visibility), With<HeliMark>>) {
+    let core = &net.session.core;
+    let id = sim_core::mob::mob_id(sim_core::heli::HELI_SLOT);
+    let mut rs = client_core::interp::RemoteState::default();
+    let at = (core.interp.ids().any(|i| i == id)
+        && core.interp.sample(id, core.render_tick(), &mut rs))
+    .then(|| map::world_to_map(rs.x, rs.z, 1));
+    for (mut node, mut vis) in &mut marks {
+        match at {
+            Some((px, py)) => {
+                node.left = Val::Percent(px * 100.0);
+                node.top = Val::Percent(py * 100.0);
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
         }
     }
 }

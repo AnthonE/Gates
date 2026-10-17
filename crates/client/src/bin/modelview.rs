@@ -55,7 +55,7 @@ const BODY_H_M: f32 = 1.7;
 const BODY_R_M: f32 = 0.4;
 /// First-person eye — `render::mod::EYE_HEIGHT`. Drawn because a head that
 /// sits above it is a head the camera is inside of.
-const EYE_H_M: f32 = 1.6;
+const EYE_H_M: f32 = 1.5;
 
 /// The clip names `render::anim::Clip` actually resolves. A model that answers
 /// all three drops into the game; one that answers none needs its clips

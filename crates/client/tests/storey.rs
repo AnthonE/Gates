@@ -36,9 +36,9 @@ const ROW_FOUNDATION: u16 = 0;
 const ROW_WALL: u16 = 1;
 const ROW_FLOOR: u16 = 2;
 const ROW_DOORWAY: u16 = 3;
-/// The camera's eye over the feet (`render::EYE_HEIGHT`, restated: this
-/// suite does not link the render tier).
-const EYE_M: f32 = 1.6;
+/// The camera's eye over the feet: the sim's, which `render::EYE_HEIGHT`
+/// is too (this suite does not link the render tier).
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 fn hv() -> &'static terrain::Haven {
     use std::sync::OnceLock;

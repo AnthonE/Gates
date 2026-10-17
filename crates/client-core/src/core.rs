@@ -1105,9 +1105,9 @@ impl DeploySet {
     /// record as it now stands, or None when this client has never heard
     /// of that address (the deploy walk will bring it, carrying state).
     /// `lock` is None where only the leaf moved (an optimistic toggle and
-    /// its rollback never touch the lock); `Some((locked, has_lock))` is
-    /// the pair the announcement carried, applied together because they
-    /// are one fact about one lock (lock v1).
+    /// its rollback never touch the lock); `Some((locked, has_lock, keyed))`
+    /// is what the announcement carried, applied together because it is
+    /// one fact about one lock (lock v1).
     fn set_open(
         &mut self,
         cx: u16,
@@ -1115,15 +1115,16 @@ impl DeploySet {
         level: u8,
         loc: u8,
         open: bool,
-        lock: Option<(bool, bool)>,
+        lock: Option<(bool, bool, bool)>,
     ) -> Option<DeployRec> {
         let r = self.recs[..self.len]
             .iter_mut()
             .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)?;
         r.open = open;
-        if let Some((locked, has_lock)) = lock {
+        if let Some((locked, has_lock, keyed)) = lock {
             r.locked = locked;
             r.has_lock = has_lock;
+            r.keyed = has_lock && keyed;
         }
         Some(*r)
     }
@@ -1472,6 +1473,8 @@ pub enum Ingest {
     AppliedDelta = 2,
     Stale = 3,
     NoBaseline = 4,
+    /// A snapshot overflow datagram (wire v121), folded into its tick.
+    AppliedMore = 5,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1979,7 +1982,7 @@ pub struct ClientCore {
     /// absolute world bearing (`sim_core::combat::bearing_sector`); the
     /// renderer subtracts its own yaw, so the mark stays where the attacker
     /// is while you turn to look at them.
-    hurts: [(u8, u16); TOAST_RING],
+    hurts: [(u8, u16, bool); TOAST_RING],
     hurt_head: usize,
     hurt_len: usize,
     /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
@@ -2413,7 +2416,7 @@ impl ClientCore {
             }; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
-            hurts: [(0, 0); TOAST_RING],
+            hurts: [(0, 0, false); TOAST_RING],
             hurt_head: 0,
             hurt_len: 0,
             deaths: [(0, 0); TOAST_RING],
@@ -3431,11 +3434,9 @@ impl ClientCore {
                     }
                     self.applied2 |= APPLIED2_WORN;
                 } else if kind == CONT_SELF {
-                    // The server shut the panel: gone, or out of reach.
-                    self.cont_kind = CONT_SELF;
-                    self.cont_handle = 0;
-                    self.cont = [ItemStack::default(); INV_SLOTS];
-                    self.applied2 |= APPLIED2_CONT;
+                    // The server shut the panel: gone, out of reach, or
+                    // the answer to this client's own close.
+                    self.shut_container();
                 } else if reset {
                     // The whole container, and the only message that may
                     // change which container is open — so a diff can never
@@ -3673,6 +3674,7 @@ impl ClientCore {
                 open,
                 locked,
                 has_lock,
+                keyed,
             } => {
                 // Absolute state, all three bits: this confirms an
                 // optimistic toggle or corrects it, and either way the
@@ -3682,7 +3684,7 @@ impl ClientCore {
                 }
                 if let Some(rec) =
                     self.deploys
-                        .set_open(cx, cz, level, loc, open, Some((locked, has_lock)))
+                        .set_open(cx, cz, level, loc, open, Some((locked, has_lock, keyed)))
                 {
                     self.seal_for(rec);
                     self.push_deploy_change(rec);
@@ -3790,12 +3792,16 @@ impl ClientCore {
                 self.hp_max = max;
                 flags |= APPLIED_HEALTH;
             }
-            EventMsg::Hurt { sector, damage } => {
+            EventMsg::Hurt {
+                sector,
+                damage,
+                head,
+            } => {
                 if self.hurt_len == TOAST_RING {
                     self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
                     self.hurt_len -= 1;
                 }
-                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage);
+                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage, head);
                 self.hurt_len += 1;
                 flags |= APPLIED_HIT;
             }
@@ -4550,12 +4556,13 @@ impl ClientCore {
         Some(r)
     }
 
-    /// The oldest blow landed on you: `(bearing sector, damage)`.
+    /// The oldest blow landed on you: `(bearing sector, damage, to the
+    /// head)`.
     ///
     /// Destructive, single-consumer, `pop_hit`'s contract exactly —
     /// `render/feed.rs` is the one drain and `client/tests/sound.rs` is what
     /// keeps it that way (`CLAUDE.md`'s clean-merge trap).
-    pub fn pop_hurt(&mut self) -> Option<(u8, u16)> {
+    pub fn pop_hurt(&mut self) -> Option<(u8, u16, bool)> {
         if self.hurt_len == 0 {
             return None;
         }
@@ -4831,6 +4838,17 @@ impl ClientCore {
             .get(item as usize)
             .is_some_and(|r| r.holster)
             && sim_core::town::safe(&self.haven().town, x, z)
+    }
+
+    /// Forget the open ground container. The server's close lands here, and
+    /// so does this client's own (`verbs::close_container`), so a box shut
+    /// with the panel is not drawn again on the next `Tab`: the server
+    /// stops feeding it the moment the close arrives.
+    pub fn shut_container(&mut self) {
+        self.cont_kind = CONT_SELF;
+        self.cont_handle = 0;
+        self.cont = [ItemStack::default(); INV_SLOTS];
+        self.applied2 |= APPLIED2_CONT;
     }
 
     /// The selected hotbar slot, when what is in it stands a downed body up
@@ -5281,6 +5299,20 @@ impl ClientCore {
                 } else {
                     Ingest::Applied
                 }
+            }
+            Ok(Applied::More) => {
+                // The rest of the tick's bodies: interpolation samples at
+                // the tick they belong to, and nothing else — the clock,
+                // the jitter estimate and the reconcile all ran on the
+                // snapshot, and the own body is never in an overflow.
+                if let Some(more) = self.view.newest_more() {
+                    for e in more.entities() {
+                        if e.id != self.player_id || self.spectating {
+                            self.interp.push(more.tick, e);
+                        }
+                    }
+                }
+                Ingest::AppliedMore
             }
             Ok(Applied::Stale) => {
                 self.snapshots_stale += 1;
@@ -6149,8 +6181,18 @@ mod tests {
 
         // Opened, then closed again — the announcement is absolute, and
         // it carries the lock bit beside the leaf (lock v0, wire v8).
-        let len =
-            encode_event_door(cx, cz, level, LOC_EDGE_XLO, true, true, true, &mut buf).unwrap();
+        let len = encode_event_door(
+            cx,
+            cz,
+            level,
+            LOC_EDGE_XLO,
+            true,
+            true,
+            true,
+            false,
+            &mut buf,
+        )
+        .unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_DEPLOYS);
         assert!(!shut(&c), "an open door passes");
         assert!(c.deploy_changes()[0].open, "the renderer hears the state");
@@ -6158,8 +6200,18 @@ mod tests {
             c.deploy_changes()[0].locked,
             "the renderer hears the lock too"
         );
-        let len =
-            encode_event_door(cx, cz, level, LOC_EDGE_XLO, false, false, true, &mut buf).unwrap();
+        let len = encode_event_door(
+            cx,
+            cz,
+            level,
+            LOC_EDGE_XLO,
+            false,
+            false,
+            true,
+            false,
+            &mut buf,
+        )
+        .unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c), "a reclosed door seals again");
         assert!(
@@ -6184,8 +6236,18 @@ mod tests {
             "a second toggle must wait for the first to resolve"
         );
         // The announcement confirms it and frees the next prediction.
-        let len =
-            encode_event_door(cx, cz, level, LOC_EDGE_XLO, true, true, true, &mut buf).unwrap();
+        let len = encode_event_door(
+            cx,
+            cz,
+            level,
+            LOC_EDGE_XLO,
+            true,
+            true,
+            true,
+            false,
+            &mut buf,
+        )
+        .unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c));
         assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_XLO), Some(false));
@@ -6223,8 +6285,18 @@ mod tests {
             c.deploys.entries()[0].locked,
             "predicting the leaf must not touch the lock"
         );
-        let len =
-            encode_event_door(cx, cz, level, LOC_EDGE_XLO, false, true, true, &mut buf).unwrap();
+        let len = encode_event_door(
+            cx,
+            cz,
+            level,
+            LOC_EDGE_XLO,
+            false,
+            true,
+            true,
+            false,
+            &mut buf,
+        )
+        .unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c));
 

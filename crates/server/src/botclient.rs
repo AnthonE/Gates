@@ -1635,7 +1635,10 @@ async fn run_bot_inner(
                     }
                     continue;
                 }
-                if peek_kind(&dg) != Ok(KIND_SNAPSHOT) {
+                if !matches!(
+                    peek_kind(&dg),
+                    Ok(KIND_SNAPSHOT | protocol::KIND_SNAPSHOT_MORE)
+                ) {
                     report.decode_errors += 1;
                     continue;
                 }
@@ -1648,6 +1651,10 @@ async fn run_bot_inner(
                         if view.get(report.player_id).is_some() {
                             report.own_updates += 1;
                         }
+                        report.max_entities_seen =
+                            report.max_entities_seen.max(view.entities.len());
+                    }
+                    Ok(Applied::More) => {
                         report.max_entities_seen =
                             report.max_entities_seen.max(view.entities.len());
                     }

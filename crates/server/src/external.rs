@@ -206,6 +206,7 @@ impl External {
             "heard": summary.heard_json(),
             "team": summary.team_json(),
             "friend": summary.friend_json(),
+            "crew": summary.crew_json(),
             "places": summary.places_json(),
         })
     }

@@ -1129,6 +1129,21 @@ pub struct Globals {
     /// may be taken back; a missed arrow is takeable at once. Seconds so
     /// the file stays free of the tick rate, exactly like `fuse_s`.
     pub arrow_lodge_s: u32,
+    /// The punch (`sim_core::combat::CombatContent::fist`). **Absent is no
+    /// punch**: an empty hand hits nothing.
+    #[serde(default)]
+    pub fist: Option<Fist>,
+}
+
+/// An empty hand's swing: a melee row with no item, no structure column and
+/// a price paid in the puncher's own hp.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fist {
+    pub damage: u32,
+    pub range_m: u32,
+    /// Hp a punch that lands takes off the puncher.
+    pub self_damage: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

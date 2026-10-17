@@ -33,16 +33,25 @@ pub fn alone(s: &Summary) -> bool {
 #[derive(Clone, Copy)]
 pub struct Gate {
     pub rule: fn(&Summary) -> bool,
-    pub why: &'static str,
+    pub why: fn(&Summary) -> &'static str,
 }
 
 pub const FRIEND_AWAY: Gate = Gate {
     rule: friend_away,
-    why: "my friend is away",
+    why: |_| "my friend is away",
 };
+/// `--alone autopilot`. A society member's crew coming together at THE GATE
+/// is the scripted policy's too, whoever is near: the meeting is what makes
+/// it a crew, and a mind that wanders off from it leaves the crew unformed.
 pub const ALONE: Gate = Gate {
-    rule: alone,
-    why: "no one is near",
+    rule: |s| alone(s) || crate::mind::crew_forming(s),
+    why: |s| {
+        if crate::mind::crew_forming(s) {
+            "the crew is coming together"
+        } else {
+            "no one is near"
+        }
+    },
 };
 
 pub struct Autopilot<P> {
@@ -76,7 +85,7 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
 
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
         if let Some(g) = self.gate.filter(|g| (g.rule)(s)) {
-            return self.fly(g.why, s);
+            return self.fly((g.why)(s), s);
         }
         match self.primary.decide(s) {
             Ok(choice) => Ok(choice),
@@ -198,5 +207,26 @@ mod tests {
             !alone(&friend),
             "a friend on the island, anywhere, wakes it"
         );
+    }
+
+    /// A crewmate not yet on its founder's team goes to THE GATE on the
+    /// scripted policy's word, a person in view or not; once it is on the
+    /// team, a person near wakes its own mind.
+    #[test]
+    fn a_crew_coming_together_is_never_the_model_s() {
+        let mut s = summary();
+        s.humans.add(10.0, 2);
+        s.society = crate::mind::SocietySense {
+            set: true,
+            role: crate::agent::society::Role::Farmer,
+            ..crate::mind::SocietySense::NONE
+        };
+        let mut gated = Autopilot::new(Answers(0), Some(ALONE));
+        let c = gated.decide(&s).unwrap();
+        assert!(c.reason.as_str().contains("the crew is coming together"));
+        assert_eq!(gated.primary.0, 0);
+        s.society.founded = true;
+        gated.decide(&s).unwrap();
+        assert_eq!(gated.primary.0, 1, "a person in view wakes it");
     }
 }
