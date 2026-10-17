@@ -692,6 +692,32 @@ pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target 
 /// the piece that stands on the ground by definition, and letting the level
 /// stepper lift one is how a player spends materials on a refusal.
 pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
+    target_at_with(ax, az, shape, level, true)
+}
+
+/// [`target_at`] with the diagonals out of the running: the straight edge
+/// a wall aimed across a cell with no triangle to stand on resolves to.
+pub fn target_at_straight(ax: f32, az: f32, shape: u8, level: u8) -> Target {
+    target_at_with(ax, az, shape, level, false)
+}
+
+/// Whether a diagonal at `t` has something to stand on in the mirror — a
+/// triangle whose hypotenuse it is, at its storey, or an edge piece in the
+/// same slot below it (`build::supported`'s diagonal arm, read off the
+/// records). Only a diagonal asks; any other loc answers `true`.
+pub fn diag_borne(taken: &[PieceRec], t: Target) -> bool {
+    if !matches!(t.loc, LOC_DIAG_A | LOC_DIAG_B) {
+        return true;
+    }
+    let (t1, t2) = sim_core::build::diag_pair(t.loc);
+    taken.iter().any(|r| {
+        (r.cx, r.cz) == (t.cx, t.cz)
+            && ((r.level == t.level && (r.loc == t1 || r.loc == t2))
+                || (r.level < t.level && r.loc == t.loc))
+    })
+}
+
+fn target_at_with(ax: f32, az: f32, shape: u8, level: u8, diag: bool) -> Target {
     let max = (MAX_BUILD_COORD - 1) as i32;
     let mut cx = build_cell_of(ax).clamp(0, max);
     let mut cz = build_cell_of(az).clamp(0, max);
@@ -721,7 +747,7 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
             cz = (cz + 1).min(max);
             loc = LOC_EDGE_ZLO;
         }
-        if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL) {
+        if diag && matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL) {
             const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
             let da = (fzc - fxc).abs() * INV_SQRT2;
             let db = (fxc + fzc - 1.0).abs() * INV_SQRT2;
@@ -1215,6 +1241,100 @@ pub fn body_aim(aim: &Aim, feet: (f32, f32), turn: u8) -> Option<(Target, Pose)>
         },
         Pose { ox, oz, yaw },
     ))
+}
+
+/// How far a body deployable's ghost may slide back toward the player to
+/// clear what it was aimed into, metres ([`body_slide`]).
+pub const DEPLOY_SLIDE_MAX_M: f32 = 1.2;
+
+/// The coarse step [`body_slide`] walks before it bisects, metres.
+const DEPLOY_SLIDE_STEP_M: f32 = 0.05;
+
+/// A body deployable aimed into a wall or another deployable, slid back
+/// along the line to the feet until it clears — so a box aimed at a wall
+/// stands flush against it instead of drawing red inside it. A SPOT or a
+/// SUPPORT refusal slides: aimed at a wall on a foundation's edge, the box
+/// first hangs past the floor under the wall, then overlaps the wall, then
+/// clears. Any other refusal (terrain, bad ground) is true of where the
+/// slide reached, so it stops there and keeps the aimed pose. The facing
+/// never changes. The check is the sim's own `deploy::body_site`, so a slid
+/// pose is one the server takes.
+pub fn body_slide(
+    site: &DeploySite<'_>,
+    placement: u8,
+    arch: u8,
+    t: Target,
+    pose: Pose,
+) -> (Target, Pose) {
+    let at = |x: f32, z: f32| -> Option<(Target, Pose)> {
+        let (cx, cz, ox, oz) = sim_core::footprint::quantize(x, z)?;
+        Some((
+            Target { cx, cz, ..t },
+            Pose {
+                ox,
+                oz,
+                yaw: pose.yaw,
+            },
+        ))
+    };
+    // `Ok(true)` clear, `Ok(false)` still in the wall or off the floor under
+    // it, `Err` a refusal the slide does not get past.
+    let clear = |(t, pose): (Target, Pose)| -> Result<bool, ()> {
+        match sim_core::deploy::body_site(
+            site.seed,
+            site.haven,
+            site.cols,
+            site.deploys,
+            site.deploy_defs,
+            placement,
+            arch,
+            t.cx,
+            t.cz,
+            t.level,
+            pose,
+        ) {
+            Ok(_) => Ok(true),
+            Err(sim_core::deploy::REFUSE_D_SPOT | sim_core::deploy::REFUSE_D_SUPPORT) => Ok(false),
+            Err(_) => Err(()),
+        }
+    };
+    if clear((t, pose)) != Ok(false) {
+        return (t, pose);
+    }
+    let (x0, z0) = sim_core::footprint::centre(t.cx, t.cz, pose);
+    let (dx, dz) = (site.at.0 - x0, site.at.1 - z0);
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < 1e-3 {
+        return (t, pose);
+    }
+    let (ux, uz) = (dx / len, dz / len);
+    // Never onto the feet: the box would stand in the placer.
+    let max = DEPLOY_SLIDE_MAX_M.min(len - 0.3);
+    let (mut lo, mut s) = (0.0, DEPLOY_SLIDE_STEP_M);
+    while s <= max {
+        let Some(p) = at(x0 + ux * s, z0 + uz * s) else {
+            break;
+        };
+        match clear(p) {
+            Ok(true) => {
+                // Bisect back toward the obstacle, so the box sits flush
+                // rather than up to a step short of it.
+                let mut hi = s;
+                for _ in 0..4 {
+                    let mid = (lo + hi) * 0.5;
+                    match at(x0 + ux * mid, z0 + uz * mid).map(clear) {
+                        Some(Ok(true)) => hi = mid,
+                        _ => lo = mid,
+                    }
+                }
+                return at(x0 + ux * hi, z0 + uz * hi).unwrap_or(p);
+            }
+            Ok(false) => lo = s,
+            Err(()) => break,
+        }
+        s += DEPLOY_SLIDE_STEP_M;
+    }
+    (t, pose)
 }
 
 /// Everything the deploy pre-check reads — the client's mirror, whole.

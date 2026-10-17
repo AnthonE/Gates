@@ -1216,7 +1216,7 @@ fn tri_bearings(cx: u16, cz: u16, loc: u8) -> (EdgeAddr, EdgeAddr, u8) {
 }
 
 /// The two triangle halves a diagonal is the hypotenuse of.
-fn diag_pair(loc: u8) -> (u8, u8) {
+pub fn diag_pair(loc: u8) -> (u8, u8) {
     if loc == LOC_DIAG_A {
         (LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI)
     } else {
@@ -1511,14 +1511,14 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                     && pieces.find(cx, cz, level, tri).is_some()
                     && !m.tri_is_frame(level, tri))
         }
-        // The diagonal wall: the cell body it stands across — a full
-        // plane or one of its own pair — or the diagonal below it.
+        // The diagonal wall: a triangle of its own pair, whose hypotenuse
+        // it is, or the diagonal below it. Never a full plane: a wall across
+        // a square cut the room in half along no edge any piece has, which
+        // the reference never allows either (its walls take sockets).
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
             let (t1, t2) = diag_pair(loc);
             let body_at = |lvl: u8| {
-                plane_at(pieces, cx, cz, lvl)
-                    || pieces.find(cx, cz, lvl, t1).is_some()
-                    || pieces.find(cx, cz, lvl, t2).is_some()
+                pieces.find(cx, cz, lvl, t1).is_some() || pieces.find(cx, cz, lvl, t2).is_some()
             };
             if level == 0 {
                 body_at(0)
@@ -3189,6 +3189,55 @@ mod tests {
         assert!(soft_side(&n, px, pz));
         assert!(!soft_side(&w, px - BUILD_CELL_M, pz), "west of the wall");
         assert!(!soft_side(&n, px, pz - BUILD_CELL_M), "north of the wall");
+    }
+
+    /// A diagonal wall across a full square foundation is refused: it is
+    /// the hypotenuse of a triangle and nothing else (reported in play, a
+    /// wall cutting a square room corner to corner). The square's own edges
+    /// still take one.
+    #[test]
+    fn a_diagonal_wall_needs_a_triangle_not_a_square() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 200), (1, 50)]);
+        let mut put = |pieces: &mut Pieces, row: u16, loc: u8| {
+            place(
+                SEED,
+                hv(),
+                &bc,
+                &nod,
+                pieces,
+                &mut p,
+                0,
+                row,
+                CX,
+                CZ,
+                0,
+                loc,
+                false,
+                0,
+                &mut ev,
+            );
+            last(&ev)
+        };
+        assert_eq!(
+            put(&mut pieces, 0, LOC_PLANE).0,
+            crate::world::EV_PIECE_PLACED
+        );
+        for diag in [LOC_DIAG_A, LOC_DIAG_B] {
+            assert_eq!(
+                put(&mut pieces, 1, diag),
+                (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SUPPORT),
+                "a diagonal across the square"
+            );
+        }
+        assert_eq!(
+            put(&mut pieces, 1, LOC_EDGE_XLO).0,
+            crate::world::EV_PIECE_PLACED,
+            "the square's own edge"
+        );
     }
 
     /// Triangles v0: the placement matrix. Two halves coexist across
