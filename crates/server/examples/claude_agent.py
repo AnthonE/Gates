@@ -168,7 +168,10 @@ second of anything is junk. Salvage (gears, pipes, blades, springs, tarp, \
 sewing kits, weapon bodies) is not for hoarding: `recycle` takes it apart \
 into metal fragments and junk at a recycler. Junk buys at the gate what a \
 loot run takes an hour to find (fragments, a code lock, fuel, rope). The \
-workbench is where blueprints are learned, with junk.
+workbench is where blueprints are learned, with junk. Something you found \
+and have no blueprint for (a revolver, a medkit, a satchel) goes with its \
+junk to the research table at THE GATE: `research` turns it into a \
+blueprint and reads it, so you can make your own from then on.
 
 `places` lists THE GATE (the town; its stalls trade for junk) and the \
 works. `buy:<item>` and `sell:<item>` trade at the gate: junk buys food, \

@@ -182,6 +182,10 @@ pub enum Goal {
     /// Take salvaged parts apart at its recycler, putting it down if
     /// none stands near: junk, fragments and cloth.
     Recycle,
+    /// Take a found thing it has no blueprint for, and the junk it costs,
+    /// to THE GATE's research table, and read the paper it makes
+    /// (`agent::oven`, `Work::Research`).
+    Research,
     /// Home is under attack or damaged: in through the doors, the fight
     /// met from inside, then the damage mended and the doors shut.
     Defend,
@@ -260,7 +264,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 39] = [
+    pub const FIXED: [Goal; 40] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -282,6 +286,7 @@ impl Goal {
         Goal::Loot,
         Goal::Cook,
         Goal::Recycle,
+        Goal::Research,
         Goal::Defend,
         Goal::Raid,
         Goal::JoinTeam,
@@ -327,6 +332,7 @@ impl Goal {
             Goal::Loot => "loot",
             Goal::Cook => "cook",
             Goal::Recycle => "recycle",
+            Goal::Research => "research",
             Goal::Defend => "defend",
             Goal::Raid => "raid",
             Goal::JoinTeam => "join_team",
@@ -412,6 +418,9 @@ impl Goal {
             Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
             Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
             Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
+            Goal::Research => {
+                "Take a found thing you have no blueprint for, and its junk, to THE GATE's research table; read the blueprint it makes.".into()
+            }
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
@@ -2874,6 +2883,11 @@ impl Scripted {
         // fragments for the base, at its own recycler.
         if s.offers(Goal::Recycle) {
             return (Goal::Recycle, "scripted: recycle the salvage");
+        }
+        // A found thing it has no blueprint for, and the junk: paper at a
+        // research table, so it can make its own from then on.
+        if s.offers(Goal::Research) {
+            return (Goal::Research, "scripted: research what it found");
         }
         // Gears enough for a recycler and some over for it to take apart,
         // and none to take them to: one is made at the bench.
