@@ -879,6 +879,21 @@ station = "none"
 seconds = 30
 inputs = [{ item = "item.wood", count = 150 }]
 
+# Rust's hazmat suit: 8 HQM, 5 tarp, 2 sewing kits at the second bench. We
+# have no HQM; ten fragments stand in for each.
+[[recipe]]
+id = "recipe.armor_hazmat_suit"
+output = "item.armor_hazmat_suit"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 20
+inputs = [
+    { item = "item.metal_frags", count = 80 },
+    { item = "item.tarp", count = 5 },
+    { item = "item.sewing_kit", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.armor_boots_feet"
 output = "item.armor_boots_feet"

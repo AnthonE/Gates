@@ -1156,6 +1156,7 @@ impl Content {
                 ArmorSlot::Body => WEAR_BODY,
                 ArmorSlot::Feet => WEAR_FEET,
             },
+            full: a.full_body,
         };
         Ok(())
     }

@@ -894,6 +894,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if a.reduction_pct > 90 {
             return Err(format!("armor `{}`: reduction over 90%", a.id));
         }
+        if a.full_body && a.slot != ArmorSlot::Body {
+            return Err(format!(
+                "armor `{}`: a full-body piece is worn on the body",
+                a.id
+            ));
+        }
     }
 
     // Consumables and deployables: item-backed; doors declare material

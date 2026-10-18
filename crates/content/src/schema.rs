@@ -542,6 +542,10 @@ pub struct Armor {
     /// Radiation column, our corruption (`exposure::corrode`).
     #[serde(default)]
     pub fel_pct: u32,
+    /// Rust's Full Body layer (the hazmat suit): a body piece that fills
+    /// the head and feet too, so it is worn alone (`combat::wear_clashes`).
+    #[serde(default)]
+    pub full_body: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -283,6 +283,7 @@ ITEMS = {
     "barricade_barbed": "lorc/spiked-fence",
     "floor_spikes": "delapouite/spiky-pit",
     "armor_boots_feet": "lorc/leather-boot",
+    "armor_hazmat_suit": "delapouite/hazmat-suit",
 }
 
 # The three vitals, bottom right, in every frame of play.

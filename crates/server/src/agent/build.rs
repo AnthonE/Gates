@@ -1899,6 +1899,9 @@ pub struct Builder {
     want: Option<Await>,
     verdict: Option<Verdict>,
     held: Option<(usize, u32)>,
+    /// The tree node the last Learn op bought: a parent on the item's path
+    /// answers that op as much as the item itself does.
+    unlocked: u16,
     /// Walk back onto the stand spot itself before the next op (a reach
     /// refusal).
     restand: bool,
@@ -1952,6 +1955,7 @@ impl Builder {
             want: None,
             verdict: None,
             held: None,
+            unlocked: sim_core::research::NO_RECIPE,
             restand: false,
             approach: None,
             late: None,
@@ -3745,6 +3749,7 @@ impl Builder {
             return Act::Go(intent);
         }
         self.held = None;
+        self.unlocked = recipe;
         self.want = Some(Await::Op {
             op: i,
             at,
@@ -3791,9 +3796,14 @@ impl Builder {
             Sent::Code => deploy_rec(core, at).is_some_and(|d| d.locked),
             Sent::Demolish => deploy_rec(core, at).is_none(),
             Sent::Unlock | Sent::Read => match spec(op).op {
-                Op::Learn(name) => item_named(core, name)
-                    .and_then(|item| learned(core, item))
-                    .unwrap_or(false),
+                Op::Learn(name) => {
+                    (sent == Sent::Unlock
+                        && self.unlocked != sim_core::research::NO_RECIPE
+                        && sim_core::research::knows(core.known(), self.unlocked))
+                        || item_named(core, name)
+                            .and_then(|item| learned(core, item))
+                            .unwrap_or(false)
+                }
                 _ => false,
             },
             Sent::Place | Sent::Grade | Sent::Deploy => false,

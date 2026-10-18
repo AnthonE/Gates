@@ -1171,9 +1171,7 @@ description = "A working fuse. Recycle it for junk."
 # toward theirs). Each is learned there, a node of their tree, and the
 # numbers are their item pages' (wiki.facepunch.com, rusthelp, rustly,
 # fetched 2026-10-17); `condition_max` is their durability. What needs a
-# mechanism we lack waits: boots (no feet slot), the hazmat suit (a
-# multi-slot suit; the Ash Suit is ours), barbed barricades and floor
-# spikes (contact damage), the flare (a thrown light) and the ladder.
+# mechanism we lack waits: the flare (a thrown light) and the ladder.
 
 [[item]]
 id = "item.hammer_salvaged"
@@ -1316,3 +1314,15 @@ rarity = "uncommon"
 slot = "feet"
 class = "clothing"
 description = "Leather boots. A little protection and warm feet."
+
+# Rust's hazmat suit (their page, 2026-10-18): one piece for the whole body,
+# worn alone (`full_body` in armor.toml), learned at the second bench.
+[[item]]
+id = "item.armor_hazmat_suit"
+name = "Hazmat Suit"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "body"
+class = "clothing"
+description = "A sealed suit, hood and boots in one. Keeps out the cold and the green."

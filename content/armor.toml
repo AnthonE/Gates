@@ -166,6 +166,19 @@ move_penalty_pct = 0
 cold_pct = 7
 fel_pct = 5
 
+# Rust's hazmat suit (their page, 2026-10-18): Full Body, so worn alone
+# (`combat::wear_clashes`). Theirs is 30 / 30, 50 radiation and 50 cold; the
+# 30 is held at the road sign jacket's 25, the most one piece may add under
+# `armor_extra_hits_max`.
+[[armor]]
+id = "item.armor_hazmat_suit"
+slot = "body"
+full_body = true
+reduction_pct = 25
+move_penalty_pct = 0
+cold_pct = 50
+fel_pct = 50
+
 # Rust's boots: 10 / 10, 8 cold (their page, 2026-10-18). The feet's slot.
 [[armor]]
 id = "item.armor_boots_feet"

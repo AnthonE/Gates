@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 152] = [
+pub const STEMS: [&str; 153] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -140,6 +140,7 @@ pub const STEMS: [&str; 152] = [
     "barbed_wooden_barricade",
     "wooden_floor_spikes",
     "boots",
+    "hazmat_suit",
     "blueprint",
     "bat",
     "torch",

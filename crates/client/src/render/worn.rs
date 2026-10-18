@@ -108,6 +108,10 @@ const BONE: [f32; 3] = [0.50, 0.46, 0.36];
 const HIDE: [f32; 3] = [0.26, 0.15, 0.08];
 /// Cloth blacked with charcoal, the Ash Mask's and the Ash Suit's.
 const ASH: [f32; 3] = [0.045, 0.045, 0.040];
+/// Hazmat yellow, rubberised.
+const HAZMAT: [f32; 3] = [0.52, 0.38, 0.03];
+/// Washed-out cotton, the tank top's.
+const COTTON: [f32; 3] = [0.36, 0.36, 0.33];
 
 /// Build the meshes and materials once (`Startup`).
 pub fn load(
@@ -128,6 +132,8 @@ pub fn load(
     let bone = materials.add(cloth(BONE, 0.7));
     let hide = materials.add(cloth(HIDE, 0.8));
     let ash = materials.add(cloth(ASH, 0.95));
+    let hazmat = materials.add(cloth(HAZMAT, 0.55));
+    let cotton = materials.add(cloth(COTTON, 0.9));
     let metal = super::textures::MapSet::load(&assets, "metal");
     let sign = materials.add(StandardMaterial {
         base_color: Color::linear_rgb(0.62, 0.64, 0.66),
@@ -203,7 +209,7 @@ pub fn load(
         .translated_by(Vec3::new(0.0, 1.12, -0.245)));
     commands.insert_resource(WornKit {
         pieces: vec![
-            ("Burlap Hood", vec![part(hood, &burlap, Bone::Head)]),
+            ("Burlap Hood", vec![part(hood.clone(), &burlap, Bone::Head)]),
             ("Ash Mask", vec![part(mask, &ash, Bone::Head)]),
             // The suit is the tunic's cut in the mask's blacked cloth: two
             // parts, so a helmet over it still fits `MAX_PARTS`.
@@ -217,18 +223,36 @@ pub fn load(
             (
                 "Bone Helmet",
                 vec![
-                    part(dome, &bone, Bone::Head),
+                    part(dome.clone(), &bone, Bone::Head),
                     part(crest, &bone, Bone::Head),
                 ],
             ),
             (
                 "Burlap Tunic",
                 vec![
-                    part(tunic_top, &burlap, Bone::Spine),
-                    part(tunic_skirt, &burlap, Bone::Hips),
+                    part(tunic_top.clone(), &burlap, Bone::Spine),
+                    part(tunic_skirt.clone(), &burlap, Bone::Hips),
                 ],
             ),
             ("Hide Poncho", vec![part(poncho, &hide, Bone::Spine)]),
+            // Rust's hazmat: hood and suit in one, so three parts, worn
+            // alone (`combat::wear_clashes`).
+            (
+                "Hazmat Suit",
+                vec![
+                    part(hood.clone(), &hazmat, Bone::Head),
+                    part(tunic_top.clone(), &hazmat, Bone::Spine),
+                    part(tunic_skirt.clone(), &hazmat, Bone::Hips),
+                ],
+            ),
+            (
+                "Coffee Can Helmet",
+                vec![part(dome.clone(), &sign, Bone::Head)],
+            ),
+            (
+                "Tank Top",
+                vec![part(tunic_top.clone(), &cotton, Bone::Spine)],
+            ),
             (
                 "Roadsign Vest",
                 vec![
@@ -603,13 +627,13 @@ mod tests {
     #[test]
     fn an_unknown_worn_skin_is_drawn_plain_until_the_catalog_knows_it() {
         let look = WornLook {
-            items: [41, 40],
-            skins: [0, 0x0B72],
+            items: [41, 40, sim_core::gather::NO_ITEM],
+            skins: [0, 0x0B72, 0],
         };
         let mut cat = protocol::SkinCatalog::EMPTY;
         let (shown, tints) = drawable(look, &cat);
         assert_eq!(shown.items, look.items);
-        assert_eq!((shown.skins, tints), ([0, 0], [None, None]));
+        assert_eq!((shown.skins, tints), ([0, 0, 0], [None, None, None]));
 
         cat.count = 1;
         cat.set(
@@ -627,7 +651,7 @@ mod tests {
         .unwrap();
         let (now, tints) = drawable(look, &cat);
         assert_eq!(now, look, "drawn in its skin");
-        assert_eq!(tints, [None, Some([1.0, 0.0, 0.0])]);
+        assert_eq!(tints, [None, Some([1.0, 0.0, 0.0]), None]);
         assert_ne!(now, shown, "and that reads as a change");
     }
 }

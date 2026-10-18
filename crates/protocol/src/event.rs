@@ -9855,16 +9855,13 @@ mod wire_domains {
             prefix: "pub const WEAR_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 3,
+            min_members: 4,
             bits: WEAR_SLOT_BITS,
-            // `WEAR_BODY`. One-based, so the ledger is NONE/HEAD/BODY and
-            // the width carries one spare value — which is exactly the
-            // headroom this row exists to guard, because
-            // `reference/ARMOR.md` §9.3 has legs, gloves and boots queued
-            // behind the per-type vector. A fourth slot is 3, 3 fits two
-            // bits, and every numeric check below would stay green while
-            // a pattern both ends refuse today became a live fact.
-            live_max: 2,
+            // `WEAR_FEET` since v123 (Rust's boots). One-based, so the
+            // ledger is NONE/HEAD/BODY/FEET and the width is full — the
+            // headroom this row guarded was spent on the feet, so a fifth
+            // slot widens `WEAR_SLOT_BITS` and bumps the wire.
+            live_max: 3,
         },
         Domain {
             what: "consume refusal",

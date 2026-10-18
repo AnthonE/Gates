@@ -3283,6 +3283,16 @@ impl World {
             || (from_kind == inventory::CONT_WEAR
                 && dst.count > 0
                 && !combat::wearable_in(&self.combat, dst.item, from_slot));
+        // A full-body suit fills the other slots (`combat::wear_clashes`),
+        // the same two landing sites.
+        let worn = &self.players[slot].worn;
+        let wear_refused = wear_refused
+            || (to_kind == inventory::CONT_WEAR
+                && src.count > 0
+                && combat::wear_clashes(&self.combat, worn, src.item, to_slot))
+            || (from_kind == inventory::CONT_WEAR
+                && dst.count > 0
+                && combat::wear_clashes(&self.combat, worn, dst.item, from_slot));
         if wear_refused {
             self.events
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_WEAR, addr);

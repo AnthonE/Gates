@@ -553,7 +553,9 @@ const TICKS: u64 = 900;
 /// stands where moved with the rocks and THE GATE's guards (#348).
 /// **Moved → `0x56B8_BE00_7039_277E` at the 128-bit blueprint mask**
 /// (2026-10-18, wipe): `state_hash` reads both words of `Player::known`.
-const GOLDEN_FINAL_HASH: u64 = 0x56B8_BE00_7039_277E;
+/// **Moved → `0xCA0F_A28D_2DF1_E3DD` at the feet** (2026-10-18, wipe):
+/// `state_hash` reads a third worn stack.
+const GOLDEN_FINAL_HASH: u64 = 0xCA0F_A28D_2DF1_E3DD;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -671,7 +673,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x56B8_BE00_7039_277E;
 /// final hash.
 /// **Moved → `0x8860_CC76_B34C_600F` at the 128-bit blueprint mask**
 /// (2026-10-18, wipe), with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x8860_CC76_B34C_600F;
+/// **Moved → `0x5BD3_1C07_2F40_36AD` at the feet** (2026-10-18, wipe), with the
+/// final hash.
+const GOLDEN_TRACE_HASH: u64 = 0x5BD3_1C07_2F40_36AD;
 
 /// Fold a stamped trace into one number.
 ///

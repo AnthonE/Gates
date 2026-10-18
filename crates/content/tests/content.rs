@@ -836,8 +836,8 @@ fn orphan_refs_refused() {
     );
     refuses(
         "loot.toml",
-        "{ item = \"item.rope\", weight = 328",
-        "{ item = \"item.ghost\", weight = 328",
+        "{ item = \"item.rope\", weight = 284",
+        "{ item = \"item.ghost\", weight = 284",
         "not an item",
     );
     refuses(
@@ -2496,8 +2496,9 @@ fn the_shipped_loot_tables_bake() {
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
     // 19 → 12 when the barrel became Rust's: its twelve parts and nothing
-    // else, one a barrel (2026-10-17).
-    assert_eq!(t.len, 12, "the barrel table lost or gained a row");
+    // else, one a barrel (2026-10-17); 16 with their tree's tank top and
+    // three deployables (2026-10-18).
+    assert_eq!(t.len, 16, "the barrel table lost or gained a row");
     assert_eq!((t.rolls_min, t.rolls_max), (1, 1));
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
 
@@ -2546,8 +2547,9 @@ fn the_shipped_loot_tables_bake() {
         .table(sim_core::loot::LOOT_CRATE)
         .expect("the crate table is armed");
     // 10 → 11: Rust's military crate components replaced gears, rope and
-    // tarp (2026-10-13); still 11 once its raw materials went (2026-10-17).
-    assert_eq!(k.len, 11);
+    // tarp (2026-10-13); still 11 once its raw materials went (2026-10-17);
+    // 17 with their tree's armour and blades (2026-10-18).
+    assert_eq!(k.len, 17);
     assert_eq!(k.hits, 5);
 }
 
@@ -4172,12 +4174,13 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// not gated here either. The auto turret (ours, `NOW.md` §0aa 1) is the
 /// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
 /// Their tree items (2026-10-17, the barbed barricade and floor spikes
-/// 2026-10-18, the boots too) and the wooden barricade, learned there, are
-/// the other fourteen.
+/// 2026-10-18, the boots and the hazmat suit too) and the wooden barricade,
+/// learned there, are the other fifteen.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 28] = [
+    let want: [(&str, u32); 29] = [
+        ("item.armor_hazmat_suit", 60),
         ("item.armor_boots_feet", 30),
         ("item.hammer_salvaged", 30),
         ("item.barricade_wood", 15),

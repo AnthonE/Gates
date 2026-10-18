@@ -1034,10 +1034,10 @@ const _: () = assert!(MAX_SKINS.is_multiple_of(64), "a SkinSet is whole u64 word
 /// verb for is a bake error rather than a silent extra row.
 pub const MAX_LOOT_TABLES: usize = 12;
 
-/// Weighted rows one loot table may carry (the barrel uses 19 since it took
-/// Rust's component rows). The bake refuses past it. Structural cap like
-/// `MAX_RECIPE_INPUTS`, not a knob.
-pub const MAX_LOOT_ENTRIES: usize = 24;
+/// Weighted rows one loot table may carry (the cache uses 30 since it took
+/// Rust's tree blades, 2026-10-18). The bake refuses past it. Structural cap
+/// like `MAX_RECIPE_INPUTS`, not a knob.
+pub const MAX_LOOT_ENTRIES: usize = 32;
 
 /// Guaranteed rows one loot table may carry (loot guaranteed column v0,
 /// 2026-09-22) — the rows every open pays whatever the weighted draw did,
