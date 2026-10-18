@@ -1184,6 +1184,12 @@ impl Survivor {
         self.core.as_deref()
     }
 
+    /// The mind back, for another body (`bench.rs` plays one mind through
+    /// every run).
+    pub fn into_mind(self) -> Mind {
+        self.mind
+    }
+
     pub fn goal(&self) -> Option<Goal> {
         self.goal.map(|a| a.goal)
     }

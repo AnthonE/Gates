@@ -19,12 +19,14 @@ const FACE_ORIGIN: &str = "https://elopros.com";
 /// Under `--mcp` stdout is the harness's JSON-RPC, so the run's report
 /// goes to stderr instead.
 static MCP: AtomicBool = AtomicBool::new(false);
+/// Under `--bench` stdout is the result alone, so the report goes to stderr.
+static BENCH: AtomicBool = AtomicBool::new(false);
 /// Ctrl-C closed the run's endpoint: a session ending now is not a refusal.
 static STOPPING: AtomicBool = AtomicBool::new(false);
 
 macro_rules! out {
     ($($arg:tt)*) => {
-        if MCP.load(Ordering::Relaxed) {
+        if MCP.load(Ordering::Relaxed) || BENCH.load(Ordering::Relaxed) {
             eprintln!($($arg)*);
         } else {
             println!($($arg)*);
@@ -93,11 +95,13 @@ impl Shift {
     }
 }
 
+const BENCH_USAGE: &str = "| --bench MINUTES [--bench-runs 3] [--bench-out FILE] [--bots 1] [--agent-name jev] MIND\n--bench plays the mind MINUTES (1-240) on a fresh private island, --bench-runs times (1-32), each bot a throwaway wallet, and prints one gates-bench-1 JSON result (JEV.md): THE ISLAND per bot with its works, hoard, kills, deaths, decisions (its own and the autopilot's) and seconds alive, and the mean with a 95% interval. --bench-out writes it to a file too. Submit it signed by your wallet at https://elopros.com/api/bench/gates/submit.";
+
 const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [--allies NAME|0xWALLET,...]] [--shift ON_S,OFF_S[,AT_S]] [--agent-keys DIR]\n--society makes the fleet (--bots 2..16, scripted or external) a guild of crews that live as Rust clans: each crew meets at THE GATE, its first bot founds the team and builds the base, and the rest live in it with a job. --crews splits the fleet into that many crews (default: as few as the team cap allows), whose bases stand side by side and who never fight each other. --roles names the jobs after each founder, in order and repeating (farmer: supply runs for the boxes, never fights; guard: walks a ring round home and takes on whoever comes in armed or fighting, leaves visitors be; runner: sells the surplus at THE GATE and brings back tools, then feeds the crew's shop); the default is farmer, guard, runner, farmer, guard, farmer. Each founder builds the base and, once it stands, keeps a vending machine outside it selling the crew's surplus at half THE GATE's price. A job sets the bot's temperament. --allies names players every member spares. --shift plays ON_S seconds, goes home and logs off for OFF_S, and again until --seconds is up: the compound sleeps, as a clan's does. With AT_S the cycle is the clock's, one starting AT_S seconds past UTC midnight, so a restart keeps it and villages given different AT_S take turns asleep. --agent-keys DIR gives every bot its own wallet, DIR/<name>.key (made there, owner-only, when missing), so a shift's bodies are its own again on a shard that keeps them.";
 
 fn usage() -> String {
     format!(
-        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--agent-harness NAME] [--agent-model NAME] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {SOCIETY_USAGE} {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits; with --agent-harness and --agent-model it signs those labels too (\"\" clears one).\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
+        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--agent-harness NAME] [--agent-model NAME] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {SOCIETY_USAGE} {MIND_USAGE}\n{BENCH_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits; with --agent-harness and --agent-model it signs those labels too (\"\" clears one).\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
     )
 }
 
@@ -123,6 +127,10 @@ struct Options {
     allies: Vec<Kin>,
     shift: Option<Shift>,
     agent_keys: Option<PathBuf>,
+    /// `--bench MINUTES`: GatesBench instead of a run (`server::bench`).
+    bench: Option<u32>,
+    bench_runs: Option<u32>,
+    bench_out: Option<PathBuf>,
 }
 
 impl Options {
@@ -149,6 +157,9 @@ impl Options {
             allies: Vec::new(),
             shift: None,
             agent_keys: None,
+            bench: None,
+            bench_runs: None,
+            bench_out: None,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -261,6 +272,36 @@ impl Options {
                         args.next().ok_or("--agent-keys needs a directory")?,
                     ))
                 }
+                "--bench" => {
+                    let m: u32 = args
+                        .next()
+                        .ok_or("--bench needs minutes")?
+                        .parse()
+                        .map_err(|_| "invalid bench minutes")?;
+                    if !(1..=server::bench::MINUTES_MAX).contains(&m) {
+                        return Err(format!(
+                            "--bench is 1..={} minutes",
+                            server::bench::MINUTES_MAX
+                        ));
+                    }
+                    options.bench = Some(m);
+                }
+                "--bench-runs" => {
+                    let k: u32 = args
+                        .next()
+                        .ok_or("--bench-runs needs a count")?
+                        .parse()
+                        .map_err(|_| "invalid bench run count")?;
+                    if !(1..=server::bench::RUNS_MAX).contains(&k) {
+                        return Err(format!("--bench-runs is 1..={}", server::bench::RUNS_MAX));
+                    }
+                    options.bench_runs = Some(k);
+                }
+                "--bench-out" => {
+                    options.bench_out = Some(PathBuf::from(
+                        args.next().ok_or("--bench-out needs a file")?,
+                    ))
+                }
                 "--seconds" => {
                     let value: u64 = args
                         .next()
@@ -296,6 +337,24 @@ impl Options {
                 return Err("--new-key makes a key and exits; run the bot with --agent-key".into());
             }
             return Ok(Some(options));
+        }
+        if options.bench.is_none() && (options.bench_runs.is_some() || options.bench_out.is_some())
+        {
+            return Err("--bench-runs and --bench-out go with --bench MINUTES".into());
+        }
+        if options.bench.is_some() {
+            if options.server.is_some() {
+                return Err("--bench plays its own private islands; it takes no --server".into());
+            }
+            if options.agent_key.is_some() || options.agent_keys.is_some() {
+                return Err("--bench makes a throwaway wallet for every bot; drop the key".into());
+            }
+            if options.seconds_given || options.shift.is_some() || options.society {
+                return Err(
+                    "--bench times its own runs: no --seconds, --shift or --society".into(),
+                );
+            }
+            options.local = true;
         }
         if options.local == options.server.is_some() {
             return Err("choose exactly one of --local and --server".into());
@@ -513,6 +572,9 @@ async fn run(options: Options) -> Result<(), String> {
         // Blocking HTTP: off the runtime's worker, which it would stall.
         return tokio::task::block_in_place(|| set_face(&options));
     }
+    if options.bench.is_some() {
+        return bench(options).await;
+    }
     // Load the key (if any) and start every source before booting a shard:
     // a refused key or credential costs nothing.
     let key = options
@@ -630,14 +692,7 @@ async fn run(options: Options) -> Result<(), String> {
             let hex = k.address().to_hex();
             String::from_utf8_lossy(&hex).into_owned()
         }),
-        mind: match options.mind.source {
-            Source::Jev => "jev",
-            Source::Scripted => "scripted",
-            Source::External(..) => "external",
-            Source::Mcp => "mcp",
-            Source::Student(_) => "student",
-        }
-        .into(),
+        mind: options.mind.word().into(),
     };
     out!(
         "bug reports: {}, copies in {}",
@@ -881,6 +936,88 @@ async fn run(options: Options) -> Result<(), String> {
         }
     }
     failed.map_or(Ok(()), Err)
+}
+
+/// `--bench`: the mind on fresh private islands, run after run, and the
+/// result on stdout (`server::bench`). Everything else goes to stderr.
+async fn bench(options: Options) -> Result<(), String> {
+    use server::bench::{Bench, Header};
+    BENCH.store(true, Ordering::Relaxed);
+    let minutes = options.bench.expect("validated");
+    let runs = options.bench_runs.unwrap_or(server::bench::RUNS_DEFAULT);
+    if options.mind.source == Source::Mcp {
+        // The harness's own stdout: the result goes to stderr and the file.
+        MCP.store(true, Ordering::Relaxed);
+        server::mcp::set_me(server::mcp::Me {
+            name: options.agent_name.clone(),
+            wallet: None,
+        });
+    }
+    let content = server::agent_demo::local_content();
+    let layout = content::Content::load_dir(&content)
+        .map_err(|e| format!("content: {e}"))?
+        .layout_hash();
+    let (harness, model) = options.mind.labels();
+    let header = Header {
+        commit: server::bench::commit(),
+        proto: u32::from(protocol::PROTO_VER),
+        seed: server::agent_demo::local_config()?.seed,
+        layout,
+        minutes,
+        bots: options.bots as u32,
+        mind: options.mind.word(),
+        harness: harness.map(str::to_owned),
+        model: model.map(str::to_owned),
+        think_ms: u32::try_from(options.mind.cfg.interval.as_millis()).unwrap_or(u32::MAX),
+    };
+    let mut minds = server::bench::minds(&options.mind, options.bots)?;
+    out!(
+        "bench: {} × {} for {minutes} min, {runs} runs on private islands (seed {}, commit {})",
+        options.mind.label(),
+        options.bots,
+        header.seed,
+        header.commit
+    );
+    let plan = Bench {
+        mind: &options.mind,
+        bots: options.bots,
+        duration: Duration::from_secs(u64::from(minutes) * 60),
+        name: &options.agent_name,
+        content,
+    };
+    let mut rows = Vec::with_capacity(runs as usize);
+    for r in 0..runs {
+        let bots = server::bench::run(&plan, &mut minds, r).await?;
+        let island: Vec<String> = bots.iter().map(|b| b.island.to_string()).collect();
+        let (d, a): (u32, u32) = bots
+            .iter()
+            .fold((0, 0), |(d, a), b| (d + b.decisions, a + b.autopilot));
+        out!(
+            "bench run {}/{runs}: island {} · {d} decisions, {a} by the autopilot",
+            r + 1,
+            island.join(", ")
+        );
+        rows.push(bots);
+    }
+    let result = server::bench::result(&header, &rows);
+    let text = serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?;
+    out!(
+        "bench: THE ISLAND {:.1} ± {:.1} over {} runs",
+        result["score"]["mean"].as_f64().unwrap_or(0.0),
+        result["score"]["ci95"].as_f64().unwrap_or(0.0),
+        runs
+    );
+    if let Some(path) = &options.bench_out {
+        std::fs::write(path, format!("{text}\n"))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        out!("bench: written to {}", path.display());
+    }
+    if MCP.load(Ordering::Relaxed) {
+        eprintln!("{text}");
+    } else {
+        println!("{text}");
+    }
+    Ok(())
 }
 
 fn print_report(label: &str, survivor: &Survivor) {

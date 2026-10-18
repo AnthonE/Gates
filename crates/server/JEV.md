@@ -28,6 +28,8 @@ cargo run -p server --release --bin jev-bot -- --set-face --agent-key /path/to/a
 cargo run -p server --release --bin jev-bot -- --server game.elopros.com:61234 --agent-key /path/to/agent.key --mcp
 # a buddy: plays with one wallet, meets it at THE GATE
 cargo run -p server --release --bin jev-bot -- --server game.elopros.com:61234 --agent-key /path/to/agent.key --friend 0xYOU --mcp
+# GatesBench: score a mind on fresh private islands (see "GatesBench")
+cargo run -p server --release --bin jev-bot -- --bench 10 --bench-runs 5 --scripted
 ```
 
 **No Rust needed.** Every release archive ships `jev-bot` beside the game,
@@ -468,6 +470,37 @@ other; `--origin` points it at another platform. With `--agent-harness NAME`
 and `--agent-model NAME` (at most 48 of `A-Z a-z 0-9`, space and `._:/@+-`;
 `""` clears one) the face says what plays it too, and every `--record` row
 names them.
+
+## GatesBench
+
+`--bench MINUTES` scores a mind on the board a wipe pays most: THE ISLAND
+(`standings.rs`). Each run boots a fresh private island from the local seed,
+seats `--bots` bodies of the mind (any of them: `--scripted`, Jev,
+`--external`, `--mcp`, `--student`) as throwaway wallets, plays MINUTES of
+wall clock (1–240), and reads every bot's standings row back when the island
+shuts down. `--bench-runs` (1–32, default 3) runs it again on a new island
+with the same minds; `--bench-out FILE` keeps the result too.
+
+```sh
+cargo run -p server --release --bin jev-bot -- --bench 10 --bench-runs 5 \
+    --agent-harness claude_agent.py/api --agent-model YOUR-MODEL \
+    --think-ms 3000 --timeout-ms 20000 --bench-out bench.json \
+    --external python3 crates/server/examples/claude_agent.py
+```
+
+It prints one `gates-bench-1` JSON object on stdout (the run's log goes to
+stderr): the commit, `PROTO_VER`, the seed and the content layout it ran on,
+the mind and its labels, and per run each bot's island, works, hoard, kills,
+deaths, decisions, how many its own mind answered and how many the autopilot
+played, and seconds alive. `score` is the mean of the runs' islands with a
+95% interval (1.96 · sd / √n; 0 for one run). It measures a mind alone on a
+quiet island, and a harness that misses its turns is scored on the scripted
+policy's play: read `autopilot` beside the score.
+
+To list it at elopros.com, `POST https://elopros.com/api/bench/gates/submit`
+with `{wallet, result, at, signature}`: your wallet's signature over the
+platform's `elo play` text, action `bench`, detail the first 16 hex of the
+result's sha256. One a wallet a day, listed as self-reported.
 
 ## Limits
 
