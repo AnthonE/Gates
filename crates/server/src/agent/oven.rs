@@ -1586,9 +1586,9 @@ mod tests {
         core.recipes = crate::net::bake_all(&content).unwrap().craft;
         core.recipes_have = core.recipes.recipe_count;
         core.research_have = core.research.row_count;
-        let (revolver, hatchet, satchel, junk) = (
+        let (revolver, hammer, satchel, junk) = (
             id("item.revolver"),
-            id("item.hatchet_metal"),
+            id("item.hammer_salvaged"),
             id("item.satchel_charge"),
             id("item.junk"),
         );
@@ -1615,26 +1615,27 @@ mod tests {
         });
         assert_eq!(research(&core, 0), paper);
         assert_eq!(research(&core, 3), paper);
-        // A metal hatchet: the tree teaches it at the bench this body has,
-        // so the one it carries is kept; with no bench, or a spare, it goes.
-        core.inv[HOTBAR_SLOTS] = stack(hatchet, 1);
+        // A salvaged hammer, the first tree's root: the tree teaches it at
+        // the bench this body has, so the one it carries is kept; with no
+        // bench, or a spare, it goes.
+        core.inv[HOTBAR_SLOTS] = stack(hammer, 1);
         core.inv[HOTBAR_SLOTS + 2] = ItemStack::default();
         assert_eq!(research(&core, 3), None);
-        assert_eq!(for_paper(&core, 3, hatchet), None);
-        assert!(research(&core, 0).is_some() && for_paper(&core, 0, hatchet).is_some());
-        core.inv[HOTBAR_SLOTS + 3] = stack(hatchet, 1);
+        assert_eq!(for_paper(&core, 3, hammer), None);
+        assert!(research(&core, 0).is_some() && for_paper(&core, 0, hammer).is_some());
+        core.inv[HOTBAR_SLOTS + 3] = stack(hammer, 1);
         assert!(research(&core, 3).is_some());
         // Somebody's revolver in the table, or the table running: theirs.
         let work = Work::Research {
-            sample: hatchet,
-            cost: cost(hatchet),
+            sample: hammer,
+            cost: cost(hammer),
         };
         let mut table = [ItemStack::default(); BOX_SLOTS];
         assert!(!in_use(&core, work, &table, false));
         assert!(in_use(&core, work, &table, true));
         table[TABLE_ITEM_SLOT] = stack(revolver, 1);
         assert!(in_use(&core, work, &table, false));
-        table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&core.research, hatchet);
+        table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&core.research, hammer);
         assert!(!in_use(&core, work, &table, false));
         // Paper left in an idle, unpaid table is anybody's; junk beside it
         // is somebody's.

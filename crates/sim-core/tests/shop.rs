@@ -308,7 +308,7 @@ fn reload(w: &mut World, cut: impl Fn(&mut Vec<u8>)) -> Box<World> {
 }
 
 #[test]
-fn the_offers_survive_a_save_and_a_format_25_file_still_loads() {
+fn the_offers_survive_a_save_and_an_older_file_is_refused() {
     let (mut w, key) = shop_world();
     press(&mut w, OWNER, key, OFFER);
     assert!(answer(&w).is_ok());
@@ -320,11 +320,18 @@ fn the_offers_survive_a_save_and_a_format_25_file_still_loads() {
     );
     assert_eq!(back.state_hash(), w.state_hash());
 
-    // A 25 file is a 26 file minus the shop section (`worldsave.rs`).
+    // A 25 file was a 26 file minus the shop section and still read, until
+    // format 27 moved every body's record (the blueprint mask's high word):
+    // an older file reads as nothing now, refused by its format.
     let (mut w, _) = shop_world();
-    let back = reload(&mut w, |blob| {
-        blob.truncate(blob.len() - 2);
-        blob[0..2].copy_from_slice(&25u16.to_le_bytes());
-    });
-    assert_eq!(back.state_hash(), w.state_hash());
+    w.tick(&[
+        Command::Leave { id: OWNER },
+        Command::Leave { id: STRANGER },
+    ]);
+    let mut blob = vec![0u8; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut blob).unwrap();
+    blob.truncate(n);
+    blob[0..2].copy_from_slice(&26u16.to_le_bytes());
+    let mut back = Box::new(World::new(SEED));
+    assert!(back.load(&blob).is_err(), "a format 26 file is refused");
 }

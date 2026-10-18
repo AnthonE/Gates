@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 20] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 22] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -541,6 +541,11 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 20] = [
     // 19 · vending machine: a tall steel cabinet, `DEPLOY_VOL`'s row, in a
     // painted red a shopper picks out across a compound.
     ([0.9, 1.9, 0.8], Color::srgb(0.553, 0.165, 0.137), 0.5, 0.5),
+    // 20 · barbed barricade: the barricade's box, `DEPLOY_VOL`'s row.
+    ([1.8, 1.4, 0.6], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
+    // 21 · floor spikes: a board of stakes, walked over (`DEPLOY_VOL` has
+    // none: the box is the model's).
+    ([1.4, 0.42, 1.4], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2274,19 +2279,21 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     // 6 door — a metal one wears [`METAL_DOOR_ASSET`]'s material, baked
     // onto the same unwrap.
     Some("models/deploy/door.glb"),
-    None,                                     // 7 lock — never drawn
-    Some("models/deploy/recycler.glb"),       // 8 recycler
-    Some("models/deploy/research_table.glb"), // 9 research table
-    Some("models/deploy/workbench2.glb"),     // 10 workbench 2
-    Some("models/deploy/workbench3.glb"),     // 11 workbench 3
-    None,                                     // 12 window bars — shared insert geometry
-    None,                                     // 13 garage door — shared insert geometry
-    None,                                     // 14 glass — shared insert geometry
-    None,                                     // 15 shutters — shared insert geometry
-    Some("models/deploy/barricade.glb"),      // 16 barricade
-    None,                                     // 17 planter — the cuboid until a model
-    Some(TURRET_BASE_GLB),                    // 18 turret base; the gun is `sentry.rs`'s
-    Some("models/deploy/vending.glb"),        // 19 vending machine
+    None,                                       // 7 lock — never drawn
+    Some("models/deploy/recycler.glb"),         // 8 recycler
+    Some("models/deploy/research_table.glb"),   // 9 research table
+    Some("models/deploy/workbench2.glb"),       // 10 workbench 2
+    Some("models/deploy/workbench3.glb"),       // 11 workbench 3
+    None,                                       // 12 window bars — shared insert geometry
+    None,                                       // 13 garage door — shared insert geometry
+    None,                                       // 14 glass — shared insert geometry
+    None,                                       // 15 shutters — shared insert geometry
+    Some("models/deploy/barricade.glb"),        // 16 barricade
+    None,                                       // 17 planter — the cuboid until a model
+    Some(TURRET_BASE_GLB),                      // 18 turret base; the gun is `sentry.rs`'s
+    Some("models/deploy/vending.glb"),          // 19 vending machine
+    Some("models/deploy/barbed_barricade.glb"), // 20 barbed barricade
+    Some("models/deploy/floor_spikes.glb"),     // 21 floor spikes
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too

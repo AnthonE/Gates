@@ -1,0 +1,37 @@
+# The research run: stand at THE GATE's public workbench, open its tech tree,
+# pick a node, unlock it, watch its child open. Coordinates are for
+# RES=1280x720, the shipped seed (20260731: the bench at 1819.5,2017.5) and
+# today's content/research.toml.
+#
+#   POP=0 SPAWN=1819.5,2015.7 KIT="item.junk:200" ./ci/drive.sh shots/tech ci/drive/tech.txt
+#
+# A spawn faces north (+Z), so the bench is straight ahead.
+# load: a cold join at the town under lavapipe takes ~8 minutes
+sleep 600
+moveto 640 360
+click 1
+sleep 3
+# tilt down onto the bench
+move 0 140
+sleep 2
+shot 01-bench
+key e
+sleep 3
+shot 02-tree
+# the first root (the salvaged hammer)
+moveto 270 186
+click 1
+sleep 2
+shot 03-selected
+# UNLOCK
+moveto 1179 680
+click 1
+sleep 3
+shot 04-unlocked
+# the hammer's first child (the metal hatchet) opens
+moveto 270 270
+click 1
+sleep 2
+shot 05-child
+key Escape
+sleep 2

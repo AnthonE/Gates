@@ -215,7 +215,7 @@ pub fn rows(
     inv: &[ItemStack; INV_SLOTS],
     catalog: &ItemCatalog,
     favs: &[u16],
-    known: u64,
+    known: u128,
     cat: Cat,
     query: &str,
     out: &mut Vec<Row>,
@@ -373,7 +373,7 @@ pub fn seconds_at(def: &RecipeDef, count: u16, best: u8) -> f32 {
 /// table's road needs a sample in hand and says so in the refusal instead.)
 pub fn unlock_hint(
     rc: &sim_core::research::ResearchContent,
-    known: u64,
+    known: u128,
     recipe: u16,
     def: &RecipeDef,
 ) -> Option<String> {

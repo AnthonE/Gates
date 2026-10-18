@@ -884,13 +884,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
         let item_slot = c.item(&a.id).map(|i| i.slot);
         let matches = matches!(
             (a.slot, item_slot),
-            (ArmorSlot::Head, Some(EquipSlot::Head)) | (ArmorSlot::Body, Some(EquipSlot::Body))
+            (ArmorSlot::Head, Some(EquipSlot::Head))
+                | (ArmorSlot::Body, Some(EquipSlot::Body))
+                | (ArmorSlot::Feet, Some(EquipSlot::Feet))
         );
         if !matches {
             return Err(format!("armor `{}`: item slot disagrees", a.id));
         }
         if a.reduction_pct > 90 {
             return Err(format!("armor `{}`: reduction over 90%", a.id));
+        }
+        if a.full_body && a.slot != ArmorSlot::Body {
+            return Err(format!(
+                "armor `{}`: a full-body piece is worn on the body",
+                a.id
+            ));
         }
     }
 

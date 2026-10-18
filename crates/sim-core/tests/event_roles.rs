@@ -99,13 +99,13 @@ use sim_core::world::{
     EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
     EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
     EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_GROW,
-    EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED,
-    EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED,
-    EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK,
-    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_SWIPE,
-    EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
-    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
-    TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
+    EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI, EV_MAX,
+    EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
+    EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
+    EV_SENTRY_LOCK, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
+    EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
+    EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX,
+    STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_SHOP,
@@ -4394,7 +4394,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 65] = [
+    const COVERED: [(&str, u8); 66] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SHOP", EV_SHOP),
         ("EV_SHOP_REFUSED", EV_SHOP_REFUSED),
@@ -4443,6 +4443,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_RESEARCH_REFUSED", EV_RESEARCH_REFUSED),
         ("EV_SHOT", EV_SHOT),
         ("EV_KNOWN", EV_KNOWN),
+        ("EV_KNOWN_HI", EV_KNOWN_HI),
         ("EV_IMPACT", EV_IMPACT),
         ("EV_TRUST", EV_TRUST),
         ("EV_SWING", EV_SWING),
@@ -4955,9 +4956,10 @@ fn research_refused_names_the_player_then_why() {
 #[test]
 fn known_names_the_holder_then_the_mask_low_half_first() {
     const HOLDER: u32 = 6;
-    // Bit 3 and bit 40: `KNOWN_MASK_BITS` is 64, so the high half is
-    // reachable, and these two put 8 in `b` and 256 in `c`.
-    const WIDE: u64 = 1 << 3 | 1 << 40;
+    // Bits 3, 40, 70 and 105: `KNOWN_MASK_BITS` is 128, so every 32-bit
+    // quarter is reachable, and these put 8 and 256 in `EV_KNOWN`'s `b` and
+    // `c`, 64 and 512 in `EV_KNOWN_HI`'s.
+    const WIDE: u128 = 1 << 3 | 1 << 40 | 1 << 70 | 1 << 105;
 
     let mut w = World::new(SEED);
     w.combat = CombatContent::probe_fixture();
@@ -4984,10 +4986,15 @@ fn known_names_the_holder_then_the_mask_low_half_first() {
          a mask naming recipes nobody bought"
     );
     assert_eq!(ev.c, (WIDE >> 32) as u32, "EV_KNOWN.c is the high 32 bits");
+    let hi = only(&w, EV_KNOWN_HI);
+    distinct3(hi, "EV_KNOWN_HI");
+    assert_eq!(hi.a, HOLDER, "EV_KNOWN_HI.a is who holds the blueprints");
+    assert_eq!(hi.b, (WIDE >> 64) as u32, "EV_KNOWN_HI.b is bits 64..96");
+    assert_eq!(hi.c, (WIDE >> 96) as u32, "EV_KNOWN_HI.c is bits 96..128");
     assert_eq!(
-        ev.b as u64 | (ev.c as u64) << 32,
+        ev.b as u128 | (ev.c as u128) << 32 | (hi.b as u128) << 64 | (hi.c as u128) << 96,
         WIDE,
-        "the two halves do not reassemble into the mask the body held"
+        "the four quarters do not reassemble into the mask the body held"
     );
 
     // And the sim agrees with what it just announced: a death that dropped

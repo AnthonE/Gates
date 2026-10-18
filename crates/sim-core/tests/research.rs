@@ -69,7 +69,7 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 }
 
 use sim_core::world::{
-    Command, World, EV_CRAFT_REFUSED, EV_KNOWN, EV_MOVE_REFUSED, EV_OVEN, EV_RESEARCH,
+    Command, World, EV_CRAFT_REFUSED, EV_KNOWN, EV_KNOWN_HI, EV_MOVE_REFUSED, EV_OVEN, EV_RESEARCH,
     EV_RESEARCH_REFUSED,
 };
 
@@ -1085,16 +1085,22 @@ fn a_sheet_of_paper_survives_a_save_and_a_load() {
 /// bits, or packed the two backwards, passes any check made with a small
 /// value — `EV_KNOWN` is `u64` state carried through two `u32` fields,
 /// which is exactly the packed-field blindness `event_roles.rs` §2 refuses.
-const WIDE: u64 = 1 << 3 | 1 << 40;
+/// And a bit in the second word, which `EV_KNOWN_HI` carries since the mask
+/// went to 128 bits.
+const WIDE: u128 = 1 << 3 | 1 << 40 | 1 << 70;
 
-/// The mask, as the door states it: `(low, high)` reassembled from the
-/// one `EV_KNOWN` on the last tick, or `None` if the door said nothing.
-fn announced(w: &World) -> Option<u64> {
-    w.events
-        .entries()
-        .iter()
-        .find(|e| e.code == EV_KNOWN)
-        .map(|e| e.b as u64 | (e.c as u64) << 32)
+/// The mask, as the door states it: both words reassembled from the
+/// `EV_KNOWN` / `EV_KNOWN_HI` pair on the last tick, or `None` if the door
+/// said nothing (or only half of it).
+fn announced(w: &World) -> Option<u128> {
+    let word = |code: u8| {
+        w.events
+            .entries()
+            .iter()
+            .find(|e| e.code == code)
+            .map(|e| e.b as u64 | (e.c as u64) << 32)
+    };
+    Some(word(EV_KNOWN)? as u128 | (word(EV_KNOWN_HI)? as u128) << 64)
 }
 
 /// Whether the gated recipe is still refused *for the blueprint*, asked of

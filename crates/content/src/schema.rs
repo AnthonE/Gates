@@ -27,6 +27,7 @@ pub enum EquipSlot {
     Hand,
     Head,
     Body,
+    Feet,
     None,
 }
 
@@ -521,6 +522,7 @@ pub struct Weapon {
 pub enum ArmorSlot {
     Head,
     Body,
+    Feet,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -540,6 +542,10 @@ pub struct Armor {
     /// Radiation column, our corruption (`exposure::corrode`).
     #[serde(default)]
     pub fel_pct: u32,
+    /// Rust's Full Body layer (the hazmat suit): a body piece that fills
+    /// the head and feet too, so it is worn alone (`combat::wear_clashes`).
+    #[serde(default)]
+    pub full_body: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -620,6 +626,10 @@ pub enum DeployArchetype {
     /// A player's vending machine (`sim-core/src/shop.rs`): a container
     /// whose stock anyone may buy at its owner's offers, priced in junk.
     Vending,
+    /// Rust's barbed wooden barricade and wooden floor spikes: they cut a
+    /// body that touches them (`World::prick_deploys`).
+    BarricadeBarbed,
+    FloorSpikes,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim

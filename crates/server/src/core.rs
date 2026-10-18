@@ -59,8 +59,8 @@ use sim_core::world::{
     EV_BAG_REMOVED, EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED,
     EV_CRAFT_DONE, EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED,
     EV_DEPLOY_REMOVED, EV_DOOR, EV_DRANK, EV_FIRE, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT,
-    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
+    EV_HOWL, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN, EV_KNOWN_HI, EV_MOVED, EV_MOVE_REFUSED,
+    EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD,
     EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SENTRY_LOCK, EV_SHOP,
     EV_SHOP_REFUSED, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT,
     EV_STUMP_GRUBBED, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
@@ -3001,11 +3001,13 @@ impl ShardCore {
         let p = &self.world.players[w];
         let (hp, hp_max, food, water, known) = (p.hp, p.hp_max, p.food, p.water, p.known);
         let (max_food, max_water) = (self.world.survival.max_food, self.world.survival.max_water);
-        for k in 0..3 {
+        // The mask a word at a time, both words (wire v123).
+        for k in 0..4 {
             let enc = match k {
                 0 => encode_event_health(hp, hp_max, &mut self.ev_buf),
                 1 => encode_event_vitals(food, water, max_food, max_water, &mut self.ev_buf),
-                _ => encode_event_known(known, &mut self.ev_buf),
+                2 => encode_event_known(0, known as u64, &mut self.ev_buf),
+                _ => encode_event_known(1, (known >> 64) as u64, &mut self.ev_buf),
             };
             match enc {
                 Ok(len) => {
@@ -3955,12 +3957,13 @@ impl ShardCore {
                 // had left. That is gone: the sim states the mask in the
                 // event, so there is nothing to look up and no way for
                 // the encoder to disagree with the tick that caused it.
-                EV_KNOWN => {
+                EV_KNOWN | EV_KNOWN_HI => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // the holder left this tick
                     };
-                    let mask = ev.b as u64 | (ev.c as u64) << 32;
-                    match encode_event_known(mask, &mut self.ev_buf) {
+                    let word = u8::from(ev.code == EV_KNOWN_HI);
+                    let bits = ev.b as u64 | (ev.c as u64) << 32;
+                    match encode_event_known(word, bits, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -9231,7 +9234,17 @@ mod tests {
             "{first:?}"
         );
         assert!(
-            matches!(first.get(2), Some(EventMsg::Known { mask: 0b1011 })),
+            matches!(
+                first.get(2),
+                Some(EventMsg::Known {
+                    word: 0,
+                    bits: 0b1011
+                })
+            ),
+            "{first:?}"
+        );
+        assert!(
+            matches!(first.get(3), Some(EventMsg::Known { word: 1, bits: 0 })),
             "{first:?}"
         );
         // Owed once: the next tick does not repeat it.

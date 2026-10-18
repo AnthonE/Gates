@@ -73,7 +73,7 @@ use crate::deploy::{box_key, DeployContent, Deploys};
 use crate::gather::{ItemStack, NO_ITEM};
 use crate::limits::{INV_SLOTS, MAX_RECIPES, MAX_RESEARCH_ROWS};
 use crate::oven::OVEN_PERIOD_TICKS;
-use crate::world::{EventQueue, Player, EV_KNOWN, EV_RESEARCH, EV_RESEARCH_REFUSED};
+use crate::world::{EventQueue, Player, EV_KNOWN, EV_KNOWN_HI, EV_RESEARCH, EV_RESEARCH_REFUSED};
 
 /// How close a placed bench must stand for the tree verb, planar metres.
 /// The workbench's number and deliberately the same one: two stations with
@@ -252,8 +252,18 @@ impl ResearchContent {
 /// in `limits.rs` means a live recipe can never reach here anyway — so
 /// this is the belt to that braces.
 #[inline]
-pub fn knows(known: u64, recipe: u16) -> bool {
-    (recipe as usize) < crate::limits::KNOWN_MASK_BITS && known & (1u64 << recipe) != 0
+pub fn knows(known: u128, recipe: u16) -> bool {
+    (recipe as usize) < crate::limits::KNOWN_MASK_BITS && known & (1u128 << recipe) != 0
+}
+
+/// State `id`'s whole mask: [`EV_KNOWN`] for its low word, [`EV_KNOWN_HI`]
+/// for its high one, back to back. The one place the mask is cut into
+/// event words, so every door and every purchase says it the same way.
+pub fn state_known(events: &mut EventQueue, id: u32, mask: u128) {
+    let lo = mask as u64;
+    let hi = (mask >> 64) as u64;
+    events.push(EV_KNOWN, id, lo as u32, (lo >> 32) as u32);
+    events.push(EV_KNOWN_HI, id, hi as u32, (hi >> 32) as u32);
 }
 
 /// The stack a finished research leaves behind: one blueprint teaching
@@ -478,12 +488,12 @@ pub fn study(rc: &ResearchContent, p: &mut Player, slot: u8, events: &mut EventQ
     if p.inv[slot].count == 0 {
         p.inv[slot] = ItemStack::default();
     }
-    p.known |= 1u64 << row.recipe;
+    p.known |= 1u128 << row.recipe;
     events.push(EV_RESEARCH, p.id, row.recipe as u32, 0);
     // And the mask itself, whole, right behind the success — pushed where
     // every other fact is pushed: by the sim, at the moment it became true
     // (`EV_KNOWN` says why a door restates it rather than a delta).
-    events.push(EV_KNOWN, p.id, p.known as u32, (p.known >> 32) as u32);
+    state_known(events, p.id, p.known);
 }
 
 /// The bench tier [`unlock`] demands for a node: the recipe's own
@@ -552,7 +562,7 @@ pub fn unlock(
 
     // Past here nothing can fail. The tree takes only the price.
     inv_take(&mut p.inv, rc.coin, row.cost as u32);
-    p.known |= 1u64 << row.recipe;
+    p.known |= 1u128 << row.recipe;
     events.push(EV_RESEARCH, p.id, row.recipe as u32, row.cost as u32);
     // The mask, whole, behind the success — the table's own statement,
     // and missing here until 2026-09-22. `client-core` takes `SUB_KNOWN`
@@ -561,7 +571,7 @@ pub fn unlock(
     // client never heard: the node stayed locked, its children stayed
     // blocked and the craft panel kept the recipe LOCKED until some later
     // door (a respawn, a reconnect, a study) restated the mask.
-    events.push(EV_KNOWN, p.id, p.known as u32, (p.known >> 32) as u32);
+    state_known(events, p.id, p.known);
 }
 
 #[cfg(test)]
@@ -574,9 +584,13 @@ mod tests {
         assert!(knows(1, 0));
         assert!(knows(1 << 63, 63));
         assert!(!knows(1 << 63, 62));
+        // The second word is live: the bits past 63 that Rust's tree items
+        // needed (`KNOWN_MASK_BITS` 128).
+        assert!(knows(1 << 64, 64));
+        assert!(knows(1 << 127, 127));
         // Past the width: false, never a wrapped shift into a live bit.
-        assert!(!knows(u64::MAX, 64));
-        assert!(!knows(u64::MAX, NO_RECIPE));
+        assert!(!knows(u128::MAX, 128));
+        assert!(!knows(u128::MAX, NO_RECIPE));
     }
 
     #[test]

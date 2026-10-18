@@ -1027,7 +1027,7 @@ fn every_player_field_is_classified_across_a_death() {
 /// respawn, driven through `die` and `wake` themselves.
 #[test]
 fn the_carried_decisions_survive_a_real_death() {
-    const MASK: u64 = 1 << 3 | 1 << 40;
+    const MASK: u128 = 1 << 3 | 1 << 40 | 1 << 100;
     let mut w = armed();
     w.tick(&[Command::Join { id: ID }]);
     w.players[0].known = MASK;

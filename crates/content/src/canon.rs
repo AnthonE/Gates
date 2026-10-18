@@ -205,6 +205,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.move_penalty_pct);
         h.u(a.cold_pct as u32);
         h.u(a.fel_pct);
+        h.u(u32::from(a.full_body));
     }
 
     h.s("consumables");

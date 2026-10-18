@@ -1235,9 +1235,14 @@ pub use voice::{
 /// v122 — the desert's cactus: `terrain::Occupant::Cactus` is solid and
 /// swung at for cloth, so both ends must draw the same cacti to predict the
 /// same walk; and the death cause admits 11 (`DEATH_BY_CACTUS`).
-/// v123 — skins priced in JUNK: a `SkinRow`'s coin admits 3 (`COIN_JUNK`),
+/// v123 — Rust's tree items: `MAX_RECIPES` 64 → 128, so the recipe and
+/// research drips' totals ride 8 bits, and `SUB_KNOWN` states one 64-bit word
+/// of the 128-bit blueprint mask behind a word index. And Rust's barbed
+/// barricade and floor spikes: two archetypes (20, 21) both ends admit, and
+/// the death cause admits 12 (`DEATH_BY_SPIKES`).
+/// v124 — skins priced in JUNK: a `SkinRow`'s coin admits 3 (`COIN_JUNK`),
 /// the play coin skins are bought with.
-pub const PROTO_VER: u16 = 123;
+pub const PROTO_VER: u16 = 124;
 
 /// This game's slug in the elo catalog.
 ///

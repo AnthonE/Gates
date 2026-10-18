@@ -424,8 +424,9 @@ pub const INV_SLOTS: usize = 30;
 /// one-based) and replaces whatever was there, so the only way to exceed the
 /// cap is to name a slot the array does not have, which `combat::worn_pct`
 /// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
-/// Proposed default, DECISIONS.md §open ("armor reduction v0").
-pub const WEAR_SLOTS: usize = 2;
+/// Proposed default, DECISIONS.md §open ("armor reduction v0"). 2 → 3 for
+/// the feet (Rust's boots, 2026-10-18).
+pub const WEAR_SLOTS: usize = 3;
 
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the
@@ -435,8 +436,10 @@ pub const HOTBAR_SLOTS: usize = 6;
 
 /// Recipe definitions the sim preallocates for (the alpha ladder is ~34
 /// rows, CONTENT.md §2). The content bake refuses a set past this.
-/// Proposed default, DECISIONS.md §open (craft verb row).
-pub const MAX_RECIPES: usize = 64;
+/// Proposed default, DECISIONS.md §open (craft verb row). 64 → 128 when
+/// Rust's tree items arrived (operator, 2026-10-17): the 62 rows of the day
+/// left two for a tree that wanted twenty.
+pub const MAX_RECIPES: usize = 128;
 
 /// Inputs one recipe may carry (alpha data uses ≤ 3). The bake refuses
 /// past it. Structural cap like `MAX_TOOLS_PER_NODE`, not a knob.
@@ -1001,13 +1004,17 @@ pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
 
 /// The width of `Player::known`, and therefore the hard ceiling on how
 /// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
-/// rather than assumed: the mask is a `u64` in the sim, in the save file
-/// and on the wire, so a 65th recipe is a widening in three places and
-/// must fail here rather than silently become unlockable.
-pub const KNOWN_MASK_BITS: usize = 64;
+/// rather than assumed: the mask is a `u128` in the sim and the save file
+/// and two 64-bit words on the wire (`SUB_KNOWN`), so a 129th recipe is a
+/// widening in three places and must fail here rather than silently become
+/// unlockable.
+pub const KNOWN_MASK_BITS: usize = 128;
+/// The mask's 64-bit words, as `EV_KNOWN` / `EV_KNOWN_HI` and `SUB_KNOWN`
+/// state them.
+pub const KNOWN_WORDS: usize = KNOWN_MASK_BITS / 64;
 const _: () = assert!(
     MAX_RECIPES <= KNOWN_MASK_BITS,
-    "Player::known is a u64 mask over recipe indices — a recipe past bit 63 \
+    "Player::known is a u128 mask over recipe indices — a recipe past bit 127 \
      could never be researched, and nothing else would say so"
 );
 
@@ -1027,10 +1034,10 @@ const _: () = assert!(MAX_SKINS.is_multiple_of(64), "a SkinSet is whole u64 word
 /// verb for is a bake error rather than a silent extra row.
 pub const MAX_LOOT_TABLES: usize = 12;
 
-/// Weighted rows one loot table may carry (the barrel uses 19 since it took
-/// Rust's component rows). The bake refuses past it. Structural cap like
-/// `MAX_RECIPE_INPUTS`, not a knob.
-pub const MAX_LOOT_ENTRIES: usize = 24;
+/// Weighted rows one loot table may carry (the cache uses 30 since it took
+/// Rust's tree blades, 2026-10-18). The bake refuses past it. Structural cap
+/// like `MAX_RECIPE_INPUTS`, not a knob.
+pub const MAX_LOOT_ENTRIES: usize = 32;
 
 /// Guaranteed rows one loot table may carry (loot guaranteed column v0,
 /// 2026-09-22) — the rows every open pays whatever the weighted draw did,
