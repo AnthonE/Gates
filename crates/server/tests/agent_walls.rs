@@ -4846,6 +4846,13 @@ fn a_raider_blows_the_door_of_a_stranger_s_base_and_empties_its_box() {
         ..common::stack(&content, "item.satchel_charge")
     };
     h.stage(|p| p.inv[HOTBAR_SLOTS] = satchels);
+    // No duds here. Which plant duds is a hash of its tick (`charge::dud`),
+    // so anything that moves the raider's timeline moves it, and this test
+    // counts the door's hp in satchels, not the dud's walk back to the wall.
+    let satchel_ix = usize::from(content.item_index("item.satchel_charge").unwrap());
+    for core in [&mut h.shard, &mut h.replay] {
+        core.world.combat.throw[satchel_ix].dud_pct = 0;
+    }
     let (bx, bz) = stage_strangers_base(&mut h, at, true);
     let frags = content.item_index("item.metal_frags").unwrap();
     assert_eq!(units_of(h.me(), frags), 0);

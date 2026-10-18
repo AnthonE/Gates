@@ -10537,6 +10537,9 @@ mod wire_domains {
             "NAME_LEN_BITS",
             "CRAFT_Q_COUNT_BITS",
             "RECIPE_TOTAL_BITS",
+            // The blueprint mask's word index, bounded by sim-core's
+            // `KNOWN_WORDS` and the assert beside the width.
+            "KNOWN_WORD_BITS",
             "RECIPE_COUNT_BITS",
             "RESEARCH_TOTAL_BITS",
             "RESEARCH_COUNT_BITS",

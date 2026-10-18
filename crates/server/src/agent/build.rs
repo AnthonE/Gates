@@ -979,6 +979,32 @@ fn tree_row(core: &ClientCore, item: u16) -> Option<(u16, u16, u16, u8)> {
     ))
 }
 
+/// The node `item`'s tree path buys next — its highest unlearned ancestor,
+/// whose own parent is known or none (or `item` itself) — and what the whole
+/// unlearned path still costs: `ui::techtree::path_total`'s walk. A Learn op
+/// spends it a node at a time, reopened by `reconcile` until `item` is
+/// learned, so a node behind others (the medkit behind the syringe, Rust's
+/// chain) is bought the way a player buys it. `None` for an item already
+/// known, before the tables are in, or for one no node teaches.
+fn next_node(core: &ClientCore, item: u16) -> Option<(u16, u32)> {
+    let rc = &core.research;
+    if core.research_have < rc.row_count {
+        return None;
+    }
+    let (mut at, mut next, mut total) = (recipe_any(core, item)?, None, 0u32);
+    // Bounded by the row count: content with a cycle never bakes.
+    for _ in 0..=rc.row_count {
+        if at == sim_core::research::NO_RECIPE || sim_core::research::knows(core.known(), at) {
+            break;
+        }
+        let row = rc.row_for_recipe(at)?;
+        total += u32::from(row.cost);
+        next = Some(at);
+        at = row.requires;
+    }
+    next.map(|n| (n, total))
+}
+
 /// A pack slot holding paper that teaches `item`.
 fn paper_slot(core: &ClientCore, item: u16) -> Option<u8> {
     (0..INV_SLOTS)
@@ -2715,11 +2741,14 @@ impl Builder {
                 Op::Lock(name) => kit(name),
                 Op::Code => {}
                 Op::Learn(name) => {
-                    if let Some((coin, cost, ..)) = item_named(core, name)
-                        .filter(|&item| paper_slot(core, item).is_none())
-                        .and_then(|item| tree_row(core, item))
+                    if let Some(item) =
+                        item_named(core, name).filter(|&item| paper_slot(core, item).is_none())
                     {
-                        bill.add(coin, u32::from(cost));
+                        if let (Some((coin, ..)), Some((_, path))) =
+                            (tree_row(core, item), next_node(core, item))
+                        {
+                            bill.add(coin, path);
+                        }
                     }
                 }
                 Op::Make(name, want) => {
@@ -2870,14 +2899,16 @@ impl Builder {
                 if paper_slot(core, item).is_some() {
                     return Some(Bill::default());
                 }
-                let (coin, cost, parent, tier) = tree_row(core, item)?;
-                let parent_known = parent == sim_core::research::NO_RECIPE
-                    || sim_core::research::knows(core.known(), parent);
-                if !parent_known || has.tier < tier {
+                // The whole path, parents first: a node's parents sit in its
+                // own tier (`validate.rs`), so the bench that teaches it
+                // teaches them.
+                let (coin, _, _, tier) = tree_row(core, item)?;
+                let (_, path) = next_node(core, item)?;
+                if has.tier < tier {
                     return None;
                 }
                 let mut bill = Bill::default();
-                bill.add(coin, u32::from(cost));
+                bill.add(coin, path);
                 return Some(bill);
             }
             Op::Make(name, _) => return recipe_bill(core, item_named(core, name)?, has),
@@ -3683,7 +3714,8 @@ impl Builder {
             .iter()
             .filter_map(|name| self.own_kit(core, name))
             .find(|&at| rung(at) >= tier);
-        let (Some(recipe), Some(bench)) = (recipe_any(core, item), bench) else {
+        // The next node on its path, parents first (`next_node`).
+        let (Some((recipe, _)), Some(bench)) = (next_node(core, item), bench) else {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };

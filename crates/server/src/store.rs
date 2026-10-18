@@ -1079,7 +1079,8 @@ mod tests {
         // and craft job (skins v0), +72.
         // 433 → 441 at SAVE_FORMAT 8: the glyph mask (`sim_core::lore`).
         // 441 → 473 at SAVE_FORMAT 9: the magazine (reload v1).
-        assert_eq!(SAVE_RECORD_BYTES, 473);
+        // 473 → 481 at SAVE_FORMAT 10: the blueprint mask's high word.
+        assert_eq!(SAVE_RECORD_BYTES, 481);
         let head = encode_header(7, 0xdead_beef, 0xfeed);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

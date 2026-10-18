@@ -2032,9 +2032,10 @@ mod tests {
         // in `PlayerSave` (+72) and the owned set in the tail (+32).
         // 485 → 493 at format 22: the glyph mask in `PlayerSave`. 493 at
         // format 23 too: the magazine's 32 B moved from the tail into it.
-        // 493 → 499 at format 24: the Verdigris in the tail.
+        // 493 → 499 at format 24: the Verdigris in the tail. 499 → 507 at
+        // format 27: the blueprint mask's high word in `PlayerSave`.
         assert_eq!(
-            PLAYER_BYTES, 499,
+            PLAYER_BYTES, 507,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2177,8 +2178,10 @@ mod tests {
         // 4_476_702 with no format change: the caps on pieces (32,768),
         // deploys (4,096), hearths (512), containers (1,024) and locks
         // (2,048) raised — counts, not strides, so old saves still load.
+        // 4_477_502 at format 27: the blueprint mask's high word, eight
+        // bytes on 100 bodies.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 4_476_702,
+            WORLD_SAVE_MAX_BYTES, 4_477_502,
             "the world save ceiling moved"
         );
     }
