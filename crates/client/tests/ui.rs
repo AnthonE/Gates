@@ -2116,6 +2116,14 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
                 break;
             }
         }
+        // The blow lands `STRIKE_DELAY_TICKS` after the swing is taken.
+        for _ in 0..=sim_core::gather::STRIKE_DELAY_TICKS {
+            w.tick(&[]);
+            for e in w.events.entries().iter().filter(|e| e.a == 1) {
+                tree |= e.code == EV_GATHER_REFUSED
+                    || (e.code == EV_GATHER && e.b >> 16 != u32::from(MEAT));
+            }
+        }
         let cut = w
             .backpacks
             .entries()

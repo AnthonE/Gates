@@ -110,7 +110,12 @@ fn the_face_is_lightened_as_much_as_it_is_darkened() {
     let block = rock_block(&src);
     for (what, needle) in [
         ("the per-block value", "splat.rock_b.x * (2.0 * d.y - 1.0)"),
-        ("the fine blocks' value", "(2.0 * draw3(fine.key).y - 1.0)"),
+        // `rock_draw` (#350) blends a block's draw with its neighbours' as a
+        // normalised weighted mean: still centred on 0.5, so still odd.
+        (
+            "the fine blocks' value",
+            "(2.0 * rock_draw(fine, 0u).y - 1.0)",
+        ),
         ("the weathering", "splat.rock_b.z * (2.0 * wx - 1.0)"),
     ] {
         assert!(

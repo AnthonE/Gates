@@ -83,6 +83,8 @@ pub const SCRIPTED_SATCHELS: u32 = 4;
 /// The scripted policy's "running low" line for food and water, percent of
 /// the meter. Also the default for when a model is told a meter is low.
 pub const SCRIPTED_LOW_METER_PCT: u32 = 40;
+/// Food and water a body sets out for THE GATE with, at least (per cent).
+pub const SCRIPTED_TRIP_METER_PCT: u32 = 55;
 /// The scripted policy runs from a fight below this share of health (the
 /// fight reflex answers one above it), and heals below the second when
 /// nobody is about.
@@ -2917,8 +2919,15 @@ impl Scripted {
             return (Goal::Recycle, "scripted: recycle the salvage");
         }
         // A found thing it has no blueprint for, and the junk: paper at a
-        // research table, so it can make its own from then on.
-        if s.offers(Goal::Research) {
+        // research table, so it can make its own from then on. In passing,
+        // with THE GATE within a walk, or once a bag is down and the base
+        // has its doors: a fresh body's trip across the island to research
+        // cost it its bag (2026-10-18).
+        let gate_close = s
+            .gate
+            .is_some_and(|g| matches!(g.distance, Distance::Here | Distance::Near | Distance::Mid));
+        let settled = s.bags > 0 && s.milestone > Milestone::Doors;
+        if (gate_close || settled) && s.offers(Goal::Research) {
             return (Goal::Research, "scripted: research what it found");
         }
         // Gears enough for a recycler and some over for it to take apart,
@@ -3010,8 +3019,19 @@ impl Scripted {
                 }
                 // What the base is short of and THE GATE sells is bought
                 // there for the junk the pack carries anyway: fragments,
-                // fuel, rope, gears, cloth.
-                if s.offers(Goal::Buy(*name)) {
+                // fuel, rope, gears, cloth. What lies about everywhere (wood,
+                // stone, ore) only with the gate close: from across the
+                // island that walk passes a hundred nodes. And no trip while
+                // food or water runs low: the walk passes nothing to eat or
+                // drink (water fell to 30 % on the gate road, 2026-10-18).
+                let gatherable =
+                    matches!(name.as_str(), "Wood" | "Stone" | "Metal Ore" | "Sulfur Ore");
+                let gate_close = s.gate.is_some_and(|g| {
+                    matches!(g.distance, Distance::Here | Distance::Near | Distance::Mid)
+                });
+                let provisioned = pct(s.food, s.food_max) >= SCRIPTED_TRIP_METER_PCT
+                    && pct(s.water, s.water_max) >= SCRIPTED_TRIP_METER_PCT;
+                if (!gatherable || gate_close) && provisioned && s.offers(Goal::Buy(*name)) {
                     return (
                         Goal::Buy(*name),
                         "scripted: buy what the base needs at the gate",
