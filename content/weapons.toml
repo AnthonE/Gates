@@ -171,6 +171,92 @@ limb_pct = 50
 rate_per_min = 48
 reach_cm = 190
 
+# --- Rust's tree melee (their item pages, 2026-10-17). Their damage runs
+# 40 (hammer, axe, icepick) · 50 (sword) · 60 (mace, cleaver) · 75
+# (longsword); `ttk_melee` holds ours to 20–34, so theirs is mapped into the
+# band in their order. Their attack rates (1.0 · 0.8 · 0.5) are written
+# down in `rate_per_min` but no melee row's rate is read yet: every swing
+# keeps `gather::SWING_INTERVAL_TICKS`, so a mace is slow in name only.
+# Reach is each prop's own length (`client/tests/melee_reach.rs`), and every
+# `structure` stays under the metal spear's 4 so the breach anchors hold.
+
+[[weapon]]
+id = "item.hammer_salvaged"
+kind = "melee"
+condition_loss = 100
+damage = 25
+structure = 2
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 60
+reach_cm = 103
+
+[[weapon]]
+id = "item.sword_salvaged"
+kind = "melee"
+condition_loss = 100
+damage = 28
+structure = 2
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 48
+reach_cm = 130
+
+[[weapon]]
+id = "item.mace"
+kind = "melee"
+condition_loss = 100
+damage = 32
+structure = 3
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 30
+reach_cm = 120
+
+[[weapon]]
+id = "item.cleaver_salvaged"
+kind = "melee"
+condition_loss = 100
+damage = 32
+structure = 3
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 30
+reach_cm = 117
+
+[[weapon]]
+id = "item.longsword"
+kind = "melee"
+condition_loss = 100
+damage = 34
+structure = 3
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 30
+reach_cm = 149
+
+[[weapon]]
+id = "item.axe_salvaged"
+kind = "melee"
+condition_loss = 100
+damage = 28
+structure = 3
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 48
+reach_cm = 110
+
+[[weapon]]
+id = "item.icepick_salvaged"
+kind = "melee"
+condition_loss = 100
+damage = 28
+structure = 2
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 48
+reach_cm = 110
+
 # **Neither bow carries a `range_m`**: an arrow flies until something stops
 # it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) — a
 # level shot from a standing eye meets flat ground about 33 m out with a
@@ -280,6 +366,25 @@ dud_pct = 20
 # sim change, not a content change.
 # Proposed default, DECISIONS.md §open ("satchel blast v0").
 blast_m = 3
+
+# Rust's beancan (their pages, 2026-10-17; the fuse, blast and dud are
+# their pre-November wiki's, the only source that prints them): a fifth of
+# the satchel's bite on a wall (15 explosive against its 75), 115 to a body,
+# about four seconds, and it fizzles more. Planted like our satchel, not
+# thrown: no charge here flies (`charge.rs`). After the satchel on purpose —
+# the raid anchor reads the first throwable (`balance.rs`).
+[[weapon]]
+id = "item.beancan"
+kind = "throwable"
+damage = 115
+structure = 25
+headshot_pct = 100
+limb_pct = 100
+rate_per_min = 10
+range_m = 10
+fuse_s = 4
+dud_pct = 15
+blast_m = 2
 
 # --- the rounds ------------------------------------------------------------
 #

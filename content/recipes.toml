@@ -216,9 +216,11 @@ station = "none"
 seconds = 15
 inputs = [{ item = "item.wood", count = 75 }]
 
+# Learned in Rust, a node of their first tree (their page, 2026-10-17).
 [[recipe]]
 id = "recipe.barricade_wood"
 output = "item.barricade_wood"
+blueprint = true
 count = 1
 station = "none"
 seconds = 15
@@ -733,3 +735,124 @@ station = "none"
 seconds = 15
 blueprint = true
 inputs = [{ item = "item.wood", count = 200 }]
+
+# --- Rust's tree items: their recipes, benches and times (their item
+# pages, 2026-10-17). All learned: each is a node in `research.toml`.
+
+[[recipe]]
+id = "recipe.hammer_salvaged"
+output = "item.hammer_salvaged"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 50 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.sword_salvaged"
+output = "item.sword_salvaged"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 15 },
+    { item = "item.metal_blade", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.mace"
+output = "item.mace"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.wood", count = 100 },
+    { item = "item.metal_frags", count = 50 },
+]
+
+[[recipe]]
+id = "recipe.cleaver_salvaged"
+output = "item.cleaver_salvaged"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 50 },
+    { item = "item.road_signs", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.longsword"
+output = "item.longsword"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_blade", count = 2 },
+]
+
+[[recipe]]
+id = "recipe.axe_salvaged"
+output = "item.axe_salvaged"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_blade", count = 5 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.icepick_salvaged"
+output = "item.icepick_salvaged"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_blade", count = 5 },
+    { item = "item.metal_pipe", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.armor_coffeecan_head"
+output = "item.armor_coffeecan_head"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 60 },
+    { item = "item.cloth", count = 15 },
+    { item = "item.sewing_kit", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.armor_tanktop_body"
+output = "item.armor_tanktop_body"
+blueprint = true
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.cloth", count = 20 }]
+
+[[recipe]]
+id = "recipe.beancan"
+output = "item.beancan"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 10
+inputs = [
+    { item = "item.gunpowder", count = 60 },
+    { item = "item.metal_frags", count = 20 },
+]

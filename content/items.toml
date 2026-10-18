@@ -1166,3 +1166,119 @@ rarity = "rare"
 slot = "none"
 class = "resources"
 description = "A working fuse. Recycle it for junk."
+
+# --- Rust's tree items (operator, 2026-10-17: the workbench trees grown
+# toward theirs). Each is learned there, a node of their tree, and the
+# numbers are their item pages' (wiki.facepunch.com, rusthelp, rustly,
+# fetched 2026-10-17); `condition_max` is their durability. What needs a
+# mechanism we lack waits: boots (no feet slot), the hazmat suit (a
+# multi-slot suit; the Ash Suit is ours), barbed barricades and floor
+# spikes (contact damage), the flare (a thrown light) and the ladder.
+
+[[item]]
+id = "item.hammer_salvaged"
+name = "Salvaged Hammer"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "tools"
+description = "A lump of scrap on a pipe. Hits hard and breaks ore, slowly."
+condition_max = 50000
+
+[[item]]
+id = "item.sword_salvaged"
+name = "Salvaged Sword"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hand"
+class = "weapons"
+description = "A blade ground out of scrap, a rag wound round the grip."
+condition_max = 35000
+
+[[item]]
+id = "item.mace"
+name = "Mace"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "weapons"
+description = "A spiked iron head on a wooden haft. Heavy, and it hurts."
+condition_max = 20000
+
+[[item]]
+id = "item.cleaver_salvaged"
+name = "Salvaged Cleaver"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "weapons"
+description = "A road sign cut into a cleaver. Crude, wide and brutal."
+condition_max = 25000
+
+[[item]]
+id = "item.longsword"
+name = "Longsword"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "hand"
+class = "weapons"
+description = "A long two-handed blade. The longest reach of any sword."
+condition_max = 25000
+
+[[item]]
+id = "item.axe_salvaged"
+name = "Salvaged Axe"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "tools"
+description = "Saw blades on a pipe. Fells a tree faster than a hatchet."
+condition_max = 50000
+
+[[item]]
+id = "item.icepick_salvaged"
+name = "Salvaged Icepick"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "tools"
+description = "Blades bent into a pick. Breaks ore faster than a pickaxe."
+condition_max = 50000
+
+[[item]]
+id = "item.armor_coffeecan_head"
+name = "Coffee Can Helmet"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "head"
+class = "clothing"
+condition_max = 20000
+description = "A big can with an eye slot. Good protection for the head."
+
+[[item]]
+id = "item.armor_tanktop_body"
+name = "Tank Top"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "body"
+class = "clothing"
+description = "A cloth vest. A little protection and a little warmth."
+
+[[item]]
+id = "item.beancan"
+name = "Beancan Grenade"
+stack = 4
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "weapons"
+description = "Gunpowder in a can. Plant it on a wall or door; it often fizzles."

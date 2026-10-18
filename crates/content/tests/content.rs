@@ -214,7 +214,7 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
         banded += 1;
     }
     assert!(banded >= 10, "only {banded} banded rows: the file shrank");
-    assert_eq!(opted_out, 1, "exactly one throwable ships");
+    assert_eq!(opted_out, 2, "two throwables ship: the satchel and the beancan");
 }
 
 /// The ladder's refusals, driven from the file rather than from the
@@ -297,8 +297,8 @@ fn test_content() {
     }
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
-        // components (2026-10-13).
-        (40..=92).contains(&(c.items.len() - fittings.len())),
+        // components (2026-10-13); → 102 for Rust's tree items (2026-10-17).
+        (40..=102).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -1939,8 +1939,8 @@ fn the_durability_rules_refuse_what_they_name() {
     // V5: a zero loss is an inert row, not a statement.
     refuses(
         "gatherables.toml",
-        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\n# Bush",
-        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\"item.hammer_salvaged\" = 30\n\"item.icepick_salvaged\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\"item.hammer_salvaged\" = 30\n\"item.icepick_salvaged\" = 30\n\n# Bush",
         "(V5)",
     );
     // V6: a loss row's tool must declare a condition to lose. Strip the
@@ -4152,7 +4152,7 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
     for root in [
         "item.pistol_ammo",
         "item.satchel_charge",
-        "item.hatchet_metal",
+        "item.hammer_salvaged",
     ] {
         let row = rc.row_for(idx(root)).expect("researchable");
         assert_eq!(
@@ -4168,10 +4168,23 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// price, and gunpowder and metal arrows — known from the start there — are
 /// not gated here either. The auto turret (ours, `NOW.md` §0aa 1) is the
 /// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
+/// Their tree items (2026-10-17) and the wooden barricade, learned there,
+/// are the other eleven.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 14] = [
+    let want: [(&str, u32); 25] = [
+        ("item.hammer_salvaged", 30),
+        ("item.barricade_wood", 15),
+        ("item.sword_salvaged", 15),
+        ("item.mace", 30),
+        ("item.cleaver_salvaged", 30),
+        ("item.armor_tanktop_body", 15),
+        ("item.beancan", 30),
+        ("item.longsword", 30),
+        ("item.axe_salvaged", 60),
+        ("item.icepick_salvaged", 60),
+        ("item.armor_coffeecan_head", 30),
         ("item.arrow_fire", 30),
         ("item.hatchet_metal", 30),
         ("item.pickaxe_metal", 30),
@@ -4344,11 +4357,12 @@ fn the_hash_moves_with_the_ladder() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .expect("research.toml");
-    // A legal edge that changes the tree: the pickaxe behind the hatchet —
-    // the guess their chain refutes (`BLUEPRINTS.md` §2), and still legal,
-    // because the floor is a minimum and authoring MORE is a design call —
-    // which is exactly why the hash has to be able to see it.
-    let from = "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30";
+    // A legal edge that changes the tree: the pickaxe behind the hatchet
+    // rather than the salvaged hammer — the guess their chain refutes
+    // (`BLUEPRINTS.md` §2), and still legal, because the floor is a minimum
+    // and authoring MORE is a design call — which is exactly why the hash
+    // has to be able to see it.
+    let from = "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30\nrequires = \"item.hammer_salvaged\"";
     assert!(
         entry.1.contains(from),
         "test fixture rot: the pickaxe row moved"
