@@ -651,3 +651,34 @@ fn the_frame_buffer_drops_newest_and_counts() {
     );
     assert_eq!(engine.pending(), 0);
 }
+
+/// Behind the head is duller, in front and beside are not: the one cue
+/// stereo has for front and back, and a sign slip here would muffle the
+/// sound you are looking at instead.
+#[test]
+fn a_sound_behind_is_duller_than_one_in_front() {
+    use client::render::audio::rear_lp;
+    for yaw in [0u16, 9_000, 30_000, 50_000] {
+        let (fx, fz) = sim_core::yaw_dir(yaw);
+        let (rx, rz) = client::look::right_dir(yaw);
+        let ears = [10.0, 2.0, -4.0];
+        let at = |k: f32, s: f32| [ears[0] + fx * k + rx * s, 2.0, ears[2] + fz * k + rz * s];
+        assert_eq!(
+            rear_lp(ears, at(8.0, 0.0), [rx, rz], 48_000),
+            0,
+            "ahead, yaw {yaw}"
+        );
+        assert_eq!(
+            rear_lp(ears, at(0.0, 8.0), [rx, rz], 48_000),
+            0,
+            "beside, yaw {yaw}"
+        );
+        let half = rear_lp(ears, at(-5.0, 5.0), [rx, rz], 48_000);
+        let dead = rear_lp(ears, at(-8.0, 0.0), [rx, rz], 48_000);
+        assert!(half > 0 && dead > 0, "behind, yaw {yaw}");
+        assert!(
+            dead < half,
+            "dead behind is the darkest (a lower coefficient)"
+        );
+    }
+}

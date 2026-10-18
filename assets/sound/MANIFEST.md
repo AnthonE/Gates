@@ -31,6 +31,9 @@ file that fails to decode, and `crates/client/tests/sound.rs`
 | `impactGeneric_light` | `BulletStone` | a round on stone |
 | `impactWood_light` | `BulletWood` | a round into wood |
 | `impactMetal_light` | `BulletMetal` | a round on metal |
+| `footstep_wood` | `StepWood` (+remote) | a step on a twig or wooden floor |
+| `footstep_concrete` | `StepConcrete` (+remote) | a step on a stone floor |
+| `impactPlate_light` | `StepMetal` (+remote) | a step on a sheet-metal floor |
 | `impactWood_heavy` | `Knock` | a knock on a door |
 | `ore_glint_0`–`1` | `OreGlint` | cut here from `impactMetal_light_000` / `_002`: whole, sped to 1.65× / 1.80× (pitch and length), faded out over the last 90 / 80 ms, mono (cut 2026-10-11) |
 | `tung_0`–`2` | `Tung` | Triple T's bat. Cut here from `impactWood_heavy_000` / `_002` / `_004`: the strike's first 0.16 s (faded over its last 30 ms) driving two narrow resonators at f and 2.76 f (f = 330 / 300 / 360 Hz, Q 45 / 30) under the dry hit at 0.35, high-passed at 90 Hz, 0.5 s, peak 0.85, mono (cut 2026-10-12) |
