@@ -7924,7 +7924,7 @@ mod tests {
                 ..ok
             },
             SkinRow {
-                coin: 3,
+                coin: COIN_JUNK + 1,
                 price: 5,
                 ..ok
             },
