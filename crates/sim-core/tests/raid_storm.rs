@@ -480,14 +480,18 @@ fn test_raid_storm() {
         s.peak_removals, MAX_REMOVALS_PER_TICK,
         "the removal budget was not saturated — the storm is no longer pressing it"
     );
+    // The other way round since 2026-10-17: the ring overflowed under this
+    // raid at 256 and was raised to 500 (`limits.rs`) so a raid drops
+    // nothing. It must still press the ring, and fit. `loot_storm.rs` and
+    // `trust_ledger.rs` still drive the overflow path itself.
     assert!(
-        s.overflow_ticks > 0,
-        "the event ring never overflowed; {PLAYERS} players is no longer a crowd, \
-         or MAX_EVENTS_PER_TICK moved"
+        s.peak_events > MAX_EVENTS_PER_TICK / 4,
+        "a peak of {} events is no crowd: {PLAYERS} players raiding should press the ring",
+        s.peak_events
     );
     assert_eq!(
-        s.peak_events, MAX_EVENTS_PER_TICK,
-        "an overflowing ring must be exactly full"
+        s.overflow_ticks, 0,
+        "{PLAYERS} players raiding overflowed a {MAX_EVENTS_PER_TICK}-slot ring"
     );
 
     // The stores the storm builds into stay well inside their caps, which

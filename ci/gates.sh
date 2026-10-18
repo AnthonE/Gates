@@ -447,6 +447,11 @@ rotation_actions="$(awk '/^rotation /{print $2}' "$native_out")"
 [ "$rotation_actions" = "8" ] \
   || fail "test_parity_wasm: rotation completed '$rotation_actions' actions, expected 8"
 
+# Every `fmath` transcendental over the probe's sweep (`probe::probe_math`).
+math_calls="$(awk '/^math /{print $2}' "$native_out")"
+[ "$math_calls" = "221234" ] \
+  || fail "test_parity_wasm: the math sweep made '$math_calls' calls, expected 221234"
+
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #
 # Eleven gates were deleted with the browser client, in two groups.

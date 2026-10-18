@@ -151,6 +151,24 @@ impl Loadout {
         best_in(self, core, role, 0..INV_SLOTS).map(|(slot, item, _)| (slot, item))
     }
 
+    /// The least of a role anywhere in the pack — the bandage before the
+    /// medkit — and whether it is also the best there is.
+    pub fn least(&self, core: &ClientCore, role: Role) -> Option<(usize, u16, bool)> {
+        let mut least: Option<(usize, u16, usize)> = None;
+        for slot in 0..INV_SLOTS {
+            let s = core.inv[slot];
+            if !usable(core, &s) {
+                continue;
+            }
+            if let Some(rank) = self.rank(role, s.item) {
+                if least.is_none_or(|(_, _, r)| rank > r) {
+                    least = Some((slot, s.item, rank));
+                }
+            }
+        }
+        least.map(|(slot, item, rank)| (slot, item, rank == 0))
+    }
+
     /// Is this belt slot worth keeping there, were `extra` on the belt too:
     /// the best of some role among the belt and it (ties go to the lower
     /// slot).

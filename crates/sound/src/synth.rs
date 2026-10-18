@@ -599,6 +599,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
             render_take(Cue::Equip, take)
         }
         Cue::Geiger => geiger(&mut r),
+        Cue::Headshot => headshot(&mut r),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else
@@ -777,6 +778,50 @@ fn impact(r: &mut Rng, dur_s: f32, t: Tone) -> Vec<f32> {
         let body =
             (std::f32::consts::TAU * t.lo_hz * time).sin() * t.lo_amp * (-time / t.lo_tau).exp();
         out.push((noise + body) * att * edges(i, n));
+    }
+    out
+}
+
+/// A headshot taken: a bright bone crack, then a crackling crunch over a
+/// heavy thud a beat behind it, the two summed into one blow.
+fn headshot(r: &mut Rng) -> Vec<f32> {
+    let crack = impact(
+        r,
+        0.12,
+        Tone {
+            lo_hz: 900.0,
+            lo_amp: 0.25,
+            lo_tau: 0.010,
+            noise_amp: 1.0,
+            noise_tau: 0.018,
+            lp_hz: 9_000.0,
+            hp_hz: 1_800.0,
+            attack_s: 0.0002,
+            crackle: 0.6,
+        },
+    );
+    let crunch = impact(
+        r,
+        0.38,
+        Tone {
+            lo_hz: 75.0,
+            lo_amp: 1.0,
+            lo_tau: 0.075,
+            noise_amp: 0.9,
+            noise_tau: 0.090,
+            lp_hz: 5_000.0,
+            hp_hz: 300.0,
+            attack_s: 0.0004,
+            crackle: 0.9,
+        },
+    );
+    let lag = samples(0.012);
+    let mut out = vec![0.0f32; crunch.len() + lag];
+    for (i, x) in crack.iter().enumerate() {
+        out[i] += x * 0.8;
+    }
+    for (i, x) in crunch.iter().enumerate() {
+        out[i + lag] += x;
     }
     out
 }

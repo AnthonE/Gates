@@ -722,8 +722,8 @@ fn main() {
     // The victim's half of a landed blow (v57): a bearing sector and the
     // damage, unicast to the person it happened to.
     {
-        let (sector, damage) = goldens::event_hurt();
-        let len = encode_event_hurt(sector, damage, &mut buf).unwrap();
+        let (sector, damage, head) = goldens::event_hurt();
+        let len = encode_event_hurt(sector, damage, head, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[101], &buf[..len]);
     }
 

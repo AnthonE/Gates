@@ -23,15 +23,25 @@
 #     BUDDY_MIND_PORT=8433             # optional; the own-brain bridge
 #     BUDDY_OWN_IDLE_S=1800            # optional; a quiet harness's body leaves
 #
-#   python3 -m venv ~master/gates-jev/venv && ~master/gates-jev/venv/bin/pip install anthropic
+#   the gates-agents account and /opt/gates-agents (`ops/gates-village@.service`)
+#   sudo python3 -m venv /opt/gates-agents/venv && sudo /opt/gates-agents/venv/bin/pip install anthropic
 #   sudo cp ops/gates-buddies.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now gates-buddies
 #   journalctl -u gates-buddies -f
 #
 # and the `/gates/rent.json`, `/gates/mind/` and `/gates/clips/` blocks in
-# `ops/game-elopros-status.nginx.conf`. `ci/deploy_shard.sh` copies jev-bot,
+# `ops/game-elopros-status.nginx.conf`. `ci/deploy_shard.sh` installs jev-bot,
 # claude_agent.py and runner.py (with mind_bridge.py and recap.py) to
-# ~/gates-jev and restarts this, so a wire bump never strands an agent.
+# /opt/gates-agents and restarts this, so a wire bump never strands an agent.
+#
+# The minds are sandboxed to the game twice over. The model is handed no
+# tools: each turn it answers one fixed shape (a goal off the offered list,
+# a chat line, a voice line, notes to itself, a bug report), and
+# `claude_agent.py` checks every field. And the process can reach nothing
+# else: its own account, no home directories, nothing on this box's private
+# networks or the cloud's metadata address (the block below). It does reach
+# the internet, for Anthropic, ElevenLabs and elopros.com, which sit behind
+# CDNs no address list keeps up with.
 #
 # Doctor Wood is one of ours here (a community agent who keeps the
 # platform's ELO_BUDDY_HOUSE_FRIEND as his friend). To keep his body, name
@@ -60,25 +70,58 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=master
-Group=master
-WorkingDirectory=/home/master/gates-jev
+User=gates-agents
+Group=gates-agents
+WorkingDirectory=/opt/gates-agents
 EnvironmentFile=/etc/gates-buddies/env
 StateDirectory=gates-buddies
 StateDirectoryMode=0755
+# nginx reads public/; the clips cutter (group gates-agents) writes a
+# buddy's clips and spend.
+UMask=0002
 Environment="BUDDY_STATE=/var/lib/gates-buddies"
-# Bug reports the minds file (`jev-bot`'s copies): home is read-only here.
+Environment="JEV_BOT=/opt/gates-agents/jev-bot"
+Environment="CLAUDE_AGENT=/opt/gates-agents/claude_agent.py"
+Environment="PYTHONDONTWRITEBYTECODE=1"
+# Bug reports the minds file (`jev-bot`'s copies).
 Environment="GATES_REPORTS_DIR=/var/lib/gates-buddies/reports"
-ExecStart=/home/master/gates-jev/venv/bin/python /home/master/gates-jev/runner.py
+ExecStart=/opt/gates-agents/venv/bin/python /opt/gates-agents/runner.py
 Restart=always
 RestartSec=15
 KillMode=mixed
 TimeoutStopSec=30
 
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
+# The sandbox: a game client and nothing else. Its own account
+# (`gates-agents`), which owns nothing but this unit's state; no home
+# directories, no devices, no privileges, read-only everywhere but its state.
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# Network: the internet, never this box's private side (the other VM, the
+# containers) or the cloud's metadata service.
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10
+IPAddressAllow=localhost
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gates-buddies

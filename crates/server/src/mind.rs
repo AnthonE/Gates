@@ -50,10 +50,13 @@ pub const SCRIPTED_PLENTY: u32 = 3000;
 /// A barrel or crate known this near (metres) is worth taking on the way,
 /// whatever the base needs.
 pub const SCRIPTED_LOOT_NEAR_M: u8 = 40;
-/// What loot pays that the playbook goes for when the base is short of it:
-/// barrels, crates and caches pay these, and before a furnace stands
-/// nothing else pays fragments (`content/loot.toml`).
-pub const LOOTED: [&str; 9] = [
+/// What the playbook goes on a loot run for when the base is short of it
+/// and THE GATE is not selling it. Junk, parts and fuel come off barrels,
+/// crates and oil barrels (`content/loot.toml`); since 2026-10-17 none of
+/// them pays the raw materials, as none of Rust's does, so a run for
+/// fragments or fat pays junk for the gate, or meets them on the way. Not
+/// cloth: a body short of it goes to the hemp.
+pub const LOOTED: [&str; 8] = [
     "Metal Fragments",
     "Low Grade Fuel",
     "Junk",
@@ -61,7 +64,6 @@ pub const LOOTED: [&str; 9] = [
     "Tarp",
     "Gears",
     "Animal Fat",
-    "Cloth",
     "Sulfur",
 ];
 /// The recycler, by catalog name (`agent::oven`), and the gears held before
@@ -182,6 +184,10 @@ pub enum Goal {
     /// Take salvaged parts apart at its recycler, putting it down if
     /// none stands near: junk, fragments and cloth.
     Recycle,
+    /// Take a found thing it has no blueprint for, and the junk it costs,
+    /// to THE GATE's research table, and read the paper it makes
+    /// (`agent::oven`, `Work::Research`).
+    Research,
     /// Home is under attack or damaged: in through the doors, the fight
     /// met from inside, then the damage mended and the doors shut.
     Defend,
@@ -260,7 +266,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 39] = [
+    pub const FIXED: [Goal; 40] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -282,6 +288,7 @@ impl Goal {
         Goal::Loot,
         Goal::Cook,
         Goal::Recycle,
+        Goal::Research,
         Goal::Defend,
         Goal::Raid,
         Goal::JoinTeam,
@@ -327,6 +334,7 @@ impl Goal {
             Goal::Loot => "loot",
             Goal::Cook => "cook",
             Goal::Recycle => "recycle",
+            Goal::Research => "research",
             Goal::Defend => "defend",
             Goal::Raid => "raid",
             Goal::JoinTeam => "join_team",
@@ -412,6 +420,7 @@ impl Goal {
             Goal::Loot => "Smash known barrels and empty crates, or go to the nearest loot place.".into(),
             Goal::Cook => "Cook raw meat at a fire, putting one down if none is near.".into(),
             Goal::Recycle => "Recycle the salvaged parts for junk.".into(),
+            Goal::Research => "Research a found thing you have no blueprint for at THE GATE's table, for junk.".into(),
             Goal::Defend => "Home is attacked or damaged: get inside, fight from there, then repair it.".into(),
             Goal::Raid => "Break into the weakest base worth it and take what its boxes hold.".into(),
             Goal::JoinTeam => "Accept the team invite.".into(),
@@ -1679,6 +1688,25 @@ impl Summary {
         })
     }
 
+    /// Its crew and job (`agent::society`), and what the job asks of it now
+    /// (`duty`, a goal off the options, and why): `null` outside a society.
+    /// Sent beside the observation, as `team` is. Worker only.
+    pub fn crew_json(&self) -> Value {
+        let soc = &self.society;
+        if !soc.set {
+            return Value::Null;
+        }
+        let duty = crew_work(self);
+        json!({
+            "job": soc.role.name(),
+            "crewmates": soc.crew,
+            "crewmates_on_team": soc.crew_on_team,
+            "intruders_at_home": soc.intruders.count,
+            "duty": duty.map(|(g, _)| g.label().as_str().to_owned()),
+            "why": duty.map(|(_, why)| why.trim_start_matches("society: ")),
+        })
+    }
+
     /// Who its team is and whose invite waits, by the labels a chat log
     /// shows. Sent to an external source beside the observation, as
     /// `heard` is, never inside it. Worker only (it allocates).
@@ -2337,6 +2365,19 @@ pub struct Scripted {
     code: Option<crate::agent::lock::LockCode>,
 }
 
+/// What a society member's crew asks of it now, as the scripted policy
+/// picks it: coming together at THE GATE, then its job (`Role`).
+pub fn crew_work(s: &Summary) -> Option<(Goal, &'static str)> {
+    founding(s).or_else(|| society_work(s))
+}
+
+/// Its crew is still coming together at THE GATE: the turns a mind other
+/// than the scripted policy never takes (`autopilot::ALONE`), since a crew
+/// that does not meet is no crew.
+pub fn crew_forming(s: &Summary) -> bool {
+    founding(s).is_some()
+}
+
 /// A society's crew coming together (`agent::society`): the founder
 /// invites a crewmate in reach, else waits at THE GATE while some of the
 /// crew is not on its team; a crewmate off its founder's team goes there
@@ -2875,6 +2916,11 @@ impl Scripted {
         if s.offers(Goal::Recycle) {
             return (Goal::Recycle, "scripted: recycle the salvage");
         }
+        // A found thing it has no blueprint for, and the junk: paper at a
+        // research table, so it can make its own from then on.
+        if s.offers(Goal::Research) {
+            return (Goal::Research, "scripted: research what it found");
+        }
         // Gears enough for a recycler and some over for it to take apart,
         // and none to take them to: one is made at the bench.
         if tooled
@@ -2893,8 +2939,14 @@ impl Scripted {
             .iter()
             .any(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
         // While the bag is still to be made, its cloth is not spent on a bow
-        // or bandages: only the spear, which takes none, goes first.
-        let bag_wanted = tooled && s.bags == 0 && s.count_of(BAG_ITEM) == 0;
+        // or bandages: only the spear, which takes none, goes first. The
+        // base's own bag (its doors milestone) counts, and so does any cloth
+        // the base is short of: no container pays it, so cloth spent before
+        // then is a walk to the hemp.
+        let bag_wanted = tooled
+            && ((s.bags == 0 && s.count_of(BAG_ITEM) == 0)
+                || s.milestone <= Milestone::Doors
+                || s.needs().iter().any(|(n, _)| n.as_str() == "Cloth"));
         if started {
             let [(spear, ..), ..] = crate::agent::loadout::ARM_UP;
             for (item, want, needs) in crate::agent::loadout::ARM_UP {
@@ -2956,9 +3008,10 @@ impl Scripted {
                 if seen && s.offers(goal) {
                     return (goal, "scripted: materials for the base");
                 }
-                // What a loot run is for, THE GATE sells for the junk the
-                // pack carries anyway: fragments, fuel, rope, gears.
-                if LOOTED.contains(&name.as_str()) && s.offers(Goal::Buy(*name)) {
+                // What the base is short of and THE GATE sells is bought
+                // there for the junk the pack carries anyway: fragments,
+                // fuel, rope, gears, cloth.
+                if s.offers(Goal::Buy(*name)) {
                     return (
                         Goal::Buy(*name),
                         "scripted: buy what the base needs at the gate",

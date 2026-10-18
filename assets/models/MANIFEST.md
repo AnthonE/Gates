@@ -1021,7 +1021,7 @@ its photographed surfaces on it (`render/town.rs`). The sidecar
 
 | file | kit | tris | size |
 |---|---|---|---|
-| `site/town.glb` | `ci/kits/town.json` | 60,940 | 7.1 MB |
+| `site/town.glb` | `ci/kits/town.json` | 60,324 | 7.0 MB |
 
 ## `site/ziggurat.glb` — the Black Ziggurat, dressed in Blender
 
@@ -1212,3 +1212,18 @@ Prompts, in full, for the IP rail:
 > **oil_barrel** — "A single red-painted steel 55-gallon oil drum standing upright on a plain white background, three-quarter view. 88 centimetres tall and 58 centimetres across, two rolling hoops around the body, rolled rims top and bottom, two bung caps on the closed lid. Red paint dented, scratched and chipped through to grey steel, rust creeping up from the bottom rim, oily black drips down one side. Real, weathered, photographed in soft daylight. Exactly one drum. No ground, no people, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Red painted steel drum, dented, chipped and scratched paint, grey steel showing through, rust at the bottom rim, oily black drips, no text, no labels, no logos"
 >
 > **food_crate** — "A single low wooden supply crate on a plain white background, three-quarter view. A long rectangular box 100 centimetres long, 60 centimetres deep and 40 centimetres tall, rough pine planks nailed into a dark wooden batten frame, a lid of three boards, iron corner brackets and a rope handle at each end. Weathered grey-brown wood, dirty, a faded green paint band across the front with no letters. Real, photographed in soft daylight. Exactly one crate. No ground, no people, no plants, no text, no letters, no labels, no logos, no scale bar."  ·  texture: "Weathered grey-brown pine planks, dark wooden battens, rusty iron corner brackets, frayed rope handles, faded green paint band, no text, no letters"
+
+## `deploy/vending.glb` — the vending machine, Meshy, 2026-10-17
+
+Same terms and pipeline as the roadside set above: `meshy_gen.py`
+(nano-banana-pro → meshy-t2 smart topology, single view, 24 credits) →
+`import_meshy.py` uniform to the `DEPLOY` row (0.9 × 1.9 × 0.8) →
+`ktx_pack.py --size 1024`. It draws the player's vending machine (row 19)
+and THE GATE's kiosk machines (`town::MACHINES`, drawn ×1.18 so they stand
+the generator's own 1.8 m).
+
+| file | arch | image task | mesh task | size (m) | import |
+|---|---|---|---|---|---|
+| `deploy/vending.glb` | 19 vending machine | `01a14aa2-3d2e` | `01a14aa2-bdae` | 0.90 × 1.53 × 0.70 | uniform to the `DEPLOY` row; the delivery was 1.06 × 1.80 × 0.82, wider than the row |
+
+> **vending** — "A single tall steel vending machine standing upright on a plain white background, three-quarter front view. A rectangular cabinet 90 centimetres wide, 80 centimetres deep and 190 centimetres tall. Its front face has a large glass window showing shelves of small boxes, cans and packets behind it, a narrow side panel to the right of the window with a coin slot, a small square button keypad and a little dark screen, and a dark collection flap across the bottom. Painted rust red steel, scratched, dented and chipped through to grey metal, grime and rust at the bottom edge and the seams, a slightly dusty glass front. Exactly one vending machine. No ground, no people, no plants, no text, no letters, no numbers, no logos, no brand names, no scale bar."  ·  texture: "Rust red painted steel cabinet, scratched and chipped through to grey metal, rust at the bottom edge and seams, dusty glass front over shelves of small boxes and cans, dark keypad and coin slot, no text, no letters, no logos"

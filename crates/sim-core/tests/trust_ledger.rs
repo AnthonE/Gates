@@ -25,12 +25,13 @@
 //! hold exactly that many rows, in command order. The event ring is then
 //! measured separately, to prove it lost rows the ledger kept.
 //!
-//! One owner stands a box. Sixteen flooders `Loot` a full bag each, placed
-//! **first** in the tick's commands: one `Loot` is thirty `EV_GATHER`s and a
-//! removal, so the event ring is full before the first withdrawal runs.
-//! Eighty-three movers then take one unit each out of the owner's box: 240
-//! trust verbs on a flood tick, 256 on a ceiling tick, 300 offered on an
-//! over-ceiling tick. The owner is awake, then asleep, then evicted, so all
+//! One owner stands a box. Enough flooders to fill the event ring `Loot` a
+//! full bag each, placed **first** in the tick's commands: one `Loot` is
+//! thirty `EV_GATHER`s and a removal, so the ring is full before the first
+//! withdrawal runs (seventeen against its 500). The movers, everybody else
+//! the shard can seat, then take one unit each out of the owner's box: the
+//! command ceiling less the flooders on a flood tick, 256 on a ceiling tick,
+//! 300 offered on an over-ceiling tick. The owner is awake, then asleep, then evicted, so all
 //! three presences cross the saturated ring.
 
 // Wall 3's clippy list bans `String` and `format!` crate-wide, tests
@@ -78,10 +79,12 @@ const SEED: u64 = 0x7257_5354;
 /// Ids, by role. Every id is distinct from every count and every code this
 /// file asserts on, so a transposed field cannot read as a match.
 const OWNER: u32 = 1;
-const FLOODERS: u32 = 16;
+/// One `Loot` raises `INV_SLOTS` gathers and a removal; this many fill the
+/// ring with one to spare.
+const FLOODERS: u32 = (MAX_EVENTS_PER_TICK / (INV_SLOTS + 1) + 1) as u32;
 const FIRST_FLOODER: u32 = 2;
 const FIRST_MOVER: u32 = FIRST_FLOODER + FLOODERS;
-/// Everybody else the shard can seat: 83 movers.
+/// Everybody else the shard can seat.
 const MOVERS: u32 = MAX_PLAYERS as u32 - FIRST_MOVER + 1;
 
 /// Trust verbs on a flood tick: the command ceiling minus the flooders.

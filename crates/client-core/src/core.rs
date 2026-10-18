@@ -1473,6 +1473,8 @@ pub enum Ingest {
     AppliedDelta = 2,
     Stale = 3,
     NoBaseline = 4,
+    /// A snapshot overflow datagram (wire v121), folded into its tick.
+    AppliedMore = 5,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1980,7 +1982,7 @@ pub struct ClientCore {
     /// absolute world bearing (`sim_core::combat::bearing_sector`); the
     /// renderer subtracts its own yaw, so the mark stays where the attacker
     /// is while you turn to look at them.
-    hurts: [(u8, u16); TOAST_RING],
+    hurts: [(u8, u16, bool); TOAST_RING],
     hurt_head: usize,
     hurt_len: usize,
     /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
@@ -2414,7 +2416,7 @@ impl ClientCore {
             }; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
-            hurts: [(0, 0); TOAST_RING],
+            hurts: [(0, 0, false); TOAST_RING],
             hurt_head: 0,
             hurt_len: 0,
             deaths: [(0, 0); TOAST_RING],
@@ -3432,11 +3434,9 @@ impl ClientCore {
                     }
                     self.applied2 |= APPLIED2_WORN;
                 } else if kind == CONT_SELF {
-                    // The server shut the panel: gone, or out of reach.
-                    self.cont_kind = CONT_SELF;
-                    self.cont_handle = 0;
-                    self.cont = [ItemStack::default(); INV_SLOTS];
-                    self.applied2 |= APPLIED2_CONT;
+                    // The server shut the panel: gone, out of reach, or
+                    // the answer to this client's own close.
+                    self.shut_container();
                 } else if reset {
                     // The whole container, and the only message that may
                     // change which container is open — so a diff can never
@@ -3792,12 +3792,16 @@ impl ClientCore {
                 self.hp_max = max;
                 flags |= APPLIED_HEALTH;
             }
-            EventMsg::Hurt { sector, damage } => {
+            EventMsg::Hurt {
+                sector,
+                damage,
+                head,
+            } => {
                 if self.hurt_len == TOAST_RING {
                     self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
                     self.hurt_len -= 1;
                 }
-                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage);
+                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage, head);
                 self.hurt_len += 1;
                 flags |= APPLIED_HIT;
             }
@@ -4552,12 +4556,13 @@ impl ClientCore {
         Some(r)
     }
 
-    /// The oldest blow landed on you: `(bearing sector, damage)`.
+    /// The oldest blow landed on you: `(bearing sector, damage, to the
+    /// head)`.
     ///
     /// Destructive, single-consumer, `pop_hit`'s contract exactly —
     /// `render/feed.rs` is the one drain and `client/tests/sound.rs` is what
     /// keeps it that way (`CLAUDE.md`'s clean-merge trap).
-    pub fn pop_hurt(&mut self) -> Option<(u8, u16)> {
+    pub fn pop_hurt(&mut self) -> Option<(u8, u16, bool)> {
         if self.hurt_len == 0 {
             return None;
         }
@@ -4833,6 +4838,17 @@ impl ClientCore {
             .get(item as usize)
             .is_some_and(|r| r.holster)
             && sim_core::town::safe(&self.haven().town, x, z)
+    }
+
+    /// Forget the open ground container. The server's close lands here, and
+    /// so does this client's own (`verbs::close_container`), so a box shut
+    /// with the panel is not drawn again on the next `Tab`: the server
+    /// stops feeding it the moment the close arrives.
+    pub fn shut_container(&mut self) {
+        self.cont_kind = CONT_SELF;
+        self.cont_handle = 0;
+        self.cont = [ItemStack::default(); INV_SLOTS];
+        self.applied2 |= APPLIED2_CONT;
     }
 
     /// The selected hotbar slot, when what is in it stands a downed body up
@@ -5168,11 +5184,18 @@ impl ClientCore {
         self.input_due = false;
         let (ack, ack_bits) = self.view.ack_fields();
         let tail = self.predict.tail();
-        // The playout report (wire v61): the delay this client actually
-        // renders remotes at, rounded to the tick, so the server's
-        // lag-comp favour prices the past THIS player sees rather than
-        // the old constant. The constructor saturates it to the field.
-        let mut dg = InputDatagram::new(ack, ack_bits, self.playout_ticks.round() as u8);
+        // The playout report (wire v61): how far behind the acked snapshot
+        // this client is drawing remotes right now, rounded to the tick, so
+        // the server's lag-comp favour prices the past THIS player sees.
+        // Measured against the ack rather than sent as the bare delay: the
+        // smoothed clock runs up to a tick past the newest snapshot between
+        // arrivals, and the bare delay left the shard rewinding half a tick
+        // short on average. The constructor saturates it to the field.
+        let view_lag = self
+            .view
+            .newest_applied
+            .map_or(self.playout_ticks, |s| f64::from(s) - self.render_tick());
+        let mut dg = InputDatagram::new(ack, ack_bits, view_lag.round().max(0.0) as u8);
         for f in tail {
             if dg.push(*f).is_err() {
                 break; // tail is wire-capped already; defensive only
@@ -5276,6 +5299,20 @@ impl ClientCore {
                 } else {
                     Ingest::Applied
                 }
+            }
+            Ok(Applied::More) => {
+                // The rest of the tick's bodies: interpolation samples at
+                // the tick they belong to, and nothing else — the clock,
+                // the jitter estimate and the reconcile all ran on the
+                // snapshot, and the own body is never in an overflow.
+                if let Some(more) = self.view.newest_more() {
+                    for e in more.entities() {
+                        if e.id != self.player_id || self.spectating {
+                            self.interp.push(more.tick, e);
+                        }
+                    }
+                }
+                Ingest::AppliedMore
             }
             Ok(Applied::Stale) => {
                 self.snapshots_stale += 1;

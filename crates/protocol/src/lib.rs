@@ -27,6 +27,13 @@
 //! record absolute, no baseline needed. Otherwise records may delta
 //! against the client's state at `tick − baseline_age`.
 //!
+//! **Snapshot overflow, S→C** (v121) — `kind:4 · tick:32 · part:2 ·
+//! entity_count:7`, then absolute entity records only. What one snapshot
+//! datagram could not carry, sent the same tick in up to
+//! `SNAPSHOT_PARTS - 1` more datagrams: no removals, no header levels, never
+//! a delta and never a baseline, so acks and deltas mean exactly what they
+//! did. A client applies one only on top of that tick's snapshot.
+//!
 //! Encode and decode both live on hot paths, so both are allocation-free
 //! and total: every failure is a `WireError`, never a panic — decode eats
 //! arbitrary bytes (client-driven on the server side), and the golden
@@ -1214,7 +1221,20 @@ pub use voice::{
 /// v120 — key locks: `SUB_DOOR` and the placed-deployable record each grew
 /// a `keyed` bit after `has_lock`, so a client draws a padlock and offers no
 /// keypad at a key lock.
-pub const PROTO_VER: u16 = 120;
+/// v121 — scale. The stores' caps raised: 32,768 pieces, 4,096
+/// deployables, 1,024 containers, 512 hearths, 2,048 locks, and
+/// `MAX_ITEM_DEFS` 127 (the held field's seven bits still hold it beside
+/// `HELD_NONE`); no field moved, but a client's mirrors are sized by the
+/// caps, so both ends must agree on them. And snapshot overflow:
+/// `KIND_SNAPSHOT_MORE` (12) carries, the same tick, the bodies a snapshot
+/// had no room for, so a client's interest set is `SNAPSHOT_PARTS` × 64
+/// rather than 64.
+/// v121 — Rust's headshot crunch: `SUB_HURT` carries a head bit after the
+/// damage, set when the blow crossed the victim's head.
+/// v122 — the desert's cactus: `terrain::Occupant::Cactus` is solid and
+/// swung at for cloth, so both ends must draw the same cacti to predict the
+/// same walk; and the death cause admits 11 (`DEATH_BY_CACTUS`).
+pub const PROTO_VER: u16 = 122;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1278,6 +1298,12 @@ pub const KIND_WATCH: u32 = 10;
 /// talker's own Opus frame, S→C the server's relay of it with the talker's
 /// id in front.
 pub const KIND_VOICE: u32 = 11;
+/// S→C datagram (v121): the bodies a tick's snapshot had no room for
+/// ([`SnapshotEncoder::begin_more`], [`decode_snapshot_more`]).
+pub const KIND_SNAPSHOT_MORE: u32 = 12;
+/// Width of a snapshot overflow datagram's part number: part 0 is the
+/// snapshot itself, so this names up to three more.
+pub const SNAPSHOT_PART_BITS: u32 = 2;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.
@@ -1345,6 +1371,17 @@ const DPOS_Y_BIAS: i32 = 512;
 /// Peek a datagram's kind without decoding it — the dispatch read.
 pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
     BitReader::new(buf).read(KIND_BITS)
+}
+
+/// The tick a snapshot or a snapshot overflow datagram belongs to — both
+/// carry it straight after the kind — or `None` for any other kind. What a
+/// sender groups one tick's datagrams by.
+pub fn peek_snapshot_tick(buf: &[u8]) -> Option<u32> {
+    let mut r = BitReader::new(buf);
+    match r.read(KIND_BITS).ok()? {
+        KIND_SNAPSHOT | KIND_SNAPSHOT_MORE => r.read(32).ok(),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4159,6 +4196,9 @@ pub struct SnapshotEncoder<'a, 'b> {
     removed: u32,
     entities: u32,
     entity_started: bool,
+    /// An overflow datagram ([`Self::begin_more`]): no removed count to
+    /// patch, and no removals to take.
+    more: bool,
 }
 
 /// Slots in `SnapshotEncoder::bl_index`: a power of two at twice
@@ -4241,6 +4281,34 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
             removed: 0,
             entities: 0,
             entity_started: false,
+            more: false,
+        })
+    }
+
+    /// A snapshot overflow datagram for `tick` (v121): part `part` of the
+    /// tick, `1 ..= 3`, carrying absolute records only. The module header
+    /// has the layout and why it never deltas.
+    pub fn begin_more(buf: &'a mut [u8], tick: u32, part: u8) -> Result<Self, WireError> {
+        if part == 0 || part as u32 >= 1 << SNAPSHOT_PART_BITS {
+            return Err(WireError::Range);
+        }
+        let mut w = BitWriter::new(buf);
+        w.write(KIND_SNAPSHOT_MORE, KIND_BITS)?;
+        w.write(tick, 32)?;
+        w.write(part as u32, SNAPSHOT_PART_BITS)?;
+        let entity_count_at = w.bit_pos();
+        w.write(0, COUNT_BITS)?;
+        Ok(Self {
+            w,
+            baseline: &[],
+            has_baseline: false,
+            bl_index: [0; BASELINE_INDEX_SLOTS],
+            removed_count_at: 0,
+            entity_count_at,
+            removed: 0,
+            entities: 0,
+            entity_started: false,
+            more: true,
         })
     }
 
@@ -4272,7 +4340,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     /// An entity that left the interest set. Must precede every
     /// `add_entity` (wire order); capped like the set itself.
     pub fn add_removed(&mut self, id: u32) -> Result<(), WireError> {
-        if self.entity_started {
+        if self.entity_started || self.more {
             return Err(WireError::Order);
         }
         if self.removed as usize >= MAX_SNAPSHOT_ENTITIES {
@@ -4416,8 +4484,10 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
 
     /// Patch the counts, return the encoded byte length.
     pub fn finish(mut self) -> Result<usize, WireError> {
-        self.w
-            .patch(self.removed_count_at, self.removed, COUNT_BITS)?;
+        if !self.more {
+            self.w
+                .patch(self.removed_count_at, self.removed, COUNT_BITS)?;
+        }
         self.w
             .patch(self.entity_count_at, self.entities, COUNT_BITS)?;
         Ok(self.w.finish())
@@ -4488,6 +4558,49 @@ impl Snapshot {
     pub fn entities(&self) -> &[EntityState] {
         &self.entities[..self.entity_count as usize]
     }
+}
+
+/// A decoded snapshot overflow datagram (v121): which tick and part, and its
+/// absolute records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotMore {
+    pub tick: u32,
+    pub part: u8,
+    entities: [EntityState; MAX_SNAPSHOT_ENTITIES],
+    entity_count: u8,
+}
+
+impl SnapshotMore {
+    pub fn entities(&self) -> &[EntityState] {
+        &self.entities[..self.entity_count as usize]
+    }
+}
+
+/// Decode a snapshot overflow datagram. Total like [`decode_snapshot`]; a
+/// delta record is malformed here, since there is no baseline to read it
+/// against.
+pub fn decode_snapshot_more(buf: &[u8]) -> Result<SnapshotMore, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_SNAPSHOT_MORE {
+        return Err(WireError::Malformed);
+    }
+    let tick = r.read(32)?;
+    let part = r.read(SNAPSHOT_PART_BITS)? as u8;
+    let entity_count = r.read(COUNT_BITS)? as usize;
+    if part == 0 || entity_count > MAX_SNAPSHOT_ENTITIES {
+        return Err(WireError::Malformed);
+    }
+    let mut more = SnapshotMore {
+        tick,
+        part,
+        entities: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
+        entity_count: entity_count as u8,
+    };
+    for slot in more.entities.iter_mut().take(entity_count) {
+        *slot = decode_entity(&mut r, 0, &[])?;
+    }
+    expect_zero_padding(&mut r)?;
+    Ok(more)
 }
 
 /// Header-only read, so a receiver can pick the baseline snapshot
@@ -4735,6 +4848,64 @@ mod tests {
             SnapshotEncoder::begin(&mut buf, &hdr, &baseline),
             Err(WireError::Malformed)
         ));
+    }
+
+    /// A snapshot overflow datagram (v121) at its worst — 64 moving bodies,
+    /// every record absolute — still fits one datagram, round-trips, and the
+    /// decoder refuses what it can never mean: part 0, a delta record, and
+    /// the snapshot's own kind.
+    #[test]
+    fn a_full_overflow_datagram_fits_and_round_trips() {
+        let mut buf = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
+        let mut more = SnapshotEncoder::begin_more(&mut buf, 7_777, 2).unwrap();
+        let mut sent = Vec::new();
+        for i in 0..MAX_SNAPSHOT_ENTITIES as u32 {
+            let e = EntityState {
+                id: 0x100 + i,
+                qx: 1_000 + i as i32 * 37,
+                qy: 50,
+                qz: 2_000 + i as i32 * 11,
+                qvy: -40,
+                yaw: (i * 999) as u16,
+                pitch: 100,
+                held: Some((i % 100) as u16),
+                ..EntityState::default()
+            };
+            more.add_entity(&e).unwrap();
+            sent.push(e);
+        }
+        assert_eq!(more.add_removed(1), Err(WireError::Order));
+        let len = more.finish().unwrap();
+        assert!(len <= sim_core::limits::DATAGRAM_BUDGET_BYTES);
+        let got = decode_snapshot_more(&buf[..len]).unwrap();
+        assert_eq!((got.tick, got.part), (7_777, 2));
+        assert_eq!(got.entities(), &sent[..]);
+        assert_eq!(peek_snapshot_tick(&buf[..len]), Some(7_777));
+
+        assert!(
+            SnapshotEncoder::begin_more(&mut buf, 1, 0).is_err(),
+            "part 0 is the snapshot"
+        );
+        assert!(
+            SnapshotEncoder::begin_more(&mut buf, 1, 4).is_err(),
+            "two bits"
+        );
+        // A delta record has no baseline to stand on here.
+        let header = SnapshotHeader {
+            tick: 9,
+            baseline_age: 1,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let mut snap = SnapshotEncoder::begin(&mut buf, &header, &sent[..1]).unwrap();
+        snap.add_entity(&sent[0]).unwrap();
+        let n = snap.finish().unwrap();
+        assert!(
+            decode_snapshot_more(&buf[..n]).is_err(),
+            "a snapshot is not an overflow"
+        );
     }
 
     /// A baseline longer than a snapshot can carry is a caller bug, and the

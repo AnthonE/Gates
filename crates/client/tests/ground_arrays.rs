@@ -81,7 +81,7 @@ fn tiling() -> ImageSampler {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
         address_mode_w: ImageAddressMode::Repeat,
-        anisotropy_clamp: 4,
+        anisotropy_clamp: client::render::textures::ANISOTROPY,
         ..ImageSamplerDescriptor::linear()
     })
 }

@@ -81,7 +81,8 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::Tung, takes!("kenney", "tung", 0 1 2)),
     (Cue::UiClick, takes!("kenney", "ui_click", 0)),
     (Cue::Hit, takes!("kenney", "hit", 0)),
-    (Cue::HitHead, takes!("kenney", "hit_head", 0)),
+    // The shooter's headshot is the victim's crunch, as in Rust.
+    (Cue::HitHead, takes!("pd", "headshot", 0 1 2)),
     (Cue::HitLimb, takes!("kenney", "hit_limb", 0)),
     (Cue::Refused, takes!("kenney", "refused", 0)),
     (Cue::CraftDone, takes!("kenney", "craft_done", 0)),
@@ -106,6 +107,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::CraftStart, takes!("kenney", "craft_start", 0 1)),
     (Cue::MapPin, takes!("kenney", "map_pin", 0)),
     (Cue::Geiger, takes!("pd", "geiger", 0 1 2 3)),
+    (Cue::Headshot, takes!("pd", "headshot", 0 1 2)),
     (Cue::BowDraw, takes!("freesound", "bow_draw", 0 1)),
     (Cue::Reload, takes!("freesound", "reload", 0 1)),
     (Cue::Ricochet, takes!("freesound", "ricochet", 0 1 2 3)),

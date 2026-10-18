@@ -420,6 +420,33 @@ pub fn structural(c: &Content) -> Result<(), String> {
              arrow that never breaks, 100 is one that always does"
         ));
     }
+    // The punch is the weakest thing in the game: slower to kill with than
+    // the slowest melee weapon the band allows, and a price that leaves the
+    // puncher standing.
+    if let Some(f) = &c.balance.globals.fist {
+        let hp = c.balance.globals.player_hp;
+        let slowest = c.balance.bands.ttk_melee[1];
+        if f.damage == 0 || f.range_m == 0 || f.range_m > 2 {
+            return Err(format!(
+                "globals: fist needs damage and a reach of 1..=2 m, has {} dmg {} m",
+                f.damage, f.range_m
+            ));
+        }
+        if hp.div_ceil(f.damage) <= slowest {
+            return Err(format!(
+                "globals: fist kills in {} hits, no fewer than {} allowed — a \
+                 punch must be weaker than every melee weapon",
+                hp.div_ceil(f.damage),
+                slowest + 1
+            ));
+        }
+        if f.self_damage >= hp {
+            return Err(format!(
+                "globals: fist self_damage {} is a whole body",
+                f.self_damage
+            ));
+        }
+    }
     let piece_hp = |shape: Shape, material: Material| -> Option<u32> {
         c.pieces
             .iter()
@@ -509,8 +536,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     w.id
                 ));
             }
+        } else if w.kind == WeaponKind::Melee {
+            if w.range_m != 0 || w.reach_cm == 0 {
+                return Err(format!(
+                    "weapon `{}`: a melee row's reach is `reach_cm`, not `range_m`",
+                    w.id
+                ));
+            }
         } else if w.range_m == 0 {
             return Err(format!("weapon `{}`: a weapon with no reach", w.id));
+        }
+        if w.kind != WeaponKind::Melee && w.reach_cm != 0 {
+            return Err(format!(
+                "weapon `{}`: `reach_cm` is a melee row's; this kind reaches by `range_m`",
+                w.id
+            ));
         }
         match w.kind {
             WeaponKind::Bow => {

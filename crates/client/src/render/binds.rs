@@ -269,6 +269,8 @@ pub enum Action {
     Island,
     Chat,
     Talk,
+    MuteMic,
+    MuteVoices,
     TeamInvite,
     TeamAccept,
     TeamScreen,
@@ -315,10 +317,11 @@ const fn spec(
 const MOVE: &str = "MOVEMENT";
 const HANDS: &str = "ACTIONS";
 const SCREENS: &str = "SCREENS";
+const VOICE: &str = "VOICE";
 const PEOPLE: &str = "TEAM AND CREW";
 const BELT: &str = "HOTBAR";
 
-pub const COUNT: usize = 37;
+pub const COUNT: usize = 39;
 
 /// The defaults are the keys this client shipped with before binds existed.
 pub static SPECS: [Spec; COUNT] = [
@@ -400,7 +403,8 @@ pub static SPECS: [Spec; COUNT] = [
         "pick_up",
         "PICK UP",
         HANDS,
-        [k(KeyCode::KeyV), None],
+        // `V` until voice took it: Rust talks on `V`.
+        [k(KeyCode::Backquote), None],
     ),
     spec(Action::Eat, "eat", "EAT", HANDS, [k(KeyCode::KeyJ), None]),
     spec(
@@ -483,11 +487,27 @@ pub static SPECS: [Spec; COUNT] = [
     spec(
         Action::Talk,
         "talk",
-        "TALK (HOLD)",
-        PEOPLE,
-        // `` ` `` under Esc, and a mouse side button for a hand that stays on
-        // WASD (`render/voice.rs`).
-        [k(KeyCode::Backquote), Some(Bind::Mouse(MouseButton::Back))],
+        "PUSH TO TALK",
+        VOICE,
+        // Rust's `V`, and a mouse side button for a hand that stays on WASD
+        // (`render/voice.rs`). In TOGGLE mode a press turns it on and off.
+        [k(KeyCode::KeyV), Some(Bind::Mouse(MouseButton::Back))],
+    ),
+    // Unbound by default, as in Rust; the AUDIO tab's TALK MODE is what
+    // makes them worth binding.
+    spec(
+        Action::MuteMic,
+        "mute_mic",
+        "MUTE MY MICROPHONE",
+        VOICE,
+        [None, None],
+    ),
+    spec(
+        Action::MuteVoices,
+        "mute_voices",
+        "MUTE ALL VOICES",
+        VOICE,
+        [None, None],
     ),
     spec(
         Action::TeamInvite,
@@ -602,7 +622,7 @@ pub const FIXED: [(&str, &str); 13] = [
     ),
     (
         "MUTE A PLAYER",
-        "/mute NAME in chat (only you stop hearing them)",
+        "/mute NAME in chat, or /mute for whoever is talking (only you stop hearing them)",
     ),
     ("REPORT A BUG", "F7"),
     ("FULLSCREEN", "F11"),
@@ -866,7 +886,12 @@ mod tests {
     fn the_defaults_bind_each_key_once_and_every_bind_is_allowed() {
         let mut seen = Vec::new();
         for s in &SPECS {
-            assert!(s.default[0].is_some(), "{} has no default", s.token);
+            let optional = matches!(s.action, Action::MuteMic | Action::MuteVoices);
+            assert!(
+                optional || s.default[0].is_some(),
+                "{} has no default",
+                s.token
+            );
             for b in s.default.into_iter().flatten() {
                 assert!(b.bindable(), "{} default {b:?} is not bindable", s.token);
                 assert!(!seen.contains(&b), "{b:?} is bound twice by default");
@@ -937,6 +962,13 @@ mod tests {
             other,
             vec![("future_verb".to_string(), "KeyQ none".to_string())]
         );
+    }
+
+    #[test]
+    fn talk_is_rusts_v() {
+        let b = Binds::default();
+        assert_eq!(b.key(Action::Talk), "V");
+        assert_eq!(b.key(Action::MuteMic), "UNBOUND");
     }
 
     #[test]

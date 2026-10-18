@@ -1398,7 +1398,7 @@ fn step_in(
                 EV_HURT,
                 vid,
                 crate::combat::bearing_sector(-(dx as i64), -(dz as i64)) as u32,
-                dmg as u32,
+                crate::world::hurt_c(part, dmg),
             );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
@@ -1666,18 +1666,17 @@ pub(crate) fn world_stop(
         let px = (ox + sx * t) / MM_PER_M;
         let py = (oy + sy * t) / MM_PER_M;
         let pz = (oz + sz * t) / MM_PER_M;
-        // `ground`, not `height`: a shot stops on the surface a player
-        // stands on, and on an authored site that is the carved floor. A
-        // raw read here puts the impact — and the decal drawn from it —
-        // several metres under the pad. Through the occupants' lattice memo,
-        // which returns `ground`'s own bits (`tests/lattice.rs`): a 50 m ray
-        // re-reads the same fine-octave quads sample after sample.
+        // The solid surface, not `height`: a shot stops where a player
+        // stands, which on an authored site is the carved floor and on a
+        // face the drawn rock (`face::surface`). A raw read here puts the
+        // impact — and the decal drawn from it — several metres under the
+        // pad, or the arrow through a buttress.
         // `shot_stop` rather than `shot_blocked`: the address it names is
         // what the caller charges structure damage against. The ladder is
         // otherwise unchanged — ground, then occupants, then pieces, and
         // the first answer wins — so a shot stops exactly where it did.
         let mut hit = None;
-        let what = if py <= terrain::ground_memo(occ.cache.lattice(), seed, haven, px, pz) {
+        let what = if py <= crate::face::surface(occ, seed, haven, px, pz) {
             Some(SURF_GROUND)
         } else if occ.blocks_volume(seed, px, pz, py, probe, probe) {
             Some(SURF_WORLD)
@@ -2670,7 +2669,7 @@ fn hitscan_in(
             // when the arc appears. At a favour of 7 the rewound bearing
             // would describe neither player's situation and is easily a
             // whole sector of the sixteen out.
-            events.push(EV_HURT, vid, sector as u32, dmg as u32);
+            events.push(EV_HURT, vid, sector as u32, crate::world::hurt_c(part, dmg));
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 // `EV_DEATH` is `die`'s (wounded v0), as for the arrow.
