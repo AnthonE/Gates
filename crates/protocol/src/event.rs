@@ -8331,8 +8331,14 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        let (_, took2) = encode_event_catalog(&cat, took, &mut buf).unwrap();
-        assert_eq!(took + took2, 11);
+        // The rest, a batch at a time, to the table's end.
+        let mut first = took;
+        while first < 11 {
+            let (_, more) = encode_event_catalog(&cat, first, &mut buf).unwrap();
+            assert!((1..=CATALOG_BATCH).contains(&more));
+            first += more;
+        }
+        assert_eq!(first, 11);
         assert_eq!(
             encode_event_catalog(&cat, 11, &mut buf),
             Err(WireError::Range)
