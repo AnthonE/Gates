@@ -492,7 +492,7 @@ impl<W: Write> Server<W> {
         let filed = if !report {
             ""
         } else if crate::bugs::is_open() {
-            " Your report goes with it; status says whether it was sent."
+            " Your report goes with it. A body sends one every 2 minutes and holds the next few until then; status says how many were sent, wait or were dropped."
         } else {
             " Bug reports are off in this run, so your report was not filed."
         };

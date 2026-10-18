@@ -12,19 +12,25 @@
 //!
 //! Bounded twice: a body files at most one per [`GAP`], a process at most
 //! [`PER_RUN`]. The intake takes 40 a day from one address, and a fleet of
-//! buddies on one box must not spend them all.
+//! buddies on one box must not spend them all. Notes written inside the gap
+//! wait in the body's [`Tray`] (at most [`HELD`]) rather than being lost: a
+//! mind that saw four things at once used to get one filed and the other
+//! three dropped where only the body's log said so.
 
 use client::report::{self, Agent, Build, Kind, Place, Report, Vitals};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Reports one process files, crashes included.
 pub const PER_RUN: u32 = 5;
 /// The shortest time between two reports from one body.
 pub const GAP: Duration = Duration::from_secs(120);
+/// Notes a body holds while it waits out the gap.
+pub const HELD: usize = 3;
 /// How long a send may take, off the body's thread.
 const SEND_TIMEOUT_S: u64 = 15;
 /// How long a crash report's send may hold a dying process.
@@ -110,6 +116,8 @@ static DESK: OnceLock<Desk> = OnceLock::new();
 static TAKEN: AtomicU32 = AtomicU32::new(0);
 static SENT: AtomicU32 = AtomicU32::new(0);
 static UNSENT: AtomicU32 = AtomicU32::new(0);
+static WAITING: AtomicU32 = AtomicU32::new(0);
+static DROPPED: AtomicU32 = AtomicU32::new(0);
 
 /// Open this process's desk. The first one stands.
 pub fn open(desk: Desk) {
@@ -127,8 +135,45 @@ pub fn counts() -> Value {
     json!({
         "sent": SENT.load(Ordering::Relaxed),
         "not_sent": UNSENT.load(Ordering::Relaxed),
+        "waiting": WAITING.load(Ordering::Relaxed),
+        "dropped": DROPPED.load(Ordering::Relaxed),
         "left_this_run": PER_RUN - taken,
     })
+}
+
+/// A body's notes waiting out the [`GAP`], each with the facts of the
+/// moment it was written, not the moment it is filed.
+#[derive(Default)]
+pub struct Tray {
+    held: VecDeque<(Note, Facts)>,
+    last: Option<Instant>,
+}
+
+impl Tray {
+    /// Keep `note` until the gap lets it go. A full tray drops it.
+    pub fn hold(&mut self, note: Note, facts: Facts) {
+        if self.held.len() >= HELD {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
+            eprintln!("bug report dropped: {HELD} already wait to be filed");
+            return;
+        }
+        WAITING.fetch_add(1, Ordering::Relaxed);
+        self.held.push_back((note, facts));
+    }
+
+    /// The oldest note, once the body's last report is [`GAP`] behind.
+    pub fn due(&mut self, now: Instant) -> Option<(Note, Facts)> {
+        if self
+            .last
+            .is_some_and(|t| now.saturating_duration_since(t) < GAP)
+        {
+            return None;
+        }
+        let next = self.held.pop_front()?;
+        WAITING.fetch_sub(1, Ordering::Relaxed);
+        self.last = Some(now);
+        Some(next)
+    }
 }
 
 /// What the body knows when it files: the facts its mind was never shown,
@@ -151,6 +196,7 @@ pub fn file(note: &Note, facts: Facts) -> String {
         return "bug report dropped: reports are off in this process".into();
     };
     if TAKEN.fetch_add(1, Ordering::Relaxed) >= PER_RUN {
+        DROPPED.fetch_add(1, Ordering::Relaxed);
         return format!("bug report dropped: this run has filed its {PER_RUN}");
     }
     let mut r = Report::new(
@@ -304,6 +350,42 @@ mod tests {
         ] {
             assert!(Note::parse(&bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn notes_inside_the_gap_wait_their_turn() {
+        let note = |t: &str| Note {
+            kind: Kind::Verb,
+            title: t.into(),
+            body: String::new(),
+        };
+        let facts = || Facts {
+            seed: 1,
+            tick: 2,
+            pos: [0.0; 3],
+            player_id: 3,
+            vitals: Vitals {
+                hp: 100,
+                hp_max: 100,
+                food: 100,
+                water: 100,
+                dead: false,
+            },
+            goal: None,
+            last: None,
+            seen: Value::Null,
+        };
+        let t0 = Instant::now();
+        let mut tray = Tray::default();
+        for t in ["a", "b", "c", "d", "e"] {
+            tray.hold(note(t), facts());
+        }
+        let title = |x: Option<(Note, Facts)>| x.map(|(n, _)| n.title);
+        assert_eq!(title(tray.due(t0)), Some("a".into()));
+        assert_eq!(title(tray.due(t0 + GAP / 2)), None, "inside the gap");
+        assert_eq!(title(tray.due(t0 + GAP)), Some("b".into()));
+        assert_eq!(title(tray.due(t0 + GAP * 2)), Some("c".into()));
+        assert_eq!(title(tray.due(t0 + GAP * 3)), None, "past HELD was dropped");
     }
 
     #[test]
