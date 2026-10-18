@@ -230,6 +230,7 @@ mod tests {
             state: crate::mind::HomeState::Inside,
             distance: crate::mind::Distance::Far,
             bearing: 5,
+            metres: u16::MAX,
             attacked: true,
             damaged: true,
         };
@@ -253,10 +254,7 @@ mod tests {
         s.raw_len = crate::mind::SUMMARY_RAW as u8;
         (s.bench, s.furnace) = (true, true);
         (s.loot, s.raid) = (seen, seen);
-        s.loot_place = Some(crate::mind::Place {
-            distance: crate::mind::Distance::Far,
-            bearing: 5,
-        });
+        s.loot_place = Some(crate::mind::Place::at(f32::from(u16::MAX), 5));
         (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
         s.last = Some(Report {
             goal: Goal::Craft(long(7)),
