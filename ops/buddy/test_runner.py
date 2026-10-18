@@ -116,6 +116,11 @@ code, _ = post(PORT, AID, {"jsonrpc": "2.0", "id": 1, "method": "ping"}, token="
 check("a wrong token is refused with 401", code == 401)
 code, _ = post(PORT, "fedcba9876", {"jsonrpc": "2.0", "id": 1, "method": "ping"})
 check("a house-brain agent has no door", code == 401)
+kept = mind_bridge.Bridge(lambda i: journal, idle_s=60)
+kept.set_agents({AID: {"brain": "own", "token_sha": hashlib.sha256(TOKEN.encode()).hexdigest()}})
+kept.recall({AID: time.time() - 10, "stale0000": time.time() - 3600})
+check("a restart takes back a harness that called inside the window, not one before it",
+      kept.wanted() == {AID} and "stale0000" not in kept.calls())
 code, _ = post(PORT, AID, None, method="GET")
 check("GET opens no stream (405)", code == 405)
 code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": "u", "method": "ping"}, in_path=True)

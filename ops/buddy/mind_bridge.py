@@ -170,6 +170,21 @@ class Bridge:
                            if a.get("brain") == "own" and a.get("token_sha")}
             self.fed_at = time.time()
 
+    def calls(self):
+        """When each harness last asked for its body: what the runner keeps
+        across a restart, so a deploy does not take every resting body off
+        the island until its harness happens to call again."""
+        with self.lock:
+            return dict(self.asked)
+
+    def recall(self, asked, now=None):
+        """Take back what `calls` kept, inside the idle window."""
+        now = time.time() if now is None else now
+        with self.lock:
+            for i, t in asked.items():
+                if isinstance(t, (int, float)) and now - t < self.idle_s:
+                    self.asked[str(i)] = max(float(t), self.asked.get(str(i), 0.0))
+
     def wanted(self, now=None):
         """The agents a harness has called for within the idle window."""
         now = time.time() if now is None else now

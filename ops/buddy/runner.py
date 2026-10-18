@@ -437,6 +437,12 @@ def main():
     ledger = Ledger()
     bridge = mind_bridge.Bridge(lambda i: path("journal", i + ".jsonl"), idle_s=OWN_IDLE_S)
     try:
+        with open(path("own-calls.json")) as f:
+            bridge.recall(json.load(f))
+    except (OSError, ValueError, AttributeError):
+        pass
+    kept_calls = bridge.calls()
+    try:
         mind_bridge.serve(bridge, MIND_PORT)
     except OSError as e:
         log(f"own-brain bridge not served on {MIND_PORT}: {e}")
@@ -468,6 +474,10 @@ def main():
             write_atomic(path("credit", i), f"{spent[i] + max(0.0, left[i]):.6f}\n")
             write_atomic(path("status", i + ".json"), json.dumps({"left_usd": round(max(0.0, left[i]), 4)}))
         want, waiting = plan(agents, left, running, bridge.wanted(now))
+        calls = bridge.calls()
+        if calls != kept_calls:
+            write_atomic(path("own-calls.json"), json.dumps(calls))
+            kept_calls = calls
         for i, proc in list(running.items()):
             if proc.poll() is not None:
                 log(f"{i}: exited {proc.returncode}")
