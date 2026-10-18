@@ -1,0 +1,15 @@
+{
+  "recording": "film/heli.rec",
+  "out": "film/v2/shots-heli",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "beach-morning", "at": 30, "len": 3.6, "hour": 0.28, "weather": "clear", "fov": 40, "ease": true, "keys": [{"t": 0, "pos": [915, 1.6, 968], "look": [1129, 6, 871]}, {"t": 3.6, "pos": [926, 1.6, 979], "look": [1129, 6, 871]}], "look": {"exposure": 0.1, "temperature": 0.02, "shake": 0.1}},
+    {"name": "heli-overhead", "at": 424.5, "len": 6.0, "hour": 0.62, "weather": "clear", "fov": 62, "keys": [{"t": 0, "pos": [2338, 1.6, 3093], "look": [2350, 30, 2998]}, {"t": 6.0, "pos": [2338.5, 1.6, 3093.5], "look": [2310, 30, 3060]}], "track": {"near": [2350, 2998], "animal": true, "up": 0.0, "lag": 0.2}, "look": {"shake": 0.3, "saturation": 1.08}}
+  ]
+}

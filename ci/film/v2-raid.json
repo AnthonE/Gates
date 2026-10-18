@@ -1,0 +1,14 @@
+{
+  "recording": "film/camp.rec",
+  "out": "film/v2/shots-raid",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "raid-plant", "at": 297.6, "len": 3.0, "hour": 0.8, "weather": "clear", "fov": 34, "keys": [{"t": 0, "pos": [2354.5, 1.6, 3119], "look": [2353.5, 1.0, 3106]}, {"t": 3.0, "pos": [2353.5, 1.6, 3117.5], "look": [2353.5, 1.0, 3106]}], "track": {"near": [2353.5, 3107], "up": 1.0, "lag": 0.5}, "look": {"focus": "subject", "fstop": 2.0, "exposure": 0.2, "temperature": 0.04, "shake": 0.2}}
+  ]
+}

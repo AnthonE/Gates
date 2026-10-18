@@ -5434,10 +5434,12 @@ fn the_protection_total_stops_at_the_cap_on_both_sides() {
     cc.armor[4] = sim_core::combat::ArmorDef {
         reduction_pct: 60,
         slot: combat::WEAR_HEAD,
+        full: false,
     };
     cc.armor[5] = sim_core::combat::ArmorDef {
         reduction_pct: 50,
         slot: combat::WEAR_BODY,
+        full: false,
     };
     let cat = catalog_for(&cc);
 

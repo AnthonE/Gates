@@ -645,7 +645,8 @@ fn main() {
                 .unwrap();
         write_fixture(goldens::FIXTURES[89], &buf[..len]);
 
-        let len = protocol::encode_event_known(goldens::event_known(), &mut buf).unwrap();
+        let (word, bits) = goldens::event_known();
+        let len = protocol::encode_event_known(word, bits, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[90], &buf[..len]);
 
         // The table verb's action, carried through the 2026-08-15

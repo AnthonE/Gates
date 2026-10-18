@@ -353,10 +353,12 @@ fn the_set_is_clamped_at_the_ceiling() {
     cc.armor[HEADWRAP as usize] = ArmorDef {
         reduction_pct: 80,
         slot: WEAR_HEAD,
+        full: false,
     };
     cc.armor[PLATE as usize] = ArmorDef {
         reduction_pct: 80,
         slot: WEAR_BODY,
+        full: false,
     };
     let mut p = Player::default();
     p.worn[0] = one(HEADWRAP);
@@ -608,6 +610,10 @@ fn a_full_pack_does_not_destroy_the_plates() {
     }
     w.players[1].worn[0] = one(HEADWRAP);
     w.players[1].worn[1] = one(PLATE);
+    // And something on the feet (`WEAR_FEET`, Rust's boots): every worn
+    // slot full, so the body carries `INV_SLOTS + WEAR_SLOTS` stacks. An
+    // item no pocket holds, so nothing merges with it either.
+    w.players[1].worn[2] = one(9);
     swings_to_kill(&mut w, yaw);
     finish_off(&mut w, yaw);
 
@@ -1023,4 +1029,39 @@ fn a_wear_move_does_not_open_a_container_it_did_not_name() {
         ItemStack::default(),
         "a box that is not there dresses nobody"
     );
+}
+
+/// **A full-body suit is worn alone** (Rust's hazmat, `ArmorDef::full`):
+/// it does not go on over a helmet, a helmet does not go on over it, and
+/// taking it off frees the other slots again.
+#[test]
+fn a_full_body_suit_is_worn_alone() {
+    let mut w = dressing_room();
+    w.combat.armor[PLATE as usize].full = true;
+    let s = w.live_slot_of(1).unwrap();
+
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
+    w.tick(&[wear_move(1, CONT_SELF, 2, CONT_WEAR, WEAR_BODY - 1)]);
+    assert_eq!(
+        refusal(&w),
+        Some(REFUSE_M_WEAR),
+        "the suit went on over a helmet"
+    );
+    assert_eq!(w.players[s].inv[2], one(PLATE));
+
+    w.tick(&[wear_move(1, CONT_WEAR, WEAR_HEAD - 1, CONT_SELF, 1)]);
+    w.tick(&[wear_move(1, CONT_SELF, 2, CONT_WEAR, WEAR_BODY - 1)]);
+    assert_eq!(w.players[s].worn[(WEAR_BODY - 1) as usize], one(PLATE));
+
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
+    assert_eq!(
+        refusal(&w),
+        Some(REFUSE_M_WEAR),
+        "a helmet went on over the suit"
+    );
+    assert_eq!(w.players[s].inv[1], one(HEADWRAP));
+
+    w.tick(&[wear_move(1, CONT_WEAR, WEAR_BODY - 1, CONT_SELF, 2)]);
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
+    assert_eq!(w.players[s].worn[(WEAR_HEAD - 1) as usize], one(HEADWRAP));
 }

@@ -54,6 +54,23 @@ placement = "any"
 matter = "wood"
 hp = 350
 
+# Rust's barbed barricade (their hp, 400) and floor spikes (100). The barbed
+# one is the barricade's wall with wire through it; the spikes are walked
+# over, and hurt the body standing on them (`World::prick_deploys`).
+[[deployable]]
+id = "item.barricade_barbed"
+archetype = "barricade_barbed"
+placement = "any"
+matter = "wood"
+hp = 400
+
+[[deployable]]
+id = "item.floor_spikes"
+archetype = "floor_spikes"
+placement = "any"
+matter = "wood"
+hp = 100
+
 # A raised bed (crops v0): seeds in its beds grow into a crop on the ovens'
 # sweep, with no fuel and no switch (`sim-core/oven.rs`). On the ground or a
 # floor; a planter is a garden, not a fortification, so it is the box's hp.
@@ -78,10 +95,13 @@ placement = "any"
 matter = "stone"
 hp = 500
 
+# The benches and the research table stand on bare ground as well as a
+# floor (operator, 2026-10-17: like Rust, where a workbench goes down in a
+# field). `any` holds them to the terrain test a foundation passes.
 [[deployable]]
 id = "item.workbench1"
 archetype = "workbench"
-placement = "foundation"
+placement = "any"
 matter = "wood"
 hp = 500
 
@@ -94,14 +114,14 @@ hp = 500
 [[deployable]]
 id = "item.workbench2"
 archetype = "workbench2"
-placement = "foundation"
+placement = "any"
 matter = "metal"
 hp = 750
 
 [[deployable]]
 id = "item.workbench3"
 archetype = "workbench3"
-placement = "foundation"
+placement = "any"
 matter = "metal"
 hp = 1000
 
@@ -118,14 +138,13 @@ placement = "any"
 matter = "metal"
 hp = 300
 
-# The research table (research v0). `foundation` like the workbench it sits
-# beside — a table is furniture for a base, not something you drop in a
-# field — and hp 400 is the workbench's, because they are the same object
+# The research table (research v0). `any` like the workbench it sits
+# beside, and hp 400 is the workbench's, because they are the same object
 # to a raider: the thing that makes the base a workshop.
 [[deployable]]
 id = "item.research_table"
 archetype = "research"
-placement = "foundation"
+placement = "any"
 matter = "metal"
 hp = 200
 

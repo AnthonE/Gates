@@ -10,9 +10,12 @@
 #   name     what the store and the item's label say (≤ 24 ASCII bytes)
 #   covers   the one item it fits (a stack-1 item, not a deployable, v0)
 #   tint     the look, v0: an sRGB multiply over the item's own colours
-#   coin     ELO or ORBS \  optional, together: a row without them ships
-#   price    bare amount  /  its look and is not on sale until priced —
-#                           prices are the operator's (BUSINESS.md)
+#   coin     JUNK, ELO or ORBS \  optional, together: a row without them
+#   price    bare amount       /  ships its look and is not on sale until
+#                                priced — prices are the operator's
+#                                (BUSINESS.md). Skins are bought with JUNK,
+#                                the play coin (2026-10-18); ORBS is the
+#                                governance coin now.
 #   season   which drop it belongs to
 #
 # Ownership is read off the platform (server/src/skins.rs); a shard with

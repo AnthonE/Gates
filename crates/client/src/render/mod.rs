@@ -262,6 +262,20 @@ pub mod weather;
 // surface fitted under the module's cap (WebGL2's 2048, WebGPU's 8192), and the page taking over where
 // `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
 pub mod web;
+
+/// How many times its per-frame build budget each ring streamer spends:
+/// terrain, props, clutter, boulders and cliffs. 1 for a player, raised by a
+/// film run (`film::FILM_STREAM_BOOST`), whose frames cost seconds anyway.
+/// Stream-out stays at one a frame: it never holds a shot back.
+static STREAM_BOOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+pub fn stream_boost() -> usize {
+    STREAM_BOOST.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_stream_boost(n: usize) {
+    STREAM_BOOST.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+}
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
 pub mod bow;
@@ -902,6 +916,7 @@ impl Plugin for GatesRenderPlugin {
             // picture and in step with it (`film::roll`).
             let (native, feed) = audio_out::pair(film::FILM_RATE);
             app.world_mut().resource_mut::<audio::Engine>().out_rate = film::FILM_RATE;
+            app.world_mut().resource_mut::<audio::Sound>().film = true;
             app.insert_non_send_resource(native);
             app.insert_non_send_resource(film::Mix::new(feed));
             app.add_systems(PostUpdate, audio_out::flush);
@@ -2238,8 +2253,16 @@ impl Plugin for GatesRenderPlugin {
                 Update,
                 (
                     film::feed.before(input::place_eye),
-                    film::aim.after(input::place_eye).before(Stream),
+                    // Before the drain too: everything after it (the
+                    // weather's Verdigris depth, the shelter) reads `Eye`,
+                    // and unordered it read the recorder's spot on some
+                    // frames and flashed its sky into the shot.
+                    film::aim
+                        .after(input::place_eye)
+                        .before(feed::drain)
+                        .before(Stream),
                     film::lens.after(film::aim),
+                    film::dark_boot,
                 )
                     .run_if(world_running),
             )

@@ -1,0 +1,14 @@
+{
+  "recording": "film/fel-stags.rec",
+  "out": "film/whole/stills-stags",
+  "width": 1600,
+  "height": 900,
+  "fov": 42,
+  "settle": 16,
+  "hold": 18,
+  "look": {"saturation": 1.08, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 1, "gaussian": true},
+  "shots": [
+    {"name": "stags", "at": 210, "still": true, "hour": 0.36, "weather": "clear", "fov": 36, "keys": [{"t": 0, "pos": [3689, 1.4, 1583], "look": [3706, 1.1, 1566]}], "look": {"focus": "look", "fstop": 2.8, "saturation": 1.1}}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "recording": "film/heli.rec",
+  "out": "film/v2/shots-beach",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "beach-morning", "at": 30, "len": 3.6, "hour": 0.28, "weather": "clear", "fov": 40, "ease": true, "keys": [{"t": 0, "pos": [915, 1.6, 968], "look": [1129, 6, 871]}, {"t": 3.6, "pos": [926, 1.6, 979], "look": [1129, 6, 871]}], "look": {"exposure": 0.1, "temperature": 0.02, "shake": 0.1}}
+  ]
+}

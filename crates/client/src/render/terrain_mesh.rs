@@ -1412,7 +1412,7 @@ pub fn stream(
     // be a per-frame heap allocation — the exact thing the rest of this pass
     // took out of `decal::fade` and `ghost::track`.
     let mut shadow_changed = false;
-    for _ in 0..CHUNK_LANDS_PER_FRAME {
+    for _ in 0..CHUNK_LANDS_PER_FRAME * super::stream_boost() {
         let Some(ground) = &ground else {
             break;
         };
@@ -1511,7 +1511,7 @@ pub fn stream(
     let mut queued = 0usize;
     for dz in -NEAR_RADIUS..=NEAR_RADIUS {
         for dx in -NEAR_RADIUS..=NEAR_RADIUS {
-            if queued >= CHUNK_BUILDS_PER_FRAME {
+            if queued >= CHUNK_BUILDS_PER_FRAME * super::stream_boost() {
                 return;
             }
             let key = (cx + dx, cz + dz);

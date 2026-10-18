@@ -476,9 +476,10 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// a forged one changes nothing but what its author sees.
 pub const EV_SHOT: u8 = 35;
 
-/// EV_KNOWN: a = the player who holds it, b = the blueprint mask's low 32
-/// bits, c = its high 32 bits. **Own-fact** — a blueprint is personal, so
-/// only the hand that holds it hears this.
+/// EV_KNOWN: a = the player who holds it, b = bits 0..32 of the blueprint
+/// mask, c = bits 32..64. **Own-fact** — a blueprint is personal, so only
+/// the hand that holds it hears this. [`EV_KNOWN_HI`] states bits 64..128
+/// right behind it (`research::state_known` pushes the pair).
 ///
 /// The whole mask, never a delta, and the reason is the one `SUB_KNOWN`
 /// was already written for: a dropped increment would grey a recipe the
@@ -497,10 +498,9 @@ pub const EV_SHOT: u8 = 35;
 /// driven, and a fact stated at only two of them is a fact that depends
 /// on how you arrived.
 ///
-/// Two `u32`s for one `u64` because an event field is a `u32` and
-/// `KNOWN_MASK_BITS` is 64. Low first: `b` is `mask as u32` and `c` is
-/// `(mask >> 32) as u32`, which is the order `encode_event_known` puts
-/// them back together in.
+/// Two `u32`s for one 64-bit word because an event field is a `u32`. Low
+/// first: `b` is `word as u32` and `c` is `(word >> 32) as u32`, which is
+/// the order `encode_event_known` puts them back together in.
 pub const EV_KNOWN: u8 = 36;
 
 /// EV_GATHER_REFUSED: a = player id, b = held item index << 16 |
@@ -939,34 +939,40 @@ pub const EV_SHOP: u8 = 64;
 /// << 24 | op << 16 | row << 8 | times. Own-fact.
 pub const EV_SHOP_REFUSED: u8 = 65;
 
+/// EV_KNOWN_HI: [`EV_KNOWN`] for the mask's second word, bits 64..128
+/// (Rust's tree items widened it past 64 recipes): a = the holder, b =
+/// bits 64..96, c = bits 96..128. Own-fact, and a whole word like its twin,
+/// so a lost one is repaired by the next statement.
+pub const EV_KNOWN_HI: u8 = 66;
+
 /// EV_WHEEL_BET: a = player id, b = the colour (`casino::WHEEL_PAYS`), c =
 /// the player's whole stake on it this round. Own-fact; the junk leaves on
 /// the inventory lane.
-pub const EV_WHEEL_BET: u8 = 66;
+pub const EV_WHEEL_BET: u8 = 67;
 
 /// EV_WHEEL_REFUSED: a = player id, b = `casino::REFUSE_CA_*`, c = colour <<
 /// 16 | the stake asked. Own-fact.
-pub const EV_WHEEL_REFUSED: u8 = 67;
+pub const EV_WHEEL_REFUSED: u8 = 68;
 
 /// EV_WHEEL_SPIN: a = the round (`casino::wheel_phase`, low 32 bits), b =
 /// the segment it will land on (`casino::WHEEL`), c = 0. The bets just shut
 /// and the wheel starts to turn — only in a round someone staked on.
 /// **Broadcast**: one wheel, everyone sees it.
-pub const EV_WHEEL_SPIN: u8 = 68;
+pub const EV_WHEEL_SPIN: u8 = 69;
 
 /// EV_WHEEL_PAID: a = player id, b = everything they staked this round, c =
 /// what the wheel paid them (0 for a loss). Own-fact, one per bettor as the
 /// wheel stops.
-pub const EV_WHEEL_PAID: u8 = 69;
+pub const EV_WHEEL_PAID: u8 = 70;
 
 /// EV_SLOTS: a = player id, b = machine << 8 | multiplier, c = the reels
 /// (`casino::pack_reels`) | the payout << 12. The lever was pulled; the
 /// reels stop and pay `casino::SLOT_SPIN_TICKS` later. Own-fact.
-pub const EV_SLOTS: u8 = 70;
+pub const EV_SLOTS: u8 = 71;
 
 /// EV_SLOTS_REFUSED: a = player id, b = `casino::REFUSE_CA_*`, c = machine
 /// << 8 | multiplier. Own-fact.
-pub const EV_SLOTS_REFUSED: u8 = 71;
+pub const EV_SLOTS_REFUSED: u8 = 72;
 
 pub const EV_MAX: u8 = EV_SLOTS_REFUSED;
 
@@ -1090,8 +1096,11 @@ pub const DEATH_BY_FEL: u8 = 10;
 /// A cactus pricked them to death (wire v122, [`World::prick_cacti`]):
 /// they kept walking into one.
 pub const DEATH_BY_CACTUS: u8 = 11;
+/// A barbed barricade or floor spikes cut them to death (wire v123,
+/// [`World::prick_deploys`]).
+pub const DEATH_BY_SPIKES: u8 = 12;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_CACTUS;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_SPIKES;
 
 /// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
 /// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
@@ -1104,6 +1113,16 @@ pub const CACTUS_PERIOD_TICKS: u64 = crate::limits::TICK_HZ as u64;
 /// How near counts as pressed against one, metres past touching: the trunk
 /// holds a capsule off at touching, so contact is within a hand of it.
 pub const CACTUS_TOUCH_M: f32 = 0.1;
+/// What a barbed barricade cuts off a body pressed against it, and floor
+/// spikes off one standing on them, once a [`CACTUS_PERIOD_TICKS`] before
+/// armour. Ours: Rust's pages say both hurt and print no number. Above the
+/// cactus's 3 because a barricade is built to hurt; the spikes more, because
+/// a trap you stand in is the point of them.
+pub const BARBED_HP: u16 = 5;
+pub const SPIKES_HP: u16 = 8;
+/// How high above the board a body still stands on spikes, metres: a hop
+/// clears them, a stride does not.
+pub const SPIKES_TOP_M: f32 = 0.3;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -1333,7 +1352,7 @@ pub struct Player {
     /// glyph `g` of `content/arc.toml`'s alphabet. Known, like `known`: a
     /// death does not take it, and the player file keeps it.
     pub glyphs: u64,
-    pub known: u64,
+    pub known: u128,
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
     pub hp: u16,
@@ -3311,6 +3330,16 @@ impl World {
             || (from_kind == inventory::CONT_WEAR
                 && dst.count > 0
                 && !combat::wearable_in(&self.combat, dst.item, from_slot));
+        // A full-body suit fills the other slots (`combat::wear_clashes`),
+        // the same two landing sites.
+        let worn = &self.players[slot].worn;
+        let wear_refused = wear_refused
+            || (to_kind == inventory::CONT_WEAR
+                && src.count > 0
+                && combat::wear_clashes(&self.combat, worn, src.item, to_slot))
+            || (from_kind == inventory::CONT_WEAR
+                && dst.count > 0
+                && combat::wear_clashes(&self.combat, worn, dst.item, from_slot));
         if wear_refused {
             self.events
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_WEAR, addr);
@@ -3590,6 +3619,81 @@ impl World {
             self.events.push(EV_HEALTH, vid, left, vmax);
             if hurt.died {
                 self.down_or_die(j, vid, DEATH_BY_CACTUS, NO_ITEM, 0, false);
+            }
+        }
+    }
+
+    /// Every barbed barricade cuts [`BARBED_HP`] off each player pressed
+    /// against it, and floor spikes [`SPIKES_HP`] off each one standing on
+    /// them, once a second — the cactus's pass, over the deploy store. One
+    /// cut per body a pass, the worst it touches: two barricades side by side
+    /// are one wall to the body pressed into their seam. No owner on the
+    /// death: a trap is the ground's doing, as a cactus is.
+    ///
+    /// The scan is the store once (bounded by `MAX_DEPLOYS`) and the players
+    /// per trap, and it allocates nothing: the per-body worst is a fixed
+    /// array on the stack.
+    fn prick_deploys(&mut self) {
+        use crate::deploy::{body_base_y, ARCH_BARRICADE_BARBED, ARCH_FLOOR_SPIKES};
+        if !self.tick.is_multiple_of(CACTUS_PERIOD_TICKS) {
+            return;
+        }
+        // The worst cut owed each slot, and where it came from.
+        let mut owed = [(0u16, 0.0f32, 0.0f32); MAX_PLAYERS];
+        let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
+        let have = usize::from(self.deploy.def_count);
+        for rec in self.deploys.entries() {
+            let Some(def) = self.deploy.defs[..have].get(usize::from(rec.row)) else {
+                continue;
+            };
+            let (hp, arch) = match def.arch {
+                ARCH_BARRICADE_BARBED => (BARBED_HP, def.arch),
+                ARCH_FLOOR_SPIKES => (SPIKES_HP, def.arch),
+                _ => continue,
+            };
+            let Some(rect) = rec.rect(arch) else {
+                continue;
+            };
+            let base = body_base_y(seed, haven, cols, rec, arch);
+            for (j, v) in self.players.iter().enumerate() {
+                if !v.active || v.dead || v.hp == 0 || combat::protected(v) {
+                    continue;
+                }
+                let (x, y, z) = (
+                    v.body.qx as f32 * POS_XZ_Q,
+                    v.body.qy as f32 * POS_Y_Q,
+                    v.body.qz as f32 * POS_XZ_Q,
+                );
+                let cut = if arch == ARCH_FLOOR_SPIKES {
+                    rect.contains(x, z) && y >= base - 0.1 && y <= base + SPIKES_TOP_M
+                } else {
+                    let reach = crate::collide::CAPSULE_RADIUS_M + CACTUS_TOUCH_M;
+                    let top = crate::deploy::solid_vol(arch).map_or(0.0, |(_, h, _)| h);
+                    rect.dist2(x, z) <= reach * reach
+                        && y < base + top
+                        && y + crate::collide::hit_height_m(v.crouched()) > base
+                };
+                if cut && hp > owed[j].0 {
+                    owed[j] = (hp, rect.x, rect.z);
+                }
+            }
+        }
+        for (j, &(hp, sx, sz)) in owed.iter().enumerate() {
+            if hp == 0 {
+                continue;
+            }
+            let from = combat::bearing_sector(
+                i64::from((sx / POS_XZ_Q) as i32 - self.players[j].body.qx),
+                i64::from((sz / POS_XZ_Q) as i32 - self.players[j].body.qz),
+            );
+            let v = &mut self.players[j];
+            let hurt = combat::hurt(&self.combat, v, hp);
+            let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
+            self.events
+                .push(EV_HURT, vid, u32::from(from), u32::from(hp));
+            self.events.push(EV_HEALTH, vid, left, vmax);
+            if hurt.died {
+                self.down_or_die(j, vid, DEATH_BY_SPIKES, NO_ITEM, 0, false);
             }
         }
     }
@@ -4884,8 +4988,7 @@ impl World {
     /// the client's copy a statement rather than a residue.
     fn announce_known(&mut self, slot: usize) {
         let (id, mask) = (self.players[slot].id, self.players[slot].known);
-        self.events
-            .push(EV_KNOWN, id, mask as u32, (mask >> 32) as u32);
+        crate::research::state_known(&mut self.events, id, mask);
     }
 
     /// The slot holding the sleeping body `id`, or `None` — the sleeper
@@ -7900,6 +8003,7 @@ impl World {
         self.fires.expire_due(tick);
         self.burn_fires();
         self.prick_cacti();
+        self.prick_deploys();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -8283,7 +8387,7 @@ impl World {
             // them and they decide what the next skinned craft mints, so
             // two replays that disagreed about them would diverge there.
             h.update(&p.skins.to_le_bytes());
-            let mut cb = [0u8; 16 + CRAFT_QUEUE * 6];
+            let mut cb = [0u8; 24 + CRAFT_QUEUE * 6];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
             // The blueprint mask (research v0). It belongs here for the
             // reason `[backpack]`'s ladder had to reach `canon::hash`, one
@@ -8292,9 +8396,9 @@ impl World {
             // then on. Two replays of one WAL that disagreed about a
             // player's blueprints would diverge on the first gated craft
             // — silently, because every other field still matched.
-            cb[8..16].copy_from_slice(&p.known.to_le_bytes());
+            cb[8..24].copy_from_slice(&p.known.to_le_bytes());
             for (j, job) in p.jobs.iter().enumerate() {
-                let at = 16 + j * 6;
+                let at = 24 + j * 6;
                 cb[at..at + 2].copy_from_slice(&job.recipe.to_le_bytes());
                 cb[at + 2..at + 4].copy_from_slice(&job.remaining.to_le_bytes());
                 cb[at + 4..at + 6].copy_from_slice(&job.skin.to_le_bytes());
@@ -8858,6 +8962,79 @@ mod tests {
     /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
     const SMOKE_SPAWN: (f32, f32) = (2048.0, 2048.0);
+
+    /// Rust's traps (`World::prick_deploys`): floor spikes cut a body
+    /// standing on them and spare one a step off the board; a barbed
+    /// barricade cuts the body pressed against it and spares one an arm's
+    /// length away. Each on flat ground found by the foundation test, so the
+    /// body and the board stand at one height.
+    #[test]
+    fn traps_cut_whoever_touches_them() {
+        use crate::build::{build_cell_of, foundation_terrain_ok, BUILD_CELL_M};
+        use crate::collide::CAPSULE_RADIUS_M;
+        use crate::deploy::{DeployContent, DeployRec, ARCH_BARRICADE_BARBED, ARCH_FLOOR_SPIKES};
+        use crate::footprint::Pose;
+        let seed = SMOKE_SEED;
+        let haven = terrain::haven(seed);
+        let n = build_cell_of(terrain::ISLAND_SIZE) as u16;
+        let flat = (0..n)
+            .flat_map(|cz| (0..n).map(move |cx| (cx, cz)))
+            .find(|&(cx, cz)| {
+                let (x, z) = crate::footprint::centre(cx, cz, Pose::CENTRE);
+                terrain::height(seed, x, z) > 2.0
+                    && (-2..=2).all(|k| {
+                        foundation_terrain_ok(seed, &haven, x + k as f32 * BUILD_CELL_M * 0.3, z)
+                            && foundation_terrain_ok(seed, &haven, x, z + k as f32 * 0.9)
+                    })
+            })
+            .expect("a flat cell on the smoke seed");
+        let barbed_off = 0.3 + CAPSULE_RADIUS_M + 0.05;
+        for (arch, dz, hp, cut) in [
+            (ARCH_FLOOR_SPIKES, 0.0, SPIKES_HP, true),
+            (ARCH_FLOOR_SPIKES, 1.4, SPIKES_HP, false),
+            (ARCH_BARRICADE_BARBED, barbed_off, BARBED_HP, true),
+            (ARCH_BARRICADE_BARBED, barbed_off + 0.6, BARBED_HP, false),
+        ] {
+            let mut w = Box::new(World::new(seed));
+            let mut dc = DeployContent::probe_fixture();
+            dc.defs[1].arch = arch;
+            w.deploy = dc;
+            let rec = DeployRec {
+                cx: flat.0,
+                cz: flat.1,
+                row: 1,
+                hp: 100,
+                pose: Pose::CENTRE,
+                ..DeployRec::default()
+            };
+            w.deploys.restore(&[rec], &[0], &[0], &[], &[], &[], &[]);
+            let (x, z) = rec.xz();
+            w.dev_spawn = Some((x, z + dz));
+            w.tick(&[Command::Join { id: 1 }]);
+            (w.players[0].hp, w.players[0].hp_max) = (100, 100);
+            w.players[0].safe = false;
+            let mut hurt = 0;
+            for _ in 0..CACTUS_PERIOD_TICKS * 2 {
+                w.tick(&[]);
+                hurt += w
+                    .events
+                    .entries()
+                    .iter()
+                    .filter(|e| e.code == EV_HURT && e.a == 1)
+                    .count();
+            }
+            if cut {
+                assert!(hurt >= 1, "arch {arch} at {dz:.2} m: never cut");
+                assert!(
+                    w.players[0].hp <= 100 - hp,
+                    "arch {arch}: the cut did not land"
+                );
+            } else {
+                assert_eq!(hurt, 0, "arch {arch} cut a body {dz:.2} m off");
+                assert_eq!(w.players[0].hp, 100);
+            }
+        }
+    }
 
     /// **Wear is in `state_hash`, in all four container stores** (item
     /// durability v0, gate 4): two worlds differing ONLY in one stack's

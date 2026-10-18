@@ -870,7 +870,7 @@ pub fn stream(
     let mut filled = 0usize;
     {
         for &(dx, dz) in &order[..n_order] {
-            if filled >= CLUTTER_FILLS_PER_FRAME {
+            if filled >= CLUTTER_FILLS_PER_FRAME * super::stream_boost() {
                 return;
             }
             let key = (tx + dx, tz + dz);

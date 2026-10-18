@@ -2116,6 +2116,8 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
             cond: 10_000,
             skin: 0,
         },
+        // Bare feet.
+        ItemStack::default(),
     ];
     core.world.players[w0].worn = worn;
     core.world.players[w0].inv[0] = ItemStack {
@@ -2153,9 +2155,11 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     // **The claim.** Under `cont_slot`'s `_` arm this was the backpack:
     // `[(0, SPEAR x COUNT_A), (1, FILLER x COUNT_B)]`, a full and
     // believable panel drawn from the wrong array.
+    // A diff: the bare feet were bare before too, so they are not in it.
     let expect: Vec<(u8, ItemStack)> = worn
         .iter()
         .enumerate()
+        .filter(|(_, st)| st.count > 0)
         .map(|(s, st)| (s as u8, *st))
         .collect();
     assert_eq!(
@@ -2183,7 +2187,7 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     assert!(
         seen.iter().any(|(s, m)| *s == 1
             && matches!(m, EventMsg::Worn { id, items, .. }
-                if *id == id_of(0) && *items == [OTHER, THIRD])),
+                if *id == id_of(0) && *items == [OTHER, THIRD, sim_core::gather::NO_ITEM])),
         "the other player is told what the body wears: {seen:?}"
     );
 

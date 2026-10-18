@@ -82,10 +82,11 @@ pub use event::{
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
     InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
-    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
-    RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
+    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
+    VEND_BATCH,
 };
 pub use event::{encode_event_achievement, Achieved};
 pub use event::{
@@ -1237,12 +1238,19 @@ pub use voice::{
 /// v122 — the desert's cactus: `terrain::Occupant::Cactus` is solid and
 /// swung at for cloth, so both ends must draw the same cacti to predict the
 /// same walk; and the death cause admits 11 (`DEATH_BY_CACTUS`).
-/// v123 — THE GATE's casino (`sim_core::casino`): `ACT_WHEEL` (37) stakes junk
+/// v123 — Rust's tree items: `MAX_RECIPES` 64 → 128, so the recipe and
+/// research drips' totals ride 8 bits, and `SUB_KNOWN` states one 64-bit word
+/// of the 128-bit blueprint mask behind a word index. And Rust's barbed
+/// barricade and floor spikes: two archetypes (20, 21) both ends admit, and
+/// the death cause admits 12 (`DEATH_BY_SPIKES`).
+/// v124 — skins priced in JUNK: a `SkinRow`'s coin admits 3 (`COIN_JUNK`),
+/// the play coin skins are bought with.
+/// v125 — THE GATE's casino (`sim_core::casino`): `ACT_WHEEL` (37) stakes junk
 /// on a colour of the big wheel and `ACT_SLOTS` (38) pulls a slot machine's
 /// lever; `SUB_WHEEL_SPIN` (104) tells everyone where the wheel will land,
 /// `SUB_WHEEL_BET` (105) and `SUB_WHEEL_PAID` (106) answer a bettor, and
 /// `SUB_SLOTS` (107) a spinner.
-pub const PROTO_VER: u16 = 123;
+pub const PROTO_VER: u16 = 125;
 
 /// This game's slug in the elo catalog.
 ///

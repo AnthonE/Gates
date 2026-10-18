@@ -214,7 +214,10 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
         banded += 1;
     }
     assert!(banded >= 10, "only {banded} banded rows: the file shrank");
-    assert_eq!(opted_out, 1, "exactly one throwable ships");
+    assert_eq!(
+        opted_out, 2,
+        "two throwables ship: the satchel and the beancan"
+    );
 }
 
 /// The ladder's refusals, driven from the file rather than from the
@@ -297,8 +300,8 @@ fn test_content() {
     }
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
-        // components (2026-10-13).
-        (40..=92).contains(&(c.items.len() - fittings.len())),
+        // components (2026-10-13); → 106 for Rust's tree items (2026-10-17/18).
+        (40..=106).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -833,8 +836,8 @@ fn orphan_refs_refused() {
     );
     refuses(
         "loot.toml",
-        "{ item = \"item.rope\", weight = 328",
-        "{ item = \"item.ghost\", weight = 328",
+        "{ item = \"item.rope\", weight = 284",
+        "{ item = \"item.ghost\", weight = 284",
         "not an item",
     );
     refuses(
@@ -1939,8 +1942,8 @@ fn the_durability_rules_refuse_what_they_name() {
     // V5: a zero loss is an inert row, not a statement.
     refuses(
         "gatherables.toml",
-        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\n# Bush",
-        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\"item.hammer_salvaged\" = 30\n\"item.icepick_salvaged\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.bat\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\"item.hammer_salvaged\" = 30\n\"item.icepick_salvaged\" = 30\n\n# Bush",
         "(V5)",
     );
     // V6: a loss row's tool must declare a condition to lose. Strip the
@@ -2493,8 +2496,9 @@ fn the_shipped_loot_tables_bake() {
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
     // 19 → 12 when the barrel became Rust's: its twelve parts and nothing
-    // else, one a barrel (2026-10-17).
-    assert_eq!(t.len, 12, "the barrel table lost or gained a row");
+    // else, one a barrel (2026-10-17); 16 with their tree's tank top and
+    // three deployables (2026-10-18).
+    assert_eq!(t.len, 16, "the barrel table lost or gained a row");
     assert_eq!((t.rolls_min, t.rolls_max), (1, 1));
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
 
@@ -2543,8 +2547,9 @@ fn the_shipped_loot_tables_bake() {
         .table(sim_core::loot::LOOT_CRATE)
         .expect("the crate table is armed");
     // 10 → 11: Rust's military crate components replaced gears, rope and
-    // tarp (2026-10-13); still 11 once its raw materials went (2026-10-17).
-    assert_eq!(k.len, 11);
+    // tarp (2026-10-13); still 11 once its raw materials went (2026-10-17);
+    // 17 with their tree's armour and blades (2026-10-18).
+    assert_eq!(k.len, 17);
     assert_eq!(k.hits, 5);
 }
 
@@ -4152,7 +4157,7 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
     for root in [
         "item.pistol_ammo",
         "item.satchel_charge",
-        "item.hatchet_metal",
+        "item.hammer_salvaged",
     ] {
         let row = rc.row_for(idx(root)).expect("researchable");
         assert_eq!(
@@ -4168,10 +4173,28 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// price, and gunpowder and metal arrows — known from the start there — are
 /// not gated here either. The auto turret (ours, `NOW.md` §0aa 1) is the
 /// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
+/// Their tree items (2026-10-17, the barbed barricade and floor spikes
+/// 2026-10-18, the boots and the hazmat suit too) and the wooden barricade,
+/// learned there, are the other fifteen.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 14] = [
+    let want: [(&str, u32); 29] = [
+        ("item.armor_hazmat_suit", 60),
+        ("item.armor_boots_feet", 30),
+        ("item.hammer_salvaged", 30),
+        ("item.barricade_wood", 15),
+        ("item.barricade_barbed", 30),
+        ("item.floor_spikes", 15),
+        ("item.sword_salvaged", 15),
+        ("item.mace", 30),
+        ("item.cleaver_salvaged", 30),
+        ("item.armor_tanktop_body", 15),
+        ("item.beancan", 30),
+        ("item.longsword", 30),
+        ("item.axe_salvaged", 60),
+        ("item.icepick_salvaged", 60),
+        ("item.armor_coffeecan_head", 30),
         ("item.arrow_fire", 30),
         ("item.hatchet_metal", 30),
         ("item.pickaxe_metal", 30),
@@ -4344,11 +4367,12 @@ fn the_hash_moves_with_the_ladder() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .expect("research.toml");
-    // A legal edge that changes the tree: the pickaxe behind the hatchet —
-    // the guess their chain refutes (`BLUEPRINTS.md` §2), and still legal,
-    // because the floor is a minimum and authoring MORE is a design call —
-    // which is exactly why the hash has to be able to see it.
-    let from = "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30";
+    // A legal edge that changes the tree: the pickaxe behind the hatchet
+    // rather than the salvaged hammer — the guess their chain refutes
+    // (`BLUEPRINTS.md` §2), and still legal, because the floor is a minimum
+    // and authoring MORE is a design call — which is exactly why the hash
+    // has to be able to see it.
+    let from = "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30\nrequires = \"item.hammer_salvaged\"";
     assert!(
         entry.1.contains(from),
         "test fixture rot: the pickaxe row moved"
@@ -4505,6 +4529,7 @@ fn bake_combat_arms_the_armor_the_data_prices() {
             match a.slot {
                 ArmorSlot::Head => WEAR_HEAD,
                 ArmorSlot::Body => WEAR_BODY,
+                ArmorSlot::Feet => sim_core::combat::WEAR_FEET,
             },
             "`{}` was baked into the wrong wear slot",
             a.id
@@ -4566,38 +4591,43 @@ fn the_shipped_burlap_shirt_costs_an_attacker_a_swing() {
 /// **The band's arithmetic and the sim's are one function, not two that
 /// agree by luck.**
 ///
-/// `balance::hits_to_kill` divides `player_hp` by the exact rational
-/// `damage × (100 − pct) / 100`; the sim computes
+/// `balance::hits_to_kill` divided `player_hp` by the exact rational
+/// `damage × (100 − pct) / 100` while the sim computes
 /// `combat::reduce(damage, pct)` once — an integer floor — and subtracts it
-/// every swing. Those are different functions, and where they disagree the
-/// band describes a fight nobody has (`findings/armor-design-20260818.md`
-/// §5). They agree on every pair we ship; this is what says so, and it
-/// covers the *set* percentages too, which no band currently reaches.
+/// every swing. Where those disagreed the band described a fight nobody has
+/// (`findings/armor-design-20260818.md` §5), and with three worn slots they
+/// disagreed on most sets, so the band reads `reduce` now (2026-10-18). This
+/// plays the fight out swing by swing against it, over every legal set.
 #[test]
 fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let hp = c.balance.globals.player_hp;
 
-    // Every single piece, plus every legal pairing of one head and one
-    // body — which is what `Player::worn` can actually hold, and what
-    // `combat::worn_pct` sums.
-    let mut sets: Vec<u32> = vec![0];
-    for a in &c.armors {
-        sets.push(a.reduction_pct);
-    }
-    for h in c
-        .armors
-        .iter()
-        .filter(|a| a.slot == content::schema::ArmorSlot::Head)
-    {
-        for b in c
-            .armors
-            .iter()
-            .filter(|a| a.slot == content::schema::ArmorSlot::Body)
-        {
-            sets.push(h.reduction_pct + b.reduction_pct);
+    // Every legal set: at most one piece per slot, any slot bare — which is
+    // what `Player::worn` can actually hold, and what `combat::worn_pct`
+    // sums. Bare is a 0 in each slot's list, so the product covers the
+    // single pieces and the pairs as well as the full head-body-feet set.
+    use content::schema::ArmorSlot;
+    let in_slot = |s: ArmorSlot| -> Vec<u32> {
+        let mut v = vec![0];
+        v.extend(
+            c.armors
+                .iter()
+                .filter(|a| a.slot == s)
+                .map(|a| a.reduction_pct),
+        );
+        v
+    };
+    let mut sets: Vec<u32> = Vec::new();
+    for h in in_slot(ArmorSlot::Head) {
+        for b in in_slot(ArmorSlot::Body) {
+            for f in in_slot(ArmorSlot::Feet) {
+                sets.push(h + b + f);
+            }
         }
     }
+    sets.sort_unstable();
+    sets.dedup();
     assert!(
         sets.len() >= 6,
         "only {} protection values to check — the shipped armor set shrank \
@@ -4817,10 +4847,11 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 13,
-        "expected exactly thirteen solid rows — the hearth, the box (twice), the \
+        seen, 14,
+        "expected exactly fourteen solid rows — the hearth, the box (twice), the \
          furnace, the three benches, the recycler, the research table, \
-         the barricade, the planter, the auto turret and the vending machine — \
+         the barricade (twice: the barbed one), the planter, the auto turret and \
+         the vending machine — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \

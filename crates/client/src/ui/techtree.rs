@@ -17,13 +17,16 @@
 
 use core::ops::RangeInclusive;
 
-use sim_core::craft::CraftContent;
+use protocol::event::ItemCatalog;
+use sim_core::craft::{CraftContent, RecipeDef};
 use sim_core::deploy::{best_bench_in, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::limits::INV_SLOTS;
 use sim_core::research::{
     knows, node_tier, ResearchContent, ResearchRow, NO_RECIPE, TABLE_RADIUS_M,
 };
+
+use crate::ui::craft::item_label;
 
 /// What a node is to this player, in the order the panel colours them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,7 +98,7 @@ pub fn bench_in_reach(recs: &[DeployRec], dc: &DeployContent, pos: [f32; 3], tie
 
 /// One row's state for this player: the sim's order of questions (known,
 /// parent, coin), asked of the mask and the pockets.
-fn state_of(row: &ResearchRow, known: u64, coin: u32) -> NodeState {
+fn state_of(row: &ResearchRow, known: u128, coin: u32) -> NodeState {
     if knows(known, row.recipe) {
         NodeState::Known
     } else if row.requires != NO_RECIPE && !knows(known, row.requires) {
@@ -118,7 +121,7 @@ pub fn rows(
     rc: &ResearchContent,
     cc: &CraftContent,
     inv: &[ItemStack; INV_SLOTS],
-    known: u64,
+    known: u128,
     tier: u8,
     out: &mut Vec<Node>,
 ) {
@@ -151,7 +154,7 @@ pub fn rows(
 /// The walk is bounded by the row count, the validator's own cycle
 /// budget: content with a cycle never bakes (`validate.rs`), so the bound
 /// is a belt on braces, not a live case.
-pub fn path_total(rc: &ResearchContent, known: u64, recipe: u16) -> u32 {
+pub fn path_total(rc: &ResearchContent, known: u128, recipe: u16) -> u32 {
     let mut total = 0u32;
     let mut at = recipe;
     let mut steps = 0usize;
@@ -221,7 +224,7 @@ pub fn layout(
     rc: &ResearchContent,
     cc: &CraftContent,
     inv: &[ItemStack; INV_SLOTS],
-    known: u64,
+    known: u128,
     tier: u8,
     placed: &mut Vec<Placed>,
     edges: &mut Vec<Edge>,
@@ -345,6 +348,21 @@ pub fn layout(
     }
     // The bench stands over the middle of the whole board.
     cursor.max(1).saturating_sub(1) / 2
+}
+
+/// The sidebar's recipe line under the description — what one craft of the
+/// node's item takes, the reference's "500 Wood, 100 Metal Fragments, 50
+/// Scrap". Empty for a recipe with no inputs.
+pub fn craft_line(catalog: &ItemCatalog, def: &RecipeDef) -> String {
+    let n = (def.n_inputs as usize).min(def.inputs.len());
+    let mut out = String::new();
+    for (item, units) in def.inputs[..n].iter() {
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(&format!("{units} {}", item_label(catalog, *item)));
+    }
+    out
 }
 
 /// The tier headline over a group — the craft badge's phrasing, so the

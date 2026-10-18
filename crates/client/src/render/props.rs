@@ -2578,11 +2578,15 @@ pub fn stream(
         false
     });
 
+    let mut built_near = 0usize;
     for dz in -NEAR_RADIUS..=NEAR_RADIUS {
         for dx in -NEAR_RADIUS..=NEAR_RADIUS {
             let key = (cx + dx, cz + dz);
             if ring.built.get(&key).is_some_and(|c| !c.stale) {
                 continue;
+            }
+            if built_near >= super::stream_boost() {
+                return;
             }
             // **The hand-off.** A chunk the player has walked into may still
             // be the outer ring's — one hull per tree, no `VisibilityRange`,
@@ -2658,8 +2662,11 @@ pub fn stream(
                 commands.entity(old.e).despawn();
             }
             // One chunk of scatter per frame, same budget as the ground.
-            return;
+            built_near += 1;
         }
+    }
+    if built_near > 0 {
+        return;
     }
 
     // ── The outer ring ──────────────────────────────────────────────────
@@ -2696,6 +2703,7 @@ pub fn stream(
         return;
     }
 
+    let mut built_outer = 0usize;
     for dz in -OUTER_RADIUS..=OUTER_RADIUS {
         for dx in -OUTER_RADIUS..=OUTER_RADIUS {
             // The near ring already owns this chunk at full detail.
@@ -2705,6 +2713,9 @@ pub fn stream(
             let key = (cx + dx, cz + dz);
             if ring.outer.get(&key).is_some_and(|c| !c.stale) {
                 continue;
+            }
+            if built_outer >= super::stream_boost() {
+                return;
             }
             let parent = commands
                 .spawn((
@@ -2759,7 +2770,7 @@ pub fn stream(
             if let Some(old) = ring.leaving.remove(&key) {
                 commands.entity(old.e).despawn();
             }
-            return;
+            built_outer += 1;
         }
     }
 }

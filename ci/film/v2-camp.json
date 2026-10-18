@@ -1,0 +1,23 @@
+{
+  "recording": "film/camp.rec",
+  "out": "film/v2/shots-camp",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "build-lapse", "at": 3, "len": 4.2, "speed": 10, "hour": [0.58, 0.68], "weather": "clear", "fov": 46, "ease": true, "orbit": {"center": [2356, 6, 3100], "radius": 36, "height": [2.5, 4.0], "from": 225, "to": 250}, "look": {"shutter": 0.3, "saturation": 1.1}},
+    {"name": "dawn-sea", "at": 20, "len": 4.2, "hour": 0.022, "weather": "clear", "fov": 42, "keys": [{"t": 0, "pos": [937, 1.5, 990], "look": [790, 10, 850]}, {"t": 4.2, "pos": [930, 1.4, 983], "look": [783, 10, 843]}], "look": {"exposure": 0.3, "temperature": 0.04, "saturation": 1.12, "shake": 0.08}},
+    {"name": "aerial-island", "at": 40, "len": 4.0, "hour": 0.12, "weather": "clear", "fov": 50, "keys": [{"t": 0, "pos": [1480, 150, 1050], "look": [1650, 30, 2300]}, {"t": 4.0, "pos": [1507, 152, 1157], "look": [1672, 30, 2380]}], "look": {"shutter": 0.35, "saturation": 1.1}},
+    {"name": "zig-reveal", "at": 110, "len": 4.2, "hour": 0.839, "weather": "clear", "fov": 34, "ease": true, "keys": [{"t": 0, "pos": [2353, 0.8, 3047], "look": [2496, 25, 3168]}, {"t": 4.2, "pos": [2350, 4.0, 3044], "look": [2496, 24, 3168]}], "look": {"focus": 190, "fstop": 2.0, "exposure": 0.2, "temperature": 0.05, "saturation": 1.15, "fringe": 0.003, "shake": 0.06}},
+    {"name": "lake-sunset", "at": 130, "len": 3.5, "hour": 0.84, "weather": "clear", "fov": 44, "keys": [{"t": 0, "pos": [1384, 1.0, 3166], "look": [1640, 5, 3362]}, {"t": 3.5, "pos": [1395, 1.0, 3174], "look": [1650, 5, 3368]}], "look": {"exposure": 0.1, "temperature": 0.05, "saturation": 1.15, "shake": 0.06}},
+    {"name": "base-golden", "at": 200, "len": 3.6, "hour": 0.8, "weather": "clear", "fov": 36, "ease": true, "orbit": {"center": [2353, 3, 3104], "radius": [31, 28], "height": 1.8, "from": 259, "to": 250}, "look": {"focus": "look", "fstop": 2.4, "fringe": 0.003, "shake": 0.08, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}},
+    {"name": "base-storm", "at": 250, "len": 3.2, "hour": 0.55, "weather": "storm", "fov": 40, "keys": [{"t": 0, "pos": [2335, 1.3, 3091], "look": [2356, 4, 3108]}, {"t": 3.2, "pos": [2337, 1.4, 3093], "look": [2356, 4, 3108]}], "look": {"focus": "look", "fstop": 2.8, "exposure": 0.2, "temperature": -0.05, "saturation": 0.9, "contrast": 1.12, "shake": 0.15}},
+    {"name": "raid-plant", "at": 297.6, "len": 3.0, "hour": 0.8, "weather": "clear", "fov": 28, "keys": [{"t": 0, "pos": [2341, 1.6, 3098], "look": [2354, 1, 3105]}, {"t": 3.0, "pos": [2342, 1.6, 3096.5], "look": [2354, 1, 3105]}], "track": {"near": [2354, 3105], "up": 1.0, "lag": 0.5}, "look": {"focus": "subject", "fstop": 2.0, "exposure": 0.2, "temperature": 0.04, "shake": 0.2}},
+    {"name": "raid-blast", "at": 305.2, "len": 5.1, "hour": 0.8, "weather": "clear", "fov": 44, "speed": [[0, 1], [1.8, 1], [2.1, 0.25], [3.8, 0.25], [4.3, 1]], "keys": [{"t": 0, "pos": [2340, 2.2, 3097], "look": [2354, 2.5, 3105]}, {"t": 5.1, "pos": [2341.5, 2.1, 3098.2], "look": [2354, 2.5, 3105]}], "look": {"focus": "look", "fstop": 2.8, "exposure": 0.2, "temperature": 0.04, "fringe": 0.004, "shake": [[0, 0.2], [2.0, 0.2], [2.15, 1.8], [3.6, 0.5], [5.1, 0.3]]}},
+    {"name": "aftermath", "at": 317.0, "len": 3.6, "hour": 0.8, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [2333, 3.5, 3088], "look": [2354, 2, 3105]}, {"t": 3.6, "pos": [2331, 4.2, 3086], "look": [2354, 2, 3105]}], "look": {"focus": "look", "fstop": 4.0, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}}
+  ]
+}

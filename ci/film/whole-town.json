@@ -1,0 +1,17 @@
+{
+  "recording": "film/town.rec",
+  "out": "film/whole/shots-town",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "gate-walkers", "at": 8, "len": 4.2, "hour": 0.4, "weather": "clear", "fov": 46, "keys": [{"t": 0, "pos": [1849, 1.7, 2068], "look": [1846, 3.5, 2118]}, {"t": 4.2, "pos": [1849, 1.7, 2064], "look": [1846, 3.5, 2112]}], "look": {"exposure": 0.1, "temperature": 0.03, "saturation": 1.1, "shake": 0.08}},
+    {"name": "street", "at": 40, "len": 4.0, "hour": 0.42, "weather": "clear", "fov": 50, "ease": true, "keys": [{"t": 0, "pos": [1850, 1.7, 2080], "look": [1848, 14, 2040]}, {"t": 4.0, "pos": [1850, 1.7, 2072], "look": [1848, 14, 2040]}], "look": {"exposure": 0.1, "temperature": 0.03, "saturation": 1.1, "shake": 0.06}},
+    {"name": "town-aerial", "at": 60, "len": 4.0, "hour": 0.44, "weather": "clear", "fov": 45, "ease": true, "keys": [{"t": 0, "pos": [1912, 48, 2128], "look": [1848, 6, 2040]}, {"t": 4.0, "pos": [1896, 44, 2120], "look": [1848, 6, 2040]}], "look": {"shutter": 0.35, "saturation": 1.1}},
+    {"name": "heli-gate", "at": 416, "len": 4.6, "hour": 0.5, "weather": "clear", "fov": 52, "keys": [{"t": 0, "pos": [1849, 1.7, 2066], "look": [1834, 30, 2075]}, {"t": 4.6, "pos": [1849, 1.7, 2067], "look": [1834, 30, 2075]}], "track": {"near": [1834, 2075], "animal": true, "up": 0.0, "lag": 0.35}, "look": {"shake": 0.25, "saturation": 1.08}}
+  ]
+}

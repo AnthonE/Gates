@@ -1,0 +1,15 @@
+{
+  "recording": "film/wild.rec",
+  "out": "film/v2/shots-wild",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 24,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "wolves-rest", "at": 60, "len": 4.0, "hour": 0.62, "weather": "clear", "fov": 34, "ease": true, "keys": [{"t": 0, "pos": [2408, 1.8, 1802], "look": [2397, 0.4, 1789]}, {"t": 4.0, "pos": [2405.5, 1.7, 1799.5], "look": [2397, 0.4, 1789]}], "look": {"focus": "look", "fstop": 2.4, "shake": 0.05, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}},
+    {"name": "pig-root", "at": 100, "len": 3.6, "hour": 0.32, "weather": "clear", "fov": 38, "follow": {"near": [2506, 1746], "animal": true, "back": 3.2, "up": 1.1, "side": 1.4, "lag": 0.6}, "look": {"focus": "subject", "fstop": 2.8, "saturation": 1.1}}
+  ]
+}

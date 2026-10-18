@@ -45,7 +45,7 @@
 
 use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
-use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_FEET, WEAR_HEAD};
 use sim_core::deploy::{box_key, holds_items, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
@@ -1119,6 +1119,7 @@ pub fn wear_slot_label(s: usize) -> &'static str {
     match u8::try_from(s).map(|s| s + 1) {
         Ok(WEAR_HEAD) => "HEAD",
         Ok(WEAR_BODY) => "BODY",
+        Ok(WEAR_FEET) => "FEET",
         _ => "-",
     }
 }

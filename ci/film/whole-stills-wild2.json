@@ -1,0 +1,16 @@
+{
+  "recording": "film/wild1.rec",
+  "out": "film/whole/stills-wild2",
+  "width": 1600,
+  "height": 900,
+  "fov": 42,
+  "settle": 16,
+  "hold": 18,
+  "look": {"saturation": 1.08, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "beach", "at": 20, "still": true, "hour": 0.06, "weather": "clear", "fov": 40, "keys": [{"t": 0, "pos": [915, 1.6, 968], "look": [1129, 6, 871]}], "look": {"exposure": 0.15, "temperature": 0.03, "saturation": 1.1}},
+    {"name": "dawn-sea", "at": 20.5, "still": true, "hour": 0.025, "weather": "clear", "fov": 42, "keys": [{"t": 0, "pos": [937, 1.5, 990], "look": [790, 10, 850]}], "look": {"exposure": 0.3, "temperature": 0.04, "saturation": 1.12}},
+    {"name": "wolves-standing", "at": 62, "still": true, "hour": 0.62, "weather": "clear", "fov": 32, "keys": [{"t": 0, "pos": [2407, 1.7, 1800], "look": [2397, 0.4, 1789]}], "look": {"focus": "look", "fstop": 2.8, "exposure": 0.2, "temperature": 0.05, "saturation": 1.12}}
+  ]
+}

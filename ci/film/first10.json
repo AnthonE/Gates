@@ -1,0 +1,16 @@
+{
+  "recording": "film/first10.rec",
+  "out": "film/first10/shots",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "dawn-sea", "at": 20, "len": 4.2, "hour": 0.022, "weather": "clear", "fov": 42, "keys": [{"t": 0, "pos": [937, 1.5, 990], "look": [790, 10, 850]}, {"t": 4.2, "pos": [930, 1.4, 983], "look": [783, 10, 843]}], "look": {"exposure": 0.3, "temperature": 0.04, "saturation": 1.12, "shake": 0.08}},
+    {"name": "beach-morning", "at": 30, "len": 3.6, "hour": 0.28, "weather": "clear", "fov": 40, "ease": true, "keys": [{"t": 0, "pos": [915, 1.6, 968], "look": [1129, 6, 871]}, {"t": 3.6, "pos": [926, 1.6, 979], "look": [1129, 6, 871]}], "look": {"exposure": 0.1, "temperature": 0.02, "shake": 0.1}},
+    {"name": "aerial-island", "at": 40, "len": 4.0, "hour": 0.12, "weather": "clear", "fov": 50, "keys": [{"t": 0, "pos": [1480, 150, 1050], "look": [1650, 30, 2300]}, {"t": 4.0, "pos": [1507, 152, 1157], "look": [1672, 30, 2380]}], "look": {"shutter": 0.35, "saturation": 1.1}}
+  ]
+}

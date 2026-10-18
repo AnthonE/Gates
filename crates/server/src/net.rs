@@ -612,6 +612,7 @@ pub fn bake_skin_catalog(content: &content::Content) -> Result<Box<protocol::Ski
         let (coin, price) = match (s.coin, s.price) {
             (Some(content::schema::Coin::Elo), Some(p)) => (protocol::COIN_ELO, p),
             (Some(content::schema::Coin::Orbs), Some(p)) => (protocol::COIN_ORBS, p),
+            (Some(content::schema::Coin::Junk), Some(p)) => (protocol::COIN_JUNK, p),
             _ => (protocol::COIN_NONE, 0),
         };
         cat.set(
