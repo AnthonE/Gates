@@ -5563,3 +5563,28 @@ fn an_agent_put_upstairs_comes_down_for_a_ground_goal() {
     );
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
+
+/// The minds we ship hold no tools. A mind's inputs include strangers'
+/// chat, so a mind that could also run something is the one road from a
+/// chat line on the island to an act off it. Both of `claude_agent.py`'s
+/// paths ask for a schema answer and nothing else, and the daily recap
+/// asks the same way; a change to that is a decision, made here.
+#[test]
+fn the_minds_we_ship_hold_no_tools() {
+    let agent =
+        std::fs::read_to_string(root().join("crates/server/examples/claude_agent.py")).unwrap();
+    assert!(
+        agent.contains(r#""--tools", "", "--disallowedTools", "mcp__*", "--strict-mcp-config""#),
+        "the Claude Code path must run with no built-in tools and no MCP server"
+    );
+    for file in [
+        "crates/server/examples/claude_agent.py",
+        "ops/buddy/recap.py",
+    ] {
+        let text = std::fs::read_to_string(root().join(file)).unwrap();
+        assert!(
+            !text.contains("tools=") && !text.contains("\"tools\":"),
+            "{file} hands a model tools"
+        );
+    }
+}
