@@ -878,3 +878,16 @@ count = 1
 station = "none"
 seconds = 30
 inputs = [{ item = "item.wood", count = 150 }]
+
+[[recipe]]
+id = "recipe.armor_boots_feet"
+output = "item.armor_boots_feet"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.leather", count = 20 },
+    { item = "item.metal_frags", count = 15 },
+    { item = "item.sewing_kit", count = 1 },
+]

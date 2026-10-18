@@ -165,3 +165,12 @@ reduction_pct = 10
 move_penalty_pct = 0
 cold_pct = 7
 fel_pct = 5
+
+# Rust's boots: 10 / 10, 8 cold (their page, 2026-10-18). The feet's slot.
+[[armor]]
+id = "item.armor_boots_feet"
+slot = "feet"
+reduction_pct = 10
+move_penalty_pct = 0
+cold_pct = 8
+fel_pct = 3

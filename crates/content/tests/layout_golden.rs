@@ -14,7 +14,7 @@
 use content::Content;
 use std::path::Path;
 
-const GOLDEN_LAYOUT_HASH: u64 = 9999403386374747536;
+const GOLDEN_LAYOUT_HASH: u64 = 18101150729583266476;
 
 #[test]
 fn content_layout_golden() {

@@ -300,8 +300,8 @@ fn test_content() {
     }
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
-        // components (2026-10-13); → 104 for Rust's tree items (2026-10-17/18).
-        (40..=104).contains(&(c.items.len() - fittings.len())),
+        // components (2026-10-13); → 106 for Rust's tree items (2026-10-17/18).
+        (40..=106).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -4172,12 +4172,13 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// not gated here either. The auto turret (ours, `NOW.md` §0aa 1) is the
 /// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
 /// Their tree items (2026-10-17, the barbed barricade and floor spikes
-/// 2026-10-18) and the wooden barricade, learned there, are the other
-/// thirteen.
+/// 2026-10-18, the boots too) and the wooden barricade, learned there, are
+/// the other fourteen.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 27] = [
+    let want: [(&str, u32); 28] = [
+        ("item.armor_boots_feet", 30),
         ("item.hammer_salvaged", 30),
         ("item.barricade_wood", 15),
         ("item.barricade_barbed", 30),

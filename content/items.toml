@@ -1304,3 +1304,15 @@ rarity = "common"
 slot = "hand"
 class = "construction"
 description = "A board of sharpened stakes. It hurts to stand on."
+
+# Rust's boots (their page, 2026-10-18): the feet's slot, learned at the
+# second bench. Not repairable there, so no condition here.
+[[item]]
+id = "item.armor_boots_feet"
+name = "Boots"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "feet"
+class = "clothing"
+description = "Leather boots. A little protection and warm feet."
