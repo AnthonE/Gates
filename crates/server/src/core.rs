@@ -8630,6 +8630,7 @@ mod tests {
         core.standings.exits = crate::standings::Exits {
             cap: 300,
             fee_pct: 10,
+            min_minutes: 0,
         };
         let key = PlayerKey::new(format!("0x{:040x}", 0xb2).as_bytes()).unwrap();
         let wallet = core::str::from_utf8(key.as_bytes()).unwrap().to_string();

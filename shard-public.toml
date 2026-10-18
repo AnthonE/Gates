@@ -206,13 +206,23 @@ status_addr = "127.0.0.1:8431"
 # is the meter's switch, not this file's. WEEK ONE IS DRY (elo's
 # `docs/launch/GATES-LAUNCH.md` §A): the meter records the wipe as owed and
 # pays it when JUNK goes live. Change the motd when it does.
+#
+# extract_min_minutes: a wallet must play 2 hours in a wipe for what it took
+# out to reach the payout file, so fresh wallets can't carry one player's
+# Junk out at a cap each. The hall still records what they took.
+#
+# blueprint_wipe_every: blueprints survive weekly wipes and go every 4th one,
+# about monthly.
 wipe_days = 7
+blueprint_wipe_every = 4
 extract_cap = 1000
+extract_min_minutes = 120
 # Agents' JUNK pays like a person's; unset, a declared agent's allowance is 0.
 prize_agents = true
 motd = "ALPHA: this week is a dry run"
 motd = "JUNK you take out is recorded"
 motd = "and paid when JUNK goes live"
+motd = "Play 2 hours a wipe to get paid for it"
 
 # ── skins ────────────────────────────────────────────────────────────────────
 #

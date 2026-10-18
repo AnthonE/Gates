@@ -257,7 +257,8 @@ pub struct ShardConfig {
     /// A Discord webhook the wipe's results are posted to. Off by default.
     pub discord_webhook: Option<String>,
     /// What may leave through THE EXCHANGE (`standings::Exits`):
-    /// `extract_cap` JUNK a wallet a wipe, less `extract_fee_pct`. Zero by
+    /// `extract_cap` JUNK a wallet a wipe, less `extract_fee_pct`, paid only
+    /// to wallets that played `extract_min_minutes` this wipe. Zero by
     /// default — nothing leaves until the operator arms it (`ALPHA.md` §2).
     pub exits: crate::standings::Exits,
     /// Lines told to each player a few seconds after they join, in order
@@ -442,6 +443,7 @@ impl ShardConfig {
             exits: crate::standings::Exits {
                 cap: 0,
                 fee_pct: DEFAULT_EXTRACT_FEE_PCT,
+                min_minutes: 0,
             },
             motd: Vec::new(),
             min_client: 0,
@@ -651,6 +653,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut exits = crate::standings::Exits {
         cap: 0,
         fee_pct: DEFAULT_EXTRACT_FEE_PCT,
+        min_minutes: 0,
     };
     let mut skins_all: Option<bool> = None;
     let mut skins_timeout_secs: Option<u64> = None;
@@ -1100,6 +1103,14 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             "extract_fee_pct" => {
                 exits.fee_pct = value.parse().ok().filter(|p| *p <= 100).ok_or_else(|| {
                     format!("shard.toml line {}: extract_fee_pct is 0..=100", n + 1)
+                })?;
+            }
+            "extract_min_minutes" => {
+                exits.min_minutes = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: extract_min_minutes must be whole minutes",
+                        n + 1
+                    )
                 })?;
             }
             "motd" => {
@@ -1618,9 +1629,15 @@ mod tests {
         assert!(!cfg.prizes.armed(), "a shard pays nothing by default");
         assert_eq!(cfg.prizes.min_minutes, DEFAULT_PRIZE_MIN_MINUTES);
         assert_eq!(cfg.exits.cap, 0, "and lets nothing leave by default");
-        let cfg =
-            parse_shard_toml(&format!("{base}extract_cap = 1000\nextract_fee_pct = 5\n")).unwrap();
-        assert_eq!((cfg.exits.cap, cfg.exits.fee_pct), (1000, 5));
+        assert_eq!(cfg.exits.min_minutes, 0, "and pays every wallet that does");
+        let cfg = parse_shard_toml(&format!(
+            "{base}extract_cap = 1000\nextract_fee_pct = 5\nextract_min_minutes = 120\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            (cfg.exits.cap, cfg.exits.fee_pct, cfg.exits.min_minutes),
+            (1000, 5, 120)
+        );
         assert!(parse_shard_toml(&format!("{base}extract_fee_pct = 101\n")).is_err());
         let cfg = parse_shard_toml(&format!(
             "{base}prize_ticker = \"JUNK\"\nprize_island = \"500, 300,200\"\n\

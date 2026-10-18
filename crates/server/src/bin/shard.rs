@@ -846,7 +846,7 @@ fn close_world(cfg: &server::config::ShardConfig, now: u64, n: u32, base: &Path)
     // No standings is a close that writes nothing (`close_wipe`), so it is
     // not reported as one.
     let kept = server::standings::standings_path(base).exists();
-    match server::standings::close_wipe(base, n, &cfg.prizes) {
+    match server::standings::close_wipe(base, n, &cfg.prizes, &cfg.exits) {
         Ok(closed) => {
             if let Some(w) = &closed.winner {
                 println!("wipe {n}: the island goes to {w}");
