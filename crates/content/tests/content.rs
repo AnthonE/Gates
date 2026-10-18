@@ -4525,6 +4525,7 @@ fn bake_combat_arms_the_armor_the_data_prices() {
             match a.slot {
                 ArmorSlot::Head => WEAR_HEAD,
                 ArmorSlot::Body => WEAR_BODY,
+                ArmorSlot::Feet => sim_core::combat::WEAR_FEET,
             },
             "`{}` was baked into the wrong wear slot",
             a.id
@@ -4586,38 +4587,43 @@ fn the_shipped_burlap_shirt_costs_an_attacker_a_swing() {
 /// **The band's arithmetic and the sim's are one function, not two that
 /// agree by luck.**
 ///
-/// `balance::hits_to_kill` divides `player_hp` by the exact rational
-/// `damage × (100 − pct) / 100`; the sim computes
+/// `balance::hits_to_kill` divided `player_hp` by the exact rational
+/// `damage × (100 − pct) / 100` while the sim computes
 /// `combat::reduce(damage, pct)` once — an integer floor — and subtracts it
-/// every swing. Those are different functions, and where they disagree the
-/// band describes a fight nobody has (`findings/armor-design-20260818.md`
-/// §5). They agree on every pair we ship; this is what says so, and it
-/// covers the *set* percentages too, which no band currently reaches.
+/// every swing. Where those disagreed the band described a fight nobody has
+/// (`findings/armor-design-20260818.md` §5), and with three worn slots they
+/// disagreed on most sets, so the band reads `reduce` now (2026-10-18). This
+/// plays the fight out swing by swing against it, over every legal set.
 #[test]
 fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let hp = c.balance.globals.player_hp;
 
-    // Every single piece, plus every legal pairing of one head and one
-    // body — which is what `Player::worn` can actually hold, and what
-    // `combat::worn_pct` sums.
-    let mut sets: Vec<u32> = vec![0];
-    for a in &c.armors {
-        sets.push(a.reduction_pct);
-    }
-    for h in c
-        .armors
-        .iter()
-        .filter(|a| a.slot == content::schema::ArmorSlot::Head)
-    {
-        for b in c
-            .armors
-            .iter()
-            .filter(|a| a.slot == content::schema::ArmorSlot::Body)
-        {
-            sets.push(h.reduction_pct + b.reduction_pct);
+    // Every legal set: at most one piece per slot, any slot bare — which is
+    // what `Player::worn` can actually hold, and what `combat::worn_pct`
+    // sums. Bare is a 0 in each slot's list, so the product covers the
+    // single pieces and the pairs as well as the full head-body-feet set.
+    use content::schema::ArmorSlot;
+    let in_slot = |s: ArmorSlot| -> Vec<u32> {
+        let mut v = vec![0];
+        v.extend(
+            c.armors
+                .iter()
+                .filter(|a| a.slot == s)
+                .map(|a| a.reduction_pct),
+        );
+        v
+    };
+    let mut sets: Vec<u32> = Vec::new();
+    for h in in_slot(ArmorSlot::Head) {
+        for b in in_slot(ArmorSlot::Body) {
+            for f in in_slot(ArmorSlot::Feet) {
+                sets.push(h + b + f);
+            }
         }
     }
+    sets.sort_unstable();
+    sets.dedup();
     assert!(
         sets.len() >= 6,
         "only {} protection values to check — the shipped armor set shrank \

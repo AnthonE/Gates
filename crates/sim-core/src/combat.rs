@@ -428,6 +428,8 @@ pub const WEAR_NONE: u8 = 0;
 pub const WEAR_HEAD: u8 = 1;
 /// `Player::worn[1]`.
 pub const WEAR_BODY: u8 = 2;
+/// `Player::worn[2]`: boots (Rust's, 2026-10-18).
+pub const WEAR_FEET: u8 = 3;
 
 /// The most a whole worn set may take off one hit, in percent.
 ///
@@ -464,7 +466,7 @@ pub struct ArmorDef {
     /// refuses a row past 90, so a `u8` cannot be overrun by content.
     pub reduction_pct: u8,
     /// Which of `WEAR_SLOTS` this piece occupies, **one-based**:
-    /// `WEAR_NONE`, `WEAR_HEAD` or `WEAR_BODY`.
+    /// `WEAR_NONE`, `WEAR_HEAD`, `WEAR_BODY` or `WEAR_FEET`.
     pub slot: u8,
 }
 

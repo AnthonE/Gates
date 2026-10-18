@@ -227,7 +227,8 @@ use crate::worldcont::WorldContRec;
 /// was written, so reading it as 25 is not the reinterpretation this number
 /// refuses.
 /// **27 — the blueprint mask is 128 bits** (store format 10): every body's
-/// `PlayerSave` grew its high word (+8), so no older file reads.
+/// `PlayerSave` grew its high word (+8) and a third worn stack, the feet
+/// (+8), so no older file reads.
 pub const WORLD_SAVE_FORMAT: u16 = 27;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
@@ -2032,10 +2033,11 @@ mod tests {
         // in `PlayerSave` (+72) and the owned set in the tail (+32).
         // 485 → 493 at format 22: the glyph mask in `PlayerSave`. 493 at
         // format 23 too: the magazine's 32 B moved from the tail into it.
-        // 493 → 499 at format 24: the Verdigris in the tail. 499 → 507 at
-        // format 27: the blueprint mask's high word in `PlayerSave`.
+        // 493 → 499 at format 24: the Verdigris in the tail. 499 → 515 at
+        // format 27: the blueprint mask's high word and the feet's stack in
+        // `PlayerSave`.
         assert_eq!(
-            PLAYER_BYTES, 507,
+            PLAYER_BYTES, 515,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2046,7 +2048,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 507                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word at 27)
+            + 100 * 515                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27)
             + 32_768 * 21                   // pieces + plate + placement tick
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
@@ -2178,10 +2180,10 @@ mod tests {
         // 4_476_702 with no format change: the caps on pieces (32,768),
         // deploys (4,096), hearths (512), containers (1,024) and locks
         // (2,048) raised — counts, not strides, so old saves still load.
-        // 4_477_502 at format 27: the blueprint mask's high word, eight
-        // bytes on 100 bodies.
+        // 4_478_302 at format 27: the blueprint mask's high word and the
+        // feet's stack, sixteen bytes on 100 bodies.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 4_477_502,
+            WORLD_SAVE_MAX_BYTES, 4_478_302,
             "the world save ceiling moved"
         );
     }

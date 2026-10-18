@@ -795,6 +795,7 @@ pub const NAMES: &[&str] = &[
     // (`structures::DEPLOY_KIT`).
     "barbed_wooden_barricade",
     "wooden_floor_spikes",
+    "boots",
 ];
 
 /// The parts of the prop called `name`, or `None` for a name with none.
@@ -853,6 +854,7 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "beancan_grenade" => beancan(),
         "barbed_wooden_barricade" => barbed_barricade(),
         "wooden_floor_spikes" => floor_spikes(),
+        "boots" => boots(),
         _ => return None,
     })
 }
@@ -2099,6 +2101,38 @@ fn barbed_barricade() -> Vec<Part> {
             .collect();
         // Thicker than real wire, so it reads in a 48 px cell.
         out.push(p(tube(&wire, |_| 0.014, 6), STEEL, Transform::IDENTITY));
+    }
+    out
+}
+
+/// A pair of leather boots, laced, standing side by side.
+fn boots() -> Vec<Part> {
+    let mut out = Vec::new();
+    for side in [-1.0f32, 1.0] {
+        let x = side * 0.065;
+        // The shaft, the foot reaching forward from its base, the sole.
+        out.push(p(
+            frustum(0.045, 0.05, 0.2),
+            LEATHER,
+            xf([x, 0.13, 0.0], [0.0; 3]),
+        ));
+        out.push(p(
+            cuboid(0.09, 0.07, 0.2),
+            LEATHER,
+            xf([x, 0.055, 0.05], [0.0; 3]),
+        ));
+        out.push(p(
+            cuboid(0.1, 0.025, 0.22),
+            BLACK,
+            xf([x, 0.0125, 0.05], [0.0; 3]),
+        ));
+        for y in [0.12, 0.17, 0.21] {
+            out.push(p(
+                cuboid(0.07, 0.008, 0.012),
+                ROPE,
+                xf([x, y, 0.047], [0.0; 3]),
+            ));
+        }
     }
     out
 }

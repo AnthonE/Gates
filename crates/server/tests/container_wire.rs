@@ -2116,6 +2116,8 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
             cond: 10_000,
             skin: 0,
         },
+        // Bare feet.
+        ItemStack::default(),
     ];
     core.world.players[w0].worn = worn;
     core.world.players[w0].inv[0] = ItemStack {
@@ -2183,7 +2185,7 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     assert!(
         seen.iter().any(|(s, m)| *s == 1
             && matches!(m, EventMsg::Worn { id, items, .. }
-                if *id == id_of(0) && *items == [OTHER, THIRD])),
+                if *id == id_of(0) && *items == [OTHER, THIRD, sim_core::gather::NO_ITEM])),
         "the other player is told what the body wears: {seen:?}"
     );
 

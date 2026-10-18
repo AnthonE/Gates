@@ -170,7 +170,8 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// **9** — the magazine (reload v1): `MAX_MAGS` pairs of `u16` close the
 /// record, 369 → 401. A loaded cylinder you log off with is still loaded.
 /// **10** — the blueprint mask is 128 bits (Rust's tree items): its high
-/// word closes the scalar head, 401 → 409.
+/// word closes the scalar head, 401 → 409; and a third worn stack, the feet
+/// (Rust's boots), 409 → 417.
 pub const SAVE_FORMAT: u16 = 10;
 
 /// Header bytes 32..40: the content layout hash. Spent out of the header's
@@ -1079,8 +1080,9 @@ mod tests {
         // and craft job (skins v0), +72.
         // 433 → 441 at SAVE_FORMAT 8: the glyph mask (`sim_core::lore`).
         // 441 → 473 at SAVE_FORMAT 9: the magazine (reload v1).
-        // 473 → 481 at SAVE_FORMAT 10: the blueprint mask's high word.
-        assert_eq!(SAVE_RECORD_BYTES, 481);
+        // 473 → 489 at SAVE_FORMAT 10: the blueprint mask's high word and
+        // the feet's stack (Rust's boots).
+        assert_eq!(SAVE_RECORD_BYTES, 489);
         let head = encode_header(7, 0xdead_beef, 0xfeed);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

@@ -424,8 +424,9 @@ pub const INV_SLOTS: usize = 30;
 /// one-based) and replaces whatever was there, so the only way to exceed the
 /// cap is to name a slot the array does not have, which `combat::worn_pct`
 /// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
-/// Proposed default, DECISIONS.md §open ("armor reduction v0").
-pub const WEAR_SLOTS: usize = 2;
+/// Proposed default, DECISIONS.md §open ("armor reduction v0"). 2 → 3 for
+/// the feet (Rust's boots, 2026-10-18).
+pub const WEAR_SLOTS: usize = 3;
 
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the

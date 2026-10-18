@@ -366,6 +366,7 @@ const SUBJECTS: &[Subject] = &[
     kit("beancan_grenade", [30.0, 0.0, 0.0]),
     kit("barbed_wooden_barricade", [0.0, 0.0, 0.0]),
     kit("wooden_floor_spikes", [30.0, 0.0, 0.0]),
+    kit("boots", [30.0, -30.0, 0.0]),
 ];
 
 /// Where the camera sits relative to the subject: right, above and in front,

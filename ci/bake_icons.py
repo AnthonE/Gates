@@ -282,6 +282,7 @@ ITEMS = {
     "beancan": "lorc/grenade",
     "barricade_barbed": "lorc/spiked-fence",
     "floor_spikes": "delapouite/spiky-pit",
+    "armor_boots_feet": "lorc/leather-boot",
 }
 
 # The three vitals, bottom right, in every frame of play.

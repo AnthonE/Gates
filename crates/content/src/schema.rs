@@ -27,6 +27,7 @@ pub enum EquipSlot {
     Hand,
     Head,
     Body,
+    Feet,
     None,
 }
 
@@ -521,6 +522,7 @@ pub struct Weapon {
 pub enum ArmorSlot {
     Head,
     Body,
+    Feet,
 }
 
 #[derive(Debug, Clone, Deserialize)]

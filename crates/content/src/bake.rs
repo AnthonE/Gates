@@ -19,8 +19,8 @@ use sim_core::build::{
     SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_HEAD,
-    WEAR_NONE,
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_FEET,
+    WEAR_HEAD, WEAR_NONE,
 };
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
@@ -1154,6 +1154,7 @@ impl Content {
             slot: match a.slot {
                 ArmorSlot::Head => WEAR_HEAD,
                 ArmorSlot::Body => WEAR_BODY,
+                ArmorSlot::Feet => WEAR_FEET,
             },
         };
         Ok(())
