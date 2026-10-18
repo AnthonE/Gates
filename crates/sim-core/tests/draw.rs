@@ -32,12 +32,14 @@ fn bow(draw_ticks: u16) -> CombatContent {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks,
+        gun: Default::default(),
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
         damage_pct: 100,
         fire_ticks: [0; 2],
+        blast: Default::default(),
     };
     c
 }

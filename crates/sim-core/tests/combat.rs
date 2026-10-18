@@ -88,6 +88,7 @@ fn swing_frame_at(pitch: u8, seq: u16, yaw: u16) -> InputFrame {
         move_x: 0,
         move_z: 0,
         sel: 0,
+        pitch_fine: 0,
     }
 }
 

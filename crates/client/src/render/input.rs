@@ -312,6 +312,9 @@ pub fn gather(
             0,
             sel,
         );
+        net.session
+            .core
+            .set_pitch_fine(crate::look::pitch_fine(look.pitch));
         return;
     }
 
@@ -563,6 +566,9 @@ pub fn gather(
         move_z,
         sel,
     );
+    net.session
+        .core
+        .set_pitch_fine(crate::look::pitch_fine(look.pitch));
 }
 
 /// One network frame per rendered frame, then place the eye.

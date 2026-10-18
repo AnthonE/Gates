@@ -1700,6 +1700,7 @@ fn the_prompt_and_the_swing_agree() {
                     move_x: 0,
                     move_z: 0,
                     sel: 0,
+                    pitch_fine: 0,
                 },
                 favour: 0,
             }]);
@@ -1835,6 +1836,7 @@ fn a_man_in_front_of_the_tree_takes_the_prompt() {
                     move_x: 0,
                     move_z: 0,
                     sel: 0,
+                    pitch_fine: 0,
                 },
                 favour: 0,
             }]);
@@ -2104,6 +2106,7 @@ fn a_blade_at_a_carcass_before_the_tree_names_the_cut() {
                     move_x: 0,
                     move_z: 0,
                     sel: 0,
+                    pitch_fine: 0,
                 },
                 favour: 0,
             }]);

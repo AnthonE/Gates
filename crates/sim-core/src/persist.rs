@@ -711,10 +711,11 @@ mod tests {
     /// 369 → 401 at `SAVE_FORMAT` 9: the magazine (reload v1).
     /// 401 → 417 at `SAVE_FORMAT` 10: the blueprint mask's high word (+8)
     /// and the feet (+8, Rust's boots).
+    /// 417 → 449 at `SAVE_FORMAT` 11: sixteen magazines (guns v1).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 417, "the on-disk record size moved");
-        assert_eq!(MAX_MAGS, 8);
+        assert_eq!(PLAYER_SAVE_BYTES, 449, "the on-disk record size moved");
+        assert_eq!(MAX_MAGS, 16);
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
         assert_eq!(WEAR_SLOTS, 3);

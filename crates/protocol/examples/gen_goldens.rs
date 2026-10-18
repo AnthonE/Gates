@@ -604,7 +604,7 @@ fn main() {
 
     {
         let (shooter, yaw, pitch, speed, drop) = goldens::event_shot();
-        let len = encode_event_shot(shooter, yaw, pitch, speed, drop, &mut buf).unwrap();
+        let len = encode_event_shot(shooter, yaw, pitch, -37, speed, drop, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[82], &buf[..len]);
     }
 

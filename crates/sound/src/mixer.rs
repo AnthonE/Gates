@@ -382,7 +382,14 @@ impl Mixer {
                 }
             }
             let kick = match req.cue {
-                Cue::ShotGun | Cue::ShotHeli => DUCK_SHOT,
+                Cue::ShotGun
+                | Cue::ShotHeli
+                | Cue::ShotRifle
+                | Cue::ShotSmg
+                | Cue::ShotPistol
+                | Cue::ShotShotgun
+                | Cue::ShotBolt
+                | Cue::ShotRocket => DUCK_SHOT,
                 Cue::Blast => DUCK_BLAST,
                 _ => 0.0,
             };

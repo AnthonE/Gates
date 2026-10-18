@@ -2844,6 +2844,7 @@ mod tests {
             move_x: frame_x,
             move_z: frame_z,
             sel: 0,
+            pitch_fine: 0,
         }
     }
 

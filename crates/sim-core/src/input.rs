@@ -101,6 +101,11 @@ pub struct InputFrame {
     /// View yaw; the high byte indexes the shared yaw LUT for movement.
     pub yaw: u16,
     pub pitch: u8,
+    /// `pitch`'s fraction, in 256ths of one of its steps, signed: the aim is
+    /// `pitch + pitch_fine / 256` on `pitch`'s own scale. A gun reads it
+    /// (`ranged::aim_dir`), so a shot is not rounded to `pitch`'s 0.7°
+    /// steps; movement and every other reader ignore it.
+    pub pitch_fine: i8,
     /// Strafe axis, +right, -127..=127.
     pub move_x: i8,
     /// Forward axis, +forward, -127..=127.
@@ -161,6 +166,7 @@ pub fn decay_frame(f: &InputFrame, repeat: u32) -> InputFrame {
         },
         yaw: f.yaw,
         pitch: f.pitch,
+        pitch_fine: f.pitch_fine,
         move_x: scale(f.move_x),
         move_z: scale(f.move_z),
         sel: f.sel,
@@ -180,6 +186,7 @@ mod tests {
             move_x,
             move_z,
             sel: 3,
+            pitch_fine: 0,
         }
     }
 

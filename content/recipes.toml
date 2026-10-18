@@ -624,6 +624,183 @@ inputs = [
     { item = "item.gunpowder", count = 5 },
 ]
 
+# --- Rust's guns (guns v1) --------------------------------------------------
+#
+# Their recipes with high-quality metal (which we do not have) priced at ten
+# fragments a piece, the recycler's rate; their explosives at 50 gunpowder,
+# 3 low grade and 10 frags each. The rifles want the third bench, as theirs.
+[[recipe]]
+id = "recipe.assault_rifle"
+output = "item.assault_rifle"
+blueprint = true
+count = 1
+station = "workbench3"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 500 },
+    { item = "item.wood", count = 200 },
+    { item = "item.rifle_body", count = 1 },
+    { item = "item.metal_spring", count = 4 },
+]
+
+[[recipe]]
+id = "recipe.semi_rifle"
+output = "item.semi_rifle"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 450 },
+    { item = "item.metal_pipe", count = 4 },
+    { item = "item.semi_body", count = 1 },
+    { item = "item.metal_spring", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.thompson"
+output = "item.thompson"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.wood", count = 100 },
+    { item = "item.smg_body", count = 1 },
+    { item = "item.metal_spring", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.custom_smg"
+output = "item.custom_smg"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 80 },
+    { item = "item.smg_body", count = 1 },
+    { item = "item.metal_spring", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.bolt_rifle"
+output = "item.bolt_rifle"
+blueprint = true
+count = 1
+station = "workbench3"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_pipe", count = 3 },
+    { item = "item.rifle_body", count = 1 },
+    { item = "item.metal_spring", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.pump_shotgun"
+output = "item.pump_shotgun"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_pipe", count = 2 },
+    { item = "item.metal_spring", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.semi_pistol"
+output = "item.semi_pistol"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 150 },
+    { item = "item.metal_pipe", count = 1 },
+    { item = "item.semi_body", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.python"
+output = "item.python"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 45
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.metal_pipe", count = 3 },
+    { item = "item.metal_spring", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.rocket_launcher"
+output = "item.rocket_launcher"
+blueprint = true
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 500 },
+    { item = "item.metal_pipe", count = 4 },
+]
+
+[[recipe]]
+id = "recipe.rifle_ammo"
+output = "item.rifle_ammo"
+blueprint = true
+count = 3
+station = "workbench2"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 10 },
+    { item = "item.gunpowder", count = 5 },
+]
+
+[[recipe]]
+id = "recipe.shotgun_shells"
+output = "item.shotgun_shells"
+blueprint = true
+count = 2
+station = "workbench2"
+seconds = 10
+inputs = [
+    { item = "item.metal_frags", count = 5 },
+    { item = "item.gunpowder", count = 10 },
+]
+
+[[recipe]]
+id = "recipe.rocket"
+output = "item.rocket"
+blueprint = true
+count = 1
+station = "workbench3"
+seconds = 30
+inputs = [
+    { item = "item.metal_pipe", count = 2 },
+    { item = "item.gunpowder", count = 650 },
+    { item = "item.lowgrade", count = 30 },
+    { item = "item.metal_frags", count = 100 },
+]
+
+[[recipe]]
+id = "recipe.c4"
+output = "item.c4"
+blueprint = true
+count = 1
+station = "workbench3"
+seconds = 30
+inputs = [
+    { item = "item.gunpowder", count = 1000 },
+    { item = "item.lowgrade", count = 60 },
+    { item = "item.metal_frags", count = 200 },
+    { item = "item.tech_trash", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.satchel_charge"
 output = "item.satchel_charge"

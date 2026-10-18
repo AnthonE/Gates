@@ -186,6 +186,52 @@ item = "item.revolver"
 cost = 30
 requires = "item.pistol_ammo"
 
+# Rust's guns (guns v1): the pistols and SMGs off the revolver's line, the
+# shotgun off the pistol round, the launcher on its own.
+[[research]]
+item = "item.semi_pistol"
+cost = 30
+requires = "item.revolver"
+
+[[research]]
+item = "item.python"
+cost = 60
+requires = "item.semi_pistol"
+
+[[research]]
+item = "item.thompson"
+cost = 60
+requires = "item.semi_pistol"
+
+[[research]]
+item = "item.custom_smg"
+cost = 60
+requires = "item.semi_pistol"
+
+[[research]]
+item = "item.semi_rifle"
+cost = 120
+requires = "item.thompson"
+
+[[research]]
+item = "item.rifle_ammo"
+cost = 30
+requires = "item.pistol_ammo"
+
+[[research]]
+item = "item.shotgun_shells"
+cost = 30
+requires = "item.pistol_ammo"
+
+[[research]]
+item = "item.pump_shotgun"
+cost = 60
+requires = "item.shotgun_shells"
+
+[[research]]
+item = "item.rocket_launcher"
+cost = 120
+
 # Ours: the turret is a revolver on a mount, so it follows the revolver.
 [[research]]
 item = "item.autoturret"
@@ -245,3 +291,24 @@ requires = "item.window_glass"
 [[research]]
 item = "item.satchel_charge"
 cost = 60
+
+# Rust's third-bench guns and explosives (guns v1).
+[[research]]
+item = "item.assault_rifle"
+cost = 120
+requires = "item.satchel_charge"
+
+[[research]]
+item = "item.bolt_rifle"
+cost = 120
+requires = "item.satchel_charge"
+
+[[research]]
+item = "item.rocket"
+cost = 120
+requires = "item.satchel_charge"
+
+[[research]]
+item = "item.c4"
+cost = 120
+requires = "item.rocket"

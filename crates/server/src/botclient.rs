@@ -1389,15 +1389,27 @@ async fn run_bot_inner(
                 // mark against the fill is the fix rather than tolerating a
                 // refusal, because a lane that can ask for a full cylinder
                 // cannot be told apart from a sim that fills the wrong one.
+                //
+                // **And one ask in flight at a time.** A dry click heard
+                // while a BUSY's retry is still on its way asks a second
+                // time, and from then on two asks circle: the fill answers
+                // one, the other comes back BUSY after the fill was seen and
+                // asks again, BUSY through the whole reload, and lands on a
+                // full cylinder. A five-tick cadence (the revolver since
+                // guns v1) clicks often enough to hit that one run in six.
+                // Every ask is answered exactly once — a fill or a refusal
+                // — so waiting for the answer before the next ask loses
+                // nothing: the answer is itself a lane event that asks.
                 let mut took_the_tick = false;
-                let asks = tally.dry_clicks.load(Ordering::Relaxed)
-                    + tally.reloads_busy.load(Ordering::Relaxed);
+                let busy = tally.reloads_busy.load(Ordering::Relaxed);
+                let asks = tally.dry_clicks.load(Ordering::Relaxed) + busy;
                 let fills = tally.reloads.load(Ordering::Relaxed);
+                let answered = busy + fills + tally.reloads_refused.load(Ordering::Relaxed);
                 if fills > fills_seen {
                     fills_seen = fills;
                     asks_answered = asks;
                 }
-                if reload_lane && asks > asks_answered {
+                if reload_lane && asks > asks_answered && report.reloads_sent <= answered {
                     asks_answered = asks;
                     let cmd = Command::Reload { id: report.player_id };
                     match encode_raid(&cmd, &mut act_buf) {

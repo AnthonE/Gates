@@ -276,12 +276,14 @@ fn world_with_bow() -> Box<World> {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1666,
         drop_mmpt2: 11,
         damage_pct: 100,
         fire_ticks: [0; 2],
+        blast: Default::default(),
     };
     w.combat = c;
     // Long enough a life that nothing here races the despawn.

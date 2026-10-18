@@ -6639,7 +6639,7 @@ impl Survivor {
         }
         // What the eyes and ears make of the fight around this body: the
         // tracks take facts, never the rings.
-        while let Some((shooter, yaw, pitch, speed, low)) = core.pop_shot() {
+        while let Some((shooter, yaw, pitch, speed, low, _fine)) = core.pop_shot() {
             if shooter == core.player_id {
                 self.combat.shot(tick);
                 self.shot_at = Some(tick);
@@ -7270,7 +7270,7 @@ fn resolve_recipe(core: &ClientCore, name: Name, has: &Stations) -> Option<(u16,
         let def = core.recipes.recipes[r];
         let usable = def.out_count > 0
             && has.usable(def.station)
-            && (!def.blueprint || (r < 64 && known & (1 << r) != 0))
+            && (!def.blueprint || sim_core::research::knows(known, r as u16))
             && core.catalog.name(def.output as usize) == name.as_bytes();
         usable.then_some((r as u16, def.output, def.ticks, def.station))
     })
@@ -7466,7 +7466,7 @@ pub fn observe(
                     || usize::from(core.jobs_count) >= CRAFT_QUEUE
                     || queued(core, r as u16)
                     || !memory.stations.usable(def.station)
-                    || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
+                    || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
                     || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
                 {
@@ -9376,7 +9376,7 @@ mod tests {
         assert_eq!(bot.senses.players.count, 1);
         // A shot from behind is heard as a sound from behind, not a body.
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_shot(4, 0, 128, 900, 10, &mut buf).unwrap();
+        let n = protocol::event::encode_event_shot(4, 0, 128, 0, 900, 10, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let heard = *bot.tracks.heard().last().expect("the shot was heard");
         assert_eq!(heard.sound, tracks::Sound::Shot);

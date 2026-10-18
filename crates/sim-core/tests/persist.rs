@@ -794,7 +794,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 50] = [
+    pub const RE_DERIVED: [&str; 53] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // The life clock: the corpse keeps it for the death screen's
@@ -845,6 +845,11 @@ mod carried_through_death {
         // `a_death_empties_the_cylinder` holds both halves.
         "mag",
         "mag_round",
+        // A gun's cone and trigger (guns v1): the barrel settles and the
+        // finger comes up; nothing about them outlives the hand.
+        "bloom",
+        "shot_at",
+        "trigger_spent",
         "ws_cell",
         "ws_mark",
         "jobs",

@@ -390,6 +390,7 @@ fn step_looking(w: &mut World, seq: &mut u16, pitch: u8) {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -557,12 +558,14 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
         drop_mmpt2: DROP_MMPT2,
         damage_pct: 100,
         fire_ticks: [0; 2],
+        blast: Default::default(),
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -586,6 +589,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -652,6 +656,7 @@ fn gun_world() -> World {
         reload_ticks: RL_RELOAD_TICKS,
         mag_slot: 0,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     w.players[0].inv[0] = ItemStack {
         item: RL_GUN,
@@ -708,6 +713,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
         // A bow's slot holds the kind it looses, with no magazine in it.
         mag_slot: 0,
         draw_ticks: 30,
+        gun: Default::default(),
     };
     for round in [WOOD, HV] {
         w.combat.ammo[round as usize] = AmmoDef {
@@ -715,6 +721,7 @@ fn ammo_names_the_archer_then_the_bow_and_its_arrow() {
             drop_mmpt2: 8,
             damage_pct: 100,
             fire_ticks: [0; 2],
+            blast: Default::default(),
         };
     }
     for (i, item) in [(0, BOW), (1, WOOD), (2, HV)] {
@@ -812,6 +819,7 @@ fn a_dry_click_names_the_hand_the_reason_and_the_count() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -879,6 +887,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         reload_ticks: 102,
         mag_slot: 0,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     w.players[0].inv[0] = ItemStack {
         item: GUN,
@@ -908,6 +917,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -989,12 +999,14 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,
         drop_mmpt2: 22,
         damage_pct: 100,
         fire_ticks: [0; 2],
+        blast: Default::default(),
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -1031,6 +1043,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -1098,12 +1111,14 @@ fn fire_names_its_burn_and_x_then_z_then_y() {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     w.combat.ammo[FIRE_ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,
         drop_mmpt2: 22,
         damage_pct: 80,
         fire_ticks: [BURN, BURN],
+        blast: Default::default(),
     };
     w.players[0].inv[0] = ItemStack {
         item: BOW,
@@ -1132,6 +1147,7 @@ fn fire_names_its_burn_and_x_then_z_then_y() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -1685,6 +1701,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);
@@ -2408,6 +2425,7 @@ fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);
@@ -3062,6 +3080,7 @@ fn piece_repaired_names_the_cell_then_the_address_then_healed_over_hp() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -3217,6 +3236,7 @@ fn repairing_a_deployable_sets_the_deploy_bit() {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -3569,6 +3589,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
             move_x: 0,
             move_z: 0,
             sel: CHARGE_SLOT,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -3690,6 +3711,7 @@ fn until_facing(w: &mut World, yaw: u16, code: u8) {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);
@@ -4010,6 +4032,7 @@ fn bag_removed_names_the_bag_then_why() {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         },
@@ -4283,6 +4306,7 @@ fn swing_names_the_swinger_and_nothing_else() {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);

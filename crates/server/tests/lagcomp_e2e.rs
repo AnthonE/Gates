@@ -120,6 +120,7 @@ fn run(one_way_ms: f64, secs: f64) -> Run {
                 move_x: 0,
                 move_z: 127,
                 sel: 0,
+                pitch_fine: 0,
             })
             .expect("one frame fits");
             core.push_input(1, &rdg);

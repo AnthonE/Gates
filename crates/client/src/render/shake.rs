@@ -302,20 +302,26 @@ pub fn apply(
     heli: Query<&GlobalTransform, With<super::heli::HeliBody>>,
     mut shake: ResMut<Shake>,
     mut cam: Query<&mut Transform, With<EyeCam>>,
+    gf: Res<super::gunfeel::GunFeel>,
 ) {
     if let Some(net) = net.as_deref() {
         let core = &net.session.core;
-        // Your own shots, off the same broadcast the tracer and the report
-        // read: a firearm's speed on the wire is zero.
-        for &(shooter, _, _, speed, _) in feed.shots() {
-            if shooter != core.player_id {
-                continue;
-            }
-            if protocol::shot_is_instant(speed) {
-                let side = shake.rand() * SHOT_SIDE_RAD;
-                shake.kick(Vec3::new(SHOT_KICK_RAD, side, 0.0));
-                shake.add(SHOT_TRAUMA);
-            } else {
+        // Your own gunshot on the frame it broke (`gunfeel`): the aim has
+        // already been kicked, so this is the jolt of the stock on top — a
+        // light one for an automatic's every round, a full one for a heavy
+        // single shot.
+        if gf.fired > 0 {
+            let heavy = gf
+                .gun
+                .is_some_and(|g| g.semi || g.pellets > 1 || g.rate_ticks > 8);
+            let k = if heavy { 0.6 } else { 0.3 };
+            let side = shake.rand() * SHOT_SIDE_RAD;
+            shake.kick(Vec3::new(SHOT_KICK_RAD * k, side * k, 0.0));
+            shake.add(SHOT_TRAUMA * if heavy { 1.0 } else { 0.35 });
+        }
+        // A bow's own loose, off the broadcast.
+        for &(shooter, _, _, speed, _, _) in feed.shots() {
+            if shooter == core.player_id && !protocol::shot_is_instant(speed) {
                 shake.kick(Vec3::new(BOW_KICK_RAD, 0.0, 0.0));
             }
         }

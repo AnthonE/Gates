@@ -348,6 +348,7 @@ async fn a_watchers_input_and_actions_reach_nothing() {
                 move_x: 0,
                 move_z: 127,
                 sel: 0,
+                pitch_fine: 0,
             })
             .unwrap();
     }

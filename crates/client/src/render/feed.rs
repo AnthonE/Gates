@@ -286,7 +286,7 @@ pub struct Feed {
     /// Cosmetic only. The tracer spawned from this decides nothing — the
     /// arrow that can kill you is the server's, and its hit arrives on its
     /// own events whether or not anything drew a streak.
-    shots: [(u32, u16, u8, u16, u16); FEED_CAP],
+    shots: [client_core::core::ShotFact; client_core::core::SHOT_RING],
     n_shots: usize,
     /// Arrow impacts heard this frame: the stop point in the wire's quanta
     /// (3 cm x/z, 1 cm y, y signed) and what it stopped on
@@ -419,7 +419,7 @@ impl Feed {
     }
     /// Grants earned this frame, oldest first.
     /// `(shooter, yaw, pitch, speed mm/tick, drop mm/tick²)` this frame.
-    pub fn shots(&self) -> &[(u32, u16, u8, u16, u16)] {
+    pub fn shots(&self) -> &[client_core::core::ShotFact] {
         &self.shots[..self.n_shots]
     }
     /// Arrow impacts heard this frame, oldest first.
@@ -773,7 +773,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
         }
     }
     while let Some(sh) = core.pop_shot() {
-        if feed.n_shots >= FEED_CAP {
+        if feed.n_shots >= client_core::core::SHOT_RING {
             feed.dropped = feed.dropped.saturating_add(1);
         } else {
             let n = feed.n_shots;

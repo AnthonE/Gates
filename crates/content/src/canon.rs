@@ -180,6 +180,37 @@ pub fn hash(c: &Content) -> u64 {
                 h.u(d);
             }
         }
+        // The magazine and its reload reach `RangedDef` too.
+        h.u(w.magazine.unwrap_or(0));
+        h.u(w.reload_ms.unwrap_or(0));
+        match w.gun {
+            None => h.u(0),
+            Some(g) => {
+                h.u(1);
+                for v in [
+                    u32::from(g.auto),
+                    g.pellets,
+                    g.aim_cdeg,
+                    g.hip_cdeg,
+                    g.move_cdeg,
+                    g.bloom_cdeg,
+                    g.bloom_max_cdeg,
+                    g.bloom_recover_ms,
+                    g.bloom_delay_ms,
+                    g.pellet_cdeg,
+                    g.falloff_m[0],
+                    g.falloff_m[1],
+                    g.falloff_pct,
+                    g.recoil_pitch_cdeg[0],
+                    g.recoil_pitch_cdeg[1],
+                    g.recoil_yaw_cdeg[0] as u32,
+                    g.recoil_yaw_cdeg[1] as u32,
+                    g.ads_recoil_pct,
+                ] {
+                    h.u(v);
+                }
+            }
+        }
     }
 
     // The ballistics, on the object they belong to. These reach
@@ -195,6 +226,15 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.damage_pct);
         h.u(a.fire_s[0]);
         h.u(a.fire_s[1]);
+        match a.blast {
+            None => h.u(0),
+            Some(b) => {
+                h.u(1);
+                h.u(b.blast_m);
+                h.u(b.damage);
+                h.u(b.structure);
+            }
+        }
     }
 
     h.s("armor");

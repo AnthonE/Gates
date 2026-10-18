@@ -28,10 +28,10 @@ private ownership with no attribution owed and no `NOTICE` entry due.
 
 | | |
 |---|---|
-| file | `stumpy.glb`, **4.2 MB** |
+| file | `stumpy.glb`, **4.3 MB** |
 | mesh | one skinned character, 21,360 verts / 31,252 tris, **24 joints**, split into `char1_arms` (8,184 tris) + `char1_body` for the first-person view |
 | albedo | `Material_1_baseColor`, KTX2/UASTC 1024², **linear luma 0.056** — measured off the shipped file 2026-08-31 at mips 0/2/4/6 (0.0568 / 0.0564 / 0.0553 / 0.0556), 94% of texels in the darkest eighth. ⚠ **That is level with `grass` (0.054), the darkest identity in the game, and one thousandth over `ALBEDO_LUMA_BAND`'s 0.05 floor** — against granite 0.292, sand 0.178, twig 0.167 and litter 0.135. It is why the operator reads other players as dark in a frame (`NOW.md` §0dk), and it is the asset rather than the light: an A/B capture rules out SSAO at under 1% and the fill gives a shaded vertical face 14.3% of lit ground, which is physically correct. |
-| clips | **53** — the delivery's 7, plus 46 retargeted off the mannequin |
+| clips | **55** — the delivery's 7, 46 retargeted off the mannequin, and guns v1's two (below) |
 | texture | one 4096² base colour, packed to **1024 UASTC** (28.9 MB → 2.8 MB) |
 | stands | **1.800 m**, feet on y = 0 — the sim's own `Capsule3d::new(0.4, 1.0)` exactly, so `ANIM_RIG_H_M` is 1.8 and the scale is 1 |
 | source | `Meshy_AI_Stumpy_biped.zip` → `..._Meshy_Merged_Animations.glb` |
@@ -61,6 +61,21 @@ ci/curl_hands.py stumpy_split.glb assets/models/stumpy.glb
 2. **The clip names are the generator's.** `render/anim.rs` resolves by NAME
    and a name it cannot find draws a body frozen in its bind pose, so
    `Idle_11` is an idle that never plays.
+
+**Guns v1's two clips** (2026-10-18): `Rifle_Hold_Loop` (the library's
+"Walk Forward While Shooting") and `Rifle_Reload` ("Standing Reload"), off
+Meshy's animation library on its own rig of this mesh (rig task
+`01a150ae-0851`, 5 credits; animate task `01a150ae-72ce`, 12 credits). The
+library's skeleton is this one bone for bone, so no mannequin in between:
+
+```
+ci/retarget_anim.py <merged_animations>.glb assets/models/stumpy.glb out.glb \
+    --identity --no-align --only Walk_Forward_While_Shooting --only Standing_Reload
+```
+
+then the two renamed. `render/anim.rs` plays the hold on the arms and spine of
+a remote body shouldering a long gun, over its gait. `Rifle_Reload` rides along
+unplayed: the wire does not yet say when somebody else reloads.
 
 **`split_arms.py` is what makes a first-person viewmodel possible**, and it is
 one line because the alternative was believed impossible: the mesh becomes
@@ -1313,6 +1328,72 @@ each to its player.
 > **slot_machine** — "A single old casino slot machine cabinet standing upright on a plain white background, three-quarter front view. A tall rectangular steel cabinet 90 centimetres wide, 70 centimetres deep and 190 centimetres tall. Its front face has a wide glass window at chest height showing three vertical spinning reels with plain fruit and bar pictures, a rounded glowing marquee lamp box on top, a small button panel and coin slot below the window, a chrome payout tray near the bottom, and a long chrome pull lever with a red ball knob on its right side. Painted deep red and cream enamel with chrome trim, scratched, dented and chipped through to grey metal, rust at the bottom edge, a salvaged post-apocalyptic look. Exactly one slot machine. No ground, no people, no text, no letters, no numbers, no logos, no brand names, no scale bar."  ·  texture: "Deep red and cream enamel steel cabinet with chrome trim, scratched and chipped through to grey metal, rust at the bottom edge, glass window over three reels of fruit and bar pictures, glowing yellow marquee lamp, chrome lever with red knob, no text, no letters, no numbers, no logos"
 >
 > **bet_terminal** — "A single small betting terminal kiosk standing upright on a plain white background, three-quarter front view. A squat steel pedestal 60 centimetres wide, 60 centimetres deep and 110 centimetres tall, with a sloped control desk on top facing the viewer that carries a dark glass screen and a row of five big round arcade buttons coloured yellow, green, blue, purple and red, a coin slot and a small chrome tray on the front of the pedestal, a bolted foot plate. Dark grey painted steel with brass trim, scratched and chipped, rust at the bolts, a salvaged post-apocalyptic look. Exactly one terminal. No stool, no ground, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted steel with brass trim, scratched and chipped, rusty bolts, dark glass screen, five big round arcade buttons coloured yellow, green, blue, purple and red, no text, no letters, no numbers, no logos"
+
+## `held/` — guns v1: Rust's guns, their rounds, the rocket and C4 (Meshy, 2026-10-18)
+
+Thirteen items for guns v1 (`content/weapons.toml`), the batch-1 pipeline
+and terms: `meshy_gen.py` (nano-banana-pro image → meshy-t2 smart topology)
+→ `import_meshy.py` → `stand_grip.py` → `ktx_pack.py --size 512`. Meshy paid
+plan, no `NOTICE` entry, no proper noun in any prompt (below, in full).
+
+**The guns are stood barrel-up, top to +Z** — the revolver's authoring
+(`render/heldgen.rs`), so the hold's shared quarter-turn points the muzzle
+down the view. The generator lays a gun along X with its muzzle at **−X**
+(the reference image's right, mirrored), so each took
+`import_meshy.py <raw> <out> 1 L 1 --turn=z-90,y-90` (L its real length,
+the uniform fit by Y), then `stand_grip.py --shaft 0.40 0.95 --grip G`:
+tilts under 2°, the fist on material at the pistol grip. The rocket is a
+hollow tube with too few vertices at any grip height for that fit and ships
+straight from the import. The charge and the two piles were fitted to a
+cube of their longest side, as batch 1's piles were.
+
+**1,703 → 1,391 credits, 312 for the batch**, run three at a time, so the
+per-row figures below are balance deltas that overlap (the first three
+report 72 each against a true ~24).
+
+| file | item | image task | mesh task | size (m) | note |
+|---|---|---|---|---|---|
+| `held/assault_rifle.glb` | Assault Rifle | `01a15089-fcf7` | `01a1508a-7756` | 0.06 × 0.89 × 0.26 | barrel-up, grip 0.32 |
+| `held/semi_automatic_rifle.glb` | Semi-Automatic Rifle | `01a15089-fd1f` | `01a1508a-7e7e` | 0.06 × 0.96 × 0.25 | barrel-up, grip 0.36 |
+| `held/thompson.glb` | Thompson | `01a15089-fd5a` | `01a1508a-7d6a` | 0.05 × 0.87 × 0.28 | barrel-up, grip 0.34 |
+| `held/custom_smg.glb` | Custom SMG | `01a1508b-2b27` | `01a1508b-a82c` | 0.05 × 0.62 × 0.35 | barrel-up, grip 0.42 |
+| `held/bolt_action_rifle.glb` | Bolt Action Rifle | `01a1508b-2c86` | `01a1508b-ad02` | 0.07 × 1.09 × 0.29 | barrel-up, grip 0.33 |
+| `held/pump_shotgun.glb` | Pump Shotgun | `01a1508b-5951` | `01a1508b-ae13` | 0.06 × 0.95 × 0.22 | barrel-up, grip 0.30 |
+| `held/semi_automatic_pistol.glb` | Semi-Automatic Pistol | `01a1508c-59e8` | `01a1508c-d457` | 0.03 × 0.20 × 0.14 | barrel-up, grip 0.22 |
+| `held/python_revolver.glb` | Python Revolver | `01a1508c-5bf1` | `01a1508c-ae7a` | 0.04 × 0.33 × 0.13 | barrel-up, grip 0.17 |
+| `held/rocket_launcher.glb` | Rocket Launcher | `01a1508c-5e32` | `01a1508c-da60` | 0.20 × 1.06 × 0.40 | barrel-up, grip 0.45 |
+| `held/rocket.glb` | Rocket | `01a1508e-b00b` | `01a1508f-0269` | 0.20 × 0.60 × 0.20 | nose-up; also drawn in flight |
+| `held/timed_explosive_charge.glb` | Timed Explosive Charge | `01a1508d-85ca` | `01a1508d-daf4` | 0.24 × 0.12 × 0.15 | cube fit |
+| `held/5_56_rifle_ammo.glb` | 5.56 Rifle Ammo | `01a1508d-ab02` | `01a1508e-2608` | 0.13 × 0.04 × 0.13 | cube fit |
+| `held/12_gauge_buckshot.glb` | 12 Gauge Buckshot | `01a1508e-53e1` | `01a1508e-a726` | 0.13 × 0.06 × 0.13 | cube fit |
+
+Prompts, in full, for the IP rail:
+
+> **assault_rifle** — "A single assault rifle lying horizontally on a plain white background, seen exactly from the side, muzzle pointing right. A classic wood-furniture assault rifle: a stamped steel receiver, a brown hardwood stock, pistol grip and handguard, a long curved steel box magazine hanging under the receiver, a gas tube over the barrel, a front sight post and a slanted muzzle brake. 88 centimetres long, 24 centimetres tall including the magazine and 7 centimetres wide. Battle-worn: scratched black paint worn to bare steel on the edges, dented, dirty, the wood chipped and oiled. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Worn gunmetal and blued steel scratched to bare metal on the edges, oil grime, matte, brown chipped hardwood stock and handguard, no text, no logos"
+>
+> **semi_automatic_rifle** — "A single homemade semi-automatic rifle lying horizontally on a plain white background, seen exactly from the side, muzzle pointing right. Built from salvage: a rough steel receiver welded from scrap plate with visible weld beads and bolts, a straight 10-round box magazine below, a scrap wooden stock bound with wire and tape, a plain round barrel with a simple front sight. 95 centimetres long, 20 centimetres tall and 6 centimetres wide. Rusty, scratched, dirty, crude but solid. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Rusty scrap steel with weld beads and bolts, worn grey paint, scratched bare metal edges, rough wooden stock wrapped in wire and black tape, grime, no text, no logos"
+>
+> **thompson** — "A single vintage 1920s-style submachine gun lying horizontally on a plain white background, seen exactly from the side, muzzle pointing right. A blued steel receiver with a cocking knob on top, a finned barrel with a muzzle compensator, a walnut wooden butt stock, a walnut vertical foregrip under the barrel and a walnut pistol grip, a straight 20-round stick magazine below the receiver. 80 centimetres long, 25 centimetres tall and 7 centimetres wide. Worn bluing scratched to bare steel, the walnut scuffed. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Worn blued steel scratched to bare metal, scuffed oiled walnut wood, grime, matte, no text, no logos"
+>
+> **custom_smg** — "A single crude homemade submachine gun lying horizontally on a plain white background, seen exactly from the side, muzzle pointing right. Made of welded steel pipe and folded sheet metal: a tube receiver, a short barrel shroud with drilled holes, a long straight magazine sticking down, a bent steel rod for a stock, a pistol grip wrapped in cloth tape, bolts and rivets. 60 centimetres long, 26 centimetres tall and 6 centimetres wide. Rusty, scratched, crude and dirty. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Rusty welded steel pipe and sheet metal, scratched bare metal edges, drilled holes, cloth tape grip, grime, no text, no logos"
+>
+> **bolt_action_rifle** — "A single bolt-action hunting rifle with a telescopic sight lying horizontally on a plain white background, seen exactly from the side, muzzle pointing right. A long walnut stock with a cheek rest, a blued steel action with a bent bolt handle, a long slim barrel, a black steel rifle scope on two rings above the action, a small internal magazine. 112 centimetres long, 22 centimetres tall and 7 centimetres wide. Worn: scuffed wood, bluing worn to bare steel on the edges. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Worn blued steel, black matte scope, scuffed oiled walnut stock, scratches, grime, no text, no logos"
+>
+> **pump_shotgun** — "A single crude pump-action shotgun lying horizontally on a plain white background, seen exactly from the side, muzzle pointing right. A thick steel pipe barrel over a tube magazine, a wooden pump fore-end that slides, a boxy steel receiver held with bolts, a rough wooden stock bound with steel straps. 95 centimetres long, 20 centimetres tall and 7 centimetres wide. Salvaged, rusty, scratched, dirty, sturdy. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Rusty steel pipe and bolted receiver, scratched bare metal edges, rough worn wooden pump and stock, steel straps, grime, no text, no logos"
+>
+> **semi_automatic_pistol** — "A single compact semi-automatic pistol lying on its side on a plain white background, seen exactly from the side, muzzle pointing right. A matte black steel slide with rear serrations, an exposed hammer, a black polymer grip with a textured panel, a trigger guard. 19 centimetres long, 14 centimetres tall and 3.5 centimetres wide. Worn: the black finish rubbed to bare steel on the slide edges, dusty. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Matte black steel slide worn to bare steel on the edges, black textured grip, grime, no text, no logos"
+>
+> **python_revolver** — "A single large-frame double-action revolver lying on its side on a plain white background, seen exactly from the side, muzzle pointing right. A long six-inch barrel with a ventilated rib on top and a full-length lug underneath, a fluted six-shot cylinder, a large hammer, a brown wooden grip. 30 centimetres long, 15 centimetres tall and 4 centimetres wide. Polished blued steel worn to bare metal on the edges, the wood scuffed. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Polished blued steel worn to bright bare metal on the edges, scuffed brown wooden grip, grime, no text, no logos"
+>
+> **rocket_launcher** — "A single crude shoulder-fired rocket launcher lying horizontally on a plain white background, seen exactly from the side, front pointing right. A long thick steel tube 12 centimetres across, with a flared rear exhaust, a pistol grip and trigger under the front half, a second grip behind it, a padded shoulder rest, a simple folding iron sight and riveted steel bands around the tube. 105 centimetres long, 26 centimetres tall and 14 centimetres wide. Olive drab paint, chipped and scorched black at the rear, rusty, dirty. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Chipped olive drab paint over steel, scorched black soot at the rear exhaust, rust, riveted steel bands, grime, no text, no logos"
+>
+> **rocket** — "A single crude rocket projectile lying horizontally on a plain white background, seen exactly from the side, nose pointing right. A cone-shaped steel warhead, a long steel pipe body, four flat stabilising fins at the tail, a black nozzle. 60 centimetres long, 12 centimetres across the fins. Olive drab and rusty steel, scratched, dirty. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Olive drab paint over rusty steel, black nozzle, scratches, grime, no text, no logos"
+>
+> **timed_explosive_charge** — "A single timed explosive charge on a plain white background, three-quarter view from above. A rectangular brick of grey-white plastic explosive wrapped in olive drab cloth tape, with a small black digital timer box strapped on top, red and yellow wires running into the brick, and a short loop of black duct tape. 24 centimetres long, 14 centimetres wide and 8 centimetres tall. Dirty, worn, real. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Grey-white plastic explosive brick, olive drab cloth tape, black plastic timer box with a dark display, red and yellow wires, black duct tape, grime, no text, no logos"
+>
+> **5_56_rifle_ammo** — "A single small pile of loose brass rifle cartridges on a plain white background, three-quarter view. About twelve long bottlenecked brass cases with copper pointed bullets lying together, some crossed over others, the pile 12 centimetres long, 10 centimetres wide and 4 centimetres tall. Slightly tarnished, real. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Tarnished brass cartridge cases, copper bullet tips, slight grime, metallic, no text, no logos"
+>
+> **12_gauge_buckshot** — "A single small pile of shotgun shells on a plain white background, three-quarter view. About eight red plastic shotgun shells with brass bases lying together, some crossed over others, the pile 12 centimetres long, 10 centimetres wide and 5 centimetres tall. Scuffed, real. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Scuffed red plastic shotgun shell hulls, tarnished brass bases with primers, slight grime, no text, no logos"
 
 ## `deploy/abyss_rug.glb` — the Abyss Rug, painted by Meshy (2026-10-18)
 

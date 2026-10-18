@@ -143,6 +143,7 @@ fn swing(w: &mut World, seq: &mut u16) {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }]);
@@ -582,6 +583,7 @@ fn a_downed_body_crawls_at_a_third_of_the_walk_and_swings_at_nothing() {
         move_x: 0,
         move_z: 127,
         sel: 0,
+        pitch_fine: 0,
     };
     // Give the victim a hand so a swing WOULD be one if it were allowed.
     w.players[1].inv[0] = ItemStack {

@@ -551,6 +551,9 @@ pub struct Rig {
     /// array is indexed by `Clip::slot` and the arms are not a body state —
     /// nothing in `BodyAnim` can ever select this.
     arms: AnimationNodeIndex,
+    /// [`RIFLE_HOLD_CLIP`], masked off the legs: a layer under the gait for
+    /// a body shouldering a long gun. `None` if the file lacks it.
+    hold: Option<AnimationNodeIndex>,
     /// Whether the shade step has reached a conclusion — either it took the
     /// model's material or it refused the file and said why.
     ///
@@ -634,6 +637,7 @@ pub fn load(
         nodes: [AnimationNodeIndex::default(); 15],
         durations: [1.0; 15],
         upper: [None; 3],
+        hold: None,
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -779,6 +783,13 @@ pub fn build(
         Some(h) => arms = graph.add_clip(h.clone(), 1.0, root),
         None => missing.push(ARMS_HOLD_CLIP),
     }
+    let hold = match gltf.named_animations.get(RIFLE_HOLD_CLIP) {
+        Some(h) => Some(graph.add_clip_with_mask(h.clone(), LEGS_MASK, 1.0, root)),
+        None => {
+            missing.push(RIFLE_HOLD_CLIP);
+            None
+        }
+    };
 
     if !missing.is_empty() {
         error!(
@@ -795,6 +806,7 @@ pub fn build(
     rig.durations = durations;
     rig.upper = upper;
     rig.arms = arms;
+    rig.hold = hold;
     rig.graph = Some(graphs.add(graph));
     rig.scene = gltf
         .default_scene
@@ -935,6 +947,10 @@ pub struct BodyAnim {
     /// `playing == want` guard. One counter for all three, because there is
     /// only ever one transient.
     pub transient_seq: u32,
+    /// Shouldering a long gun (guns v1, `ui::hold::long_gun`): the arms and
+    /// spine hold [`RIFLE_HOLD_CLIP`] over the gait, and a shot is the gun's
+    /// own kick rather than the pistol's one-shot.
+    pub hold: bool,
 }
 
 impl BodyAnim {
@@ -1148,6 +1164,16 @@ impl BodyAnim {
             Some(t) if self.transient_full => Some(t),
             _ => Some(gait),
         }
+    }
+
+    /// Shouldering a long gun right now: holding one, and on its feet —
+    /// not down, asleep or swimming, where a gun is not shouldered.
+    pub fn shouldering(&self) -> bool {
+        self.hold
+            && !matches!(
+                self.clip,
+                Some(Clip::Death | Clip::Sleep | Clip::Swim | Clip::SwimIdle) | None
+            )
     }
 
     /// What the upper body plays over the gait: a one-shot that began while
@@ -1378,6 +1404,10 @@ struct SpineBone {
     yaw: f32,
     /// Its share of the look.
     pitch: f32,
+    /// Its share of [`SpineBones::hold`]: the spine bones take it between
+    /// them and the neck hands it back, so the head still looks where the
+    /// body does.
+    chest: f32,
     /// The head: the crouch's head lift goes here alone.
     head: bool,
     /// The local delta this system last composed in, so it can be taken back
@@ -1403,6 +1433,12 @@ pub struct SpineBones {
     /// read at bind: the scene root's stand-up turn. Nothing animates it.
     root: Quat,
     bones: Vec<SpineBone>,
+    /// The chest's turn that lays a shouldered long gun along the aim,
+    /// radians `(about up, about right)`: the hold clip carries the gun
+    /// across the body and its hips belong to the gait, so the chest is
+    /// turned until the line between the hands meets the aim
+    /// (`bodies::aim_long_guns` closes that loop each frame).
+    pub hold: Vec2,
 }
 
 /// Find each body's spine and work out how the look and the twist are shared.
@@ -1485,6 +1521,7 @@ pub fn bind_spine(
             commands.entity(body).insert(SpineBones {
                 root: Quat::IDENTITY,
                 bones: Vec::new(),
+                hold: Vec2::ZERO,
             });
             continue;
         }
@@ -1531,9 +1568,21 @@ pub fn bind_spine(
             } else {
                 0.0
             };
-            bones.push(SpineBone::new(e, yaw, weight(i) / total, i + 1 == n));
+            let mut b = SpineBone::new(e, yaw, weight(i) / total, i + 1 == n);
+            b.chest = if hips.is_none() || spine == 0 || i > spine {
+                0.0
+            } else if i < spine {
+                1.0 / spine as f32
+            } else {
+                -1.0
+            };
+            bones.push(b);
         }
-        commands.entity(body).insert(SpineBones { root, bones });
+        commands.entity(body).insert(SpineBones {
+            root,
+            bones,
+            hold: Vec2::ZERO,
+        });
     }
 }
 
@@ -1543,6 +1592,7 @@ impl SpineBone {
             entity,
             yaw,
             pitch,
+            chest: 0.0,
             head,
             applied: Quat::IDENTITY,
             written: Quat::IDENTITY,
@@ -1581,6 +1631,17 @@ pub const HAND_BONE: &str = "RightHand";
 /// source called it, because renaming a retargeted clip would break the one
 /// property that makes the library legible: these are the mannequin's names.
 pub const ARMS_HOLD_CLIP: &str = "Pistol_Idle_Loop";
+
+/// The two-handed shoulder a remote body holds a long gun in (guns v1): the
+/// stock in the right hand at the shoulder, the left on the handguard, aimed
+/// down the body's line — Meshy's "Walk Forward While Shooting", retargeted
+/// onto the rig (`assets/models/MANIFEST.md`) and played on the arms and
+/// spine only, over whatever gait the legs are in.
+pub const RIFLE_HOLD_CLIP: &str = "Rifle_Hold_Loop";
+
+/// The other hand's bone: where a long gun's handguard is held, and so the
+/// line a remote's barrel is laid along (`bodies::aim_long_guns`).
+pub const OFF_HAND_BONE: &str = "LeftHand";
 
 /// The half of the mesh a first-person view draws, and the half it hides.
 /// Written by `ci/split_arms.py`; `tests/rig_asset.rs` fails if either goes
@@ -1638,6 +1699,7 @@ pub fn pose_spine(
             _ => 0.0,
         };
         let yaw = if dead { 0.0 } else { anim.hip_yaw };
+        let hold = spine.hold;
         // The body frame → this bone's parent frame, built down the chain.
         let mut w = spine.root;
         for bone in spine.bones.iter_mut() {
@@ -1649,9 +1711,10 @@ pub fn pose_spine(
             } else {
                 t.rotation
             };
-            let look = pitch * bone.pitch + if bone.head { lift } else { 0.0 };
-            let turn =
-                Quat::from_rotation_y(yaw * bone.yaw) * Quat::from_axis_angle(BODY_RIGHT, look);
+            let look =
+                pitch * bone.pitch + if bone.head { lift } else { 0.0 } + hold.y * bone.chest;
+            let turn = Quat::from_rotation_y(yaw * bone.yaw + hold.x * bone.chest)
+                * Quat::from_axis_angle(BODY_RIGHT, look);
             // A turn in the body frame, carried into the parent's.
             // Normalized at every step: a bone the clip never rewrites is
             // composed onto itself every frame, and through a chain of three
@@ -1690,6 +1753,8 @@ pub struct Playing {
     upper_seq: u32,
     /// How much of the arms and spine the upper one-shot owns, 0..1.
     upper_u: f32,
+    /// How much of them the long gun's hold owns, 0..1.
+    hold_u: f32,
 }
 
 /// Attach the graph to every newly spawned player and find its body.
@@ -1842,6 +1907,36 @@ pub fn drive(
             playing.fading = None;
         }
         upper(&rig, anim, &mut playing, &mut player, dt);
+        hold(&rig, anim, &mut playing, &mut player, dt);
+    }
+}
+
+/// The long gun's hold: [`RIFLE_HOLD_CLIP`] on the arms and spine while the
+/// body shoulders one, faded in and out at the general pace, under any
+/// one-shot (a flinch still jolts the arms). Not for a body that is down,
+/// asleep or swimming — a gun is not shouldered there.
+fn hold(rig: &Rig, anim: &BodyAnim, playing: &mut Playing, player: &mut AnimationPlayer, dt: f32) {
+    let Some(node) = rig.hold else {
+        return;
+    };
+    let want = anim.shouldering();
+    playing.hold_u = if want {
+        (playing.hold_u + dt / ANIM_BLEND_S).min(1.0)
+    } else {
+        (playing.hold_u - dt / ANIM_BLEND_S).max(0.0)
+    };
+    if playing.hold_u <= 0.0 {
+        if player.is_playing_animation(node) {
+            player.stop(node);
+        }
+        return;
+    }
+    if !player.is_playing_animation(node) {
+        player.start(node).repeat();
+    }
+    if let Some(a) = player.animation_mut(node) {
+        let u = playing.hold_u.min(UPPER_MAX);
+        a.set_weight(u / (1.0 - u));
     }
 }
 

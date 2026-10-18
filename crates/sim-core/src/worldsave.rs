@@ -229,7 +229,9 @@ use crate::worldcont::WorldContRec;
 /// **27 — the blueprint mask is 128 bits** (store format 10): every body's
 /// `PlayerSave` grew its high word (+8) and a third worn stack, the feet
 /// (+8), so no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 27;
+/// **28 — guns v1**: `MAX_MAGS` 8 → 16, so every body's `PlayerSave` grew
+/// eight magazines (+32) and no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 28;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -1151,6 +1153,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 move_x,
                 move_z,
                 sel,
+                pitch_fine: 0,
             },
             next_swing,
             // A swing on its way in is sub-second and not saved.
@@ -1161,6 +1164,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // file is not a client.
             mag: save.mag,
             mag_round: save.mag_round,
+            // The gun's cone and trigger settle over a restart.
+            bloom: 0,
+            shot_at: 0,
+            trigger_spent: false,
             ws_cell,
             ws_mark,
             death_by,
@@ -2035,9 +2042,9 @@ mod tests {
         // format 23 too: the magazine's 32 B moved from the tail into it.
         // 493 → 499 at format 24: the Verdigris in the tail. 499 → 515 at
         // format 27: the blueprint mask's high word and the feet's stack in
-        // `PlayerSave`.
+        // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
         assert_eq!(
-            PLAYER_BYTES, 515,
+            PLAYER_BYTES, 547,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2048,7 +2055,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 515                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27)
+            + 100 * 547                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27)
             + 32_768 * 21                   // pieces + plate + placement tick
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
@@ -2181,9 +2188,10 @@ mod tests {
         // deploys (4,096), hearths (512), containers (1,024) and locks
         // (2,048) raised — counts, not strides, so old saves still load.
         // 4_478_302 at format 27: the blueprint mask's high word and the
-        // feet's stack, sixteen bytes on 100 bodies.
+        // feet's stack, sixteen bytes on 100 bodies. 4_481_502 at format
+        // 28: eight more magazines, 32 bytes on 100 bodies (guns v1).
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 4_478_302,
+            WORLD_SAVE_MAX_BYTES, 4_481_502,
             "the world save ceiling moved"
         );
     }

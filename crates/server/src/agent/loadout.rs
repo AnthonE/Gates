@@ -27,7 +27,21 @@ pub const MELEE: [&str; 8] = [
     "item.torch",
 ];
 /// Bows and guns, best first.
-pub const RANGED: [&str; 3] = ["item.revolver", "item.crossbow", "item.bow"];
+pub const RANGED: [&str; 11] = [
+    // Rust's guns (guns v1): the automatics first, a bot's fight being a
+    // close one; the bolt and the launcher are not a bot's.
+    "item.assault_rifle",
+    "item.thompson",
+    "item.custom_smg",
+    "item.semi_rifle",
+    "item.pump_shotgun",
+    "item.python",
+    "item.semi_pistol",
+    "item.revolver",
+    "item.crossbow",
+    "item.bow",
+    "item.bolt_rifle",
+];
 /// Health in a hurry, best first.
 pub const MEDS: [&str; 2] = ["item.medkit", "item.bandage"];
 /// What fells a tree and what breaks rock, best first.
@@ -49,7 +63,18 @@ pub const ARM_UP: [(&str, u32, Option<&str>); 4] = [
 /// carried. A wooden spear beside a metal one is junk.
 const OUTCLASSED_BY: [(&str, &[&str]); 2] = [
     ("Wooden Spear", &["Metal Spear"]),
-    ("Hunting Bow", &["Crossbow", "Revolver"]),
+    (
+        "Hunting Bow",
+        &[
+            "Crossbow",
+            "Revolver",
+            "Assault Rifle",
+            "Thompson",
+            "Custom SMG",
+            "Semi-Automatic Rifle",
+            "Pump Shotgun",
+        ],
+    ),
 ];
 
 /// Is `item` needless beside what `held` says is carried?
@@ -78,7 +103,25 @@ pub const BELT: [Role; 5] = [
     Role::Pick,
 ];
 
-const LADDER_MAX: usize = MELEE.len();
+/// The longest ladder: every role's rungs fit in one row of this width.
+const LADDER_MAX: usize = {
+    let lens = [
+        MELEE.len(),
+        RANGED.len(),
+        MEDS.len(),
+        HATCHETS.len(),
+        PICKS.len(),
+    ];
+    let mut max = 0;
+    let mut i = 0;
+    while i < lens.len() {
+        if lens[i] > max {
+            max = lens[i];
+        }
+        i += 1;
+    }
+    max
+};
 
 fn ladder_ids(role: Role) -> &'static [&'static str] {
     match role {

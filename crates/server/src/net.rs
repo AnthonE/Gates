@@ -424,6 +424,30 @@ pub fn bake_catalog(
                 item.id, ranged.draw_ticks, ranged.rate_ticks
             ));
         };
+        // A gun's handling (v126): its cadence a byte of ticks, refused past
+        // one as the draw's is; the rest `content::validate` bounded.
+        let gun = if ranged.damage > 0 && ranged.hitscan {
+            let g = ranged.gun;
+            let rate_ticks = u8::try_from(ranged.rate_ticks).map_err(|_| {
+                format!(
+                    "catalog: `{}` fires every {} ticks, past a byte",
+                    item.id, ranged.rate_ticks
+                )
+            })?;
+            Some(protocol::GunRow {
+                rate_ticks,
+                reload_ticks: ranged.reload_ticks,
+                semi: g.semi,
+                pellets: g.pellets,
+                aim: g.aim,
+                hip: g.hip,
+                recoil_pitch: g.recoil_pitch,
+                recoil_yaw: g.recoil_yaw,
+                ads_recoil_pct: g.ads_recoil_pct,
+            })
+        } else {
+            None
+        };
         cat.set(
             idx,
             item.name.as_bytes(),
@@ -441,6 +465,7 @@ pub fn bake_catalog(
                 holster: sim_core::combat::drawn_weapon(combat, gather, idx as u16),
                 revive: survival.revives(idx as u16),
                 class: item.class.code(),
+                gun,
             },
         )
         .map_err(|_| {

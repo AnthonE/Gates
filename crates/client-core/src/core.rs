@@ -41,6 +41,16 @@ pub const REMOVED_RING: usize = sim_core::limits::MAX_REMOVALS_PER_TICK;
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
 
+/// Shots heard between two drains, drop-oldest (guns v1): sixteen, so a
+/// fire-fight of automatics — an AK is a round every four ticks — does
+/// not evict the tracer and the count of a shot nobody drew yet.
+pub const SHOT_RING: usize = 16;
+
+/// One shot as the client keeps it: the shooter, where the round went
+/// (yaw, pitch and its fine fraction) and the round's speed and drop — or,
+/// at a zero speed, how far it flew in decimetres.
+pub type ShotFact = (u32, u16, u8, u16, u16, i8);
+
 /// How far a `BagDropped` may land from the dead predicted body and still
 /// be tagged as this body's own bag (`ClientCore::own_bag`). Covers the
 /// unreconciled prediction lead at death — a sprint's worth of round trip
@@ -1488,6 +1498,8 @@ struct InputState {
     buttons: u8,
     yaw: u16,
     pitch: u8,
+    /// `pitch`'s fraction (v126, `InputFrame::pitch_fine`): where a gun aims.
+    pitch_fine: i8,
     move_x: i8,
     move_z: i8,
     sel: u8,
@@ -2216,7 +2228,7 @@ pub struct ClientCore {
     /// of this ring may decide anything: the arrow that matters is the
     /// server's, and its hit arrives on `EV_HIT` whether or not a tracer
     /// was ever drawn. A dropped entry costs one streak of motion.
-    shots: [(u32, u16, u8, u16, u16); REFUSAL_RING],
+    shots: [ShotFact; SHOT_RING],
     shot_head: usize,
     shot_len: usize,
     /// Where arrows stopped, in the wire's quanta, with the surface kind
@@ -2527,7 +2539,7 @@ impl ClientCore {
             heat_radius_cm: 0,
             deploy_refusals: [0; REFUSAL_RING],
             knocks: [(0, 0, 0, 0, 0); REFUSAL_RING],
-            shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
+            shots: [(0, 0, 0, 0, 0, 0); SHOT_RING],
             shot_head: 0,
             shot_len: 0,
             impacts: [Impact::default(); IMPACT_RING],
@@ -4077,6 +4089,7 @@ impl ClientCore {
                 shooter,
                 yaw,
                 pitch,
+                pitch_fine,
                 speed_mmpt,
                 drop_mmpt2,
             } => {
@@ -4098,14 +4111,14 @@ impl ClientCore {
                     self.mag.0 = self.mag.0.saturating_sub(1);
                 }
                 // Drop-oldest, the knock ring's policy: under a volley
-                // worth more than `REFUSAL_RING`, the newest tracers are
-                // the ones still worth drawing.
-                if self.shot_len == REFUSAL_RING {
-                    self.shot_head = (self.shot_head + 1) % REFUSAL_RING;
+                // worth more than `SHOT_RING`, the newest tracers are the
+                // ones still worth drawing.
+                if self.shot_len == SHOT_RING {
+                    self.shot_head = (self.shot_head + 1) % SHOT_RING;
                     self.shot_len -= 1;
                 }
-                self.shots[(self.shot_head + self.shot_len) % REFUSAL_RING] =
-                    (shooter, yaw, pitch, speed_mmpt, drop_mmpt2);
+                self.shots[(self.shot_head + self.shot_len) % SHOT_RING] =
+                    (shooter, yaw, pitch, speed_mmpt, drop_mmpt2, pitch_fine);
                 self.shot_len += 1;
             }
             EventMsg::Impact {
@@ -4468,12 +4481,12 @@ impl ClientCore {
     /// **Single-consumer, like every `pop_*` here** — CLAUDE.md's
     /// clean-merge trap is exactly this ring shape, so the one caller is
     /// `render::feed::drain` and a second reader takes `Res<Feed>`.
-    pub fn pop_shot(&mut self) -> Option<(u32, u16, u8, u16, u16)> {
+    pub fn pop_shot(&mut self) -> Option<ShotFact> {
         if self.shot_len == 0 {
             return None;
         }
         let s = self.shots[self.shot_head];
-        self.shot_head = (self.shot_head + 1) % REFUSAL_RING;
+        self.shot_head = (self.shot_head + 1) % SHOT_RING;
         self.shot_len -= 1;
         Some(s)
     }
@@ -5091,10 +5104,20 @@ impl ClientCore {
             buttons,
             yaw,
             pitch,
+            pitch_fine: 0,
             move_x,
             move_z,
             sel: sel.min(HOTBAR_SLOTS as u8 - 1),
         };
+    }
+
+    /// The aim's fine pitch (v126), set after [`ClientCore::set_input`]:
+    /// a gun's shot is aimed at the precision the view holds, where
+    /// `pitch` alone rounds it to 0.7°.
+    pub fn set_pitch_fine(&mut self, fine: i8) {
+        if !self.spectating {
+            self.input.pitch_fine = fine;
+        }
     }
 
     /// The button bits this client is currently **sending** — the exact
@@ -5209,6 +5232,7 @@ impl ClientCore {
                 move_x: self.input.move_x,
                 move_z: self.input.move_z,
                 sel: self.input.sel,
+                pitch_fine: self.input.pitch_fine,
             };
             // Consumed by the FIRST step of this call, never carried into a
             // second. A frame that happened to span two ticks would otherwise

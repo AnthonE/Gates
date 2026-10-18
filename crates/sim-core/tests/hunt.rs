@@ -40,6 +40,7 @@ fn weapons() -> CombatContent {
         reload_ticks: 102,
         mag_slot: 0,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
@@ -54,12 +55,14 @@ fn weapons() -> CombatContent {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
         damage_pct: 100,
         fire_ticks: [0; 2],
+        blast: Default::default(),
     };
     c
 }

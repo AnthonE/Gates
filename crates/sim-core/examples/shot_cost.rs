@@ -137,6 +137,7 @@ fn main() {
         reload_ticks: 102,
         mag_slot: 0,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     let mut pristine = Scratch::with(SEED, Pristine);
     let mut barren = Scratch::barren();

@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 154] = [
+pub const STEMS: [&str; 167] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -189,6 +189,20 @@ pub const STEMS: [&str; 154] = [
     "crossbow",
     "revolver",
     "pistol_round",
+    // Rust's guns (guns v1): their rounds, the rocket and the charge.
+    "assault_rifle",
+    "semi_automatic_rifle",
+    "thompson",
+    "custom_smg",
+    "bolt_action_rifle",
+    "pump_shotgun",
+    "semi_automatic_pistol",
+    "python_revolver",
+    "rocket_launcher",
+    "5_56_rifle_ammo",
+    "12_gauge_buckshot",
+    "rocket",
+    "timed_explosive_charge",
     "satchel_charge",
     "metal_door",
     "roadsign_vest",

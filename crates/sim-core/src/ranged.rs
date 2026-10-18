@@ -123,10 +123,10 @@ use crate::collide::{self, ColIndex, Part, CAPSULE_RADIUS_M, HEAD_BAND_M};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::{inv_add_spilling, GatherContent, ItemStack, NO_ITEM};
-use crate::input::{BTN_AIM, BTN_PRIMARY};
+use crate::input::{BTN_AIM, BTN_PRIMARY, BTN_SPRINT};
 use crate::limits::{
     ARROW_STEP_MM, INV_SLOTS, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS,
-    MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
+    MAX_HITSCAN_MARK_SAMPLES, MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PELLETS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -704,6 +704,24 @@ pub struct Ignite {
 pub struct Lit {
     e: [Ignite; MAX_ARROWS],
     n: usize,
+    booms: [Boom; MAX_ARROWS],
+    nb: usize,
+}
+
+/// Where an exploding round came down, handed to `World` to blow up
+/// (`charge::blast`) for [`Ignite`]'s reason: a blast needs the piece and
+/// deploy stores, and the flight step holds neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Boom {
+    /// Where it stopped, millimetres.
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub owner: u32,
+    pub item: u16,
+    pub blast: crate::combat::RoundBlast,
+    /// The piece it struck, if it struck one: it takes the whole blast.
+    pub struck: Option<Struck>,
 }
 
 impl Lit {
@@ -718,12 +736,29 @@ impl Lit {
             range_cm: 0,
         }; MAX_ARROWS],
         n: 0,
+        booms: [Boom {
+            qx: 0,
+            qy: 0,
+            qz: 0,
+            owner: 0,
+            item: 0,
+            blast: crate::combat::RoundBlast::NONE,
+            struck: None,
+        }; MAX_ARROWS],
+        nb: 0,
     };
 
     fn push(&mut self, f: Ignite) {
         if self.n < MAX_ARROWS {
             self.e[self.n] = f;
             self.n += 1;
+        }
+    }
+
+    fn boom(&mut self, b: Boom) {
+        if self.nb < MAX_ARROWS {
+            self.booms[self.nb] = b;
+            self.nb += 1;
         }
     }
 }
@@ -802,6 +837,15 @@ impl Arrows {
 
     pub fn clear_lit(&mut self) {
         self.lit.n = 0;
+    }
+
+    /// The exploding rounds that came down since [`Arrows::clear_booms`].
+    pub fn booms(&self) -> &[Boom] {
+        &self.lit.booms[..self.lit.nb]
+    }
+
+    pub fn clear_booms(&mut self) {
+        self.lit.nb = 0;
     }
 
     /// The first free slot, or `None` when the store is full — the refusal
@@ -1075,7 +1119,25 @@ fn land(
     host: Option<(u32, u64)>,
     dir: [i8; 3],
     off: [i16; 3],
+    struck: Option<Struck>,
 ) {
+    // A rocket leaves no shaft: where it came down goes to `World` to blow.
+    if let Some(blast) = cc
+        .ammo_def(a.round)
+        .map(|b| b.blast)
+        .filter(|b| b.blast_cm > 0)
+    {
+        lit.boom(Boom {
+            qx: a.qx,
+            qy: a.qy,
+            qz: a.qz,
+            owner: a.owner,
+            item: a.item,
+            blast,
+            struck,
+        });
+        return;
+    }
     let burns = cc.ammo_def(a.round).map_or([0; 2], |b| b.fire_ticks);
     if burns[1] > 0 {
         lit.push(Ignite {
@@ -1231,6 +1293,7 @@ fn step_in(
                 None,
                 [0; 3],
                 [0; 3],
+                None,
             );
             arrows.a[ix].life = 0;
             continue;
@@ -1320,6 +1383,7 @@ fn step_in(
                     Some(host),
                     dir,
                     off,
+                    None,
                 );
                 arrows.a[ix].life = 0;
                 continue;
@@ -1362,6 +1426,7 @@ fn step_in(
                     None,
                     [0; 3],
                     [0; 3],
+                    None,
                 );
                 arrows.a[ix].life = 0;
                 continue;
@@ -1443,6 +1508,7 @@ fn step_in(
                 Some(host),
                 dir,
                 off,
+                None,
             );
             arrows.a[ix].life = 0;
             continue;
@@ -1526,6 +1592,7 @@ fn step_in(
                 None,
                 dir,
                 [0; 3],
+                built,
             );
             arrows.a[ix].life = 0;
             continue;
@@ -1550,6 +1617,7 @@ fn step_in(
                 None,
                 [0; 3],
                 [0; 3],
+                None,
             );
         }
         arrows.a[ix] = a;
@@ -1760,15 +1828,13 @@ pub fn beam_stop(
     cols: &ColIndex,
     occ: &mut Occupants,
     origin_mm: (f32, f32, f32),
-    yaw: u16,
-    pitch: u8,
+    dir: (f32, f32, f32),
     range_mm: u32,
 ) -> BeamStop {
     let n = (range_mm as usize / ARROW_STEP_MM as usize + 1).min(MAX_HITSCAN_SAMPLES);
-    let (fx, fz) = yaw_dir(yaw);
-    let (ch, sv) = pitch_dir(pitch);
+    let (fx, sv, fz) = dir;
     let reach = range_mm as f32;
-    let s = (fx * ch * reach, sv * reach, fz * ch * reach);
+    let s = (fx * reach, sv * reach, fz * reach);
     let (stop_t, surf, _) = world_stop(seed, haven, cols, occ, origin_mm, s, n, n, ARROW_R_M);
     let k = if surf.is_some() {
         crate::fmath::floor_i32(stop_t * n as f32 + 0.5) as usize
@@ -1784,7 +1850,7 @@ pub fn beam_stop(
             origin_mm.2 + s.2 * stop_t,
         ),
         surf,
-        dir: (fx * ch, sv, fz * ch),
+        dir,
     }
 }
 
@@ -2397,7 +2463,14 @@ fn hitscan_in(
         if !def.hitscan {
             continue;
         }
-        if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
+        let gun = def.gun;
+        // The trigger. Released, it re-arms a semi-automatic; held, an
+        // automatic fires at its cadence and a semi-automatic only once.
+        if p.frame.buttons & BTN_PRIMARY == 0 {
+            players[i].trigger_spent = false;
+            continue;
+        }
+        if tick < p.next_swing || (gun.semi && p.trigger_spent) {
             continue;
         }
         // The sampler backstop, `step`'s in a different clock: a reach this
@@ -2418,8 +2491,7 @@ fn hitscan_in(
         // `CombatContent::EMPTY` and a bare test fixture can produce a
         // magazineless hitscan row, and an unguarded index into
         // `Player::mag` with `NO_MAG` is the aliasing the constant exists
-        // to prevent. Read before the cadence is paid so that ordering
-        // stays visible, spent after it.
+        // to prevent.
         let mag = (def.magazine > 0 && (def.mag_slot as usize) < MAX_MAGS)
             .then_some(def.mag_slot as usize);
         let round = match mag {
@@ -2432,15 +2504,22 @@ fn hitscan_in(
                 .take_while(|&a| a != NO_ITEM)
                 .find(|&a| inv_count(&p.inv, a) > 0),
         };
-        let (id, yaw, pitch) = (p.id, p.frame.yaw, p.frame.pitch);
+        let (id, frame) = (p.id, p.frame);
         let (qx, qy, qz) = (p.body.qx, p.body.qy, p.body.qz);
         let crouched = p.crouched();
         let (held, magazine) = (held_item(p), def.magazine);
+        // **The cone this shot leaves through** (Rust's `GetAimCone`): the
+        // gun's own, what sustained fire has added and not yet bled off,
+        // the hip's when the sights are not up, and the body's movement.
+        // Read before this shot adds its own penalty.
+        let bloom = gun.bloom_after(p.bloom, tick.saturating_sub(p.shot_at));
+        let cone = gun.cone(bloom, frame.buttons & BTN_AIM != 0, stance_pct(p));
         // The cadence is the weapon's and it is paid on the pull, not on
         // the hit — `draw`'s rule, for `draw`'s reason: a refused shot must
         // not be re-attempted every tick. It is also what bounds the dry
         // click below to one event per `rate_ticks` per player.
         players[i].next_swing = tick + def.rate_ticks.max(1) as u64;
+        players[i].trigger_spent = gun.semi;
         // A broken gun fires nothing (`NOW.md` §0dur 2): the broken tool's
         // sentence, bounded by the cadence just paid.
         let sel = (players[i].frame.sel as usize).min(INV_SLOTS - 1);
@@ -2458,8 +2537,6 @@ fn hitscan_in(
             // refusal and not a silence: without it the gun going quiet is
             // indistinguishable from the client having dropped the input,
             // and the player is owed the sentence that says *press reload*.
-            // The pack path stays silent, as it always has — it has no
-            // magazine to be empty and no reload verb to point at.
             if let Some(slot) = mag {
                 let pair = mag_pair(players[i].mag[slot], magazine);
                 events.push(
@@ -2472,112 +2549,312 @@ fn hitscan_in(
             continue;
         };
         match mag {
-            // One round out of the cylinder. `mag_round` is left alone at
-            // zero rather than reset to `NO_ITEM`: `reload` only trusts it
-            // when `loaded > 0`, so a spent magazine remembers nothing and
-            // takes whatever the pack offers next.
-            // **No event for the spend, and that is a measurement rather
-            // than a preference.** It emitted `EV_RELOAD` here for one
-            // build, which is one own-fact message per shot and reads as
-            // cheap — until a hundred bodies fire at once:
-            // `snapshot_budget::the_event_lane_holds_at_population` went
-            // from ~128 to **256 sim events in one tick against a 256
-            // cap**, where `EventQueue` drops the newest and `pump_events`
-            // resyncs every connected client at the same instant. The
-            // client counts its own shots instead (`ClientCore`'s
-            // `EventMsg::Shot` arm), which is exact — one shot is one
-            // round — and self-heals against the full statements that
-            // bracket it: a fill and a dry click both carry the pair.
-            // Losing an `EV_SHOT` costs a count that is one high until
-            // then, and it costs the tracer too, so the readout and the
-            // picture stay in agreement.
+            // One round out of the magazine. No event for the spend: the
+            // client counts its own shots off `EV_SHOT` (`ClientCore`), and
+            // a fill and a dry click both restate the pair, which heals it.
             Some(slot) => players[i].mag[slot] -= 1,
             None => {
                 inv_take(&mut players[i].inv, round, 1);
             }
         }
-        // **The report, and it is the same event a bow raises.** Announced
-        // here for `draw`'s reason, one line later in the same order: the
-        // cadence and the ammunition have both had their say, so `EV_SHOT`
-        // means *a round left this barrel* rather than *someone pressed the
-        // button*. Everything below only decides what it reached.
-        //
-        // `speed == 0` is the instantaneous reading (`world.rs`'s doc on the
-        // constant): a projectile cannot leave the muzzle at rest, so the
-        // pattern was unreachable, and it is now the one bit of state that
-        // separates a flight from a beam. The low half then carries the
-        // **reach in decimetres** instead of a drop, because a shot with no
-        // flight has no gravity to describe and a beam does need a length —
-        // `range_m` is at most 80 here and the field holds 6 553.
-        events.push(
-            EV_SHOT,
-            id,
-            (yaw as u32) << 8 | pitch as u32,
-            def.range_mm / 100,
-        );
+        players[i].bloom = bloom.saturating_add(gun.per_shot).min(gun.max);
+        players[i].shot_at = tick;
         // Each pull wears the gun (`CombatContent::shot_wear`).
         cc.wear_shot(&mut players[i].inv[sel]);
 
-        let (fx, fz) = yaw_dir(yaw);
-        let (ch, sv) = pitch_dir(pitch);
         // Millimetres, and the same eye the bow leaves from — a gun fired
         // from the navel would clear cover the shooter cannot see over.
-        let (ox, oy, oz) = (
+        let o = (
             (qx * (POS_XZ_Q * MM_PER_M) as i32) as f32,
             (qy * (POS_Y_Q * MM_PER_M) as i32 + eye_mm(crouched)) as f32,
             (qz * (POS_XZ_Q * MM_PER_M) as i32) as f32,
         );
-        // The whole reach as one segment. The two LUTs give a unit
-        // direction, so its length is `range_mm` and the sample count above
-        // is the spacing `ARROW_STEP_MM` names.
+        // **The aimed line at the frame's whole precision**: all sixteen
+        // bits of yaw and the fine pitch, where the movement LUTs would
+        // round a shot to 1.4° sideways and 0.7° up — a metre either way
+        // at seventy.
+        let aim = aim_dir(frame.yaw, frame.pitch, frame.pitch_fine);
         let reach = def.range_mm as f32;
-        let (sx, sy, sz) = (fx * ch * reach, sv * reach, fz * ch * reach);
+        let pellets = (gun.pellets as usize).clamp(1, MAX_PELLETS);
+        let spread = cone
+            + if pellets > 1 {
+                u32::from(gun.pellet)
+            } else {
+                0
+            };
+        let key = crate::rng::splitmix64(
+            seed ^ CH_CONE ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((i as u64) << 40),
+        );
+        let ctx = Shot {
+            seed,
+            haven,
+            cols,
+            tick,
+            rewind,
+            back: favour[i],
+            id,
+            o,
+            reach,
+            n,
+            def: &def,
+        };
+        // Every pellet is resolved before anything is said, so the report
+        // leads the wire and what it reached follows it.
+        let mut outs = [Pellet::Miss { t: 1.0 }; MAX_PELLETS];
+        let mut dirs = [aim; MAX_PELLETS];
+        for k in 0..pellets {
+            dirs[k] = cone_dir(aim, spread, crate::rng::splitmix64(key ^ k as u64));
+            outs[k] = ctx.resolve(players, occ, quarry.as_deref(), dirs[k]);
+        }
 
-        // **The cheap question first, which is the opposite of the arrow's
-        // order, and the reason is length.** `step` asks the world first
-        // because a tick of flight is 1.3 m and at most sixteen taps, so
-        // asking anything else first saves nothing. A bullet's segment is
-        // its whole reach — 295 taps for the shipped revolver, each one a
-        // terrain evaluation — while the body solve is a hundred compares
-        // and no noise at all. So the body is found over the *whole*
-        // segment, and the world is then walked only as far as that body:
-        // past it, nothing the world could stop changes who was hit.
-        //
-        // It is a truncation and not a different rule. `nearest_body` picks
-        // the **minimum** `t`, so if that one falls past where the world
-        // stopped then no body is inside the stop, and the single compare
-        // below is exactly what passing the real `stop_t` in would have
-        // computed. With no body in the line the walk is the full one,
-        // because then the only thing left to find is where the shot marked
-        // the world — and that last walk is the one bounded by
-        // `MAX_HITSCAN_MARK_SAMPLES`, because a decal must not own the
-        // tick. Measured, at 100 shooters all firing on one tick: 20 ms
-        // when every trace runs its full 50 m, 2.1 ms when a body
-        // truncates it (`DECISIONS.md` §open, hitscan v0).
-        //
-        // **Rewound** (lag comp, the gun's slice): this shot was fired on
-        // this tick, so the bodies it is asked about are put back where the
-        // shooter's screen had them. The truncation argument above is
-        // untouched by that — it is about which `t` is the minimum, and the
-        // scan still returns the minimum of whatever positions it resolved.
+        // **The report, and it names where the round went.** `speed == 0`
+        // is the instantaneous reading (`world.rs`'s doc on the constant);
+        // the bearing is the first pellet's after its cone, with the fine
+        // pitch in the top byte, and the low half of `c` is how far it flew
+        // in decimetres — so every client draws the tracer down the line the
+        // bullet took and ends it where the bullet stopped.
+        let (wy, wp, wf) = wire_angles(dirs[0]);
+        let flown_dm = (reach * outs[0].t() / 100.0) as u32;
+        events.push(
+            EV_SHOT,
+            id,
+            u32::from(wf as u8) << 24 | u32::from(wy) << 8 | u32::from(wp),
+            flown_dm.clamp(1, u32::from(u16::MAX)),
+        );
+
+        let mut hits = [Hit::default(); MAX_PELLETS];
+        let mut n_hits = 0usize;
+        let mut chip: Option<Chip> = None;
+        for (k, out) in outs[..pellets].iter().enumerate() {
+            match *out {
+                Pellet::Miss { .. } => {}
+                Pellet::Mob { slot, damage, .. } => {
+                    if let Some(q) = quarry.as_deref_mut() {
+                        q.push(MobShot {
+                            slot,
+                            by: id,
+                            damage,
+                        });
+                    }
+                }
+                Pellet::Body {
+                    slot,
+                    part,
+                    damage,
+                    range_cm,
+                    ..
+                } => {
+                    // Pellets that found one body land on it as one blow, at
+                    // the worst part any of them crossed.
+                    match hits[..n_hits].iter_mut().find(|h| h.slot == slot) {
+                        Some(h) => {
+                            h.damage = h.damage.saturating_add(damage);
+                            h.part = h.part.max(part);
+                            h.range_cm = h.range_cm.min(range_cm);
+                        }
+                        None => {
+                            hits[n_hits] = Hit {
+                                slot,
+                                damage,
+                                part,
+                                range_cm,
+                            };
+                            n_hits += 1;
+                        }
+                    }
+                }
+                Pellet::World { t, surf, built } => {
+                    // Where it landed, in the body's own quanta — `step`'s
+                    // arithmetic. Reached only when no body was hit, so a
+                    // decal is never drawn for a shot that found flesh.
+                    let d = dirs[k];
+                    push_impact(
+                        events,
+                        surf,
+                        IMPACT_BULLET,
+                        o,
+                        (d.0 * reach, d.1 * reach, d.2 * reach),
+                        t,
+                    );
+                    // …and the wall takes it: the first piece any pellet
+                    // met, charged once per pellet that met a piece.
+                    if let (Some(hit), true) = (built, def.structure > 0) {
+                        match chip.as_mut() {
+                            Some(c) => c.structure = c.structure.saturating_add(def.structure),
+                            None => {
+                                chip = Some(Chip {
+                                    hit: hit.at,
+                                    deploy: hit.deploy,
+                                    structure: def.structure,
+                                    from_x: o.0 / MM_PER_M,
+                                    from_z: o.2 / MM_PER_M,
+                                    by: id,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(c) = chip {
+            if n_chips < chips.len() {
+                chips[n_chips] = c;
+                n_chips += 1;
+            }
+        }
+
+        for h in &hits[..n_hits] {
+            let j = h.slot;
+            if j != i {
+                let (sh, v) = crate::combat::pair_mut(players, i, j);
+                if crate::combat::shielded(sh, v) {
+                    continue;
+                }
+            }
+            let v = &mut players[j];
+            let dmg = h.damage.min(u32::from(u16::MAX)) as u16;
+            // The funnel, reduced: a bullet is a hit like any other, and
+            // armor blunts it (armor v0).
+            let hurt = crate::combat::hurt(cc, v, dmg);
+            let (vid, left, vmax) = (v.id, hurt.left as u32, v.hp_max as u32);
+            // A beam has no flight to reverse, so the bearing is the muzzle
+            // to the victim's **live** body — `strike`'s rule: it is an
+            // instruction to someone at their present position.
+            let sector = crate::combat::bearing_sector(
+                qx as i64 - v.body.qx as i64,
+                qz as i64 - v.body.qz as i64,
+            );
+            events.push(EV_HIT, id, vid, crate::world::hit_c(h.part, dmg));
+            events.push(
+                EV_HURT,
+                vid,
+                sector as u32,
+                crate::world::hurt_c(h.part, dmg),
+            );
+            events.push(EV_HEALTH, vid, left, vmax);
+            if hurt.died && n_kills < kills.len() {
+                // `EV_DEATH` is `die`'s (wounded v0), as for the arrow.
+                kills[n_kills] = Kill {
+                    victim: j,
+                    by: id,
+                    item,
+                    range_cm: h.range_cm,
+                    head: h.part == crate::collide::Part::Head,
+                };
+                n_kills += 1;
+            }
+        }
+    }
+    (n_kills, n_chips)
+}
+
+/// Salt for the gun's aim-cone draws, so they share no stream with any
+/// other roll keyed by the same seed and tick.
+const CH_CONE: u64 = 0x636F_6E65_5F76_3100;
+
+/// One body a gunshot reached, its pellets summed (`hitscan`).
+#[derive(Clone, Copy, Debug)]
+struct Hit {
+    slot: usize,
+    damage: u32,
+    part: Part,
+    range_cm: u16,
+}
+
+impl Default for Hit {
+    fn default() -> Self {
+        Hit {
+            slot: 0,
+            damage: 0,
+            part: Part::Limb,
+            range_cm: u16::MAX,
+        }
+    }
+}
+
+/// What one pellet reached, and how far along its reach (`t`) it stopped.
+#[derive(Clone, Copy, Debug)]
+enum Pellet {
+    Miss {
+        t: f32,
+    },
+    Mob {
+        t: f32,
+        slot: usize,
+        damage: u16,
+    },
+    Body {
+        t: f32,
+        slot: usize,
+        part: Part,
+        damage: u32,
+        range_cm: u16,
+    },
+    World {
+        t: f32,
+        surf: u8,
+        built: Option<Struck>,
+    },
+}
+
+impl Pellet {
+    fn t(&self) -> f32 {
+        match *self {
+            Pellet::Miss { t }
+            | Pellet::Mob { t, .. }
+            | Pellet::Body { t, .. }
+            | Pellet::World { t, .. } => t,
+        }
+    }
+}
+
+/// One gunshot's fixed facts, shared by its pellets.
+struct Shot<'a> {
+    seed: u64,
+    haven: &'a terrain::Haven,
+    cols: &'a ColIndex,
+    tick: u64,
+    rewind: &'a Rewind,
+    back: u8,
+    id: u32,
+    o: (f32, f32, f32),
+    reach: f32,
+    n: usize,
+    def: &'a crate::combat::RangedDef,
+}
+
+impl Shot<'_> {
+    /// Where one pellet along `d` goes: the nearest of a body, an animal and
+    /// the world. **The cheap question first**: the body and animal solves
+    /// cover the whole reach in a few hundred compares, and the world (a
+    /// terrain read per tap) is walked only as far as the nearest of them —
+    /// past it nothing the world could stop changes who was hit — or to
+    /// `MAX_HITSCAN_MARK_SAMPLES` when nothing is in the line.
+    ///
+    /// **Rewound**: this shot was fired on this tick, so the bodies it is
+    /// asked about are put back where the shooter's screen had them.
+    fn resolve(
+        &self,
+        players: &[Player; MAX_PLAYERS],
+        occ: &mut Occupants,
+        quarry: Option<&Quarry>,
+        d: (f32, f32, f32),
+    ) -> Pellet {
+        let (o, reach, n) = (self.o, self.reach, self.n);
+        let s = (d.0 * reach, d.1 * reach, d.2 * reach);
         let seen = nearest_body(
             players,
-            (ox, oy, oz),
-            (sx, sy, sz),
+            o,
+            s,
             1.0,
-            id,
+            self.id,
             Pose::Rewound {
-                rewind,
-                tick,
-                back: favour[i],
+                rewind: self.rewind,
+                tick: self.tick,
+                back: self.back,
             },
         );
-        // The nearest animal on the whole segment, found the same cheap way
-        // and truncating the world walk the same way: the walk only needs
-        // to reach the first thing the round could meet.
-        let beast = quarry
-            .as_deref()
-            .and_then(|q| q.first((ox, oy, oz), (sx, sy, sz)));
+        let beast = quarry.and_then(|q| q.first(o, s));
         let first_t = match (seen.map(|b| b.t), beast.map(|m| m.t)) {
             (Some(b), Some(m)) => Some(b.min(m)),
             (b, m) => b.or(m),
@@ -2587,34 +2864,24 @@ fn hitscan_in(
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
         let (stop_t, surf, built) = world_stop(
-            seed,
-            haven,
-            cols,
-            occ,
-            (ox, oy, oz),
-            (sx, sy, sz),
-            n,
-            upto,
-            ARROW_R_M,
+            self.seed, self.haven, self.cols, occ, o, s, n, upto, ARROW_R_M,
         );
         let best = seen.filter(|b| b.t <= stop_t);
-
+        let gun = self.def.gun;
         // An animal in front of every body and short of the world's stop
         // takes the round; it stops there, and marks nothing.
-        if let (Some(q), Some(m)) = (quarry.as_deref_mut(), beast) {
+        if let Some(m) = beast {
             if m.t <= stop_t && best.is_none_or(|b| m.t < b.enter) {
-                q.push(MobShot {
+                return Pellet::Mob {
+                    t: m.t,
                     slot: m.slot,
-                    by: id,
-                    damage: def.damage,
-                });
-                continue;
+                    damage: gun.fall_off(self.def.damage, (reach * m.t) as u32),
+                };
             }
         }
-
         if let Some(BodyHit {
             t,
-            slot: j,
+            slot,
             enter,
             exit,
             qy: feet_q,
@@ -2622,100 +2889,120 @@ fn hitscan_in(
             part: lying_part,
         }) = best
         {
-            let range_cm = (reach * t / 10.0) as u16;
-            if j != i {
-                let (sh, v) = crate::combat::pair_mut(players, i, j);
-                if crate::combat::shielded(sh, v) {
-                    continue;
-                }
-            }
-            let v = &mut players[j];
-            // Same question the arrow asks, from the same two functions —
-            // the head band is a property of the body, not of what is
-            // travelling towards it. Clipped against the world's stop for
-            // the same reason: a beam that dies in a wall did not reach
-            // what was standing behind the wall.
-            //
-            // **The rewound feet, not the live ones**, and this is the
-            // half a rewind that stopped at the scan would have got wrong:
-            // the band is an offset off the top of the cylinder the hit was
-            // solved against, so a victim who jumped or walked downhill in
-            // the last quarter-second would otherwise have a head floating
-            // clear of the body the bullet met. At favour 0 this is the
-            // live `qy` to the bit.
+            // The head band off the **rewound** feet — the cylinder the hit
+            // was solved against — and clipped against the world's stop: a
+            // beam that dies in a wall did not reach what stood behind it.
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
-            // Hoisted for the same reason as the arrow's: the rung reaches
-            // the shooter's screen now, not just their damage number.
             let part = lying_part.unwrap_or_else(|| {
-                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low)
+                part_crossed(o.1, s.1, feet_mm, enter, exit.min(stop_t), struck_low)
             });
-            let dmg = crate::combat::part_damage(def.damage, part, def.head_pct, def.limb_pct);
-            // The funnel, reduced: a bullet is a hit like any other, and
-            // armor blunts it (armor v0, 2026-08-19 — this said "the day
-            // armor lands" for exactly one day).
-            let h = crate::combat::hurt(cc, v, dmg);
-            let died = h.died;
-            let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
-            let sector = crate::combat::bearing_sector(
-                qx as i64 - v.body.qx as i64,
-                qz as i64 - v.body.qz as i64,
+            let raw = crate::combat::part_damage(
+                self.def.damage,
+                part,
+                self.def.head_pct,
+                self.def.limb_pct,
             );
-            events.push(EV_HIT, id, vid, crate::world::hit_c(part, dmg));
-            // A beam has no flight to reverse, so this is the muzzle itself —
-            // the shooter's body this tick, which is where they still are.
-            // **And the victim's live body, not the rewound one**, which is
-            // `strike`'s rule verbatim: this bearing is an instruction to
-            // the person it is sent to, who is at their present position
-            // when the arc appears. At a favour of 7 the rewound bearing
-            // would describe neither player's situation and is easily a
-            // whole sector of the sixteen out.
-            events.push(EV_HURT, vid, sector as u32, crate::world::hurt_c(part, dmg));
-            events.push(EV_HEALTH, vid, left, vmax);
-            if died {
-                // `EV_DEATH` is `die`'s (wounded v0), as for the arrow.
-                kills[n_kills] = Kill {
-                    victim: j,
-                    by: id,
-                    item,
-                    range_cm,
-                    head: part == crate::collide::Part::Head,
-                };
-                n_kills += 1;
-            }
-            continue;
+            return Pellet::Body {
+                t,
+                slot,
+                part,
+                damage: u32::from(gun.fall_off(raw, (reach * t) as u32)),
+                range_cm: (reach * t / 10.0) as u16,
+            };
         }
-
-        if let Some(kind) = surf {
-            // Where it landed, in the body's own quanta — `step`'s
-            // arithmetic and `step`'s reason for the units. Reached only
-            // when no body was hit, so a decal is never drawn for a shot
-            // that found flesh.
-            push_impact(
-                events,
-                kind,
-                IMPACT_BULLET,
-                (ox, oy, oz),
-                (sx, sy, sz),
-                stop_t,
-            );
-            // …and the wall takes it. After the impact, so the order on the
-            // wire is *where it hit* then *what that cost* — and so a piece
-            // that falls to this shot has its `EV_PIECE_REMOVED` behind the
-            // mark that explains it.
-            if let Some(hit) = built {
-                if def.structure > 0 {
-                    chips[n_chips] = Chip {
-                        hit: hit.at,
-                        deploy: hit.deploy,
-                        structure: def.structure,
-                        from_x: ox / MM_PER_M,
-                        from_z: oz / MM_PER_M,
-                        by: id,
-                    };
-                    n_chips += 1;
-                }
-            }
+        match surf {
+            Some(surf) => Pellet::World {
+                t: stop_t,
+                surf,
+                built,
+            },
+            None => Pellet::Miss { t: 1.0 },
         }
     }
-    (n_kills, n_chips)
+}
+
+/// Rust's stance penalty, in percent of the gun's `moving` term: nothing
+/// standing or crouched still, the whole of it on the move, half of it for
+/// a crouch-walk, and three times it in the air (Rust refuses a jump shot
+/// outright; here it is merely hopeless). Read off the frame's intent, so
+/// both ends of the wire compute it from facts they share.
+pub fn stance_pct(p: &Player) -> u16 {
+    if !p.body.grounded {
+        return 300;
+    }
+    let m = p
+        .frame
+        .move_x
+        .unsigned_abs()
+        .max(p.frame.move_z.unsigned_abs());
+    if m < 16 {
+        return 0;
+    }
+    let full = if p.crouched() { 50 } else { 100 };
+    let sprint = p.frame.buttons & BTN_SPRINT != 0 && p.frame.buttons & BTN_AIM == 0;
+    if sprint {
+        full * 3 / 2
+    } else {
+        full
+    }
+}
+
+/// The aimed line at an input frame's whole precision: all of `yaw`'s
+/// sixteen bits and `pitch` plus its fine fraction, on the pitch LUT's own
+/// scale (`(pitch / 255 − ½)·π`), through `fmath` so native and wasm agree.
+pub fn aim_dir(yaw: u16, pitch: u8, pitch_fine: i8) -> (f32, f32, f32) {
+    let a = f32::from(yaw) * (core::f32::consts::TAU / 65536.0);
+    let p =
+        ((f32::from(pitch) + f32::from(pitch_fine) / 256.0) / 255.0 - 0.5) * core::f32::consts::PI;
+    let (sa, ca) = crate::fmath::sin_cos(a);
+    let (sp, cp) = crate::fmath::sin_cos(p);
+    (sa * cp, sp, ca * cp)
+}
+
+/// `d` turned off its line by a draw inside a cone of `cdeg` hundredths of
+/// a degree of apex — Rust's `GetModifiedAimConeDirection`, at most half
+/// the apex off the line. The radius is drawn **uniform, not area-uniform**,
+/// so shots crowd the centre: Rust's 2022 weighted cone ("about a fifth of
+/// shots land dead centre"), and what makes a tap at range worth taking.
+/// `key` is the draw; the same key turns the same line the same way.
+pub fn cone_dir(d: (f32, f32, f32), cdeg: u32, key: u64) -> (f32, f32, f32) {
+    if cdeg == 0 {
+        return d;
+    }
+    let u = (key >> 40) as f32 / 16_777_216.0;
+    let v = ((key >> 8) & 0xFF_FFFF) as f32 / 16_777_216.0;
+    let r = crate::fmath::tan(u * cdeg as f32 * (core::f32::consts::PI / 36_000.0));
+    let (sn, cs) = crate::fmath::sin_cos(v * core::f32::consts::TAU);
+    let h = (d.0 * d.0 + d.2 * d.2).sqrt();
+    let right = if h > 1e-6 {
+        (d.2 / h, 0.0, -d.0 / h)
+    } else {
+        (1.0, 0.0, 0.0)
+    };
+    let up = (
+        right.1 * d.2 - right.2 * d.1,
+        right.2 * d.0 - right.0 * d.2,
+        right.0 * d.1 - right.1 * d.0,
+    );
+    let (ox, oy) = (r * cs, r * sn);
+    let x = d.0 + right.0 * ox + up.0 * oy;
+    let y = d.1 + right.1 * ox + up.1 * oy;
+    let z = d.2 + right.2 * ox + up.2 * oy;
+    let l = (x * x + y * y + z * z).sqrt();
+    (x / l, y / l, z / l)
+}
+
+/// A unit direction back to the wire's angles: yaw, pitch and the fine
+/// pitch, [`aim_dir`] inverted (to the wire's own rounding).
+pub fn wire_angles(d: (f32, f32, f32)) -> (u16, u8, i8) {
+    let mut t = crate::fmath::atan2(d.0, d.2) / core::f32::consts::TAU;
+    if t < 0.0 {
+        t += 1.0;
+    }
+    let yaw = (crate::fmath::round(t * 65536.0) as u32 & 0xFFFF) as u16;
+    let p = crate::fmath::asin(d.1.clamp(-1.0, 1.0));
+    let x = (p / core::f32::consts::PI + 0.5) * 255.0;
+    let whole = crate::fmath::round(x).clamp(0.0, 255.0);
+    let fine = crate::fmath::round((x - whole) * 256.0).clamp(-128.0, 127.0);
+    (yaw, whole as u8, fine as i8)
 }

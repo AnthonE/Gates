@@ -2475,6 +2475,7 @@ pub fn animate(
     mut q: Query<&mut Transform, (With<HeldRig>, Without<HeldItem>)>,
     mut item: Query<(&mut Transform, Has<InHand>), With<HeldItem>>,
     mut zoom: ResMut<DrawZoom>,
+    gf: Option<Res<super::gunfeel::GunFeel>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
     let dt = time.delta_secs();
@@ -2694,13 +2695,23 @@ pub fn animate(
             }
         }
     }
-    // A shot row's kick is the sim's shot, not a prediction of it: nothing
-    // on this side mirrors a magazine or a reload, so the event is the one
-    // honest source — a round trip late, with the report it plays under.
+    // A gun's kick is its predicted shot (`gunfeel`), on the frame the
+    // trigger broke; a crossbow's is the sim's, off the event. Under
+    // sustained fire the kick rides up rather than restarting from rest on
+    // every round, so an automatic shakes in the hand instead of stuttering.
     if shoots {
         let me = net.as_deref().map(|n| n.session.core.player_id);
-        if feed.shots().iter().any(|sh| Some(sh.0) == me) {
-            m.loose = 1.0;
+        let gun = gf.as_deref().is_some_and(|g| g.fired > 0);
+        let bolt = feed
+            .shots()
+            .iter()
+            .any(|sh| Some(sh.0) == me && !protocol::shot_is_instant(sh.3));
+        if gun || bolt {
+            m.loose = if m.loose > 0.45 {
+                (m.loose + 0.4).min(1.0)
+            } else {
+                1.0
+            };
             m.looses = m.looses.wrapping_add(1);
         }
     }

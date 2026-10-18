@@ -126,6 +126,12 @@ struct Live {
     /// An empty hand for a frame is the pre-v56 picture; a hundredfold
     /// hatchet at the feet is not.
     bone: Option<Entity>,
+    /// The `LeftHand` bone (guns v1): where a shouldered long gun's
+    /// handguard is held, found in the same walk as [`Live::bone`].
+    off_bone: Option<Entity>,
+    /// Where a shouldered long gun's muzzle was last drawn, world space,
+    /// for the shot's flash (`fx::gun`). `None` for anything else.
+    muzzle: Option<Vec3>,
     /// Which `HELD_MODELS` row the hand and the flame are currently
     /// showing, `sleeping`'s reason exactly — written on a TRANSITION.
     /// Assigning `Mesh3d` unconditionally marks it changed 60 times a
@@ -200,6 +206,14 @@ pub struct Bodies {
     /// Bumped once per frame; a body still in the interpolator is stamped
     /// with it, and `retain` drops whatever the stamp missed.
     gen: u64,
+}
+
+impl Bodies {
+    /// Where this body's shouldered long gun's muzzle was drawn last frame,
+    /// if it shoulders one (`aim_long_guns`).
+    pub fn muzzle(&self, id: u32) -> Option<Vec3> {
+        self.live.get(&id)?.muzzle
+    }
 }
 
 /// Eight parameters, which clippy counts — `viewmodel::dress_arms` carries
@@ -313,6 +327,7 @@ pub fn stream(
                     anim.airborne = rs.airborne;
                     anim.crouched = rs.crouched;
                     anim.facing = wire_yaw_to_radians(rs.yaw);
+                    anim.hold = shoulders(&core.catalog, &rs);
                     anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
@@ -329,7 +344,9 @@ pub fn stream(
                     }
                     // A shot is the same kind of fact on its own broadcast
                     // (`EV_SHOT`): an arrow or a round left this body's hands.
-                    if feed.shots().iter().any(|sh| sh.0 == id) {
+                    // A shouldered long gun keeps its hold: the pistol's
+                    // one-shot would drop it to one hand for every round.
+                    if !anim.hold && feed.shots().iter().any(|sh| sh.0 == id) {
                         anim.shoot();
                     }
                     // **And the blow you just landed on them** — the other
@@ -365,6 +382,7 @@ pub fn stream(
                     airborne: rs.airborne,
                     crouched: rs.crouched,
                     facing: wire_yaw_to_radians(rs.yaw),
+                    hold: shoulders(&core.catalog, &rs),
                     ..BodyAnim::default()
                 };
                 anim.observe(pos, 0.0, rs.sleeping, rs.dead, rs.wounded);
@@ -375,7 +393,7 @@ pub fn stream(
                 if feed.swings().contains(&id) {
                     anim.swing();
                 }
-                if feed.shots().iter().any(|sh| sh.0 == id) {
+                if !anim.hold && feed.shots().iter().any(|sh| sh.0 == id) {
                     anim.shoot();
                 }
                 // Same for the blow: a body that enters AOI on the frame
@@ -473,6 +491,8 @@ pub fn stream(
                         held_skin: 0,
                         lit: None,
                         bone: None,
+                        off_bone: None,
+                        muzzle: None,
                     },
                 );
             }
@@ -552,16 +572,18 @@ pub fn bind_hands(
         let mut stack = vec![body];
         let mut seen = 0usize;
         let mut bone = None;
+        let mut off_bone = None;
         while let Some(e) = stack.pop() {
             seen += 1;
             if seen > 512 {
                 break;
             }
-            if names
-                .get(e)
-                .is_ok_and(|n| n.as_str() == super::anim::HAND_BONE)
-            {
-                bone = Some(e);
+            match names.get(e).map(|n| n.as_str()) {
+                Ok(super::anim::HAND_BONE) => bone = Some(e),
+                Ok(super::anim::OFF_HAND_BONE) => off_bone = Some(e),
+                _ => {}
+            }
+            if bone.is_some() && off_bone.is_some() {
                 break;
             }
             if let Ok(kids) = children.get(e) {
@@ -586,6 +608,7 @@ pub fn bind_hands(
         commands.entity(live.hand).insert(ChildOf(bone));
         commands.entity(live.flame).insert(ChildOf(bone));
         live.bone = Some(bone);
+        live.off_bone = off_bone;
         // Forget what the hand was showing, so the next frame's
         // `update_hand` writes both transforms against the bone's frame.
         // Without it the transition test is already satisfied and the item
@@ -614,6 +637,91 @@ pub fn bind_hands(
                 super::anim::HAND_BONE
             );
         }
+    }
+}
+
+/// How much of the hands' miss from the aim the chest turn takes back each
+/// frame. A loop rather than a measured constant, because the miss is the
+/// hold clip's arms over whatever gait the hips are in, and that moves
+/// with the gait (45° standing, up to 68° on a jog).
+const HOLD_GAIN: f32 = 0.3;
+
+/// The chest turn's bounds, radians `(about up, about right)`.
+const HOLD_MAX: Vec2 = Vec2::new(1.3, 0.9);
+
+/// Lay a remote's shouldered long gun along its hands, and its hands along
+/// its aim (guns v1).
+///
+/// The hold clip (`anim::RIFLE_HOLD_CLIP`) has the stock in the right hand
+/// and the handguard in the left, but on its own the gun hangs off the right
+/// hand at the one-handed grip every held item shares and the left hand
+/// holds air. So, after the transforms are propagated:
+///
+/// - **the barrel** lies along the line from the right wrist to the left,
+///   its grip point kept in the right palm. Written to the item's `GlobalTransform`
+///   directly — this frame's draw, nothing anyone else reads as a decision;
+///   the next propagation starts again from the hand's own grip.
+/// - **the chest** turns (`SpineBones::hold`) until that line meets the aim:
+///   the clip carries the gun across the body and the gait owns the hips, so
+///   without it every remote would point its gun 45° off where it shoots.
+///   The miss is measured here and taken back over the next frames.
+/// - **the muzzle** is kept, so the shot's flash leaves the barrel.
+pub fn aim_long_guns(
+    mut store: ResMut<Bodies>,
+    rig: Res<Rig>,
+    mut bodies: Query<(&BodyAnim, &mut super::anim::SpineBones)>,
+    bones: Query<&GlobalTransform, Without<HeldOnBody>>,
+    mut items: Query<&mut GlobalTransform, With<HeldOnBody>>,
+) {
+    for live in store.live.values_mut() {
+        live.muzzle = None;
+        let Ok((anim, mut spine)) = bodies.get_mut(live.entity) else {
+            continue;
+        };
+        let row = live.held.filter(|&r| HELD_MODELS[r].long_gun());
+        let hands = live
+            .bone
+            .zip(live.off_bone)
+            .and_then(|(r, l)| Some((bones.get(r).ok()?, bones.get(l).ok()?)));
+        let (Some(row), Some((right, left)), true) = (row, hands, anim.shouldering()) else {
+            // Let go: the chest comes back round at the same pace.
+            spine.hold *= 1.0 - HOLD_GAIN;
+            continue;
+        };
+        let line = (left.translation() - right.translation()).normalize_or_zero();
+        if line == Vec3::ZERO {
+            continue;
+        }
+        // The miss, in the body's own frame: yaw 0 faces +Z, positive up.
+        let d = Quat::from_rotation_y(-anim.facing) * line;
+        let aim = anim.pitch.clamp(
+            -super::anim::ANIM_LOOK_PITCH_MAX,
+            super::anim::ANIM_LOOK_PITCH_MAX,
+        );
+        let miss = Vec2::new(d.x.atan2(d.z), d.y.clamp(-1.0, 1.0).asin() - aim);
+        spine.hold = (spine.hold - miss * HOLD_GAIN).clamp(-HOLD_MAX, HOLD_MAX);
+
+        let Ok(mut gt) = items.get_mut(live.hand) else {
+            continue;
+        };
+        let def = &HELD_MODELS[row];
+        let palm = right
+            .mul_transform(grip(Some(row), rig.scale))
+            .transform_point(VIEWMODEL_PALM);
+        let (scale, _, _) = right
+            .mul_transform(hand_pose(row, rig.scale))
+            .to_scale_rotation_translation();
+        // The model stands barrel-up, top to +Z (`ui::hold`'s gun rows).
+        let top = (Vec3::Y - line * line.y).normalize_or(Vec3::Z);
+        let turn = Quat::from_mat3(&Mat3::from_cols(line.cross(top), line, top));
+        let grip_at = scale * (Vec3::Y * def.grip_m() / def.scale);
+        let at = palm - turn * grip_at;
+        *gt = GlobalTransform::from(Transform {
+            translation: at,
+            rotation: turn,
+            scale,
+        });
+        live.muzzle = Some(at + turn * (scale * Vec3::Y * def.height_m));
     }
 }
 
@@ -663,6 +771,14 @@ pub fn hand_wants(
         held_model_of(catalog, rs.held),
         lit_model_of(catalog, rs.held, rs.lit),
     )
+}
+
+/// Does this body shoulder what it holds — a long gun, in two hands
+/// (`HeldModelDef::long_gun`)?
+pub fn shoulders(catalog: &protocol::ItemCatalog, rs: &client_core::interp::RemoteState) -> bool {
+    hand_wants(catalog, rs)
+        .0
+        .is_some_and(|row| HELD_MODELS[row].long_gun())
 }
 
 fn update_hand(

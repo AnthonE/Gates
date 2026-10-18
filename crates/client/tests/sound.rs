@@ -2844,6 +2844,8 @@ fn the_shipped_weapons_are_spread_across_the_curve() {
     let src = std::fs::read_to_string(root.join("weapons.toml")).expect("weapons.toml");
     let mut rows: Vec<(String, u16)> = Vec::new();
     let (mut kind, mut damage) = (None::<String>, None::<u16>);
+    // A shotgun's shell lands as one blow, its pellets summed (guns v1).
+    let mut pellets = 1u16;
     // A row with `lit_damage` is a light that also hits (the torch): half a
     // rock's blow, a tap rather than a hit, and ON the floor by design — so
     // it is left out of the spread, like the charge that saturates it.
@@ -2853,11 +2855,19 @@ fn the_shipped_weapons_are_spread_across_the_curve() {
         if l.starts_with("[[") {
             if let (Some(k), Some(d)) = (kind.take(), damage.take()) {
                 if !light {
-                    rows.push((k, d));
+                    rows.push((k, d.saturating_mul(pellets)));
                 }
             }
             light = false;
+            pellets = 1;
             continue;
+        }
+        if let Some(v) = l.strip_prefix("pellets") {
+            pellets = v
+                .split('=')
+                .nth(1)
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(1);
         }
         if l.starts_with("lit_damage") {
             light = true;

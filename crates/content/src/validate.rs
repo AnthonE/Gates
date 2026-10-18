@@ -821,6 +821,62 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 sim_core::limits::TICK_HZ
             ));
         }
+        // How a gun handles belongs to a gun, and every gun says.
+        match (w.kind, w.gun) {
+            (WeaponKind::Firearm, None) => {
+                return Err(format!("weapon `{}`: a firearm needs a [weapon.gun]", w.id));
+            }
+            (WeaponKind::Firearm, Some(g)) => {
+                let err = |what: &str| Err(format!("weapon `{}`: gun {what}", w.id));
+                if g.pellets == 0 || g.pellets as usize > sim_core::limits::MAX_PELLETS {
+                    return err("pellets outside 1..=MAX_PELLETS");
+                }
+                let angles = [
+                    g.aim_cdeg,
+                    g.hip_cdeg,
+                    g.move_cdeg,
+                    g.bloom_cdeg,
+                    g.bloom_max_cdeg,
+                    g.pellet_cdeg,
+                ];
+                // 45° of apex is a gun that cannot hit a barn; past it, a typo.
+                if angles.iter().any(|&a| a > 4500) {
+                    return err("cone over 45 degrees");
+                }
+                if g.bloom_cdeg > 0 && (g.bloom_max_cdeg < g.bloom_cdeg || g.bloom_recover_ms == 0)
+                {
+                    return err("bloom needs a max at least one shot's and a recovery");
+                }
+                if g.pellets == 1 && g.pellet_cdeg > 0 {
+                    return err("pellet spread on a one-projectile gun");
+                }
+                let [near, far] = g.falloff_m;
+                if near > far || far > 1000 || g.falloff_pct == 0 || g.falloff_pct > 100 {
+                    return err("falloff is not near <= far <= 1000 m, 1..=100 %");
+                }
+                let [plo, phi] = g.recoil_pitch_cdeg;
+                let [ylo, yhi] = g.recoil_yaw_cdeg;
+                if plo > phi || phi > 2000 || ylo > yhi || ylo < -2000 || yhi > 2000 {
+                    return err("recoil ends out of order or past 20 degrees");
+                }
+                if g.ads_recoil_pct > 100 {
+                    return err("ads_recoil_pct over 100");
+                }
+                if [g.bloom_recover_ms, g.bloom_delay_ms]
+                    .iter()
+                    .any(|&ms| ms > 60_000)
+                {
+                    return err("bloom times over a minute");
+                }
+            }
+            (_, Some(_)) => {
+                return Err(format!(
+                    "weapon `{}`: only a firearm carries a [weapon.gun]",
+                    w.id
+                ));
+            }
+            (_, None) => {}
+        }
     }
 
     // `Player::mag` is indexed by a dense `mag_slot`, so the number of
@@ -875,6 +931,19 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 "ammo `{}`: fire_s [{lo}, {hi}] is not 1 <= shortest <= longest <= 120",
                 a.id
             ));
+        }
+        // A blast is a planted charge's, so it has a charge's bound: one
+        // build cell (`charge::BLAST_MAX_CM`), and numbers that fit `u16`.
+        if let Some(b) = a.blast {
+            if b.blast_m == 0 || b.blast_m * 100 > 300 {
+                return Err(format!("ammo `{}`: blast_m outside 1..=3", a.id));
+            }
+            if b.damage > u16::MAX as u32 || b.structure > u16::MAX as u32 {
+                return Err(format!("ammo `{}`: blast numbers over u16", a.id));
+            }
+            if a.fire_s != [0, 0] {
+                return Err(format!("ammo `{}`: a round either burns or blows up", a.id));
+            }
         }
     }
 

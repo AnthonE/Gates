@@ -406,6 +406,7 @@ mod tests {
             move_x: (seq % 5) as i8 - 2,
             move_z,
             sel: (seq % 6) as u8,
+            pitch_fine: 0,
         }
     }
 

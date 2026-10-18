@@ -1,7 +1,9 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 114 kB — fixed-capacity by design (wall 4), and
-# (113 kB until a rug's comfort put a furnish row per item on the exposure
+# `World` is 124 kB — fixed-capacity by design (wall 4), and
+# (114 kB until guns v1 put sixteen magazines and a gun's cone on each
+# player and a rocket's landing ring on the arrows;
+# 113 kB until a rug's comfort put a furnish row per item on the exposure
 # table;
 # 108 kB until the blueprint mask went to 128 bits, a `u128` on each player;
 # 100 kB until wire v121 and a swing's wind-up met in one merge: v121 grew

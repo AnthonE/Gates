@@ -573,12 +573,68 @@ fn detonate(
     hit_mobs: &mut BlastMobs,
     events: &mut EventQueue,
 ) {
-    use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
-    use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
-
     let (ax, az) = epicentre(deploys, c);
     let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
         + crate::build::level_y(c.level);
+    let b = Blast {
+        at: (ax, ay, az),
+        cell: (c.cx, c.cz),
+        struck: None,
+        structure: c.structure,
+        damage: c.damage,
+        blast_cm: c.blast_cm,
+        owner: c.owner,
+        mark_lift: 0.8,
+    };
+    blast(
+        seed, haven, bc, dc, cc, &b, pieces, deploys, players, budget, kills, mobs, hit_mobs,
+        events,
+    );
+}
+
+/// One explosion: where it is (metres), the build cell whose 3×3 ring it
+/// scans, and what it takes off a structure and a body at its heart. A
+/// planted charge is one at its anchor; a rocket is one where it struck,
+/// and the piece it struck (`struck`, the four-part address and the store
+/// bit) takes the whole `structure` however far its anchor is from the
+/// face the rocket met — the wall a rocket hits is the wall it opens.
+#[derive(Clone, Copy, Debug)]
+pub struct Blast {
+    pub at: (f32, f32, f32),
+    pub cell: (u16, u16),
+    pub struck: Option<(u16, u16, u8, u8, bool)>,
+    pub structure: u16,
+    pub damage: u16,
+    pub blast_cm: u16,
+    pub owner: u32,
+    /// How far above `at` the flash and scorch are drawn, metres: a
+    /// planted charge's sits at the wall's waist, a rocket's where it hit.
+    pub mark_lift: f32,
+}
+
+/// Blow `b` up: [`detonate`]'s area, from any point.
+#[allow(clippy::too_many_arguments)]
+pub fn blast(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    bc: &BuildContent,
+    dc: &DeployContent,
+    cc: &crate::combat::CombatContent,
+    b: &Blast,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    players: &mut [Player; crate::limits::MAX_PLAYERS],
+    budget: &mut usize,
+    kills: &mut BlastKills,
+    mobs: &crate::mob::Mobs,
+    hit_mobs: &mut BlastMobs,
+    events: &mut EventQueue,
+) {
+    use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
+    use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
+
+    let (ax, ay, az) = b.at;
+    let c = b;
     let blast = c.blast_cm;
     // The blast itself, before what it breaks: every client in range draws
     // the fireball and the scorch at the charge, and a piece that falls to
@@ -591,7 +647,7 @@ fn detonate(
             crate::fmath::floor_i32(ax / crate::movement::POS_XZ_Q),
         ),
         crate::fmath::floor_i32(az / crate::movement::POS_XZ_Q) as u32,
-        crate::fmath::floor_i32((ay + 0.8) / crate::movement::POS_Y_Q) as u32,
+        crate::fmath::floor_i32((ay + c.mark_lift) / crate::movement::POS_Y_Q) as u32,
     );
 
     // Distance from the epicentre to a point, centimetres. Planar plus
@@ -608,8 +664,8 @@ fn detonate(
     let mut targets: [(u16, u16, u8, u8, bool, u16); BLAST_TARGET_CAP] =
         [(0, 0, 0, 0, false, 0); BLAST_TARGET_CAP];
     let mut n = 0usize;
-    let bcx = c.cx as i32;
-    let bcz = c.cz as i32;
+    let bcx = c.cell.0 as i32;
+    let bcz = c.cell.1 as i32;
     let mut dz = -1i32;
     while dz <= 1 {
         let mut dx = -1i32;
@@ -631,7 +687,11 @@ fn detonate(
                     }
                     let (tx, tz) = anchor(cx, cz, loc);
                     let d = dist_cm(tx, ly, tz);
-                    let scaled = falloff(c.structure, d, blast);
+                    let scaled = if c.struck == Some((cx, cz, level, loc, false)) {
+                        c.structure
+                    } else {
+                        falloff(c.structure, d, blast)
+                    };
                     if scaled > 0 {
                         targets[n] = (cx, cz, level, loc, false, scaled);
                         n += 1;
@@ -669,7 +729,11 @@ fn detonate(
             }
         };
         let d = dist_cm(tx, ly, tz);
-        let scaled = falloff(c.structure, d, blast);
+        let scaled = if c.struck == Some((rec.cx, rec.cz, rec.level, rec.loc, true)) {
+            c.structure
+        } else {
+            falloff(c.structure, d, blast)
+        };
         if scaled > 0 {
             targets[n] = (rec.cx, rec.cz, rec.level, rec.loc, true, scaled);
             n += 1;

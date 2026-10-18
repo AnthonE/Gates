@@ -381,6 +381,11 @@ pub const MAX_ITEM_DEFS: usize = 127;
 /// Proposed default, DECISIONS.md §open (ballistics-on-ammo row).
 pub const MAX_WEAPON_AMMO: usize = 4;
 
+/// Projectiles one gunshot may throw — a shotgun's pellets
+/// (`combat::Gun::pellets`). Each is traced and paid on its own, so this
+/// bounds a pull's work at `MAX_PELLETS × MAX_HITSCAN_SAMPLES` taps.
+pub const MAX_PELLETS: usize = 16;
+
 /// Weapons that may carry a **magazine** at once — the width of
 /// `Player::mag`, which is indexed by `RangedDef::mag_slot` rather than by
 /// item index.
@@ -398,7 +403,7 @@ pub const MAX_WEAPON_AMMO: usize = 4;
 /// Structural, not a balance number: it sizes a fixed array on `Player`,
 /// so it is a cap in the `MAX_WEAPON_AMMO` sense.
 /// Proposed default, DECISIONS.md §open (reload v1).
-pub const MAX_MAGS: usize = 8;
+pub const MAX_MAGS: usize = 16;
 
 /// Stacks a fresh character may be granted at spawn (`content/balance.toml`
 /// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:
@@ -1257,7 +1262,7 @@ pub const MAX_ARROW_SUBSTEPS: usize = 16;
 ///
 /// With `ARROW_STEP_MM` this is a **content wall**, exactly as
 /// `MAX_ARROW_SUBSTEPS` is for a round's muzzle speed: a firearm whose
-/// `range_m` exceeds `ARROW_STEP_MM * MAX_HITSCAN_SAMPLES` (54.4 m) cannot
+/// `range_m` exceeds `ARROW_STEP_MM * MAX_HITSCAN_SAMPLES` (306 m) cannot
 /// be traced at the spacing a trunk needs, and `bake_combat` refuses it at
 /// boot rather than shipping a gun that shoots through cover past some
 /// distance nothing writes down. The revolver is 50 m — 295 samples — so it
@@ -1275,10 +1280,13 @@ pub const MAX_ARROW_SUBSTEPS: usize = 16;
 /// exists. A queue would be the wrong shape here anyway: a hitscan shot
 /// leaves no entity behind to store, so there is nothing to overflow.
 /// Proposed default, DECISIONS.md §open (hitscan v0).
-pub const MAX_HITSCAN_SAMPLES: usize = 320;
+pub const MAX_HITSCAN_SAMPLES: usize = 1800;
 
 /// How far past the shooter a **missed** shot still marks the world, in
-/// samples of `ARROW_STEP_MM` — 64 of them, 10.9 m.
+/// samples of `ARROW_STEP_MM` — 600 of them, 102 m (guns v1; it was 64,
+/// 10.9 m): far enough that a wall a rifle hits across a compound takes the
+/// chip and shows the mark. An automatic fires every fourth tick, so a
+/// hundred of them at open sky is ~25 full walks a tick, ~9 ms.
 ///
 /// This is a *cosmetic* bound and it is the only number here that admits to
 /// being one, so it is worth saying exactly what it buys. `ranged::hitscan`
@@ -1303,7 +1311,7 @@ pub const MAX_HITSCAN_SAMPLES: usize = 320;
 /// Overflow policy: none — a shot past it is a miss with no decal, never a
 /// shot that stops early. Nothing about a hit reads this.
 /// Proposed default, DECISIONS.md §open (hitscan v0).
-pub const MAX_HITSCAN_MARK_SAMPLES: usize = 64;
+pub const MAX_HITSCAN_MARK_SAMPLES: usize = 600;
 
 /// The roster's length: the hard cap on animals one shard simulates, plus
 /// the heli's slot (`mob.rs`). Not a queue — fixed slots, one species each,

@@ -108,6 +108,7 @@ fn swing_frame(w: &World, attacker: usize, victim: usize, seq: u16, yaw: u16) ->
         move_x: 0,
         move_z: 0,
         sel: 0,
+        pitch_fine: 0,
     }
 }
 
@@ -220,6 +221,7 @@ fn a_sleeper_does_not_act_on_input() {
                 move_x: 127,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);

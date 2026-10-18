@@ -112,6 +112,7 @@ pub mod disconnected;
 pub mod fresnel;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
+pub mod gunfeel;
 // The blue wash over the piece a hammer is aimed at.
 pub mod decal;
 pub mod highlight;
@@ -719,6 +720,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
+            .init_resource::<gunfeel::GunFeel>()
             .init_resource::<lodged::Lodged>()
             .init_resource::<arrow_fire::ArrowFires>()
             .init_resource::<decal::Marks>()
@@ -1464,6 +1466,16 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !plate || filming),
         )
+        // A remote's shouldered long gun, laid along its hands once the hands
+        // are where this frame draws them (guns v1). Before the culling
+        // reads the gun's place.
+        .add_systems(
+            PostUpdate,
+            bodies::aim_long_guns
+                .after(bevy::transform::TransformSystems::Propagate)
+                .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility)
+                .run_if(world_running),
+        )
         // The fire on the torch in your own hand, in the hand's frame: the
         // same slot for the same reason, and the viewmodel's conditions.
         .add_systems(
@@ -1941,6 +1953,16 @@ impl Plugin for GatesRenderPlugin {
             feed::drain
                 .after(input::place_eye)
                 .before(Stream)
+                .run_if(world_running),
+        )
+        // The local gun's shot and its kick (guns v1): after the trigger is
+        // decided and before the feed drains, so every reader of the shot
+        // sees it on the frame it was fired.
+        .add_systems(
+            Update,
+            gunfeel::predict
+                .after(input::gather)
+                .before(input::place_eye)
                 .run_if(world_running),
         )
         // The craft clock, the craft bar and the item notices over the

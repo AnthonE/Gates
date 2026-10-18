@@ -84,6 +84,7 @@ fn swing_frame(w: &World, seq: u16, yaw: u16) -> InputFrame {
         move_x: 0,
         move_z: 0,
         sel: 0,
+        pitch_fine: 0,
     }
 }
 

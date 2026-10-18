@@ -464,11 +464,24 @@ pub enum Cue {
     RemoteStepWood,
     RemoteStepConcrete,
     RemoteStepMetal,
+    /// Rust's guns (guns v1), one report per kind of gun so a fight is read
+    /// by ear: an assault or semi-automatic rifle's crack (5.56),
+    ShotRifle,
+    /// a submachine gun's lighter, faster chatter (pistol rounds),
+    ShotSmg,
+    /// a pistol's snap,
+    ShotPistol,
+    /// a pump shotgun's boom,
+    ShotShotgun,
+    /// a bolt-action rifle's long, heavy report,
+    ShotBolt,
+    /// and a rocket leaving its tube: the launch's whoosh and thump.
+    ShotRocket,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 109;
+pub const CUE_COUNT: usize = 115;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -586,6 +599,12 @@ impl Cue {
         Cue::RemoteStepWood,
         Cue::RemoteStepConcrete,
         Cue::RemoteStepMetal,
+        Cue::ShotRifle,
+        Cue::ShotSmg,
+        Cue::ShotPistol,
+        Cue::ShotShotgun,
+        Cue::ShotBolt,
+        Cue::ShotRocket,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -760,7 +779,13 @@ impl Cue {
             | Cue::ShotGun
             | Cue::ShotGunFar
             | Cue::ShotHeli
-            | Cue::ShotHeliFar => 0.05,
+            | Cue::ShotHeliFar
+            | Cue::ShotRifle
+            | Cue::ShotSmg
+            | Cue::ShotPistol
+            | Cue::ShotShotgun
+            | Cue::ShotBolt
+            | Cue::ShotRocket => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -1151,6 +1176,16 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The built floors: the step family's numbers, yours then theirs.
     STEP, STEP, STEP,
     RSTEP, RSTEP, RSTEP,
+    // Rust's guns (guns v1): the gun's own reach and the revolver's gain,
+    // a cooldown under the fastest cadence (an SMG's 100 ms), so every
+    // round of a burst is heard. The shotgun and the bolt carry further, the
+    // rocket's launch less far than its blast.
+    row(GAME, 100.0, 0.85,  60, 6, true),  // rifle
+    row(GAME, 100.0, 0.80,  60, 6, true),  // smg
+    row(GAME, 100.0, 0.80,  60, 6, true),  // pistol
+    row(GAME, 100.0, 0.95,  60, 6, true),  // shotgun
+    row(GAME, 100.0, 0.95,  60, 6, true),  // bolt
+    row(GAME,  80.0, 0.90, 150, 6, true),  // rocket launch
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:

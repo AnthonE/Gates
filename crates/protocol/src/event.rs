@@ -61,10 +61,10 @@ pub const GROW_SYNC_BATCH: usize = 32;
 /// walk fills it. 33 bits a node, 32 of them in 136 B.
 pub const NODE_STAGE_BATCH: usize = 32;
 
-/// Item names one catalog message carries. Seven since v102: a worst-case
-/// row is 320 bits with the class nibble, and eight of them would pass
+/// Item names one catalog message carries. Five since v126: a worst-case
+/// row is 427 bits with a gun's handling, and six of them would pass
 /// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
-pub const CATALOG_BATCH: usize = 7;
+pub const CATALOG_BATCH: usize = 5;
 
 /// Skin rows one skin-catalog message carries. A row is at most
 /// 16 + 16 + 24 + 2 + 32 + 1 + 64 + 5 + 24 × 8 = 352 bits since a painted
@@ -1194,6 +1194,61 @@ pub struct ItemRow {
     /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
     /// also what a row past the drip watermark reads as.
     pub class: u8,
+    /// How a gun handles (v126, `combat::Gun`), for the client to kick its
+    /// own view on the shot it fires and to draw it the instant the trigger
+    /// breaks rather than a round trip later. `None` on all but firearms.
+    pub gun: Option<GunRow>,
+}
+
+/// A firearm's handling, as the client needs it (`sim_core::combat::Gun`):
+/// its cadence in ticks, the trigger, the pellets, the cone (hundredths of
+/// a degree of apex, through the sights and added from the hip) and the
+/// per-shot view kick from the hip (pitch up, yaw right; hundredths of a
+/// degree) with the share of it the sights keep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GunRow {
+    pub rate_ticks: u8,
+    /// Ticks a reload holds the gun (`RangedDef::reload_ticks`).
+    pub reload_ticks: u16,
+    pub semi: bool,
+    pub pellets: u8,
+    pub aim: u16,
+    pub hip: u16,
+    pub recoil_pitch: [u16; 2],
+    pub recoil_yaw: [i16; 2],
+    pub ads_recoil_pct: u8,
+}
+
+/// The widths of [`GunRow`] on the wire: a gun row is these and a presence
+/// bit; a row with no gun is the presence bit alone.
+const GUN_PELLET_BITS: u32 = 5;
+const GUN_CONE_BITS: u32 = 13;
+const GUN_RECOIL_BITS: u32 = 12;
+const GUN_RELOAD_BITS: u32 = 11;
+const GUN_ROW_BITS: usize =
+    (8 + GUN_RELOAD_BITS + 1 + GUN_PELLET_BITS + 2 * GUN_CONE_BITS + 4 * GUN_RECOIL_BITS + 7)
+        as usize;
+const _: () = assert!(sim_core::limits::MAX_PELLETS < 1 << GUN_PELLET_BITS);
+
+impl GunRow {
+    /// Fits its widths: what `content::validate` holds a gun to (cones to
+    /// 45°, kicks to 20°, pellets to `MAX_PELLETS`).
+    fn coherent(&self) -> bool {
+        (1..=sim_core::limits::MAX_PELLETS as u8).contains(&self.pellets)
+            && self.aim < 1 << GUN_CONE_BITS
+            && self.hip < 1 << GUN_CONE_BITS
+            && self
+                .recoil_pitch
+                .iter()
+                .all(|&p| p < 1 << (GUN_RECOIL_BITS - 1))
+            && self
+                .recoil_yaw
+                .iter()
+                .all(|&y| y.unsigned_abs() < 1 << (GUN_RECOIL_BITS - 1))
+            && self.ads_recoil_pct <= 100
+            && self.rate_ticks > 0
+            && self.reload_ticks < 1 << GUN_RELOAD_BITS
+    }
 }
 
 /// Width of [`ItemRow::oven`].
@@ -1213,7 +1268,9 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + 2 * 8
     + OVEN_ROLE_BITS as usize
     + 2
-    + ITEM_CLASS_BITS as usize;
+    + ITEM_CLASS_BITS as usize
+    + 1
+    + GUN_ROW_BITS;
 // A full batch of the widest rows fits one message. v102's class nibble is
 // what took `CATALOG_BATCH` from 8 to 7: eight rows had filled the cap to
 // the byte. A column added to the row must shrink the batch first.
@@ -1238,6 +1295,7 @@ impl ItemRow {
         holster: false,
         revive: false,
         class: CLASS_OTHER,
+        gun: None,
     };
 
     /// Does a right mouse draw this item before it looses?
@@ -1277,6 +1335,7 @@ impl ItemRow {
             && (self.nock_ticks == 0 || self.draw_ticks > 0)
             && u32::from(self.oven) < 1 << OVEN_ROLE_BITS
             && self.class <= CLASS_MAX
+            && self.gun.is_none_or(|g| g.coherent())
     }
 }
 
@@ -1957,6 +2016,10 @@ pub enum EventMsg {
         shooter: u32,
         yaw: u16,
         pitch: u8,
+        /// `pitch`'s fraction in 256ths of a step (v126,
+        /// `sim_core::input::InputFrame::pitch_fine`): where a gun's round
+        /// went, its cone applied, at the precision it was aimed with.
+        pitch_fine: i8,
         speed_mmpt: u16,
         drop_mmpt2: u16,
     },
@@ -2816,6 +2879,26 @@ pub fn encode_event_catalog(
         w.write_bit(row.revive)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
+        // A gun's handling (v126), behind a presence bit.
+        w.write_bit(row.gun.is_some())?;
+        if let Some(g) = row.gun {
+            w.write(g.rate_ticks as u32, 8)?;
+            w.write(g.reload_ticks as u32, GUN_RELOAD_BITS)?;
+            w.write_bit(g.semi)?;
+            w.write(g.pellets as u32, GUN_PELLET_BITS)?;
+            w.write(g.aim as u32, GUN_CONE_BITS)?;
+            w.write(g.hip as u32, GUN_CONE_BITS)?;
+            for p in g.recoil_pitch {
+                w.write(p as u32, GUN_RECOIL_BITS)?;
+            }
+            for y in g.recoil_yaw {
+                w.write(
+                    (y as u16 as u32) & ((1 << GUN_RECOIL_BITS) - 1),
+                    GUN_RECOIL_BITS,
+                )?;
+            }
+            w.write(g.ads_recoil_pct as u32, 7)?;
+        }
     }
     Ok((w.finish(), count))
 }
@@ -3753,6 +3836,7 @@ pub fn encode_event_shot(
     shooter: u32,
     yaw: u16,
     pitch: u8,
+    pitch_fine: i8,
     speed_mmpt: u16,
     drop_mmpt2: u16,
     buf: &mut [u8],
@@ -3775,6 +3859,7 @@ pub fn encode_event_shot(
     w.write(shooter, 32)?;
     w.write(yaw as u32, 16)?;
     w.write(pitch as u32, 8)?;
+    w.write(pitch_fine as u8 as u32, 8)?;
     w.write(speed_mmpt as u32, 16)?;
     w.write(drop_mmpt2 as u32, 16)?;
     Ok(w.finish())
@@ -5980,6 +6065,36 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
+                    gun: if r.read_bit()? {
+                        let rate_ticks = r.read(8)? as u8;
+                        let reload_ticks = r.read(GUN_RELOAD_BITS)? as u16;
+                        let semi = r.read_bit()?;
+                        let pellets = r.read(GUN_PELLET_BITS)? as u8;
+                        let aim = r.read(GUN_CONE_BITS)? as u16;
+                        let hip = r.read(GUN_CONE_BITS)? as u16;
+                        let p0 = r.read(GUN_RECOIL_BITS)? as u16;
+                        let p1 = r.read(GUN_RECOIL_BITS)? as u16;
+                        // Twelve-bit two's complement, sign-extended.
+                        let sx = |v: u32| {
+                            ((v << (32 - GUN_RECOIL_BITS)) as i32 >> (32 - GUN_RECOIL_BITS)) as i16
+                        };
+                        let y0 = sx(r.read(GUN_RECOIL_BITS)?);
+                        let y1 = sx(r.read(GUN_RECOIL_BITS)?);
+                        let ads_recoil_pct = r.read(7)? as u8;
+                        Some(GunRow {
+                            rate_ticks,
+                            reload_ticks,
+                            semi,
+                            pellets,
+                            aim,
+                            hip,
+                            recoil_pitch: [p0, p1],
+                            recoil_yaw: [y0, y1],
+                            ads_recoil_pct,
+                        })
+                    } else {
+                        None
+                    },
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -6495,6 +6610,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 shooter: r.read(32)?,
                 yaw: r.read(16)? as u16,
                 pitch: r.read(8)? as u8,
+                pitch_fine: r.read(8)? as u8 as i8,
                 speed_mmpt: r.read(16)? as u16,
                 drop_mmpt2: r.read(16)? as u16,
             };
@@ -8189,6 +8305,7 @@ mod tests {
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
+                gun: None,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -8213,8 +8330,14 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        let (_, took2) = encode_event_catalog(&cat, took, &mut buf).unwrap();
-        assert_eq!(took + took2, 11);
+        // The rest, a batch at a time, to the table's end.
+        let mut first = took;
+        while first < 11 {
+            let (_, more) = encode_event_catalog(&cat, first, &mut buf).unwrap();
+            assert!((1..=CATALOG_BATCH).contains(&more));
+            first += more;
+        }
+        assert_eq!(first, 11);
         assert_eq!(
             encode_event_catalog(&cat, 11, &mut buf),
             Err(WireError::Range)
@@ -10779,6 +10902,15 @@ mod wire_domains {
             // `casino::WHEEL_SEGMENTS`, a sim-core *count* tied by a
             // compile-time assert at the declaration.
             "WHEEL_SEGMENT_BITS",
+            // A gun's handling (v126): a pellet count bounded by
+            // `limits::MAX_PELLETS` (a compile-time assert at the
+            // declaration), and cones and kicks that `content::validate`
+            // holds to 45° and 20°, magnitudes `GunRow::coherent` refuses
+            // past at both ends.
+            "GUN_PELLET_BITS",
+            "GUN_CONE_BITS",
+            "GUN_RECOIL_BITS",
+            "GUN_RELOAD_BITS",
         ];
 
         let mut widths = Vec::new();

@@ -181,6 +181,7 @@ fn hold_primary(aim: Aim, seq: u16) -> Command {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }
@@ -197,6 +198,7 @@ fn stand_still(aim: Aim, seq: u16) -> Command {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }
@@ -850,6 +852,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
             move_x: 0,
             move_z: 0,
             sel,
+            pitch_fine: 0,
         },
         favour: 0,
     };
