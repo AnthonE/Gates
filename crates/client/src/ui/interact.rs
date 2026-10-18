@@ -149,6 +149,12 @@ pub enum Verb {
     /// (`inventory::CONT_BODY`), as Rust lets you loot a sleeper where it
     /// lies. `handle` is their id. Aimed, by [`resolve_sleeper`].
     Sleeper,
+    /// One of THE GATE's big wheel terminals (`sim_core::casino`): `handle`
+    /// is the terminal. By nearness, like `Trade` ([`resolve_casino`]).
+    Wheel,
+    /// One of THE GATE's slot machines: `handle` is the machine. By
+    /// nearness.
+    Slots,
 }
 
 impl Verb {
@@ -202,6 +208,8 @@ impl Verb {
             Verb::Planter => 19,
             Verb::Sleeper => 20,
             Verb::Shop => 21,
+            Verb::Wheel => 22,
+            Verb::Slots => 23,
         }
     }
 
@@ -235,6 +243,8 @@ impl Verb {
             Verb::Planter => "PLANTER",
             Verb::Sleeper => "SLEEPING PLAYER",
             Verb::Shop => "VENDING MACHINE",
+            Verb::Wheel => "BIG WHEEL",
+            Verb::Slots => "SLOT MACHINE",
         }
     }
 }
@@ -463,6 +473,8 @@ impl Pick {
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
             Verb::Shop => "[E] SHOP".to_string(),
+            Verb::Wheel => "[E] BET ON THE WHEEL".to_string(),
+            Verb::Slots => "[E] PLAY SLOTS".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => "[E] TALK".to_string(),
             Verb::Read => "[E] READ THE STONE".to_string(),
@@ -571,6 +583,36 @@ pub fn resolve_trade(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
     match best {
         Some((k, d2)) => Pick {
             verb: Verb::Trade,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The casino seat `E` would sit at, or a `None` pick: the nearest wheel
+/// terminal or slot machine within the sim's own `CASINO_REACH_M`.
+pub fn resolve_casino(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
+    use sim_core::town;
+    if !town.live {
+        return Pick::default();
+    }
+    let reach = sim_core::casino::CASINO_REACH_M;
+    let mut best: Option<(Verb, usize, f32)> = None;
+    let terminals = (0..town::WHEEL_TERMINALS.len())
+        .filter_map(|k| Some((Verb::Wheel, k, town::wheel_terminal_world(town, k)?)));
+    let slots = (0..town::SLOT_SPOTS.len())
+        .filter_map(|k| Some((Verb::Slots, k, town::slot_world(town, k)?)));
+    for (verb, k, (sx, sz)) in terminals.chain(slots) {
+        let d2 = (sx - x) * (sx - x) + (sz - z) * (sz - z);
+        if d2 <= reach * reach && best.is_none_or(|(_, _, b)| d2 < b) {
+            best = Some((verb, k, d2));
+        }
+    }
+    match best {
+        Some((verb, k, d2)) => Pick {
+            verb,
             handle: k as u32,
             d2,
             ..Pick::default()

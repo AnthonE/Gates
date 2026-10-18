@@ -109,7 +109,8 @@ use sim_core::world::{
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_SHOP,
-    EV_SHOP_REFUSED, EV_STUMP_GRUBBED, EV_WORK,
+    EV_SHOP_REFUSED, EV_SLOTS, EV_SLOTS_REFUSED, EV_STUMP_GRUBBED, EV_WHEEL_BET, EV_WHEEL_PAID,
+    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -4394,8 +4395,14 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 66] = [
+    const COVERED: [(&str, u8); 72] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_WHEEL_BET", EV_WHEEL_BET),
+        ("EV_WHEEL_REFUSED", EV_WHEEL_REFUSED),
+        ("EV_WHEEL_SPIN", EV_WHEEL_SPIN),
+        ("EV_WHEEL_PAID", EV_WHEEL_PAID),
+        ("EV_SLOTS", EV_SLOTS),
+        ("EV_SLOTS_REFUSED", EV_SLOTS_REFUSED),
         ("EV_SHOP", EV_SHOP),
         ("EV_SHOP_REFUSED", EV_SHOP_REFUSED),
         ("EV_NODE_STAGE", EV_NODE_STAGE),
@@ -5958,6 +5965,122 @@ fn a_shop_press_names_the_presser_the_machine_then_the_press() {
         REFUSE_SH_STOCK << 24 | (SHOP_OP_BUY as u32) << 16 | 2 << 8 | 1,
         "EV_SHOP_REFUSED.c is the reason over the press"
     );
+}
+
+/// A world at THE GATE with the fixture's item 1 as the casino's coin, 50 of
+/// it in the pack, and a salt.
+fn casino_world() -> World {
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.deploy.shop_coin = 1;
+    w.arc.salt = 0x5A17_0000_0000_00C3;
+    w.tick(&[Command::Join { id: BUILDER }]);
+    assert!(w.haven.town.live, "the fixture seed has a town");
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 50,
+        cond: 0,
+        skin: 0,
+    };
+    w
+}
+
+/// `EV_WHEEL_REFUSED: a = player, b = reason, c = colour << 16 | stake`,
+/// `EV_WHEEL_BET: a = player, b = colour, c = stake on it`, `EV_WHEEL_SPIN:
+/// a = round, b = segment` and `EV_WHEEL_PAID: a = player, b = staked, c =
+/// paid` — a bet out of reach, two on purple at a terminal, then the spin and
+/// the payout.
+#[test]
+fn a_wheel_round_names_the_bettor_the_colour_the_landing_and_the_pay() {
+    use sim_core::casino::{
+        wheel_segment, REFUSE_CA_REACH, WHEEL, WHEEL_OPEN_TICKS, WHEEL_PAYS, WHEEL_ROUND_TICKS,
+    };
+    let mut w = casino_world();
+    let (x, z) = sim_core::town::wheel_terminal_world(&w.haven.town, 2).unwrap();
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 40.0, z);
+    let bet = |stake| Command::Wheel {
+        id: BUILDER,
+        colour: 3,
+        stake,
+    };
+    w.tick(&[bet(7)]);
+    let ev = only(&w, EV_WHEEL_REFUSED);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_CA_REACH, 3 << 16 | 7));
+
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.tick(&[bet(7)]);
+    let ev = only(&w, EV_WHEEL_BET);
+    distinct3(ev, "EV_WHEEL_BET");
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 3, 7));
+    w.tick(&[bet(5)]);
+    let ev = only(&w, EV_WHEEL_BET);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 3, 12), "c is the whole stake");
+
+    let round = w.tick / WHEEL_ROUND_TICKS + 3;
+    w.tick = round * WHEEL_ROUND_TICKS + WHEEL_OPEN_TICKS;
+    w.tick(&[]);
+    let seg = wheel_segment(SEED, w.arc.salt, round);
+    let ev = only(&w, EV_WHEEL_SPIN);
+    assert_eq!((ev.a, ev.b, ev.c), (round as u32, seg as u32, 0));
+
+    w.tick = (round + 1) * WHEEL_ROUND_TICKS - 1;
+    w.tick(&[]);
+    let paid = if WHEEL[seg as usize] == 3 {
+        12 * (WHEEL_PAYS[3] + 1)
+    } else {
+        0
+    };
+    let ev = only(&w, EV_WHEEL_PAID);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 12, paid));
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[0].inv, 1),
+        50 - 12 + paid
+    );
+}
+
+/// `EV_SLOTS_REFUSED: a = player, b = reason, c = machine << 8 | mult` and
+/// `EV_SLOTS: a = player, b = machine << 8 | mult, c = reels | pay << 12` —
+/// a multiplier past the lever's, a spin at ×3, a second pull while the reels
+/// turn, then the pay as they stop.
+#[test]
+fn a_slot_spin_names_the_player_the_machine_and_the_reels() {
+    use sim_core::casino::{
+        pack_reels, slot_pay, slot_reels, REFUSE_CA_BUSY, REFUSE_CA_KIND, SLOT_COST,
+        SLOT_SPIN_TICKS,
+    };
+    let mut w = casino_world();
+    let (x, z) = sim_core::town::slot_world(&w.haven.town, 1).unwrap();
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    let pull = |mult| Command::Slots {
+        id: BUILDER,
+        machine: 1,
+        mult,
+    };
+    w.tick(&[pull(6)]);
+    let ev = only(&w, EV_SLOTS_REFUSED);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_CA_KIND, 1 << 8 | 6));
+
+    let at = w.tick;
+    w.tick(&[pull(3)]);
+    let reels = slot_reels(SEED, w.arc.salt, at, 1, BUILDER);
+    let pay = slot_pay(reels) * 3;
+    let ev = only(&w, EV_SLOTS);
+    assert_eq!((ev.a, ev.b), (BUILDER, 1 << 8 | 3));
+    assert_eq!(
+        ev.c,
+        pack_reels(reels) | pay << 12,
+        "c is the reels and the pay"
+    );
+    let left = 50 - 3 * SLOT_COST;
+    assert_eq!(sim_core::craft::inv_count(&w.players[0].inv, 1), left);
+
+    w.tick(&[pull(1)]);
+    let ev = only(&w, EV_SLOTS_REFUSED);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_CA_BUSY, 1 << 8 | 1));
+    for _ in 0..SLOT_SPIN_TICKS {
+        w.tick(&[]);
+    }
+    assert_eq!(sim_core::craft::inv_count(&w.players[0].inv, 1), left + pay);
 }
 
 /// `EV_ARC_REFUSED: a = player, b = reason, c = op << 8 | target`,

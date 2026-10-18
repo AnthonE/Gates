@@ -1293,3 +1293,23 @@ Prompts, in full, for the IP rail:
 > **wooden_floor_spikes** — "A single square floor trap of sharpened wooden stakes on a plain white background, high three-quarter view. A flat frame of rough planks 140 centimetres square and 5 centimetres thick, with five rows of five sharpened wooden stakes driven up through it, each stake 4 centimetres thick and pointing straight up; the whole trap 25 centimetres tall. Weathered grey-brown wood, pale freshly cut points. Real, photographed in soft daylight. Exactly one trap. No grass. No ground, no people, no hands, no plants, no text, no labels, no logos, no scale bar."  ·  texture: "Weathered grey-brown rough planks, pale freshly cut stake points, nails, dusty, matte, no moss, no green, no text, no logos"
 >
 > **salvaged_hammer**, first roll (not shipped) — "A single crude handmade sledge hammer on a plain white background, three-quarter view. A heavy rectangular lump of scrap steel cut from an old engine part, 16 centimetres long, 9 centimetres tall and 9 centimetres deep, welded crookedly onto the end of a straight steel pipe handle 3 centimetres thick, the whole hammer 51 centimetres long. Rough weld beads, rust-brown and dark grey steel with scratched bare metal on the striking faces, black tape wrapped around the bottom of the handle for a grip. Real, photographed in soft daylight. Exactly one hammer. No ground, no people, no hands, no plants, no text, no labels, no logos, no scale bar."
+
+## `site/slot_machine.glb`, `site/bet_terminal.glb` — THE GATE's casino, Meshy, 2026-10-18
+
+Same terms and pipeline as the vending machine: `meshy_gen.py`
+(nano-banana-pro → meshy-t2 smart topology, single view) → `import_meshy.py`
+uniform → `ktx_pack.py --size 1024`. The two ran at once, so the credit figure
+is their combined 48 (balance 1,751 → 1,703), not 48 each. They draw the slot
+machines and the big wheel's betting terminals (`render/casino.rs`), and the
+sim's boxes (`town::CABINET_*`, `town::TERMINAL_*`) are their sizes, so what
+stops a body is what is drawn. Both face +Z at their base; the renderer turns
+each to its player.
+
+| file | image task | mesh task | size (m) | import |
+|---|---|---|---|---|
+| `site/slot_machine.glb` | `01a14dca-dcec` | `01a14dcb-56f9` | 1.06 × 1.80 × 0.83 | ×1.199 uniform; the delivery was 0.88 × 1.50 × 0.69, lever included |
+| `site/bet_terminal.glb` | `01a14dca-da85` | `01a14dcb-a847` | 0.57 × 1.10 × 0.63 | ×1.000; delivered at its own size |
+
+> **slot_machine** — "A single old casino slot machine cabinet standing upright on a plain white background, three-quarter front view. A tall rectangular steel cabinet 90 centimetres wide, 70 centimetres deep and 190 centimetres tall. Its front face has a wide glass window at chest height showing three vertical spinning reels with plain fruit and bar pictures, a rounded glowing marquee lamp box on top, a small button panel and coin slot below the window, a chrome payout tray near the bottom, and a long chrome pull lever with a red ball knob on its right side. Painted deep red and cream enamel with chrome trim, scratched, dented and chipped through to grey metal, rust at the bottom edge, a salvaged post-apocalyptic look. Exactly one slot machine. No ground, no people, no text, no letters, no numbers, no logos, no brand names, no scale bar."  ·  texture: "Deep red and cream enamel steel cabinet with chrome trim, scratched and chipped through to grey metal, rust at the bottom edge, glass window over three reels of fruit and bar pictures, glowing yellow marquee lamp, chrome lever with red knob, no text, no letters, no numbers, no logos"
+>
+> **bet_terminal** — "A single small betting terminal kiosk standing upright on a plain white background, three-quarter front view. A squat steel pedestal 60 centimetres wide, 60 centimetres deep and 110 centimetres tall, with a sloped control desk on top facing the viewer that carries a dark glass screen and a row of five big round arcade buttons coloured yellow, green, blue, purple and red, a coin slot and a small chrome tray on the front of the pedestal, a bolted foot plate. Dark grey painted steel with brass trim, scratched and chipped, rust at the bolts, a salvaged post-apocalyptic look. Exactly one terminal. No stool, no ground, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted steel with brass trim, scratched and chipped, rusty bolts, dark glass screen, five big round arcade buttons coloured yellow, green, blue, purple and red, no text, no letters, no numbers, no logos"

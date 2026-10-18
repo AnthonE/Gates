@@ -945,7 +945,36 @@ pub const EV_SHOP_REFUSED: u8 = 65;
 /// so a lost one is repaired by the next statement.
 pub const EV_KNOWN_HI: u8 = 66;
 
-pub const EV_MAX: u8 = EV_KNOWN_HI;
+/// EV_WHEEL_BET: a = player id, b = the colour (`casino::WHEEL_PAYS`), c =
+/// the player's whole stake on it this round. Own-fact; the junk leaves on
+/// the inventory lane.
+pub const EV_WHEEL_BET: u8 = 67;
+
+/// EV_WHEEL_REFUSED: a = player id, b = `casino::REFUSE_CA_*`, c = colour <<
+/// 16 | the stake asked. Own-fact.
+pub const EV_WHEEL_REFUSED: u8 = 68;
+
+/// EV_WHEEL_SPIN: a = the round (`casino::wheel_phase`, low 32 bits), b =
+/// the segment it will land on (`casino::WHEEL`), c = 0. The bets just shut
+/// and the wheel starts to turn — only in a round someone staked on.
+/// **Broadcast**: one wheel, everyone sees it.
+pub const EV_WHEEL_SPIN: u8 = 69;
+
+/// EV_WHEEL_PAID: a = player id, b = everything they staked this round, c =
+/// what the wheel paid them (0 for a loss). Own-fact, one per bettor as the
+/// wheel stops.
+pub const EV_WHEEL_PAID: u8 = 70;
+
+/// EV_SLOTS: a = player id, b = machine << 8 | multiplier, c = the reels
+/// (`casino::pack_reels`) | the payout << 12. The lever was pulled; the
+/// reels stop and pay `casino::SLOT_SPIN_TICKS` later. Own-fact.
+pub const EV_SLOTS: u8 = 71;
+
+/// EV_SLOTS_REFUSED: a = player id, b = `casino::REFUSE_CA_*`, c = machine
+/// << 8 | multiplier. Own-fact.
+pub const EV_SLOTS_REFUSED: u8 = 72;
+
+pub const EV_MAX: u8 = EV_SLOTS_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -2153,6 +2182,19 @@ pub enum Command {
         key: u32,
         act: crate::shop::ShopAct,
     },
+    /// Put `stake` junk on one colour of THE GATE's wheel (`casino.rs`). The
+    /// sim checks the terminal, the round, the cap and the funds.
+    Wheel {
+        id: u32,
+        colour: u8,
+        stake: u16,
+    },
+    /// Pull slot machine `machine`'s lever at ×`mult` (`casino.rs`).
+    Slots {
+        id: u32,
+        machine: u8,
+        mult: u8,
+    },
     /// Swipe a keycard at one of the ziggurat's doors, or pull its inside
     /// lever (`monument.rs`). The sim checks reach and the card.
     Swipe {
@@ -2490,6 +2532,10 @@ pub struct World {
     /// The outbreaks that salt draws ([`crate::blight::Plan`]): derived,
     /// rebuilt by [`World::set_blight_salt`], never saved or hashed.
     pub blight: crate::blight::Plan,
+    /// The wheel's stakes this round and the slot machines' spins
+    /// (`casino.rs`) — sim state, hashed while any is held, never saved.
+    /// Boxed for `mobs`' stack reason.
+    pub casino: Box<crate::casino::Casino>,
 }
 
 impl World {
@@ -2558,6 +2604,7 @@ impl World {
             dev_spawn: None,
             blight_salt: 0,
             blight,
+            casino: Box::default(),
         }
     }
 
@@ -5303,6 +5350,74 @@ impl World {
         );
     }
 
+    /// THE GATE's casino, once a tick after the commands (`casino.rs`): the
+    /// wheel starts to turn as its bets shut and pays on the round's last
+    /// tick, and a slot machine pays as its reels stop.
+    fn casino_step(&mut self) {
+        use crate::casino::{wheel_paid, wheel_phase, wheel_segment, SlotSpin, WheelSeat};
+        let (round, phase) = wheel_phase(self.tick);
+        // The wheel turns for money: a round nobody staked on is silent.
+        if phase == crate::casino::WHEEL_OPEN_TICKS && self.casino.seated().next().is_some() {
+            let seg = wheel_segment(self.seed, self.arc.salt, round);
+            self.events.push(EV_WHEEL_SPIN, round as u32, seg as u32, 0);
+        }
+        if phase == crate::casino::WHEEL_ROUND_TICKS - 1 {
+            let seg = wheel_segment(self.seed, self.arc.salt, round);
+            for i in 0..self.casino.seats.len() {
+                let seat = self.casino.seats[i];
+                if seat.id == 0 {
+                    continue;
+                }
+                self.casino.seats[i] = WheelSeat::default();
+                let paid = wheel_paid(&seat, seg);
+                self.casino_pay(seat.id, paid);
+                self.events
+                    .push(EV_WHEEL_PAID, seat.id, seat.staked(), paid);
+            }
+        }
+        for k in 0..self.casino.slots.len() {
+            let s = self.casino.slots[k];
+            if s.id != 0 && self.tick >= s.done_at {
+                self.casino.slots[k] = SlotSpin::default();
+                self.casino_pay(s.id, s.pay);
+            }
+        }
+    }
+
+    /// Pay `amount` junk to player `id`: into the pack, and what does not
+    /// fit into a bag at their feet — all of it, for a body on the death
+    /// screen. A player gone from the island forfeits it.
+    fn casino_pay(&mut self, id: u32, amount: u32) {
+        let coin = self.deploy.shop_coin;
+        if amount == 0 || coin == crate::deploy::NO_SHOP_COIN {
+            return;
+        }
+        let Some(slot) = self.slot_of(id) else {
+            return;
+        };
+        let (cap, cond) = (
+            self.gather.stack_max_of(coin),
+            self.gather.cond_max_of(coin),
+        );
+        let amount = amount.min(u16::MAX as u32) as u16;
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let dead = self.players[slot].dead;
+        if dead {
+            crate::gather::inv_add(&mut spill, coin, amount, cap, cond);
+        } else {
+            crate::gather::inv_add_spilling(
+                &mut self.players[slot].inv,
+                &mut spill,
+                coin,
+                amount,
+                cap,
+                cond,
+            );
+            self.announce_spill(slot, &spill);
+        }
+        self.drain_spill(slot, &mut spill);
+    }
+
     /// Tell the player a give-back (cancel, refund, pick-up, unbolt) spilled
     /// at their feet: `EV_GATHER` with zero added and c the units dropped,
     /// the "pack full — N × Item" line. One event per distinct item, its
@@ -6021,6 +6136,38 @@ impl World {
                         &mut self.players[slot],
                         offer as usize,
                         times,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Wheel { id, colour, stake } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let town = self.haven.town;
+                    crate::casino::bet(
+                        &mut self.casino,
+                        &town,
+                        self.deploy.shop_coin,
+                        self.tick,
+                        &mut self.players[slot],
+                        colour,
+                        stake,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Slots { id, machine, mult } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let town = self.haven.town;
+                    crate::casino::spin(
+                        &mut self.casino,
+                        &town,
+                        self.deploy.shop_coin,
+                        self.seed,
+                        self.arc.salt,
+                        self.tick,
+                        &mut self.players[slot],
+                        machine,
+                        mult,
                         &mut self.events,
                     );
                 }
@@ -6794,6 +6941,7 @@ impl World {
             let seat = self.trust.seat();
             self.apply(cmd, seat, &mut removals, &mut favour, &mut catchup);
         }
+        self.casino_step();
         // Every column the commands opened gets its terrain band memoized
         // before the walks below ask for floors (`ColIndex::fill_bands`) —
         // a compare on a tick that built nothing.
@@ -8466,6 +8614,21 @@ impl World {
         // length prefix, so a world without a shop hashes as it did.
         for r in self.deploys.shops().entries() {
             h.update(&r.hash_bytes());
+        }
+        // The casino's held stakes and running spins (`casino.rs`), on the
+        // same idiom: a world nobody gambled in hashes as it did.
+        for seat in self.casino.seated() {
+            h.update(&seat.hash_bytes());
+        }
+        for (k, s) in self
+            .casino
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.id != 0)
+        {
+            h.update(&[k as u8]);
+            h.update(&s.hash_bytes());
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

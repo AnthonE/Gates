@@ -591,7 +591,24 @@ const SUB_SHOP_RESULT: u32 = 102;
 /// An achievement earned, or a set of them finished (wire v119,
 /// `server::achievements`). Own-fact. See `EventMsg::Achievement`.
 const SUB_ACHIEVEMENT: u32 = 103;
-const SUB_MAX: u32 = SUB_ACHIEVEMENT;
+/// THE GATE's wheel starts to turn (wire v123, `EV_WHEEL_SPIN`): the round
+/// and where it will land. Broadcast. See `EventMsg::WheelSpin`.
+const SUB_WHEEL_SPIN: u32 = 104;
+/// The receiver's wheel bet answered (wire v123, `EV_WHEEL_BET` /
+/// `EV_WHEEL_REFUSED`). See `EventMsg::WheelBet`.
+const SUB_WHEEL_BET: u32 = 105;
+/// What the wheel paid the receiver as it stopped (wire v123,
+/// `EV_WHEEL_PAID`). See `EventMsg::WheelPaid`.
+const SUB_WHEEL_PAID: u32 = 106;
+/// The receiver's pull of a slot machine's lever answered (wire v123,
+/// `EV_SLOTS` / `EV_SLOTS_REFUSED`). See `EventMsg::Slots`.
+const SUB_SLOTS: u32 = 107;
+const SUB_MAX: u32 = SUB_SLOTS;
+/// Widths of the casino's event fields.
+const WHEEL_SEGMENT_BITS: u32 = 5;
+const CASINO_CODE_BITS: u32 = 4;
+const _: () = assert!(sim_core::casino::WHEEL_SEGMENTS <= 1 << WHEEL_SEGMENT_BITS);
+const _: () = assert!(sim_core::casino::REFUSE_CA_MAX < 1 << CASINO_CODE_BITS);
 /// Rows a standings board carries.
 pub const STANDING_TOP: usize = 5;
 /// The boards: island, works, hoard, fight, and last wipe's island.
@@ -2161,6 +2178,27 @@ pub enum EventMsg {
         row: u8,
         times: u8,
         code: u8,
+    },
+    /// THE GATE's wheel starts to turn (v123): round `round`
+    /// (`sim_core::casino::wheel_phase`) lands on `segment`
+    /// (`sim_core::casino::WHEEL`) when it stops.
+    WheelSpin { round: u32, segment: u8 },
+    /// The receiver's bet on wheel colour `colour` (v123): `code` 0 and
+    /// `stake` the whole of theirs on it this round, or a
+    /// `sim_core::casino::REFUSE_CA_*` and the stake asked.
+    WheelBet { colour: u8, stake: u16, code: u8 },
+    /// The wheel stopped (v123): the receiver had `staked` on it and it paid
+    /// them `paid`, 0 for a loss.
+    WheelPaid { staked: u32, paid: u32 },
+    /// The receiver pulled slot machine `machine`'s lever at ×`mult` (v123):
+    /// `code` 0 and the reels (`sim_core::casino::pack_reels`) and what they
+    /// pay as they stop, or a `sim_core::casino::REFUSE_CA_*` and zeroes.
+    Slots {
+        machine: u8,
+        mult: u8,
+        code: u8,
+        reels: u16,
+        pay: u32,
     },
     /// What player `id` wears (v98): the item in each wear slot, `NO_ITEM`
     /// for an empty one, and each piece's skin (v102), zero for none and
@@ -5594,6 +5632,73 @@ pub fn encode_event_shop_result(
     Ok(w.finish())
 }
 
+/// The wheel starts to turn — see [`EventMsg::WheelSpin`].
+pub fn encode_event_wheel_spin(
+    round: u32,
+    segment: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if segment as usize >= sim_core::casino::WHEEL_SEGMENTS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WHEEL_SPIN)?;
+    w.write(round, 32)?;
+    w.write(segment as u32, WHEEL_SEGMENT_BITS)?;
+    Ok(w.finish())
+}
+
+/// A wheel bet answered — see [`EventMsg::WheelBet`].
+pub fn encode_event_wheel_bet(
+    colour: u8,
+    stake: u16,
+    code: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if colour as usize >= sim_core::casino::WHEEL_COLOURS
+        || code as u32 > sim_core::casino::REFUSE_CA_MAX
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WHEEL_BET)?;
+    w.write(colour as u32, 3)?;
+    w.write(stake as u32, 16)?;
+    w.write(code as u32, CASINO_CODE_BITS)?;
+    Ok(w.finish())
+}
+
+/// The wheel's pay — see [`EventMsg::WheelPaid`].
+pub fn encode_event_wheel_paid(staked: u32, paid: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_WHEEL_PAID)?;
+    w.write(staked, 32)?;
+    w.write(paid, 32)?;
+    Ok(w.finish())
+}
+
+/// A slot machine's lever answered — see [`EventMsg::Slots`].
+pub fn encode_event_slots(
+    machine: u8,
+    mult: u8,
+    code: u8,
+    reels: u16,
+    pay: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if machine as usize >= sim_core::town::SLOT_SPOTS.len()
+        || mult > sim_core::casino::SLOT_MULT_MAX
+        || code as u32 > sim_core::casino::REFUSE_CA_MAX
+        || reels as u32 >= 1 << (3 * sim_core::casino::REEL_BITS)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SLOTS)?;
+    w.write(machine as u32, 2)?;
+    w.write(mult as u32, 3)?;
+    w.write(code as u32, CASINO_CODE_BITS)?;
+    w.write(reels as u32, 3 * sim_core::casino::REEL_BITS)?;
+    w.write(pay, 32)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -7153,6 +7258,53 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 item,
                 range_cm,
                 alive_s,
+            }
+        }
+        SUB_WHEEL_SPIN => {
+            let round = r.read(32)?;
+            let segment = r.read(WHEEL_SEGMENT_BITS)? as u8;
+            if segment as usize >= sim_core::casino::WHEEL_SEGMENTS {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::WheelSpin { round, segment }
+        }
+        SUB_WHEEL_BET => {
+            let colour = r.read(3)? as u8;
+            let stake = r.read(16)? as u16;
+            let code = r.read(CASINO_CODE_BITS)? as u8;
+            if colour as usize >= sim_core::casino::WHEEL_COLOURS
+                || code as u32 > sim_core::casino::REFUSE_CA_MAX
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::WheelBet {
+                colour,
+                stake,
+                code,
+            }
+        }
+        SUB_WHEEL_PAID => EventMsg::WheelPaid {
+            staked: r.read(32)?,
+            paid: r.read(32)?,
+        },
+        SUB_SLOTS => {
+            let machine = r.read(2)? as u8;
+            let mult = r.read(3)? as u8;
+            let code = r.read(CASINO_CODE_BITS)? as u8;
+            let reels = r.read(3 * sim_core::casino::REEL_BITS)? as u16;
+            let pay = r.read(32)?;
+            if machine as usize >= sim_core::town::SLOT_SPOTS.len()
+                || mult > sim_core::casino::SLOT_MULT_MAX
+                || code as u32 > sim_core::casino::REFUSE_CA_MAX
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Slots {
+                machine,
+                mult,
+                code,
+                reels,
+                pay,
             }
         }
         SUB_ACHIEVEMENT => {
@@ -9502,6 +9654,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/shop.rs"),
         },
         Module {
+            file: "casino.rs",
+            src: include_str!("../../sim-core/src/casino.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -9882,6 +10038,18 @@ mod wire_domains {
             min_members: 3,
             bits: REFUSE_C_BITS,
             live_max: 3,
+        },
+        Domain {
+            what: "casino refusal",
+            sim_site: "casino.rs REFUSE_CA_*",
+            wire_site: "CASINO_CODE_BITS",
+            home: "casino.rs",
+            prefix: "pub const REFUSE_CA_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 5,
+            bits: CASINO_CODE_BITS,
+            live_max: 5,
         },
         Domain {
             what: "reload refusal",
@@ -10295,9 +10463,10 @@ mod wire_domains {
             // craft and deploy refusals, a byte each since v0 (§5b).
             // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
             // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
-            // `craft::CLASS_*`.
+            // `craft::CLASS_*`. 23 -> 24 at v123: `CASINO_CODE_BITS` over
+            // `casino::REFUSE_CA_*`.
             DOMAINS.len(),
-            23,
+            24,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -10607,6 +10776,10 @@ mod wire_domains {
             "TOSS_XZ_BITS",
             "TOSS_Y_BITS",
             "TOSS_BITS",
+            // The wheel's segment (v123), an index bounded by
+            // `casino::WHEEL_SEGMENTS`, a sim-core *count* tied by a
+            // compile-time assert at the declaration.
+            "WHEEL_SEGMENT_BITS",
         ];
 
         let mut widths = Vec::new();

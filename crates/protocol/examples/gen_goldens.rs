@@ -255,6 +255,25 @@ fn main() {
     // Achievements (v119).
     let len = protocol::encode_event_achievement(&goldens::event_achievement(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[174], &buf[..len]);
+    // THE GATE's casino (v123).
+    let (colour, stake) = goldens::action_wheel();
+    let len = protocol::encode_action_wheel(colour, stake, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[175], &buf[..len]);
+    let (machine, mult) = goldens::action_slots();
+    let len = protocol::encode_action_slots(machine, mult, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[176], &buf[..len]);
+    let (round, segment) = goldens::event_wheel_spin();
+    let len = protocol::encode_event_wheel_spin(round, segment, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[177], &buf[..len]);
+    let (colour, stake, code) = goldens::event_wheel_bet();
+    let len = protocol::encode_event_wheel_bet(colour, stake, code, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[178], &buf[..len]);
+    let (staked, paid) = goldens::event_wheel_paid();
+    let len = protocol::encode_event_wheel_paid(staked, paid, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[179], &buf[..len]);
+    let (machine, mult, code, reels, pay) = goldens::event_slots();
+    let len = protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[180], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

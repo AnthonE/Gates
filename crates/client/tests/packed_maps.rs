@@ -142,6 +142,8 @@ fn packed_models() -> Vec<&'static str> {
         client::render::lore::SLAB_GLB,
         client::render::lore::DIAL_GLB,
         client::render::town_fx::SEARCHLIGHT_GLB,
+        client::render::casino::SLOT_GLB,
+        client::render::casino::TERMINAL_GLB,
     ] {
         set.insert(p);
     }

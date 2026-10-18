@@ -266,6 +266,18 @@ pub fn shop(code: u8) -> String {
     }
 }
 
+/// Why the casino turned a bet or a lever down (`sim_core::casino::REFUSE_CA_*`).
+pub fn casino(code: u8) -> String {
+    use sim_core::casino::*;
+    match code as u32 {
+        REFUSE_CA_REACH => "step up to it".into(),
+        REFUSE_CA_BUSY => "it is spinning — wait for it to stop".into(),
+        REFUSE_CA_FUNDS => "you do not have the junk".into(),
+        REFUSE_CA_CAP => format!("{WHEEL_STAKE_MAX} junk a colour is the most a spin takes"),
+        _ => "it does not answer".into(),
+    }
+}
+
 /// Why an arc verb did nothing (`sim_core::works::REFUSE_A_*`).
 pub fn arc(code: u8) -> String {
     use sim_core::works::*;

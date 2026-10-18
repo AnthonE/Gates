@@ -55,14 +55,14 @@ fn glyph(ch: char) -> [u8; 7] {
 }
 
 /// A box list: `(centre, half-extent, hex)`, the props builder's shape.
-type Boxes = Vec<([f32; 3], [f32; 3], u32)>;
+pub(super) type Boxes = Vec<([f32; 3], [f32; 3], u32)>;
 
 /// A face: its centre (kit-local metres), the way it faces (the reader is
 /// out along it), and its up.
 #[derive(Clone, Copy)]
-struct Face {
-    at: Vec3,
-    normal: Vec3,
+pub(super) struct Face {
+    pub at: Vec3,
+    pub normal: Vec3,
 }
 
 impl Face {
@@ -73,7 +73,15 @@ impl Face {
 
     /// A box on the face, `along` the reader's right and `up`, standing
     /// `out` off it, with half-extents across the face and through it.
-    fn put(self, out: &mut Boxes, along: f32, up: f32, off: f32, half: (f32, f32, f32), hex: u32) {
+    pub(super) fn put(
+        self,
+        out: &mut Boxes,
+        along: f32,
+        up: f32,
+        off: f32,
+        half: (f32, f32, f32),
+        hex: u32,
+    ) {
         let r = self.right();
         let c = self.at + r * along + Vec3::Y * up + self.normal * off;
         let h = r.abs() * half.0 + Vec3::Y * half.1 + self.normal.abs() * half.2;
@@ -83,7 +91,7 @@ impl Face {
 
 /// Lay `lines` of block letters on `face`, centred, `cell` metres a cell,
 /// standing `depth` off it.
-fn letters(out: &mut Boxes, face: Face, lines: &[(&str, u32)], cell: f32, depth: f32) {
+pub(super) fn letters(out: &mut Boxes, face: Face, lines: &[(&str, u32)], cell: f32, depth: f32) {
     let n = lines.len() as f32;
     for (j, (text, hex)) in lines.iter().enumerate() {
         let chars: Vec<char> = text.chars().collect();

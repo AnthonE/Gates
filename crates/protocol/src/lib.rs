@@ -103,6 +103,9 @@ pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
 pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
 pub use event::{encode_event_shop, encode_event_shop_result, ShopRow, ShopView};
 pub use event::{
+    encode_event_slots, encode_event_wheel_bet, encode_event_wheel_paid, encode_event_wheel_spin,
+};
+pub use event::{
     encode_event_standing, StandingBoard, STANDING_BOARDS, STANDING_NAME_BYTES,
     STANDING_TICKER_BYTES, STANDING_TOP,
 };
@@ -1242,7 +1245,12 @@ pub use voice::{
 /// the death cause admits 12 (`DEATH_BY_SPIKES`).
 /// v124 — skins priced in JUNK: a `SkinRow`'s coin admits 3 (`COIN_JUNK`),
 /// the play coin skins are bought with.
-pub const PROTO_VER: u16 = 124;
+/// v125 — THE GATE's casino (`sim_core::casino`): `ACT_WHEEL` (37) stakes junk
+/// on a colour of the big wheel and `ACT_SLOTS` (38) pulls a slot machine's
+/// lever; `SUB_WHEEL_SPIN` (104) tells everyone where the wheel will land,
+/// `SUB_WHEEL_BET` (105) and `SUB_WHEEL_PAID` (106) answer a bettor, and
+/// `SUB_SLOTS` (107) a spinner.
+pub const PROTO_VER: u16 = 125;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2125,6 +2133,22 @@ const ACT_TEAM: u32 = 35;
 /// `sim_core::shop`): the machine's box key, an op and its fields. Reach,
 /// who may edit, stock, funds and room are the sim's verdict.
 const ACT_SHOP: u32 = 36;
+/// Stake junk on one colour of THE GATE's wheel (wire v123,
+/// `Command::Wheel`): the colour and the stake. Reach, the round, the cap and
+/// the funds are the sim's verdict.
+const ACT_WHEEL: u32 = 37;
+/// Pull slot machine `machine`'s lever at ×`mult` (wire v123,
+/// `Command::Slots`).
+const ACT_SLOTS: u32 = 38;
+/// Widths of the casino's fields.
+const WHEEL_COLOUR_BITS: u32 = 3;
+const WHEEL_STAKE_BITS: u32 = 7;
+const SLOT_MACHINE_BITS: u32 = 2;
+const SLOT_MULT_BITS: u32 = 3;
+const _: () = assert!((sim_core::casino::WHEEL_COLOURS as u32) <= 1 << WHEEL_COLOUR_BITS);
+const _: () = assert!(sim_core::casino::WHEEL_STAKE_MAX < 1 << WHEEL_STAKE_BITS);
+const _: () = assert!((sim_core::town::SLOT_SPOTS.len() as u32) <= 1 << SLOT_MACHINE_BITS);
+const _: () = assert!((sim_core::casino::SLOT_MULT_MAX as u32) < 1 << SLOT_MULT_BITS);
 /// Width of `ActionMsg::Team`'s op.
 const TEAM_OP_BITS: u32 = 3;
 /// Ask `target` to join the asker's team, making one if the asker has none.
@@ -2153,7 +2177,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_SHOP;
+const ACT_MAX: u32 = ACT_SLOTS;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2296,6 +2320,10 @@ pub enum ActionMsg {
     /// A press at the vending machine with box key `key` (v118): set or
     /// clear an offer row, or buy `times` lots of one (`sim_core::shop`).
     Shop { key: u32, act: ShopAct },
+    /// Stake `stake` junk on wheel colour `colour` (v123, `sim_core::casino`).
+    Wheel { colour: u8, stake: u16 },
+    /// Pull slot machine `machine`'s lever at ×`mult` (v123).
+    Slots { machine: u8, mult: u8 },
     /// Enqueue `count` crafts of recipe row `recipe`, minted wearing skin
     /// `skin` (a catalog id; 0 for the item's own look).
     Craft { recipe: u16, count: u16, skin: u16 },
@@ -2858,6 +2886,46 @@ pub fn encode_action_shop(key: u32, act: ShopAct, buf: &mut [u8]) -> Result<usiz
         ShopAct::Buy { times, .. } => w.write(times as u32, 5)?,
     }
     Ok(w.finish())
+}
+
+/// A wheel bet — see [`ActionMsg::Wheel`]. Refuses a colour past the wheel's
+/// and a stake of nothing or past `WHEEL_STAKE_MAX`.
+pub fn encode_action_wheel(colour: u8, stake: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !wheel_ok(colour, stake) {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_WHEEL, ACTION_SUB_BITS)?;
+    w.write(colour as u32, WHEEL_COLOUR_BITS)?;
+    w.write(stake as u32, WHEEL_STAKE_BITS)?;
+    Ok(w.finish())
+}
+
+fn wheel_ok(colour: u8, stake: u16) -> bool {
+    (colour as usize) < sim_core::casino::WHEEL_COLOURS
+        && stake > 0
+        && stake as u32 <= sim_core::casino::WHEEL_STAKE_MAX
+}
+
+/// A slot machine's lever — see [`ActionMsg::Slots`]. Refuses a machine past
+/// the town's and a multiplier outside 1 to `SLOT_MULT_MAX`.
+pub fn encode_action_slots(machine: u8, mult: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !slots_ok(machine, mult) {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_SLOTS, ACTION_SUB_BITS)?;
+    w.write(machine as u32, SLOT_MACHINE_BITS)?;
+    w.write(mult as u32, SLOT_MULT_BITS)?;
+    Ok(w.finish())
+}
+
+fn slots_ok(machine: u8, mult: u8) -> bool {
+    (machine as usize) < sim_core::town::SLOT_SPOTS.len()
+        && mult > 0
+        && mult <= sim_core::casino::SLOT_MULT_MAX
 }
 
 /// The shape both ends hold a shop press to.
@@ -3711,6 +3779,22 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Shop { key, act }
+        }
+        ACT_WHEEL => {
+            let colour = r.read(WHEEL_COLOUR_BITS)? as u8;
+            let stake = r.read(WHEEL_STAKE_BITS)? as u16;
+            if !wheel_ok(colour, stake) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Wheel { colour, stake }
+        }
+        ACT_SLOTS => {
+            let machine = r.read(SLOT_MACHINE_BITS)? as u8;
+            let mult = r.read(SLOT_MULT_BITS)? as u8;
+            if !slots_ok(machine, mult) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Slots { machine, mult }
         }
         ACT_TEAM => {
             let op = r.read(TEAM_OP_BITS)? as u8;
@@ -5500,11 +5584,12 @@ mod tests {
         // respawn point (v92) 28, the arc's one verb (v95) 29, drop
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
-        // and fast-track 34, teams (v108) 35, and the shop (v118) 36.
-        assert_eq!(ACT_MAX, ACT_SHOP);
+        // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
+        // casino's wheel and slots (v123) 37 and 38.
+        assert_eq!(ACT_MAX, ACT_SLOTS);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            27,
+            25,
             "the spare action codes moved — say so where the count is written"
         );
     }

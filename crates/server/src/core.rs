@@ -68,6 +68,7 @@ use sim_core::world::{
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_NODE_STAGE,
+    EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID, EV_WHEEL_REFUSED, EV_WHEEL_SPIN,
     EV_WORK,
 };
 
@@ -2777,6 +2778,16 @@ impl ShardCore {
                         times,
                     },
                     ActionMsg::Shop { key, act } => Command::Shop { id: c.id, key, act },
+                    ActionMsg::Wheel { colour, stake } => Command::Wheel {
+                        id: c.id,
+                        colour,
+                        stake,
+                    },
+                    ActionMsg::Slots { machine, mult } => Command::Slots {
+                        id: c.id,
+                        machine,
+                        mult,
+                    },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
                     ActionMsg::Arc {
                         op: sim_core::works::OP_EXTRACT,
@@ -3690,6 +3701,69 @@ impl ShardCore {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                // THE GATE's casino (`casino.rs`): the bettor's and the
+                // spinner's answers, and the wheel's landing to everyone.
+                EV_WHEEL_BET | EV_WHEEL_REFUSED | EV_WHEEL_PAID | EV_SLOTS | EV_SLOTS_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    let r = match ev.code {
+                        EV_WHEEL_BET => protocol::encode_event_wheel_bet(
+                            ev.b as u8,
+                            ev.c.min(u16::MAX as u32) as u16,
+                            0,
+                            &mut self.ev_buf,
+                        ),
+                        EV_WHEEL_REFUSED => protocol::encode_event_wheel_bet(
+                            (ev.c >> 16) as u8,
+                            ev.c as u16,
+                            ev.b as u8,
+                            &mut self.ev_buf,
+                        ),
+                        EV_WHEEL_PAID => {
+                            protocol::encode_event_wheel_paid(ev.b, ev.c, &mut self.ev_buf)
+                        }
+                        EV_SLOTS => protocol::encode_event_slots(
+                            (ev.b >> 8) as u8,
+                            ev.b as u8,
+                            0,
+                            (ev.c & 0xFFF) as u16,
+                            ev.c >> 12,
+                            &mut self.ev_buf,
+                        ),
+                        _ => protocol::encode_event_slots(
+                            (ev.c >> 8) as u8,
+                            ev.c as u8,
+                            ev.b as u8,
+                            0,
+                            0,
+                            &mut self.ev_buf,
+                        ),
+                    };
+                    match r {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_WHEEL_SPIN => {
+                    match protocol::encode_event_wheel_spin(ev.a, ev.b as u8, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                }
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
