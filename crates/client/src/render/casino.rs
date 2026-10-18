@@ -54,6 +54,8 @@ const INK_DARK: u32 = 0x2a1d12;
 
 /// The bulbs' glow at full brightness, linear; the yard's own bulbs'.
 const BULB_GLOW: LinearRgba = LinearRgba::rgb(6.0, 4.5, 2.2);
+/// How much of the night eye's gain (`rig::FlameGain`) the bulbs take.
+const NIGHT_SHARE: f32 = 0.04;
 /// The casino's two lamps at night: over the wheel, over the slots.
 const LAMPS: [(f32, f32, f32); 2] = [(27.0, 5.6, 14.0), (20.0, 3.6, 18.8)];
 const LAMP_LUMENS: f32 = 2600.0;
@@ -692,7 +694,10 @@ pub fn lights(
     let core = &net.session.core;
     let now = core.server_tick_est().max(0.0);
     let t = time.elapsed_secs();
-    let base = (0.35 + 0.65 * night) * g;
+    // Lit by day; by night a share of the eye's gain, not all of it: the
+    // yard's lone bulbs take the whole of it, and a hundred and forty of
+    // them a hand apart at that bloom into one glare.
+    let base = 0.35 * (1.0 - night) + NIGHT_SHARE * night * g;
     let landed_ticks = (LANDED_S * TICK_HZ as f32) as f64;
     let (e, o) = match core.casino.spin.and_then(|(r, _)| {
         let u = spin_progress(r, now)?;
@@ -708,7 +713,7 @@ pub fn lights(
         }
         Some(_) => {
             let f = if ((t * 3.0) as u32).is_multiple_of(2) {
-                1.3
+                1.0
             } else {
                 0.2
             };
