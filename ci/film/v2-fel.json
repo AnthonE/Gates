@@ -1,0 +1,17 @@
+{
+  "recording": "film/fel.rec",
+  "out": "film/v2/shots-fel",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "fel-pack-follow", "at": 57.5, "len": 4.0, "hour": 0.45, "weather": "clear", "fov": 46, "follow": {"near": [3485, 1590], "animal": true, "back": 4.0, "up": 1.4, "side": 1.6, "lag": 0.35}, "look": {"focus": "subject", "fstop": 2.8, "shake": 0.2, "saturation": 1.1}},
+    {"name": "fel-pig", "at": 142, "len": 3.4, "hour": 0.45, "weather": "clear", "fov": 38, "follow": {"near": [3522, 1674], "animal": true, "back": 3.0, "up": 1.2, "side": -1.2, "lag": 0.6}, "look": {"focus": "subject", "fstop": 2.8, "saturation": 1.1}},
+    {"name": "verdigris", "at": 200, "len": 4.4, "hour": 0.78, "weather": "clear", "fov": 44, "ease": true, "keys": [{"t": 0, "pos": [3392, 40, 1510], "look": [3138, 18, 1143]}, {"t": 4.4, "pos": [3366, 37, 1480], "look": [3138, 18, 1143]}], "look": {"shutter": 0.35, "exposure": 0.15, "temperature": 0.03, "saturation": 1.12}},
+    {"name": "fel-charge-follow", "at": 523.5, "len": 4.5, "hour": 0.7, "weather": "clear", "fov": 44, "follow": {"near": [3516, 1593], "animal": true, "back": 4.5, "up": 2.1, "side": -1.6, "lag": 0.3}, "look": {"focus": "subject", "fstop": 2.4, "shake": 0.25, "exposure": 0.25, "temperature": 0.05, "saturation": 1.12}}
+  ]
+}

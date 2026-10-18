@@ -1,0 +1,15 @@
+{
+  "recording": "film/camp.rec",
+  "out": "film/whole/shots-camp2",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "beach-morning", "at": 30, "len": 3.6, "hour": 0.28, "weather": "clear", "fov": 40, "ease": true, "keys": [{"t": 0, "pos": [915, 1.6, 968], "look": [1129, 6, 871]}, {"t": 3.6, "pos": [926, 1.6, 979], "look": [1129, 6, 871]}], "look": {"exposure": 0.1, "temperature": 0.02, "shake": 0.1}},
+    {"name": "heli-overhead", "at": 440, "len": 5.0, "hour": 0.62, "weather": "clear", "fov": 62, "keys": [{"t": 0, "pos": [2336, 1.6, 3104], "look": [2334, 30, 3036]}, {"t": 5.0, "pos": [2336.5, 1.6, 3104.5], "look": [2320, 30, 3075]}], "track": {"near": [2334, 3036], "animal": true, "up": 0.0, "lag": 0.2}, "look": {"shake": 0.3, "saturation": 1.08}}
+  ]
+}

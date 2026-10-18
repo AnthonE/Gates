@@ -463,13 +463,40 @@ pub struct Sound {
     snap: SnapshotDef,
     /// The track the output is playing, as this side last asked for it.
     sounding: Sounding,
+    /// A film is rendering (`film::Film`): the camera is not the recorder's
+    /// body, so that body's own sounds are not the camera's ([`film_hears`]).
+    pub film: bool,
 }
 
 impl Sound {
     /// Ask for a cue. The one door — see [`Sound`].
     pub fn play(&mut self, req: Request) {
+        if self.film && !film_hears(req.cue) {
+            return;
+        }
         self.mixer.push(req);
     }
+}
+
+/// Whether a film's camera hears this cue. Everything positional, the beds
+/// and the thunder; never the recorder's own sounds — its steps, its hurt
+/// and its death, the interface, and the Verdigris counter, whose clicks in
+/// a trailer's wolf shot read as the wolf's paws because the recorder stood
+/// in the green.
+pub fn film_hears(cue: Cue) -> bool {
+    cue.def().positional
+        || matches!(
+            cue,
+            Cue::BedWind
+                | Cue::BedSurf
+                | Cue::BedUnder
+                | Cue::BedRain
+                | Cue::BedRotor
+                | Cue::BedRotorFar
+                | Cue::BedTown
+                | Cue::BedNight
+                | Cue::Thunder
+        )
 }
 
 /// The track the music output is playing, as the game thread knows it — the

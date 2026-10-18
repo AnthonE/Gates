@@ -253,6 +253,9 @@ pub struct FarForest {
     fell_dirty: bool,
     /// Seconds since the tiles were last checked.
     fell_since: f32,
+    /// Every tile has been carded once since the seed was set. Re-cards
+    /// after it keep the old cards up until the new ones replace them.
+    carded: bool,
 }
 
 /// A carded tile's trees against the harvested set.
@@ -283,6 +286,12 @@ impl FarForest {
     }
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
+    }
+    /// The island's first carding is done: no tile is still bald. A film
+    /// waits on it, since the queue cards outward from where the eye
+    /// booted and a shot across the island would watch its forest arrive.
+    pub fn is_carded(&self) -> bool {
+        self.carded
     }
 }
 
@@ -361,6 +370,7 @@ pub fn stream(
         forest.taps.clear();
         forest.fell.clear();
         forest.seen = None;
+        forest.carded = false;
         // Nearest last, so `pop` takes the nearest.
         let n = tiles_per_side();
         let (ex, ez) = (eye.pos.x, eye.pos.z);
@@ -447,7 +457,10 @@ pub fn stream(
     if forest.current.is_none() {
         match forest.queue.pop() {
             Some(key) => forest.current = Some(TileBuild::new(key)),
-            None => return,
+            None => {
+                forest.carded = true;
+                return;
+            }
         }
     }
     let Some(mut build) = forest.current.take() else {
@@ -455,7 +468,7 @@ pub fn stream(
     };
     let tc = tile_cells();
     let total = (tc * tc) as usize;
-    let end = (build.next + CELLS_PER_FRAME).min(total);
+    let end = (build.next + CELLS_PER_FRAME * super::stream_boost()).min(total);
     for i in build.next..end {
         let cell_x = build.key.0 * tc + (i as i32 % tc);
         let cell_z = build.key.1 * tc + (i as i32 / tc);

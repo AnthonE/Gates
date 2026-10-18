@@ -56,6 +56,9 @@ pub const SETTLE_FRAMES: u32 = 45;
 /// The most a settle may run past [`SETTLE_FRAMES`] waiting for the rings
 /// before it rolls anyway and says so.
 pub const SETTLE_MAX_FRAMES: u32 = 300;
+/// Tape the boot plays before it holds the clock (`steer`): the welcome and
+/// the first snapshots, which are what place the eye.
+pub const BOOT_TAPE_MS: f64 = 2_000.0;
 /// The audio rate the film's mix is rendered at: video's, and a whole number
 /// of samples per frame at 24, 25, 30 and 60 fps.
 pub const FILM_RATE: u32 = 48_000;
@@ -66,6 +69,16 @@ pub const STILL_HOLD: u32 = 40;
 pub const SHUTTER: f32 = 0.5;
 /// The aperture a focused shot gets unless it names one.
 pub const FSTOP: f32 = 2.8;
+
+/// How many times a frame's streaming budget the rings may spend in a film
+/// run ([`super::stream_boost`]).
+///
+/// A player's rings stream a chunk or so a frame so that no frame spikes. A
+/// film's frame takes seconds on lavapipe whatever it builds, so the spike is
+/// free and the frames are not: at one chunk a frame the world took 208
+/// frames to build, and every shot that jumped across the island spent as
+/// long again refilling the rings before it rolled.
+pub const FILM_STREAM_BOOST: usize = 8;
 
 /// The graphics a film draws with: [`Quality::High`]'s frame with every row
 /// a player's GPU is spared turned up. Lavapipe takes a second a frame either
@@ -85,11 +98,18 @@ pub fn cinematic(g: super::quality::Gfx, b: Budget) -> super::quality::Gfx {
         taa: true,
         bloom: true,
         shadows: true,
-        cascades: 4,
+        cascades: b
+            .cascades
+            .unwrap_or(4)
+            .clamp(1, super::quality::max_cascades()),
         shadow_m: b.shadow_m.unwrap_or(300.0),
         shadow_map_px: b.shadow_px.unwrap_or(4096),
         tree_lod_swap_m: b.tree_lod_m.unwrap_or(160.0),
-        clouds: crate::config::Clouds::High,
+        clouds: match b.clouds.unwrap_or(2) {
+            0 => crate::config::Clouds::Low,
+            1 => crate::config::Clouds::Medium,
+            _ => crate::config::Clouds::High,
+        },
         ..g
     }
 }
@@ -104,8 +124,13 @@ pub struct Budget {
     /// One shadow cascade's map, texels a side, and how far the last reaches.
     pub shadow_px: Option<usize>,
     pub shadow_m: Option<f32>,
+    /// Shadow cascades, 1 to 4 (4 unless set).
+    pub cascades: Option<usize>,
     /// Where a tree becomes a card.
     pub tree_lod_m: Option<f32>,
+    /// The cloud deck: 0 flat, 1 raymarched coarse, 2 raymarched fine (2
+    /// unless set). On lavapipe the fine march is most of a sky shot's frame.
+    pub clouds: Option<u8>,
     /// Motion blur taps each way (4 unless set).
     pub blur_samples: Option<u32>,
     /// Gaussian defocus instead of bokeh: cheaper, softer.
@@ -651,6 +676,7 @@ pub struct Film {
 
 impl Film {
     pub fn new(script: Script, replay: crate::film::Replay) -> Self {
+        super::set_stream_boost(FILM_STREAM_BOOST);
         Self {
             script,
             replay,
@@ -722,6 +748,10 @@ impl Mix {
 /// rolls (none for a still), real time otherwise.
 pub fn steer(film: Res<Film>, mut time: ResMut<Time<Virtual>>) {
     let speed = match film.phase {
+        // The boot holds the tape once the world has arrived: a fast boot
+        // (`dark_boot`) runs hundreds of frames, and a tape that played
+        // through them all would be past a shot near its start.
+        Phase::Boot if film.replay.clock_ms >= BOOT_TAPE_MS => 0.0,
         Phase::Roll { .. } if film.cur().still => 0.0,
         Phase::Roll { frame } => {
             let shot = film.cur();
@@ -1164,6 +1194,20 @@ fn spline(path: &[(f32, Vec3, Vec3)], t: f32) -> (Vec3, Vec3) {
     (pick(|k| k.1), pick(|k| k.2))
 }
 
+/// The world camera is off while the film boots. The loading screen is drawn
+/// over it, so nothing it draws is seen, and on lavapipe drawing it is most of
+/// a frame: the ring builds the boot is waiting for run on the same cores.
+/// It comes back on for the first seek, and the settle frames that follow
+/// compile its pipelines and fill TAA's history before anything is written.
+pub fn dark_boot(film: Res<Film>, mut cams: Query<&mut Camera, With<EyeCam>>) {
+    let on = film.phase != Phase::Boot;
+    for mut cam in &mut cams {
+        if cam.is_active != on {
+            cam.is_active = on;
+        }
+    }
+}
+
 /// End the frame: render its slice of the mix, shoot it if the shot is
 /// rolling, and move the film on. After the audio flush, so this frame's cues
 /// are in the slice this frame's picture goes with.
@@ -1177,7 +1221,9 @@ pub fn roll(
     ring: Res<Ring>,
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
+    forest: Res<super::far_trees::FarForest>,
     screen: Res<State<super::Screen>>,
+    backlog: Res<super::pipelines::PipelineBacklog>,
 ) {
     film.drawn += 1;
     let n = (FILM_RATE / film.script.fps) as usize * 2;
@@ -1189,7 +1235,12 @@ pub fn roll(
         && ring.is_full()
         && props.is_full()
         && props.stale_len() == 0
-        && clutter.is_full();
+        && clutter.is_full()
+        && forest.is_carded()
+        // The world camera was dark while the film booted (`dark_boot`), so
+        // its pipelines compile during the first settle; a mesh whose
+        // pipeline is still compiling is not drawn at all.
+        && backlog.pending() == 0;
 
     match film.phase {
         Phase::Boot => {

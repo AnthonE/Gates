@@ -239,13 +239,25 @@ fn scan(path: &str, every: f64) {
             next_report += every;
             let at = core.render_tick();
             let mut people = Vec::new();
-            let mut animals = 0;
+            let mut animals = Vec::new();
             for id in core.interp.ids() {
                 if id == core.player_id || !core.interp.sample(id, at, &mut rs) {
                     continue;
                 }
-                if sim_core::mob::slot_of_id(id).is_some() {
-                    animals += 1;
+                if let Some(slot) = sim_core::mob::slot_of_id(id) {
+                    // The species is the slot's (`mob::kind_of`), so a shot
+                    // list can find a wolf and not just "an animal".
+                    let kind = ["pig", "wolf", "stag", "heli", "sentry"]
+                        .get(sim_core::mob::kind_of(slot) as usize)
+                        .unwrap_or(&"mob");
+                    if *kind != "sentry" {
+                        animals.push(format!(
+                            "{kind}@{:.0},{:.0}{}",
+                            rs.x,
+                            rs.z,
+                            if rs.dead { "†" } else { "" }
+                        ));
+                    }
                 } else {
                     people.push(format!(
                         "{id}@{:.0},{:.0}{}",
@@ -271,10 +283,13 @@ fn scan(path: &str, every: f64) {
                 .max()
                 .unwrap_or(0);
             println!(
-                "{t:7.1}  pieces {:3} (top storey {top}) · animals {animals} · {eye} {ex:.0},{ez:.0} · {}",
+                "{t:7.1}  pieces {:3} (top storey {top}) · {eye} {ex:.0},{ez:.0} · {}",
                 core.pieces.len(),
                 people.join(" ")
             );
+            if !animals.is_empty() {
+                println!("{t:7.1}    animals {}", animals.join(" "));
+            }
         }
     }
 }

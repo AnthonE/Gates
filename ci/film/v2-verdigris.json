@@ -1,0 +1,14 @@
+{
+  "recording": "film/fel.rec",
+  "out": "film/v2/shots-verdigris",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "verdigris", "at": 200, "len": 4.4, "hour": 0.78, "weather": "clear", "fov": 44, "ease": true, "keys": [{"t": 0, "pos": [3392, 40, 1510], "look": [3138, 18, 1143]}, {"t": 4.4, "pos": [3366, 37, 1480], "look": [3138, 18, 1143]}], "look": {"shutter": 0.35, "exposure": 0.15, "temperature": 0.03, "saturation": 1.12}}
+  ]
+}

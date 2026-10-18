@@ -119,7 +119,7 @@ pub fn stream(
     ring.tasks.retain(|&(x, z), _| near(x, z));
 
     // Cells that finished, a bounded few a frame: `meshes.add` uploads.
-    for _ in 0..LANDS_PER_FRAME {
+    for _ in 0..LANDS_PER_FRAME * super::stream_boost() {
         let Some(key) = ring
             .tasks
             .iter()
@@ -165,7 +165,7 @@ pub fn stream(
 
     let pool = AsyncComputeTaskPool::get();
     let (seed, haven) = (world.seed, world.haven);
-    let mut budget = QUEUES_PER_FRAME;
+    let mut budget = QUEUES_PER_FRAME * super::stream_boost();
     for r in 0..=CLIFF_RING {
         for dz in -r..=r {
             for dx in -r..=r {

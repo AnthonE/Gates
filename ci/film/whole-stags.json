@@ -1,0 +1,14 @@
+{
+  "recording": "film/fel-stags.rec",
+  "out": "film/whole/shots-stags",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "fov": 42,
+  "settle": 16,
+  "look": {"shutter": 0.5, "saturation": 1.06, "contrast": 1.05},
+  "budget": {"ao": 2, "shadow_px": 2048, "shadow_m": 150, "cascades": 3, "clouds": 2, "gaussian": true},
+  "shots": [
+    {"name": "stags", "at": 208, "len": 3.6, "hour": 0.36, "weather": "clear", "fov": 36, "keys": [{"t": 0, "pos": [3688, 1.4, 1584], "look": [3706, 1.1, 1566]}, {"t": 3.6, "pos": [3686, 1.4, 1582], "look": [3706, 1.1, 1566]}], "track": {"near": [3706, 1566], "animal": true, "up": 0.9, "lag": 0.6}, "look": {"focus": "subject", "fstop": 2.8, "saturation": 1.1}}
+  ]
+}
