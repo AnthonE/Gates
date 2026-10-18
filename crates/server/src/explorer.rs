@@ -5055,7 +5055,19 @@ impl Survivor {
             self.consume(core, slot, tick);
             return Intent::IDLE;
         }
-        if core.hp_max > 0 && pct(core.hp, core.hp_max) <= DRINK_MIN_HP_PCT {
+        // No sea to drink, or too hurt for salt water: a food never tried is
+        // tasted (`taste_slot`), which costs no health.
+        let x = body.qx as f32 * POS_XZ_Q;
+        let z = body.qz as f32 * POS_XZ_Q;
+        let (seed, _) = core.island();
+        let hurt = core.hp_max > 0 && pct(core.hp, core.hp_max) <= DRINK_MIN_HP_PCT;
+        if hurt || (!water_in_reach(seed, x, z) && self.water_yaw.is_none()) {
+            if let Some(slot) = taste_slot(core, &self.memory.food) {
+                self.consume(core, slot, tick);
+                return Intent::IDLE;
+            }
+        }
+        if hurt {
             let outcome = if active.gained > 0 {
                 Outcome::Done
             } else {
@@ -5064,9 +5076,6 @@ impl Survivor {
             self.end_goal(tick, outcome);
             return Intent::IDLE;
         }
-        let x = body.qx as f32 * POS_XZ_Q;
-        let z = body.qz as f32 * POS_XZ_Q;
-        let (seed, _) = core.island();
         if water_in_reach(seed, x, z) {
             if self.queue(protocol::encode_action_drink) {
                 self.awaiting = Some((Pending::Drink, tick));
@@ -7306,6 +7315,22 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
         .or_else(|| best(&mut slots().filter(|&i| book.may_feed(core.inv[i].item))))
 }
 
+/// A food in the pack never tried: what a thirsty body with no water in
+/// sight tastes, since eating is how it learns which of its food carries
+/// water. A forager full of berries it had never tasted let its water run
+/// down once mushrooms stopped coming off every tree it chopped (#356).
+fn taste_slot(core: &ClientCore, book: &FoodBook) -> Option<usize> {
+    (0..INV_SLOTS).find(|&i| {
+        let s = core.inv[i];
+        let b = FoodBook::bit(s.item);
+        s.count > 0
+            && b != 0
+            && book.tried & b == 0
+            && book.not_food & b == 0
+            && core.catalog.row(usize::from(s.item)).food > 0
+    })
+}
+
 /// The sim's own drink test: five taps on the heightfield at the reach.
 fn water_in_reach(seed: u64, x: f32, z: f32) -> bool {
     let r = DRINK_REACH_M;
@@ -7683,7 +7708,9 @@ pub fn observe(
         && (core.hp_max == 0 || pct(core.hp, core.hp_max) > DRINK_MIN_HP_PCT);
     if core.max_water > 0
         && pct(core.water, core.max_water) < METER_TARGET_PCT
-        && (sea || food_slot(core, &memory.food, true).is_some())
+        && (sea
+            || food_slot(core, &memory.food, true).is_some()
+            || taste_slot(core, &memory.food).is_some())
     {
         s.offer(Goal::Drink);
     }
