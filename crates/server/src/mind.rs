@@ -387,6 +387,26 @@ impl Goal {
         )
     }
 
+    /// Any goal by its label, offered now or not: a plan names goals for
+    /// later (`Plan`).
+    pub fn named(label: &str) -> Option<Goal> {
+        if let Some(g) = Goal::FIXED
+            .iter()
+            .copied()
+            .find(|g| g.label().as_str() == label)
+        {
+            return Some(g);
+        }
+        let (key, name) = label.split_once(':')?;
+        let name = Name::new(name.as_bytes())?;
+        match key {
+            "craft" => Some(Goal::Craft(name)),
+            "buy" => Some(Goal::Buy(name)),
+            "sell" => Some(Goal::Sell(name)),
+            _ => None,
+        }
+    }
+
     /// Strict: a label must name one of the goals actually offered.
     pub fn parse(label: &str, offered: &[Goal]) -> Option<Goal> {
         offered
@@ -1217,6 +1237,8 @@ pub struct HomeSense {
     pub state: HomeState,
     pub distance: Distance,
     pub bearing: u8,
+    /// How far, metres (`json` rounds it to ten).
+    pub metres: u16,
     /// Blows, breaks or blasts at home a moment ago.
     pub attacked: bool,
     /// Something of it is damaged that a repair would mend.
@@ -1231,6 +1253,7 @@ impl HomeSense {
         json!({
             "state": self.state.word(),
             "distance": self.distance.word(),
+            "metres": tens(self.metres),
             "bearing": BEARINGS[self.bearing as usize % 8],
             "under_attack": self.attacked,
             "damaged": self.damaged,
@@ -1238,21 +1261,38 @@ impl HomeSense {
     }
 }
 
-/// A place on the map, as a summary carries it: a distance band and a
-/// relative bearing (an index into [`BEARINGS`]), never where.
+/// A place on the map, as a summary carries it: a distance band, about how
+/// many metres, and a relative bearing (an index into [`BEARINGS`]), never
+/// where. The metres let a mind plan a trip (an agent asked, 2026-10-18); a
+/// player sees as much on the map.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Place {
     pub distance: Distance,
     pub bearing: u8,
+    pub metres: u16,
 }
 
 impl Place {
+    pub fn at(metres: f32, bearing: u8) -> Self {
+        Self {
+            distance: Distance::of(metres),
+            bearing,
+            metres: metres.clamp(0.0, f32::from(u16::MAX)) as u16,
+        }
+    }
+
     fn json(&self) -> Value {
         json!({
             "distance": self.distance.word(),
+            "metres": tens(self.metres),
             "bearing": BEARINGS[self.bearing as usize % 8],
         })
     }
+}
+
+/// Metres to the nearest ten: about how far, not where.
+fn tens(m: u16) -> u32 {
+    (u32::from(m) + 5) / 10 * 10
 }
 
 /// The scripted policy takes the pack to the team's chest with this few
@@ -1473,6 +1513,7 @@ impl Summary {
             state: HomeState::None,
             distance: Distance::Here,
             bearing: 0,
+            metres: 0,
             attacked: false,
             damaged: false,
         },
@@ -1730,7 +1771,9 @@ impl Summary {
             }
         };
         let mut v = json!({
+            // No vitals yet: the body is still coming onto the island.
             "body": match self.body {
+                BodyState::Alive if self.hp_max == 0 => "spawning",
                 BodyState::Alive => "alive",
                 BodyState::Wounded => "wounded",
                 BodyState::Dead => "dead",
@@ -1901,6 +1944,91 @@ pub trait DecisionSource: Send + 'static {
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
         None
     }
+    /// A plan the last answer left for the turns it does not answer (`act`'s
+    /// `plan`). Only an external or MCP mind writes them.
+    fn take_plan(&mut self) -> Option<Plan> {
+        None
+    }
+}
+
+/// Steps a mind may leave its autopilot.
+pub const PLAN_STEPS: usize = 4;
+
+/// One step of a plan: a goal, done for good once the pack holds `until`.
+/// A step with no `until` is never done.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanStep {
+    pub goal: Goal,
+    pub until: Option<(Name, u32)>,
+}
+
+/// What a mind leaves the scripted autopilot for the turns it misses
+/// (`Scripted::plan`): "gather wood until I hold 1515, then build". An
+/// agent that thinks in sessions asked for it (2026-10-18), so the turns
+/// between follow its strategy rather than the playbook's.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Plan {
+    pub steps: [Option<PlanStep>; PLAN_STEPS],
+}
+
+impl Plan {
+    /// A reply's `plan`: missing or null leaves it be (`None`); `[]` clears
+    /// it; at most [`PLAN_STEPS`] steps `{"goal": label, "until": {"item":
+    /// name, "count": n}}` replace it. A bad one is refused whole.
+    pub fn parse(v: &Value) -> Result<Option<Plan>, String> {
+        let steps = match v {
+            Value::Null => return Ok(None),
+            Value::Array(steps) => steps,
+            _ => return Err("plan is a list of steps".into()),
+        };
+        if steps.len() > PLAN_STEPS {
+            return Err(format!("a plan has at most {PLAN_STEPS} steps"));
+        }
+        let mut plan = Plan::default();
+        for (i, step) in steps.iter().enumerate() {
+            let label = step["goal"].as_str().ok_or("each plan step needs a goal")?;
+            let goal =
+                Goal::named(label).ok_or_else(|| format!("plan step {label:?} is not a goal"))?;
+            let until = match &step["until"] {
+                Value::Null => None,
+                u => {
+                    let item = u["item"].as_str().and_then(|n| Name::new(n.as_bytes()));
+                    let count = u["count"]
+                        .as_u64()
+                        .filter(|&c| (1..=u64::from(u32::MAX)).contains(&c));
+                    match (item, count) {
+                        (Some(item), Some(count)) => Some((item, count as u32)),
+                        _ => {
+                            return Err(
+                                "a step's until is {\"item\": a name, \"count\": a number}".into()
+                            )
+                        }
+                    }
+                }
+            };
+            plan.steps[i] = Some(PlanStep { goal, until });
+        }
+        Ok(Some(plan))
+    }
+
+    pub fn len(&self) -> usize {
+        self.steps.iter().flatten().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The first step not yet done, if it is on offer now. One that is not
+    /// leaves the turn to the playbook rather than skipping ahead: "until
+    /// 1515 wood, then build" builds only once the wood is in.
+    pub fn next(&self, s: &Summary) -> Option<Goal> {
+        let step = self.steps.iter().flatten().find(|st| {
+            st.until
+                .is_none_or(|(item, n)| s.count_of(item.as_str()) < n)
+        })?;
+        s.offers(step.goal).then_some(step.goal)
+    }
 }
 
 /// Fixed request windows. A window opens at its first request and closes
@@ -2002,13 +2130,15 @@ impl Default for MindConfig {
 impl MindConfig {
     pub fn check(&self) -> Result<(), String> {
         let limit = Duration::from_secs(60);
+        // A harness's think (MCP `--autopilot-s`) may run past the minute.
+        let timeout_limit = Duration::from_secs(180);
         if self.interval < crate::jev::THINK_INTERVAL
             || self.interval > limit
             || self.timeout.is_zero()
-            || self.timeout > limit
+            || self.timeout > timeout_limit
         {
             return Err(
-                "decision interval must be 1..60 s (never under the once-per-second ceiling) and the timeout (0, 60 s]".into(),
+                "decision interval must be 1..60 s (never under the once-per-second ceiling) and the timeout (0, 180 s]".into(),
             );
         }
         if self.heartbeat < self.interval || self.heartbeat > Duration::from_secs(3600) {
@@ -2370,6 +2500,8 @@ pub struct Scripted {
     /// The answer to say with the next choice, and a code a teammate gave.
     say: Say,
     code: Option<crate::agent::lock::LockCode>,
+    /// What its mind left it for the turns it plays alone (`Plan`).
+    plan: Plan,
 }
 
 /// What a society member's crew asks of it now, as the scripted policy
@@ -2587,6 +2719,10 @@ impl DecisionSource for Scripted {
 }
 
 impl Scripted {
+    pub fn set_plan(&mut self, plan: Plan) {
+        self.plan = plan;
+    }
+
     /// What its team typed since it was last asked, read as orders
     /// (`agent::orders`), and whether someone near it asked to team up.
     /// A line it said itself or an agent said is never an order.
@@ -2754,6 +2890,11 @@ impl Scripted {
                 return (Goal::Wait, "scripted: my teammate said stay");
             }
             _ => {}
+        }
+        // The plan its mind left for the turns it plays alone: the first
+        // step not yet done, while it is on offer.
+        if let Some(goal) = self.plan.next(s) {
+            return (goal, "scripted: the plan my mind left");
         }
         // A society (`agent::society`): the crew comes together at THE GATE
         // before anything else — its founder invites each crewmate who walks
@@ -3141,6 +3282,33 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plan_parses_strictly_and_a_place_says_its_metres() {
+        assert_eq!(Goal::named("gather_wood"), Some(Goal::GatherWood));
+        assert!(matches!(
+            Goal::named("craft:Stone Hatchet"),
+            Some(Goal::Craft(_))
+        ));
+        assert_eq!(Goal::named("fly"), None);
+        assert_eq!(Plan::parse(&Value::Null), Ok(None));
+        assert_eq!(Plan::parse(&json!([])).unwrap().unwrap().len(), 0);
+        let p = Plan::parse(
+            &json!([{"goal": "gather_wood", "until": {"item": "Wood", "count": 1515}},
+            {"goal": "build"}]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(p.len(), 2);
+        assert!(Plan::parse(&json!([{"goal": "fly"}])).is_err());
+        assert!(Plan::parse(&json!([{"goal": "build", "until": {"item": "Wood"}}])).is_err());
+        assert!(Plan::parse(&json!(vec![json!({"goal": "build"}); PLAN_STEPS + 1])).is_err());
+        let place = Place::at(123.4, 2);
+        assert_eq!(
+            (place.distance, place.json()["metres"].as_u64()),
+            (Distance::Mid, Some(120))
+        );
+    }
 
     fn name(s: &str) -> Name {
         Name::new(s.as_bytes()).unwrap()

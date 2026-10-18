@@ -107,6 +107,8 @@ pub struct External {
     speech: Option<crate::agent_voice::SpeechTx>,
     /// The bug report the last reply carried, for the body to file.
     note: Option<crate::bugs::Note>,
+    /// The plan the last reply left its autopilot (`mind::Plan`).
+    plan: Option<crate::mind::Plan>,
 }
 
 impl External {
@@ -213,6 +215,7 @@ impl External {
             stale: 0,
             speech: None,
             note: None,
+            plan: None,
         })
     }
 
@@ -433,11 +436,23 @@ impl DecisionSource for External {
             Ok(note) => self.note = note,
             Err(e) => eprintln!("external agent report refused: {e}"),
         }
+        let plan = serde_json::from_str::<Value>(reply.trim_end())
+            .map_err(|e| e.to_string())
+            .and_then(|v| crate::mind::Plan::parse(&v["plan"]));
+        match plan {
+            Ok(Some(plan)) => self.plan = Some(plan),
+            Ok(None) => {}
+            Err(e) => eprintln!("external agent plan refused: {e}"),
+        }
         Ok(choice)
     }
 
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
         self.note.take()
+    }
+
+    fn take_plan(&mut self) -> Option<crate::mind::Plan> {
+        self.plan.take()
     }
 }
 

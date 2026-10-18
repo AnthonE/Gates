@@ -59,6 +59,10 @@ Environment (defaults in brackets):
     CLAUDE_MODEL          [claude-haiku-5-5]
     BUDDY_MIND_PORT       [8433] the own-brain bridge, on loopback
     BUDDY_OWN_IDLE_S      [1800]
+    BUDDY_OWN_ANSWER_S    [120] how long an own brain has to answer a turn
+                          before the autopilot plays it (`--autopilot-s`);
+                          a harness quiet past that and a minute more has
+                          every turn played at once (jev-bot `mcp::McpDoor`)
     ANTHROPIC_API_KEY     passed through to each house mind, and recaps
     ELEVENLABS_API_KEY    the voices in VOICES speak with it; mute without
 """
@@ -95,6 +99,7 @@ AGENT = os.environ.get("CLAUDE_AGENT", "/home/master/gates-jev/claude_agent.py")
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5")
 MIND_PORT = int(os.environ.get("BUDDY_MIND_PORT", "8433"))
 OWN_IDLE_S = float(os.environ.get("BUDDY_OWN_IDLE_S", "1800"))
+OWN_ANSWER_S = int(os.environ.get("BUDDY_OWN_ANSWER_S", "120"))
 TICK_S = 20
 WAKE_GAP_S = 2         # a harness waking the loop gets a tick at most this often
 RECAP_EVERY_S = 3600
@@ -304,7 +309,8 @@ def start(aid, a):
     log(f"{aid}: {a['name']} ({a['kind']}, {a['brain']} brain) joins")
     if own:
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        return subprocess.Popen(cmd + ["--mcp"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        return subprocess.Popen(cmd + ["--mcp", "--autopilot-s", str(OWN_ANSWER_S)], env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     env = dict(os.environ)
     env.update({
         "CLAUDE_MODEL": MODEL,
@@ -431,6 +437,12 @@ def main():
     ledger = Ledger()
     bridge = mind_bridge.Bridge(lambda i: path("journal", i + ".jsonl"), idle_s=OWN_IDLE_S)
     try:
+        with open(path("own-calls.json")) as f:
+            bridge.recall(json.load(f))
+    except (OSError, ValueError, AttributeError):
+        pass
+    kept_calls = bridge.calls()
+    try:
         mind_bridge.serve(bridge, MIND_PORT)
     except OSError as e:
         log(f"own-brain bridge not served on {MIND_PORT}: {e}")
@@ -462,6 +474,10 @@ def main():
             write_atomic(path("credit", i), f"{spent[i] + max(0.0, left[i]):.6f}\n")
             write_atomic(path("status", i + ".json"), json.dumps({"left_usd": round(max(0.0, left[i]), 4)}))
         want, waiting = plan(agents, left, running, bridge.wanted(now))
+        calls = bridge.calls()
+        if calls != kept_calls:
+            write_atomic(path("own-calls.json"), json.dumps(calls))
+            kept_calls = calls
         for i, proc in list(running.items()):
             if proc.poll() is not None:
                 log(f"{i}: exited {proc.returncode}")

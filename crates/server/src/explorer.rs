@@ -6175,6 +6175,7 @@ impl Survivor {
                     state,
                     distance: Distance::of(d),
                     bearing,
+                    metres: d.clamp(0.0, f32::from(u16::MAX)) as u16,
                     attacked: self.home.alarmed(tick, home::HOME_ALARM_TICKS),
                     damaged: self.memory.damaged,
                 }
@@ -6383,10 +6384,7 @@ impl Survivor {
             self.senses.loot = known;
             self.senses.loot_place = self.loot.place(&haven, here, tick).map(|(_, [x, z])| {
                 let (d, bearing) = relative(body, x, z);
-                Place {
-                    distance: Distance::of(d),
-                    bearing,
-                }
+                Place::at(d, bearing)
             });
             let (seed, _) = core.island();
             let x = body.qx as f32 * POS_XZ_Q;
@@ -7579,10 +7577,7 @@ pub fn observe(
     // THE GATE and the works, from the tables its client was sent.
     if let (Some(b), Some([gx, gz])) = (body, gate::gate(core)) {
         let (d, bearing) = relative(b, gx, gz);
-        s.gate = Some(Place {
-            distance: Distance::of(d),
-            bearing,
-        });
+        s.gate = Some(Place::at(d, bearing));
     }
     let named = |item: u16| Name::new(core.catalog.name(usize::from(item))).unwrap_or(Name::EMPTY);
     for (_, w) in core.arc.known() {
@@ -7601,10 +7596,7 @@ pub fn observe(
         if let (Some(b), Some((x, _, z))) = (body, sim_core::spot::world(core.haven(), &w.def.spot))
         {
             let (d, bearing) = relative(b, x, z);
-            sense.at = Some(Place {
-                distance: Distance::of(d),
-                bearing,
-            });
+            sense.at = Some(Place::at(d, bearing));
         }
         let mut needs = [(0u16, 0u32); sim_core::limits::MAX_WORK_INPUTS];
         let m = gate::work_needs(w, &mut needs);
@@ -7619,10 +7611,7 @@ pub fn observe(
     let place = |x: f32, z: f32| {
         body.map(|b| {
             let (d, bearing) = relative(b, x, z);
-            Place {
-                distance: Distance::of(d),
-                bearing,
-            }
+            Place::at(d, bearing)
         })
     };
     (s.stones_read, s.stones_known) = lore::stones(core);

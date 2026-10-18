@@ -116,6 +116,11 @@ code, _ = post(PORT, AID, {"jsonrpc": "2.0", "id": 1, "method": "ping"}, token="
 check("a wrong token is refused with 401", code == 401)
 code, _ = post(PORT, "fedcba9876", {"jsonrpc": "2.0", "id": 1, "method": "ping"})
 check("a house-brain agent has no door", code == 401)
+kept = mind_bridge.Bridge(lambda i: journal, idle_s=60)
+kept.set_agents({AID: {"brain": "own", "token_sha": hashlib.sha256(TOKEN.encode()).hexdigest()}})
+kept.recall({AID: time.time() - 10, "stale0000": time.time() - 3600})
+check("a restart takes back a harness that called inside the window, not one before it",
+      kept.wanted() == {AID} and "stale0000" not in kept.calls())
 code, _ = post(PORT, AID, None, method="GET")
 check("GET opens no stream (405)", code == 405)
 code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": "u", "method": "ping"}, in_path=True)
@@ -255,7 +260,8 @@ check("only ours speak", "--voice" not in cmd)
 check("an owner's buddy is never put on autopilot alone", "--alone" not in cmd)
 runner.start("a000000002", got["a000000002"])
 cmd, env, stdout = calls[-1]
-check("an own brain runs --mcp with its stdio held", cmd[-1] == "--mcp" and "--external" not in cmd
+check("an own brain runs --mcp with its stdio held, and its window", "--mcp" in cmd and "--external" not in cmd
+      and cmd[cmd.index("--autopilot-s") + 1] == str(runner.OWN_ANSWER_S)
       and stdout == subprocess.PIPE)
 check("an own brain's body gets no API key", "ANTHROPIC_API_KEY" not in env)
 

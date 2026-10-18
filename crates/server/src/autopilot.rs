@@ -87,7 +87,13 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
         if let Some(g) = self.gate.filter(|g| (g.rule)(s)) {
             return self.fly((g.why)(s), s);
         }
-        match self.primary.decide(s) {
+        let answer = self.primary.decide(s);
+        // A plan the answer left is the autopilot's from now on, for the
+        // turns the source misses.
+        if let Some(plan) = self.primary.take_plan() {
+            self.scripted.set_plan(plan);
+        }
+        match answer {
             Ok(choice) => Ok(choice),
             Err(e) => self.fly(&e, s),
         }
@@ -206,6 +212,51 @@ mod tests {
         assert!(
             !alone(&friend),
             "a friend on the island, anywhere, wakes it"
+        );
+    }
+
+    /// A plan its source leaves is what the autopilot plays on the turns
+    /// the source misses: the first step not yet done, while it is offered;
+    /// a step done (the pack holds its count) gives way to the next.
+    #[test]
+    fn the_turns_it_misses_follow_the_plan_its_source_left() {
+        use crate::mind::{Name, Plan, PlanStep};
+        struct Away(Option<Plan>);
+        impl DecisionSource for Away {
+            fn kind(&self) -> SourceKind {
+                SourceKind::External
+            }
+            fn decide(&mut self, _: &Summary) -> Result<Choice, String> {
+                Err("the harness is away".into())
+            }
+            fn take_plan(&mut self) -> Option<Plan> {
+                self.0.take()
+            }
+        }
+        let mut plan = Plan::default();
+        plan.steps[0] = Some(PlanStep {
+            goal: Goal::GatherWood,
+            until: Some((Name::new(b"Wood").unwrap(), 100)),
+        });
+        plan.steps[1] = Some(PlanStep {
+            goal: Goal::Build,
+            until: None,
+        });
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::GatherWood, Goal::Build, Goal::Wait] {
+            s.offer(g);
+        }
+        let mut a = Autopilot::new(Away(Some(plan)), None);
+        let c = a.decide(&s).unwrap();
+        assert_eq!(c.goal, Goal::GatherWood, "{}", c.reason.as_str());
+        assert!(c.reason.as_str().contains("the plan my mind left"));
+        assert_eq!(plan.next(&s), Some(Goal::GatherWood));
+        let mut bare = Summary::EMPTY;
+        bare.offer(Goal::Build);
+        assert_eq!(
+            plan.next(&bare),
+            None,
+            "a step not on offer does not skip ahead"
         );
     }
 
