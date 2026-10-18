@@ -32,6 +32,10 @@ const HEAD_BG: Color = Color::srgba(0.118, 0.106, 0.094, 0.85);
 const ROW_BG: Color = Color::srgba(0.212, 0.196, 0.176, 0.92);
 const BET_BG: Color = Color::srgba(0.282, 0.357, 0.161, 0.95);
 const BET_HOT: Color = Color::srgba(0.345, 0.439, 0.196, 1.0);
+/// The casino's gilt, and the slot machine's red enamel.
+const GILT_INK: Color = Color::srgb(0.95, 0.78, 0.38);
+const ENAMEL: Color = Color::srgba(0.36, 0.08, 0.07, 0.96);
+const REEL_BG: Color = Color::srgba(0.95, 0.93, 0.87, 0.98);
 
 /// The wheel's colours as Rust paints them, in `casino::WHEEL_PAYS` order:
 /// the name and an sRGB fill. The yard's wheel wears the same.
@@ -106,7 +110,7 @@ fn header(
         ..default()
     })
     .with_children(|h| {
-        h.spawn((Text::new(title), font_bold(22.0), TextColor(TEXT)));
+        h.spawn((Text::new(title), font_bold(24.0), TextColor(GILT_INK)));
         if junk == sim_core::gather::NO_ITEM {
             return;
         }
@@ -261,6 +265,34 @@ fn root(commands: &mut Commands, body: impl FnOnce(&mut ChildSpawnerCommands)) {
         });
 }
 
+/// A colour's chip: its fill, a gilt rim, and its multiplier on it.
+fn chip(r: &mut ChildSpawnerCommands, c: usize, w: f32, h: f32, size: f32) {
+    let ink = if c == 0 {
+        Color::srgb(0.16, 0.11, 0.07)
+    } else {
+        Color::srgb(0.97, 0.94, 0.86)
+    };
+    r.spawn((
+        Node {
+            width: Val::Px(w),
+            height: Val::Px(h),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            border: UiRect::all(Val::Px(2.0)),
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            ..default()
+        },
+        BackgroundColor(colour(c)),
+        BorderColor::all(GILT_INK),
+    ))
+    .with_child((
+        Text::new(format!("×{}", WHEEL_PAYS[c])),
+        font_bold(size),
+        TextColor(ink),
+        Pickable::IGNORE,
+    ));
+}
+
 /// The wheel's betting terminal.
 pub fn build_wheel(
     commands: &mut Commands,
@@ -282,6 +314,40 @@ pub fn build_wheel(
                 ..default()
             },
         ));
+        // Where the wheel has come to rest, newest first: the rounds that
+        // have ended, never the one still turning.
+        let round = casino::wheel_phase(core.server_tick_est().max(0.0) as u64).0;
+        let landed: Vec<u8> = core
+            .casino
+            .history
+            .iter()
+            .flatten()
+            .filter(|(r, _)| (*r as u64) < round)
+            .map(|&(_, seg)| WHEEL[seg as usize % WHEEL_SEGMENTS])
+            .collect();
+        if !landed.is_empty() {
+            p.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(5.0),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+                ..default()
+            })
+            .with_children(|h| {
+                h.spawn((
+                    Text::new("LANDED"),
+                    font_bold(11.0),
+                    TextColor(TEXT_DIM),
+                    Node {
+                        margin: UiRect::right(Val::Px(6.0)),
+                        ..default()
+                    },
+                ));
+                for c in landed {
+                    chip(h, c as usize, 30.0, 22.0, 11.0);
+                }
+            });
+        }
         p.spawn(Node {
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
@@ -301,7 +367,7 @@ pub fn build_wheel(
             ));
             stepper(r, format!("{stake}"));
         });
-        for c in 0..WHEEL_COLOURS {
+        for (c, &(name, _)) in COLOURS.iter().enumerate() {
             let hits = WHEEL.iter().filter(|&&s| s as usize == c).count();
             let mine = core.casino.stakes[c];
             let room = (mine as u32 + stake as u32) <= WHEEL_STAKE_MAX;
@@ -317,16 +383,9 @@ pub fn build_wheel(
                 BackgroundColor(ROW_BG),
             ))
             .with_children(|row| {
+                chip(row, c, 46.0, 34.0, 15.0);
                 row.spawn((
-                    Node {
-                        width: Val::Px(26.0),
-                        height: Val::Px(26.0),
-                        ..default()
-                    },
-                    BackgroundColor(colour(c)),
-                ));
-                row.spawn((
-                    Text::new(format!("{}  ×{}", COLOURS[c].0, WHEEL_PAYS[c])),
+                    Text::new(name),
                     font_bold(15.0),
                     TextColor(TEXT),
                     Node {
@@ -389,13 +448,32 @@ pub fn build_slots(
             core,
             icons,
         );
-        p.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            justify_content: JustifyContent::Center,
-            column_gap: Val::Px(10.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            ..default()
-        })
+        p.spawn((
+            Text::new(format!(
+                "JACKPOT  ·  THREE 7s PAY {}",
+                SLOT_TRIPLE[casino::SYM_SEVEN as usize] * mult as u32
+            )),
+            font_bold(15.0),
+            TextColor(GILT_INK),
+            Node {
+                align_self: AlignSelf::Center,
+                margin: UiRect::bottom(Val::Px(4.0)),
+                ..default()
+            },
+        ));
+        p.spawn((
+            Node {
+                flex_direction: FlexDirection::Row,
+                justify_content: JustifyContent::Center,
+                column_gap: Val::Px(10.0),
+                padding: UiRect::all(Val::Px(14.0)),
+                border: UiRect::all(Val::Px(3.0)),
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                ..default()
+            },
+            BackgroundColor(ENAMEL),
+            BorderColor::all(GILT_INK),
+        ))
         .with_children(|reels| {
             for (r, &sym) in shown.iter().enumerate() {
                 reels
@@ -407,9 +485,12 @@ pub fn build_slots(
                             align_items: AlignItems::Center,
                             justify_content: JustifyContent::Center,
                             row_gap: Val::Px(6.0),
+                            border: UiRect::all(Val::Px(2.0)),
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
                             ..default()
                         },
-                        BackgroundColor(Color::srgba(0.93, 0.91, 0.86, 0.96)),
+                        BackgroundColor(REEL_BG),
+                        BorderColor::all(Color::srgb(0.25, 0.2, 0.15)),
                     ))
                     .with_children(|cell| {
                         let (name, word) = SYMBOLS[sym as usize % SLOT_SYMBOLS];

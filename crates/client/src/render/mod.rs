@@ -92,6 +92,7 @@ pub mod fx;
 /// THE GATE's ruin, alive: hanging fragments, arcs, motes, beacons.
 pub mod gate_fx;
 pub mod guards;
+pub mod keepers;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -1835,10 +1836,12 @@ impl Plugin for GatesRenderPlugin {
                         town_signs::machines,
                         // THE GATE's casino: the stand, the cabinets, the
                         // wheel turning on the shard's clock.
-                        (casino::spawn, casino::spin).chain(),
+                        (casino::spawn, casino::spin, casino::lights).chain(),
                         // THE GATE's guards, walked off the server's clock.
                         guards::spawn,
                         guards::walk,
+                        // Its shopkeepers: Rust's, greeting and serving.
+                        (keepers::spawn, keepers::act.after(feed::drain)).chain(),
                         ziggurat::dress,
                         ziggurat::doors,
                         // The works' terminals (`ARC.md` F1): stood up as

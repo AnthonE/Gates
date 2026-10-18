@@ -1553,6 +1553,10 @@ pub struct CasinoView {
     /// The last spin told (`EventMsg::WheelSpin`): its round and the segment
     /// it lands on.
     pub spin: Option<(u32, u8)>,
+    /// The spins told before it, newest first — a board of where the wheel
+    /// has landed. A spin still turning is in it too; draw only the rounds
+    /// that have ended.
+    pub history: [Option<(u32, u8)>; 8],
     /// This player's stakes on the wheel this round, by colour: set by each
     /// bet taken, cleared when the wheel pays.
     pub stakes: [u16; sim_core::casino::WHEEL_COLOURS],
@@ -3128,6 +3132,10 @@ impl ClientCore {
             EventMsg::WheelSpin { round, segment } => {
                 self.casino_gen = self.casino_gen.wrapping_add(1);
                 self.casino.spin = Some((round, segment));
+                if self.casino.history[0] != Some((round, segment)) {
+                    self.casino.history.rotate_right(1);
+                    self.casino.history[0] = Some((round, segment));
+                }
             }
             EventMsg::WheelBet {
                 colour,

@@ -136,6 +136,11 @@ pub enum Clip {
     Swim,
     /// In deep water, still: treading water.
     SwimIdle,
+    /// **Talking with the hands**, standing: a shopkeeper's greeting and its
+    /// thanks after a sale (`render/keepers.rs`) — Rust's `NPCShopKeeper`
+    /// waves and plays a victory gesture, and this rig has neither, so the
+    /// talking loop stands in for both. Nothing a player does plays it.
+    Talk,
 }
 
 impl Clip {
@@ -222,13 +227,14 @@ impl Clip {
             // `SWIM_FEET_DEPTH_M` of water the drawn swimmer is under it.
             Clip::Swim => "Swim_Fwd_Loop",
             Clip::SwimIdle => "Swim_Idle_Loop",
+            Clip::Talk => "Idle_Talking_Loop",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 14] = [
+    pub const ALL: [Clip; 15] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
@@ -243,6 +249,7 @@ impl Clip {
         Clip::CrouchWalk,
         Clip::Swim,
         Clip::SwimIdle,
+        Clip::Talk,
     ];
 
     /// The ground speed a locomotion loop's feet were authored for, m/s, and
@@ -315,6 +322,7 @@ impl Clip {
             Clip::CrouchWalk => 11,
             Clip::Swim => 12,
             Clip::SwimIdle => 13,
+            Clip::Talk => 14,
         }
     }
 }
@@ -523,10 +531,10 @@ pub struct Rig {
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 14],
+    nodes: [AnimationNodeIndex; 15],
     /// Each clip's length, seconds, indexed by `Clip::slot` — what the gait
     /// phase sync in [`drive`] converts a seek time into a stride phase with.
-    durations: [f32; 14],
+    durations: [f32; 15],
     /// The transients again, **masked off the legs** ([`Clip::upper_slot`]):
     /// a swing, flinch or shot played over a moving gait poses the arms and
     /// spine and leaves the hips and legs running. `None` for a clip the file
@@ -623,8 +631,8 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 14],
-        durations: [1.0; 14],
+        nodes: [AnimationNodeIndex::default(); 15],
+        durations: [1.0; 15],
         upper: [None; 3],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
@@ -726,7 +734,7 @@ pub fn build(
     // The clips' lengths and the skeleton's node tree are sub-assets of the
     // glTF and can land a frame after it: wait for both rather than build a
     // graph that cannot phase-sync or cannot mask.
-    let mut durations = [1.0; 14];
+    let mut durations = [1.0; 15];
     for clip in Clip::ALL {
         if let Some(h) = gltf.named_animations.get(clip.name()) {
             let Some(c) = clips.get(h) else { return };
@@ -739,7 +747,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 14];
+    let mut nodes = [AnimationNodeIndex::default(); 15];
     let mut upper = [None; 3];
     let mut missing = Vec::new();
     for clip in Clip::ALL {

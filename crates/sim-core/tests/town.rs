@@ -224,6 +224,7 @@ fn guards_walk_clear_of_the_town() {
                     .iter()
                     .chain(town::MACHINES.iter())
                     .chain(town::CASINO.iter())
+                    .chain(town::KEEPERS.iter())
                 {
                     if p.flags & kit::DECOR == 0 && solid(p.b) {
                         assert!(
