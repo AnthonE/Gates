@@ -11,7 +11,8 @@
 //! The features are a flattening of [`Summary::to_json`], the documented
 //! observation, so a recording keeps everything needed to re-featurize it,
 //! and the student reads exactly what a teacher was shown. No chat text and
-//! no player names are in it.
+//! no player names are in it. Each row names the harness and model that
+//! played (`--agent-harness`, `--agent-model`), null when not given.
 
 use crate::mind::{Choice, DecisionSource, Goal, Reason, Say, SourceKind, Summary};
 use serde_json::{json, Map, Value};
@@ -97,12 +98,19 @@ pub struct Recorder<S> {
     out: Option<std::io::BufWriter<std::fs::File>>,
     path: PathBuf,
     rows: u64,
+    harness: Option<String>,
+    model: Option<String>,
 }
 
 impl<S: DecisionSource> Recorder<S> {
     /// A new file in `dir` (made if missing), named so that bots, runs and
     /// processes never share one.
-    pub fn open(inner: S, dir: &Path) -> Result<Self, String> {
+    pub fn open(
+        inner: S,
+        dir: &Path,
+        harness: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("--record {}: {e}", dir.display()))?;
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -120,12 +128,21 @@ impl<S: DecisionSource> Recorder<S> {
             out: Some(std::io::BufWriter::new(file)),
             path,
             rows: 0,
+            harness: harness.map(str::to_owned),
+            model: model.map(str::to_owned),
         })
     }
 }
 
 /// One recorded decision: what [`ROW_FORMAT`] means.
-pub fn row(summary: &Summary, choice: &Choice, source: SourceKind, n: u64) -> Value {
+pub fn row(
+    summary: &Summary,
+    choice: &Choice,
+    source: SourceKind,
+    n: u64,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> Value {
     let obs = summary.to_json();
     let x: Map<String, Value> = features(&obs)
         .into_iter()
@@ -139,6 +156,8 @@ pub fn row(summary: &Summary, choice: &Choice, source: SourceKind, n: u64) -> Va
         "t": (t * 1000.0).round() / 1000.0,
         "n": n,
         "source": source.label(),
+        "harness": harness,
+        "model": model,
         "options": summary.options().iter().map(|g| g.label().as_str().to_owned()).collect::<Vec<_>>(),
         "goal": choice.goal.label().as_str(),
         "confidence": choice.confidence,
@@ -156,7 +175,14 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
         let answer = self.inner.decide(summary);
         if let (Ok(choice), Some(out)) = (&answer, self.out.as_mut()) {
-            let line = row(summary, choice, self.inner.kind(), self.rows);
+            let line = row(
+                summary,
+                choice,
+                self.inner.kind(),
+                self.rows,
+                self.harness.as_deref(),
+                self.model.as_deref(),
+            );
             if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
                 eprintln!(
                     "record: {} could not be written; recording stopped",
@@ -371,7 +397,7 @@ impl DecisionSource for Student {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mind::Name;
+    use crate::mind::{Name, Scripted};
 
     fn get(f: &[(String, f32)], k: &str) -> Option<f32> {
         f.iter().find(|(key, _)| key == k).map(|(_, v)| *v)
@@ -409,6 +435,29 @@ mod tests {
             None,
             "only the list's head"
         );
+    }
+
+    /// A row names what played it, and says null when nobody said.
+    #[test]
+    fn a_row_names_its_harness_and_model_or_null() {
+        let mut sum = Summary::EMPTY;
+        sum.offer(Goal::Explore);
+        let choice = Scripted::default().decide(&sum).unwrap();
+        let r = row(
+            &sum,
+            &choice,
+            SourceKind::External,
+            0,
+            Some("claude-code/2.1"),
+            Some("m-1"),
+        );
+        assert_eq!(r["format"], ROW_FORMAT);
+        assert_eq!(
+            (r["harness"].as_str(), r["model"].as_str()),
+            (Some("claude-code/2.1"), Some("m-1"))
+        );
+        let r = row(&sum, &choice, SourceKind::Scripted, 1, None, None);
+        assert!(r["harness"].is_null() && r["model"].is_null());
     }
 
     /// Bias-only weights: `gather_wood` over `explore`, `craft:*` over both.

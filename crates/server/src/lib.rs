@@ -39,6 +39,8 @@ pub mod anomaly;
 pub mod auth;
 /// The scripted policy behind another source: a body never stands still.
 pub mod autopilot;
+/// GatesBench: a mind scored on fresh private islands (`jev-bot --bench`).
+pub mod bench;
 pub mod boot;
 pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.

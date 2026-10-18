@@ -2672,7 +2672,7 @@ fn test_input_sel_domain_is_enforced() {
     // Offsets derived from `KIND_BITS`, never typed: v27 widened it 3 → 4
     // and a literal here silently moved every field this test pokes —
     // and v61 shrank `first_client_tick:32` to `playout_ticks:4`, which
-    // moved it again. v126's `pitch_fine` is eight more frame bits.
+    // moved it again. v127's `pitch_fine` is eight more frame bits.
     let sel_bit = KIND_BITS as usize + 16 + 32 + 4 + 4 + 16 + 56;
     for b in 0..3 {
         let bit = sel_bit + b;

@@ -1250,11 +1250,14 @@ pub use voice::{
 /// lever; `SUB_WHEEL_SPIN` (104) tells everyone where the wheel will land,
 /// `SUB_WHEEL_BET` (105) and `SUB_WHEEL_PAID` (106) answer a bettor, and
 /// `SUB_SLOTS` (107) a spinner.
-/// v126 — guns v1: an input frame carries `pitch_fine` (8 bits after
+/// v126 — the Abyss Rug: a deploy archetype (22, `ARCH_RUG`) both ends
+/// admit, a flat cloth floor piece whose row's comfort warms a body with no
+/// fire.
+/// v127 — guns v1: an input frame carries `pitch_fine` (8 bits after
 /// `pitch`), so a shot is aimed finer than `pitch`'s 0.7° steps; and a
 /// firearm's `EV_SHOT` names where the round went (its cone applied, the
 /// fine pitch in `b`'s top byte) and how far it flew (`c`, decimetres).
-pub const PROTO_VER: u16 = 126;
+pub const PROTO_VER: u16 = 127;
 
 /// This game's slug in the elo catalog.
 ///

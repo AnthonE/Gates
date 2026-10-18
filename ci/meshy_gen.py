@@ -43,12 +43,23 @@ charge themselves part of the other's spend: measured 2026-09-01, two
 concurrent assets reported 48 and 39 against a true combined 72. Run them
 serially if the per-asset figure matters, or record the total and say so.
 
+`--ref FILE` (up to five) turns stage 1 into `image-to-image`: the prompt
+describes the object and the files are what it must look like. That is how
+a real mark reaches an asset -- the Abyss Rug's logo came from abyss.trading's
+own icon -- where a text prompt alone draws something logo-shaped. Leave out
+`--mesh-prompt` to texture the mesh from the image itself rather than from
+words. ⚠ Not for flat things: a rug's three-quarter view came back as a box
+(`MANIFEST.md`, the Abyss Rug), so there the image is the deliverable.
+
 Usage:
-  ci/meshy_gen.py <slug> --image-prompt "..." --mesh-prompt "..." --out DIR
+  ci/meshy_gen.py <slug> --image-prompt "..." [--mesh-prompt "..."] --out DIR
+                  [--ref FILE ...]
   ci/meshy_gen.py <slug> ... --resume-image ID --resume-mesh ID   (poll only;
-      both prompts and --out are still required, and --multiview if it was)
+      the prompts and --out are still required, and --ref and --multiview
+      if they were)
 """
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -113,11 +124,18 @@ def fetch(url, dest):
     return os.path.getsize(dest)
 
 
+def data_uri(path):
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp"}[ext]
+    return f"data:image/{mime};base64," + base64.b64encode(open(path, "rb").read()).decode()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("slug")
     ap.add_argument("--image-prompt", required=True)
-    ap.add_argument("--mesh-prompt", required=True)
+    ap.add_argument("--mesh-prompt",
+                    help="texture prompt; omit to texture from the image itself")
     ap.add_argument("--out", required=True)
     ap.add_argument("--aspect", default="1:1")
     # A site stands once on an island; a boulder stands a thousand times, so
@@ -128,6 +146,9 @@ def main():
     # See the --multiview note in the header: one view of a rock is a slab.
     ap.add_argument("--multiview", action="store_true",
                     help="ask for several viewpoints and reconstruct from all of them")
+    ap.add_argument("--ref", action="append", default=[],
+                    help="reference image file (repeatable, max 5): stage 1 "
+                         "becomes image-to-image")
     ap.add_argument("--resume-image", help="skip stage 1, use this task id")
     ap.add_argument("--resume-mesh", help="skip stage 2, use this task id")
     a = ap.parse_args()
@@ -139,19 +160,22 @@ def main():
     # ── Stage 1 · the reference image ────────────────────────────────────
     # `nano-banana-pro` rather than `nano-banana`: the recipe names it, and
     # the image is what the mesh stage's quality rests on.
+    img_ep = "/openapi/v1/image-to-image" if a.ref else "/openapi/v1/text-to-image"
     if a.resume_image:
         img_id = a.resume_image
     else:
-        img_id = call("POST", "/openapi/v1/text-to-image", {
+        img_id = call("POST", img_ep, {
             "ai_model": "nano-banana-pro",
             "prompt": a.image_prompt,
+            **({"reference_image_urls": [data_uri(f) for f in a.ref[:5]]}
+               if a.ref else {}),
             # The two are mutually exclusive: the API refuses an
             # `aspect_ratio` alongside `generate_multi_view` (400), because a
             # multi-view sheet has a shape of its own.
             **({"generate_multi_view": True} if a.multiview
                else {"aspect_ratio": a.aspect}),
         })["result"]
-    img = wait("/openapi/v1/text-to-image", img_id, "image")
+    img = wait(img_ep, img_id, "image")
     urls = [u for u in (img.get("image_urls") or [img.get("image_url")]) if u]
     if not urls:
         sys.exit(f"image {img_id} succeeded with no image url: {img}")
@@ -173,7 +197,7 @@ def main():
             "should_texture": True,
             "enable_pbr": True,
             "texture_resolution": "2k",
-            "texture_prompt": a.mesh_prompt,
+            **({"texture_prompt": a.mesh_prompt} if a.mesh_prompt else {}),
             "auto_size": True,
             "origin_at": "bottom",
             **({"target_polycount": a.tris} if a.tris else {}),
@@ -227,6 +251,8 @@ def main():
         "image_task": img_id,
         "mesh_task": mesh_id,
         "image_model": "nano-banana-pro",
+        "image_stage": img_ep.rsplit("/", 1)[-1],
+        "references": [os.path.basename(f) for f in a.ref],
         "mesh_model": mesh_ep.rsplit("/", 1)[-1],
         "views": len(urls),
         "target_polycount": a.tris,

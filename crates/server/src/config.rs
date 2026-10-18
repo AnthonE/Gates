@@ -257,7 +257,8 @@ pub struct ShardConfig {
     /// A Discord webhook the wipe's results are posted to. Off by default.
     pub discord_webhook: Option<String>,
     /// What may leave through THE EXCHANGE (`standings::Exits`):
-    /// `extract_cap` JUNK a wallet a wipe, less `extract_fee_pct`. Zero by
+    /// `extract_cap` JUNK a wallet a wipe, less `extract_fee_pct`, paid only
+    /// to wallets that played `extract_min_minutes` this wipe. Zero by
     /// default — nothing leaves until the operator arms it (`ALPHA.md` §2).
     pub exits: crate::standings::Exits,
     /// Lines told to each player a few seconds after they join, in order
@@ -311,6 +312,12 @@ pub struct ShardConfig {
     /// so at least one seat is always a person's. Refused outright when
     /// `require_auth` is set, because an inhabitant handshakes as a guest.
     pub population: usize,
+    /// **The most declared agents (`HELLO_AGENT`) seated at once**
+    /// (`agent_seats`). A joining agent meets `REFUSE_FULL` once the shard's
+    /// connected-agent gauge reaches it, so the rest of the seats stay a
+    /// person's however many agents dial. People are never counted against
+    /// it. Zero is the shipping default and caps nothing.
+    pub agent_seats: u32,
     /// Which congestion controller quinn runs (`cc = "cubic" | "bbr"`).
     ///
     /// **CUBIC is the default and stays the default.** `NETCODE.md` §2.1
@@ -436,6 +443,7 @@ impl ShardConfig {
             exits: crate::standings::Exits {
                 cap: 0,
                 fee_pct: DEFAULT_EXTRACT_FEE_PCT,
+                min_minutes: 0,
             },
             motd: Vec::new(),
             min_client: 0,
@@ -443,6 +451,7 @@ impl ShardConfig {
             anomaly_file: None,
             ban_file: None,
             population: 0,
+            agent_seats: 0,
             spectate: Spectate::OFF,
             team_max: protocol::TEAM_MAX as u8,
         }
@@ -625,6 +634,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut anomaly_file: Option<String> = None;
     let mut ban_file: Option<String> = None;
     let mut population: Option<usize> = None;
+    let mut agent_seats: u32 = 0;
     let mut team_max: Option<u8> = None;
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
@@ -643,6 +653,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut exits = crate::standings::Exits {
         cap: 0,
         fee_pct: DEFAULT_EXTRACT_FEE_PCT,
+        min_minutes: 0,
     };
     let mut skins_all: Option<bool> = None;
     let mut skins_timeout_secs: Option<u64> = None;
@@ -1094,6 +1105,14 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     format!("shard.toml line {}: extract_fee_pct is 0..=100", n + 1)
                 })?;
             }
+            "extract_min_minutes" => {
+                exits.min_minutes = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: extract_min_minutes must be whole minutes",
+                        n + 1
+                    )
+                })?;
+            }
             "motd" => {
                 if motd.len() >= MOTD_MAX_LINES {
                     return Err(format!(
@@ -1211,6 +1230,15 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ));
                 }
                 population = Some(v);
+            }
+            "agent_seats" => {
+                agent_seats = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: agent_seats must be a whole number of \
+                         seats (0 caps nothing, which is the default)",
+                        n + 1
+                    )
+                })?;
             }
             // Refused rather than defaulted on an unknown value: an
             // operator who typed `cc = "bbr2"` wanted something other than
@@ -1471,6 +1499,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         ban_file,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
+        agent_seats,
         spectate,
         team_max: team_max.unwrap_or(protocol::TEAM_MAX as u8),
     })
@@ -1600,9 +1629,15 @@ mod tests {
         assert!(!cfg.prizes.armed(), "a shard pays nothing by default");
         assert_eq!(cfg.prizes.min_minutes, DEFAULT_PRIZE_MIN_MINUTES);
         assert_eq!(cfg.exits.cap, 0, "and lets nothing leave by default");
-        let cfg =
-            parse_shard_toml(&format!("{base}extract_cap = 1000\nextract_fee_pct = 5\n")).unwrap();
-        assert_eq!((cfg.exits.cap, cfg.exits.fee_pct), (1000, 5));
+        assert_eq!(cfg.exits.min_minutes, 0, "and pays every wallet that does");
+        let cfg = parse_shard_toml(&format!(
+            "{base}extract_cap = 1000\nextract_fee_pct = 5\nextract_min_minutes = 120\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            (cfg.exits.cap, cfg.exits.fee_pct, cfg.exits.min_minutes),
+            (1000, 5, 120)
+        );
         assert!(parse_shard_toml(&format!("{base}extract_fee_pct = 101\n")).is_err());
         let cfg = parse_shard_toml(&format!(
             "{base}prize_ticker = \"JUNK\"\nprize_island = \"500, 300,200\"\n\
@@ -1973,6 +2008,23 @@ mod auth_cfg_tests {
         ] {
             let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
             assert!(err.contains("dev_arc_hour"), "{err}");
+        }
+    }
+
+    #[test]
+    fn agent_seats_default_off_and_read_whole_numbers() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert_eq!(parse_shard_toml(base).unwrap().agent_seats, 0);
+        assert_eq!(ShardConfig::ephemeral(1).agent_seats, 0);
+        let capped = parse_shard_toml(&format!("{base}agent_seats = 80\n")).unwrap();
+        assert_eq!(capped.agent_seats, 80);
+        for bad in [
+            "agent_seats = -1\n",
+            "agent_seats = most\n",
+            "agent_seats = \n",
+        ] {
+            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
+            assert!(err.contains("agent_seats"), "{err}");
         }
     }
 

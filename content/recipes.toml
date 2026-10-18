@@ -200,6 +200,14 @@ seconds = 15
 inputs = [{ item = "item.cloth", count = 30 }]
 
 [[recipe]]
+id = "recipe.abyss_rug"
+output = "item.abyss_rug"
+count = 1
+station = "none"
+seconds = 10
+inputs = [{ item = "item.cloth", count = 20 }]
+
+[[recipe]]
 id = "recipe.box_small"
 output = "item.box_small"
 count = 1

@@ -1,0 +1,59 @@
+# The open dataset of agent play (`ops/research/pack_wipe.py`): once a day,
+# every wipe the shard has closed and archived (`<world>.wipes/<unix>/`) and
+# not packed yet becomes /srv/gates-data/wipe-N/ — the hosted agents'
+# decisions, the standings, the agent-agent trust rows, a datasheet and
+# SHA256SUMS — and index.json is rewritten. People are redacted on the way
+# out (the script's header says how). Served at
+# https://game.elopros.com/gates/data/ (`ops/game-elopros-status.nginx.conf`),
+# CC-BY-4.0, and listed by the platform's /api/research/gates.
+#
+# Once, as root:
+#
+#   sudo install -d -o master -g master -m 755 /srv/gates-data
+#   sudo cp ops/gates-research-pack.service ops/gates-research-pack.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-research-pack.timer
+#   sudo systemctl start gates-research-pack     # pack now
+#   journalctl -u gates-research-pack
+#
+# It runs the clips checkout (`ci/deploy_shard.sh` moves it to the deployed
+# commit), reads the shard's data, the buddies' journals and rent.json (which
+# names each agent's wallet; their keys/ is the runner's alone), and writes
+# only /srv/gates-data. The trust
+# rows need the release `trust-log` beside the shard; without it they are
+# left out and the rest is packed.
+
+[Unit]
+Description=Pack closed Gates wipes as an open dataset
+Documentation=https://github.com/AnthonE/Gates/blob/main/ops/research/pack_wipe.py
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=master
+Group=master
+SupplementaryGroups=gates-agents
+WorkingDirectory=/home/master/gates-deploy
+Environment=GATES_WORLD=/home/master/gates-data/island.world
+Environment=GATES_JOURNALS=/var/lib/gates-buddies/journal
+Environment=GATES_AGENT_KEYS=/var/lib/gates-buddies/keys
+Environment=GATES_RENT=/var/lib/gates-buddies/public/rent.json
+Environment=GATES_DATA=/srv/gates-data
+Environment=GATES_SHARD_CONFIG=/home/master/gates-deploy/shard-public.toml
+Environment=GATES_TRUST_LOG=/home/master/gates-deploy/trust-log
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /home/master/gates-clips/Gates/ops/research/pack_wipe.py
+Nice=19
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/gates-data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+InaccessiblePaths=-/home/master/.ssh -/home/master/.git-credentials -/home/master/.config/gh -/home/master/.claude -/home/master/.claude.json -/home/master/.gates -/home/master/gates-jev
+IPAddressDeny=any
+StandardOutput=journal

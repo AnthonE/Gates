@@ -233,7 +233,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--agent-harness NAME] [--agent-model NAME] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls. --agent-harness and --agent-model say what plays it (at most 48 of A-Z a-z 0-9 space . _ : / @ + -): written into --record rows and, with --set-face, onto its Elo Pros face.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -279,6 +279,14 @@ pub struct MindArgs {
     pub voice: bool,
     /// Where every decision is recorded for distilling (`--record DIR`).
     pub record: Option<std::path::PathBuf>,
+    /// What plays this body, as the platform labels it (`--agent-harness`,
+    /// `--agent-model`; `agentkey::label_ok`): self-declared, like
+    /// `HELLO_AGENT`. Written into `--record` rows and signed onto the face
+    /// by `--set-face`. `Some("")` clears a face's label.
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    /// Counts what the mind decides and who decided it (`bench.rs`).
+    pub tally: Option<std::sync::Arc<crate::bench::Tally>>,
 }
 
 /// `--autopilot-s`'s default: a long think for a big model, well inside the
@@ -302,6 +310,9 @@ impl Default for MindArgs {
             autopilot: AUTOPILOT_DEFAULT,
             voice: false,
             record: None,
+            harness: None,
+            model: None,
+            tally: None,
         }
     }
 }
@@ -376,6 +387,19 @@ impl MindArgs {
                     _ => return Err("--alone is autopilot or think".into()),
                 };
             }
+            "--agent-harness" | "--agent-model" => {
+                let label = args.next().ok_or_else(|| format!("{arg} needs a name"))?;
+                if !agentkey::label_ok(&label) {
+                    return Err(format!(
+                        "{arg} is at most {} of A-Z a-z 0-9 space . _ : / @ + -",
+                        agentkey::LABEL_MAX
+                    ));
+                }
+                match arg {
+                    "--agent-harness" => self.harness = Some(label),
+                    _ => self.model = Some(label),
+                }
+            }
             "--external" => {
                 let program = args.next().ok_or("--external needs a program")?;
                 self.source = Source::External(program, args.collect());
@@ -394,6 +418,17 @@ impl MindArgs {
             friend: self.friend,
             society: None,
             code_doors: false,
+        }
+    }
+
+    /// The source in one word, as a bug report and a bench result name it.
+    pub fn word(&self) -> &'static str {
+        match self.source {
+            Source::Jev => "jev",
+            Source::Scripted => "scripted",
+            Source::External(..) => "external",
+            Source::Mcp => "mcp",
+            Source::Student(_) => "student",
         }
     }
 
@@ -490,11 +525,33 @@ impl MindArgs {
         }
     }
 
-    /// The decision worker for `source`, recording what it decides when
-    /// `--record` named a directory.
+    /// `--agent-harness` and `--agent-model` as a row names them: `None`
+    /// when unset or cleared.
+    pub fn labels(&self) -> (Option<&str>, Option<&str>) {
+        fn set(l: &Option<String>) -> Option<&str> {
+            l.as_deref().filter(|l| !l.is_empty())
+        }
+        (set(&self.harness), set(&self.model))
+    }
+
+    /// The decision worker for `source`, counted when a bench is counting
+    /// and recording what it decides when `--record` named a directory.
     fn start(&self, source: impl DecisionSource, cfg: MindConfig) -> Result<Mind, String> {
+        match &self.tally {
+            Some(t) => self.recorded(crate::bench::Counted::new(source, t.clone()), cfg),
+            None => self.recorded(source, cfg),
+        }
+    }
+
+    fn recorded(&self, source: impl DecisionSource, cfg: MindConfig) -> Result<Mind, String> {
         match &self.record {
-            Some(dir) => Mind::new(crate::distill::Recorder::open(source, dir)?, cfg),
+            Some(dir) => {
+                let (harness, model) = self.labels();
+                Mind::new(
+                    crate::distill::Recorder::open(source, dir, harness, model)?,
+                    cfg,
+                )
+            }
             None => Mind::new(source, cfg),
         }
     }
@@ -515,9 +572,10 @@ pub fn local_content() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content"))
 }
 
-pub async fn spawn_local_with_content(
-    content_dir: &std::path::Path,
-) -> Result<crate::net::ShardHandle, String> {
+/// A local island's config: `shard.toml.example`'s seed on a loopback port,
+/// guests welcome, nobody seated but who dials, everyone landing at one
+/// spawn.
+pub fn local_config() -> Result<crate::config::ShardConfig, String> {
     let mut cfg = crate::config::parse_shard_toml(include_str!("../../../shard.toml.example"))?;
     cfg.bind = "127.0.0.1:0".parse().expect("loopback");
     cfg.require_auth = false;
@@ -527,6 +585,31 @@ pub async fn spawn_local_with_content(
     // only a viewer on this machine can reach them; a remote viewer needs a
     // routable bind and a fixed UDP port, which is an operator's call.
     cfg.spectate = crate::config::Spectate::on();
+    Ok(cfg)
+}
+
+pub async fn spawn_local_with_content(
+    content_dir: &std::path::Path,
+) -> Result<crate::net::ShardHandle, String> {
+    boot_local(local_config()?, content_dir).await
+}
+
+/// A bench island (`bench.rs`): the local one, with its standings kept
+/// beside `base` (`<base>.standings`, written when it shuts down). Nothing
+/// else is kept: the world and the players are not saved.
+pub async fn spawn_bench(
+    content_dir: &std::path::Path,
+    base: &std::path::Path,
+) -> Result<crate::net::ShardHandle, String> {
+    let mut cfg = local_config()?;
+    cfg.world_file = Some(base.display().to_string());
+    boot_local(cfg, content_dir).await
+}
+
+async fn boot_local(
+    cfg: crate::config::ShardConfig,
+    content_dir: &std::path::Path,
+) -> Result<crate::net::ShardHandle, String> {
     let content = content::Content::load_dir(content_dir).map_err(|e| format!("content: {e}"))?;
     crate::net::spawn_shard(
         cfg,
@@ -608,6 +691,15 @@ mod tests {
                 .alone_autopilot
         );
         assert!(parse("--alone nap").is_err());
+        let labelled =
+            parse("--agent-harness claude-code/2.1 --agent-model test-model --scripted").unwrap();
+        assert_eq!(
+            labelled.labels(),
+            (Some("claude-code/2.1"), Some("test-model"))
+        );
+        assert!(parse("--agent-harness my\"harness").is_err());
+        assert!(parse(&format!("--agent-model {}", "m".repeat(49))).is_err());
+        assert_eq!(parse("--scripted").unwrap().labels(), (None, None));
     }
 
     /// Off this machine the owner is handed the public page, which takes

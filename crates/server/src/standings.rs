@@ -194,13 +194,18 @@ impl Prizes {
 }
 
 /// What may leave through the exchange (`shard.toml` `extract_cap`,
-/// `extract_fee_pct`). A zero cap lets nothing out.
+/// `extract_fee_pct`, `extract_min_minutes`). A zero cap lets nothing out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Exits {
     /// JUNK a wallet may take out a wipe, before the exchange's ceiling.
     pub cap: u64,
     /// Per cent of what goes through that is burnt, never credited.
     pub fee_pct: u64,
+    /// Minutes a wallet must have played this wipe for what it extracted to
+    /// reach the payout file. Zero pays every wallet. A wallet that only
+    /// carries someone else's Junk to the exchange plays a few minutes; the
+    /// cap is per wallet, so without this a farm of fresh wallets multiplies it.
+    pub min_minutes: u32,
 }
 
 /// A key that is a real wallet: `0x` and forty hex digits, not the guest.
@@ -551,13 +556,16 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// One row of a saved standings file, as the wipe reads it back.
-struct Saved {
-    key: String,
-    label: String,
-    scores: [u64; BOARDS],
-    played: u32,
-    agent: bool,
-    extracted: u64,
+pub struct Saved {
+    pub key: String,
+    pub label: String,
+    /// Whole points by board, in wire order: THE ISLAND, THE WORKS, THE
+    /// HOARD, THE FIGHT (kills).
+    pub scores: [u64; BOARDS],
+    pub deaths: u32,
+    pub played: u32,
+    pub agent: bool,
+    pub extracted: u64,
 }
 
 fn read_saved(text: &str) -> Vec<Saved> {
@@ -573,12 +581,26 @@ fn read_saved(text: &str) -> Vec<Saved> {
             key: f[1].to_string(),
             label: f.get(ROW_FIELDS - 1).copied().unwrap_or("").to_string(),
             scores: [island, (given + deeds) / 100, hoard / 100, kills],
+            deaths: n(5) as u32,
             played: n(8) as u32,
             agent: n(9) & FLAG_AGENT != 0,
             extracted: n(10),
         });
     }
     out
+}
+
+/// Every row of `<base>.standings` by key, as the wipe reads them; empty
+/// when there is no file. What the bench scores a run by (`bench.rs`).
+pub fn saved_rows(base: &Path) -> BTreeMap<String, Saved> {
+    std::fs::read_to_string(standings_path(base))
+        .map(|t| {
+            read_saved(&t)
+                .into_iter()
+                .map(|r| (r.key.clone(), r))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Whether wipe `wipe` is already closed into the hall beside `base`: its
@@ -609,7 +631,12 @@ type Owed = (u64, Vec<String>);
 /// `end_world`, before `wipe::apply` archives the standings): each board's
 /// podium and prizes into the hall, everyone's island placing into
 /// `.lastwipe`, and what is owed to whom into the payout files.
-pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, String> {
+pub fn close_wipe(
+    base: &Path,
+    wipe: u32,
+    prizes: &Prizes,
+    exits: &Exits,
+) -> Result<Closed, String> {
     let mut closed = Closed {
         ticker: prizes.ticker.clone(),
         ..Closed::default()
@@ -631,12 +658,19 @@ pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, Str
     // Keyed (address, ticker): prizes and extraction may be different coins.
     let mut owed: BTreeMap<(String, String), Owed> = BTreeMap::new();
     for r in rows.iter().filter(|r| r.extracted > 0 && is_wallet(&r.key)) {
+        hall.push_str(&format!("extract\t{wipe}\t{}\t{}\n", r.extracted, r.key));
+        if r.played < exits.min_minutes {
+            println!(
+                "wipe {wipe}: {} extracted {} but played {} of {} minutes: not paid",
+                r.key, r.extracted, r.played, exits.min_minutes
+            );
+            continue;
+        }
         let e = owed
             .entry((r.key.clone(), EXTRACT_TICKER.to_string()))
             .or_default();
         e.0 += r.extracted;
         e.1.push(format!("EXTRACTED {}", r.extracted));
-        hall.push_str(&format!("extract\t{wipe}\t{}\t{}\n", r.extracted, r.key));
     }
     for board in 0..BOARDS as u8 {
         let b = Board::rank(
@@ -1063,9 +1097,10 @@ impl Standings {
     }
 
     /// `units` of JUNK went through the exchange for `key`: the fee burns,
-    /// the rest is credited.
+    /// the rest is credited. The fee rounds up, so splitting a stack into
+    /// small runs does not dodge it.
     pub fn extracted(&mut self, key: &str, label: &str, units: u32) {
-        let fee = units as u64 * self.exits.fee_pct.min(100) / 100;
+        let fee = (units as u64 * self.exits.fee_pct.min(100)).div_ceil(100);
         if let Some(row) = self.row(key, label) {
             row.taken = row.taken.saturating_add(units as u64);
             row.extracted = row.extracted.saturating_add(units as u64 - fee);
@@ -1516,6 +1551,7 @@ mod tests {
         s.exits = Exits {
             cap: 150,
             fee_pct: 2,
+            min_minutes: 0,
         };
         assert_eq!(s.allowance(CAROL, 100), 150);
         s.extracted(CAROL, "", 100);
@@ -1536,6 +1572,21 @@ mod tests {
         assert_eq!(s.would_win(BOARD_FIGHT, BOT), 0);
         s.save_now().unwrap();
 
+        // What the bench reads: whole points by board, and the fight's both
+        // sides.
+        s.kill(Some((BOT, "BOT")), Some((CAROL, "CAROL")));
+        s.save_now().unwrap();
+        let rows = saved_rows(&base);
+        let (bot, carol) = (&rows[BOT], &rows[CAROL]);
+        assert_eq!((bot.scores[BOARD_FIGHT as usize], bot.deaths), (3, 0));
+        assert_eq!((carol.scores[BOARD_FIGHT as usize], carol.deaths), (1, 1));
+        assert!(bot.agent && !carol.agent);
+        assert_eq!(
+            rows[ALICE].scores[BOARD_ISLAND as usize],
+            s.row_of(ALICE).unwrap().score(BOARD_ISLAND, &rules())
+        );
+        assert!(saved_rows(&dir.join("nothing")).is_empty());
+
         // A restart mid-wipe reads the same rows back.
         let again = Standings::open(rules(), prizes.clone(), Some(&base), 3);
         assert_eq!(again.row_of(ALICE), s.row_of(ALICE));
@@ -1546,7 +1597,7 @@ mod tests {
         assert!(next.row_of(ALICE).is_none());
 
         assert!(!is_closed(&base, 3));
-        let closed = close_wipe(&base, 3, &prizes).unwrap();
+        let closed = close_wipe(&base, 3, &prizes, &s.exits).unwrap();
         assert!(is_closed(&base, 3), "a closed wipe is not closed twice");
         assert!(!is_closed(&base, 4));
         assert_eq!(closed.winner.as_deref(), Some("ALICE (1600)"));
@@ -1600,6 +1651,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A wallet below `extract_min_minutes` is left out of the payout file,
+    /// though the hall still records what it took out; and the fee rounds up,
+    /// so 40 at 2% burns 1 rather than nothing.
+    #[test]
+    fn extraction_pays_only_wallets_that_played_and_the_fee_rounds_up() {
+        let dir = std::env::temp_dir().join(format!("gates-extract-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("world.bin");
+        let prizes = Prizes::default();
+        let mut s = Standings::open(rules(), prizes.clone(), Some(&base), 3);
+        s.exits = Exits {
+            cap: 1000,
+            fee_pct: 2,
+            min_minutes: 2,
+        };
+        for _ in 0..2 {
+            s.minute(ALICE, "", false);
+        }
+        s.minute(CAROL, "", false);
+        s.extracted(ALICE, "ALICE", 100);
+        s.extracted(CAROL, "CAROL", 40);
+        assert_eq!(s.row_of(CAROL).unwrap().extracted, 39, "the fee rounds up");
+        s.rebuild();
+        s.save_now().unwrap();
+        let closed = close_wipe(&base, 3, &prizes, &s.exits).unwrap();
+        assert_eq!(
+            closed.paid,
+            vec![(ALICE.to_string(), "ALICE".into(), 98, "JUNK".into())]
+        );
+        let csv = std::fs::read_to_string(payout_path(&base, 3, "csv")).unwrap();
+        assert!(!csv.contains(CAROL), "a minute's play is not paid");
+        assert_eq!(Hall::load(&base).last_extracted.get(CAROL), Some(&39));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `/standings.json` is a website's read: it parses as JSON, a wallet
     /// row names its wallet and a guest or dev key's does not, every board
     /// row says whether it is an agent, and the hall carries the podiums.
@@ -1619,7 +1705,7 @@ mod tests {
         s.kill(Some((GUEST, "")), None);
         s.rebuild();
         s.save_now().unwrap();
-        close_wipe(&base, 3, &prizes).unwrap();
+        close_wipe(&base, 3, &prizes, &Exits::default()).unwrap();
 
         let mut s = Standings::open(rules(), prizes, Some(&base), 4);
         s.gave(CAROL, "CAROL", 1, 4);

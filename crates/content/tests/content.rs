@@ -5029,3 +5029,32 @@ fn the_ash_mask_and_suit_reach_the_ward_cap_and_the_tonic_draws() {
         "a heal would slow a medkit drunk beside it"
     );
 }
+
+/// The Abyss Rug: a baseline craft (20 cloth, no bench, no blueprint) whose
+/// row's comfort bakes to the item's furnish slot, and the only one that does.
+#[test]
+fn the_abyss_rug_is_a_baseline_comfort() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let r = c
+        .recipes
+        .iter()
+        .find(|r| r.output == "item.abyss_rug")
+        .expect("a rug recipe");
+    assert!(!r.blueprint, "the rug is known from the start");
+    assert_eq!(r.inputs.len(), 1);
+    assert_eq!(
+        (r.inputs[0].item.as_str(), r.inputs[0].count),
+        ("item.cloth", 20)
+    );
+    let sc = c.bake_survival().expect("survival bakes");
+    let ex = &sc.exposure;
+    let rug = c.item_index("item.abyss_rug").expect("rug") as usize;
+    assert_eq!((ex.furnish[rug], ex.furnish_radius_cm[rug]), (150, 300));
+    let others = ex
+        .furnish
+        .iter()
+        .enumerate()
+        .filter(|&(i, &v)| v > 0 && i != rug)
+        .count();
+    assert_eq!(others, 0, "only the rug furnishes");
+}

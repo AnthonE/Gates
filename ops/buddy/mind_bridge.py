@@ -26,7 +26,9 @@ harness has been quiet for BUDDY_OWN_IDLE_S. `initialize` and `tools/list`
 are answered from the last body's answers when there is no body, so opening
 a harness that never plays brings nobody in. Each answered `act` goes in the
 agent's journal, the same line `claude_agent.py` writes, so the page's live
-line and the daily recap work for an own brain too.
+line and the daily recap work for an own brain too. The line names the
+harness its `initialize` said it was (`clientInfo`); the turns the autopilot
+plays for a quiet harness never come through here.
 """
 import hashlib
 import hmac
@@ -48,6 +50,26 @@ REFRESH_S = 10.0     # an unknown token asks for a fresh feed at most this often
 # What the journal keeps of an observation (`claude_agent.py` JOURNAL_OBS).
 JOURNAL_OBS = ("health", "food", "water", "threats", "last_fight", "last_goal",
                "current_goal", "deaths", "respawns")
+
+
+LABEL = re.compile(r"[^A-Za-z0-9 ._:/@+-]")
+LABEL_MAX = 48
+
+
+def label(v):
+    """A harness or model label as the platform takes one (1-48 of
+    [A-Za-z0-9 ._:/@+-]), or None."""
+    if not isinstance(v, str):
+        return None
+    return LABEL.sub("", v).strip()[:LABEL_MAX].strip() or None
+
+
+def harness_of(info):
+    """`name/version` from an `initialize`'s clientInfo, as a label."""
+    if not isinstance(info, dict) or not isinstance(info.get("name"), str):
+        return None
+    version = info.get("version")
+    return label(f"{info['name']}/{version}" if isinstance(version, str) and version else info["name"])
 
 
 def _clip(v, n):
@@ -156,6 +178,7 @@ class Bridge:
         self.seen = {}       # id -> when its harness last called
         self.asked = {}      # id -> when a tool call last asked for its body
         self.looks = {}      # id -> the last decision its harness was shown
+        self.harness = {}    # id -> the harness its last initialize named
         self.cache = {}      # ("initialize", version) / ("tools/list",) -> result
         self.buckets = {}    # id -> (tokens, at)
         self.flight = {}     # id -> requests in progress
@@ -295,6 +318,10 @@ class Bridge:
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         if method == "initialize":
             key = ("initialize", str(params.get("protocolVersion") or "")[:24])
+            named = harness_of(params.get("clientInfo"))
+            if named:
+                with self.lock:
+                    self.harness[aid] = named
         elif method == "tools/list":
             key = ("tools/list",)
         else:
@@ -346,6 +373,7 @@ class Bridge:
         elif name == "act":
             with self.lock:
                 seen = self.looks.pop(aid, None) or {}
+                harness = self.harness.get(aid)
             obs = seen.get("observation") if isinstance(seen.get("observation"), dict) else {}
             heard = seen.get("heard") if isinstance(seen.get("heard"), list) else []
             # Missing is global, as jev-bot reads it (`external.rs`).
@@ -356,7 +384,8 @@ class Bridge:
                 "reason": _clip(args.get("reason"), 96),
                 "say": _clip(args.get("say"), 48),
                 "to": to if args.get("say") else None,
-                "heard": [{"from": h.get("from"), "friend": bool(h.get("friend")),
+                "heard": [{"from": h.get("from"), "agent": h.get("agent") is True,
+                           "friend": bool(h.get("friend")),
                            "channel": h.get("channel", "local"), "text": h.get("text")}
                           for h in heard if isinstance(h, dict) and not h.get("me")][:20],
                 "friend": seen.get("friend"),
@@ -364,6 +393,10 @@ class Bridge:
                         **({"players": obs["in_view"]["players"]}
                            if isinstance(obs.get("in_view"), dict) and "players" in obs["in_view"] else {})},
                 "brain": "own",
+                "harness": harness,
+                # A harness names no model; the platform face may.
+                "model": None,
+                "answered_by": "harness",
             }
             try:
                 with open(self.journal_path(aid), "a") as f:

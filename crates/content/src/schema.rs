@@ -702,6 +702,9 @@ pub enum DeployArchetype {
     /// body that touches them (`World::prick_deploys`).
     BarricadeBarbed,
     FloorSpikes,
+    /// A rug: a flat cloth floor piece, walked over. Its row's `comfort` is
+    /// what it does.
+    Rug,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -731,6 +734,13 @@ pub struct Deployable {
     /// base's hearth crew) rather than a code lock.
     #[serde(default)]
     pub keyed: bool,
+    /// Comfort, per mille, this deployable gives a body within
+    /// `comfort_radius_cm` of it (a rug's). The best in reach counts, on top
+    /// of a fire's; it needs no fire (`sim_core::exposure::comfort_target`).
+    #[serde(default)]
+    pub comfort: u32,
+    #[serde(default)]
+    pub comfort_radius_cm: u32,
 }
 
 /// What an oven burns (`content/cooking.toml`, `sim-core/oven.rs`).

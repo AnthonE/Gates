@@ -71,6 +71,18 @@ placement = "any"
 matter = "wood"
 hp = 100
 
+# A rug: walked over like the spikes, on the ground or a floor. Comfort is per
+# mille within `comfort_radius_cm`: 15 % with no fire, on top of a fire's, and
+# the best rug in reach counts, so two rugs are one (`World::furnish_comfort`).
+[[deployable]]
+id = "item.abyss_rug"
+archetype = "rug"
+placement = "any"
+matter = "cloth"
+hp = 100
+comfort = 150
+comfort_radius_cm = 300
+
 # A raised bed (crops v0): seeds in its beds grow into a crop on the ovens'
 # sweep, with no fuel and no switch (`sim-core/oven.rs`). On the ground or a
 # floor; a planter is a garden, not a fortification, so it is the box's hp.

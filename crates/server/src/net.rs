@@ -957,6 +957,7 @@ pub async fn spawn_shard(
             min_client: cfg.min_client,
             netsim: cfg.netsim,
             spectate: cfg.spectate,
+            agent_seats: cfg.agent_seats,
         },
         bans,
         ctrl_tx,
@@ -1021,6 +1022,18 @@ struct ShardFacts {
     netsim: Option<crate::config::NetSim>,
     /// The spectator door (`config.rs`, `NETCODE.md` §2.3). Shut by default.
     spectate: crate::config::Spectate,
+    /// `shard.toml agent_seats`: the most declared agents seated at once.
+    /// 0 — the default — caps nothing.
+    agent_seats: u32,
+}
+
+/// Is there a seat for this joiner under `agent_seats`? People always pass;
+/// an agent passes while the connected-agent gauge is below the cap. The
+/// gauge is the sim's, mirrored each tick, so a burst of agents inside one
+/// tick can overshoot by that burst — the cap keeps seats for people, it is
+/// not a hard count.
+fn agent_seat_free(agent_seats: u32, agents_now: u64, is_agent: bool) -> bool {
+    !is_agent || agent_seats == 0 || agents_now < u64::from(agent_seats)
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -2432,6 +2445,15 @@ async fn install(
         address,
         hello,
     } = done;
+    if !agent_seat_free(
+        facts.agent_seats,
+        ShardStats::get(&stats.agents),
+        hello.is_agent(),
+    ) {
+        ShardStats::bump(&stats.refused_agents);
+        spawn_refusal(connection, send, REFUSE_FULL);
+        return None;
+    }
     let Some((slot, generation)) = (0..MAX_PLAYERS).find_map(|s| slots.claim(s).map(|g| (s, g)))
     else {
         ShardStats::bump(&stats.refused_full);
@@ -4889,6 +4911,18 @@ mod tests {
                 && ShardStats::get(&stats.net_sndbuf_bytes) > 0,
             "the send side records both numbers too"
         );
+    }
+
+    #[test]
+    fn agent_seats_hold_the_rest_for_people() {
+        // Off: anyone, however many agents are in.
+        assert!(agent_seat_free(0, 99, true));
+        // Under the cap an agent sits; at it, the next is refused.
+        assert!(agent_seat_free(80, 79, true));
+        assert!(!agent_seat_free(80, 80, true));
+        assert!(!agent_seat_free(80, 81, true));
+        // A person is never counted against it.
+        assert!(agent_seat_free(80, 80, false));
     }
 
     /// The chat limiter is the only wall between one client and everyone

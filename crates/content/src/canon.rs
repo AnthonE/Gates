@@ -272,6 +272,8 @@ pub fn hash(c: &Content) -> u64 {
         }
         h.u(d.hp);
         h.u(u32::from(d.keyed));
+        h.u(d.comfort);
+        h.u(d.comfort_radius_cm);
     }
 
     h.s("loot");

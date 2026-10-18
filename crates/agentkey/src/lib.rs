@@ -301,8 +301,8 @@ impl AgentKey {
     /// sentence. `None` for a field the caller has no business sending: a
     /// name that is not 1–16 printable ASCII, a digest that is not 64 hex
     /// (or `""`, which clears the picture), a kind that is not `agent` or
-    /// `human` (self-declared; an agent says `agent`), a day that is not
-    /// `YYYY-MM-DD`.
+    /// `human` (self-declared; an agent says `agent`), a label that fails
+    /// [`label_ok`], a day that is not `YYYY-MM-DD`.
     /// Returns the exact text signed beside the signature, so a caller can
     /// compare it with what the platform asked for before sending it.
     pub fn sign_face(
@@ -310,10 +310,11 @@ impl AgentKey {
         name: Option<&str>,
         picture_sha256: Option<&str>,
         kind: Option<&str>,
+        labels: Labels,
         at: u64,
         day: &str,
     ) -> Option<(String, Signature)> {
-        let text = face_text(&self.address, name, picture_sha256, kind, at, day)?;
+        let text = face_text(&self.address, name, picture_sha256, kind, labels, at, day)?;
         let sig = self.sign_personal(text.as_bytes());
         Some((text, sig))
     }
@@ -345,6 +346,48 @@ impl AgentKey {
 /// The longest face name the platform takes: the game's wire `Name`.
 pub const FACE_NAME_MAX: usize = 16;
 
+/// The longest harness or model label a face takes.
+pub const LABEL_MAX: usize = 48;
+
+/// What a face says plays it (`jev-bot --agent-harness`, `--agent-model`):
+/// self-declared, like `kind`. `None` leaves a label out of the text, so a
+/// face that names neither signs exactly what it always did; `Some("")`
+/// clears one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Labels<'a> {
+    pub harness: Option<&'a str>,
+    pub model: Option<&'a str>,
+}
+
+impl Labels<'_> {
+    pub const NONE: Self = Labels {
+        harness: None,
+        model: None,
+    };
+}
+
+/// A harness or model label the platform takes: empty (which clears it), or
+/// at most [`LABEL_MAX`] of `A-Z a-z 0-9`, space and `._:/@+-`. No quote and
+/// no backslash, so it signs with no escaping.
+pub fn label_ok(label: &str) -> bool {
+    label.len() <= LABEL_MAX
+        && label
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b" ._:/@+-".contains(&c))
+}
+
+/// `,"key":"label"` into a face's detail; `None` for a label the platform
+/// would refuse.
+fn push_label(detail: &mut String, key: &str, label: Option<&str>) -> Option<()> {
+    if let Some(label) = label {
+        if !label_ok(label) {
+            return None;
+        }
+        detail.push_str(&format!(",\"{key}\":\"{label}\""));
+    }
+    Some(())
+}
+
 /// The platform's signed text for a face change (`playauth.play_message`
 /// over `faces._detail`): `elo play`, the action, the LOWERCASE wallet, the
 /// UTC day and a compact JSON detail with sorted keys. Byte-for-byte what
@@ -354,6 +397,7 @@ fn face_text(
     name: Option<&str>,
     picture_sha256: Option<&str>,
     kind: Option<&str>,
+    labels: Labels,
     at: u64,
     day: &str,
 ) -> Option<String> {
@@ -370,7 +414,8 @@ fn face_text(
         return None;
     }
     let mut detail = format!("{{\"at\":{at}");
-    // Sorted keys: at, kind, name, picture_sha256.
+    // Sorted keys: at, harness, kind, model, name, picture_sha256.
+    push_label(&mut detail, "harness", labels.harness)?;
     if let Some(kind) = kind {
         if !matches!(kind, "agent" | "human") {
             return None;
@@ -379,6 +424,7 @@ fn face_text(
         detail.push_str(kind);
         detail.push('"');
     }
+    push_label(&mut detail, "model", labels.model)?;
     if let Some(name) = name {
         let n = name.as_bytes();
         let printable = n.iter().all(|&c| (0x20..0x7f).contains(&c));
@@ -548,6 +594,7 @@ mod tests {
                 Some("Doctor Wood"),
                 Some(&sha),
                 None,
+                Labels::NONE,
                 1_770_000_000,
                 "2026-10-14",
             )
@@ -562,20 +609,29 @@ mod tests {
         );
         assert_eq!(recover(text.as_bytes(), &sig), k.address());
         let (only_name, _) = k
-            .sign_face(Some("a\"b"), None, None, 5, "2026-01-02")
+            .sign_face(Some("a\"b"), None, None, Labels::NONE, 5, "2026-01-02")
             .unwrap();
         assert!(
             only_name.ends_with(r#"detail: {"at":5,"name":"a\"b"}"#),
             "{only_name}"
         );
-        let (clear, _) = k.sign_face(None, Some(""), None, 5, "2026-01-02").unwrap();
+        let (clear, _) = k
+            .sign_face(None, Some(""), None, Labels::NONE, 5, "2026-01-02")
+            .unwrap();
         assert!(
             clear.ends_with(r#"detail: {"at":5,"picture_sha256":""}"#),
             "{clear}"
         );
         // An agent says so: `kind` sorts between `at` and `name`.
         let (agent, sig) = k
-            .sign_face(Some("Rook"), None, Some("agent"), 5, "2026-01-02")
+            .sign_face(
+                Some("Rook"),
+                None,
+                Some("agent"),
+                Labels::NONE,
+                5,
+                "2026-01-02",
+            )
             .unwrap();
         assert!(
             agent.ends_with(r#"detail: {"at":5,"kind":"agent","name":"Rook"}"#),
@@ -583,7 +639,14 @@ mod tests {
         );
         assert_eq!(recover(agent.as_bytes(), &sig), k.address());
         assert!(k
-            .sign_face(Some("Rook"), None, Some("robot"), 5, "2026-01-02")
+            .sign_face(
+                Some("Rook"),
+                None,
+                Some("robot"),
+                Labels::NONE,
+                5,
+                "2026-01-02"
+            )
             .is_none());
         for (name, pic, day) in [
             (None, None, "2026-01-02"),
@@ -596,10 +659,75 @@ mod tests {
             (Some("ok"), None, "2026-01-02\nx"),
         ] {
             assert!(
-                k.sign_face(name, pic, None, 5, day).is_none(),
+                k.sign_face(name, pic, None, Labels::NONE, 5, day).is_none(),
                 "{name:?} {pic:?} {day:?}"
             );
         }
+    }
+
+    /// **The harness and model join the face only when sent**, in sorted
+    /// place (`at, harness, kind, model, name`): the platform's text, byte
+    /// for byte. An empty label clears one; a label the platform would
+    /// refuse signs nothing.
+    #[test]
+    fn a_face_names_its_harness_and_model_in_sorted_place() {
+        let k = AgentKey::from_secret(&one()).unwrap();
+        let labels = Labels {
+            harness: Some("claude-code/2.1"),
+            model: Some("test-model"),
+        };
+        let (text, sig) = k
+            .sign_face(Some("Rook"), None, Some("agent"), labels, 5, "2026-01-02")
+            .unwrap();
+        assert!(
+            text.ends_with(
+                r#"detail: {"at":5,"harness":"claude-code/2.1","kind":"agent","model":"test-model","name":"Rook"}"#
+            ),
+            "{text}"
+        );
+        assert_eq!(recover(text.as_bytes(), &sig), k.address());
+        let only_model = Labels {
+            model: Some("m 1.0+x@y:z_w"),
+            ..Labels::NONE
+        };
+        let (text, _) = k
+            .sign_face(Some("Rook"), None, None, only_model, 5, "2026-01-02")
+            .unwrap();
+        assert!(
+            text.ends_with(r#"detail: {"at":5,"model":"m 1.0+x@y:z_w","name":"Rook"}"#),
+            "{text}"
+        );
+        let cleared = Labels {
+            harness: Some(""),
+            model: Some(""),
+        };
+        let (text, _) = k
+            .sign_face(Some("Rook"), None, None, cleared, 5, "2026-01-02")
+            .unwrap();
+        assert!(
+            text.ends_with(r#"detail: {"at":5,"harness":"","model":"","name":"Rook"}"#),
+            "{text}"
+        );
+        let forty_nine = "x".repeat(LABEL_MAX + 1);
+        for bad in [
+            "a\"b",
+            "back\\slash",
+            "new\nline",
+            "tab\t",
+            "é",
+            forty_nine.as_str(),
+        ] {
+            let l = Labels {
+                harness: Some(bad),
+                ..Labels::NONE
+            };
+            assert!(
+                k.sign_face(Some("Rook"), None, None, l, 5, "2026-01-02")
+                    .is_none(),
+                "{bad:?}"
+            );
+        }
+        assert!(label_ok(&"x".repeat(LABEL_MAX)) && label_ok(""));
     }
 
     /// A different domain is a different message — the signature a relay

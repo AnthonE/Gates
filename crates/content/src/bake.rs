@@ -511,6 +511,7 @@ impl Content {
                     DeployArchetype::Vending => sim_core::deploy::ARCH_VENDING,
                     DeployArchetype::BarricadeBarbed => sim_core::deploy::ARCH_BARRICADE_BARBED,
                     DeployArchetype::FloorSpikes => sim_core::deploy::ARCH_FLOOR_SPIKES,
+                    DeployArchetype::Rug => sim_core::deploy::ARCH_RUG,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -1406,6 +1407,16 @@ impl Content {
             // Per cent to per mille of chill kept out, and of the Verdigris.
             ex.warmth[idx] = (a.cold_pct * 10) as i16;
             ex.ward[idx] = (a.fel_pct * 10) as u16;
+        }
+        // Furnishings (a rug): comfort per item, read where the sim finds a
+        // placed deployable's item (`World::furnish_comfort`).
+        for d in self.deployables.iter().filter(|d| d.comfort > 0) {
+            let idx = self
+                .item_index(&d.id)
+                .ok_or_else(|| format!("bake: deployable `{}` names no item", d.id))?
+                as usize;
+            ex.furnish[idx] = u16f(d.comfort, "comfort")?;
+            ex.furnish_radius_cm[idx] = u16f(d.comfort_radius_cm, "comfort_radius_cm")?;
         }
         for con in &self.consumables {
             let idx = self

@@ -380,7 +380,7 @@ fn every_solid_deploy_blocks_what_it_draws() {
 
     assert_eq!(
         DEPLOY_VOL.len(),
-        sim_core::deploy::ARCH_FLOOR_SPIKES as usize + 1,
+        sim_core::deploy::ARCH_RUG as usize + 1,
         "the sim volume table and the archetype space drifted"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
@@ -411,6 +411,7 @@ fn every_solid_deploy_blocks_what_it_draws() {
                             | ARCH_WINDOW_GLASS
                             | ARCH_WINDOW_SHUTTER
                             | sim_core::deploy::ARCH_FLOOR_SPIKES
+                            | sim_core::deploy::ARCH_RUG
                     ),
                     "arch {arch} became walk-over without the doc's excuse list"
                 );
