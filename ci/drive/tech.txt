@@ -18,8 +18,8 @@ shot 01-bench
 key e
 sleep 3
 shot 02-tree
-# the first root (the metal hatchet)
-moveto 314 186
+# the first root (the salvaged hammer)
+moveto 270 186
 click 1
 sleep 2
 shot 03-selected
@@ -28,8 +28,8 @@ moveto 1179 680
 click 1
 sleep 3
 shot 04-unlocked
-# the hatchet's child opens
-moveto 314 270
+# the hammer's first child (the metal hatchet) opens
+moveto 270 270
 click 1
 sleep 2
 shot 05-child
