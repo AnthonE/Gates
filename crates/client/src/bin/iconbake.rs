@@ -353,20 +353,61 @@ const SUBJECTS: &[Subject] = &[
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
     kit("wood_shutters", [90.0, 0.0, 0.0]),
-    // Rust's tree items (2026-10-17).
-    kit_long("salvaged_hammer", -45.0),
-    kit_long("salvaged_sword", -45.0),
-    kit_long("mace", -45.0),
-    kit_long("salvaged_cleaver", -45.0),
-    kit_long("longsword", -45.0),
-    kit_long("salvaged_axe", -45.0),
-    kit_long("salvaged_icepick", -45.0),
-    kit("coffee_can_helmet", [30.0, 0.0, 0.0]),
-    kit("tank_top", [30.0, -20.0, 0.0]),
-    kit("beancan_grenade", [30.0, 0.0, 0.0]),
-    kit("barbed_wooden_barricade", [0.0, 0.0, 0.0]),
-    kit("wooden_floor_spikes", [30.0, 0.0, 0.0]),
-    kit("boots", [70.0, 15.0, 0.0]),
+    // Rust's tree items (2026-10-17; Meshy, 2026-10-18).
+    long(
+        "salvaged_hammer",
+        Src::Glb("models/held/salvaged_hammer.glb"),
+        1.9,
+    ),
+    long(
+        "salvaged_sword",
+        Src::Glb("models/held/salvaged_sword.glb"),
+        1.9,
+    ),
+    long("mace", Src::Glb("models/held/mace.glb"), 1.9),
+    long(
+        "salvaged_cleaver",
+        Src::Glb("models/held/salvaged_cleaver.glb"),
+        1.9,
+    ),
+    long("longsword", Src::Glb("models/held/longsword.glb"), 1.9),
+    long(
+        "salvaged_axe",
+        Src::Glb("models/held/salvaged_axe.glb"),
+        1.9,
+    ),
+    long(
+        "salvaged_icepick",
+        Src::Glb("models/held/salvaged_icepick.glb"),
+        1.9,
+    ),
+    s(
+        "coffee_can_helmet",
+        "models/held/coffee_can_helmet.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("tank_top", "models/held/tank_top.glb", [0.0, 0.0, 0.0]),
+    s(
+        "beancan_grenade",
+        "models/held/beancan_grenade.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "barbed_wooden_barricade",
+        "models/deploy/barbed_barricade.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s(
+        "wooden_floor_spikes",
+        "models/deploy/floor_spikes.glb",
+        [0.0, 0.0, 0.0],
+    ),
+    s("boots", "models/held/boots.glb", [0.0, 0.0, 0.0]),
+    s(
+        "hazmat_suit",
+        "models/held/hazmat_suit.glb",
+        [0.0, 0.0, 0.0],
+    ),
 ];
 
 /// Where the camera sits relative to the subject: right, above and in front,
