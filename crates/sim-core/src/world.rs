@@ -1067,8 +1067,11 @@ pub const DEATH_BY_FEL: u8 = 10;
 /// A cactus pricked them to death (wire v122, [`World::prick_cacti`]):
 /// they kept walking into one.
 pub const DEATH_BY_CACTUS: u8 = 11;
+/// A barbed barricade or floor spikes cut them to death (wire v123,
+/// [`World::prick_deploys`]).
+pub const DEATH_BY_SPIKES: u8 = 12;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_CACTUS;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_SPIKES;
 
 /// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
 /// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
@@ -1081,6 +1084,16 @@ pub const CACTUS_PERIOD_TICKS: u64 = crate::limits::TICK_HZ as u64;
 /// How near counts as pressed against one, metres past touching: the trunk
 /// holds a capsule off at touching, so contact is within a hand of it.
 pub const CACTUS_TOUCH_M: f32 = 0.1;
+/// What a barbed barricade cuts off a body pressed against it, and floor
+/// spikes off one standing on them, once a [`CACTUS_PERIOD_TICKS`] before
+/// armour. Ours: Rust's pages say both hurt and print no number. Above the
+/// cactus's 3 because a barricade is built to hurt; the spikes more, because
+/// a trap you stand in is the point of them.
+pub const BARBED_HP: u16 = 5;
+pub const SPIKES_HP: u16 = 8;
+/// How high above the board a body still stands on spikes, metres: a hop
+/// clears them, a stride does not.
+pub const SPIKES_TOP_M: f32 = 0.3;
 
 /// Fall damage (Rust's): landing faster than `FALL_SAFE_MPS` costs
 /// `FALL_HP_PER_MPS` hp for every m/s over it. At this sim's gravity
@@ -3549,6 +3562,81 @@ impl World {
             self.events.push(EV_HEALTH, vid, left, vmax);
             if hurt.died {
                 self.down_or_die(j, vid, DEATH_BY_CACTUS, NO_ITEM, 0, false);
+            }
+        }
+    }
+
+    /// Every barbed barricade cuts [`BARBED_HP`] off each player pressed
+    /// against it, and floor spikes [`SPIKES_HP`] off each one standing on
+    /// them, once a second — the cactus's pass, over the deploy store. One
+    /// cut per body a pass, the worst it touches: two barricades side by side
+    /// are one wall to the body pressed into their seam. No owner on the
+    /// death: a trap is the ground's doing, as a cactus is.
+    ///
+    /// The scan is the store once (bounded by `MAX_DEPLOYS`) and the players
+    /// per trap, and it allocates nothing: the per-body worst is a fixed
+    /// array on the stack.
+    fn prick_deploys(&mut self) {
+        use crate::deploy::{body_base_y, ARCH_BARRICADE_BARBED, ARCH_FLOOR_SPIKES};
+        if !self.tick.is_multiple_of(CACTUS_PERIOD_TICKS) {
+            return;
+        }
+        // The worst cut owed each slot, and where it came from.
+        let mut owed = [(0u16, 0.0f32, 0.0f32); MAX_PLAYERS];
+        let (seed, haven, cols) = (self.seed, &self.haven, self.pieces.cols());
+        let have = usize::from(self.deploy.def_count);
+        for rec in self.deploys.entries() {
+            let Some(def) = self.deploy.defs[..have].get(usize::from(rec.row)) else {
+                continue;
+            };
+            let (hp, arch) = match def.arch {
+                ARCH_BARRICADE_BARBED => (BARBED_HP, def.arch),
+                ARCH_FLOOR_SPIKES => (SPIKES_HP, def.arch),
+                _ => continue,
+            };
+            let Some(rect) = rec.rect(arch) else {
+                continue;
+            };
+            let base = body_base_y(seed, haven, cols, rec, arch);
+            for (j, v) in self.players.iter().enumerate() {
+                if !v.active || v.dead || v.hp == 0 || combat::protected(v) {
+                    continue;
+                }
+                let (x, y, z) = (
+                    v.body.qx as f32 * POS_XZ_Q,
+                    v.body.qy as f32 * POS_Y_Q,
+                    v.body.qz as f32 * POS_XZ_Q,
+                );
+                let cut = if arch == ARCH_FLOOR_SPIKES {
+                    rect.contains(x, z) && y >= base - 0.1 && y <= base + SPIKES_TOP_M
+                } else {
+                    let reach = crate::collide::CAPSULE_RADIUS_M + CACTUS_TOUCH_M;
+                    let top = crate::deploy::solid_vol(arch).map_or(0.0, |(_, h, _)| h);
+                    rect.dist2(x, z) <= reach * reach
+                        && y < base + top
+                        && y + crate::collide::hit_height_m(v.crouched()) > base
+                };
+                if cut && hp > owed[j].0 {
+                    owed[j] = (hp, rect.x, rect.z);
+                }
+            }
+        }
+        for (j, &(hp, sx, sz)) in owed.iter().enumerate() {
+            if hp == 0 {
+                continue;
+            }
+            let from = combat::bearing_sector(
+                i64::from((sx / POS_XZ_Q) as i32 - self.players[j].body.qx),
+                i64::from((sz / POS_XZ_Q) as i32 - self.players[j].body.qz),
+            );
+            let v = &mut self.players[j];
+            let hurt = combat::hurt(&self.combat, v, hp);
+            let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
+            self.events
+                .push(EV_HURT, vid, u32::from(from), u32::from(hp));
+            self.events.push(EV_HEALTH, vid, left, vmax);
+            if hurt.died {
+                self.down_or_die(j, vid, DEATH_BY_SPIKES, NO_ITEM, 0, false);
             }
         }
     }
@@ -7757,6 +7845,7 @@ impl World {
         self.fires.expire_due(tick);
         self.burn_fires();
         self.prick_cacti();
+        self.prick_deploys();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -8700,6 +8789,79 @@ mod tests {
     /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
     const SMOKE_SPAWN: (f32, f32) = (2048.0, 2048.0);
+
+    /// Rust's traps (`World::prick_deploys`): floor spikes cut a body
+    /// standing on them and spare one a step off the board; a barbed
+    /// barricade cuts the body pressed against it and spares one an arm's
+    /// length away. Each on flat ground found by the foundation test, so the
+    /// body and the board stand at one height.
+    #[test]
+    fn traps_cut_whoever_touches_them() {
+        use crate::build::{build_cell_of, foundation_terrain_ok, BUILD_CELL_M};
+        use crate::collide::CAPSULE_RADIUS_M;
+        use crate::deploy::{DeployContent, DeployRec, ARCH_BARRICADE_BARBED, ARCH_FLOOR_SPIKES};
+        use crate::footprint::Pose;
+        let seed = SMOKE_SEED;
+        let haven = terrain::haven(seed);
+        let n = build_cell_of(terrain::ISLAND_SIZE) as u16;
+        let flat = (0..n)
+            .flat_map(|cz| (0..n).map(move |cx| (cx, cz)))
+            .find(|&(cx, cz)| {
+                let (x, z) = crate::footprint::centre(cx, cz, Pose::CENTRE);
+                terrain::height(seed, x, z) > 2.0
+                    && (-2..=2).all(|k| {
+                        foundation_terrain_ok(seed, &haven, x + k as f32 * BUILD_CELL_M * 0.3, z)
+                            && foundation_terrain_ok(seed, &haven, x, z + k as f32 * 0.9)
+                    })
+            })
+            .expect("a flat cell on the smoke seed");
+        let barbed_off = 0.3 + CAPSULE_RADIUS_M + 0.05;
+        for (arch, dz, hp, cut) in [
+            (ARCH_FLOOR_SPIKES, 0.0, SPIKES_HP, true),
+            (ARCH_FLOOR_SPIKES, 1.4, SPIKES_HP, false),
+            (ARCH_BARRICADE_BARBED, barbed_off, BARBED_HP, true),
+            (ARCH_BARRICADE_BARBED, barbed_off + 0.6, BARBED_HP, false),
+        ] {
+            let mut w = Box::new(World::new(seed));
+            let mut dc = DeployContent::probe_fixture();
+            dc.defs[1].arch = arch;
+            w.deploy = dc;
+            let rec = DeployRec {
+                cx: flat.0,
+                cz: flat.1,
+                row: 1,
+                hp: 100,
+                pose: Pose::CENTRE,
+                ..DeployRec::default()
+            };
+            w.deploys.restore(&[rec], &[0], &[0], &[], &[], &[], &[]);
+            let (x, z) = rec.xz();
+            w.dev_spawn = Some((x, z + dz));
+            w.tick(&[Command::Join { id: 1 }]);
+            (w.players[0].hp, w.players[0].hp_max) = (100, 100);
+            w.players[0].safe = false;
+            let mut hurt = 0;
+            for _ in 0..CACTUS_PERIOD_TICKS * 2 {
+                w.tick(&[]);
+                hurt += w
+                    .events
+                    .entries()
+                    .iter()
+                    .filter(|e| e.code == EV_HURT && e.a == 1)
+                    .count();
+            }
+            if cut {
+                assert!(hurt >= 1, "arch {arch} at {dz:.2} m: never cut");
+                assert!(
+                    w.players[0].hp <= 100 - hp,
+                    "arch {arch}: the cut did not land"
+                );
+            } else {
+                assert_eq!(hurt, 0, "arch {arch} cut a body {dz:.2} m off");
+                assert_eq!(w.players[0].hp, 100);
+            }
+        }
+    }
 
     /// **Wear is in `state_hash`, in all four container stores** (item
     /// durability v0, gate 4): two worlds differing ONLY in one stack's

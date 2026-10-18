@@ -856,3 +856,25 @@ inputs = [
     { item = "item.gunpowder", count = 60 },
     { item = "item.metal_frags", count = 20 },
 ]
+
+[[recipe]]
+id = "recipe.barricade_barbed"
+output = "item.barricade_barbed"
+blueprint = true
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.wood", count = 300 },
+    { item = "item.metal_frags", count = 50 },
+    { item = "item.rope", count = 1 },
+]
+
+[[recipe]]
+id = "recipe.floor_spikes"
+output = "item.floor_spikes"
+blueprint = true
+count = 1
+station = "none"
+seconds = 30
+inputs = [{ item = "item.wood", count = 150 }]

@@ -94,13 +94,23 @@ cost = 15
 requires = "item.hatchet_metal"
 
 # Their chain: … Wooden Barricade → Barbed Wooden Barricade → Wooden Floor
-# Spikes → Wood Shutters; the two between are not ours. Hand-crafted, and
-# still a node in the first tree — theirs sits in WB1's tree with no bench
-# to craft it, like ours.
+# Spikes → Wood Shutters, every one ours since 2026-10-18.
+[[research]]
+item = "item.barricade_barbed"
+cost = 30
+requires = "item.barricade_wood"
+
+[[research]]
+item = "item.floor_spikes"
+cost = 15
+requires = "item.barricade_barbed"
+
+# Hand-crafted, and still a node in the first tree — theirs sits in WB1's
+# tree with no bench to craft it, like ours.
 [[research]]
 item = "item.window_shutters"
 cost = 15
-requires = "item.barricade_wood"
+requires = "item.floor_spikes"
 
 [[research]]
 item = "item.window_bars_metal"

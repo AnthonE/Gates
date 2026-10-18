@@ -85,7 +85,8 @@ pub fn wounds(cause: u8, head: bool) -> bool {
         DEATH_BY_HAND
         | DEATH_BY_MOB
         | crate::world::DEATH_BY_FALL
-        | crate::world::DEATH_BY_CACTUS => true,
+        | crate::world::DEATH_BY_CACTUS
+        | crate::world::DEATH_BY_SPIKES => true,
         DEATH_BY_ARROW | DEATH_BY_BULLET => !head,
         _ => false,
     }

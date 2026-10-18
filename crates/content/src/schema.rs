@@ -620,6 +620,10 @@ pub enum DeployArchetype {
     /// A player's vending machine (`sim-core/src/shop.rs`): a container
     /// whose stock anyone may buy at its owner's offers, priced in junk.
     Vending,
+    /// Rust's barbed wooden barricade and wooden floor spikes: they cut a
+    /// body that touches them (`World::prick_deploys`).
+    BarricadeBarbed,
+    FloorSpikes,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim

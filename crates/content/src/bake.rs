@@ -509,6 +509,8 @@ impl Content {
                     DeployArchetype::Planter => sim_core::deploy::ARCH_PLANTER,
                     DeployArchetype::Turret => sim_core::deploy::ARCH_TURRET,
                     DeployArchetype::Vending => sim_core::deploy::ARCH_VENDING,
+                    DeployArchetype::BarricadeBarbed => sim_core::deploy::ARCH_BARRICADE_BARBED,
+                    DeployArchetype::FloorSpikes => sim_core::deploy::ARCH_FLOOR_SPIKES,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,

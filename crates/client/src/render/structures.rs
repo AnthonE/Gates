@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 20] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 22] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -541,6 +541,10 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 20] = [
     // 19 · vending machine: a tall steel cabinet, `DEPLOY_VOL`'s row, in a
     // painted red a shopper picks out across a compound.
     ([0.9, 1.9, 0.8], Color::srgb(0.553, 0.165, 0.137), 0.5, 0.5),
+    // 20 · barbed barricade: the barricade's box, `DEPLOY_VOL`'s row.
+    ([1.8, 1.4, 0.6], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
+    // 21 · floor spikes: a board of stakes, walked over.
+    ([1.4, 0.25, 1.4], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2287,7 +2291,28 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None,                                     // 17 planter — the cuboid until a model
     Some(TURRET_BASE_GLB),                    // 18 turret base; the gun is `sentry.rs`'s
     Some("models/deploy/vending.glb"),        // 19 vending machine
+    None,                                     // 20 barbed barricade — the kit's (`DEPLOY_KIT`)
+    None,                                     // 21 floor spikes — the kit's
 ];
+
+/// The rows drawn with a prop from the kit (`render::heldkit`) rather than a
+/// model file: the same mesh the hand and the icon draw, centred on its box
+/// like the cuboid it stands in for, in the kit's one material.
+pub const DEPLOY_KIT: [Option<&str>; DEPLOY.len()] = {
+    let mut k = [None; DEPLOY.len()];
+    k[sim_core::deploy::ARCH_BARRICADE_BARBED as usize] = Some("barbed_wooden_barricade");
+    k[sim_core::deploy::ARCH_FLOOR_SPIKES as usize] = Some("wooden_floor_spikes");
+    k
+};
+
+/// A kit prop centred on its own bounds, the cuboid's convention.
+fn kit_centred(name: &str) -> Option<Mesh> {
+    use bevy::camera::primitives::MeshAabb;
+    let mut mesh = super::heldkit::baked(name)?;
+    let aabb = mesh.compute_aabb()?;
+    mesh.translate_by(-Vec3::from(aabb.center));
+    Some(mesh)
+}
 
 /// The auto turret's steel base, which the town's sentries stand on too
 /// (`render/sentry.rs`).
@@ -2393,10 +2418,13 @@ pub fn build_kit(
         {
             meshes.add(insert_mesh(i as u8))
         }
-        None => {
-            let [w, h, d] = DEPLOY[i].0;
-            meshes.add(Cuboid::new(w, h, d))
-        }
+        None => match DEPLOY_KIT[i].and_then(kit_centred) {
+            Some(mesh) => meshes.add(mesh),
+            None => {
+                let [w, h, d] = DEPLOY[i].0;
+                meshes.add(Cuboid::new(w, h, d))
+            }
+        },
     });
     let deploy_mat = std::array::from_fn(|i| match DEPLOY_ASSET[i] {
         None if i as u8 == ARCH_WINDOW_GLASS => materials.add(StandardMaterial {
@@ -2405,6 +2433,7 @@ pub fn build_kit(
             ..default()
         }),
         None if i as u8 == ARCH_WINDOW_SHUTTER => tier[MAT_WOOD as usize][0][0].clone(),
+        None if DEPLOY_KIT[i].is_some() => materials.add(super::heldkit::material()),
         None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
             tier[MAT_METAL as usize][0][0].clone()
         }

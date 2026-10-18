@@ -1282,3 +1282,25 @@ rarity = "uncommon"
 slot = "hand"
 class = "weapons"
 description = "Gunpowder in a can. Plant it on a wall or door; it often fizzles."
+
+# Rust's barbed wooden barricade and wooden floor spikes (their pages,
+# 2026-10-18): both learned, both cut a body that touches them.
+[[item]]
+id = "item.barricade_barbed"
+name = "Barbed Wooden Barricade"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "construction"
+description = "A log barricade wound with wire. It cuts anyone pressed against it."
+
+[[item]]
+id = "item.floor_spikes"
+name = "Wooden Floor Spikes"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "construction"
+description = "A board of sharpened stakes. It hurts to stand on."

@@ -280,6 +280,8 @@ ITEMS = {
     "armor_coffeecan_head": "lorc/visored-helm",
     "armor_tanktop_body": "delapouite/tank-top",
     "beancan": "lorc/grenade",
+    "barricade_barbed": "lorc/spiked-fence",
+    "floor_spikes": "delapouite/spiky-pit",
 }
 
 # The three vitals, bottom right, in every frame of play.

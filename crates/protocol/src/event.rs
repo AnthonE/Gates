@@ -27,7 +27,8 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_VENDING, BAG_CAP, MATTER_MAX, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_FLOOR_SPIKES, BAG_CAP, MATTER_MAX,
+    PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -3409,7 +3410,7 @@ pub fn encode_event_deploy_defs(
     // content can bake.
     w.write(heat_radius_cm as u32, 16)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_VENDING || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_FLOOR_SPIKES || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS || def.matter > MATTER_MAX {
@@ -6274,7 +6275,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let matter = r.read(MATTER_BITS)? as u8;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_VENDING
+                if arch > ARCH_FLOOR_SPIKES
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -9803,8 +9804,8 @@ mod wire_domains {
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
-            // DEATH_BY_CACTUS at v122.
-            live_max: 11,
+            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123.
+            live_max: 12,
         },
         Domain {
             what: "move refusal",
@@ -10025,10 +10026,11 @@ mod wire_domains {
             ty: ": u8 = ",
             exempt: &[],
             // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`;
-            // 20 at v118: `ARCH_VENDING`.
-            min_members: 20,
+            // 20 at v118: `ARCH_VENDING`; 22 at v123: the barbed barricade and
+            // the floor spikes.
+            min_members: 22,
             bits: ARCH_BITS,
-            live_max: 19,
+            live_max: 21,
         },
         Domain {
             what: "deploy matter",

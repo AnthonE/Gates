@@ -791,6 +791,10 @@ pub const NAMES: &[&str] = &[
     "coffee_can_helmet",
     "tank_top",
     "beancan_grenade",
+    // Rust's traps (2026-10-18), drawn in the world from these too
+    // (`structures::DEPLOY_KIT`).
+    "barbed_wooden_barricade",
+    "wooden_floor_spikes",
 ];
 
 /// The parts of the prop called `name`, or `None` for a name with none.
@@ -847,6 +851,8 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "coffee_can_helmet" => coffee_can(),
         "tank_top" => stood(tank_top()),
         "beancan_grenade" => beancan(),
+        "barbed_wooden_barricade" => barbed_barricade(),
+        "wooden_floor_spikes" => floor_spikes(),
         _ => return None,
     })
 }
@@ -2062,6 +2068,55 @@ fn tank_top() -> Vec<Part> {
         m(0xd6d0c2, 0.95, 0.0, Tex::Weave),
         xf([0.0; 3], [-20.0, 0.0, 0.0]),
     )]
+}
+
+/// The barricade's wall of sharpened logs, two rails across it and wire wound
+/// along both — `structures::DEPLOY`'s 1.8 × 1.4 × 0.6 box, stood up.
+fn barbed_barricade() -> Vec<Part> {
+    let mut out = Vec::new();
+    for k in 0..7 {
+        let x = -0.78 + k as f32 * 0.26;
+        let h = 1.18 + 0.06 * ((k * 5 % 3) as f32);
+        out.push(p(cyl(0.085, h), BARK, xf([x, h * 0.5, 0.0], [0.0; 3])));
+        out.push(p(
+            cone(0.085, 0.2),
+            WOOD_LIGHT,
+            xf([x, h + 0.1, 0.0], [0.0; 3]),
+        ));
+    }
+    for y in [0.35, 0.9] {
+        out.push(p(
+            cyl(0.06, 1.8),
+            WOOD_DARK,
+            xf([0.0, y, 0.12], [0.0, 0.0, 90.0]),
+        ));
+        let wire: Vec<Vec3> = (0..=48)
+            .map(|i| {
+                let t = i as f32 / 48.0;
+                let a = t * TAU * 9.0;
+                Vec3::new(-0.88 + 1.76 * t, y + 0.09 * a.sin(), 0.12 + 0.09 * a.cos())
+            })
+            .collect();
+        // Thicker than real wire, so it reads in a 48 px cell.
+        out.push(p(tube(&wire, |_| 0.014, 6), STEEL, Transform::IDENTITY));
+    }
+    out
+}
+
+/// A square board of sharpened stakes, flat on the ground.
+fn floor_spikes() -> Vec<Part> {
+    let mut out = vec![p(
+        cuboid(1.4, 0.05, 1.4),
+        WOOD_DARK,
+        xf([0.0, 0.025, 0.0], [0.0; 3]),
+    )];
+    for i in 0..5 {
+        for j in 0..5 {
+            let (x, z) = (-0.56 + i as f32 * 0.28, -0.56 + j as f32 * 0.28);
+            out.push(p(cone(0.035, 0.2), WOOD_LIGHT, xf([x, 0.15, z], [0.0; 3])));
+        }
+    }
+    out
 }
 
 /// A bean can full of gunpowder, taped round, a fuse out of its lid.

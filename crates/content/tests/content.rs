@@ -300,8 +300,8 @@ fn test_content() {
     }
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
-        // components (2026-10-13); → 102 for Rust's tree items (2026-10-17).
-        (40..=102).contains(&(c.items.len() - fittings.len())),
+        // components (2026-10-13); → 104 for Rust's tree items (2026-10-17/18).
+        (40..=104).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -4171,14 +4171,17 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 /// price, and gunpowder and metal arrows — known from the start there — are
 /// not gated here either. The auto turret (ours, `NOW.md` §0aa 1) is the
 /// fourteenth, at the satchel's rare-tier price, as theirs is gated too.
-/// Their tree items (2026-10-17) and the wooden barricade, learned there,
-/// are the other eleven.
+/// Their tree items (2026-10-17, the barbed barricade and floor spikes
+/// 2026-10-18) and the wooden barricade, learned there, are the other
+/// thirteen.
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 25] = [
+    let want: [(&str, u32); 27] = [
         ("item.hammer_salvaged", 30),
         ("item.barricade_wood", 15),
+        ("item.barricade_barbed", 30),
+        ("item.floor_spikes", 15),
         ("item.sword_salvaged", 15),
         ("item.mace", 30),
         ("item.cleaver_salvaged", 30),
@@ -4834,10 +4837,11 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 13,
-        "expected exactly thirteen solid rows — the hearth, the box (twice), the \
+        seen, 14,
+        "expected exactly fourteen solid rows — the hearth, the box (twice), the \
          furnace, the three benches, the recycler, the research table, \
-         the barricade, the planter, the auto turret and the vending machine — \
+         the barricade (twice: the barbed one), the planter, the auto turret and \
+         the vending machine — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \
