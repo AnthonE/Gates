@@ -29,6 +29,7 @@
 //! install ring.
 
 use crate::engine::{self, Cmd, Renderer, Stats, BLOCK, CMD_BYTES};
+use crate::limit::Limiter;
 use crate::talk::{Talk, TALKERS};
 use crate::{Cue, CUE_COUNT};
 
@@ -127,6 +128,8 @@ pub struct Worklet {
     planar: [f32; 2 * BLOCK],
     /// Players talking, mixed after the renderer (`talk.rs`).
     talk: Talk,
+    /// Over everything summed, last (`limit.rs`).
+    limit: Limiter,
     bad_records: u32,
     bad_installs: u32,
 }
@@ -142,6 +145,7 @@ impl Worklet {
             lr: [0.0; 2 * BLOCK],
             planar: [0.0; 2 * BLOCK],
             talk: Talk::new(out_rate),
+            limit: Limiter::new(out_rate),
             bad_records: 0,
             bad_installs: 0,
         }
@@ -220,6 +224,7 @@ impl Worklet {
     pub fn render(&mut self) {
         self.r.render(&mut self.lr);
         self.talk.mix(&mut self.lr);
+        self.limit.run(&mut self.lr);
         for i in 0..BLOCK {
             self.planar[i] = self.lr[2 * i];
             self.planar[BLOCK + i] = self.lr[2 * i + 1];

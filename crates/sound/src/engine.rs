@@ -103,7 +103,7 @@
 //! genuinely fuller than predicted.
 
 use crate::mixer::{Start, SPEED_MAX, SPEED_MIN};
-use crate::{Cue, CUE_COUNT, SAMPLE_RATE, STARTS_PER_FRAME, VOICE_CAP};
+use crate::{Cue, CUE_COUNT, SAMPLE_RATE, STARTS_PER_FRAME, VOICE_CAP, VOICE_RESERVE};
 
 /// Frames per render call — the `AudioWorklet`'s render quantum. Native uses
 /// the same so there is one code path (`DECISIONS.md` §open, audio engine v0).
@@ -122,14 +122,17 @@ pub const BLOCK: usize = 128;
 pub const VOICE_SLACK_FRAMES: usize = 4;
 
 /// One-shot voice slots. Pinned below to
-/// `VOICE_CAP + STARTS_PER_FRAME · VOICE_SLACK_FRAMES`: the mixer's live
+/// `VOICE_CAP + VOICE_RESERVE + STARTS_PER_FRAME · VOICE_SLACK_FRAMES`: the
+/// mixer admits up to `VOICE_CAP + VOICE_RESERVE` (the reserve for the cues
+/// that matter most, `crate::RESERVE_PRIORITY`), and its live
 /// count lags the renderer by the callback latency, so the pool holds that
 /// many frames' budget of overshoot and a voice the mixer admitted is not
 /// refused here inside [`VOICE_SLACK_FRAMES`] frames of it. Past that the
 /// policy is **refuse, never steal** — a stolen voice is an audible cut and
 /// the refusal is counted in [`Renderer::refused`].
-pub const VOICE_SLOTS: usize = 40;
-const _: () = assert!(VOICE_SLOTS == VOICE_CAP + STARTS_PER_FRAME * VOICE_SLACK_FRAMES);
+pub const VOICE_SLOTS: usize = 48;
+const _: () =
+    assert!(VOICE_SLOTS == VOICE_CAP + VOICE_RESERVE + STARTS_PER_FRAME * VOICE_SLACK_FRAMES);
 
 /// Held slots for the beds: wind, surf, submerged, rain, rotor, town, night,
 /// the rotor's far layer, one each.
@@ -1031,6 +1034,9 @@ fn mix_voice(v: &mut Voice, b: &[i16], out: &mut [f32]) {
 #[derive(Clone, Copy, Debug)]
 pub struct Live {
     left: [f32; VOICE_SLOTS],
+    /// Which cue each slot holds (`Cue::idx`), `u8::MAX` for one recorded
+    /// without — what the mixer's per-cue cap reads ([`Live::counts`]).
+    cue: [u8; VOICE_SLOTS],
 }
 
 // By hand: `std` derives `Default` for arrays only up to 32 elements, and the
@@ -1039,6 +1045,7 @@ impl Default for Live {
     fn default() -> Self {
         Self {
             left: [0.0; VOICE_SLOTS],
+            cue: [u8::MAX; VOICE_SLOTS],
         }
     }
 }
@@ -1052,11 +1059,32 @@ impl Live {
     /// rate, `speed` the mixer's rate about 1.0. Returns `false` if every
     /// slot is live — the renderer would have refused the same start.
     pub fn start(&mut self, len_s: f32, speed: f32) -> bool {
-        let Some(slot) = self.left.iter_mut().find(|l| **l <= 0.0) else {
+        self.start_at(u8::MAX, len_s, speed)
+    }
+
+    /// [`Self::start`], remembering which cue it is.
+    pub fn start_cue(&mut self, cue: Cue, len_s: f32, speed: f32) -> bool {
+        self.start_at(cue.idx() as u8, len_s, speed)
+    }
+
+    fn start_at(&mut self, cue: u8, len_s: f32, speed: f32) -> bool {
+        let Some(i) = self.left.iter().position(|l| *l <= 0.0) else {
             return false;
         };
-        *slot = (len_s - 1.0 / SAMPLE_RATE as f32) / speed;
+        self.left[i] = (len_s - 1.0 / SAMPLE_RATE as f32) / speed;
+        self.cue[i] = cue;
         true
+    }
+
+    /// How many voices of each cue are live, by `Cue::idx`.
+    pub fn counts(&self) -> [u8; CUE_COUNT] {
+        let mut out = [0u8; CUE_COUNT];
+        for (l, c) in self.left.iter().zip(self.cue) {
+            if *l > 0.0 && (c as usize) < CUE_COUNT {
+                out[c as usize] = out[c as usize].saturating_add(1);
+            }
+        }
+        out
     }
 
     /// A frame passed.

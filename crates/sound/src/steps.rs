@@ -93,6 +93,9 @@ pub fn remote(cue: Cue) -> Cue {
         Cue::StepLitter => Cue::RemoteStepLitter,
         Cue::StepRock => Cue::RemoteStepRock,
         Cue::StepWater => Cue::RemoteStepWater,
+        Cue::StepWood => Cue::RemoteStepWood,
+        Cue::StepConcrete => Cue::RemoteStepConcrete,
+        Cue::StepMetal => Cue::RemoteStepMetal,
         other => other,
     }
 }
@@ -191,5 +194,42 @@ impl Steps {
         self.travelled = 0.0;
         self.last = None;
         self.speed = 0.0;
+    }
+}
+
+/// Water covered between two strokes, metres.
+pub const STROKE_M: f32 = 1.8;
+
+/// A swimmer's strokes: one per [`STROKE_M`] of water covered, louder for a
+/// faster swimmer. The steps' odometer for a body with no stride, so a
+/// swimmer is heard as a wader is (Rust's swimmers are not silent).
+#[derive(Default)]
+pub struct Strokes {
+    travelled: f32,
+    last: Option<[f32; 3]>,
+}
+
+impl Strokes {
+    /// A stroke's gain when one lands this frame. `swimming` false drops the
+    /// banked water, as a step's airborne stretch is dropped; a jump of more
+    /// than a few metres in one frame (a respawn) counts as nothing.
+    pub fn sample(&mut self, pos: [f32; 3], swimming: bool, dt_s: f32) -> Option<f32> {
+        let last = self.last.replace(pos)?;
+        if !swimming {
+            self.travelled = 0.0;
+            return None;
+        }
+        let (dx, dz) = (pos[0] - last[0], pos[2] - last[2]);
+        let d = (dx * dx + dz * dz).sqrt();
+        if d > 4.0 {
+            return None;
+        }
+        self.travelled += d;
+        if self.travelled < STROKE_M {
+            return None;
+        }
+        self.travelled -= STROKE_M;
+        let speed = d / dt_s.max(1e-3);
+        Some((0.4 + speed * 0.15).clamp(0.4, 1.0))
     }
 }

@@ -460,6 +460,8 @@ pub fn hear(
             Some((g, hz)) => (g, one_pole(hz, out_rate)),
             None => (1.0, 1.0),
         };
+        // Behind the head, duller: the darker of that and the walls.
+        let lp = lp.min(at.map_or(1.0, |at| rear(at - eye.pos, rx, rz, out_rate)));
         engine.push_talk(TalkMsg::Gain {
             lane: i as u8,
             l: gl * level * wall_gain,
@@ -503,6 +505,33 @@ pub fn ears(to: Vec3, rx: f32, rz: f32) -> (f32, f32) {
     let theta = (side * 0.7 + 1.0) * std::f32::consts::FRAC_PI_4;
     let k = std::f32::consts::SQRT_2 * g;
     (theta.cos() * k, theta.sin() * k)
+}
+
+/// The cutoff a voice straight behind the head is heard through, Hz: the
+/// ear's own shadow, `audio::REAR_HZ`'s rule set for speech. Stereo cannot
+/// say front from back and the top end can; the codec carries nothing past
+/// 8 kHz, so a voice needs a lower cutoff than a gunshot does to be heard
+/// as behind you, and 3 kHz is still the telephone band, clear to follow.
+const REAR_HZ: f32 = 3_000.0;
+/// Where the rear shadow starts, Hz: beside the head it is all but open.
+const REAR_OPEN_HZ: f32 = 16_000.0;
+
+/// The one-pole coefficient a voice at `to` (from the listener's eye) is
+/// heard through for being behind the head, with the listener's right
+/// `(rx, rz)`: 1 (open) in front and beside, darker the further behind,
+/// [`REAR_HZ`] dead behind.
+pub fn rear(to: Vec3, rx: f32, rz: f32, rate: u32) -> f32 {
+    let flat = Vec2::new(to.x, to.z);
+    let len = flat.length();
+    if len < 1.0 {
+        return 1.0;
+    }
+    // Forward is the right turned a quarter (`look::right_dir`'s inverse).
+    let ahead = flat.dot(Vec2::new(rz, -rx)) / len;
+    if ahead >= -0.05 {
+        return 1.0;
+    }
+    one_pole(REAR_OPEN_HZ * (REAR_HZ / REAR_OPEN_HZ).powf(-ahead), rate)
 }
 
 /// `/mute NAME`, `/unmute NAME`, `/mute` (whoever is talking) and `/unmute`
@@ -870,6 +899,19 @@ mod tests {
         let (fl, _) = ears(Vec3::new(0.0, 0.0, -80.0), 1.0, 0.0);
         assert!(fl < 0.03 && fl > 0.0, "80 m is a murmur: {fl}");
         assert_eq!(ears(Vec3::new(0.0, 0.0, -RADIUS_M), 1.0, 0.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_voice_behind_is_duller_and_one_in_front_is_not() {
+        // Right vector +x, so ahead is -z.
+        assert_eq!(rear(Vec3::new(0.0, 0.0, -10.0), 1.0, 0.0, 48_000), 1.0);
+        assert_eq!(rear(Vec3::new(10.0, 0.0, 0.0), 1.0, 0.0, 48_000), 1.0);
+        let half = rear(Vec3::new(7.0, 0.0, 7.0), 1.0, 0.0, 48_000);
+        let dead = rear(Vec3::new(0.0, 0.0, 10.0), 1.0, 0.0, 48_000);
+        assert!(dead < half && half < 1.0, "{dead} {half}");
+        assert!((dead - one_pole(REAR_HZ, 48_000)).abs() < 1e-4);
+        // At the ears: nothing to place.
+        assert_eq!(rear(Vec3::new(0.0, 0.0, 0.5), 1.0, 0.0, 48_000), 1.0);
     }
 
     #[test]

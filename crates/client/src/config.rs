@@ -286,6 +286,10 @@ pub struct Persisted {
     pub vol_game: f32,
     pub vol_ambience: f32,
     pub vol_music: f32,
+    /// Footsteps, landings and brush, 0..1 (`sound::Bus::Steps`).
+    pub vol_steps: f32,
+    /// The interface's clicks and chimes, 0..1 (`sound::Bus::Interface`).
+    pub vol_interface: f32,
     /// Players' voices (proximity voice chat), 0..1.
     pub vol_voice: f32,
     /// Proximity voice at all: off neither opens the microphone nor plays
@@ -414,6 +418,8 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_game" => num(&mut v.vol_game, value),
             "vol_ambience" => num(&mut v.vol_ambience, value),
             "vol_music" => num(&mut v.vol_music, value),
+            "vol_steps" => num(&mut v.vol_steps, value),
+            "vol_interface" => num(&mut v.vol_interface, value),
             "vol_voice" => num(&mut v.vol_voice, value),
             "voice_chat" => flag(&mut v.voice_chat, value),
             "vol_mic" => num(&mut v.vol_mic, value),
@@ -594,6 +600,8 @@ pub fn serialize(
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
     s.push_str(&format!("vol_music = {}\n", v.vol_music));
+    s.push_str(&format!("vol_steps = {}\n", v.vol_steps));
+    s.push_str(&format!("vol_interface = {}\n", v.vol_interface));
     s.push_str(&format!("vol_voice = {}\n", v.vol_voice));
     s.push_str(&format!("voice_chat = {}\n", v.voice_chat));
     s.push_str(&format!("vol_mic = {}\n", v.vol_mic));
@@ -758,6 +766,8 @@ mod tests {
             vol_game: 1.0,
             vol_ambience: 1.0,
             vol_music: 1.0,
+            vol_steps: 1.0,
+            vol_interface: 1.0,
             vol_voice: 1.0,
             voice_chat: true,
             vol_mic: 1.0,
@@ -790,6 +800,8 @@ mod tests {
             vol_game: 0.3,
             vol_ambience: 0.0,
             vol_music: 0.45,
+            vol_steps: 0.4,
+            vol_interface: 0.8,
             vol_voice: 0.6,
             voice_chat: false,
             vol_mic: 1.5,

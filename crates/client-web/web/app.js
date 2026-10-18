@@ -1329,36 +1329,67 @@ async function openMic(mic, gen) {
   console.info(`gates mic: on at ${a.context.sampleRate} Hz`);
 }
 
-/* ── the score, started inside the gesture ─────────────────────────────────
+/* ── the score, from the intro screen on ───────────────────────────────────
    The music is whole tracks, four to five minutes each, streamed by the
    browser's own `<audio>` element from `assets/music/` rather than decoded
-   into the game's memory (`crates/sound/src/music.rs`). The intro starts HERE,
-   inside the PLAY or WATCH press, because a page may only start sound inside
-   a gesture — so it plays through the download, the join and the loading
-   screen. `render/audio_web.rs` takes it over when the game boots: it reads
+   into the game's memory (`crates/sound/src/music.rs`). The intro is asked
+   for as the page opens, so it plays over the download; a browser that
+   refuses sound before a gesture gets it on the first click or key anywhere
+   on the page, PLAY included. Until the game boots the page loops it, as the
+   desktop menu does. `render/audio_web.rs` takes it over then: it reads
    `track` and `time()` to know how far in it is, and from then on calls
    `play`, `stop` and `gain`. Volume is the element's own (`volume`, linear):
    the game sends the level every frame, fades included. Never fatal: a
    browser that cannot play Ogg Vorbis plays the game without music. */
 const INTRO = "music/safe_zone.ogg";
-const MUSIC_DEFAULT = 0.2;   /* `sound::MUSIC_DEFAULT`, until the game sends its own */
+const MUSIC_DEFAULT = 0.2;   /* `sound::MUSIC_DEFAULT` */
+/* The game's own settings text (`render/settings.rs` `BROWSER_KEY`): the page
+   plays at its MASTER × MUSIC and its music toggle writes MUSIC, so the two
+   are one setting. Last line wins, as in the game's parser. */
+const SETTINGS = "gates.settings";
+const MUSIC_WAS = "gates.musicWas";
+function savedNum(key, fallback) {
+  try {
+    const t = localStorage.getItem(SETTINGS) || "";
+    const all = [...t.matchAll(new RegExp("^\\s*" + key + "\\s*=\\s*([^#\\n]*)", "gm"))];
+    const n = all.length ? Number(all[all.length - 1][1].trim().replace(/"/g, "")) : NaN;
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
+  } catch (err) { return fallback; }
+}
+function saveNum(key, value) {
+  try {
+    const t = localStorage.getItem(SETTINGS) || "";
+    const re = new RegExp("^\\s*" + key + "\\s*=.*$", "gm");
+    const line = `${key} = ${value}`;
+    localStorage.setItem(SETTINGS, t.search(re) >= 0 ? t.replace(re, line)
+      : t + (t && !t.endsWith("\n") ? "\n" : "") + line + "\n");
+  } catch (err) { /* storage blocked: nowhere to keep it */ }
+}
+const musicLevel = () => savedNum("vol_master", 1) * savedNum("vol_music", MUSIC_DEFAULT);
 let music = null;
 function startMusic() {
   if (music) return music;
   const el = new Audio();
   el.preload = "auto";
-  el.volume = MUSIC_DEFAULT;
+  el.volume = musicLevel();
   const canOgg = el.canPlayType('audio/ogg; codecs="vorbis"') !== "";
   if (!canOgg) console.warn("gates music: this browser cannot play Ogg Vorbis; no score");
   let blocked = false;
+  /* Set once the game sends its first level: from then on it owns the score. */
+  let game = false;
   const kick = () => {
     const p = el.play();
     if (p && p.catch) p.catch(() => { blocked = true; });
   };
-  /* A play refused for want of a gesture is retried on the next one. */
-  const retry = () => { if (blocked && music.track) { blocked = false; kick(); } };
+  /* A play refused for want of a gesture is retried on the next one, unless
+     that gesture is the music switch, which decides for itself. */
+  const retry = (ev) => {
+    if (ev.target && ev.target.closest && ev.target.closest("#music")) return;
+    if (blocked && music.track) { blocked = false; kick(); }
+  };
   addEventListener("pointerdown", retry, { passive: true });
   addEventListener("keydown", retry, { passive: true });
+  addEventListener("click", retry, { passive: true });
   music = {
     track: null,
     play(file) {
@@ -1374,15 +1405,52 @@ function startMusic() {
       el.load();
     },
     gain(g) {
+      game = true;
       el.volume = Math.min(1, Math.max(0, Number(g) || 0));
     },
     time() { return music.track ? el.currentTime || 0 : 0; },
+    /* The page's own level, before the game has one. */
+    level(g) {
+      if (game) return;
+      el.volume = Math.min(1, Math.max(0, g));
+      if (g > 0 && !music.track) music.play(INTRO);
+      else if (g > 0 && blocked) { blocked = false; kick(); }
+    },
   };
-  el.addEventListener("ended", () => { music.track = null; });
+  el.addEventListener("ended", () => {
+    if (game || !music.track) { music.track = null; return; }
+    el.currentTime = 0;
+    kick();
+  });
   globalThis.gatesMusic = music;
-  music.play(INTRO);
+  /* Nothing fetched for a player who has the music off; the game asks for
+     the intro itself if they turn it back up. */
+  if (el.volume > 0) music.play(INTRO);
   return music;
 }
+
+/* The footer's music switch: off writes MUSIC = 0 into the game's settings
+   and on puts back what it was. */
+function paintMusic() {
+  const on = savedNum("vol_music", MUSIC_DEFAULT) > 0;
+  const b = $("music");
+  b.hidden = touchOnly && !EMBED;
+  b.setAttribute("aria-pressed", String(on));
+  b.textContent = on ? "Music on" : "Music off";
+}
+$("music").addEventListener("click", () => {
+  const was = savedNum("vol_music", MUSIC_DEFAULT);
+  if (was > 0) {
+    try { localStorage.setItem(MUSIC_WAS, String(was)); } catch (err) { /* private mode */ }
+    saveNum("vol_music", 0);
+  } else {
+    let back = MUSIC_DEFAULT;
+    try { back = Number(localStorage.getItem(MUSIC_WAS)) || MUSIC_DEFAULT; } catch (err) { /* private mode */ }
+    saveNum("vol_music", back);
+  }
+  paintMusic();
+  startMusic().level(musicLevel());
+});
 
 /* ── PLAY and WATCH ────────────────────────────────────────────────────────
    One button each, and each draws its own state: how far the download is,
@@ -1844,6 +1912,9 @@ if (q.has("spectate")) {
 let booting = null;
 const ready = () => booting || (booting = boot());
 if (!touchOnly || EMBED || cameBack) ready();
+/* The intro over the download, on anything that can play the game. */
+if (!touchOnly || EMBED) startMusic();
+paintMusic();
 paintDownload();
 loadServers();
 fillFeature();
