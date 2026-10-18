@@ -284,9 +284,9 @@ pub struct MindArgs {
 /// `--autopilot-s`'s default: a long think for a big model, well inside the
 /// minute a decision may wait.
 pub const AUTOPILOT_DEFAULT: Duration = Duration::from_secs(45);
-/// The longest a decision may wait (`MindConfig::check`), and what MCP mode
-/// sets it to: the harness's own deadline is `autopilot`.
-const MCP_DECISION_TIMEOUT: Duration = Duration::from_secs(60);
+/// How much longer than the harness's own deadline (`autopilot`) an MCP
+/// decision may wait, so the autopilot's answer lands inside it.
+const MCP_DECISION_SLACK: Duration = Duration::from_secs(15);
 
 impl Default for MindArgs {
     fn default() -> Self {
@@ -350,8 +350,8 @@ impl MindArgs {
             }
             "--autopilot-s" => {
                 let secs = number(arg)?;
-                if !(5..=55).contains(&secs) {
-                    return Err("--autopilot-s must be 5..55".into());
+                if !(5..=165).contains(&secs) {
+                    return Err("--autopilot-s must be 5..165".into());
                 }
                 self.autopilot = Duration::from_secs(secs);
             }
@@ -447,11 +447,13 @@ impl MindArgs {
             Source::Student(file) => self.start(crate::distill::Student::load(file)?, self.cfg),
             Source::Mcp => {
                 let cfg = MindConfig {
-                    timeout: MCP_DECISION_TIMEOUT,
+                    timeout: self.autopilot + MCP_DECISION_SLACK,
                     ..self.cfg
                 };
                 cfg.check()?;
-                let door = voiced(crate::mcp::spawn(self.autopilot)?);
+                let (door, presence) = crate::mcp::spawn(self.autopilot)?;
+                let quiet = self.autopilot + crate::mcp::AWAY_GRACE;
+                let door = crate::mcp::McpDoor::new(voiced(door), presence, quiet);
                 self.start(Autopilot::new(door, gate), cfg).map(priced)
             }
             Source::External(program, args) => {

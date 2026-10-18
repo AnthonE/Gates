@@ -1730,7 +1730,9 @@ impl Summary {
             }
         };
         let mut v = json!({
+            // No vitals yet: the body is still coming onto the island.
             "body": match self.body {
+                BodyState::Alive if self.hp_max == 0 => "spawning",
                 BodyState::Alive => "alive",
                 BodyState::Wounded => "wounded",
                 BodyState::Dead => "dead",
@@ -2002,13 +2004,15 @@ impl Default for MindConfig {
 impl MindConfig {
     pub fn check(&self) -> Result<(), String> {
         let limit = Duration::from_secs(60);
+        // A harness's think (MCP `--autopilot-s`) may run past the minute.
+        let timeout_limit = Duration::from_secs(180);
         if self.interval < crate::jev::THINK_INTERVAL
             || self.interval > limit
             || self.timeout.is_zero()
-            || self.timeout > limit
+            || self.timeout > timeout_limit
         {
             return Err(
-                "decision interval must be 1..60 s (never under the once-per-second ceiling) and the timeout (0, 60 s]".into(),
+                "decision interval must be 1..60 s (never under the once-per-second ceiling) and the timeout (0, 180 s]".into(),
             );
         }
         if self.heartbeat < self.interval || self.heartbeat > Duration::from_secs(3600) {

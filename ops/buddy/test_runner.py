@@ -255,7 +255,8 @@ check("only ours speak", "--voice" not in cmd)
 check("an owner's buddy is never put on autopilot alone", "--alone" not in cmd)
 runner.start("a000000002", got["a000000002"])
 cmd, env, stdout = calls[-1]
-check("an own brain runs --mcp with its stdio held", cmd[-1] == "--mcp" and "--external" not in cmd
+check("an own brain runs --mcp with its stdio held, and its window", "--mcp" in cmd and "--external" not in cmd
+      and cmd[cmd.index("--autopilot-s") + 1] == str(runner.OWN_ANSWER_S)
       and stdout == subprocess.PIPE)
 check("an own brain's body gets no API key", "ANTHROPIC_API_KEY" not in env)
 
