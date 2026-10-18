@@ -214,6 +214,13 @@ impl Gates {
         client::render::web::stretch_canvas(&canvas, fit.stretch);
 
         let mut app = App::new();
+        // Before `AssetPlugin`, which keeps a default source already
+        // registered: Bevy's own wasm reader panics on a download that breaks
+        // mid-body, this one retries it (`render/asset_fetch.rs`).
+        app.register_asset_source(
+            bevy::asset::io::AssetSourceId::Default,
+            client::render::asset_fetch::source("assets"),
+        );
         app.add_plugins(
             DefaultPlugins
                 .build()

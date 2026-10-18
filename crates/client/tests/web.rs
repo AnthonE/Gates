@@ -190,3 +190,38 @@ fn leaving_the_world_hands_control_to_the_page_on_wasm() {
         "`Gates::play` pins the canvas at 1280 x 720 again"
     );
 }
+
+/// The asset reader's retry policy (`render/asset_fetch.rs`): a broken
+/// download is tried four times in all with growing waits, and an answer
+/// that will not change on a retry is given up at once.
+#[test]
+fn a_broken_download_is_retried_and_a_missing_file_is_not() {
+    use client::render::asset_fetch::{retry_after_ms, Failed};
+
+    for failed in [Failed::Network, Failed::Status(503), Failed::Status(429)] {
+        let waits: Vec<u32> = (0..).map_while(|n| retry_after_ms(n, failed)).collect();
+        assert_eq!(
+            waits.len(),
+            3,
+            "{failed:?}: three retries, four tries in all"
+        );
+        assert!(
+            waits.windows(2).all(|w| w[0] < w[1]),
+            "{failed:?}: waits grow: {waits:?}"
+        );
+    }
+    for failed in [404, 403, 400, 410].map(Failed::Status) {
+        assert_eq!(retry_after_ms(0, failed), None, "{failed:?} is retried");
+    }
+    // The page's register call comes before `DefaultPlugins`: after it, the
+    // AssetPlugin has already kept Bevy's panicking reader.
+    let play = include_str!("../../client-web/src/lib.rs");
+    let reg = play
+        .find("asset_fetch::source(")
+        .expect("client-web registers the reader");
+    let plugins = play.find("DefaultPlugins").expect("DefaultPlugins");
+    assert!(
+        reg < plugins,
+        "the reader is registered after DefaultPlugins"
+    );
+}
