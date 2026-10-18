@@ -194,13 +194,18 @@ impl Prizes {
 }
 
 /// What may leave through the exchange (`shard.toml` `extract_cap`,
-/// `extract_fee_pct`). A zero cap lets nothing out.
+/// `extract_fee_pct`, `extract_min_minutes`). A zero cap lets nothing out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Exits {
     /// JUNK a wallet may take out a wipe, before the exchange's ceiling.
     pub cap: u64,
     /// Per cent of what goes through that is burnt, never credited.
     pub fee_pct: u64,
+    /// Minutes a wallet must have played this wipe for what it extracted to
+    /// reach the payout file. Zero pays every wallet. A wallet that only
+    /// carries someone else's Junk to the exchange plays a few minutes; the
+    /// cap is per wallet, so without this a farm of fresh wallets multiplies it.
+    pub min_minutes: u32,
 }
 
 /// A key that is a real wallet: `0x` and forty hex digits, not the guest.
@@ -609,7 +614,12 @@ type Owed = (u64, Vec<String>);
 /// `end_world`, before `wipe::apply` archives the standings): each board's
 /// podium and prizes into the hall, everyone's island placing into
 /// `.lastwipe`, and what is owed to whom into the payout files.
-pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, String> {
+pub fn close_wipe(
+    base: &Path,
+    wipe: u32,
+    prizes: &Prizes,
+    exits: &Exits,
+) -> Result<Closed, String> {
     let mut closed = Closed {
         ticker: prizes.ticker.clone(),
         ..Closed::default()
@@ -631,12 +641,19 @@ pub fn close_wipe(base: &Path, wipe: u32, prizes: &Prizes) -> Result<Closed, Str
     // Keyed (address, ticker): prizes and extraction may be different coins.
     let mut owed: BTreeMap<(String, String), Owed> = BTreeMap::new();
     for r in rows.iter().filter(|r| r.extracted > 0 && is_wallet(&r.key)) {
+        hall.push_str(&format!("extract\t{wipe}\t{}\t{}\n", r.extracted, r.key));
+        if r.played < exits.min_minutes {
+            println!(
+                "wipe {wipe}: {} extracted {} but played {} of {} minutes: not paid",
+                r.key, r.extracted, r.played, exits.min_minutes
+            );
+            continue;
+        }
         let e = owed
             .entry((r.key.clone(), EXTRACT_TICKER.to_string()))
             .or_default();
         e.0 += r.extracted;
         e.1.push(format!("EXTRACTED {}", r.extracted));
-        hall.push_str(&format!("extract\t{wipe}\t{}\t{}\n", r.extracted, r.key));
     }
     for board in 0..BOARDS as u8 {
         let b = Board::rank(
@@ -1063,9 +1080,10 @@ impl Standings {
     }
 
     /// `units` of JUNK went through the exchange for `key`: the fee burns,
-    /// the rest is credited.
+    /// the rest is credited. The fee rounds up, so splitting a stack into
+    /// small runs does not dodge it.
     pub fn extracted(&mut self, key: &str, label: &str, units: u32) {
-        let fee = units as u64 * self.exits.fee_pct.min(100) / 100;
+        let fee = (units as u64 * self.exits.fee_pct.min(100)).div_ceil(100);
         if let Some(row) = self.row(key, label) {
             row.taken = row.taken.saturating_add(units as u64);
             row.extracted = row.extracted.saturating_add(units as u64 - fee);
@@ -1516,6 +1534,7 @@ mod tests {
         s.exits = Exits {
             cap: 150,
             fee_pct: 2,
+            min_minutes: 0,
         };
         assert_eq!(s.allowance(CAROL, 100), 150);
         s.extracted(CAROL, "", 100);
@@ -1546,7 +1565,7 @@ mod tests {
         assert!(next.row_of(ALICE).is_none());
 
         assert!(!is_closed(&base, 3));
-        let closed = close_wipe(&base, 3, &prizes).unwrap();
+        let closed = close_wipe(&base, 3, &prizes, &s.exits).unwrap();
         assert!(is_closed(&base, 3), "a closed wipe is not closed twice");
         assert!(!is_closed(&base, 4));
         assert_eq!(closed.winner.as_deref(), Some("ALICE (1600)"));
@@ -1600,6 +1619,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A wallet below `extract_min_minutes` is left out of the payout file,
+    /// though the hall still records what it took out; and the fee rounds up,
+    /// so 40 at 2% burns 1 rather than nothing.
+    #[test]
+    fn extraction_pays_only_wallets_that_played_and_the_fee_rounds_up() {
+        let dir = std::env::temp_dir().join(format!("gates-extract-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("world.bin");
+        let prizes = Prizes::default();
+        let mut s = Standings::open(rules(), prizes.clone(), Some(&base), 3);
+        s.exits = Exits {
+            cap: 1000,
+            fee_pct: 2,
+            min_minutes: 2,
+        };
+        for _ in 0..2 {
+            s.minute(ALICE, "", false);
+        }
+        s.minute(CAROL, "", false);
+        s.extracted(ALICE, "ALICE", 100);
+        s.extracted(CAROL, "CAROL", 40);
+        assert_eq!(s.row_of(CAROL).unwrap().extracted, 39, "the fee rounds up");
+        s.rebuild();
+        s.save_now().unwrap();
+        let closed = close_wipe(&base, 3, &prizes, &s.exits).unwrap();
+        assert_eq!(
+            closed.paid,
+            vec![(ALICE.to_string(), "ALICE".into(), 98, "JUNK".into())]
+        );
+        let csv = std::fs::read_to_string(payout_path(&base, 3, "csv")).unwrap();
+        assert!(!csv.contains(CAROL), "a minute's play is not paid");
+        assert_eq!(Hall::load(&base).last_extracted.get(CAROL), Some(&39));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// `/standings.json` is a website's read: it parses as JSON, a wallet
     /// row names its wallet and a guest or dev key's does not, every board
     /// row says whether it is an agent, and the hall carries the podiums.
@@ -1619,7 +1673,7 @@ mod tests {
         s.kill(Some((GUEST, "")), None);
         s.rebuild();
         s.save_now().unwrap();
-        close_wipe(&base, 3, &prizes).unwrap();
+        close_wipe(&base, 3, &prizes, &Exits::default()).unwrap();
 
         let mut s = Standings::open(rules(), prizes, Some(&base), 4);
         s.gave(CAROL, "CAROL", 1, 4);
