@@ -68,6 +68,13 @@ pub fn pitch_u8(pitch: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
 }
 
+/// [`pitch_u8`]'s rounding remainder in 256ths of a step, signed (wire
+/// v126, `InputFrame::pitch_fine`): a gun aims at the view's precision.
+pub fn pitch_fine(pitch: f32) -> i8 {
+    let x = ((pitch / std::f32::consts::PI + 0.5) * 255.0).clamp(0.0, 255.0);
+    ((x - x.round()) * 256.0).round().clamp(-128.0, 127.0) as i8
+}
+
 /// A wire yaw back to radians — [`yaw_u16`] inverted, for a spectator's
 /// camera (spectators v0), which faces the way the WATCHED body faces.
 ///

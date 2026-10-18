@@ -159,6 +159,7 @@ fn hold_primary(aim: Aim, seq: u16) -> Command {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }

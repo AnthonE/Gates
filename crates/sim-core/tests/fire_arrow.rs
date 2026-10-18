@@ -40,12 +40,14 @@ fn world_with_fire_arrows() -> Box<World> {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     c.ammo[FIRE_ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 11,
         damage_pct: 80,
         fire_ticks: [BURN, BURN],
+        blast: Default::default(),
     };
     w.combat = c;
     w.tick(&[Command::Join { id: 1 }]);

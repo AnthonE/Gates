@@ -4877,7 +4877,9 @@ impl ShardCore {
                     // `content/tests/content.rs` gates that second reason,
                     // because it is a relationship between a content
                     // number and a limit and nothing else was holding it.
-                    let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
+                    // A gun's round puts its fine pitch in the top byte.
+                    let (yaw, pitch, fine) =
+                        ((ev.b >> 8) as u16, ev.b as u8, (ev.b >> 24) as u8 as i8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
                     let sh = Self::world_slot_of(&self.world, ev.a);
                     // A gun is heard past the interest set (v113): out to
@@ -4890,7 +4892,7 @@ impl ShardCore {
                         }
                         _ => None,
                     };
-                    match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
+                    match encode_event_shot(ev.a, yaw, pitch, fine, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {

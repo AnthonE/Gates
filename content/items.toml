@@ -643,7 +643,7 @@ tier = 2
 rarity = "uncommon"
 slot = "none"
 class = "ammo"
-description = "Rounds for the revolver."
+description = "Rounds for the revolver, the pistols and the submachine guns."
 
 # Stack 10 confirmed theirs (RIPLIST §1e).
 [[item]]
@@ -655,6 +655,150 @@ rarity = "rare"
 slot = "hand"
 class = "weapons"
 description = "A crude bomb. Plant it on a wall or door; it may not go off."
+
+# --- Rust's guns (guns v1, 2026-10-18) ------------------------------------
+#
+# Their item pages: every one stacks 1, every round 128, the rocket 3 and C4
+# 10. Condition is the revolver's 10000 (wear per shot is weapons.toml's).
+
+[[item]]
+id = "item.assault_rifle"
+name = "Assault Rifle"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Thirty rounds of 5.56 at 450 a minute. It climbs; pull it down."
+
+[[item]]
+id = "item.semi_rifle"
+name = "Semi-Automatic Rifle"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Sixteen rounds of 5.56, one per pull. Steady at range."
+
+[[item]]
+id = "item.thompson"
+name = "Thompson"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "A drum of pistol rounds and a gentle climb. Wins close."
+
+[[item]]
+id = "item.custom_smg"
+name = "Custom SMG"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Six hundred pistol rounds a minute, light on each."
+
+[[item]]
+id = "item.bolt_rifle"
+name = "Bolt Action Rifle"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Four rounds of 5.56 and a bolt between them. A head at any range."
+
+[[item]]
+id = "item.pump_shotgun"
+name = "Pump Shotgun"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Fifteen pellets a shell. Ends arguments in doorways."
+
+[[item]]
+id = "item.semi_pistol"
+name = "Semi-Automatic Pistol"
+stack = 1
+tier = 2
+rarity = "uncommon"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Ten pistol rounds, as fast as you can pull."
+
+[[item]]
+id = "item.python"
+name = "Python Revolver"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Six heavy rounds and a kick to match."
+
+[[item]]
+id = "item.rocket_launcher"
+name = "Rocket Launcher"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+condition_max = 10000
+description = "Puts a rocket through a wall. Four open stone."
+
+[[item]]
+id = "item.rifle_ammo"
+name = "5.56 Rifle Ammo"
+stack = 128
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "ammo"
+description = "Rounds for the rifles."
+
+[[item]]
+id = "item.shotgun_shells"
+name = "12 Gauge Buckshot"
+stack = 128
+tier = 2
+rarity = "uncommon"
+slot = "none"
+class = "ammo"
+description = "Shells for the pump shotgun."
+
+[[item]]
+id = "item.rocket"
+name = "Rocket"
+stack = 3
+tier = 2
+rarity = "rare"
+slot = "none"
+class = "ammo"
+description = "For the launcher. Opens a quarter of a stone wall."
+
+[[item]]
+id = "item.c4"
+name = "Timed Explosive Charge"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "hand"
+class = "weapons"
+description = "Plant it on a wall. Ten seconds, and it always goes off."
 
 [[item]]
 id = "item.door_metal"

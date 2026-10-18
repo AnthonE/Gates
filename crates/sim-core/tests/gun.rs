@@ -114,6 +114,7 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         reload_ticks: 102,
         mag_slot: 0,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     c
 }
@@ -595,8 +596,7 @@ fn a_client_beam_stops_where_the_shards_mark_did() {
         &ColIndex::new(),
         &mut sc.occupants(),
         origin,
-        0,
-        0,
+        ranged::aim_dir(0, 0, 0),
         50_000,
     );
     assert_eq!(b.surf, Some(surf));
@@ -646,10 +646,17 @@ fn a_firearm_reports_itself_as_an_instant_shot() {
         0,
         "the high half is the muzzle speed and a hitscan has none - zero is what makes it a beam"
     );
-    assert_eq!(
-        shot.c & 0xffff,
-        500,
-        "the low half is the reach in decimetres, and the fixture's range_mm is 50_000"
+    // Guns v1: the low half is how far the round flew, in decimetres — to
+    // the body it met, short of the fixture's 50 m reach.
+    let (a, b) = (players[0].body, players[1].body);
+    let apart_dm = (sim_core::fmath::hypot(
+        (a.qx - b.qx) as f32 * POS_XZ_Q,
+        (a.qz - b.qz) as f32 * POS_XZ_Q,
+    ) * 10.0) as u32;
+    let flown = shot.c & 0xffff;
+    assert!(
+        flown > 0 && flown < 500 && flown.abs_diff(apart_dm) <= 10,
+        "the low half is how far the round flew: {flown} dm against a body {apart_dm} dm away"
     );
     assert_eq!(players[1].hp, 80, "and it fired all the same");
 }

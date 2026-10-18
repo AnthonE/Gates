@@ -362,11 +362,11 @@ fn a_shot_crosses_whole_and_drains_once() {
     // speed two orders off the drop: every field distinguishable from
     // every other.
     let (shooter, yaw, pitch, speed, drop) = (0x2B17u32, 41_234u16, 203u8, 1_333u16, 22u16);
-    let len = encode_event_shot(shooter, yaw, pitch, speed, drop, &mut buf).unwrap();
+    let len = encode_event_shot(shooter, yaw, pitch, 5, speed, drop, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert_eq!(
         c.pop_shot(),
-        Some((shooter, yaw, pitch, speed, drop)),
+        Some((shooter, yaw, pitch, speed, drop, 5)),
         "the shot arrived with a field in the wrong seat"
     );
     assert_eq!(c.pop_shot(), None, "the shot ring must drain");
@@ -497,7 +497,7 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     // speed = 1, so the field's only set bit is its bit 0, at wire
     // position 67 — byte 8, offset 3.
-    let len = encode_event_shot(0x2B17, 41_234, 203, 1, 22, &mut buf).unwrap();
+    let len = encode_event_shot(0x2B17, 41_234, 203, 0, 1, 22, &mut buf).unwrap();
 
     // Control: clear the speed's middle byte only. Speed stays 1, and the
     // whole frame must still decode — which is what proves the assertion

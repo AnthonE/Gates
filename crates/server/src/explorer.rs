@@ -6629,7 +6629,7 @@ impl Survivor {
         }
         // What the eyes and ears make of the fight around this body: the
         // tracks take facts, never the rings.
-        while let Some((shooter, yaw, pitch, speed, low)) = core.pop_shot() {
+        while let Some((shooter, yaw, pitch, speed, low, _fine)) = core.pop_shot() {
             if shooter == core.player_id {
                 self.combat.shot(tick);
                 self.shot_at = Some(tick);
@@ -9350,7 +9350,7 @@ mod tests {
         assert_eq!(bot.senses.players.count, 1);
         // A shot from behind is heard as a sound from behind, not a body.
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_shot(4, 0, 128, 900, 10, &mut buf).unwrap();
+        let n = protocol::event::encode_event_shot(4, 0, 128, 0, 900, 10, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let heard = *bot.tracks.heard().last().expect("the shot was heard");
         assert_eq!(heard.sound, tracks::Sound::Shot);

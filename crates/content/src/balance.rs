@@ -183,7 +183,10 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             WeaponKind::Firearm => bands.ttk_firearm,
             WeaponKind::Throwable => continue, // structure damage, not TTK
         };
-        let base = hits_to_kill(hp, w.damage, 0);
+        // A shotgun's hit is its whole shell: the pellets land as one blow
+        // (`ranged::hitscan`).
+        let blow = w.damage * w.gun.map_or(1, |g| g.pellets);
+        let base = hits_to_kill(hp, blow, 0);
         in_band(base, band, &format!("ttk `{}`", w.id))?;
         // Burning, it hits harder — and must still sit in its band.
         if let Some(extra) = w.lit_damage {
@@ -198,8 +201,10 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         // What the band used to pin exactly: a headshot that kills a naked
         // body outright is a data edit no TTK band (measured on the chest)
         // would see.
-        let head = w.damage * w.headshot_pct / 100;
-        if head >= hp {
+        // Not a gun's: Rust's rifles and the Python take a naked head in
+        // one (an assault rifle's 50 doubled), which is what a helmet is for.
+        let head = blow * w.headshot_pct / 100;
+        if head >= hp && w.kind != WeaponKind::Firearm {
             return Err(format!(
                 "band break: a headshot from `{}` does {head} and kills a naked {hp}-hp \
                  body in one hit",
@@ -216,7 +221,7 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         // light at half a rock's blow gains hits in proportion from any
         // plate — that is what being a lamp and not a club costs.
         for a in c.armors.iter().filter(|_| !light) {
-            let with = hits_to_kill(hp, w.damage, a.reduction_pct);
+            let with = hits_to_kill(hp, blow, a.reduction_pct);
             if with - base > bands.armor_extra_hits_max {
                 return Err(format!(
                     "band break: `{}` vs `{}` adds +{} hits, max {}",

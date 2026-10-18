@@ -1046,6 +1046,31 @@ impl Content {
             // The draw (`reference/PROJECTILES.md` §6), validated to a bow
             // and to a nonzero, `u16` tick count (`validate.rs`).
             draw_ticks,
+            gun: match w.gun {
+                None => sim_core::combat::Gun::NONE,
+                // Bounded by `validate`: every angle and count fits its
+                // field, the falloff's ends are ordered, the percents are.
+                Some(g) => {
+                    let ticks = |ms: u32| (ms as u64 * TICK_HZ as u64 / 1000) as u16;
+                    sim_core::combat::Gun {
+                        semi: !g.auto,
+                        pellets: g.pellets as u8,
+                        aim: g.aim_cdeg as u16,
+                        hip: g.hip_cdeg as u16,
+                        moving: g.move_cdeg as u16,
+                        per_shot: g.bloom_cdeg as u16,
+                        max: g.bloom_max_cdeg as u16,
+                        recover_ticks: ticks(g.bloom_recover_ms),
+                        delay_ticks: ticks(g.bloom_delay_ms),
+                        pellet: g.pellet_cdeg as u16,
+                        falloff_mm: g.falloff_m.map(|m| m * 1000),
+                        falloff_pct: g.falloff_pct as u16,
+                        recoil_pitch: g.recoil_pitch_cdeg.map(|v| v as u16),
+                        recoil_yaw: g.recoil_yaw_cdeg.map(|v| v as i16),
+                        ads_recoil_pct: g.ads_recoil_pct as u8,
+                    }
+                }
+            },
         };
         Ok(())
     }
@@ -1100,6 +1125,14 @@ impl Content {
             damage_pct: a.damage_pct as u16,
             // At most 120 s by `validate`, 3600 ticks.
             fire_ticks: a.fire_s.map(|s| (s * TICK_HZ) as u16),
+            // Bounded by `validate` to one build cell and to `u16`.
+            blast: a.blast.map_or(sim_core::combat::RoundBlast::NONE, |b| {
+                sim_core::combat::RoundBlast {
+                    blast_cm: (b.blast_m * 100) as u16,
+                    damage: b.damage as u16,
+                    structure: b.structure as u16,
+                }
+            }),
         };
         Ok(())
     }

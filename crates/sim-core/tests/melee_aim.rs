@@ -274,6 +274,7 @@ fn swing_once(w: &mut World, yaw: u16, pitch: u8) -> Swung {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);

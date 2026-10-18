@@ -1335,6 +1335,15 @@ pub struct Player {
     /// refuses to mix — a magazine holding one kind tops up with that kind
     /// or not at all.
     pub mag_round: [u16; MAX_MAGS],
+    /// The gun's aim-cone penalty, hundredths of a degree (`combat::Gun`):
+    /// what sustained fire has added, as of [`Player::shot_at`]. Neither
+    /// hashed nor saved — a restart lets the barrel settle.
+    pub bloom: u16,
+    /// The tick of this body's last gunshot, which `bloom` bleeds from.
+    pub shot_at: u64,
+    /// A semi-automatic fired on this pull, so the trigger has to come up
+    /// before it fires again (`combat::Gun::semi`). Neither hashed nor saved.
+    pub trigger_spent: bool,
     /// Weak-spot chase: the cell this player last landed a hit on
     /// (`NO_CELL` = none) and the mark there — its heading in the low byte,
     /// which way round it travels in `gather::WS_MARK_CCW`. Sim state.
@@ -1603,6 +1612,9 @@ impl Default for Player {
             // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
             // array would say every empty magazine holds one.
             mag_round: [NO_ITEM; MAX_MAGS],
+            bloom: 0,
+            shot_at: 0,
+            trigger_spent: false,
             ws_cell: NO_CELL,
             ws_mark: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -3513,6 +3525,92 @@ impl World {
         );
     }
 
+    /// Blow up each exploding round that came down this tick where it
+    /// stopped (`charge::blast`), then lay down its dead and land its
+    /// animals the way a fuse's are (`charge::tick_fuses`' caller).
+    fn blow_rockets(&mut self, removals: &mut usize) {
+        if self.arrows.booms().is_empty() {
+            return;
+        }
+        let (seed, tick) = (self.seed, self.tick);
+        let mut kills = crate::charge::BlastKills::new();
+        let mut mobs = crate::charge::BlastMobs::new();
+        for i in 0..self.arrows.booms().len() {
+            let b = self.arrows.booms()[i];
+            let (x, y, z) = (
+                b.qx as f32 / 1000.0,
+                b.qy as f32 / 1000.0,
+                b.qz as f32 / 1000.0,
+            );
+            let cell = (
+                crate::build::build_cell_of(x).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1)
+                    as u16,
+                crate::build::build_cell_of(z).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1)
+                    as u16,
+            );
+            self.noises.push(crate::noise::Noise {
+                qx: crate::movement::quant_xz(x),
+                qz: crate::movement::quant_xz(z),
+                sound: crate::noise::Sound::Blast,
+                at: tick,
+            });
+            let blast = crate::charge::Blast {
+                at: (x, y, z),
+                cell,
+                struck: b
+                    .struck
+                    .map(|s| (s.at.cx, s.at.cz, s.at.level, s.at.loc, s.deploy)),
+                structure: b.blast.structure,
+                damage: b.blast.damage,
+                blast_cm: b.blast.blast_cm,
+                owner: b.owner,
+                mark_lift: 0.0,
+            };
+            crate::charge::blast(
+                seed,
+                &self.haven,
+                &self.build,
+                &self.deploy,
+                &self.combat,
+                &blast,
+                &mut self.pieces,
+                &mut self.deploys,
+                &mut self.players,
+                removals,
+                &mut kills,
+                &self.mobs,
+                &mut mobs,
+                &mut self.events,
+            );
+        }
+        self.arrows.clear_booms();
+        for &(victim, owner, range_cm) in kills.entries() {
+            let slot = victim as usize;
+            if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
+                self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
+            }
+        }
+        for slot in 0..crate::limits::MAX_MOBS {
+            let dmg = mobs.dmg[slot];
+            if dmg == 0 {
+                continue;
+            }
+            let by = self.live_slot_of(mobs.by[slot]);
+            mob::hurt_slot(
+                &self.backpack,
+                &self.mob_now(),
+                tick,
+                by,
+                &self.players,
+                &mut self.mobs,
+                &mut self.backpacks,
+                &mut self.events,
+                slot,
+                dmg,
+            );
+        }
+    }
+
     /// Light a fire where each fire round came down this tick: dropped
     /// onto whatever a body could stand on below it, and not at all in the
     /// sea (`fire.rs`).
@@ -4901,6 +4999,10 @@ impl World {
                     // lose a loaded cylinder.
                     mag: s.mag,
                     mag_round: s.mag_round,
+                    // The gun's cone and trigger settle over a restart.
+                    bloom: 0,
+                    shot_at: 0,
+                    trigger_spent: false,
                     // Dry and warm: the store's record is a body that left
                     // the world, and it comes back the way a body wakes.
                     wet: 0,
@@ -8000,6 +8102,7 @@ impl World {
         self.settle_arrows();
         self.unstick_arrows();
         self.light_fires();
+        self.blow_rockets(&mut removals);
         self.fires.expire_due(tick);
         self.burn_fires();
         self.prick_cacti();
@@ -8276,6 +8379,10 @@ impl World {
                 h.update(&loaded.to_le_bytes());
                 h.update(&round.to_le_bytes());
             }
+            // `bloom`, `shot_at` and `trigger_spent` are not hashed and not
+            // saved, `hostile`'s rule: a gun's cone settles in a few tenths
+            // of a second and a restart lets it, and what they change (where
+            // a round went) is in the hash already as the hp it took.
             // The survival clock, in its own buffer rather than widening
             // the one above — every byte of it is sim state (the
             // accumulators included: a replay resuming mid-span with a

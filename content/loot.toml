@@ -231,6 +231,11 @@ entries = [
     { item = "item.syringe", weight = 140, count_min = 1, count_max = 1 },
     { item = "item.armor_roadsign_body", weight = 112, count_min = 1, count_max = 1 },
     { item = "item.satchel_charge", weight = 66, count_min = 1, count_max = 1 },
+    { item = "item.semi_pistol", weight = 50, count_min = 1, count_max = 1 },
+    { item = "item.custom_smg", weight = 40, count_min = 1, count_max = 1 },
+    { item = "item.python", weight = 30, count_min = 1, count_max = 1 },
+    { item = "item.shotgun_shells", weight = 120, count_min = 8, count_max = 16 },
+    { item = "item.rifle_ammo", weight = 100, count_min = 10, count_max = 20 },
 ]
 
 [[loot_table]]
@@ -250,6 +255,14 @@ entries = [
     { item = "item.pistol_ammo", weight = 155, count_min = 12, count_max = 24 },
     { item = "item.revolver", weight = 103, count_min = 1, count_max = 1 },
     { item = "item.satchel_charge", weight = 103, count_min = 1, count_max = 2 },
+    { item = "item.assault_rifle", weight = 40, count_min = 1, count_max = 1 },
+    { item = "item.bolt_rifle", weight = 30, count_min = 1, count_max = 1 },
+    { item = "item.semi_rifle", weight = 60, count_min = 1, count_max = 1 },
+    { item = "item.thompson", weight = 60, count_min = 1, count_max = 1 },
+    { item = "item.pump_shotgun", weight = 60, count_min = 1, count_max = 1 },
+    { item = "item.rifle_ammo", weight = 155, count_min = 20, count_max = 40 },
+    { item = "item.rocket", weight = 30, count_min = 1, count_max = 2 },
+    { item = "item.c4", weight = 20, count_min = 1, count_max = 1 },
     { item = "item.armor_roadsign_body", weight = 103, count_min = 1, count_max = 1 },
     { item = "item.medkit", weight = 130, count_min = 1, count_max = 2 },
     { item = "item.syringe", weight = 130, count_min = 1, count_max = 1 },

@@ -1,13 +1,21 @@
 //! What a shot looks like: the muzzle flash, the tracer, and the dust and
 //! mark of a miss the shard did not mark.
 //!
-//! The shard walks a missed shot only [`MAX_HITSCAN_MARK_SAMPLES`] (10.9 m)
+//! The shard walks a missed shot only [`MAX_HITSCAN_MARK_SAMPLES`] (102 m)
 //! for its mark — a decal must not own the tick — so a round into a hillside
-//! at thirty metres used to land in silence: no dust, no hole. The client
-//! walks the rest itself, with the sim's own ladder (`ranged::beam_stop`),
-//! and draws a mark only past where the shard would have (no double mark),
-//! and only when no drawn body stood in the line (a hit is `EV_HIT`, not
-//! dust behind the victim). Cosmetic: it decides nothing.
+//! further out would land in silence: no dust, no hole. The client walks the
+//! rest itself, with the sim's own ladder (`ranged::beam_stop`), and draws a
+//! mark only past where the shard would have (no double mark), and only when
+//! no drawn body stood in the line (a hit is `EV_HIT`, not dust behind the
+//! victim). Cosmetic: it decides nothing.
+//!
+//! **Your own gun is drawn the frame its trigger breaks** (guns v1,
+//! `gunfeel::predict`): its flash, its smoke and its tracer down the view.
+//! The shard's word on that shot arrives a round trip later and draws
+//! nothing more of it but the miss it walks — the round's own line, its cone
+//! applied, is in the event (`EV_SHOT` carries where it went and how far).
+//! Everyone else's shot is drawn off the event, down that same line, to the
+//! point the round stopped.
 
 use bevy::prelude::*;
 
@@ -41,6 +49,57 @@ pub const MUZZLE_FLASH: FlashDef = FlashDef {
 
 /// A tracer's speed, m/s — slow enough to be seen crossing a frame.
 pub const TRACER_MPS: f32 = 280.0;
+
+/// How far your own tracer is drawn, metres, when the shard has not yet
+/// said where the round stopped: far enough to read as a round going out.
+pub const OWN_TRACER_M: f32 = 120.0;
+
+/// How wide a shotgun's pellets are drawn, radians off the line (half its
+/// 12° spread): the look of a shell, not its truth.
+pub const PELLET_DRAW_RAD: f32 = 0.105;
+
+/// Your own muzzle: just ahead of the camera, down and to the right where
+/// the held gun is, and on the view's centre line once it is at the sights.
+pub fn own_muzzle(cam: &GlobalTransform, ads: bool) -> Vec3 {
+    let (side, down) = if ads { (0.0, 0.05) } else { (0.12, 0.1) };
+    cam.translation() + Vec3::from(cam.forward()) * 0.7 + Vec3::from(cam.right()) * side
+        - Vec3::from(cam.up()) * down
+}
+
+/// `dir` turned by up to `rad` about itself, by `key` — a drawn pellet.
+pub fn scatter(dir: Vec3, rad: f32, key: u32) -> Vec3 {
+    let h = key.wrapping_mul(0x9E37_79B1).rotate_left(13) ^ 0x5bd1_e995;
+    let u = (h & 0xFFFF) as f32 / 65_536.0;
+    let v = (h >> 16) as f32 / 65_536.0;
+    let r = rad * u.sqrt();
+    let a = v * std::f32::consts::TAU;
+    let right = dir.cross(Vec3::Y).normalize_or(Vec3::X);
+    let up = right.cross(dir);
+    (dir + right * (r * a.cos()) + up * (r * a.sin())).normalize_or(dir)
+}
+
+/// A tracer from `start` along `dir` for `dist` metres: one hot streak.
+pub fn tracer(fx: &mut Fx, start: Vec3, dir: Vec3, dist: f32) {
+    if dist <= 2.0 {
+        return;
+    }
+    let life = (dist / TRACER_MPS).clamp(0.03, 0.45);
+    fx.glow.spawn(Particle {
+        left: life,
+        life,
+        pos: start,
+        vel: dir * TRACER_MPS,
+        size0: 0.014,
+        size1: 0.010,
+        c0: [9.0, 6.0, 2.4, 0.9],
+        c1: [5.0, 3.0, 1.0, 0.5],
+        cell: super::atlas::STREAK,
+        orient: Orient::Stretch,
+        stretch: 0.014,
+        len_max: 5.0,
+        ..Particle::default()
+    });
+}
 
 /// Whether the client draws a miss the shard did not: the beam stopped on
 /// something, past the shard's own mark walk, with no drawn body in its line.
@@ -106,6 +165,7 @@ pub fn shots(
     world: Option<Res<WorldId>>,
     cams: Query<&GlobalTransform, With<EyeCam>>,
     bodies: Query<(&Body, &GlobalTransform)>,
+    drawn: Res<super::super::bodies::Bodies>,
     animals: Query<&GlobalTransform, With<super::super::mobs::Animal>>,
     helis: Query<&GlobalTransform, With<super::super::heli::HeliBody>>,
     sentries: Query<(&super::super::sentry::SentryHead, &GlobalTransform)>,
@@ -113,8 +173,9 @@ pub fn shots(
     mut fx: ResMut<Fx>,
     mut cache: Local<Box<SlotCache>>,
     mut sound: Option<ResMut<super::super::audio::Sound>>,
+    gf: Res<super::super::gunfeel::GunFeel>,
 ) {
-    if feed.shots().is_empty() {
+    if feed.shots().is_empty() && gf.fired == 0 {
         return;
     }
     let (Some(net), Some(world)) = (net, world) else {
@@ -129,7 +190,32 @@ pub fn shots(
     let mut rs = client_core::interp::RemoteState::default();
     let mut traces = 0usize;
 
-    for &(shooter, yaw, pitch, speed_mmpt, reach) in feed.shots() {
+    // Your own shot, on the frame it broke: the flash where the gun is and
+    // the tracer down the view, every pellet of it.
+    if gf.fired > 0 {
+        let fwd = Vec3::from(cam.forward());
+        let muzzle = own_muzzle(cam, gf.ads);
+        emit(&mut fx.glow, Layer::Flash, 2, muzzle, fwd, Matter::Metal);
+        emit(&mut fx.soft, Layer::GunSmoke, 2, muzzle, fwd, Matter::Metal);
+        fx.flash(muzzle, MUZZLE_FLASH);
+        let pellets = gf.gun.map_or(1, |g| g.pellets.max(1));
+        for k in 0..pellets {
+            // The pellets' scatter is drawn, not known: the shard rolls the
+            // real one, and the marks it reports are where they went.
+            let dir = if pellets > 1 {
+                scatter(
+                    fwd,
+                    PELLET_DRAW_RAD,
+                    k as u32 ^ (at_tick as u32).wrapping_mul(2_654_435_761),
+                )
+            } else {
+                fwd
+            };
+            tracer(&mut fx, muzzle + dir * 1.2, dir, OWN_TRACER_M);
+        }
+    }
+
+    for &(shooter, yaw, pitch, speed_mmpt, reach, fine) in feed.shots() {
         // Arrows fly (`tracer.rs`) and land as `EV_IMPACT`; only a firearm's
         // instantaneous shot flashes and needs a trace.
         if !protocol::shot_is_instant(speed_mmpt) {
@@ -144,9 +230,9 @@ pub fn shots(
         } else {
             continue;
         };
-        let (fx_, fz) = sim_core::yaw_dir(yaw);
-        let (ch, sv) = sim_core::pitch_dir(pitch);
-        let dir = Vec3::new(fx_ * ch, sv, fz * ch).normalize_or(Vec3::Z);
+        // Where the round went, its cone applied, at the aim's precision.
+        let d = sim_core::ranged::aim_dir(yaw, pitch, fine);
+        let dir = Vec3::new(d.0, d.1, d.2).normalize_or(Vec3::Z);
         let eye_at = feet + Vec3::Y * (sim_core::ranged::eye_mm(crouched) as f32 / MM_PER_M);
 
         // The muzzle: your own is just ahead of the camera, down and to the
@@ -172,6 +258,9 @@ pub fn shots(
         } else if let Some(gt) = sentry {
             // A town sentry's barrel.
             gt.transform_point(super::super::sentry::MUZZLE)
+        } else if let Some(m) = drawn.muzzle(shooter) {
+            // A shouldered long gun's own barrel (`bodies::aim_long_guns`).
+            m
         } else {
             let drawn = bodies
                 .iter()
@@ -181,12 +270,15 @@ pub fn shots(
             let hands = if crouched { 1.42 - 0.65 } else { 1.42 };
             drawn + Vec3::Y * hands + dir * 0.55
         };
-        emit(&mut fx.glow, Layer::Flash, 2, muzzle, dir, Matter::Metal);
-        emit(&mut fx.soft, Layer::GunSmoke, 2, muzzle, dir, Matter::Metal);
-        fx.flash(muzzle, MUZZLE_FLASH);
+        // Your own was drawn when it broke (`gunfeel`); the rest flash here.
+        if !own {
+            emit(&mut fx.glow, Layer::Flash, 2, muzzle, dir, Matter::Metal);
+            emit(&mut fx.soft, Layer::GunSmoke, 2, muzzle, dir, Matter::Metal);
+            fx.flash(muzzle, MUZZLE_FLASH);
+        }
 
-        // Where the beam stops: the sim's own walk over the whole reach,
-        // for shooters near enough to see.
+        // Where the beam stops: the sim's own walk over as far as the round
+        // flew (the event says), for shooters near enough to see.
         let range_mm = reach as u32 * 100;
         let traced = traces < MAX_TRACES_PER_FRAME && feet.distance(eye_pos) <= TRACE_RANGE_M;
         let stop = traced.then(|| {
@@ -208,8 +300,7 @@ pub fn shots(
                     eye_at.y * MM_PER_M,
                     eye_at.z * MM_PER_M,
                 ),
-                yaw,
-                pitch,
+                d,
                 range_mm,
             )
         });
@@ -251,25 +342,26 @@ pub fn shots(
                 ));
             }
         }
-        let start = muzzle + dir * if own { 1.5 } else { 0.3 };
-        let dist = (tracer_end - start).dot(dir).max(0.0);
-        if dist > 2.0 {
-            let life = (dist / TRACER_MPS).clamp(0.03, 0.3);
-            fx.glow.spawn(Particle {
-                left: life,
-                life,
-                pos: start,
-                vel: dir * TRACER_MPS,
-                size0: 0.012,
-                size1: 0.010,
-                c0: [9.0, 6.0, 2.4, 0.9],
-                c1: [5.0, 3.0, 1.0, 0.5],
-                cell: super::atlas::STREAK,
-                orient: Orient::Stretch,
-                stretch: 0.012,
-                len_max: 4.0,
-                ..Particle::default()
-            });
+        if !own {
+            let start = muzzle + dir * 0.3;
+            let dist = (tracer_end - start).dot(dir).max(0.0);
+            tracer(&mut fx, start, dir, dist);
+            // A shotgun's other pellets, drawn about the first's line.
+            let pellets = core
+                .interp
+                .sample(shooter, at_tick, &mut rs)
+                .then_some(rs.held)
+                .flatten()
+                .and_then(|i| core.catalog.row(i as usize).gun)
+                .map_or(1, |g| g.pellets.max(1));
+            for k in 1..pellets {
+                let pd = scatter(
+                    dir,
+                    PELLET_DRAW_RAD,
+                    k as u32 ^ shooter.wrapping_mul(40_503),
+                );
+                tracer(&mut fx, start, pd, dist.min(40.0));
+            }
         }
 
         // The miss the shard did not mark.

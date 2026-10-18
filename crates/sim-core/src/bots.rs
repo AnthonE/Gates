@@ -93,6 +93,7 @@ pub fn bot_frame(rng: &mut Pcg32, prev_yaw: u16, seq: u16) -> InputFrame {
         // Wander the hotbar too, so held-item selection is inside the
         // alloc/replay/parity surface.
         sel: rng.next_bounded(6) as u8,
+        pitch_fine: 0,
     }
 }
 
@@ -511,6 +512,7 @@ pub fn brawl_step(plan: &mut BrawlPlan, rng: &mut Pcg32, down: bool) -> Command 
             move_x: 0,
             move_z: 0,
             sel: plan.weapon_slot,
+            pitch_fine: 0,
         },
         favour,
     }

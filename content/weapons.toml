@@ -303,12 +303,14 @@ ammo = ["item.arrow_metal"]
 id = "item.revolver"
 kind = "firearm"
 condition_loss = 25
-damage = 20
+# Rust's revolver (their item data, 2026-10): 35 a round, a 0.175 s repeat
+# (343 a minute; 5 ticks here, 360), eight in the cylinder, 3.4 s to fill.
+damage = 35
 structure = 1
 headshot_pct = 200
 limb_pct = 50
-rate_per_min = 150
-range_m = 50
+rate_per_min = 343
+range_m = 150
 ammo = ["item.pistol_ammo"]
 # Eight rounds and 3.4 s, both the reference's own published figures for
 # this weapon, taken rather than argued (`reference/BALANCE.md` §6: take
@@ -325,6 +327,262 @@ ammo = ["item.pistol_ammo"]
 # both would be two cadences to keep in step for one wait.
 magazine = 8
 reload_ms = 3400
+[weapon.gun]
+aim_cdeg = 75
+hip_cdeg = 200
+bloom_cdeg = 15
+bloom_max_cdeg = 60
+bloom_recover_ms = 400
+bloom_delay_ms = 100
+falloff_m = [10, 60]
+falloff_pct = 80
+recoil_pitch_cdeg = [220, 260]
+recoil_yaw_cdeg = [-40, 40]
+
+# --- Rust's guns (guns v1, 2026-10-18) ------------------------------------
+#
+# **Every number is Rust's**, read off their game data (a weekly item dump,
+# build 25824447) and their decompiled `BaseProjectile`; where ours differs
+# the line says why. The `[weapon.gun]` table is theirs field for field:
+#
+#   aim_cdeg / hip_cdeg  `aimCone` / `hipAimCone`, the cone's FULL apex in
+#                        hundredths of a degree (the AK's 0.2° reads 20). A
+#                        shot leaves within half of it, crowding the centre.
+#   move_cdeg            the stance penalty, a degree on the move (default).
+#   bloom_*              `aimconePenalty*`: what sustained fire adds.
+#   falloff_m / _pct     the round's `damageDistances`: 5.56 is whole to 20 m
+#                        and 80 % from 100 m, pistol 10 → 60 m, buckshot
+#                        10 → 40 m at a quarter.
+#   recoil_*             the view kick per shot from the hip; through the
+#                        sights half of it (`ADSScale`). Their per-weapon
+#                        `RecoilProperties` are not public; these keep their
+#                        ratios (macro tables: the AK climbs ~2.25 a shot and
+#                        drifts right, an SMG 0.66) at a scale a hand can
+#                        pull down.
+#
+# A cadence is ticks at 30 Hz (`1800 / rate_per_min`, floored), so 462 (the
+# Thompson's) would be 3 ticks and 600 a minute; 450 is the honest four.
+# Reach stops inside the interest band (176 m): their bullets fly eight
+# seconds, but a body past the band is not on anybody's screen.
+
+[[weapon]]
+id = "item.assault_rifle"
+kind = "firearm"
+condition_loss = 25
+damage = 50
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 450
+range_m = 170
+ammo = ["item.rifle_ammo"]
+magazine = 30
+reload_ms = 4400
+[weapon.gun]
+auto = true
+aim_cdeg = 20
+hip_cdeg = 250
+bloom_cdeg = 3
+bloom_max_cdeg = 60
+bloom_recover_ms = 300
+bloom_delay_ms = 100
+falloff_m = [20, 100]
+falloff_pct = 80
+recoil_pitch_cdeg = [180, 220]
+recoil_yaw_cdeg = [-20, 80]
+
+[[weapon]]
+id = "item.semi_rifle"
+kind = "firearm"
+condition_loss = 25
+damage = 40
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 343
+range_m = 170
+ammo = ["item.rifle_ammo"]
+magazine = 16
+reload_ms = 4400
+[weapon.gun]
+aim_cdeg = 25
+hip_cdeg = 180
+bloom_cdeg = 10
+bloom_max_cdeg = 40
+bloom_recover_ms = 400
+bloom_delay_ms = 100
+falloff_m = [20, 100]
+falloff_pct = 80
+recoil_pitch_cdeg = [230, 270]
+recoil_yaw_cdeg = [-40, 40]
+
+[[weapon]]
+id = "item.thompson"
+kind = "firearm"
+condition_loss = 25
+# Their 37.5, whole.
+damage = 38
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 450
+range_m = 150
+ammo = ["item.pistol_ammo"]
+magazine = 20
+reload_ms = 4000
+[weapon.gun]
+auto = true
+aim_cdeg = 50
+hip_cdeg = 180
+bloom_cdeg = 4
+bloom_max_cdeg = 80
+bloom_recover_ms = 300
+bloom_delay_ms = 100
+falloff_m = [10, 60]
+falloff_pct = 80
+recoil_pitch_cdeg = [55, 75]
+recoil_yaw_cdeg = [-20, 20]
+
+[[weapon]]
+id = "item.custom_smg"
+kind = "firearm"
+condition_loss = 25
+damage = 30
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 600
+range_m = 150
+ammo = ["item.pistol_ammo"]
+magazine = 30
+reload_ms = 4000
+[weapon.gun]
+auto = true
+aim_cdeg = 50
+hip_cdeg = 180
+bloom_cdeg = 4
+bloom_max_cdeg = 80
+bloom_recover_ms = 300
+bloom_delay_ms = 100
+falloff_m = [10, 60]
+falloff_pct = 80
+recoil_pitch_cdeg = [55, 75]
+recoil_yaw_cdeg = [-25, 25]
+
+# Their 1.7 s between rounds is the bolt; their reload is a round at a time
+# (1.24 s, then 0.87 a round, then 1.4 s), ours the whole four at once.
+[[weapon]]
+id = "item.bolt_rifle"
+kind = "firearm"
+condition_loss = 25
+damage = 80
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 35
+range_m = 170
+ammo = ["item.rifle_ammo"]
+magazine = 4
+reload_ms = 4800
+[weapon.gun]
+aim_cdeg = 0
+hip_cdeg = 180
+falloff_m = [20, 100]
+falloff_pct = 80
+recoil_pitch_cdeg = [450, 550]
+recoil_yaw_cdeg = [-60, 60]
+
+# Fifteen pellets of 14 (their buckshot), each scattering 12° about the
+# shot's line, whole to 10 m and a quarter from 40 m. Each pellet pays the
+# ladder for the part it crossed (theirs ×1.2 on the head; ours the guns' ×2).
+[[weapon]]
+id = "item.pump_shotgun"
+kind = "firearm"
+condition_loss = 25
+damage = 14
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 55
+range_m = 60
+ammo = ["item.shotgun_shells"]
+magazine = 8
+reload_ms = 5500
+[weapon.gun]
+pellets = 15
+aim_cdeg = 0
+hip_cdeg = 180
+pellet_cdeg = 1200
+falloff_m = [10, 40]
+falloff_pct = 25
+recoil_pitch_cdeg = [500, 600]
+recoil_yaw_cdeg = [-80, 80]
+
+[[weapon]]
+id = "item.semi_pistol"
+kind = "firearm"
+condition_loss = 25
+damage = 40
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 400
+range_m = 150
+ammo = ["item.pistol_ammo"]
+magazine = 10
+reload_ms = 2900
+[weapon.gun]
+aim_cdeg = 75
+hip_cdeg = 200
+bloom_cdeg = 15
+bloom_max_cdeg = 60
+bloom_recover_ms = 400
+bloom_delay_ms = 100
+falloff_m = [10, 60]
+falloff_pct = 80
+recoil_pitch_cdeg = [160, 200]
+recoil_yaw_cdeg = [-40, 40]
+
+[[weapon]]
+id = "item.python"
+kind = "firearm"
+condition_loss = 25
+damage = 55
+structure = 1
+headshot_pct = 200
+limb_pct = 50
+rate_per_min = 400
+range_m = 150
+ammo = ["item.pistol_ammo"]
+magazine = 6
+reload_ms = 3750
+[weapon.gun]
+aim_cdeg = 50
+hip_cdeg = 200
+bloom_cdeg = 20
+bloom_max_cdeg = 80
+bloom_recover_ms = 500
+bloom_delay_ms = 100
+falloff_m = [10, 60]
+falloff_pct = 80
+recoil_pitch_cdeg = [500, 600]
+recoil_yaw_cdeg = [-80, 80]
+
+# The rocket launcher is a bow in this schema: it fires a round that flies
+# (the rocket's speed and drop, `[[ammo]]`), with no magazine to fill. A
+# direct hit is the blunt 60 (theirs 75; the bow band's head rule holds it
+# under a one-shot); the blast is the round's. One every six seconds is
+# their 2 s repeat plus their 6.2 s reload, near enough.
+[[weapon]]
+id = "item.rocket_launcher"
+kind = "bow"
+condition_loss = 25
+damage = 60
+structure = 1
+headshot_pct = 150
+limb_pct = 50
+rate_per_min = 10
+ammo = ["item.rocket"]
 
 [[weapon]]
 id = "item.satchel_charge"
@@ -385,6 +643,23 @@ range_m = 10
 fuse_s = 4
 dud_pct = 15
 blast_m = 2
+
+# Rust's C4 (their data, 2026-10): 550 to a body, ten seconds, never a dud,
+# and half a stone wall a charge — 275 here, so a stone wall (500) takes two,
+# sheet metal (1000) four and a wooden one (250) one, their raid table to the
+# charge. Its 4 m blast is held to one build cell, the charge's bound.
+[[weapon]]
+id = "item.c4"
+kind = "throwable"
+damage = 550
+structure = 275
+headshot_pct = 100
+limb_pct = 100
+rate_per_min = 10
+range_m = 10
+fuse_s = 10
+dud_pct = 0
+blast_m = 3
 
 # --- the rounds ------------------------------------------------------------
 #
@@ -452,3 +727,22 @@ speed_mps = 40
 drop_mps2 = 10
 damage_pct = 80
 fire_s = [20, 40]
+
+# --- the rocket (guns v1) ----------------------------------------------------
+#
+# Rust's basic rocket: 18 m/s, a quarter of gravity, no drag (their wiki;
+# the speed is old and the feel is right: you lead a running man by a body
+# and see it come). 30 here, so a lob 200 m out lands inside the flight
+# backstop, and 2 m/s² bakes to the sim's 1.8. Its blast is
+# theirs where a charge's bound allows: 275 to a body at the heart (falling
+# to nothing at the edge), and 125 off a structure — a quarter of a stone
+# wall, so stone takes four, sheet metal eight, wood two, their raid table.
+# The piece it strikes takes the whole 125.
+[[ammo]]
+id = "item.rocket"
+speed_mps = 30
+drop_mps2 = 2
+[ammo.blast]
+blast_m = 3
+damage = 275
+structure = 125

@@ -2254,12 +2254,13 @@ fn golden_event(fixture: &[u8], name: &str) {
                     shooter,
                     yaw,
                     pitch,
+                    pitch_fine: -37,
                     speed_mmpt,
                     drop_mmpt2,
                 },
                 "{name}: decode mismatch"
             );
-            encode_event_shot(shooter, yaw, pitch, speed_mmpt, drop_mmpt2, &mut buf).unwrap()
+            encode_event_shot(shooter, yaw, pitch, -37, speed_mmpt, drop_mmpt2, &mut buf).unwrap()
         }
         "event_impact.bin" => {
             let (qx, qy, qz, surf, kind) = event_impact();
@@ -2665,14 +2666,14 @@ fn test_input_sel_domain_is_enforced() {
     let len = encode_input(&ok, &mut buf).unwrap();
     assert_eq!(decode_input(&buf[..len]).unwrap(), ok);
     // sel is the last 3 bits of the one frame (header: kind + ack:16 +
-    // ack_bits:32 + playout:4 + frame_count:4, then first_seq:16 and 48
+    // ack_bits:32 + playout:4 + frame_count:4, then first_seq:16 and 56
     // frame bits before it; the writer is LSB-first within each byte):
     // force all three high — sel 7 — and decode must refuse.
     // Offsets derived from `KIND_BITS`, never typed: v27 widened it 3 → 4
     // and a literal here silently moved every field this test pokes —
     // and v61 shrank `first_client_tick:32` to `playout_ticks:4`, which
-    // moved it again.
-    let sel_bit = KIND_BITS as usize + 16 + 32 + 4 + 4 + 16 + 48;
+    // moved it again. v126's `pitch_fine` is eight more frame bits.
+    let sel_bit = KIND_BITS as usize + 16 + 32 + 4 + 4 + 16 + 56;
     for b in 0..3 {
         let bit = sel_bit + b;
         buf[bit / 8] |= 1 << (bit % 8);

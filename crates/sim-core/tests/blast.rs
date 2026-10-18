@@ -474,3 +474,101 @@ fn a_dud_drops_the_satchel_at_the_wall() {
         "no dud: the wall took it"
     );
 }
+
+/// **A rocket opens the wall it strikes** (guns v1): fired from a launcher,
+/// it flies as an arrow does, and where it stops on a wall it blows up —
+/// one blast impact, and the struck wall takes the round's whole structure
+/// however far its anchor is from the face the rocket met (plus the direct
+/// hit's chip).
+#[test]
+fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
+    use sim_core::combat::{AmmoDef, Gun, RangedDef, RoundBlast, NO_MAG};
+    const LAUNCHER: u16 = 30;
+    const ROCKET: u16 = 31;
+    let (mut w, cx, cz) = raid_world();
+    w.combat.ranged[LAUNCHER as usize] = RangedDef {
+        damage: 60,
+        ammo: [ROCKET, NO_ITEM16, NO_ITEM16, NO_ITEM16],
+        rate_ticks: 180,
+        hitscan: false,
+        range_mm: 0,
+        structure: 1,
+        head_pct: 150,
+        limb_pct: 50,
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
+        draw_ticks: 0,
+        gun: Gun::NONE,
+    };
+    w.combat.ammo[ROCKET as usize] = AmmoDef {
+        speed_mmpt: 1000,
+        drop_mmpt2: 2,
+        damage_pct: 100,
+        fire_ticks: [0; 2],
+        blast: RoundBlast {
+            blast_cm: 300,
+            damage: 275,
+            structure: 125,
+        },
+    };
+    let before = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap();
+    // Eight metres out on the wall's low side, facing it (+X), the rocket
+    // and the launcher in hand.
+    let (x, z) = cell_center(cx, cz);
+    let wall_x = cx as f32 * BUILD_CELL_M;
+    w.players[0].body = Body::at(SEED, hv(SEED), wall_x - 8.0, z);
+    w.players[0].inv[2] = ItemStack {
+        item: LAUNCHER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[3] = ItemStack {
+        item: ROCKET,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+    let _ = x;
+    // Level, at eye height: the wall stands three metres over its floor.
+    let pitch = 128u8;
+    let mut blasts = 0;
+    for t in 0..60u16 {
+        w.tick(&[Command::Input {
+            id: RAIDER,
+            frame: sim_core::input::InputFrame {
+                seq: 1000 + t,
+                sel: 2,
+                yaw: 16_384,
+                pitch,
+                buttons: if t < 3 {
+                    sim_core::input::BTN_PRIMARY
+                } else {
+                    0
+                },
+                ..sim_core::input::InputFrame::default()
+            },
+            favour: 0,
+        }]);
+        blasts += w
+            .events
+            .entries()
+            .iter()
+            .filter(|e| {
+                e.code == sim_core::world::EV_IMPACT
+                    && sim_core::world::impact_parts(e.a).1 == sim_core::ranged::IMPACT_BLAST
+            })
+            .count();
+    }
+    assert_eq!(w.players[0].inv[3].count, 1, "one rocket left the launcher");
+    assert_eq!(blasts, 1, "one rocket, one blast");
+    let after = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap_or(0);
+    let took = before - after;
+    assert!(
+        (125..=130).contains(&took),
+        "the struck wall takes the rocket's 125 and the direct hit's chip: took {took}"
+    );
+}
+
+const NO_ITEM16: u16 = sim_core::gather::NO_ITEM;

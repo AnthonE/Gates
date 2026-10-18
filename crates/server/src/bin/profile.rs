@@ -382,6 +382,7 @@ fn main() {
                 yaw: seq.wrapping_mul(97),
                 pitch: 0,
                 sel: 0,
+                pitch_fine: 0,
             });
             core.push_input(slot, &dg);
         }

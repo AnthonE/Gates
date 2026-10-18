@@ -555,7 +555,10 @@ const TICKS: u64 = 900;
 /// (2026-10-18, wipe): `state_hash` reads both words of `Player::known`.
 /// **Moved → `0xCA0F_A28D_2DF1_E3DD` at the feet** (2026-10-18, wipe):
 /// `state_hash` reads a third worn stack.
-const GOLDEN_FINAL_HASH: u64 = 0xCA0F_A28D_2DF1_E3DD;
+/// **Moved → `0x2A9B_5B07_1CF9_388C` at guns v1** (2026-10-18, wipe), with
+/// the trace: a shot leaves down the frame's whole yaw and fine pitch rather
+/// than the LUTs' 1.4° steps, so the fixture gun's rounds land elsewhere.
+const GOLDEN_FINAL_HASH: u64 = 0x2A9B_5B07_1CF9_388C;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -675,7 +678,7 @@ const GOLDEN_FINAL_HASH: u64 = 0xCA0F_A28D_2DF1_E3DD;
 /// (2026-10-18, wipe), with the final hash.
 /// **Moved → `0x5BD3_1C07_2F40_36AD` at the feet** (2026-10-18, wipe), with the
 /// final hash.
-const GOLDEN_TRACE_HASH: u64 = 0x5BD3_1C07_2F40_36AD;
+const GOLDEN_TRACE_HASH: u64 = 0x34D2_4839_76C3_1698;
 
 /// Fold a stamped trace into one number.
 ///

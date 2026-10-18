@@ -356,6 +356,116 @@ pub struct RangedDef {
     /// whole draw away (`ranged::draw`), so the clock starts when the aim
     /// does and no second clock exists to keep in step.
     pub draw_ticks: u16,
+    /// How a firearm handles: trigger, pellets, aim cone and falloff. Inert
+    /// ([`Gun::NONE`]) on a bow, so an arrow flies exactly where it is aimed.
+    pub gun: Gun,
+}
+
+/// A firearm's handling, Rust's `BaseProjectile` aim cone read straight
+/// across (`weapons.toml`'s `[weapon.gun]`). Angles are **hundredths of a
+/// degree of the cone's full apex**, Rust's own measure (a shot leaves
+/// within half of it of the aimed line); times are ticks, so nothing here
+/// is a float.
+///
+/// The cone a shot leaves through is
+/// `aim + bloom + (hip if not aiming) + moving × stance`, and each pellet
+/// adds `pellet` on top. `bloom` is the per-player penalty: each shot adds
+/// `per_shot` up to `max`, and it bleeds back to zero over `recover_ticks`
+/// once `delay_ticks` have passed since the last shot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gun {
+    /// Fires once per pull: the trigger must come up between shots.
+    pub semi: bool,
+    /// Projectiles per shot; each is resolved and paid on its own.
+    pub pellets: u8,
+    pub aim: u16,
+    pub hip: u16,
+    /// Added on the move (Rust's `stancePenalty`, a degree), scaled by
+    /// `ranged::stance_pct`.
+    pub moving: u16,
+    pub per_shot: u16,
+    pub max: u16,
+    pub recover_ticks: u16,
+    pub delay_ticks: u16,
+    pub pellet: u16,
+    /// Damage starts falling at `falloff_mm[0]` and reaches
+    /// `falloff_pct` percent of itself at `falloff_mm[1]`. `[0, 0]` is none.
+    pub falloff_mm: [u32; 2],
+    pub falloff_pct: u16,
+    /// The view kick per shot from the hip, hundredths of a degree: up
+    /// between the two pitch ends, sideways between the two yaw ends.
+    /// The sim never reads it — the client kicks its own view and the shot
+    /// goes where the view then points, as Rust's does — it rides here to
+    /// the catalog drip (`protocol::ItemRow`).
+    pub recoil_pitch: [u16; 2],
+    pub recoil_yaw: [i16; 2],
+    /// Through the sights the kick is this percent of the hip's.
+    pub ads_recoil_pct: u8,
+}
+
+impl Gun {
+    /// No cone, one projectile, the trigger repeats while held: a shot goes
+    /// exactly where it is aimed, which is every ranged row before guns v1.
+    pub const NONE: Gun = Gun {
+        semi: false,
+        pellets: 1,
+        aim: 0,
+        hip: 0,
+        moving: 0,
+        per_shot: 0,
+        max: 0,
+        recover_ticks: 0,
+        delay_ticks: 0,
+        pellet: 0,
+        falloff_mm: [0, 0],
+        falloff_pct: 100,
+        recoil_pitch: [0, 0],
+        recoil_yaw: [0, 0],
+        ads_recoil_pct: 100,
+    };
+
+    /// The cone a shot leaves through, hundredths of a degree of apex.
+    /// `speed` is the stance penalty in percent (`ranged::stance_pct`):
+    /// 100 is a body on the move.
+    pub fn cone(&self, bloom: u16, aiming: bool, speed: u16) -> u32 {
+        let hip = if aiming { 0 } else { u32::from(self.hip) };
+        u32::from(self.aim)
+            + u32::from(bloom)
+            + hip
+            + u32::from(self.moving) * u32::from(speed) / 100
+    }
+
+    /// `damage` after falloff at `dist_mm` from the muzzle.
+    pub fn fall_off(&self, damage: u16, dist_mm: u32) -> u16 {
+        let [a, b] = self.falloff_mm;
+        if b <= a || dist_mm <= a {
+            return damage;
+        }
+        let span = u64::from(b - a);
+        let past = u64::from(dist_mm.min(b) - a);
+        let lost = u64::from(100 - self.falloff_pct.min(100));
+        let pct = 100 * span - lost * past;
+        ((u64::from(damage) * pct / (100 * span)) as u16).max(1)
+    }
+
+    /// Bloom left `since` ticks after the last shot.
+    pub fn bloom_after(&self, bloom: u16, since: u64) -> u16 {
+        let delay = u64::from(self.delay_ticks);
+        if since <= delay || bloom == 0 {
+            return bloom;
+        }
+        if self.recover_ticks == 0 {
+            return 0;
+        }
+        let shed = (since - delay) * u64::from(self.max.max(1)) / u64::from(self.recover_ticks);
+        bloom.saturating_sub(shed.min(u64::from(u16::MAX)) as u16)
+    }
+}
+
+impl Default for Gun {
+    fn default() -> Self {
+        Gun::NONE
+    }
 }
 
 /// A weapon that carries no magazine, in [`RangedDef::mag_slot`].
@@ -392,6 +502,7 @@ impl Default for RangedDef {
             reload_ticks: 0,
             mag_slot: NO_MAG,
             draw_ticks: 0,
+            gun: Gun::NONE,
         }
     }
 }
@@ -418,6 +529,27 @@ pub struct AmmoDef {
     /// longest, in ticks (`fire.rs`); a round that lights one leaves no
     /// arrow. Zero for every round that does not.
     pub fire_ticks: [u16; 2],
+    /// What the round does where it lands, if it explodes (a rocket). A
+    /// round that blows up leaves no arrow behind (`ranged::land`).
+    pub blast: RoundBlast,
+}
+
+/// An exploding round's blast (`charge::Blast`): radius in centimetres,
+/// what it takes off a body and a structure at its heart. Zero radius is a
+/// round that does not explode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoundBlast {
+    pub blast_cm: u16,
+    pub damage: u16,
+    pub structure: u16,
+}
+
+impl RoundBlast {
+    pub const NONE: RoundBlast = RoundBlast {
+        blast_cm: 0,
+        damage: 0,
+        structure: 0,
+    };
 }
 
 /// **Not wearable.** `ArmorDef::slot` is one-based so that a zeroed table
@@ -608,12 +740,14 @@ impl CombatContent {
             reload_ticks: 0,
             mag_slot: NO_MAG,
             draw_ticks: 0,
+            gun: Gun::NONE,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {
             speed_mmpt: 0,
             drop_mmpt2: 0,
             damage_pct: 100,
             fire_ticks: [0; 2],
+            blast: RoundBlast::NONE,
         }; MAX_ITEM_DEFS],
         armor: [ArmorDef {
             reduction_pct: 0,
@@ -772,6 +906,7 @@ impl CombatContent {
             //     by hope.
             limb_pct: 50,
             draw_ticks: 0,
+            gun: Default::default(),
         };
         c
     }

@@ -64,6 +64,7 @@ fn in_town(lx: f32, lz: f32) -> (Box<World>, usize) {
         reload_ticks: 0,
         mag_slot: NO_MAG,
         draw_ticks: 0,
+        gun: Default::default(),
     };
     w.combat = c;
     let t = w.haven.town;
@@ -106,6 +107,7 @@ fn fire(on: bool) -> Command {
             move_x: 0,
             move_z: 0,
             sel: 0,
+            pitch_fine: 0,
         },
         favour: 0,
     }

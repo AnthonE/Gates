@@ -105,6 +105,9 @@ struct Flight {
     /// it is what stops a 144 Hz client drawing a slower arrow than a 60 Hz
     /// one.
     carry: f32,
+    /// A rocket rather than an arrow (guns v1): drawn fat, trailing smoke
+    /// and burning at the tail.
+    rocket: bool,
 }
 
 /// The pool. Entities are spawned once and reused.
@@ -112,6 +115,8 @@ struct Flight {
 pub struct Tracers {
     slots: [Flight; TRACERS],
     entities: Vec<Entity>,
+    /// The slot the last claim took.
+    last: usize,
 }
 
 impl Tracers {
@@ -201,10 +206,28 @@ impl Tracers {
             shooter,
             linger: 0.0,
             carry: 0.0,
+            rocket: false,
         };
+        self.last = ix;
         true
     }
+
+    /// Draw the flight just claimed as a rocket.
+    pub fn rocket_last(&mut self) {
+        self.slots[self.last].rocket = true;
+    }
 }
+
+/// A rocket in flight is drawn this much fatter and longer than an arrow.
+const ROCKET_SCALE: Vec3 = Vec3::new(3.6, 1.1, 3.6);
+
+/// The rocket motor's light, renewed each frame it burns.
+const ROCKET_GLOW: super::fx::FlashDef = super::fx::FlashDef {
+    lumens: 6_000.0,
+    range: 6.0,
+    life: 0.05,
+    color: [1.0, 0.6, 0.3],
+};
 
 /// Spawn the pool, hidden. One-time cost at startup, so the frame path never
 /// spawns.
@@ -251,7 +274,7 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
     let at = core.render_tick();
     let mut rs = client_core::interp::RemoteState::default();
 
-    for &(shooter, yaw, pitch, speed_mmpt, drop_mmpt2) in feed.shots() {
+    for &(shooter, yaw, pitch, speed_mmpt, drop_mmpt2, _fine) in feed.shots() {
         // **An instantaneous shot is refused, and the refusal is
         // `Tracers::claim`'s** — this early-out is the same test one step
         // sooner, kept only so a rifle skips the interpolator sample below
@@ -284,7 +307,7 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
         // bounded by the event ring either way, and a later shot in the same
         // frame cannot free a slot, so the two differ by a `free()` scan of
         // sixteen and nothing else.
-        pool.claim_from(
+        let claimed = pool.claim_from(
             feet,
             sim_core::ranged::eye_mm(crouched),
             shooter,
@@ -293,6 +316,18 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
             speed_mmpt,
             drop_mmpt2,
         );
+        // A rocket launcher's round flies as a rocket.
+        let held = if shooter == core.player_id && !core.spectating() {
+            let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
+            (s.count > 0).then_some(s.item)
+        } else {
+            rs.held
+        };
+        if claimed
+            && super::audio::gun_cue(&core.catalog, held) == Some(crate::sound::Cue::ShotRocket)
+        {
+            pool.rocket_last();
+        }
     }
 }
 
@@ -313,11 +348,14 @@ pub fn fly(
     animals: Query<&GlobalTransform, With<super::mobs::Animal>>,
     mut cache: Local<Box<SlotCache>>,
     mut q: Query<(&mut Transform, &mut Visibility)>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
 ) {
     let dt = time.delta_secs();
     let ticks = dt * TICK_HZ as f32;
     // Disjoint field borrows rather than a per-frame clone of the entity list.
-    let Tracers { entities, slots } = &mut *pool;
+    let Tracers {
+        entities, slots, ..
+    } = &mut *pool;
     for (ix, entity) in entities.iter().enumerate() {
         let Ok((mut tf, mut vis)) = q.get_mut(*entity) else {
             continue;
@@ -438,6 +476,28 @@ pub fn fly(
         tf.translation = pos;
         if dir != Vec3::ZERO {
             tf.rotation = Quat::from_rotation_arc(Vec3::Y, dir);
+        }
+        tf.scale = if f.rocket { ROCKET_SCALE } else { Vec3::ONE };
+        // A rocket in the air: smoke off its tail and the motor's glow.
+        if let (true, None, Some(fx)) = (f.rocket, stopped, fx.as_deref_mut()) {
+            let tail = pos - dir * (LEN_M * ROCKET_SCALE.y * 0.5);
+            super::fx::table::emit(
+                &mut fx.soft,
+                super::fx::table::Layer::Smoke,
+                2,
+                tail,
+                -dir,
+                super::impact::Matter::Dirt,
+            );
+            super::fx::table::emit(
+                &mut fx.glow,
+                super::fx::table::Layer::Flash,
+                1,
+                tail,
+                -dir,
+                super::impact::Matter::Metal,
+            );
+            fx.flash(tail, ROCKET_GLOW);
         }
         if *vis != Visibility::Visible {
             *vis = Visibility::Visible;

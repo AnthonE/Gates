@@ -285,6 +285,7 @@ fn swing(w: &mut World, yaw: u16, pitch: u8) -> Vec<SimEvent> {
                 move_x: 0,
                 move_z: 0,
                 sel: 0,
+                pitch_fine: 0,
             },
             favour: 0,
         }]);

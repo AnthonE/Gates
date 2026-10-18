@@ -727,6 +727,7 @@ pub fn input_full() -> InputDatagram {
             // defect — the two differ because the codec is total over
             // `sel` and deliberately not over `buttons`.
             sel: rng.next_bounded(6) as u8,
+            pitch_fine: 0,
         };
         dg.push(f).expect("golden construction is in-cap by design");
     }

@@ -640,6 +640,7 @@ fn test_alloc_zero() {
                     move_x: 0,
                     move_z: 0,
                     sel: 0,
+                    pitch_fine: 0,
                 },
                 favour: 0,
             };

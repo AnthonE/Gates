@@ -388,6 +388,75 @@ pub struct Ammo {
     /// leaves no arrow. Absent, no fire.
     #[serde(default)]
     pub fire_s: [u32; 2],
+    /// An exploding round (a rocket): where it lands it blows up like a
+    /// planted charge (`sim_core::charge::blast`), and leaves no arrow.
+    #[serde(default)]
+    pub blast: Option<RoundBlast>,
+}
+
+/// `[ammo.blast]`: radius in metres (at most one build cell, the charge's
+/// own bound), and what it takes off a body and a structure at its heart.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoundBlast {
+    pub blast_m: u32,
+    pub damage: u32,
+    pub structure: u32,
+}
+
+/// `[weapon.gun]` on a firearm: how it handles, in Rust's own terms
+/// (`BaseProjectile` and `RecoilProperties`). Every angle is **hundredths
+/// of a degree**; the cone ones are Rust's full apex (`aimCone`,
+/// `hipAimCone`), so Rust's 0.2° reads 20.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GunSpec {
+    /// Fires while the trigger is held. Absent: once per pull.
+    #[serde(default)]
+    pub auto: bool,
+    /// Projectiles a shot throws (a shotgun's pellets). Absent is one.
+    #[serde(default = "one")]
+    pub pellets: u32,
+    /// The cone through the sights (Rust's `aimCone`).
+    pub aim_cdeg: u32,
+    /// Added from the hip (Rust's `hipAimCone`).
+    pub hip_cdeg: u32,
+    /// Added on the move (Rust's stance penalty: a degree).
+    #[serde(default = "hundred")]
+    pub move_cdeg: u32,
+    /// What each shot adds to the cone, up to `bloom_max_cdeg`, bleeding
+    /// back to nothing over `bloom_recover_ms` once `bloom_delay_ms` have
+    /// passed since the last shot (Rust's `aimconePenalty*`).
+    #[serde(default)]
+    pub bloom_cdeg: u32,
+    #[serde(default)]
+    pub bloom_max_cdeg: u32,
+    #[serde(default)]
+    pub bloom_recover_ms: u32,
+    #[serde(default)]
+    pub bloom_delay_ms: u32,
+    /// Each pellet's own scatter about the shot's line (Rust's
+    /// `projectileSpread`, 12° on buckshot).
+    #[serde(default)]
+    pub pellet_cdeg: u32,
+    /// Damage is whole until `falloff_m[0]` and `falloff_pct` percent of
+    /// itself from `falloff_m[1]` on (Rust's `damageDistances`).
+    #[serde(default)]
+    pub falloff_m: [u32; 2],
+    #[serde(default = "hundred")]
+    pub falloff_pct: u32,
+    /// The view kick each shot gives from the hip, up (`pitch`) and to the
+    /// side (`yaw`, negative left), drawn between the two ends (Rust's
+    /// `recoilPitch*` and `recoilYaw*`). Through the sights it is
+    /// `ads_recoil_pct` of that (Rust's `ADSScale`, a half).
+    pub recoil_pitch_cdeg: [u32; 2],
+    pub recoil_yaw_cdeg: [i32; 2],
+    #[serde(default = "fifty")]
+    pub ads_recoil_pct: u32,
+}
+
+fn fifty() -> u32 {
+    50
 }
 
 fn hundred() -> u32 {
@@ -515,6 +584,9 @@ pub struct Weapon {
     /// throwable; only on an item that declares `condition_max`, nonzero and
     /// inside `u16` — the durability rules' V1/V5/V6 shapes (`validate.rs`).
     pub condition_loss: Option<u32>,
+    /// How a firearm handles — trigger, pellets, cone, falloff, recoil.
+    /// Required on every firearm and refused on everything else.
+    pub gun: Option<GunSpec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

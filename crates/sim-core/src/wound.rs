@@ -145,6 +145,7 @@ pub fn crawl_frame(f: &InputFrame) -> InputFrame {
         move_x: f.move_x / CRAWL_DIV,
         move_z: f.move_z / CRAWL_DIV,
         sel: f.sel,
+        pitch_fine: 0,
     }
 }
 
@@ -236,6 +237,7 @@ mod tests {
             move_x: -127,
             move_z: 127,
             sel: 4,
+            pitch_fine: 0,
         };
         let c = crawl_frame(&f);
         assert_eq!(

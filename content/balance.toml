@@ -115,7 +115,9 @@ ttk_light = [8, 10]
 # Rust's wooden arrow is 50 off the bow and 60 off the crossbow: two body
 # hits on a naked 100.
 ttk_bow = [2, 3]
-ttk_firearm = [4, 6]
+# Rust's guns on a naked 100 (guns v1): the pump's shell 1, the AK, bolt
+# and Python 2, the SAR, Thompson, revolver and P250 3, the custom SMG 4.
+ttk_firearm = [1, 4]
 # The head, in percent: Rust's arrows are ×1.5 on every bow and its guns
 # ×2 (CONTENT §4's "headshot × 2"), so a band rather than one value now.
 # What the exact pin was for is held by a rule instead (`balance.rs`): no

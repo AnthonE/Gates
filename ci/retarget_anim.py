@@ -53,6 +53,9 @@ Usage:
                           the clock it is written against moves -- so a swing
                           can be made to fit a cadence it was not authored for.
                           Repeatable.
+      [--identity]        the source rig names its bones as the target's does
+                          (a Meshy biped rigged again, for clips out of its
+                          animation library): every bone maps to itself.
       [--no-align]        anchor each bone on its OWN rest instead of on one
                           aligned to the source's. Wrong for these two rigs --
                           it is what put the arms 43 degrees low -- and kept
@@ -381,6 +384,10 @@ def main():
             retime[k] = float(v); i += 2
         elif a == "--no-align":
             no_align = True; i += 1
+        elif a == "--identity":
+            for k in list(BONES):
+                BONES[k] = k
+            i += 1
         elif a.startswith("--"):
             raise SystemExit(f"unknown flag {a}\n\n{__doc__}")
         else:

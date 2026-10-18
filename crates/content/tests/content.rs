@@ -215,8 +215,8 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
     }
     assert!(banded >= 10, "only {banded} banded rows: the file shrank");
     assert_eq!(
-        opted_out, 2,
-        "two throwables ship: the satchel and the beancan"
+        opted_out, 3,
+        "three throwables ship: the satchel, the beancan and C4"
     );
 }
 
@@ -300,8 +300,9 @@ fn test_content() {
     }
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
-        // components (2026-10-13); → 106 for Rust's tree items (2026-10-17/18).
-        (40..=106).contains(&(c.items.len() - fittings.len())),
+        // components (2026-10-13); → 106 for Rust's tree items (2026-10-17/18);
+        // → 130 for Rust's guns, their rounds, the rocket and C4 (guns v1).
+        (40..=130).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -3010,7 +3011,7 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
             );
         }
     }
-    assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
+    assert_eq!(bows, 3, "a bow, a crossbow and the rocket launcher");
 }
 
 /// The revolver reaches the sim, armed, and kills inside the band
@@ -3103,10 +3104,12 @@ fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
 
         // Hits to kill, computed the way the sim computes it — the melee
         // test's arithmetic against the firearm band.
+        // A shotgun's shell lands as one blow, its pellets summed.
+        let blow = baked.damage * u16::from(baked.gun.pellets.max(1));
         let mut hp = cc.player_hp;
         let mut hits = 0u32;
         while hp > 0 {
-            hp -= baked.damage.min(hp);
+            hp -= blow.min(hp);
             hits += 1;
         }
         assert!(
@@ -3115,7 +3118,7 @@ fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
             w.id
         );
     }
-    assert_eq!(guns, 1, "the alpha data ships exactly one firearm");
+    assert_eq!(guns, 9, "the revolver and Rust's eight (guns v1)");
 }
 
 /// A firearm reaching further than one shot can be sampled is refused at
@@ -3126,7 +3129,7 @@ fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
 fn a_firearm_that_outreaches_the_collision_sampler_is_refused() {
     refuses_bake(
         "weapons.toml",
-        "range_m = 50",
+        "range_m = 150",
         "range_m = 500",
         "shoot through cover",
     );
@@ -4179,7 +4182,20 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 #[test]
 fn the_shipped_split_is_rusts() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
-    let want: [(&str, u32); 29] = [
+    let want: [(&str, u32); 42] = [
+        ("item.assault_rifle", 120),
+        ("item.semi_rifle", 120),
+        ("item.thompson", 60),
+        ("item.custom_smg", 60),
+        ("item.bolt_rifle", 120),
+        ("item.pump_shotgun", 60),
+        ("item.semi_pistol", 30),
+        ("item.python", 60),
+        ("item.rocket_launcher", 120),
+        ("item.rifle_ammo", 30),
+        ("item.shotgun_shells", 30),
+        ("item.rocket", 120),
+        ("item.c4", 120),
         ("item.armor_hazmat_suit", 60),
         ("item.armor_boots_feet", 30),
         ("item.hammer_salvaged", 30),

@@ -67,6 +67,7 @@ fn frame(buttons: u8) -> InputFrame {
         move_x: 0,
         move_z: 0,
         sel: 0,
+        pitch_fine: 0,
     }
 }
 

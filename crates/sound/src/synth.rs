@@ -600,6 +600,11 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         }
         Cue::Geiger => geiger(&mut r),
         Cue::Headshot => headshot(&mut r),
+        // Rust's guns: the near report, by delegation, until a recording.
+        Cue::ShotRifle | Cue::ShotSmg | Cue::ShotPistol | Cue::ShotShotgun | Cue::ShotBolt => {
+            render_take(Cue::ShotGun, take)
+        }
+        Cue::ShotRocket => render_take(Cue::ShotBow, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

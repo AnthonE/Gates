@@ -81,7 +81,7 @@ pub use event::{
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
+    GunRow, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
     BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
     COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
     GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
@@ -1250,7 +1250,11 @@ pub use voice::{
 /// lever; `SUB_WHEEL_SPIN` (104) tells everyone where the wheel will land,
 /// `SUB_WHEEL_BET` (105) and `SUB_WHEEL_PAID` (106) answer a bettor, and
 /// `SUB_SLOTS` (107) a spinner.
-pub const PROTO_VER: u16 = 125;
+/// v126 — guns v1: an input frame carries `pitch_fine` (8 bits after
+/// `pitch`), so a shot is aimed finer than `pitch`'s 0.7° steps; and a
+/// firearm's `EV_SHOT` names where the round went (its cone applied, the
+/// fine pitch in `b`'s top byte) and how far it flew (`c`, decimetres).
+pub const PROTO_VER: u16 = 126;
 
 /// This game's slug in the elo catalog.
 ///
@@ -3968,6 +3972,7 @@ pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireErr
             w.write(f.buttons as u32, 8)?;
             w.write(f.yaw as u32, 16)?;
             w.write(f.pitch as u32, 8)?;
+            w.write(f.pitch_fine as u8 as u32, 8)?;
             w.write(f.move_x as u8 as u32, 8)?;
             w.write(f.move_z as u8 as u32, 8)?;
             w.write(f.sel as u32, SEL_BITS)?;
@@ -4017,6 +4022,7 @@ pub fn decode_input(buf: &[u8]) -> Result<InputDatagram, WireError> {
                 buttons: r.read(8)? as u8,
                 yaw: r.read(16)? as u16,
                 pitch: r.read(8)? as u8,
+                pitch_fine: r.read(8)? as u8 as i8,
                 move_x: r.read(8)? as u8 as i8,
                 move_z: r.read(8)? as u8 as i8,
                 sel: r.read(SEL_BITS)? as u8,

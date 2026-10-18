@@ -1393,13 +1393,21 @@ pub fn shots(
     eye: Res<Eye>,
     bodies: Query<(&super::bodies::Body, &Transform)>,
     mut sound: ResMut<Sound>,
+    gf: Res<super::gunfeel::GunFeel>,
 ) {
+    let core = &net.session.core;
+    // Your own gun, heard the frame its trigger broke (`gunfeel`), as the
+    // kind of gun it is.
+    if gf.fired > 0 && !core.spectating() {
+        let p = core.predict.position();
+        let cue = gun_cue(&core.catalog, Some(gf.item)).unwrap_or(Cue::ShotGun);
+        sound.play(Request::at(cue, [p[0], p[1], p[2]]));
+    }
     if feed.shots().is_empty() {
         return;
     }
-    let core = &net.session.core;
     let mut rs = client_core::interp::RemoteState::default();
-    for &(shooter, _yaw, _pitch, speed_mmpt, _reach) in feed.shots() {
+    for &(shooter, _yaw, _pitch, speed_mmpt, _reach, _fine) in feed.shots() {
         // The one bit that separates the two weapons, and it is the same
         // bit the tracer reads: a projectile cannot leave a muzzle at rest,
         // so zero means the shot was instantaneous and instantaneous means
@@ -1407,6 +1415,11 @@ pub fn shots(
         // heard as one (`projectile_cue`).
         let mut cue = shot_cue(speed_mmpt);
         let at = if shooter == core.player_id {
+            // Your gunshot was heard when it broke; the shard's word on it
+            // is not a second report.
+            if protocol::shot_is_instant(speed_mmpt) && !core.spectating() {
+                continue;
+            }
             let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
             cue = projectile_cue(&core.catalog, cue, (s.count > 0).then_some(s.item));
             // A spectator predicts nothing: the watched body is where it is.
@@ -1423,6 +1436,9 @@ pub fn shots(
         {
             if core.interp.sample(shooter, core.render_tick(), &mut rs) {
                 cue = projectile_cue(&core.catalog, cue, rs.held);
+                if protocol::shot_is_instant(speed_mmpt) {
+                    cue = gun_cue(&core.catalog, rs.held).unwrap_or(cue);
+                }
             }
             [t.x, t.y, t.z]
         } else if (super::heli::is_heli(shooter) || super::sentry::is_sentry(shooter))
@@ -1444,14 +1460,37 @@ pub fn shots(
 }
 
 /// A flying shot's cue by what loosed it: a crossbow in the hand is a
-/// crossbow, anything else that flies is a bow. A gunshot is left alone.
+/// crossbow, a rocket launcher a rocket's launch, anything else that flies
+/// is a bow. A gunshot is left alone.
 pub fn projectile_cue(catalog: &protocol::ItemCatalog, cue: Cue, held: Option<u16>) -> Cue {
     match held {
         Some(item) if cue == Cue::ShotBow && crate::ui::hold::is_crossbow(catalog, item) => {
             Cue::ShotCrossbow
         }
+        Some(item)
+            if cue == Cue::ShotBow && gun_cue(catalog, Some(item)) == Some(Cue::ShotRocket) =>
+        {
+            Cue::ShotRocket
+        }
         _ => cue,
     }
+}
+
+/// A gun's own report (guns v1), by the kind of gun in the hand: the
+/// rifles' crack, the SMGs' chatter, a pistol's snap, the pump's boom, the
+/// bolt's long report and a rocket's launch. `None` for anything else — the
+/// revolver and the Python keep the revolver's ring.
+pub fn gun_cue(catalog: &protocol::ItemCatalog, held: Option<u16>) -> Option<Cue> {
+    let name = core::str::from_utf8(catalog.name(held? as usize)).ok()?;
+    Some(match crate::ui::icons::stem(name).as_str() {
+        "assault_rifle" | "semi_automatic_rifle" => Cue::ShotRifle,
+        "thompson" | "custom_smg" => Cue::ShotSmg,
+        "semi_automatic_pistol" => Cue::ShotPistol,
+        "pump_shotgun" => Cue::ShotShotgun,
+        "bolt_action_rifle" => Cue::ShotBolt,
+        "rocket_launcher" => Cue::ShotRocket,
+        _ => return None,
+    })
 }
 
 /// Past this far the heli's gun is its far layer, metres: where the near
@@ -1478,7 +1517,16 @@ pub const SHOT_FAR_M: f32 = 45.0;
 /// The layer of a report heard from `d` metres. Only the gun has a far
 /// layer; a bow does not carry far enough to need one.
 pub fn far_layer(cue: Cue, d: f32) -> Cue {
-    if cue == Cue::ShotGun && d > SHOT_FAR_M {
+    let gun = matches!(
+        cue,
+        Cue::ShotGun
+            | Cue::ShotRifle
+            | Cue::ShotSmg
+            | Cue::ShotPistol
+            | Cue::ShotShotgun
+            | Cue::ShotBolt
+    );
+    if gun && d > SHOT_FAR_M {
         Cue::ShotGunFar
     } else {
         cue
