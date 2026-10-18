@@ -145,16 +145,48 @@ fn master_scales_every_bus_and_silences_at_zero() {
         game: 0.5,
         ambience: 1.0,
         music: 0.2,
+        steps: 0.4,
+        interface: 0.0,
     };
     assert_eq!(mix.bus_gain(Bus::Game), 0.25);
     assert_eq!(mix.bus_gain(Bus::Ambience), 0.5);
     assert_eq!(mix.bus_gain(Bus::Music), 0.1);
+    assert_eq!(mix.bus_gain(Bus::Steps), 0.2);
+    assert_eq!(mix.bus_gain(Bus::Interface), 0.0);
     let silent = Mix {
         master: 0.0,
         ..Mix::default()
     };
     assert_eq!(silent.bus_gain(Bus::Game), 0.0);
     assert_eq!(silent.bus_gain(Bus::Ambience), 0.0);
+}
+
+/// The FOOTSTEPS slider moves every boot, yours and everyone else's, and
+/// nothing else: a muted steps bus starts no step and still starts a hit.
+#[test]
+fn the_steps_bus_is_every_footstep_and_only_them() {
+    for cue in [
+        Cue::StepGrass,
+        Cue::RemoteStepRock,
+        Cue::Land,
+        Cue::RemoteBrush,
+    ] {
+        assert_eq!(cue.def().bus, Bus::Steps, "{cue:?}");
+    }
+    for cue in [Cue::Swing, Cue::ShotGun, Cue::Hit, Cue::Howl] {
+        assert_eq!(cue.def().bus, Bus::Game, "{cue:?}");
+    }
+    assert_eq!(Cue::UiClick.def().bus, Bus::Interface);
+    let mix = Mix {
+        steps: 0.0,
+        ..Mix::default()
+    };
+    let mut m = Mixer::new();
+    m.push(Request::own(Cue::StepGrass));
+    m.push(Request::own(Cue::Hit));
+    let started = m.tick(16.0, AT_ORIGIN, 0, &mix);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].cue, Cue::Hit);
 }
 
 /// A muted bus must not merely be inaudible — it must not consume a voice,
@@ -1356,6 +1388,7 @@ fn the_submerged_snapshot_ducks_without_muting() {
         game: 0.8,
         ambience: 0.7,
         music: 0.2,
+        ..Mix::default()
     };
     let mut s = Snapshots::default();
     let def = s.tick(Snapshot::Above, 1.0);

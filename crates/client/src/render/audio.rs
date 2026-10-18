@@ -2678,6 +2678,8 @@ fn mix_of(s: &super::Settings) -> Mix {
         game: s.vol_game,
         ambience: s.vol_ambience,
         music: s.vol_music,
+        steps: s.vol_steps,
+        interface: s.vol_interface,
     }
 }
 

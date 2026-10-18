@@ -23,8 +23,8 @@
 //! - **Buses before effects.** The reference moved to Unity 5's audio mixer —
 //!   groups you can balance and snapshots you can fade between — before it had
 //!   occlusion or reverb. [`Bus`] is that, at the size ours can be honest
-//!   about: three groups, mirroring `audio.game`, `audio.ambience` and
-//!   `audio.musicvolume`.
+//!   about: groups mirroring `audio.game`, `audio.ambience` and
+//!   `audio.musicvolume`, plus footsteps and the interface.
 //! - **Music is a gap system, not a soundtrack.** Four to eight minutes of
 //!   silence between songs, the intensity read so a song never opens in the
 //!   middle of a fight. [`music`] is that director; the songs are whole
@@ -99,8 +99,8 @@ pub const SAMPLE_RATE: u32 = 44_100;
 /// `music::Director` landed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bus {
-    /// Everything the player or the world did: steps, swings, impacts, the
-    /// interface. The reference's `audio.game`.
+    /// Everything the player or the world did: swings, impacts, shots,
+    /// animals. The reference's `audio.game`.
     Game,
     /// The beds and the layers over them. The reference's `audio.ambience`.
     Ambience,
@@ -108,6 +108,13 @@ pub enum Bus {
     /// **0.2** — music is the one bus that does not open at full, there and
     /// here (see [`Mix::default`]).
     Music,
+    /// Footsteps, landings and pushing through plants: yours and everyone
+    /// else's. Split off the game bus so a player can turn their own boots
+    /// down without turning the guns down with them.
+    Steps,
+    /// The menus and the inventory answering the hand: clicks, hovers, slots,
+    /// the map, the craft chimes.
+    Interface,
 }
 
 /// Every sound this client can make, as an integer code.
@@ -828,6 +835,8 @@ const fn row(
 
 use Bus::Ambience as AMB;
 use Bus::Game as GAME;
+use Bus::Interface as UI;
+use Bus::Steps as STEPS;
 
 /// The cue table. Indexed by [`Cue::idx`] — order must match [`Cue::ALL`].
 ///
@@ -851,8 +860,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 48.0, 0.70,  40, 4, true),   // metal
     // Gather / craft / refusal are the interface answering you.
     row(GAME,  0.0, 0.50,  60, 4, false),  // gather
-    row(GAME,  0.0, 0.55,  80, 5, false),  // craft done
-    row(GAME,  0.0, 0.45, 250, 5, false),  // refused
+    row(UI,    0.0, 0.55,  80, 5, false),  // craft done
+    row(UI,    0.0, 0.45, 250, 5, false),  // refused
     // Combat. `Hurt` and `Death` outrank everything: a player who cannot hear
     // that they are being killed has lost the round to the mixer.
     //
@@ -879,7 +888,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A tree coming down is the loudest thing in the forest — and it set
     // `MAX_AUDIBLE_M` until the gun's report outranged it at v54.
     row(GAME, 96.0, 0.90,   0, 6, true),   // tree fall
-    row(GAME,  0.0, 0.45,  40, 2, false),  // ui click
+    row(UI,    0.0, 0.45,  40, 2, false),  // ui click
     // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
     // holds one looping voice each and moves their gains.
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
@@ -1023,7 +1032,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.60,  60, 4, true),   // door close
     // Your own mouth and feet, like the eat and the step.
     row(GAME,  0.0, 0.45, 300, 3, false),  // drink
-    row(GAME,  0.0, 0.72, 200, 3, false),  // land
+    row(STEPS, 0.0, 0.72, 200, 3, false),  // land
     // A fire is scenery: the ambience bus, a short reach, the lowest rank.
     row(AMB,  14.0, 0.62,  80, 1, true),   // fire crackle
     // A fuse is a bomb about to go off: carried far enough to run from,
@@ -1032,7 +1041,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A round past your head is the shot that was meant for you.
     row(GAME, 30.0, 0.95,  60, 6, true),   // bullet flyby
     // The interface answering you, like the craft chime.
-    row(GAME,  0.0, 0.85, 200, 4, false),  // learn
+    row(UI,    0.0, 0.85, 200, 4, false),  // learn
     row(GAME, 16.0, 0.55, 150, 4, true),   // unlock
     row(GAME, 60.0, 0.80,  80, 5, true),   // collapse, wood
     // The night's crickets: scenery like the town's bed, its level the
@@ -1041,7 +1050,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Your own hands at the interface's level: the gather's register, and a
     // cooldown so a scroll through the hotbar is not a drum roll.
     row(GAME,  0.0, 0.50, 120, 3, false),  // equip
-    row(GAME,  0.0, 0.45, 150, 3, false),  // map paper
+    row(UI,    0.0, 0.45, 150, 3, false),  // map paper
     row(GAME,  0.0, 0.55, 200, 3, false),  // container open
     // Other bodies' hands, at the body. Each takes its own cue's gain and a
     // reach of its own; a reload carries furthest and ranks with a remote
@@ -1054,7 +1063,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 12.0, 0.45, 100, 3, true),   // drink, somebody else's
     row(GAME, 20.0, 0.55,  60, 3, true),   // container open, somebody else's
     row(GAME, 16.0, 0.50,  40, 3, true),   // equip, somebody else's
-    row(GAME, 24.0, 0.72,  40, 3, true),   // land, somebody else's
+    row(STEPS, 24.0, 0.72,  40, 3, true),  // land, somebody else's
     row(GAME, 30.0, 0.65,  60, 4, true),   // splash, somebody else's
     // A bow coming back is the shot a moment before it: ranked with the
     // reload, carried a little less far than the loose itself.
@@ -1062,8 +1071,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Pushing through a plant: a footstep's register, and the remote one a
     // footstep's reach — the leaves give a body away about as far as its
     // boots do, and from inside cover where its boots are all you have.
-    row(GAME,  0.0, 0.42,  90, 1, false),  // brush
-    row(GAME, 24.0, 0.42,  40, 2, true),   // brush, somebody else's
+    row(STEPS, 0.0, 0.42,  90, 1, false),  // brush
+    row(STEPS, 24.0, 0.42,  40, 2, true),  // brush, somebody else's
     // A torch going out in your hand: once, and it must be heard.
     row(GAME,  0.0, 0.55, 500, 3, false),  // torch out
     // The stag: the pig's register (ambience, not signal), carrying further
@@ -1096,13 +1105,13 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The interface's small sounds, under the click: a hover is the quietest
     // thing in the bank and its cooldown is what keeps a sweep across a row
     // of buttons from becoming a rattle.
-    row(GAME,  0.0, 0.18,  45, 1, false),  // ui hover
-    row(GAME,  0.0, 0.50, 150, 3, false),  // inventory open
-    row(GAME,  0.0, 0.42, 150, 3, false),  // inventory close
-    row(GAME,  0.0, 0.48,  60, 3, false),  // item moved
-    row(GAME,  0.0, 0.52, 120, 3, false),  // item dropped
-    row(GAME,  0.0, 0.50, 120, 3, false),  // craft started
-    row(GAME,  0.0, 0.45,  80, 2, false),  // map pin
+    row(UI,    0.0, 0.18,  45, 1, false),  // ui hover
+    row(UI,    0.0, 0.50, 150, 3, false),  // inventory open
+    row(UI,    0.0, 0.42, 150, 3, false),  // inventory close
+    row(UI,    0.0, 0.48,  60, 3, false),  // item moved
+    row(UI,    0.0, 0.52, 120, 3, false),  // item dropped
+    row(UI,    0.0, 0.50, 120, 3, false),  // craft started
+    row(UI,    0.0, 0.45,  80, 2, false),  // map pin
     // The counter: a hazard reading, so the game bus (turning the scenery
     // down must not mute it); a cooldown under a frame, so clicks on
     // consecutive frames both land; ducked under a near shot.
@@ -1161,7 +1170,7 @@ const RSWING: CueDef = CueDef {
 /// with the swing. Under `(1 - d/R)²` a step at 20 m is a quarter of one at
 /// your feet; crouching halves it again (`render/audio.rs`).
 const STEP: CueDef = CueDef {
-    bus: Bus::Game,
+    bus: Bus::Steps,
     radius_m: 40.0,
     gain: 0.35,
     cooldown_ms: 90,
@@ -1181,7 +1190,7 @@ const STEP: CueDef = CueDef {
 /// therefore shared across every remote on that surface — a stride-length
 /// cooldown would let your own pool mask a second attacker entirely.
 const RSTEP: CueDef = CueDef {
-    bus: Bus::Game,
+    bus: Bus::Steps,
     radius_m: STEP.radius_m,
     gain: STEP.gain,
     cooldown_ms: 40,
@@ -1229,13 +1238,15 @@ pub const STARTS_PER_FRAME: usize = 4;
 pub const CUE_QUEUE_CAP: usize = 32;
 
 /// The bus and master volumes. The reference's `audio.master`, `audio.game`
-/// and `audio.ambience`, one for one.
+/// and `audio.ambience`, one for one, plus footsteps and the interface.
 #[derive(Clone, Copy, Debug)]
 pub struct Mix {
     pub master: f32,
     pub game: f32,
     pub ambience: f32,
     pub music: f32,
+    pub steps: f32,
+    pub interface: f32,
 }
 
 impl Default for Mix {
@@ -1253,6 +1264,8 @@ impl Default for Mix {
             game: 1.0,
             ambience: 1.0,
             music: MUSIC_DEFAULT,
+            steps: 1.0,
+            interface: 1.0,
         }
     }
 }
@@ -1269,6 +1282,8 @@ impl Mix {
             Bus::Game => self.game,
             Bus::Ambience => self.ambience,
             Bus::Music => self.music,
+            Bus::Steps => self.steps,
+            Bus::Interface => self.interface,
         };
         (self.master * g).clamp(0.0, 1.0)
     }
@@ -1281,6 +1296,10 @@ impl Mix {
             game: self.game * snap.game,
             ambience: self.ambience * snap.ambience,
             music: self.music * snap.music,
+            // Both were game-bus cues before they had sliders, and go under
+            // with it.
+            steps: self.steps * snap.game,
+            interface: self.interface * snap.game,
         }
     }
 }
