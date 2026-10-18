@@ -2919,8 +2919,15 @@ impl Scripted {
             return (Goal::Recycle, "scripted: recycle the salvage");
         }
         // A found thing it has no blueprint for, and the junk: paper at a
-        // research table, so it can make its own from then on.
-        if s.offers(Goal::Research) {
+        // research table, so it can make its own from then on. In passing,
+        // with THE GATE within a walk, or once a bag is down and the base
+        // has its doors: a fresh body's trip across the island to research
+        // cost it its bag (2026-10-18).
+        let gate_close = s
+            .gate
+            .is_some_and(|g| matches!(g.distance, Distance::Here | Distance::Near | Distance::Mid));
+        let settled = s.bags > 0 && s.milestone > Milestone::Doors;
+        if (gate_close || settled) && s.offers(Goal::Research) {
             return (Goal::Research, "scripted: research what it found");
         }
         // Gears enough for a recycler and some over for it to take apart,
