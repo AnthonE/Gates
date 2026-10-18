@@ -274,6 +274,7 @@ pub fn parse_prices(body: &str, sc: &SkinContent) -> Prices {
         {
             Some("ORBS") => protocol::COIN_ORBS,
             Some("ELO") => protocol::COIN_ELO,
+            Some("JUNK") => protocol::COIN_JUNK,
             _ => continue,
         };
         let Some(price) = s
@@ -433,9 +434,18 @@ mod tests {
     }
 
     #[test]
+    fn a_skin_priced_in_junk_is_on_sale_in_junk() {
+        let junk = r#"{"configured":true,"reachable":true,"skins":[
+            {"catalog_id":2,"on_sale":true,"coin":{"symbol":"JUNK","decimals":18},
+             "price_whole":400000}]}"#;
+        let rows = known(parse_prices(junk, &catalog()));
+        assert_eq!(rows[1], Some((protocol::COIN_JUNK, 400_000)));
+    }
+
+    #[test]
     fn a_coin_the_wire_cannot_name_or_a_price_it_cannot_carry_is_not_on_sale_here() {
         let odd = r#"{"configured":true,"reachable":true,"skins":[
-            {"catalog_id":1,"on_sale":true,"coin":{"symbol":"JUNK"},"price_whole":5},
+            {"catalog_id":1,"on_sale":true,"coin":{"symbol":"USDG"},"price_whole":5},
             {"catalog_id":2,"on_sale":true,"coin":{"symbol":"ORBS"},"price_whole":4294967296},
             {"catalog_id":900,"on_sale":true,"coin":{"symbol":"ORBS"},"price_whole":0}]}"#;
         let rows = known(parse_prices(odd, &catalog()));

@@ -82,10 +82,11 @@ pub use event::{
     encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
     InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
-    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
-    RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
+    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
+    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
+    VEND_BATCH,
 };
 pub use event::{encode_event_achievement, Achieved};
 pub use event::{
@@ -1234,7 +1235,9 @@ pub use voice::{
 /// v122 — the desert's cactus: `terrain::Occupant::Cactus` is solid and
 /// swung at for cloth, so both ends must draw the same cacti to predict the
 /// same walk; and the death cause admits 11 (`DEATH_BY_CACTUS`).
-pub const PROTO_VER: u16 = 122;
+/// v123 — skins priced in JUNK: a `SkinRow`'s coin admits 3 (`COIN_JUNK`),
+/// the play coin skins are bought with.
+pub const PROTO_VER: u16 = 123;
 
 /// This game's slug in the elo catalog.
 ///
