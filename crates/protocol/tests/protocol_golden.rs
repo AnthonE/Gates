@@ -1165,13 +1165,13 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_research_refused(reason, &mut buf).unwrap()
         }
         "event_known.bin" => {
-            let mask = event_known();
+            let (word, bits) = event_known();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Known { mask },
+                EventMsg::Known { word, bits },
                 "{name}: decode mismatch"
             );
-            encode_event_known(mask, &mut buf).unwrap()
+            encode_event_known(word, bits, &mut buf).unwrap()
         }
         "event_bags.bin" => {
             let (bags, n) = event_bags();

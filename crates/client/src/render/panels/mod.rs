@@ -292,7 +292,7 @@ pub(crate) struct Seen {
     /// The blueprint mask (tech tree v0). Without it a node clicked to
     /// `Known` only redraws because the junk left `inv` — and a FREE
     /// node, which content permits, would not redraw at all.
-    pub known: u64,
+    pub known: u128,
     /// The research drip's watermark, `recipes_have`'s reason exactly.
     pub research_have: u16,
     /// Whether the open container is lit — a research table running

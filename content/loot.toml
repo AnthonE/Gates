@@ -72,7 +72,7 @@ hits = 3
 guaranteed = [{ item = "item.junk", count_min = 2, count_max = 2 }]
 
 entries = [
-    { item = "item.rope", weight = 328, count_min = 1, count_max = 3 },
+    { item = "item.rope", weight = 284, count_min = 1, count_max = 3 },
     { item = "item.tarp", weight = 170, count_min = 1, count_max = 2 },
     { item = "item.sewing_kit", weight = 170, count_min = 3, count_max = 5 },
     { item = "item.metal_blade", weight = 154, count_min = 1, count_max = 1 },
@@ -84,12 +84,18 @@ entries = [
     { item = "item.road_signs", weight = 14, count_min = 2, count_max = 4 },
     { item = "item.semi_body", weight = 14, count_min = 1, count_max = 1 },
     { item = "item.fuse", weight = 14, count_min = 1, count_max = 1 },
+    # Their tree's deployables and the tank top, at their 1.1 % (2026-10-18),
+    # out of the rope's share of their clothing third.
+    { item = "item.armor_tanktop_body", weight = 11, count_min = 1, count_max = 1 },
+    { item = "item.barricade_wood", weight = 11, count_min = 1, count_max = 1 },
+    { item = "item.floor_spikes", weight = 11, count_min = 1, count_max = 1 },
+    { item = "item.window_shutters", weight = 11, count_min = 1, count_max = 1 },
 ]
 
 # The middle tier. A waystation is their roadside monument, and the crates
 # one stands among are a brown crate, a tool crate and a medical crate, so
-# the cache is the three at once: the brown crate's seven parts at about its
-# 14.3 %, the tool crate's metal tools, bows and arrows, the medical crate's
+# the cache is the three at once: the brown crate's seven parts at about 12 %
+# (its 14.3 %, thinned for the tree's blades), the tool crate's metal tools, bows and arrows, the medical crate's
 # medkit, bandage and syringe at its 5 : 4 : 1, and the revolver and satchel
 # at the brown crate's 0.44 %.
 [[loot_table]]
@@ -103,13 +109,13 @@ hits = 4
 guaranteed = [{ item = "item.junk", count_min = 5, count_max = 5 }]
 
 entries = [
-    { item = "item.gears", weight = 100, count_min = 2, count_max = 3 },
-    { item = "item.metal_spring", weight = 100, count_min = 1, count_max = 2 },
-    { item = "item.sheet_metal", weight = 100, count_min = 1, count_max = 2 },
-    { item = "item.metal_pipe", weight = 100, count_min = 1, count_max = 5 },
-    { item = "item.road_signs", weight = 100, count_min = 2, count_max = 4 },
-    { item = "item.semi_body", weight = 100, count_min = 1, count_max = 1 },
-    { item = "item.fuse", weight = 100, count_min = 1, count_max = 1 },
+    { item = "item.gears", weight = 81, count_min = 2, count_max = 3 },
+    { item = "item.metal_spring", weight = 81, count_min = 1, count_max = 2 },
+    { item = "item.sheet_metal", weight = 81, count_min = 1, count_max = 2 },
+    { item = "item.metal_pipe", weight = 81, count_min = 1, count_max = 5 },
+    { item = "item.road_signs", weight = 81, count_min = 2, count_max = 4 },
+    { item = "item.semi_body", weight = 81, count_min = 1, count_max = 1 },
+    { item = "item.fuse", weight = 81, count_min = 1, count_max = 1 },
     { item = "item.hatchet_metal", weight = 35, count_min = 1, count_max = 1 },
     { item = "item.pickaxe_metal", weight = 35, count_min = 1, count_max = 1 },
     { item = "item.arrow_wood", weight = 44, count_min = 5, count_max = 10 },
@@ -117,7 +123,19 @@ entries = [
     { item = "item.arrow_fire", weight = 25, count_min = 3, count_max = 6 },
     { item = "item.bow", weight = 25, count_min = 1, count_max = 1 },
     { item = "item.crossbow", weight = 12, count_min = 1, count_max = 1 },
-    { item = "item.lowgrade", weight = 6, count_min = 20, count_max = 40 },
+    { item = "item.lowgrade", weight = 7, count_min = 20, count_max = 40 },
+    # Their tree's blades: the tool crate's at 4.9 % and 2 %, the brown
+    # crate's at 0.4 % (wiki.facepunch.com, 2026-10-18).
+    { item = "item.sword_salvaged", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.mace", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.cleaver_salvaged", weight = 25, count_min = 1, count_max = 1 },
+    { item = "item.axe_salvaged", weight = 10, count_min = 1, count_max = 1 },
+    { item = "item.icepick_salvaged", weight = 10, count_min = 1, count_max = 1 },
+    { item = "item.hammer_salvaged", weight = 3, count_min = 1, count_max = 1 },
+    { item = "item.beancan", weight = 3, count_min = 1, count_max = 1 },
+    { item = "item.barricade_barbed", weight = 3, count_min = 1, count_max = 1 },
+    # Their brown crate's hazmat, at its 4 %.
+    { item = "item.armor_hazmat_suit", weight = 28, count_min = 1, count_max = 1 },
     { item = "item.medkit", weight = 30, count_min = 1, count_max = 1 },
     { item = "item.bandage", weight = 25, count_min = 1, count_max = 1 },
     { item = "item.syringe", weight = 6, count_min = 1, count_max = 1 },
@@ -148,12 +166,19 @@ entries = [
     { item = "item.rifle_body", weight = 100, count_min = 1, count_max = 1 },
     { item = "item.metal_pipe", weight = 111, count_min = 5, count_max = 6 },
     { item = "item.tech_trash", weight = 111, count_min = 2, count_max = 4 },
-    { item = "item.pistol_ammo", weight = 150, count_min = 5, count_max = 10 },
-    { item = "item.arrow_metal", weight = 130, count_min = 5, count_max = 10 },
+    { item = "item.pistol_ammo", weight = 122, count_min = 5, count_max = 10 },
+    { item = "item.arrow_metal", weight = 100, count_min = 5, count_max = 10 },
     { item = "item.medkit", weight = 90, count_min = 1, count_max = 1 },
     { item = "item.syringe", weight = 60, count_min = 1, count_max = 1 },
     { item = "item.armor_roadsign_body", weight = 40, count_min = 1, count_max = 1 },
     { item = "item.revolver", weight = 20, count_min = 1, count_max = 1 },
+    # Their tree's pieces, each 0.4 % there, taking some of the guns' share.
+    { item = "item.armor_coffeecan_head", weight = 15, count_min = 1, count_max = 1 },
+    { item = "item.armor_boots_feet", weight = 15, count_min = 1, count_max = 1 },
+    { item = "item.armor_hazmat_suit", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.longsword", weight = 10, count_min = 1, count_max = 1 },
+    { item = "item.axe_salvaged", weight = 5, count_min = 1, count_max = 1 },
+    { item = "item.icepick_salvaged", weight = 5, count_min = 1, count_max = 1 },
     # Theirs is dropped by the monument's scientists; ours by the pad.
     { item = "item.keycard_green", weight = 68, count_min = 1, count_max = 1 },
 ]

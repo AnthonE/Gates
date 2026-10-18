@@ -428,6 +428,8 @@ pub const WEAR_NONE: u8 = 0;
 pub const WEAR_HEAD: u8 = 1;
 /// `Player::worn[1]`.
 pub const WEAR_BODY: u8 = 2;
+/// `Player::worn[2]`: boots (Rust's, 2026-10-18).
+pub const WEAR_FEET: u8 = 3;
 
 /// The most a whole worn set may take off one hit, in percent.
 ///
@@ -464,8 +466,11 @@ pub struct ArmorDef {
     /// refuses a row past 90, so a `u8` cannot be overrun by content.
     pub reduction_pct: u8,
     /// Which of `WEAR_SLOTS` this piece occupies, **one-based**:
-    /// `WEAR_NONE`, `WEAR_HEAD` or `WEAR_BODY`.
+    /// `WEAR_NONE`, `WEAR_HEAD`, `WEAR_BODY` or `WEAR_FEET`.
     pub slot: u8,
+    /// Rust's Full Body layer (the hazmat suit): worn in `slot`, it fills
+    /// every other wear slot too (`wear_clashes`).
+    pub full: bool,
 }
 
 /// The whole combat ruleset the sim knows. Construction input like the
@@ -613,6 +618,7 @@ impl CombatContent {
         armor: [ArmorDef {
             reduction_pct: 0,
             slot: WEAR_NONE,
+            full: false,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
         // 100, not 0 — see the field. An inert recovery rule must destroy
@@ -692,10 +698,12 @@ impl CombatContent {
         c.armor[4] = ArmorDef {
             reduction_pct: 10,
             slot: WEAR_HEAD,
+            full: false,
         };
         c.armor[5] = ArmorDef {
             reduction_pct: 20,
             slot: WEAR_BODY,
+            full: false,
         };
         // **Item 6 is a hitscan firearm and item 7 is its round**, and this
         // row is the whole reason `probe_combat`'s rewind claim is true.
@@ -1273,6 +1281,25 @@ pub fn wearable_in(cc: &CombatContent, item: u16, s: u8) -> bool {
     (s as usize) < WEAR_SLOTS
         && (item as usize) < MAX_ITEM_DEFS
         && cc.armor[item as usize].slot == s + 1
+}
+
+/// Whether `item` landing in wear slot `s` clashes with what else is worn:
+/// a full-body piece (`ArmorDef::full`, Rust's hazmat suit) goes on over
+/// nothing, and nothing goes on over it. The other slots are read as they
+/// stand, which is right for every move `wearable_in` lets through: it
+/// refuses wear-to-wear moves between slots, so the slot a landing stack
+/// leaves is never another wear slot.
+#[inline]
+pub fn wear_clashes(
+    cc: &CombatContent,
+    worn: &[crate::gather::ItemStack; WEAR_SLOTS],
+    item: u16,
+    s: u8,
+) -> bool {
+    let full = |i: u16| (i as usize) < MAX_ITEM_DEFS && cc.armor[i as usize].full;
+    worn.iter()
+        .enumerate()
+        .any(|(t, w)| t != s as usize && w.count > 0 && (full(item) || full(w.item)))
 }
 
 /// What gets through `pct` percent of protection.

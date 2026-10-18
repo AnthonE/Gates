@@ -326,14 +326,17 @@ fn a_worn_skin_reaches_every_other_client() {
         pump(&mut core, &stats, &mut clients);
     }
     let look = clients[1].1.worn_of(id_of(0));
-    assert_eq!(look.items, [4, OUTPUT]);
-    assert_eq!(look.skins, [0, SKIN], "the bystander sees the worn skin");
+    assert_eq!(look.items, [4, OUTPUT, sim_core::gather::NO_ITEM]);
+    assert_eq!(look.skins, [0, SKIN, 0], "the bystander sees the worn skin");
 
     core.world.players[w0].worn[1] = ItemStack::default();
     for _ in 0..4 {
         pump(&mut core, &stats, &mut clients);
     }
     let look = clients[1].1.worn_of(id_of(0));
-    assert_eq!(look.items, [4, sim_core::gather::NO_ITEM]);
-    assert_eq!(look.skins, [0, 0], "an empty slot wears no skin");
+    assert_eq!(
+        look.items,
+        [4, sim_core::gather::NO_ITEM, sim_core::gather::NO_ITEM]
+    );
+    assert_eq!(look.skins, [0, 0, 0], "an empty slot wears no skin");
 }

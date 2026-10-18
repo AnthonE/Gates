@@ -50,17 +50,23 @@ pub struct Anchors {
 /// Body hits to kill: ceil(hp / damage), integer-exact. `reduction_pct`
 /// is the armor's cut of every body hit.
 ///
-/// **Public since armor v0, and only so it can be pinned.** This divides by
-/// the exact rational `damage × (100 − pct) / 100`; the sim floors that
-/// number once and subtracts it (`sim_core::combat::reduce`), and the two
-/// are not the same function. They agree on every (weapon, armor) pair we
-/// ship — `crates/content/tests/content.rs` asserts it rather than assuming
-/// it — and the day they stop agreeing, the band describes a fight nobody
-/// has.
+/// **Public since armor v0, and only so it can be pinned.** The per-hit
+/// number is the sim's own (`sim_core::combat::reduce`: the damage floored
+/// once under the protection), so the band and the fight are one
+/// arithmetic. It divided by the exact rational `damage × (100 − pct) /
+/// 100` until the feet made a third worn slot (2026-10-18): the two agreed
+/// on every two-piece set by luck and on almost no three-piece one.
+/// `crates/content/tests/content.rs` still plays the fight out and checks.
+/// A hit that rounds to nothing never kills: `u32::MAX`.
 pub fn hits_to_kill(hp: u32, damage: u32, reduction_pct: u32) -> u32 {
-    let effective = damage * (100 - reduction_pct);
-    let scaled_hp = hp * 100;
-    scaled_hp.div_ceil(effective)
+    let per = u32::from(sim_core::combat::reduce(
+        damage.min(u32::from(u16::MAX)) as u16,
+        reduction_pct,
+    ));
+    if per == 0 {
+        return u32::MAX;
+    }
+    hp.div_ceil(per)
 }
 
 /// Farm-minutes for `qty` of an item: declared raw rate, component

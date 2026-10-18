@@ -1525,8 +1525,9 @@ pub fn event_research_refused() -> u8 {
 /// A known-mask restate. Bits 0, 4, 21, 33 and 63: both ends of the
 /// field and the two recipes the fixtures above unlock, so a halved or
 /// byte-swapped mask cannot reproduce it.
-pub fn event_known() -> u64 {
-    (1 << 0) | (1 << 4) | (1 << 21) | (1 << 33) | (1 << 63)
+/// The second word, so the word index is pinned as a set bit.
+pub fn event_known() -> (u8, u64) {
+    (1, (1 << 0) | (1 << 4) | (1 << 21) | (1 << 33) | (1 << 63))
 }
 
 /// Your own bags: a **partial** rack, so the count is pinned as something
@@ -2712,16 +2713,17 @@ pub fn action_respawn_at() -> (u16, u16, u8) {
     (300, 211, 2)
 }
 
-/// Player 0x0100_0007 in a bone helmet (item 41) and a hide poncho (item
-/// 40) (wire v98), the poncho skinned (catalog id 0x0B72, wire v102) and
-/// the helmet plain, so both shapes of a slot are pinned.
+/// Player 0x0100_0007 in a bone helmet (item 41), a hide poncho (item
+/// 40) (wire v98) and boots (item 42, wire v123), the poncho skinned
+/// (catalog id 0x0B72, wire v102) and the rest plain, so both shapes of a
+/// slot are pinned.
 #[allow(clippy::type_complexity)]
 pub fn event_worn() -> (
     u32,
     [u16; sim_core::limits::WEAR_SLOTS],
     [u16; sim_core::limits::WEAR_SLOTS],
 ) {
-    (0x0100_0007, [41, 40], [0, 0x0B72])
+    (0x0100_0007, [41, 40, 42], [0, 0x0B72, 0])
 }
 
 /// Inject inventory slot 6 into downed player 0x0100_0009 (wire v99).
