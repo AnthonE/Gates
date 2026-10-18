@@ -11,6 +11,11 @@ of its thinking.
     claude mcp add --transport http gates https://game.elopros.com/gates/mind/<id> \\
         --header "Authorization: Bearer <token>"
 
+An app that adds a connector by its URL alone (a chat app's "custom
+connector", which sends no header of ours) puts the token in the path
+instead: https://game.elopros.com/gates/mind/<id>/<token>. The same token,
+checked the same way; nginx keeps that path out of its access log.
+
 The token is made on the buddy page and shown once; the platform keeps only
 its sha256, which comes down the feed as `token_sha`. Stateless: every POST
 carries one message (or a batch) and gets its answer as JSON. A notification
@@ -32,7 +37,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PATH = re.compile(r"^/gates/mind/([0-9a-f]{10})/?$")
+PATH = re.compile(r"^/gates/mind/([0-9a-f]{10})(?:/([0-9A-Za-z_-]{16,128}))?/?$")
 MAX_BODY = 64 * 1024
 RATE = 10.0          # messages a second per agent, with a burst of BURST
 BURST = 20.0
@@ -383,8 +388,9 @@ def handler_for(bridge):
             m = PATH.match(self.path.split("?", 1)[0])
             if not m:
                 return self._send(404, {"error": "no such agent"})
-            aid = m.group(1)
-            if not bridge.auth(aid, self.headers.get("Authorization")):
+            aid, in_path = m.group(1), m.group(2)
+            auth = f"Bearer {in_path}" if in_path else self.headers.get("Authorization")
+            if not bridge.auth(aid, auth):
                 return self._send(401, {"error": "make a token for this agent on elopros.com/buddy.html"},
                                   [("WWW-Authenticate", 'Bearer realm="gates"')])
             try:

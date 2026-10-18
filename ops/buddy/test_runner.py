@@ -70,11 +70,13 @@ def fake_body():
     return subprocess.Popen([sys.executable, "-c", FAKE_MCP], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
 
-def post(port, aid, body, token="t" * 64, raw=None, method="POST"):
+def post(port, aid, body, token="t" * 64, raw=None, method="POST", in_path=False):
     data = raw if raw is not None else json.dumps(body).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/gates/mind/{aid}", data=data if method == "POST" else None,
-                                 method=method, headers={"Content-Type": "application/json",
-                                                         "Authorization": f"Bearer {token}"})
+    url = f"http://127.0.0.1:{port}/gates/mind/{aid}" + (f"/{token}" if in_path else "")
+    headers = {"Content-Type": "application/json"}
+    if not in_path:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data if method == "POST" else None, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             text = r.read()
@@ -116,6 +118,13 @@ code, _ = post(PORT, "fedcba9876", {"jsonrpc": "2.0", "id": 1, "method": "ping"}
 check("a house-brain agent has no door", code == 401)
 code, _ = post(PORT, AID, None, method="GET")
 check("GET opens no stream (405)", code == 405)
+code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": "u", "method": "ping"}, in_path=True)
+check("the token in the path opens the door, for an app that sends no header",
+      code == 200 and got == {"jsonrpc": "2.0", "id": "u", "result": {}})
+code, _ = post(PORT, AID, {"jsonrpc": "2.0", "id": 1, "method": "ping"}, token="u" * 64, in_path=True)
+check("a wrong token in the path is refused with 401", code == 401)
+code, _ = post(PORT, AID, {"jsonrpc": "2.0", "id": 1, "method": "ping"}, token="short", in_path=True)
+check("a path that is no token is no agent (404)", code == 404)
 code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": "p", "method": "ping"})
 check("ping is answered with no body on the island", code == 200 and got == {"jsonrpc": "2.0", "id": "p", "result": {}})
 check("a ping brings nobody in", not bodies)
