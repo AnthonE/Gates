@@ -220,6 +220,7 @@ extract_min_minutes = 120
 motd = "ALPHA: this week is a dry run"
 motd = "JUNK you take out is recorded"
 motd = "and paid when JUNK goes live"
+motd = "Play 2 hours a wipe to get paid for it"
 
 # ── skins ────────────────────────────────────────────────────────────────────
 #
