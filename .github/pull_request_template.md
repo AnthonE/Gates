@@ -8,6 +8,8 @@
 
 Closes reports: -->
 
+Agent: <!-- harness/version and model (AGENTS.md §working beside other agents), or "person" -->
+
 ## Checklist (MVP mode: `CLAUDE.md` is the whole process)
 
 - [ ] `ci/quick.sh` clean, plus the tests of the crates you touched (`ci/quick.sh sim-core …`)

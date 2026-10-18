@@ -33,7 +33,8 @@ BUDDY_STATE:
                              mind asks nothing more past it
     status/<id>.json         {left_usd}: what it tells its friend when low
     notes/<id>.txt           its own notes, kept across restarts
-    journal/<id>.jsonl       its decisions; the last few are published
+    journal/<id>.jsonl       its decisions, each naming the harness and model
+                             that answered; the last few are published
     recaps/<id>.jsonl        its daily recaps; the last three are published
     public/clips/<id>/       its highlight clips and their index.json
                              (`clips.py`): game.elopros.com/gates/clips/
@@ -118,6 +119,9 @@ NAME = re.compile(r"^[\x20-\x7e]{1,16}$")
 # ElevenLabs voice. The house's key pays per line, so only these; they talk
 # and do not hear (no transcriber key).
 VOICES = {"pot-doctor-wood": "s2wvuS7SwITYg8dqsJdn"}
+# What a house mind's journal lines and nametag say ran it (`claude_agent.py`
+# GATES_HARNESS, `jev-bot --agent-harness`).
+HARNESS = "elo-buddy-runner"
 RATES = {"claude-fable-5-1": (10, 50), "claude-opus-5-5": (4, 20),
          "claude-sonnet-5-5": (2, 10), "claude-haiku-5-5": (0.1, 0.5)}
 
@@ -261,9 +265,16 @@ def address(aid):
         return None
 
 
+def labels(a):
+    """The harness and model a face says played it: ours for a house brain;
+    an own brain's are its owner's to say, so ours are cleared."""
+    return (HARNESS, MODEL) if a.get("brain") != "own" else ("", "")
+
+
 def ensure_face(aid, a):
     """Sign the agent's name and picture onto its nametag when either changed."""
-    want = {"name": a["name"], "pic_sha": a.get("pic_sha")}
+    harness, model = labels(a)
+    want = {"name": a["name"], "pic_sha": a.get("pic_sha"), "harness": harness, "model": model}
     try:
         with open(path("face", aid + ".json")) as f:
             if json.load(f) == want and address(aid):
@@ -275,7 +286,8 @@ def ensure_face(aid, a):
         with open(pic, "wb") as f:
             f.write(fetch(ORIGIN + str(a.get("pic") or ""), 300 * 1024))
         out = subprocess.run([JEV_BOT, "--set-face", "--agent-key", ensure_key(aid),
-                              "--name", a["name"], "--pic", pic],
+                              "--name", a["name"], "--pic", pic,
+                              "--agent-harness", harness, "--agent-model", model],
                              capture_output=True, text=True, timeout=60)
         if out.returncode != 0:
             raise RuntimeError(out.stderr.strip()[-200:])
@@ -320,6 +332,7 @@ def start(aid, a):
         "GATES_NOTES": path("notes", aid + ".txt"),
         "GATES_JOURNAL": path("journal", aid + ".jsonl"),
         "GATES_PERSONA": str(a.get("persona") or "")[:600],
+        "GATES_HARNESS": HARNESS,
     })
     if aid in VOICES and os.environ.get("ELEVENLABS_API_KEY"):
         cmd += ["--voice"]
