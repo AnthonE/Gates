@@ -407,6 +407,30 @@ mod tests {
         assert_eq!(keys.len(), 13, "nothing beyond C3: {keys:?}");
         let bot_keys = v["runs"][0]["bots"][0].as_object().unwrap().len();
         assert_eq!(bot_keys, 9);
+        assert_eq!(
+            v["runs"][0].as_object().unwrap().len(),
+            2,
+            "island and bots"
+        );
+        assert_eq!(v["score"].as_object().unwrap().len(), 3, "n, mean, ci95");
+        // What the platform recomputes on submit: a run is its bots' mean,
+        // the score the runs'.
+        let runs = v["runs"].as_array().unwrap();
+        for r in runs {
+            let bots = r["bots"].as_array().unwrap();
+            let mean = bots
+                .iter()
+                .map(|b| b["island"].as_f64().unwrap())
+                .sum::<f64>()
+                / bots.len() as f64;
+            assert!((r["island"].as_f64().unwrap() - mean).abs() < 1e-9);
+        }
+        let mean = runs
+            .iter()
+            .map(|r| r["island"].as_f64().unwrap())
+            .sum::<f64>()
+            / runs.len() as f64;
+        assert!((v["score"]["mean"].as_f64().unwrap() - mean).abs() < 1e-9);
         assert!(v.to_string().len() <= 64 * 1024);
     }
 

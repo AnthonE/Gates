@@ -1008,8 +1008,9 @@ async fn bench(options: Options) -> Result<(), String> {
         runs
     );
     if let Some(path) = &options.bench_out {
-        std::fs::write(path, format!("{text}\n"))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        // The exact string printed, with nothing after it: what a submit
+        // hashes for its signed detail.
+        std::fs::write(path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
         out!("bench: written to {}", path.display());
     }
     if MCP.load(Ordering::Relaxed) {

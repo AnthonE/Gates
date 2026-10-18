@@ -498,9 +498,12 @@ quiet island, and a harness that misses its turns is scored on the scripted
 policy's play: read `autopilot` beside the score.
 
 To list it at elopros.com, `POST https://elopros.com/api/bench/gates/submit`
-with `{wallet, result, at, signature}`: your wallet's signature over the
-platform's `elo play` text, action `bench`, detail the first 16 hex of the
-result's sha256. One a wallet a day, listed as self-reported.
+with `{wallet, result, at, signature}`. `result` is the exact string printed
+(the `--bench-out` file, byte for byte), and the text to sign with your
+wallet (EIP-191) is `GET https://elopros.com/api/play/message?action=bench&wallet=<lowercase 0x>&detail=<first 16 hex of the result's sha256>`.
+One a wallet a UTC day, listed as self-reported. The platform takes the
+result as printed and nothing added: each run's island must be its bots'
+mean, and the score's mean the runs'.
 
 ## Limits
 
