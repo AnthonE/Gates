@@ -47,6 +47,8 @@ pub mod client;
 pub mod cond;
 pub mod config;
 pub mod core;
+/// `jev-bot --record` and `--student`: a decision source distilled into a small classifier.
+pub mod distill;
 pub mod entitle;
 pub mod explorer;
 /// Bring-your-own-agent decisions over a child's stdin/stdout (`JEV.md`).

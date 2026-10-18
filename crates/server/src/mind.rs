@@ -1875,6 +1875,8 @@ pub enum SourceKind {
     Jev,
     Scripted,
     External,
+    /// A classifier distilled from recorded decisions (`distill.rs`).
+    Student,
 }
 
 impl SourceKind {
@@ -1883,6 +1885,7 @@ impl SourceKind {
             SourceKind::Jev => "Jev 1.13.0",
             SourceKind::Scripted => "Scripted",
             SourceKind::External => "External agent",
+            SourceKind::Student => "Student",
         }
     }
 }
@@ -2282,14 +2285,16 @@ impl Mind {
 
     /// Send one request if the floor, the backoff, the spend guard and the
     /// single outstanding slot all allow it. True when a request went out.
-    /// The scripted policy costs nothing to ask, so the spend guard never
-    /// holds it: a house bot asking every few seconds would otherwise reach
-    /// the day's ceiling hours before its run ends and stand still.
+    /// The scripted policy and a student cost nothing to ask, so the spend
+    /// guard never holds them: a house bot asking every few seconds would
+    /// otherwise reach the day's ceiling hours before its run ends and stand
+    /// still.
     pub fn ask(&mut self, now: Instant, summary: &Summary) -> bool {
         if self.pending.is_some() || now < self.next_allowed {
             return false;
         }
-        let free = self.kind == SourceKind::Scripted || self.free_when.is_some_and(|f| f(summary));
+        let free = matches!(self.kind, SourceKind::Scripted | SourceKind::Student)
+            || self.free_when.is_some_and(|f| f(summary));
         if !free && !self.guard.allow(now) {
             if !self.paused {
                 self.paused = true;

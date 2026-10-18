@@ -631,6 +631,7 @@ async fn run(options: Options) -> Result<(), String> {
             Source::Scripted => "scripted",
             Source::External(..) => "external",
             Source::Mcp => "mcp",
+            Source::Student(_) => "student",
         }
         .into(),
     };
