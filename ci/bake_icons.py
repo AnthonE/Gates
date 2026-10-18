@@ -268,6 +268,18 @@ ITEMS = {
     "rifle_body": "skoll/ak47",
     "tech_trash": "lorc/circuitry",
     "fuse": "delapouite/electrical-resistance",
+    # Rust's tree items (2026-10-17). Each ships as a render of its kit
+    # prop (`ci/finish_icons.py`); these are the silhouettes behind them.
+    "hammer_salvaged": "lorc/flat-hammer",
+    "sword_salvaged": "lorc/broad-dagger",
+    "mace": "lorc/spiked-mace",
+    "cleaver_salvaged": "lorc/meat-cleaver",
+    "longsword": "lorc/broadsword",
+    "axe_salvaged": "lorc/battle-axe",
+    "icepick_salvaged": "lorc/mining",
+    "armor_coffeecan_head": "lorc/visored-helm",
+    "armor_tanktop_body": "delapouite/tank-top",
+    "beancan": "lorc/grenade",
 }
 
 # The three vitals, bottom right, in every frame of play.

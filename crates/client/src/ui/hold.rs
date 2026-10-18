@@ -806,7 +806,7 @@ pub const HELD_MODELS: [HeldModelDef; 104] = [
     HeldModelDef::kit_hafted("salvaged_axe", 0.620, 0.20, 1.00),
     HeldModelDef::kit_hafted("salvaged_icepick", 0.580, 0.20, 1.00),
     HeldModelDef::kit_borne("coffee_can_helmet", 0.227, 0.12, 0.50),
-    HeldModelDef::kit_borne("tank_top", 0.452, 0.12, 0.45).yawed(GARMENT_YAW),
+    HeldModelDef::kit_borne("tank_top", 0.440, 0.12, 0.45).yawed(GARMENT_YAW),
     HeldModelDef::kit("beancan_grenade", 0.160, 0.45, 1.00),
 ];
 
