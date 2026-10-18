@@ -7264,7 +7264,7 @@ fn resolve_recipe(core: &ClientCore, name: Name, has: &Stations) -> Option<(u16,
         let def = core.recipes.recipes[r];
         let usable = def.out_count > 0
             && has.usable(def.station)
-            && (!def.blueprint || (r < 64 && known & (1 << r) != 0))
+            && (!def.blueprint || sim_core::research::knows(known, r as u16))
             && core.catalog.name(def.output as usize) == name.as_bytes();
         usable.then_some((r as u16, def.output, def.ticks, def.station))
     })
@@ -7460,7 +7460,7 @@ pub fn observe(
                     || usize::from(core.jobs_count) >= CRAFT_QUEUE
                     || queued(core, r as u16)
                     || !memory.stations.usable(def.station)
-                    || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
+                    || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
                     || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
                 {

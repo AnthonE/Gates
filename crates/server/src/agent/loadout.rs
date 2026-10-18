@@ -103,7 +103,25 @@ pub const BELT: [Role; 5] = [
     Role::Pick,
 ];
 
-const LADDER_MAX: usize = MELEE.len();
+/// The longest ladder: every role's rungs fit in one row of this width.
+const LADDER_MAX: usize = {
+    let lens = [
+        MELEE.len(),
+        RANGED.len(),
+        MEDS.len(),
+        HATCHETS.len(),
+        PICKS.len(),
+    ];
+    let mut max = 0;
+    let mut i = 0;
+    while i < lens.len() {
+        if lens[i] > max {
+            max = lens[i];
+        }
+        i += 1;
+    }
+    max
+};
 
 fn ladder_ids(role: Role) -> &'static [&'static str] {
     match role {

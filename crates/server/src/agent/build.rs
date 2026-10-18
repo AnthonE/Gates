@@ -883,7 +883,7 @@ pub fn recipe_for(core: &ClientCore, item: u16, has: &Stations) -> Option<(u16, 
             && def.output == item
             && has.usable(def.station)
             && core.arc.holds(def.unlock)
-            && (!def.blueprint || (r < 64 && known & (1 << r) != 0));
+            && (!def.blueprint || sim_core::research::knows(known, r as u16));
         usable.then_some((r as u16, def.ticks, def.station))
     })
 }
