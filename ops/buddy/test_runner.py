@@ -196,6 +196,11 @@ A = lambda kind, since, **kw: {"kind": kind, "since": since, "name": "x", "pool"
 agents = {"a000000001": A("buddy", 1), "a000000002": A("solo", 2, brain="own"),
           "a000000003": A("solo", 3, brain="own"), "pot-x": A("community", 1)}
 left = {"a000000001": 1.0, "a000000002": 0.0, "a000000003": 0.0, "pot-x": 1.0}
+print("[seats]")
+check("free seats are the cap less who is on", runner.seats_free({"players": 31, "max_players": 100}) == 69)
+check("a full island has none", runner.seats_free({"players": 104, "max_players": 100}) == 0)
+check("a status that does not say is no answer", runner.seats_free({"players": 3}) is None
+      and runner.seats_free({"players": "x", "max_players": 100}) is None)
 want, waiting = runner.plan(agents, left, {}, called={"a000000002"})
 check("an own brain plays when its harness calls, with no credit", "a000000002" in want)
 check("an own brain whose harness is quiet stays off", "a000000003" not in want and "a000000003" not in waiting)

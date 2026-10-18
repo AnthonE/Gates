@@ -49,6 +49,10 @@ Environment (defaults in brackets):
     BUDDY_SERVER          [game.elopros.com:61234]
     BUDDY_SLOTS           [6] owned agents at once; the rest wait, oldest first
     BUDDY_COMMUNITY_SLOTS [2]
+    BUDDY_FREE_SEATS      [20] seats on the island kept for people: no agent
+                          comes in while fewer are free (ones on stay)
+    BUDDY_STATUS_URL      [https://game.elopros.com/gates/status.json] where
+                          the shard says how many are on and its cap
     BUDDY_THINK_MS [4000]   BUDDY_MAX_HOUR [400]   BUDDY_MAX_DAY [3000]
     JEV_BOT               [/home/master/gates-jev/jev-bot]
     CLAUDE_AGENT          [/home/master/gates-jev/claude_agent.py]
@@ -78,6 +82,11 @@ STATE = os.environ.get("BUDDY_STATE", "/var/lib/gates-buddies")
 SERVER = os.environ.get("BUDDY_SERVER", "game.elopros.com:61234")
 SLOTS = int(os.environ.get("BUDDY_SLOTS", "6"))
 COMMUNITY_SLOTS = int(os.environ.get("BUDDY_COMMUNITY_SLOTS", "2"))
+FREE_SEATS = int(os.environ.get("BUDDY_FREE_SEATS", "20"))
+STATUS_URL = os.environ.get("BUDDY_STATUS_URL", "https://game.elopros.com/gates/status.json")
+# The shard admits eight handshakes from one address at a time, and every
+# body here dials from this box's: a tick starts at most this many.
+STARTS_PER_TICK = 4
 THINK_MS = int(os.environ.get("BUDDY_THINK_MS", "4000"))
 MAX_HOUR = int(os.environ.get("BUDDY_MAX_HOUR", "400"))
 MAX_DAY = int(os.environ.get("BUDDY_MAX_DAY", "3000"))
@@ -128,6 +137,23 @@ def fetch(url, cap=FETCH_MAX):
     req = urllib.request.Request(url, headers={"User-Agent": "gates-buddies"})
     with urllib.request.urlopen(req, timeout=10) as r:
         return r.read(cap)
+
+
+def seats_free(doc):
+    """Free seats on the island from the shard's status, or None when it
+    does not say (an agent then comes in: the shard refuses past its cap)."""
+    try:
+        cap, on = int(doc["max_players"]), int(doc["players"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return max(0, cap - on) if cap > 0 else None
+
+
+def read_seats():
+    try:
+        return seats_free(json.loads(fetch(STATUS_URL)))
+    except (OSError, ValueError):
+        return None
 
 
 def read_feed():
@@ -446,9 +472,16 @@ def main():
                 bridge.detach(i)
                 stop(i, agents.get(i, {}).get("name", i), proc)
                 del running[i]
+        # People first: no agent comes in while the island is nearly full,
+        # and a few at a time when it may.
+        free = read_seats() if want - set(running) else None
+        started = 0
         for i in sorted(want - set(running)):
             if now - exited.get(i, 0) < RESTART_S:
                 continue
+            if started >= STARTS_PER_TICK or (free is not None and free - started <= FREE_SEATS):
+                break
+            started += 1
             try:
                 ensure_face(i, agents[i])
                 running[i] = start(i, agents[i])
