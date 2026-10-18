@@ -1400,6 +1400,8 @@ pub const COIN_NONE: u8 = 0;
 pub const COIN_ELO: u8 = 1;
 /// Priced in ORBS.
 pub const COIN_ORBS: u8 = 2;
+/// Priced in JUNK, the play coin: skins are bought with JUNK (v124).
+pub const COIN_JUNK: u8 = 3;
 
 /// One skin as the client draws and sells it (skins v0): the id items
 /// carry, the item row it fits, its tint, and its price if it has one.
@@ -1413,7 +1415,7 @@ pub struct SkinRow {
     pub covers: u16,
     /// sRGB multiply over the item's own colours.
     pub tint: [u8; 3],
-    /// [`COIN_NONE`], [`COIN_ELO`] or [`COIN_ORBS`].
+    /// [`COIN_NONE`], [`COIN_ELO`], [`COIN_ORBS`] or [`COIN_JUNK`].
     pub coin: u8,
     /// Bare amount in `coin`; 0 exactly when `coin` is [`COIN_NONE`].
     pub price: u32,
@@ -1434,7 +1436,7 @@ impl SkinRow {
     pub fn coherent(&self) -> bool {
         self.catalog != 0
             && (self.covers as usize) < MAX_ITEM_DEFS
-            && self.coin <= COIN_ORBS
+            && self.coin <= COIN_JUNK
             && ((self.coin == COIN_NONE) == (self.price == 0))
     }
 }
@@ -7945,7 +7947,7 @@ mod tests {
                 ..ok
             },
             SkinRow {
-                coin: 3,
+                coin: COIN_JUNK + 1,
                 price: 5,
                 ..ok
             },

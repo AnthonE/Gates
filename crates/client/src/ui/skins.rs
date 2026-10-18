@@ -7,13 +7,14 @@
 //! item; and a skin the platform has not said you own is shown with its
 //! price and where it is sold, never as a choice.
 
-use protocol::{SkinCatalog, SkinRow, COIN_ELO, COIN_ORBS};
+use protocol::{SkinCatalog, SkinRow, COIN_ELO, COIN_JUNK, COIN_ORBS};
 use sim_core::skin::{SkinSet, NO_SKIN};
 
-/// What a skin costs, as a list says it: `250 ELO`, `12 ORBS`, or that it
-/// is not on sale yet. Bare tickers, never a `$`.
+/// What a skin costs, as a list says it: `400000 JUNK`, `250 ELO`, or that
+/// it is not on sale yet. Bare tickers, never a `$`.
 pub fn price_label(row: &SkinRow) -> String {
     match row.coin {
+        COIN_JUNK => format!("{} JUNK", row.price),
         COIN_ELO => format!("{} ELO", row.price),
         COIN_ORBS => format!("{} ORBS", row.price),
         _ => "not on sale yet".to_string(),
@@ -77,6 +78,7 @@ mod tests {
             (7u16, 3u16, COIN_ELO, 250u32),
             (8, 4, COIN_NONE, 0),
             (9, 3, COIN_ORBS, 12),
+            (10, 3, COIN_JUNK, 400_000),
         ];
         for (i, (catalog, covers, coin, price)) in rows.into_iter().enumerate() {
             c.set(
@@ -103,6 +105,7 @@ mod tests {
         assert_eq!(price_label(&c.rows[0]), "250 ELO");
         assert_eq!(price_label(&c.rows[1]), "not on sale yet");
         assert_eq!(price_label(&c.rows[2]), "12 ORBS");
+        assert_eq!(price_label(&c.rows[3]), "400000 JUNK");
         assert!(!price_label(&c.rows[0]).contains('$'));
     }
 

@@ -1056,6 +1056,9 @@ pub enum Coin {
     Elo,
     #[serde(rename = "ORBS")]
     Orbs,
+    /// The play coin, and what skins are bought with (2026-10-18).
+    #[serde(rename = "JUNK")]
+    Junk,
 }
 
 /// Appearance only: no stat field exists to write (DESIGN.md §3.3).
