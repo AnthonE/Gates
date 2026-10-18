@@ -1427,6 +1427,24 @@ pub fn structural(c: &Content) -> Result<(), String> {
     {
         return Err(format!("deployable `{}`: only a lock can be keyed", d.id));
     }
+    // Comfort is per mille and needs a reach, and a reach needs comfort.
+    for d in &c.deployables {
+        if d.comfort > 1000 {
+            return Err(format!(
+                "deployable `{}`: comfort is per mille, at most 1000",
+                d.id
+            ));
+        }
+        if (d.comfort > 0) != (d.comfort_radius_cm > 0) {
+            return Err(format!(
+                "deployable `{}`: comfort and comfort_radius_cm come together",
+                d.id
+            ));
+        }
+        if d.comfort_radius_cm > u32::from(u16::MAX) {
+            return Err(format!("deployable `{}`: comfort_radius_cm over u16", d.id));
+        }
+    }
 
     // The decay ladder: one rate per material, each a live percent, and
     // **monotone against toughness** — a tougher grade must not rot

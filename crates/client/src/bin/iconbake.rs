@@ -402,6 +402,7 @@ const SUBJECTS: &[Subject] = &[
         "models/deploy/floor_spikes.glb",
         [0.0, 0.0, 0.0],
     ),
+    s("abyss_rug", "models/deploy/abyss_rug.glb", [0.0, 0.0, 0.0]),
     s("boots", "models/held/boots.glb", [0.0, 0.0, 0.0]),
     s(
         "hazmat_suit",

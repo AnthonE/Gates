@@ -1303,6 +1303,18 @@ slot = "hand"
 class = "construction"
 description = "A board of sharpened stakes. It hurts to stand on."
 
+# A rug for the base floor (ours, for the Abyss launch): no bench, cloth. It
+# makes a body near it comfortable, fire or no fire (`deployables.toml`).
+[[item]]
+id = "item.abyss_rug"
+name = "Abyss Rug"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "construction"
+description = "A woven rug from the deep. Sit near it to get comfortable."
+
 # Rust's boots (their page, 2026-10-18): the feet's slot, learned at the
 # second bench. Not repairable there, so no condition here.
 [[item]]

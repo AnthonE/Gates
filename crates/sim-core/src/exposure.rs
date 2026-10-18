@@ -153,6 +153,12 @@ pub struct ExposureContent {
     /// Per item index: the share of the Verdigris a worn piece wards off,
     /// per mille (`armor.toml` `fel_pct`).
     pub ward: [u16; MAX_ITEM_DEFS],
+    /// Per item index: the comfort a placed deployable of that item gives a
+    /// body within `furnish_radius_cm` of it, per mille (`deployables.toml`
+    /// `comfort`, a rug's). The best one in reach counts, on top of a fire's
+    /// ([`comfort_target`]); it needs no fire.
+    pub furnish: [u16; MAX_ITEM_DEFS],
+    pub furnish_radius_cm: [u16; MAX_ITEM_DEFS],
 }
 
 impl ExposureContent {
@@ -209,6 +215,8 @@ impl ExposureContent {
         fel_ward_max: 0,
         fel_pocket_per_s: 0,
         ward: [0; MAX_ITEM_DEFS],
+        furnish: [0; MAX_ITEM_DEFS],
+        furnish_radius_cm: [0; MAX_ITEM_DEFS],
     };
 
     /// Is exposure armed? A zero chill rate means nothing ever moves.
@@ -265,8 +273,8 @@ pub struct Inputs {
     pub fire: bool,
     /// A lit torch in hand.
     pub torch: bool,
-    /// The comfort the surroundings give, per mille: a lit fire, and
-    /// company at it (`World::exposure_inputs`).
+    /// The comfort the surroundings give, per mille: a lit fire, company
+    /// at it, and the best rug in reach (`World::exposure_inputs`).
     pub comfort: u16,
     /// The meters' ceilings, for the stomach's share of regen and its bill.
     pub max_food: u16,
@@ -630,15 +638,23 @@ pub fn regens(ec: &ExposureContent, p: &Player) -> bool {
 /// The comfort a body's surroundings give it, per mille (Rust's
 /// `TriggerComfort.CalculateComfort`): `fire_comfort` in a lit fire's
 /// warmth, and `company_comfort` for each other body there, half for a
-/// sleeper. Nothing away from a fire.
-pub fn comfort_target(ec: &ExposureContent, fire: bool, awake: u32, asleep: u32) -> u16 {
-    if !fire {
-        return 0;
-    }
-    let c = ec.fire_comfort as u32
-        + ec.company_comfort as u32 * awake
-        + ec.company_comfort as u32 * asleep / 2;
-    c.min(1000) as u16
+/// sleeper; plus `furnish`, the best comfort deployable in reach (a rug's,
+/// [`ExposureContent::furnish`]), which needs no fire. Capped at all of it.
+pub fn comfort_target(
+    ec: &ExposureContent,
+    fire: bool,
+    awake: u32,
+    asleep: u32,
+    furnish: u16,
+) -> u16 {
+    let at_fire = if fire {
+        ec.fire_comfort as u32
+            + ec.company_comfort as u32 * awake
+            + ec.company_comfort as u32 * asleep / 2
+    } else {
+        0
+    };
+    (at_fire + furnish as u32).min(1000) as u16
 }
 
 /// One second of the cold's and the heat's metabolic cost (`NOW.md` §0wx

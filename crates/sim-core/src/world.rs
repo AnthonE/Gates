@@ -6717,13 +6717,15 @@ impl World {
         let vent = fel_pm >= (crate::terrain::FEL_VENT_AT * 1000.0) as u16
             && crate::terrain::fel(self.seed, x, z) >= crate::terrain::FEL_VENT_AT
             && crate::terrain::fel_vent_near(self.seed, x, z);
-        let comfort = match fire {
+        let (by_fire, awake, asleep) = match fire {
             Some(at) if ec.fire_comfort > 0 => {
                 let (awake, asleep) = self.company_at(i, at);
-                crate::exposure::comfort_target(ec, true, awake, asleep)
+                (true, awake, asleep)
             }
-            _ => 0,
+            _ => (false, 0, 0),
         };
+        let furnish = self.furnish_comfort(x, z, feet);
+        let comfort = crate::exposure::comfort_target(ec, by_fire, awake, asleep, furnish);
         crate::exposure::Inputs {
             rain: wx.rain,
             wind: wx.wind,
@@ -6774,6 +6776,39 @@ impl World {
             .find(|&at| {
                 crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet)
             })
+    }
+
+    /// The comfort the furnishings near a body standing here give it, per
+    /// mille: the best of the placed deployables whose item has a `furnish`
+    /// value (a rug), within its own `furnish_radius_cm` and a storey
+    /// (`exposure::fire_reaches`, the fire's reach rule). Two rugs are one
+    /// rug's worth: the max, never the sum. Zero when no content row has any.
+    pub fn furnish_comfort(&self, x: f32, z: f32, feet: f32) -> u16 {
+        let ec = &self.survival.exposure;
+        if ec.furnish.iter().all(|&c| c == 0) {
+            return 0;
+        }
+        let have = usize::from(self.deploy.def_count);
+        let cols = self.pieces.cols();
+        let mut best = 0u16;
+        for rec in self.deploys.entries() {
+            let Some(def) = self.deploy.defs[..have].get(usize::from(rec.row)) else {
+                continue;
+            };
+            let item = usize::from(def.item);
+            let (Some(&c), Some(&r)) = (ec.furnish.get(item), ec.furnish_radius_cm.get(item))
+            else {
+                continue;
+            };
+            if c <= best || r == 0 {
+                continue;
+            }
+            let at = (rec.cx, rec.cz, rec.level, rec.pose);
+            if crate::exposure::fire_reaches(self.seed, &self.haven, cols, r, at, x, z, feet) {
+                best = c;
+            }
+        }
+        best
     }
 
     /// The other bodies in the same fire's warmth as slot `i`: `(awake,
@@ -9034,6 +9069,91 @@ mod tests {
                 assert_eq!(w.players[0].hp, 100);
             }
         }
+    }
+
+    /// A rug's comfort (`World::furnish_comfort`): its row's per mille within
+    /// its own reach and nothing past it, no fire needed; two rugs in reach
+    /// are one rug's worth; and on top of a fire's, under the cap.
+    #[test]
+    fn a_rug_comforts_without_a_fire_and_does_not_stack() {
+        use crate::build::{build_cell_of, foundation_terrain_ok, BUILD_CELL_M};
+        use crate::deploy::{DeployContent, DeployRec, ARCH_RUG};
+        use crate::exposure::comfort_target;
+        use crate::footprint::Pose;
+        let seed = SMOKE_SEED;
+        let haven = terrain::haven(seed);
+        let n = build_cell_of(terrain::ISLAND_SIZE) as u16;
+        let flat = (0..n.saturating_sub(1))
+            .flat_map(|cz| (0..n.saturating_sub(1)).map(move |cx| (cx, cz)))
+            .find(|&(cx, cz)| {
+                let (x, z) = crate::footprint::centre(cx, cz, Pose::CENTRE);
+                terrain::height(seed, x, z) > 2.0
+                    && (-2..=4).all(|k| {
+                        foundation_terrain_ok(seed, &haven, x + k as f32 * BUILD_CELL_M * 0.5, z)
+                            && foundation_terrain_ok(seed, &haven, x, z + k as f32 * 0.9)
+                    })
+            })
+            .expect("a flat cell on the smoke seed");
+        let rug = |cx: u16| DeployRec {
+            cx,
+            cz: flat.1,
+            row: 1,
+            hp: 100,
+            pose: Pose::CENTRE,
+            ..DeployRec::default()
+        };
+        let world = |recs: &[DeployRec]| {
+            let mut w = Box::new(World::new(seed));
+            let mut dc = DeployContent::probe_fixture();
+            dc.defs[1].arch = ARCH_RUG;
+            let item = usize::from(dc.defs[1].item);
+            w.deploy = dc;
+            w.survival.exposure.fire_comfort = 500;
+            w.survival.exposure.company_comfort = 250;
+            w.survival.exposure.furnish[item] = 150;
+            w.survival.exposure.furnish_radius_cm[item] = 300;
+            let zeros = vec![0; recs.len()];
+            w.deploys.restore(recs, &zeros, &zeros, &[], &[], &[], &[]);
+            w
+        };
+        let at = |x: f32, z: f32| (x, z, terrain::ground(seed, &haven, x, z));
+
+        let w = world(&[rug(flat.0)]);
+        let (x, z) = rug(flat.0).xz();
+        let (px, pz, feet) = at(x, z + 1.0);
+        assert_eq!(w.furnish_comfort(px, pz, feet), 150, "within its reach");
+        let (px, pz, feet) = at(x, z + 3.2);
+        assert_eq!(w.furnish_comfort(px, pz, feet), 0, "past its reach");
+
+        // Two rugs a cell apart, a body between them: in reach of both.
+        let w2 = world(&[rug(flat.0), rug(flat.0 + 1)]);
+        let (px, pz, feet) = at(x + BUILD_CELL_M * 0.5, z);
+        assert_eq!(w2.furnish_comfort(px, pz, feet), 150, "two rugs are one");
+
+        // With no rug content at all the scan answers nothing.
+        let mut bare = world(&[rug(flat.0)]);
+        bare.survival.exposure.furnish = [0; crate::limits::MAX_ITEM_DEFS];
+        let (px, pz, feet) = at(x, z);
+        assert_eq!(bare.furnish_comfort(px, pz, feet), 0);
+
+        // The sum: alone, with a fire, with a fire and a crowd (capped).
+        let ec = &w.survival.exposure;
+        assert_eq!(
+            comfort_target(ec, false, 2, 0, 150),
+            150,
+            "no fire, no company"
+        );
+        assert_eq!(comfort_target(ec, true, 0, 0, 150), 650);
+        assert_eq!(comfort_target(ec, true, 1, 0, 150), 900);
+        assert_eq!(comfort_target(ec, true, 4, 0, 150), 1000, "capped");
+
+        // And it reaches the body through `exposure_inputs`, with no fire.
+        let mut w = world(&[rug(flat.0)]);
+        w.dev_spawn = Some((x, z + 0.5));
+        w.tick(&[Command::Join { id: 1 }]);
+        let inp = w.exposure_inputs(0, &crate::weather::Wx::default(), false, 0);
+        assert!(!inp.fire);
+        assert_eq!(inp.comfort, 150);
     }
 
     /// **Wear is in `state_hash`, in all four container stores** (item

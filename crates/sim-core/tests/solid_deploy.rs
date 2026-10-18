@@ -637,7 +637,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
 fn the_volume_table_covers_every_archetype() {
     assert_eq!(
         DEPLOY_VOL.len(),
-        sim_core::deploy::ARCH_FLOOR_SPIKES as usize + 1,
+        sim_core::deploy::ARCH_RUG as usize + 1,
         "a new archetype needs a volume row"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
@@ -666,6 +666,7 @@ fn the_volume_table_covers_every_archetype() {
         ARCH_WINDOW_GLASS,
         ARCH_WINDOW_SHUTTER,
         sim_core::deploy::ARCH_FLOOR_SPIKES,
+        sim_core::deploy::ARCH_RUG,
     ] {
         assert!(
             solid_vol(arch).is_none(),
