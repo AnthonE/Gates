@@ -396,6 +396,12 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::RemoteStepLitter => render_take(Cue::StepLitter, take),
         Cue::RemoteStepRock => render_take(Cue::StepRock, take),
         Cue::RemoteStepWater => render_take(Cue::StepWater, take),
+        // The built floors are recordings; a failed decode falls back to
+        // the rock step, the hardest of the island's grounds.
+        Cue::StepWood | Cue::StepConcrete | Cue::StepMetal => render_take(Cue::StepRock, take),
+        Cue::RemoteStepWood => render_take(Cue::StepWood, take),
+        Cue::RemoteStepConcrete => render_take(Cue::StepConcrete, take),
+        Cue::RemoteStepMetal => render_take(Cue::StepMetal, take),
 
         // ---- a remote swing ---------------------------------------------
         // The same arm through the same air, by delegation for the remote

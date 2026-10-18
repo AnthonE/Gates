@@ -1322,6 +1322,53 @@ pub fn edge_foot_drop(
     (here - col_base_y(seed, haven, cols, ox, oz)).max(0.0)
 }
 
+/// The built cell and level a body standing at (x, z) with its feet at
+/// `feet_y` is on: a plane whose top is within a hand of its feet, or a
+/// flight of stairs it is partway up — the point's own cell first, then the
+/// cells its capsule reaches into. `None` on terrain, a rock or a
+/// deployable. A footstep reads it to sound like the floor and not the dirt
+/// under it; nothing in the tick does.
+pub fn floor_under(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> Option<(u16, u16, u8)> {
+    // A hand, and a little over: another body's feet are an interpolated
+    // transform, not the predictor's.
+    const HAND: f32 = 0.25;
+    let r = CAPSULE_RADIUS_M;
+    for (px, pz) in [(x, z), (x - r, z), (x + r, z), (x, z - r), (x, z + r)] {
+        let bx = crate::build::build_cell_of(px);
+        let bz = crate::build::build_cell_of(pz);
+        if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+            continue;
+        }
+        let m = cols.get(bx as u16, bz as u16);
+        let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+        let flats = m.planes | m.floor_frames | tris;
+        let stairs = m.stairs | m.stairs_xhi | m.stairs_zlo | m.stairs_xlo;
+        if flats | stairs == 0 {
+            continue;
+        }
+        let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+        for level in 0..MAX_BUILD_SOCKETS {
+            let bit = 1u16 << level;
+            let y = base + crate::build::level_y(level as u8);
+            let on_flat = flats & bit != 0 && fabs(y - feet_y) <= HAND;
+            let on_stairs = stairs & bit != 0
+                && feet_y > y - HAND
+                && feet_y < y + crate::build::LEVEL_H_M + HAND;
+            if on_flat || on_stairs {
+                return Some((bx as u16, bz as u16, level as u8));
+            }
+        }
+    }
+    None
+}
+
 /// The highest built surface under the POINT (x, z) that something with its
 /// bottom at `feet_y` may stand on — a plane's top, or the stair ramp's
 /// height at this z — `NO_SURFACE` when none. "May stand on" is the step
@@ -3252,6 +3299,24 @@ mod tests {
             ),
             "the doorway lintel stops a shot"
         );
+    }
+
+    /// What a footstep reads: the slab under the feet, by cell and level —
+    /// and nothing for feet a storey off it, or off its cell entirely.
+    #[test]
+    fn floor_under_names_the_slab_under_the_feet() {
+        let bc = free_table();
+        let mut pieces = Pieces::new();
+        put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
+        let base = col_base_y(SEED, hv(), pieces.cols(), CX, CZ);
+        let x = (CX as f32 + 0.5) * BUILD_CELL_M;
+        let z = (CZ as f32 + 0.5) * BUILD_CELL_M;
+        let at = |x: f32, z: f32, y: f32| floor_under(SEED, hv(), pieces.cols(), x, z, y);
+        assert_eq!(at(x, z, base), Some((CX, CZ, 0)));
+        assert_eq!(at(x, z, base + 0.1), Some((CX, CZ, 0)));
+        assert_eq!(at(x, z, base + 1.5), None, "a jump over it is not on it");
+        assert_eq!(at(x, z, base - 1.0), None, "under it is not on it");
+        assert_eq!(at(x + 3.0 * BUILD_CELL_M, z, base), None, "off its cell");
     }
 
     /// Triangles v0's collision contract: a tri foundation is ground over

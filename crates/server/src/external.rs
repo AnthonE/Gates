@@ -227,19 +227,20 @@ impl External {
     }
 
     /// What a reply asks to have said out loud: `speak`, else a local
-    /// `say` (a line typed to a far team is not read out to strangers).
-    fn spoken(line: &str) -> Option<String> {
+    /// `say` (a line typed to a far team is not read out to strangers), and
+    /// whether it is the typed `say`, so a line the voice cannot say is not
+    /// typed twice.
+    fn spoken(line: &str) -> Option<(String, bool)> {
         let v: Value = serde_json::from_str(line.trim_end()).ok()?;
         let say = if v["to"] == "team" {
             &Value::Null
         } else {
             &v["say"]
         };
-        let said = [&v["speak"], say]
+        let said = [(&v["speak"], false), (say, true)]
             .into_iter()
-            .filter_map(|t| t.as_str())
-            .map(crate::agent_voice::clean)
-            .find(|t| !t.is_empty() && !t.starts_with('/') && !peddles(t));
+            .filter_map(|(t, typed)| t.as_str().map(|t| (crate::agent_voice::clean(t), typed)))
+            .find(|(t, _)| !t.is_empty() && !t.starts_with('/') && !peddles(t));
         said
     }
 
@@ -357,7 +358,7 @@ mod voice_tests {
 
     #[test]
     fn a_reply_is_spoken_by_speak_else_a_local_say() {
-        let spoken = |line: &str| External::spoken(line);
+        let spoken = |line: &str| External::spoken(line).map(|(t, _)| t);
         assert_eq!(
             spoken(r#"{"say":"hi","speak":"hello there friend"}"#).as_deref(),
             Some("hello there friend")
@@ -406,8 +407,10 @@ impl DecisionSource for External {
         self.next_id += 1;
         let deadline = Instant::now() + self.timeout;
         let mut request = Self::observation(id, summary);
-        if self.speech.is_some() {
+        if let Some(speech) = self.speech.as_ref() {
             request["voice"] = Value::Bool(true);
+            // Still saying its last line: a new one would wait its turn.
+            request["speaking"] = Value::Bool(speech.speaking());
         }
         let mut line = request.to_string();
         line.push('\n');
@@ -428,9 +431,9 @@ impl DecisionSource for External {
             .as_mut()
             .ok_or("external agent output is closed")?;
         let (choice, reply) = wait(lines, id, deadline, summary, &mut self.stale)?;
-        if let (Some(tx), Some(text)) = (self.speech.as_mut(), Self::spoken(&reply)) {
-            // Full: a line is still being said; this one goes unsaid.
-            let _ = tx.push(text);
+        if let (Some(tx), Some((text, typed))) = (self.speech.as_mut(), Self::spoken(&reply)) {
+            // Full only if the voice has stopped ticking; the line goes unsaid.
+            let _ = tx.push(text, typed);
         }
         match Self::note(&reply) {
             Ok(note) => self.note = note,

@@ -20,7 +20,10 @@
 //! inaudible cues from across the island would fill the frame's budget and
 //! silence the axe in your hands.
 
-use super::{falloff, Cue, Mix, CUE_COUNT, CUE_QUEUE_CAP, STARTS_PER_FRAME, VOICE_CAP};
+use super::{
+    falloff, Cue, Mix, CUE_COUNT, CUE_QUEUE_CAP, MAX_SAME_CUE, RESERVE_PRIORITY, STARTS_PER_FRAME,
+    VOICE_CAP, VOICE_RESERVE,
+};
 
 /// The band a diegetic cue's playback rate may wander in, as the mixer's
 /// speed about 1.0 — inclusive at both ends. Below it a voice holds a slot for
@@ -107,6 +110,13 @@ pub struct Mixer {
     queued: usize,
     /// Milliseconds left before each cue may start again.
     cool: [f32; CUE_COUNT],
+    /// A positional cue's cooldown is its source's: where each of its last
+    /// few starts was, and the milliseconds left on each. A second body
+    /// [`SAME_SOURCE_M`] away is not held by the first.
+    cool_at: [[([f32; 3], f32); SOURCES]; CUE_COUNT],
+    /// Voices of each cue sounding as the frame opens, from the ledger
+    /// ([`Self::set_live_of`]): what [`MAX_SAME_CUE`] is held against.
+    live_of: [u8; CUE_COUNT],
     starts: [Start; STARTS_PER_FRAME],
     started: usize,
     /// Requests refused because the queue was full since the last reset.
@@ -155,6 +165,8 @@ impl Mixer {
             queue: [EMPTY; CUE_QUEUE_CAP],
             queued: 0,
             cool: [0.0; CUE_COUNT],
+            cool_at: [[([0.0; 3], 0.0); SOURCES]; CUE_COUNT],
+            live_of: [0; CUE_COUNT],
             starts: [NO_START; STARTS_PER_FRAME],
             started: 0,
             dropped: 0,
@@ -169,6 +181,13 @@ impl Mixer {
     /// this; the mixer applies it to its own quiet cues.
     pub fn duck(&self) -> f32 {
         1.0 - DUCK_DEPTH * self.duck
+    }
+
+    /// How many voices of each cue are sounding (`engine::Live::counts`),
+    /// for the next [`Self::tick`]. Zeros when never set: no cue is held by
+    /// [`MAX_SAME_CUE`] then.
+    pub fn set_live_of(&mut self, counts: [u8; CUE_COUNT]) {
+        self.live_of = counts;
     }
 
     /// xorshift32 — see [`Self::rng`].
@@ -219,6 +238,9 @@ impl Mixer {
         for c in self.cool.iter_mut() {
             *c = (*c - dt_ms).max(0.0);
         }
+        for (_, c) in self.cool_at.iter_mut().flatten() {
+            *c = (*c - dt_ms).max(0.0);
+        }
         self.duck = (self.duck - dt_ms / (DUCK_RELEASE_S * 1000.0)).max(0.0);
         let ducked = self.duck();
         self.started = 0;
@@ -256,8 +278,16 @@ impl Mixer {
             };
             let gain = def.gain * req.gain * fall * mix.bus_gain(def.bus) * duck;
             // Below the cull radius, silenced by the mix, or on cooldown —
-            // the clock of the row it is a second voice of (`Cue::lead`).
-            let ok = fall > 0.0 && gain > 0.0 && self.cool[req.cue.lead().idx()] <= 0.0;
+            // the clock of the row it is a second voice of (`Cue::lead`),
+            // and for a place in the world only that place's.
+            let lead = req.cue.lead().idx();
+            let cooled = match (def.positional, req.at) {
+                (true, Some(at)) => self.cool_at[lead]
+                    .iter()
+                    .all(|&(was, left)| left <= 0.0 || apart(Some(at), Some(was))),
+                _ => self.cool[lead] <= 0.0,
+            };
+            let ok = fall > 0.0 && gain > 0.0 && cooled;
             *slot = if ok {
                 (def.priority, gain, dist)
             } else {
@@ -268,14 +298,24 @@ impl Mixer {
         // Pass two: take the best, up to the frame's budget and the voice cap.
         // A selection scan rather than a sort — at most 32 × 4 comparisons,
         // no allocation, and the tie-break is explicit rather than whatever a
-        // sort happens to be stable about.
-        let room = VOICE_CAP.saturating_sub(live);
-        let budget = STARTS_PER_FRAME.min(room);
+        // sort happens to be stable about. The cap is [`VOICE_CAP`], and
+        // [`VOICE_RESERVE`] past it for the cues that matter most; no one cue
+        // past [`MAX_SAME_CUE`] voices.
         let mut taken = [false; CUE_QUEUE_CAP];
-        while self.started < budget {
+        let mut of = self.live_of;
+        while self.started < STARTS_PER_FRAME {
+            let sounding = live + self.started;
             let mut best: Option<usize> = None;
             for i in 0..self.queued {
                 if taken[i] || scored[i].1 < 0.0 {
+                    continue;
+                }
+                let cap = if scored[i].0 >= RESERVE_PRIORITY {
+                    VOICE_CAP + VOICE_RESERVE
+                } else {
+                    VOICE_CAP
+                };
+                if sounding >= cap || of[self.queue[i].cue.idx()] >= MAX_SAME_CUE {
                     continue;
                 }
                 let Some(b) = best else {
@@ -294,8 +334,26 @@ impl Mixer {
             let Some(i) = best else { break };
             taken[i] = true;
             let req = self.queue[i];
+            of[req.cue.idx()] = of[req.cue.idx()].saturating_add(1);
             let def = req.cue.def();
-            self.cool[req.cue.lead().idx()] = def.cooldown_ms as f32;
+            let lead = req.cue.lead().idx();
+            match (def.positional, req.at) {
+                (true, Some(at)) => {
+                    // Its own source's slot if it has one, else the slot
+                    // whose clock is nearest done.
+                    let slots = &mut self.cool_at[lead];
+                    let k = slots
+                        .iter()
+                        .position(|&(was, left)| left > 0.0 && !apart(Some(at), Some(was)))
+                        .unwrap_or_else(|| {
+                            (0..SOURCES)
+                                .min_by(|&a, &b| slots[a].1.total_cmp(&slots[b].1))
+                                .unwrap_or(0)
+                        });
+                    slots[k] = (at, def.cooldown_ms as f32);
+                }
+                _ => self.cool[lead] = def.cooldown_ms as f32,
+            }
             // **The cooldown binds WITHIN the frame too**, and it did not
             // until the gate said so: the scoring pass above reads `cool`
             // once, so four footsteps requested in one frame all scored as
@@ -305,10 +363,18 @@ impl Mixer {
             // start as often as the budget allows, which is what a zero
             // cooldown means. **By row, not by clock:** this is what lets
             // `HurtAgain` start beside `Hurt` in a frame of two blows, while
-            // across frames the scoring pass reads the lead's clock.
+            // across frames the scoring pass reads the lead's clock. **By
+            // source, for a place in the world:** two players stepping on
+            // the same ground in one frame are two steps, so a squad can be
+            // counted by ear.
             if def.cooldown_ms > 0 {
                 for (j, s) in scored.iter_mut().enumerate().take(self.queued) {
-                    if j != i && !taken[j] && self.queue[j].cue == req.cue {
+                    let other = self.queue[j];
+                    if j != i
+                        && !taken[j]
+                        && other.cue == req.cue
+                        && !(def.positional && apart(other.at, req.at))
+                    {
                         // Below zero, so it is not counted as starved: it was
                         // refused by its own cooldown, not for want of a voice.
                         s.1 = -1.0;
@@ -362,6 +428,24 @@ impl Mixer {
 
         self.queued = 0;
         &self.starts[..self.started]
+    }
+}
+
+/// How far apart two starts of one positional cue are two sources, metres:
+/// past it each keeps its own cooldown. A body's two feet, a gun's muzzle
+/// and its shooter are inside it; the next player over is not.
+pub const SAME_SOURCE_M: f32 = 2.0;
+
+/// How many sources of one positional cue hold their own cooldown at once.
+/// Past it the clock nearest done is reused: a fifth body inside a cue's
+/// cooldown can wait out the shortest of the four.
+pub const SOURCES: usize = 4;
+
+/// Two positions of one cue are different sources.
+fn apart(a: Option<[f32; 3]>, b: Option<[f32; 3]>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => dist(a, b) > SAME_SOURCE_M,
+        _ => false,
     }
 }
 

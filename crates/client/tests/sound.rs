@@ -20,8 +20,8 @@ use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
 use client::sound::synth;
 use client::sound::{hit, hurt};
 use client::sound::{
-    Bus, Cue, Mix, CUES, CUE_COUNT, CUE_QUEUE_CAP, MAX_AUDIBLE_M, SAMPLE_RATE, STARTS_PER_FRAME,
-    VOICE_CAP,
+    Bus, Cue, Mix, CUES, CUE_COUNT, CUE_QUEUE_CAP, MAX_AUDIBLE_M, MAX_SAME_CUE, RESERVE_PRIORITY,
+    SAMPLE_RATE, STARTS_PER_FRAME, VOICE_CAP, VOICE_RESERVE,
 };
 use sim_core::collide::Part;
 
@@ -145,16 +145,50 @@ fn master_scales_every_bus_and_silences_at_zero() {
         game: 0.5,
         ambience: 1.0,
         music: 0.2,
+        steps: 0.4,
+        interface: 0.0,
     };
     assert_eq!(mix.bus_gain(Bus::Game), 0.25);
     assert_eq!(mix.bus_gain(Bus::Ambience), 0.5);
     assert_eq!(mix.bus_gain(Bus::Music), 0.1);
+    assert_eq!(mix.bus_gain(Bus::Steps), 0.2);
+    assert_eq!(mix.bus_gain(Bus::Interface), 0.0);
     let silent = Mix {
         master: 0.0,
         ..Mix::default()
     };
     assert_eq!(silent.bus_gain(Bus::Game), 0.0);
     assert_eq!(silent.bus_gain(Bus::Ambience), 0.0);
+}
+
+/// The FOOTSTEPS slider moves every boot, yours and everyone else's, and
+/// nothing else: a muted steps bus starts no step and still starts a hit.
+#[test]
+fn the_steps_bus_is_every_footstep_and_only_them() {
+    for cue in [
+        Cue::StepGrass,
+        Cue::RemoteStepRock,
+        Cue::StepWood,
+        Cue::RemoteStepMetal,
+        Cue::Land,
+        Cue::RemoteBrush,
+    ] {
+        assert_eq!(cue.def().bus, Bus::Steps, "{cue:?}");
+    }
+    for cue in [Cue::Swing, Cue::ShotGun, Cue::Hit, Cue::Howl] {
+        assert_eq!(cue.def().bus, Bus::Game, "{cue:?}");
+    }
+    assert_eq!(Cue::UiClick.def().bus, Bus::Interface);
+    let mix = Mix {
+        steps: 0.0,
+        ..Mix::default()
+    };
+    let mut m = Mixer::new();
+    m.push(Request::own(Cue::StepGrass));
+    m.push(Request::own(Cue::Hit));
+    let started = m.tick(16.0, AT_ORIGIN, 0, &mix);
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].cue, Cue::Hit);
 }
 
 /// A muted bus must not merely be inaudible — it must not consume a voice,
@@ -198,23 +232,61 @@ fn frame_budget_is_a_hard_cap() {
     assert_eq!(n, STARTS_PER_FRAME, "the frame budget was not the cap");
 }
 
+/// Full at [`VOICE_CAP`] for the small sounds; the cues that matter most
+/// (`RESERVE_PRIORITY` and up) have [`VOICE_RESERVE`] more, and past that
+/// nothing starts. Nothing already sounding is ever asked to stop.
 #[test]
 fn the_voice_cap_refuses_rather_than_steals() {
-    let mut m = Mixer::new();
     let mix = Mix::default();
-    for cue in [Cue::Hit, Cue::Gather, Cue::CraftDone, Cue::UiClick] {
-        m.push(Request::own(cue));
-    }
-    // The pool is full: nothing starts, and nothing already sounding is asked
-    // to stop (the mixer cannot stop anything — that is the point).
-    assert!(m.tick(16.0, AT_ORIGIN, VOICE_CAP, &mix).is_empty());
-
-    // One slot free: exactly one starts.
+    let ask = |m: &mut Mixer| {
+        for cue in [Cue::Hit, Cue::Gather, Cue::CraftDone, Cue::UiClick] {
+            m.push(Request::own(cue));
+        }
+    };
+    let heard = |m: &mut Mixer, live| -> Vec<Cue> {
+        m.tick(16.0, AT_ORIGIN, live, &mix)
+            .iter()
+            .map(|s| s.cue)
+            .collect()
+    };
+    // The bulk is full: the hitmarker, the craft chime and the gather tick
+    // get in, the click does not.
     let mut m = Mixer::new();
-    for cue in [Cue::Hit, Cue::Gather, Cue::CraftDone, Cue::UiClick] {
-        m.push(Request::own(cue));
-    }
-    assert_eq!(m.tick(16.0, AT_ORIGIN, VOICE_CAP - 1, &mix).len(), 1);
+    ask(&mut m);
+    assert_eq!(
+        heard(&mut m, VOICE_CAP),
+        [Cue::Hit, Cue::CraftDone, Cue::Gather]
+    );
+    assert!(Cue::UiClick.def().priority < RESERVE_PRIORITY);
+
+    // The reserve is full too: nothing starts.
+    let mut m = Mixer::new();
+    ask(&mut m);
+    assert!(heard(&mut m, VOICE_CAP + VOICE_RESERVE).is_empty());
+
+    // One slot of the reserve free: exactly the most important one.
+    let mut m = Mixer::new();
+    ask(&mut m);
+    assert_eq!(heard(&mut m, VOICE_CAP + VOICE_RESERVE - 1), [Cue::Hit]);
+}
+
+/// One cue repeated cannot take the pool: past [`MAX_SAME_CUE`] of it
+/// sounding, the next is refused and another cue still starts.
+#[test]
+fn one_cue_cannot_take_the_pool() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    let mut live = [0u8; CUE_COUNT];
+    live[Cue::Blast.idx()] = MAX_SAME_CUE;
+    m.set_live_of(live);
+    m.push(Request::at(Cue::Blast, [30.0, 0.0, 0.0]));
+    m.push(Request::at(Cue::RemoteReload, [5.0, 0.0, 0.0]));
+    let heard: Vec<Cue> = m
+        .tick(16.0, AT_ORIGIN, MAX_SAME_CUE as usize, &mix)
+        .iter()
+        .map(|s| s.cue)
+        .collect();
+    assert_eq!(heard, [Cue::RemoteReload]);
 }
 
 #[test]
@@ -357,6 +429,36 @@ fn a_cooldown_binds_within_one_frame() {
         "each hurt row starts once a frame, and the two rows start together"
     );
     assert_eq!(m.starved, 0, "a cooldown refusal was counted as starvation");
+}
+
+/// **A positional cue's cooldown is its source's.** Two players stepping on
+/// the same ground in one frame are two steps — a squad can be counted by
+/// ear — while one body asking twice is still one.
+#[test]
+fn two_bodies_on_one_surface_are_two_steps() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteStepGrass, [6.0, 0.0, 0.0]));
+    m.push(Request::at(Cue::RemoteStepGrass, [6.5, 0.0, 0.0]));
+    m.push(Request::at(Cue::RemoteStepGrass, [-6.0, 0.0, 4.0]));
+    let at: Vec<_> = m
+        .tick(16.0, AT_ORIGIN, 0, &mix)
+        .iter()
+        .map(|s| s.at)
+        .collect();
+    assert_eq!(at, [Some([6.0, 0.0, 0.0]), Some([-6.0, 0.0, 4.0])]);
+    assert_eq!(m.starved, 0);
+
+    // The next frame, inside the cooldown: the first body is held, a third
+    // body is not.
+    m.push(Request::at(Cue::RemoteStepGrass, [6.2, 0.0, 0.0]));
+    m.push(Request::at(Cue::RemoteStepGrass, [0.0, 0.0, 12.0]));
+    let at: Vec<_> = m
+        .tick(16.0, AT_ORIGIN, 0, &mix)
+        .iter()
+        .map(|s| s.at)
+        .collect();
+    assert_eq!(at, [Some([0.0, 0.0, 12.0])]);
 }
 
 /// The reference's own bug, refused rather than reproduced: placement effects
@@ -552,6 +654,9 @@ fn a_remote_step_is_the_same_boot_on_the_same_ground() {
         (Cue::StepLitter, Cue::RemoteStepLitter),
         (Cue::StepRock, Cue::RemoteStepRock),
         (Cue::StepWater, Cue::RemoteStepWater),
+        (Cue::StepWood, Cue::RemoteStepWood),
+        (Cue::StepConcrete, Cue::RemoteStepConcrete),
+        (Cue::StepMetal, Cue::RemoteStepMetal),
     ];
     for (local, far) in pairs {
         assert_eq!(remote(local), far, "{local:?} maps to the wrong twin");
@@ -656,16 +761,8 @@ fn a_remote_swing_is_heard_at_the_body_and_culled_by_distance() {
     assert_eq!(m.starved, 0, "a culled swing was counted as starvation");
 }
 
-/// **The cooldown is what one raider costs the rest of his crew**, and that
-/// is the whole reason the remote row does not inherit the local 120 ms.
-///
-/// ⚠ **A first draft of this test asserted two swingers in one frame are two
-/// voices, and that is false** — `a_cooldown_binds_within_one_frame` above
-/// proves the clock binds inside a frame, so a per-CUE cooldown is a hard
-/// rate limit over every swinger in earshot at once, not a per-emitter one.
-/// So the property that actually distinguishes 40 from 120 is the RATE: at
-/// 40 ms a second raider swinging three frames later is heard, and at the
-/// local swing rate he is not.
+/// A second raider swinging three frames after the first is heard, and the
+/// local row's 120 ms is the number the remote row exists to not inherit.
 #[test]
 fn a_second_swinger_is_not_locked_out_by_the_first() {
     let mix = Mix::default();
@@ -1356,6 +1453,7 @@ fn the_submerged_snapshot_ducks_without_muting() {
         game: 0.8,
         ambience: 0.7,
         music: 0.2,
+        ..Mix::default()
     };
     let mut s = Snapshots::default();
     let def = s.tick(Snapshot::Above, 1.0);
