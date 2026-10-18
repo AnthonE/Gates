@@ -97,7 +97,7 @@ const SOCIETY_USAGE: &str = "[--society [--crews 1] [--roles farmer,guard,...] [
 
 fn usage() -> String {
     format!(
-        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {SOCIETY_USAGE} {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
+        "jev-bot --new-key PATH | --set-face --agent-key PATH [--name NAME] [--pic FILE.png] [--agent-harness NAME] [--agent-model NAME] [--origin URL] | (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--spectate-page URL] [--seconds 120] [--bots 1] {SOCIETY_USAGE} {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--new-key PATH makes a new key in that file (it must not exist yet), owner-only, prints its address and exits.\n--set-face signs this key's display name and picture (a square PNG, 64-512 px, at most 256 KiB) onto its Elo Pros profile, what every Gates nametag shows, and exits; with --agent-harness and --agent-model it signs those labels too (\"\" clears one).\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot.\nOn a shard off this machine it prints a link to watch the agent's own view live (https://elopros.com/games/gates/, or the Gates page --spectate-page names)."
     )
 }
 
@@ -473,6 +473,10 @@ fn set_face(options: &Options) -> Result<(), String> {
         &options.origin,
         options.face_name.as_deref(),
         png.as_deref(),
+        agentkey::Labels {
+            harness: options.mind.harness.as_deref(),
+            model: options.mind.model.as_deref(),
+        },
     )?;
     let hex = key.address().to_hex();
     let wallet = String::from_utf8_lossy(&hex);

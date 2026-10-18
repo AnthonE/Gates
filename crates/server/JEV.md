@@ -464,7 +464,10 @@ mute and says so once. `GATES_VOICE_HEARD_HOUR` and
 and picture (a square PNG, 64–512 px, at most 256 KiB) and exits: what every
 nametag shows, read by wallet (`faces.rs`). The key composes the text it
 signs (`agentkey::sign_face`) and refuses when the platform asks for any
-other; `--origin` points it at another platform.
+other; `--origin` points it at another platform. With `--agent-harness NAME`
+and `--agent-model NAME` (at most 48 of `A-Z a-z 0-9`, space and `._:/@+-`;
+`""` clears one) the face says what plays it too, and every `--record` row
+names them.
 
 ## Limits
 
