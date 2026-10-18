@@ -986,6 +986,9 @@ pub struct Survivor {
     /// Where the line above goes (`Say`): a team line with no team to hear
     /// it goes to whoever is near.
     say_to: protocol::Channel,
+    /// A line its voice could not say, in chat-sized pieces, typed to whoever
+    /// is near once `say_line` is clear.
+    voice_typed: std::collections::VecDeque<protocol::ChatText>,
     /// Its team has someone besides itself to hear the team channel.
     has_mates: bool,
     /// The stranger going for a teammate, nearest them (`perceive`).
@@ -1149,6 +1152,7 @@ impl Survivor {
             outbox: None,
             say_line: None,
             say_to: protocol::Channel::Local,
+            voice_typed: std::collections::VecDeque::new(),
             has_mates: false,
             guard: None,
             wedge: Wedge::default(),
@@ -7002,6 +7006,7 @@ impl BotDriver for Survivor {
         self.pace = Pace::default();
         self.outbox = None;
         self.say_line = None;
+        self.voice_typed.clear();
         self.say_at = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
@@ -7082,6 +7087,15 @@ impl BotDriver for Survivor {
                 });
             }
         });
+        if let Some(text) = v.take_unsaid() {
+            // The newest line it could not say replaces any still being typed.
+            self.voice_typed.clear();
+            self.voice_typed.extend(
+                crate::agent_voice::pieces(&text)
+                    .into_iter()
+                    .map(|(t, _)| t),
+            );
+        }
         v.due(now, out)
     }
 
@@ -7090,12 +7104,18 @@ impl BotDriver for Survivor {
         if tick < self.say_at {
             return None;
         }
-        let line = self.say_line.take()?;
         // A body speaks where it asked to: to everyone, to the bodies near
-        // it, or to its team when it has one.
-        let channel = match self.say_to {
-            protocol::Channel::Team if !self.has_mates => protocol::Channel::Local,
-            to => to,
+        // it, or to its team when it has one. What its voice could not say
+        // goes to the bodies near it, who would have heard it.
+        let (line, channel) = match self.say_line.take() {
+            Some(line) => (
+                line,
+                match self.say_to {
+                    protocol::Channel::Team if !self.has_mates => protocol::Channel::Local,
+                    to => to,
+                },
+            ),
+            None => (self.voice_typed.pop_front()?, protocol::Channel::Local),
         };
         match protocol::encode_chat(line.as_bytes(), channel, out) {
             Ok(len) => {

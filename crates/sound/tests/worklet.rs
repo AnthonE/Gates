@@ -26,6 +26,7 @@
 //! | `bytes.chunks_exact` → `bytes.chunks` (a trailing partial decoded) | `push_bytes_refuses_a_malformed_record_and_counts_it`, as a **panic** rather than an assertion: `copy_from_slice: source slice length (3) does not match destination slice length (16)`. Recorded as a panic on purpose — on the audio thread that is the processor gone for the session, which is why the decoder counts a short tail instead of reaching it |
 
 use sound::engine::{rate, Cmd, Renderer, Stats, BLOCK, CMD_BYTES, CMD_RING_CAP};
+use sound::limit::Limiter;
 use sound::worklet::{encode, Report, Worklet, REPORT_BYTES};
 use sound::{synth, Cue, CUE_COUNT};
 
@@ -72,7 +73,8 @@ fn script(out_rate: u32) -> Vec<(usize, Cmd)> {
 /// **The claim: a browser hears what a desktop hears.**
 ///
 /// The native side is a `Renderer` fed by `push`, which is what
-/// `audio_out.rs`'s ring does on the other side of `In::drain_into`. The
+/// `audio_out.rs`'s ring does on the other side of `In::drain_into`, then the
+/// same `Limiter` `audio_out.rs` puts last. The
 /// browser side is a `Worklet` fed the same commands as the bytes a
 /// `postMessage` carries. Compared on `to_bits` at both rates that matter:
 /// the bank's own 44.1 kHz, and the 48 kHz most devices actually run — where
@@ -82,6 +84,7 @@ fn script(out_rate: u32) -> Vec<(usize, Cmd)> {
 fn the_seam_renders_what_the_native_path_renders() {
     for out_rate in [44_100, 48_000] {
         let mut native = Renderer::new(out_rate);
+        let mut limit = Limiter::new(out_rate);
         let mut web = Worklet::new(out_rate);
         for cue in USED {
             let pcm = synth::pcm(cue);
@@ -110,6 +113,7 @@ fn the_seam_renders_what_the_native_path_renders() {
             assert_eq!(web.push_bytes(&bytes[..n]), due.len(), "and decoded");
 
             native.render(&mut lr);
+            limit.run(&mut lr);
             web.render();
             let planar = web.planar();
             for i in 0..BLOCK {

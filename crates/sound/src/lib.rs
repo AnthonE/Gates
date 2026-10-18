@@ -23,8 +23,8 @@
 //! - **Buses before effects.** The reference moved to Unity 5's audio mixer —
 //!   groups you can balance and snapshots you can fade between — before it had
 //!   occlusion or reverb. [`Bus`] is that, at the size ours can be honest
-//!   about: three groups, mirroring `audio.game`, `audio.ambience` and
-//!   `audio.musicvolume`.
+//!   about: groups mirroring `audio.game`, `audio.ambience` and
+//!   `audio.musicvolume`, plus footsteps and the interface.
 //! - **Music is a gap system, not a soundtrack.** Four to eight minutes of
 //!   silence between songs, the intensity read so a song never opens in the
 //!   middle of a fight. [`music`] is that director; the songs are whole
@@ -58,6 +58,9 @@ pub mod geiger;
 // silent for all three with every gate green.
 pub mod hit;
 pub mod hurt;
+// The last stage before the device, after the score and the voices are summed
+// in: a peak limiter, so a voice over a gunshot cannot clip.
+pub mod limit;
 pub mod mixer;
 // When a song plays and which piece it is. `reference/AUDIO.md` §8 is the
 // design; this is the whole of it.
@@ -99,8 +102,8 @@ pub const SAMPLE_RATE: u32 = 44_100;
 /// `music::Director` landed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bus {
-    /// Everything the player or the world did: steps, swings, impacts, the
-    /// interface. The reference's `audio.game`.
+    /// Everything the player or the world did: swings, impacts, shots,
+    /// animals. The reference's `audio.game`.
     Game,
     /// The beds and the layers over them. The reference's `audio.ambience`.
     Ambience,
@@ -108,6 +111,13 @@ pub enum Bus {
     /// **0.2** — music is the one bus that does not open at full, there and
     /// here (see [`Mix::default`]).
     Music,
+    /// Footsteps, landings and pushing through plants: yours and everyone
+    /// else's. Split off the game bus so a player can turn their own boots
+    /// down without turning the guns down with them.
+    Steps,
+    /// The menus and the inventory answering the hand: clicks, hovers, slots,
+    /// the map, the craft chimes.
+    Interface,
 }
 
 /// Every sound this client can make, as an integer code.
@@ -440,11 +450,25 @@ pub enum Cue {
     /// smashy crunchy sound when you get head shot"*). Yours, so not
     /// positional. Appended, the enum's append-order rule.
     Headshot,
+    /// A step on a built floor of twig or wood. The step family's grounds
+    /// that are not the island's: `render/audio.rs` picks one when the body
+    /// stands on a piece (`sim_core::collide::floor_under`), so a player
+    /// upstairs sounds like one. Appended, the enum's append-order rule, like
+    /// the five after it.
+    StepWood,
+    /// A step on a stone floor.
+    StepConcrete,
+    /// A step on a sheet-metal floor.
+    StepMetal,
+    /// The three floors heard at another body, as [`Cue::RemoteStepSand`].
+    RemoteStepWood,
+    RemoteStepConcrete,
+    RemoteStepMetal,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 103;
+pub const CUE_COUNT: usize = 109;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -556,6 +580,12 @@ impl Cue {
         Cue::MapPin,
         Cue::Geiger,
         Cue::Headshot,
+        Cue::StepWood,
+        Cue::StepConcrete,
+        Cue::StepMetal,
+        Cue::RemoteStepWood,
+        Cue::RemoteStepConcrete,
+        Cue::RemoteStepMetal,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -639,7 +669,13 @@ impl Cue {
             | Cue::RemoteStepGrass
             | Cue::RemoteStepLitter
             | Cue::RemoteStepRock
-            | Cue::RemoteStepWater => 0.10,
+            | Cue::RemoteStepWater
+            | Cue::StepWood
+            | Cue::StepConcrete
+            | Cue::StepMetal
+            | Cue::RemoteStepWood
+            | Cue::RemoteStepConcrete
+            | Cue::RemoteStepMetal => 0.10,
             Cue::Swing
             | Cue::RemoteSwing
             | Cue::ImpactWood
@@ -828,6 +864,8 @@ const fn row(
 
 use Bus::Ambience as AMB;
 use Bus::Game as GAME;
+use Bus::Interface as UI;
+use Bus::Steps as STEPS;
 
 /// The cue table. Indexed by [`Cue::idx`] — order must match [`Cue::ALL`].
 ///
@@ -851,8 +889,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 48.0, 0.70,  40, 4, true),   // metal
     // Gather / craft / refusal are the interface answering you.
     row(GAME,  0.0, 0.50,  60, 4, false),  // gather
-    row(GAME,  0.0, 0.55,  80, 5, false),  // craft done
-    row(GAME,  0.0, 0.45, 250, 5, false),  // refused
+    row(UI,    0.0, 0.55,  80, 5, false),  // craft done
+    row(UI,    0.0, 0.45, 250, 5, false),  // refused
     // Combat. `Hurt` and `Death` outrank everything: a player who cannot hear
     // that they are being killed has lost the round to the mixer.
     //
@@ -879,7 +917,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A tree coming down is the loudest thing in the forest — and it set
     // `MAX_AUDIBLE_M` until the gun's report outranged it at v54.
     row(GAME, 96.0, 0.90,   0, 6, true),   // tree fall
-    row(GAME,  0.0, 0.45,  40, 2, false),  // ui click
+    row(UI,    0.0, 0.45,  40, 2, false),  // ui click
     // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
     // holds one looping voice each and moves their gains.
     row(AMB,   0.0, 0.30,   0, 0, false),  // wind
@@ -1023,7 +1061,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.60,  60, 4, true),   // door close
     // Your own mouth and feet, like the eat and the step.
     row(GAME,  0.0, 0.45, 300, 3, false),  // drink
-    row(GAME,  0.0, 0.72, 200, 3, false),  // land
+    row(STEPS, 0.0, 0.72, 200, 3, false),  // land
     // A fire is scenery: the ambience bus, a short reach, the lowest rank.
     row(AMB,  14.0, 0.62,  80, 1, true),   // fire crackle
     // A fuse is a bomb about to go off: carried far enough to run from,
@@ -1032,7 +1070,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A round past your head is the shot that was meant for you.
     row(GAME, 30.0, 0.95,  60, 6, true),   // bullet flyby
     // The interface answering you, like the craft chime.
-    row(GAME,  0.0, 0.85, 200, 4, false),  // learn
+    row(UI,    0.0, 0.85, 200, 4, false),  // learn
     row(GAME, 16.0, 0.55, 150, 4, true),   // unlock
     row(GAME, 60.0, 0.80,  80, 5, true),   // collapse, wood
     // The night's crickets: scenery like the town's bed, its level the
@@ -1041,7 +1079,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Your own hands at the interface's level: the gather's register, and a
     // cooldown so a scroll through the hotbar is not a drum roll.
     row(GAME,  0.0, 0.50, 120, 3, false),  // equip
-    row(GAME,  0.0, 0.45, 150, 3, false),  // map paper
+    row(UI,    0.0, 0.45, 150, 3, false),  // map paper
     row(GAME,  0.0, 0.55, 200, 3, false),  // container open
     // Other bodies' hands, at the body. Each takes its own cue's gain and a
     // reach of its own; a reload carries furthest and ranks with a remote
@@ -1054,7 +1092,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 12.0, 0.45, 100, 3, true),   // drink, somebody else's
     row(GAME, 20.0, 0.55,  60, 3, true),   // container open, somebody else's
     row(GAME, 16.0, 0.50,  40, 3, true),   // equip, somebody else's
-    row(GAME, 24.0, 0.72,  40, 3, true),   // land, somebody else's
+    row(STEPS, 24.0, 0.72,  40, 3, true),  // land, somebody else's
     row(GAME, 30.0, 0.65,  60, 4, true),   // splash, somebody else's
     // A bow coming back is the shot a moment before it: ranked with the
     // reload, carried a little less far than the loose itself.
@@ -1062,8 +1100,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Pushing through a plant: a footstep's register, and the remote one a
     // footstep's reach — the leaves give a body away about as far as its
     // boots do, and from inside cover where its boots are all you have.
-    row(GAME,  0.0, 0.42,  90, 1, false),  // brush
-    row(GAME, 24.0, 0.42,  40, 2, true),   // brush, somebody else's
+    row(STEPS, 0.0, 0.42,  90, 1, false),  // brush
+    row(STEPS, 24.0, 0.42,  40, 2, true),  // brush, somebody else's
     // A torch going out in your hand: once, and it must be heard.
     row(GAME,  0.0, 0.55, 500, 3, false),  // torch out
     // The stag: the pig's register (ambience, not signal), carrying further
@@ -1096,13 +1134,13 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The interface's small sounds, under the click: a hover is the quietest
     // thing in the bank and its cooldown is what keeps a sweep across a row
     // of buttons from becoming a rattle.
-    row(GAME,  0.0, 0.18,  45, 1, false),  // ui hover
-    row(GAME,  0.0, 0.50, 150, 3, false),  // inventory open
-    row(GAME,  0.0, 0.42, 150, 3, false),  // inventory close
-    row(GAME,  0.0, 0.48,  60, 3, false),  // item moved
-    row(GAME,  0.0, 0.52, 120, 3, false),  // item dropped
-    row(GAME,  0.0, 0.50, 120, 3, false),  // craft started
-    row(GAME,  0.0, 0.45,  80, 2, false),  // map pin
+    row(UI,    0.0, 0.18,  45, 1, false),  // ui hover
+    row(UI,    0.0, 0.50, 150, 3, false),  // inventory open
+    row(UI,    0.0, 0.42, 150, 3, false),  // inventory close
+    row(UI,    0.0, 0.48,  60, 3, false),  // item moved
+    row(UI,    0.0, 0.52, 120, 3, false),  // item dropped
+    row(UI,    0.0, 0.50, 120, 3, false),  // craft started
+    row(UI,    0.0, 0.45,  80, 2, false),  // map pin
     // The counter: a hazard reading, so the game bus (turning the scenery
     // down must not mute it); a cooldown under a frame, so clicks on
     // consecutive frames both land; ducked under a near shot.
@@ -1110,6 +1148,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A headshot taken: as loud and as high as being killed, because it is
     // usually the first half of it.
     row(GAME,  0.0, 0.95, 150, 8, false),  // headshot
+    // The built floors: the step family's numbers, yours then theirs.
+    STEP, STEP, STEP,
+    RSTEP, RSTEP, RSTEP,
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1138,12 +1179,9 @@ const SWING: CueDef = row(GAME, 20.0, 0.45, 120, 3, false);
 ///   pressed. That puts it level with the impacts, which is the register it
 ///   belongs in; ties break on distance, so the nearer swing wins.
 /// - **a 40 ms cooldown** rather than the local 120 ms — [`RSTEP`]'s value,
-///   taken for [`RSTEP`]'s reason. The cooldown is per-CUE and therefore
-///   shared across every swinger in earshot, and ⚠ **it binds inside a
-///   frame** (`tests/sound.rs::a_cooldown_binds_within_one_frame`), so it is
-///   a hard rate limit over the whole crew rather than a stagger on one arm.
-///   At 40 ms a second raider swinging three frames later is heard; at the
-///   local swing rate he waits an eighth of a second.
+///   taken for [`RSTEP`]'s reason. The cooldown is per SOURCE for a
+///   positional cue (`mixer::SAME_SOURCE_M`), so two raiders swinging at once
+///   are two swings; the 40 ms is one arm's floor.
 const RSWING: CueDef = CueDef {
     bus: Bus::Game,
     radius_m: SWING.radius_m,
@@ -1153,16 +1191,17 @@ const RSWING: CueDef = CueDef {
     positional: true,
 };
 
-/// The five footsteps share every number but their timbre — see [`CUES`].
+/// The footsteps share every number but their timbre — see [`CUES`].
 ///
-/// **40 m, not the 24 it opened at**: the reference's client spawns another
-/// player's footstep out to 75 m from the camera (`BaseFootstepEffect`, its
-/// hard cull), so a step is a sound you hear coming, not one that arrives
-/// with the swing. Under `(1 - d/R)²` a step at 20 m is a quarter of one at
-/// your feet; crouching halves it again (`render/audio.rs`).
+/// **75 m, the reference's own number** (it opened at 24, then 40): its
+/// client spawns another player's footstep out to 75 m from the camera
+/// (`BaseFootstepEffect`, its hard cull), so a step is a sound you hear
+/// coming, not one that arrives with the swing. Under `(1 - d/R)²` a step at
+/// 20 m is half of one at your feet and at 40 m a fifth; crouching halves it
+/// again (`render/audio.rs`).
 const STEP: CueDef = CueDef {
-    bus: Bus::Game,
-    radius_m: 40.0,
+    bus: Bus::Steps,
+    radius_m: 75.0,
     gain: 0.35,
     cooldown_ms: 90,
     priority: 1,
@@ -1170,18 +1209,18 @@ const STEP: CueDef = CueDef {
 };
 
 /// The remote five (`DECISIONS.md` §open, "remote footsteps v0"). Radius and
-/// gain are read off [`STEP`] rather than restated — the 24 m the local row
+/// gain are read off [`STEP`] rather than restated — the radius the local row
 /// always carried was written for exactly this positional half, and tying
 /// them means the two families cannot drift apart on how far a boot carries.
 /// What differs is deliberate: **positional** (the whole point — the cue is
 /// at the body, panned and culled by the one falloff law); **priority 2**,
 /// above your own feet, because another player's step is the sound that
 /// decides fights and yours tells you nothing; and a **40 ms cooldown** (the
-/// impacts' register, not the local 90 ms) since the cooldown is per-CUE and
-/// therefore shared across every remote on that surface — a stride-length
-/// cooldown would let your own pool mask a second attacker entirely.
+/// impacts' register, not the local 90 ms). The cooldown is per source
+/// (`mixer::SAME_SOURCE_M`), so a squad on one surface is every one of its
+/// steps, not one.
 const RSTEP: CueDef = CueDef {
-    bus: Bus::Game,
+    bus: Bus::Steps,
     radius_m: STEP.radius_m,
     gain: STEP.gain,
     cooldown_ms: 40,
@@ -1212,6 +1251,20 @@ pub const MAX_AUDIBLE_M: f32 = 1500.0;
 /// the 25th simultaneous sound, which nobody can pick out of the other 24.
 pub const VOICE_CAP: usize = 24;
 
+/// Voices past [`VOICE_CAP`] that only a cue of [`RESERVE_PRIORITY`] or
+/// more may take: in a raid the pool fills with long tails (blasts,
+/// collapses, far shots), and the reload or the hit beside you is the sound
+/// that must still get in.
+pub const VOICE_RESERVE: usize = 8;
+
+/// The priority a cue needs to use [`VOICE_RESERVE`]: the impacts, a remote
+/// swing or reload, the hitmarkers, being hurt, the shots.
+pub const RESERVE_PRIORITY: u8 = 4;
+
+/// How many voices of one cue may sound at once, so one sound repeated (a
+/// raid's charges, a fusillade's far reports) cannot take the whole pool.
+pub const MAX_SAME_CUE: u8 = 6;
+
 /// How many voices may START in one frame.
 ///
 /// This is the reference's `audio.framebudget` in the only unit a pure module
@@ -1229,13 +1282,15 @@ pub const STARTS_PER_FRAME: usize = 4;
 pub const CUE_QUEUE_CAP: usize = 32;
 
 /// The bus and master volumes. The reference's `audio.master`, `audio.game`
-/// and `audio.ambience`, one for one.
+/// and `audio.ambience`, one for one, plus footsteps and the interface.
 #[derive(Clone, Copy, Debug)]
 pub struct Mix {
     pub master: f32,
     pub game: f32,
     pub ambience: f32,
     pub music: f32,
+    pub steps: f32,
+    pub interface: f32,
 }
 
 impl Default for Mix {
@@ -1253,6 +1308,8 @@ impl Default for Mix {
             game: 1.0,
             ambience: 1.0,
             music: MUSIC_DEFAULT,
+            steps: 1.0,
+            interface: 1.0,
         }
     }
 }
@@ -1269,6 +1326,8 @@ impl Mix {
             Bus::Game => self.game,
             Bus::Ambience => self.ambience,
             Bus::Music => self.music,
+            Bus::Steps => self.steps,
+            Bus::Interface => self.interface,
         };
         (self.master * g).clamp(0.0, 1.0)
     }
@@ -1281,6 +1340,10 @@ impl Mix {
             game: self.game * snap.game,
             ambience: self.ambience * snap.ambience,
             music: self.music * snap.music,
+            // Both were game-bus cues before they had sliders, and go under
+            // with it.
+            steps: self.steps * snap.game,
+            interface: self.interface * snap.game,
         }
     }
 }

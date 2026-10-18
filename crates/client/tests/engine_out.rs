@@ -41,6 +41,7 @@ use cpal::{FromSample, SizedSample};
 
 use client::render::audio_out::{pair, Feed, Native};
 use client::sound::engine::{rate, Cmd, Renderer, BLOCK, CMD_RING_CAP_NATIVE, HELD};
+use client::sound::limit::Limiter;
 use client::sound::{synth, Cue, CUE_COUNT, SAMPLE_RATE};
 
 /// The cues a script here plays: two beds and four
@@ -103,11 +104,13 @@ fn script(x: &mut u32, k: usize, out_rate: u32, out: &mut Vec<Cmd>) {
     }
 }
 
-/// The reference: a bare renderer and the interleaved stereo stream it has
-/// rendered that the seam has not yet handed out — the carry, modelled by
-/// arithmetic rather than by the seam's own bookkeeping.
+/// The reference: a bare renderer through the limiter the seam puts last,
+/// and the interleaved stereo stream it has rendered that the seam has not
+/// yet handed out — the carry, modelled by arithmetic rather than by the
+/// seam's own bookkeeping.
 struct Mirror {
     r: Renderer,
+    limit: Limiter,
     expect: VecDeque<f32>,
 }
 
@@ -115,6 +118,7 @@ impl Mirror {
     fn new(out_rate: u32) -> Self {
         Self {
             r: Renderer::new(out_rate),
+            limit: Limiter::new(out_rate),
             expect: VecDeque::new(),
         }
     }
@@ -132,6 +136,7 @@ impl Mirror {
         let mut blk = [0.0f32; 2 * BLOCK];
         for _ in 0..need {
             self.r.render(&mut blk);
+            self.limit.run(&mut blk);
             self.expect.extend(blk.iter().copied());
         }
         self.expect.drain(..2 * frames).collect()

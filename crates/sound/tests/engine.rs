@@ -304,7 +304,7 @@ fn every_sample_is_rebuilt_from_published_parts() {
 
 /// (2) Every queue and pool has its cap, its policy and its counter.
 #[test]
-fn the_pool_refuses_the_forty_first_voice_and_never_steals() {
+fn the_pool_refuses_a_voice_past_its_slots_and_never_steals() {
     let mut r = loaded(44_100);
     for _ in 0..VOICE_SLOTS + 1 {
         r.push(start(Cue::BedWind, 0.1, 0.1, 1.0));
@@ -314,11 +314,11 @@ fn the_pool_refuses_the_forty_first_voice_and_never_steals() {
     assert_eq!(
         r.live(),
         VOICE_SLOTS,
-        "forty-one simultaneous starts should leave exactly the pool's forty live"
+        "one start past the pool should leave exactly the pool's slots live"
     );
     assert_eq!(
         r.refused, 1,
-        "the forty-first start must be refused and counted, not stolen from an older voice"
+        "the start past the pool must be refused and counted, not stolen from an older voice"
     );
     // The first voice is still the first voice: nothing was stolen.
     r.push(Cmd::CutVoices);
@@ -1380,7 +1380,7 @@ fn the_live_ledger_matches_the_renderer_frame_for_frame() {
 }
 
 #[test]
-fn the_ledger_refuses_a_forty_first_voice_like_the_pool() {
+fn the_ledger_refuses_a_voice_past_the_pool_like_the_pool() {
     let mut l = Live::new();
     for _ in 0..VOICE_SLOTS {
         assert!(l.start(1.0, 1.0));

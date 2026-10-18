@@ -137,6 +137,10 @@ pub struct Settings {
     /// The reference's `audio.musicvolume`, which is the one bus that does
     /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
     pub vol_music: f32,
+    /// Footsteps, landings and brush — yours and everyone else's.
+    pub vol_steps: f32,
+    /// The menus' and the inventory's clicks and chimes.
+    pub vol_interface: f32,
     /// Players' voices (proximity voice chat, `render/voice.rs`), 0..1.
     pub vol_voice: f32,
     /// Proximity voice at all. Off releases the microphone and plays nobody.
@@ -254,6 +258,8 @@ impl Default for Settings {
             // master and game ship at 1. A score at parity with footsteps
             // is a score players turn off.
             vol_music: crate::sound::MUSIC_DEFAULT,
+            vol_steps: 1.0,
+            vol_interface: 1.0,
             vol_voice: 1.0,
             voice_chat: true,
             vol_mic: 1.0,
@@ -305,6 +311,8 @@ pub enum Knob {
     VolGame,
     VolAmbience,
     VolMusic,
+    VolSteps,
+    VolInterface,
     VolVoice,
     VoiceChat,
     VolMic,
@@ -437,6 +445,8 @@ impl Settings {
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
             Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
+            Knob::VolSteps => self.vol_steps = step_vol(self.vol_steps, delta),
+            Knob::VolInterface => self.vol_interface = step_vol(self.vol_interface, delta),
             Knob::VolVoice => self.vol_voice = step_vol(self.vol_voice, delta),
             Knob::Shake => self.shake = step_vol(self.shake, delta),
             Knob::VoiceChat => self.voice_chat = !self.voice_chat,
@@ -538,6 +548,8 @@ impl Settings {
                 Knob::VolGame => self.vol_game = d.vol_game,
                 Knob::VolAmbience => self.vol_ambience = d.vol_ambience,
                 Knob::VolMusic => self.vol_music = d.vol_music,
+                Knob::VolSteps => self.vol_steps = d.vol_steps,
+                Knob::VolInterface => self.vol_interface = d.vol_interface,
                 Knob::Shake => self.shake = d.shake,
                 Knob::VolVoice => self.vol_voice = d.vol_voice,
                 Knob::VoiceChat => self.voice_chat = d.voice_chat,
@@ -602,6 +614,8 @@ impl Settings {
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
             Knob::VolMusic => pct(self.vol_music),
+            Knob::VolSteps => pct(self.vol_steps),
+            Knob::VolInterface => pct(self.vol_interface),
             Knob::VolVoice => pct(self.vol_voice),
             Knob::Shake => pct(self.shake),
             Knob::VoiceChat => on_off(self.voice_chat),
@@ -641,6 +655,8 @@ impl Settings {
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
+            vol_steps: self.vol_steps,
+            vol_interface: self.vol_interface,
             vol_voice: self.vol_voice,
             voice_chat: self.voice_chat,
             vol_mic: self.vol_mic,
@@ -712,6 +728,8 @@ impl Settings {
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            vol_steps: step(p.vol_steps, VOL_STEP).clamp(0.0, 1.0),
+            vol_interface: step(p.vol_interface, VOL_STEP).clamp(0.0, 1.0),
             vol_voice: step(p.vol_voice, VOL_STEP).clamp(0.0, 1.0),
             voice_chat: p.voice_chat,
             vol_mic: step(p.vol_mic, VOL_STEP).clamp(0.0, MIC_GAIN_MAX),
@@ -1147,9 +1165,15 @@ fn rows(cat: usize) -> Vec<Row> {
         "AUDIO" => {
             let mut out = vec![
                 Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
-                Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
+                Row::Number("GAME VOLUME", Knob::VolGame, "tools, hits, guns, animals"),
+                Row::Number("FOOTSTEPS VOLUME", Knob::VolSteps, "steps, landings, brush"),
+                Row::Number(
+                    "INTERFACE VOLUME",
+                    Knob::VolInterface,
+                    "menus, inventory, map",
+                ),
                 Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
-                Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
+                Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score, menus too"),
                 // **There is only ONE music slider** where the reference
                 // has two - it ships `audio.musicvolume` and
                 // `audio.menumusicvolume` separately, and ours is one number for

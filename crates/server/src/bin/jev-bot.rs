@@ -1081,8 +1081,8 @@ fn print_report(label: &str, survivor: &Survivor) {
     if let Some(v) = survivor.voice.as_ref() {
         let v = v.stats;
         out!(
-            "{label}voice: heard {} frames, {} utterances, {} transcribed ({} over the cap); spoke {} lines in {} frames ({} over the cap); {} service failures",
-            v.frames_heard, v.utterances, v.transcribed, v.heard_dropped, v.lines_spoken, v.frames_sent, v.said_dropped, v.failures
+            "{label}voice: heard {} frames, {} utterances, {} transcribed ({} over the cap); spoke {} lines in {} frames ({} dropped, {} typed instead); {} service failures",
+            v.frames_heard, v.utterances, v.transcribed, v.heard_dropped, v.lines_spoken, v.frames_sent, v.said_dropped, v.said_typed, v.failures
         );
     }
     if let Some(core) = survivor.core() {

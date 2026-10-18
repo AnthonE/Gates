@@ -61,6 +61,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 
 use crate::sound::engine::{self, Cmd, In, Renderer, Stats, BLOCK};
+use crate::sound::limit::Limiter;
 use crate::sound::talk::{Talk, TalkMsg};
 use crate::sound::{Cue, SAMPLE_RATE};
 
@@ -91,6 +92,8 @@ pub struct Feed {
     /// gains arrive on from the game thread.
     talk: Box<Talk>,
     talk_rx: rtrb::Consumer<TalkMsg>,
+    /// Over everything summed, last (`sound::limit`).
+    limit: Limiter,
 }
 
 impl Feed {
@@ -123,6 +126,7 @@ impl Feed {
                 self.renderer.render(&mut self.buf);
                 self.music.mix(&mut self.buf);
                 self.talk.mix(&mut self.buf);
+                self.limit.run(&mut self.buf);
                 self.at = 0;
             }
             let (l, r) = (self.buf[self.at], self.buf[self.at + 1]);
@@ -290,6 +294,7 @@ pub fn pair(out_rate: u32) -> (Native, Feed) {
             music: tap,
             talk: Box::new(Talk::new(out_rate)),
             talk_rx,
+            limit: Limiter::new(out_rate),
         },
     )
 }
