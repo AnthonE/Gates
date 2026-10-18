@@ -45,6 +45,20 @@ pub const ARM_UP: [(&str, u32, Option<&str>); 4] = [
     ("Bandage", 3, None),
 ];
 
+/// What makes an [`ARM_UP`] entry needless: a better one of its kind,
+/// carried. A wooden spear beside a metal one is junk.
+const OUTCLASSED_BY: [(&str, &[&str]); 2] = [
+    ("Wooden Spear", &["Metal Spear"]),
+    ("Hunting Bow", &["Crossbow", "Revolver"]),
+];
+
+/// Is `item` needless beside what `held` says is carried?
+pub fn outclassed(item: &str, held: impl Fn(&str) -> bool) -> bool {
+    OUTCLASSED_BY
+        .iter()
+        .any(|&(i, better)| i == item && better.iter().any(|b| held(b)))
+}
+
 /// A belt role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -135,6 +149,24 @@ impl Loadout {
     /// The best working item for a role anywhere on the body.
     pub fn best(&self, core: &ClientCore, role: Role) -> Option<(usize, u16)> {
         best_in(self, core, role, 0..INV_SLOTS).map(|(slot, item, _)| (slot, item))
+    }
+
+    /// The least of a role anywhere in the pack — the bandage before the
+    /// medkit — and whether it is also the best there is.
+    pub fn least(&self, core: &ClientCore, role: Role) -> Option<(usize, u16, bool)> {
+        let mut least: Option<(usize, u16, usize)> = None;
+        for slot in 0..INV_SLOTS {
+            let s = core.inv[slot];
+            if !usable(core, &s) {
+                continue;
+            }
+            if let Some(rank) = self.rank(role, s.item) {
+                if least.is_none_or(|(_, _, r)| rank > r) {
+                    least = Some((slot, s.item, rank));
+                }
+            }
+        }
+        least.map(|(slot, item, rank)| (slot, item, rank == 0))
     }
 
     /// Is this belt slot worth keeping there, were `extra` on the belt too:

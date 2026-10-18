@@ -104,6 +104,7 @@ pub fn build_screen(
     icons: &Icons,
     sel: u8,
     portrait: Option<&crate::render::portrait::Portrait>,
+    hearth: Option<(u16, u16, u8)>,
 ) {
     super::page_root(commands, ui, |zone| {
         // **The body is drawn unconditionally** (`NOW.md` §0eq item 4). It
@@ -128,7 +129,11 @@ pub fn build_screen(
         .with_children(|row| {
             wear_panel(row, core, icons, portrait);
             own_grid(row, core, icons, sel as usize);
-            if open_table(core).is_some() {
+            if let Some(at) = hearth {
+                // A hearth is not a container; its column is the upkeep
+                // (Rust's tool cupboard, `panels::hearth`).
+                super::hearth::column(row, core, icons, at);
+            } else if open_table(core).is_some() {
                 table_grid(row, ui, core, icons);
             } else if let Some((arch, l)) = open_fire(core) {
                 fire_grid(row, core, icons, arch, l);
@@ -140,7 +145,9 @@ pub fn build_screen(
         });
 
         zone.spawn((
-            Text::new(if open_fire(core).is_some() {
+            Text::new(if hearth.is_some() {
+                crate::ui::hearth::HINT
+            } else if open_fire(core).is_some() {
                 // Rust's camp fire: each band takes its own, and the
                 // switch is on the panel (`C` is the key from outside it;
                 // with a panel up the verbs never see it).
@@ -1549,6 +1556,10 @@ pub fn drag_pointer(
     // `Option` for `icons`' reason — a capture run registers no verbs.
     bite: Option<ResMut<super::super::verbs::Bite>>,
     time: Res<Time>,
+    // The hearth the page is showing, and its column: a stack released
+    // over it feeds the hearth rather than dropping on the ground.
+    hearth: Option<Res<super::super::verbs::HearthView>>,
+    feed_zones: Query<(&ComputedNode, &UiGlobalTransform), With<super::hearth::HearthDrop>>,
 ) {
     if ui.panel != Panel::Inventory {
         if ui.drag.is_some() {
@@ -1691,14 +1702,19 @@ pub fn drag_pointer(
         commands.entity(e).despawn();
     }
 
+    let hearth_at = hearth.as_ref().and_then(|h| h.0);
     let Some(target) = over else {
+        let cursor = window.single().ok().and_then(|w| w.cursor_position());
+        // Onto the hearth's column: feed it (Rust's drag into the cupboard).
+        if let Some(at) = hearth_at.filter(|_| drag.kind == CONT_SELF) {
+            if cursor.is_some_and(|p| inside_any(&feed_zones, p)) {
+                feed_hearth(&mut ui, &net, at, drag.stack.item);
+                return;
+            }
+        }
         // Released clear of every cell: Rust's drop. Between two cells is
         // not clear, so a slipped release does not throw a stack away.
-        let clear = window
-            .single()
-            .ok()
-            .and_then(|w| w.cursor_position())
-            .is_some_and(|p| clear_of_cells(&rects, p));
+        let clear = cursor.is_some_and(|p| clear_of_cells(&rects, p));
         if drag.kind == CONT_SELF && clear {
             let held = cell_stack(core, drag.kind, drag.slot).count;
             drop_item(&mut ui, &net, drag.slot, drag.grab.units(held));
@@ -1719,6 +1735,15 @@ pub fn drag_pointer(
     // this arm sends what it is handed and decides nothing.
     let table = open_table(core).is_some();
     if target.kind == drag.kind && target.slot == drag.slot {
+        // A material right-clicked with the hearth open goes into it, the
+        // way a right-click moves a stack into an open box.
+        if let Some(at) = hearth_at.filter(|_| drag.grab == Grab::Half && drag.kind == CONT_SELF) {
+            let known = super::hearth::known_rows(core, at);
+            if known.is_some_and(|r| crate::ui::hearth::takes(r, drag.stack.item)) {
+                feed_hearth(&mut ui, &net, at, drag.stack.item);
+                return;
+            }
+        }
         if drag.grab == Grab::Half {
             // The plain container's plan is the whole stack, the first
             // move and every one after it (`quick_move_stack`); a fire's
@@ -1941,6 +1966,43 @@ pub fn hover_loot(
     }) {
         ui.say(why);
     }
+}
+
+/// Feed the open hearth with what was dragged onto it. A feed puts in up
+/// to 500 of every upkeep material, not just this stack, and says so; a
+/// stack the hearth does not take is refused here when the crew's stock
+/// ack names its materials.
+fn feed_hearth(ui: &mut Ui, net: &super::super::Net, at: (u16, u16, u8), item: u16) {
+    let core = &net.session.core;
+    if let Some(rows) = super::hearth::known_rows(core, at) {
+        if !crate::ui::hearth::takes(rows, item) {
+            let names: Vec<String> = rows
+                .iter()
+                .map(|&(i, _, _)| item_label(&core.catalog, i).to_lowercase())
+                .collect();
+            ui.say(format!("the hearth only takes {}", names.join(", ")));
+            return;
+        }
+    }
+    super::hearth::feed(
+        ui,
+        net,
+        at,
+        "fed the hearth up to 500 of each material you carry",
+    );
+}
+
+/// Whether `cursor` (logical px) is inside any of these nodes.
+fn inside_any<F: bevy::ecs::query::QueryFilter>(
+    rects: &Query<(&ComputedNode, &UiGlobalTransform), F>,
+    cursor: Vec2,
+) -> bool {
+    rects.iter().any(|(node, at)| {
+        let k = node.inverse_scale_factor();
+        let centre = at.translation * k;
+        let half = node.size() * k * 0.5;
+        (cursor - centre).abs().cmple(half).all()
+    })
 }
 
 /// How far outside the cells' bounding box a release must land to drop,

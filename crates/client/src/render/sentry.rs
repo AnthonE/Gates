@@ -105,10 +105,20 @@ pub struct SentryAssets {
 }
 
 /// The drawn turrets, by sentry index, and how long each lamp stays red.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Drawn {
     live: [Option<Entity>; GUNS],
     alarm: [f32; GUNS],
+}
+
+// By hand: an array past 32 has no derived `Default`.
+impl Default for Drawn {
+    fn default() -> Self {
+        Self {
+            live: [None; GUNS],
+            alarm: [0.0; GUNS],
+        }
+    }
 }
 
 /// Marks a turret's pedestal, the root the head hangs on.

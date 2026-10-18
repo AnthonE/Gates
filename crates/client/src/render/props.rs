@@ -339,6 +339,8 @@ pub struct Fellable {
 
 /// How far through its topple a trunk or a canopy is, seconds. Negative means
 /// "not falling" — the resting state both before a chop and after a respawn.
+/// Past [`FELL_FALL_S`] it lies, then sinks, and at [`FELL_GONE_S`] it is
+/// hidden (`fall`).
 ///
 /// **Its own component, and that is not tidiness — it is a bug that was
 /// written and caught before it shipped.** `fall_t` lived on [`Fellable`]
@@ -529,6 +531,12 @@ pub const OUTER_RADIUS: i32 = 4;
 pub struct PropRing {
     built: HashMap<(i32, i32), Chunk>,
     outer: HashMap<(i32, i32), Chunk>,
+    /// Near chunks the eye has walked away from, still standing until the
+    /// outer ring builds their key — the outward twin of the inward hand-off
+    /// in `stream`. Dropped at once, a chunk 128–192 m off had no ring trees
+    /// for the frames the near ring took to fill, and its trees popped to the
+    /// island cards and back on every chunk edge crossed.
+    leaving: HashMap<(i32, i32), Chunk>,
     /// The blight's moment the rings last withered against
     /// (`render::blight::Blight::now`).
     seen: Option<sim_core::blight::Now>,
@@ -604,7 +612,11 @@ impl PropRing {
     /// Every chunk either ring has trees standing in — what the far cards
     /// step aside for (`far_trees`).
     pub fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
-        self.built.keys().chain(self.outer.keys()).copied()
+        self.built
+            .keys()
+            .chain(self.outer.keys())
+            .chain(self.leaving.keys())
+            .copied()
     }
     /// Chunks in the tree-only outer ring. Read by gates, not by the bar.
     pub fn outer_len(&self) -> usize {
@@ -1704,7 +1716,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 27] = [
+pub const OCCUPANTS: [Occupant; 28] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1732,6 +1744,7 @@ pub const OCCUPANTS: [Occupant; 27] = [
     Occupant::MetalPile,
     Occupant::SulfurPile,
     Occupant::MushroomPatch,
+    Occupant::Cactus,
 ];
 
 /// The roadside junk's colours, row for row with the sim's box tables.
@@ -1759,7 +1772,8 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         | Occupant::Tree
         | Occupant::BerryBush
         | Occupant::Hemp
-        | Occupant::Shrub => return None,
+        | Occupant::Shrub
+        | Occupant::Cactus => return None,
         // One blob serves all three ore nodes; they differ by material only.
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => {
             blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2)
@@ -1777,7 +1791,8 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         // invisible collision skirt is a player passing through geometry — so
         // `OCCUPANT_R_M`/`OCCUPANT_TOP_M` moved in the same commit and the
         // replay golden moved with them.
-        Occupant::BarrelSlot => Cylinder::new(0.2925, 0.88).mesh().resolution(10).build(),
+        // Grown 12/11 to Rust's drum on 2026-10-17 (`terrain::OCCUPANT_R_M`).
+        Occupant::BarrelSlot => Cylinder::new(0.3191, 0.96).mesh().resolution(10).build(),
         Occupant::CrateSlot | Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])
         }
@@ -1787,7 +1802,7 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
             boxes_mesh(&authored(&terrain::WAYSTATION_CANOPY_BOXES, &CANOPY_HEX))
         }
         // The barrel's drum, painted red where it is drawn.
-        Occupant::OilBarrel => Cylinder::new(0.2925, 0.88).mesh().resolution(10).build(),
+        Occupant::OilBarrel => Cylinder::new(0.3191, 0.96).mesh().resolution(10).build(),
         Occupant::RoadSign => boxes_mesh_with(
             &authored(&terrain::ROAD_SIGN_BOXES, &ROAD_SIGN_HEX),
             linear,
@@ -1843,13 +1858,13 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 0.5,
         Occupant::Rock => 0.55,
         // The half-height, so the drum's base is the slot's ground and its
-        // top is its own 0.88 m. It was 0.5 against a half-height of 0.475.
-        Occupant::BarrelSlot => 0.44,
+        // top is its own 0.96 m.
+        Occupant::BarrelSlot => 0.48,
         Occupant::CrateSlot | Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             0.4
         }
         Occupant::CacheSlot => 0.275,
-        Occupant::OilBarrel => 0.44,
+        Occupant::OilBarrel => 0.48,
         Occupant::FoodCrate => 0.2,
         Occupant::TireStack => terrain::TIRE_STACK_TOP_M * 0.5,
         // The box tables put ground at y = 0, like the authored structures.
@@ -1859,7 +1874,7 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
         // So do the plants (`plants.rs` builds them ground-rooted), which is
         // also the root height the foliage shader bends them from.
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => 0.0,
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => 0.0,
         // Centred meshes sat on the ground.
         Occupant::StonePile | Occupant::MetalPile | Occupant::SulfurPile => 0.1,
         Occupant::WoodPile => 0.11,
@@ -2531,11 +2546,34 @@ pub fn stream(
     }
 
     let mut dropped = 0usize;
-    ring.built.retain(|(bx, bz), c| {
+    let PropRing { built, leaving, .. } = &mut *ring;
+    built.retain(|(bx, bz), c| {
         if dropped >= 1 || ((*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS) {
             return true;
         }
         dropped += 1;
+        if (*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS {
+            // The outer ring's now: it stands until that ring builds the key.
+            let taps = std::mem::take(&mut c.taps);
+            if let Some(old) = leaving.insert(
+                (*bx, *bz),
+                Chunk {
+                    e: c.e,
+                    taps,
+                    stale: true,
+                },
+            ) {
+                commands.entity(old.e).despawn();
+            }
+        } else {
+            commands.entity(c.e).despawn();
+        }
+        false
+    });
+    leaving.retain(|(bx, bz), c| {
+        if (*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS {
+            return true;
+        }
         commands.entity(c.e).despawn();
         false
     });
@@ -2563,6 +2601,9 @@ pub fn stream(
             // budget the ground pays every frame.
             if let Some(hulls) = ring.outer.remove(&key) {
                 commands.entity(hulls.e).despawn();
+            }
+            if let Some(old) = ring.leaving.remove(&key) {
+                commands.entity(old.e).despawn();
             }
             let parent = commands
                 .spawn((
@@ -2726,6 +2767,9 @@ pub fn stream(
             if let Some(old) = ring.outer.insert(key, built) {
                 commands.entity(old.e).despawn();
             }
+            if let Some(old) = ring.leaving.remove(&key) {
+                commands.entity(old.e).despawn();
+            }
             built_outer += 1;
         }
     }
@@ -2848,6 +2892,10 @@ pub fn spawn_outer_tree(
             Mesh3d(meshes[variant % meshes.len()].clone()),
             MeshMaterial3d(mats[tint_of(key)].clone()),
             transform,
+            // The card's corners sit on its axis until the vertex stage
+            // spreads them, so its bounds are a line: culled by that, a
+            // crown half on screen blinked out at the frame's edge.
+            bevy::camera::visibility::NoFrustumCulling,
         ));
         return;
     }
@@ -2894,13 +2942,13 @@ pub fn spawn_slot(
     // the number the draw uses and the number `tests/greybox.rs` checks
     // against `OCCUPANT_TOP_M` are the same number.
     let mut lift = archetype_lift(slot.occupant);
-    // How much bigger than its file the mesh draws: 1 but for a pickup's
-    // hand-sized model (`PICKUP_GLB`).
-    let mut grow = 1.0;
     // What a shrub cell grows, off its biome (`plants::scenery`).
     // `fel` is the spread's depth at the slot now (the caller's,
     // `render::blight::live_fel`), not the wipe-day heart.
     let scenery = plants::scenery_with(seed, slot, key, fel);
+    // How much bigger than its file the mesh draws: a pickup's hand-sized
+    // model (`PICKUP_GLB`), a scenery bush (`plants::SCENERY_GROW`), 1 else.
+    let mut grow = plants::grow(slot.occupant, scenery);
     // A tree in the Verdigris is dead: charred bark and no crown.
     let snag = slot.occupant == Occupant::Tree && fel >= FEL_SNAG_AT;
     let (mesh, material) = match slot.occupant {
@@ -2933,7 +2981,7 @@ pub fn spawn_slot(
         // A plant's wood (twigs, the hemp stalk, the berries) is the primary
         // entity and its leaves ride beside it, below. Indexed by yaw exactly
         // as the conifer pool is, so two plants side by side differ.
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
+        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => {
             variant = (slot.yaw as usize) % PLANT_POOL;
             match a.plant(slot.occupant, key, variant, tint, scenery) {
                 Some(p) => (p.wood.clone(), p.wood_mat.clone()),
@@ -3059,6 +3107,7 @@ pub fn spawn_slot(
             | Occupant::MetalPile
             | Occupant::SulfurPile
             | Occupant::MushroomPatch
+            | Occupant::Cactus
     );
     // An emptied crate is harvested too (`World::move_item`), until it refills.
     let lootable = sim_core::worldcont::table_of(slot.occupant).is_some();
@@ -3288,6 +3337,8 @@ pub fn spawn_slot(
                 MeshMaterial3d(mats[tint].clone()),
                 tree::lod_band(&lod.far),
                 transform,
+                // Bounds of a line (`spawn_outer_tree` says why).
+                bevy::camera::visibility::NoFrustumCulling,
             ));
         } else {
             e.with_child((
@@ -3411,6 +3462,31 @@ pub const STUMP_LIFT_M: f32 = 0.17;
 /// looked at afterwards, and 1.1 s reads as a swat rather than as a tree.
 pub const FELL_FALL_S: f32 = 1.6;
 
+/// How long a felled tree lies on the ground once it lands, seconds, before
+/// it sinks away. Rust's tree falls and then is gone (operator, 2026-08-10
+/// and again 2026-10-17: a downed forest read as chopped trees still
+/// showing); the stump is what stays.
+pub const FELL_REST_S: f32 = 1.2;
+
+/// How long the downed tree takes to sink out of sight, seconds.
+pub const FELL_SINK_S: f32 = 1.5;
+
+/// When a felled tree's trunk and canopy are hidden, seconds from the cut.
+pub const FELL_GONE_S: f32 = FELL_FALL_S + FELL_REST_S + FELL_SINK_S;
+
+/// How far a downed tree has sunk below where it lay, metres, `t` seconds
+/// from the cut: none until it has rested, then eased down to `depth`.
+pub fn fell_sink(t: f32, depth: f32) -> f32 {
+    let p = ((t - FELL_FALL_S - FELL_REST_S) / FELL_SINK_S).clamp(0.0, 1.0);
+    depth * p * p
+}
+
+/// How deep a downed tree sinks: its crown's reach at its drawn scale, which
+/// is how far a canopy lying on its side stands off the ground.
+fn sink_depth(f: &Fellable, scale: f32) -> f32 {
+    tree::SPECIES[tree::species_of(f.variant)].max_r_m * scale
+}
+
 /// Hash channel for the fall bearing. Its own channel, never the scatter's:
 /// `spawn_slot` already derives the tree's YAW from `slot.yaw`, and a bearing
 /// sharing that source would make every tree fall the way it happens to face.
@@ -3452,22 +3528,22 @@ pub fn fell_rotation(yaw: f32, bearing: f32, t: f32) -> Quat {
     Quat::from_axis_angle(Vec3::new(cb, 0.0, -sb), angle) * Quat::from_rotation_y(yaw)
 }
 
-/// Advance every topple in flight.
+/// Advance every topple in flight: the fall, the rest, the sink, and then
+/// the trunk and canopy are hidden.
 ///
 /// **Only the ones in flight.** [`Topple::t`] is negative while a slot is
-/// standing and clamps at [`FELL_FALL_S`] once it is down, so this touches an
-/// entity
-/// on the ~96 frames of its fall and never again — a forest of felled trees
-/// costs this system one comparison each. That matters because the client is
-/// held to the sim thread's discipline (`CLAUDE.md`'s client trap) and this
-/// runs every frame over every prop in the ring.
+/// standing and clamps at [`FELL_GONE_S`] once it is gone, so this touches an
+/// entity for the few seconds after its cut and never again — a forest of
+/// felled trees costs this system one comparison each. That matters because
+/// the client is held to the sim thread's discipline (`CLAUDE.md`'s client
+/// trap) and this runs every frame over every prop in the ring.
 ///
 /// The trunk takes its marks with it as it goes (a hole must not hang where
 /// it stood) and throws dust and needles where it lands (`fx::world`).
 /// Optional so the topple still runs in a world that draws no effects.
 pub fn fall(
     time: Res<Time>,
-    mut q: Query<(&Fellable, &mut Topple, &mut Transform)>,
+    mut q: Query<(&Fellable, &mut Topple, &mut Transform, &mut Visibility)>,
     mut fx: Option<ResMut<super::fx::Fx>>,
     mut marks: Option<ResMut<super::decal::Marks>>,
     world: Option<Res<super::WorldId>>,
@@ -3475,13 +3551,22 @@ pub fn fall(
     mut shake: Option<ResMut<super::shake::Shake>>,
 ) {
     let dt = time.delta_secs();
-    for (f, mut top, mut t) in q.iter_mut() {
-        if top.t < 0.0 || top.t >= FELL_FALL_S {
+    for (f, mut top, mut t, mut vis) in q.iter_mut() {
+        if top.t < 0.0 || top.t >= FELL_GONE_S {
             continue;
         }
         let was = top.t;
-        top.t = (top.t + dt).min(FELL_FALL_S);
-        t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+        top.t = (top.t + dt).min(FELL_GONE_S);
+        if was < FELL_FALL_S {
+            t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+        }
+        let sink = fell_sink(top.t, sink_depth(f, t.scale.y));
+        if sink > 0.0 {
+            t.translation.y = f.base_y - sink;
+        }
+        if top.t >= FELL_GONE_S {
+            *vis = Visibility::Hidden;
+        }
         if f.part != FellPart::Trunk {
             continue;
         }
@@ -3490,7 +3575,7 @@ pub fn fall(
                 m.forget_later(t.translation + Vec3::Y * 1.2, 1.2);
             }
         }
-        if top.t >= FELL_FALL_S {
+        if was < FELL_FALL_S && top.t >= FELL_FALL_S {
             // The ground takes the trunk: felt as well as seen.
             if let (Some(shake), Some(eye)) = (shake.as_deref_mut(), eye.as_deref()) {
                 use super::shake::{TREE_FULL_M, TREE_TRAUMA, TREE_ZERO_M};
@@ -3649,19 +3734,22 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
                 // handle, so it leaves the pose alone instead of guessing.
                 let Some(mut top) = top else { continue };
                 if felled && arrived {
-                    // Already down: the topple's last pose, which `fall`
-                    // leaves alone.
-                    top.t = FELL_FALL_S;
+                    // Felled long ago: already gone, which `fall` leaves
+                    // alone. Only the stump says a tree stood here.
+                    top.t = FELL_GONE_S;
                     t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), FELL_FALL_S);
+                    *vis = Visibility::Hidden;
                 } else if felled {
                     // Start the topple. `fall` owns the pose from here.
                     top.t = 0.0;
                 } else {
-                    // Respawned: back upright, and back to "not falling" so
-                    // the next chop starts from the top of the curve rather
-                    // than from wherever the last one ended.
+                    // Respawned: back upright where it stood, and back to
+                    // "not falling" so the next chop starts from the top of
+                    // the curve rather than from wherever the last one ended.
                     top.t = -1.0;
                     t.rotation = Quat::from_rotation_y(f.yaw);
+                    t.translation.y = f.base_y;
+                    *vis = Visibility::Inherited;
                 }
             }
         }
@@ -3713,7 +3801,6 @@ impl PropAssets {
             (Occupant::Shrub, Scenery::DeadScrub) => {
                 plant(&self.dead_wood[v], &self.plant_wood, None)
             }
-            (Occupant::Shrub, Scenery::Cactus) => plant(&self.cactus[v], &self.plant_wood, None),
             (Occupant::Shrub, Scenery::Flowers) => {
                 let palette = (hash01(key, 0xf10e_9a1e) * plants::FLOWER_PALETTES as f32) as usize
                     % plants::FLOWER_PALETTES;
@@ -3742,6 +3829,9 @@ impl PropAssets {
                 &self.hemp_wood,
                 Some((&self.hemp_leaves[v], &self.hemp_leaf[tint])),
             ),
+            // The sim's cactus (`terrain::cactus_at`), whatever the spread:
+            // it stands, and pricks, until it is swung down.
+            (Occupant::Cactus, _) => plant(&self.cactus[v], &self.plant_wood, None),
             _ => return None,
         })
     }

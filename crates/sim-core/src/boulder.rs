@@ -27,7 +27,9 @@
 //! boulder and a cliff are one substance at two scales.
 //!
 //! Every number here is a first cut (operator, 2026-09-28: "bolders and
-//! gigantic rocks are small they need to be huge").
+//! gigantic rocks are small they need to be huge"), and every size went up
+//! 1.4× on 2026-10-17 ("i want all rocks to be bigger still").
+//! [`FORMATION_BODY_M`] grew with them, held under the 3×3 query's reach.
 
 use crate::fmath::{fabs, floor_i32};
 use crate::rng::cell_hash;
@@ -47,19 +49,19 @@ pub const FORMATION_BLOCKS: usize = 8;
 /// and blocks as the box it is drawn on.
 pub const STRAYS_PER_CELL: usize = 4;
 /// A stray's longer half-extent, metres.
-pub const STRAY_HALF: (f32, f32) = (2.2, 4.2);
+pub const STRAY_HALF: (f32, f32) = (3.1, 5.9);
 /// The least a stray stands over the ground, metres.
-pub const STRAY_MIN_H: f32 = 2.4;
+pub const STRAY_MIN_H: f32 = 3.4;
 /// How far a stray is kept inside its cell, metres.
 const STRAY_INSET_M: f32 = 6.0;
 /// Longest half-extent a block is planned with, metres.
-pub const BLOCK_HALF_MAX: f32 = 10.0;
+pub const BLOCK_HALF_MAX: f32 = 14.0;
 /// Shortest half-extent a block is kept with, metres. Smaller is the
 /// scatter's own `Rock`.
 pub const BLOCK_HALF_FLOOR: f32 = 0.7;
 /// How far a formation's blocks reach from its anchor, metres — a block's
 /// centre distance plus its half-diagonal. `plan` drops any block past it.
-pub const FORMATION_BODY_M: f32 = 34.0;
+pub const FORMATION_BODY_M: f32 = 41.0;
 /// How far a formation's anchor is kept inside its cell, metres.
 const ANCHOR_INSET_M: f32 = 16.0;
 /// How far a formation's blocks can reach from its cell's centre, metres: the

@@ -138,6 +138,8 @@ pub enum NodeArchetype {
     /// A felled tree's stump (`sim_core::gather::STUMP_NODE`): no occupant of
     /// its own, the tree slot's second harvest.
     Stump,
+    /// The desert's cactus (`terrain::Occupant::Cactus`), swung at.
+    Cactus,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its
@@ -425,6 +427,14 @@ pub struct Weapon {
     /// round's flight (`[[ammo]]`).
     #[serde(default)]
     pub range_m: u32,
+    /// A **melee** row's reach in centimetres, from the eye to the struck
+    /// body's skin — required there, in place of `range_m`, and refused on
+    /// every other kind. Centimetres because the drawn weapon sets it: the
+    /// rig's hand at the strike plus the item's length ahead of the grip
+    /// (`client/tests/melee_reach.rs`), and a whole metre cannot tell a bat
+    /// from a hatchet.
+    #[serde(default)]
+    pub reach_cm: u32,
     /// Rounds this weapon holds **loaded**, or absent for a weapon that
     /// spends straight out of the pack. Required on `firearm`, refused on
     /// every other kind (`validate.rs`).
@@ -1121,6 +1131,21 @@ pub struct Globals {
     /// may be taken back; a missed arrow is takeable at once. Seconds so
     /// the file stays free of the tick rate, exactly like `fuse_s`.
     pub arrow_lodge_s: u32,
+    /// The punch (`sim_core::combat::CombatContent::fist`). **Absent is no
+    /// punch**: an empty hand hits nothing.
+    #[serde(default)]
+    pub fist: Option<Fist>,
+}
+
+/// An empty hand's swing: a melee row with no item, no structure column and
+/// a price paid in the puncher's own hp.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fist {
+    pub damage: u32,
+    pub range_m: u32,
+    /// Hp a punch that lands takes off the puncher.
+    pub self_damage: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1214,6 +1239,14 @@ pub struct StarterBase {
 pub struct Survival {
     pub max_food: u32,
     pub max_water: u32,
+    /// What a fresh body starts with (join and respawn), Rust-style: not
+    /// full. Zero or absent is a full meter / full hp.
+    #[serde(default)]
+    pub spawn_hp: u32,
+    #[serde(default)]
+    pub spawn_food: u32,
+    #[serde(default)]
+    pub spawn_water: u32,
     /// Minutes from a full meter to an empty one, at rest.
     pub food_minutes_to_empty: u32,
     pub water_minutes_to_empty: u32,

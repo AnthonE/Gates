@@ -18,10 +18,19 @@
 #
 #   VILLAGE_NAME=Miller        # 1-13 characters: the bots are Miller-1..
 #   VILLAGE_BOTS=12            # 2..16
-#   VILLAGE_SHIFT=5400,1800    # seconds on, seconds off
+#   VILLAGE_SHIFT=5400,1800,0  # seconds on, seconds off, and where the
+#                              # cycle starts (seconds past UTC midnight).
+#                              # Give each village its own start so they
+#                              # take turns asleep: millers 0, thatchers 3600.
 #
 # `ci/deploy_shard.sh` restarts every gates-village@ unit on the binary it
-# copies to ~/gates-jev, so a wire bump never strands a village.
+# installs to /opt/gates-agents, so a wire bump never strands a village.
+#
+# It runs as `gates-agents`, sandboxed to the game (see the block below):
+#
+#   sudo useradd --system --user-group --no-create-home \
+#        --home-dir /var/lib/gates-agents --shell /usr/sbin/nologin gates-agents
+#   sudo install -d -m 0755 /opt/gates-agents   # the deploy fills it
 
 [Unit]
 Description=Gates village %i on game.elopros.com:61234
@@ -33,24 +42,55 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=master
-Group=master
-WorkingDirectory=/home/master/gates-jev
+User=gates-agents
+Group=gates-agents
+WorkingDirectory=/opt/gates-agents
 StateDirectory=gates-village/%i
 StateDirectoryMode=0700
+UMask=0077
+Environment=GATES_REPORTS_DIR=/var/lib/gates-village/%i/reports
 Environment=VILLAGE_NAME=%i
 Environment=VILLAGE_BOTS=12
 Environment=VILLAGE_SHIFT=5400,1800
 EnvironmentFile=-/etc/gates-village/%i.env
 # A run is at most a day (`--seconds`); systemd starts the next.
-ExecStart=/home/master/gates-jev/jev-bot --server game.elopros.com:61234 --scripted --society --bots ${VILLAGE_BOTS} --shift ${VILLAGE_SHIFT} --agent-keys /var/lib/gates-village/%i --agent-name ${VILLAGE_NAME} --seconds 86400
+ExecStart=/opt/gates-agents/jev-bot --server game.elopros.com:61234 --scripted --society --bots ${VILLAGE_BOTS} --shift ${VILLAGE_SHIFT} --agent-keys /var/lib/gates-village/%i --agent-name ${VILLAGE_NAME} --seconds 86400
 Restart=always
 RestartSec=15
 
-ProtectSystem=strict
-ProtectHome=read-only
-PrivateTmp=true
+# The sandbox: a game client and nothing else. Its own account
+# (`gates-agents`), which owns nothing but this unit's state; no home
+# directories, no devices, no privileges, read-only everywhere but its state.
 NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# Network: the game server and nothing else. 5.161.193.186 is this box,
+# what game.elopros.com resolves to; DNS is systemd-resolved on loopback.
+# If the box's address moves, move it here too.
+IPAddressDeny=any
+IPAddressAllow=localhost 5.161.193.186
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gates-village-%i

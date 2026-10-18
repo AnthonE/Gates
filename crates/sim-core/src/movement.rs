@@ -114,6 +114,59 @@ fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
     rise <= STEP_UP && rise <= run * CLIFF_SLOPE_RATIO
 }
 
+/// How fast a body slides down a face, m/s along the fall line: nobody
+/// stands on ground too steep to climb. Until 2026-10-17 the cliff ratio
+/// held only a step's own rise, so a body walked along a face, or up it on a
+/// diagonal, and stood inside the rock the client draws proud of every face
+/// (`render/cliff_skin.rs`).
+pub const SLIDE_SPEED: f32 = 4.0;
+
+/// The fall line at (`x`, `z`), a unit vector downhill, where the solid
+/// surface there is a face: too steep to climb at the nearest whole-metre
+/// point and at all eight round it, the gentlest of the 3×3 that the skin's
+/// own mask reads (`face.rs`). `None` where a body may stand. Read off
+/// [`crate::face::surface`], so a shelf in the drawn rock is ground and a
+/// riser is a face; off the faces that is the sim's ground.
+pub fn face_fall(
+    occ: &mut Occupants,
+    seed: u64,
+    haven: &terrain::Haven,
+    x: f32,
+    z: f32,
+) -> Option<(f32, f32)> {
+    occ.cache
+        .fall(seed, haven, floor_i32(x + 0.5), floor_i32(z + 0.5))
+}
+
+/// [`face_fall`] at whole-metre (`ix`, `iz`), from the surface's heights
+/// there (`surf`).
+pub(crate) fn fall_at(
+    ix: i32,
+    iz: i32,
+    mut surf: impl FnMut(i32, i32) -> f32,
+) -> Option<(f32, f32)> {
+    let mut grade = |i: i32, j: i32| {
+        let sx = (surf(i + 1, j) - surf(i - 1, j)) * 0.5;
+        let sz = (surf(i, j + 1) - surf(i, j - 1)) * 0.5;
+        (sx, sz)
+    };
+    let (sx, sz) = grade(ix, iz);
+    let mut gentlest = sx * sx + sz * sz;
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            if dx != 0 || dz != 0 {
+                let (gx, gz) = grade(ix + dx, iz + dz);
+                gentlest = gentlest.min(gx * gx + gz * gz);
+            }
+        }
+    }
+    if gentlest < CLIFF_SLOPE_RATIO * CLIFF_SLOPE_RATIO {
+        return None;
+    }
+    let s = (sx * sx + sz * sz).sqrt();
+    Some((-sx / s, -sz / s))
+}
+
 /// Highest quantized feet position that keeps the head below a slab. Round
 /// down, then check the decoded sum too: float subtraction/division must not
 /// round a contact back inside the ceiling on the next tick.
@@ -171,9 +224,18 @@ pub fn step(
     // stops it with. A point here let a body stand past a ledge with its
     // centre over air and fall down the face half inside it, which the
     // veto lifts then treated as "already inside" (`body_ground`'s doc).
-    let ground_here = terrain::ground(seed, haven, x, z)
-        .max(collide::body_ground(seed, haven, cols, x, z, y))
-        .max(occ.body_ground(seed, x, z, y));
+    // The solid ground (`face::surface`): the sim's, or on a face the rock
+    // drawn over it.
+    let terrain_here = crate::face::surface(occ, seed, haven, x, z);
+    let hard_here =
+        collide::body_ground(seed, haven, cols, x, z, y).max(occ.body_ground(seed, x, z, y));
+    let ground_here = terrain_here.max(hard_here);
+    // Off its feet over a face, a body is coming down it.
+    let slide = if !body.grounded && hard_here <= terrain_here && y - terrain_here <= STEP_UP {
+        face_fall(occ, seed, haven, x, z)
+    } else {
+        None
+    };
     // A drawn bow walks (`BTN_AIM`, `reference/PROJECTILES.md` §6): the
     // draw costs the legs as well as the time. Crouch is read off the frame
     // alone, like the draw, so the predictor needs nothing else to agree.
@@ -192,8 +254,14 @@ pub fn step(
     // Walls veto a candidate outright; a built surface accepts on the
     // step rule alone (a stair-step, not a cliff — the ramp and slab
     // rises are bounded by design), terrain keeps the cliff ratio.
-    let dx = wx * speed * DT;
-    let dz = wz * speed * DT;
+    let mut dx = wx * speed * DT;
+    let mut dz = wz * speed * DT;
+    if let Some((fall_x, fall_z)) = slide {
+        // Steered across the face, and down it at the slide's own pace.
+        let along = dx * fall_x + dz * fall_z;
+        dx += fall_x * (SLIDE_SPEED * DT - along);
+        dz += fall_z * (SLIDE_SPEED * DT - along);
+    }
     let mut nx = x;
     let mut nz = z;
     // The effective ground under wherever the body ends up. It starts as the
@@ -218,6 +286,10 @@ pub fn step(
     // `test_replay`, `test_terrain_golden` and `test_parity_wasm` are the
     // proof rather than the risk.
     let mut ground_sel = ground_here;
+    // Whether that ground is bare terrain, and, if the accepted candidate
+    // already asked, whether it is a face.
+    let mut bare_sel = hard_here <= terrain_here;
+    let mut face_sel = None;
     // Cache a queried destination ceiling (including "none") for the vertical
     // pass. A rising step must not sample each column's terrain band twice.
     let mut ceiling_sel = None;
@@ -229,7 +301,7 @@ pub fn step(
     let mut inside_dep: Option<bool> = None;
     // ...and for plane flanks, third and apart for the same reason.
     let mut inside_plane: Option<bool> = None;
-    if len2 > 0.0 {
+    if len2 > 0.0 || slide.is_some() {
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
         let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
         for (cx, cz) in candidates {
@@ -299,7 +371,7 @@ pub fn step(
                     continue;
                 }
             }
-            let g = terrain::ground(seed, haven, cx, cz);
+            let g = crate::face::surface(occ, seed, haven, cx, cz);
             let pg = collide::body_ground(seed, haven, cols, cx, cz, y);
             let og = occ.body_ground(seed, cx, cz, y);
             // A built or hard surface accepts on the step rule alone; bare
@@ -307,10 +379,19 @@ pub fn step(
             // for the reason piece tops do — the rise onto a plinth is
             // bounded by the lid, not by a slope that does not exist.
             let hard = pg.max(og);
+            let mut face = None;
             let ok = if hard > g {
                 hard - y <= STEP_UP
+            } else if !climbable(y, g, run2.sqrt()) {
+                false
+            } else if g > y {
+                // Up onto a face from any bearing: the ratio above holds
+                // only the rise along the step, which a diagonal keeps low.
+                let f = face_fall(occ, seed, haven, cx, cz).is_some();
+                face = Some(f);
+                !f
             } else {
-                climbable(y, g, run2.sqrt())
+                true
             };
             if ok {
                 let next_ground = g.max(hard);
@@ -334,10 +415,22 @@ pub fn step(
                 nx = cx;
                 nz = cz;
                 ground_sel = next_ground;
+                bare_sel = hard <= g;
+                face_sel = face;
                 break;
             }
         }
     }
+
+    // Whether the body ends the step over a face, which it slides down
+    // rather than stands on. A grounded body that did not move was asked
+    // when it arrived.
+    let moved = nx != x || nz != z;
+    let on_face = bare_sel
+        && (moved || !body.grounded)
+        && face_sel.unwrap_or_else(|| {
+            (!moved && slide.is_some()) || face_fall(occ, seed, haven, nx, nz).is_some()
+        });
 
     // Vertical: snap within step range, otherwise fall. Built surfaces
     // count as ground only when the step rule already admitted them
@@ -357,7 +450,10 @@ pub fn step(
     if jumping {
         vy = JUMP_SPEED;
     }
-    if !jumping && body.grounded && ground - y <= STEP_UP && y - ground <= STEP_UP {
+    // A slide keeps to the face like a walk keeps to the ground, so its foot
+    // is not a fall.
+    let held = body.grounded || slide.is_some();
+    if !jumping && held && ground - y <= STEP_UP && y - ground <= STEP_UP {
         ny = ground;
         vy = 0.0;
     } else {
@@ -386,7 +482,7 @@ pub fn step(
             }
         }
     }
-    body.grounded = ny <= ground + 0.001;
+    body.grounded = ny <= ground + 0.001 && !on_face;
 
     body.qx = quant_xz(nx);
     body.qy = quant_y(ny);

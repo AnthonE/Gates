@@ -18,6 +18,7 @@
 //! | inventory page | `Tab` (or `I`) toggles, `Q` switches, `Esc` closes | the reference `inventory.jpeg` |
 //! | crafting page | `Q` toggles, `Tab` switches, `Esc` closes | the reference `crafting.png` |
 //! | container | the inventory page, opened by the sim | `storageandtoolchest.jpeg` |
+//! | hearth | the inventory page with the upkeep column (`hearth.rs`), opened by `E` | the reference's tool cupboard |
 //! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
 //! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |
 //!
@@ -48,6 +49,7 @@ use sim_core::gather::ItemStack;
 
 pub mod arc;
 pub mod craft;
+pub mod hearth;
 pub mod inv;
 pub mod kit;
 pub mod lore;
@@ -314,7 +316,17 @@ pub(crate) struct Seen {
     /// `ClientCore::shop_gen` at the last redraw: a machine's offers or a
     /// shop answer arriving.
     pub shop_gen: u32,
+    /// The latched hearth stock ack — address, live rows, rows — so the
+    /// hearth's column redraws when a feed, a take or the decay moves it.
+    pub stock: StockSeen,
 }
+
+/// The hearth stock ack as `Seen` keys it: address, live rows, rows.
+pub(crate) type StockSeen = (
+    (u16, u16, u8),
+    u8,
+    [(u16, u32, u32); sim_core::limits::HEARTH_STOCK_ROWS],
+);
 
 impl Default for Ui {
     fn default() -> Self {
@@ -828,7 +840,7 @@ pub fn register(app: &mut App) {
                 (inv::drag_pointer, inv::hover_loot).chain(),
                 inv::skin_keys,
                 inv::table_clicks,
-                (inv::fire_clicks, inv::take_all_clicks).chain(),
+                (inv::fire_clicks, inv::take_all_clicks, hearth::clicks).chain(),
                 (craft::clicks, craft::skin_store).chain(),
                 craft::scroll,
                 tech::clicks,
@@ -925,11 +937,11 @@ pub fn forget(mut ui: ResMut<Ui>) {
 #[allow(clippy::too_many_arguments)]
 pub fn keys(
     mut ui: ResMut<Ui>,
-    net: NonSend<super::Net>,
+    mut net: NonSendMut<super::Net>,
     mut toast: ResMut<super::hud::Toast>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
-    // The hammer wheel's release fires at the nearest structure — the same
+    // The hammer wheel's release fires at the aimed structure — the same
     // `Near` the keyboard verbs read, resolved before this system so a
     // removed or upgraded structure cannot leave a stale wheel target.
     near: Res<super::verbs::Near>,
@@ -976,7 +988,7 @@ pub fn keys(
             ui.dirty = true;
         }
         if was_inventory {
-            super::verbs::close_container(&net, &mut toast);
+            super::verbs::close_container(&mut net, &mut toast);
         }
         // Forced shut: a page the follow raised is not up any more, so a
         // later close must not shut one the watcher opens for themselves.
@@ -1137,7 +1149,7 @@ pub fn keys(
     // worst bug on this verb. The close is sent when the panel that owned it
     // goes away, whichever key did it.
     if was_inventory && !cont_page(ui.panel) {
-        super::verbs::close_container(&net, &mut toast);
+        super::verbs::close_container(&mut net, &mut toast);
     }
 
     // **Opening the panel no longer opens the body, because the body is
@@ -1256,6 +1268,7 @@ pub fn keys(
     // button `research::unlock` would refuse for want of a bench. Movement is
     // zeroed while a panel is up, so a walk-off is not the case this catches;
     // the bench leaving is.
+    let core = &net.session.core;
     if ui.panel == Panel::Tech
         && !crate::ui::techtree::bench_in_reach(
             core.deploys.entries(),
@@ -1333,6 +1346,7 @@ pub fn sync_refusals(
 /// changes when a player clicks or a sync lands, so the simple shape is also
 /// the cheap one. What is NOT cheap is rebuilding a still screen, which is
 /// what `Seen` exists to prevent.
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     mut commands: Commands,
     mut ui: ResMut<Ui>,
@@ -1344,10 +1358,14 @@ pub fn rebuild(
     icons: Option<Res<super::icons::Icons>>,
     near: Res<super::verbs::Near>,
     portrait: Option<Res<super::portrait::Portrait>>,
+    hearth: Option<Res<super::verbs::HearthView>>,
 ) {
     let core = &net.session.core;
 
     detect_changes(&mut ui, core, near.0);
+    if hearth.as_ref().is_some_and(|h| h.is_changed()) && ui.panel != Panel::None {
+        ui.dirty = true;
+    }
 
     if !ui.dirty {
         return;
@@ -1370,6 +1388,7 @@ pub fn rebuild(
                 icons,
                 net.sel,
                 portrait.as_deref(),
+                hearth.as_ref().and_then(|h| h.0),
             )
         }
         Panel::Craft => {
@@ -1444,6 +1463,7 @@ fn detect_changes(
             || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
             || (ui.panel == Panel::Team && core.team_gen != ui.seen.team_gen)
             || (ui.panel == Panel::Shop && core.shop_gen != ui.seen.shop_gen)
+            || (core.stock_addr, core.stock_count, core.stock) != ui.seen.stock
         {
             ui.seen.inv = inv;
             ui.seen.cont = cont;
@@ -1467,6 +1487,7 @@ fn detect_changes(
             ui.seen.bank_gen = core.bank_gen;
             ui.seen.team_gen = core.team_gen;
             ui.seen.shop_gen = core.shop_gen;
+            ui.seen.stock = (core.stock_addr, core.stock_count, core.stock);
             ui.dirty = true;
         }
     }

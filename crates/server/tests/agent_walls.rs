@@ -1446,6 +1446,7 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
     let kit = [
         stack("item.wood", 1000),
         stack("item.wood", 1000),
+        stack("item.wood", 1000),
         stack("item.wood", 400),
         stack("item.stone", 1000),
         stack("item.stone", 1000),
@@ -1464,9 +1465,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         }
     });
 
-    // 1. The shell, the doors, the bag and box inside, the stone core.
-    let built = h.until(24_000, |b| {
-        b.builder().survey().milestone >= Milestone::Upstairs
+    // 1. The shell, the doors and their key locks, the bag and box inside,
+    // the roof, the stone core.
+    let built = h.until(30_000, |b| {
+        b.builder().survey().milestone > Milestone::Stone
     });
     if !built {
         let me = h.view.get(ID).copied().unwrap();
@@ -1524,6 +1526,28 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
             let d = w.deploys.find(cx + 1, cz + 1, 0, loc).unwrap();
             assert_eq!(w.deploy.defs[usize::from(d.row)].item, wood_door);
+            // Locked from the day it was hung, as a player's is.
+            assert!(
+                w.deploys
+                    .locks()
+                    .iter()
+                    .any(|l| (l.cx, l.cz, l.level, l.loc) == (cx + 1, cz + 1, 0, loc)
+                        && l.is_key()
+                        && l.locked),
+                "a key lock on the door at loc {loc}"
+            );
+        }
+        // Roofed over the core and the stairwell, and the airlock.
+        let tri = sim_core::build::LOC_TRI_XLO_ZLO;
+        for (x, z, level, loc) in [
+            (cx, cz, 2, LOC_PLANE),
+            (cx + 1, cz, 2, LOC_PLANE),
+            (cx + 1, cz + 1, 1, tri),
+        ] {
+            assert!(
+                w.pieces.find(x, z, level, loc).is_some(),
+                "a roof over {x},{z} at level {level}"
+            );
         }
         // The shell, and the core's walls in stone.
         for (x, z, loc) in [
@@ -1756,9 +1780,9 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
     assert_eq!(h.bot.mind.stats.requests, asked, "the mind is not asked");
     assert_eq!(h.heap_ops, 0);
 
-    // 2d. Somebody opens its front door from outside (doors go up with no
-    //     lock until lane C, so a plain use opens them): it walks out
-    //     through both doors and back in, shutting each behind it.
+    // 2d. Somebody tries its front door from outside: the key lock that
+    //     went on with it (`build::KEY_LOCK_ITEM`) keeps them out, and the
+    //     body asleep inside is not disturbed.
     h.with_puppet();
     h.step();
     let (fx, fz) = (
@@ -1778,32 +1802,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
             },
         );
     }
-    let opened = h.until(TICK_HZ, |_| false) || !shut(&h, LOC_EDGE_XLO);
-    assert!(opened, "the puppet never opened the front door");
-    // Out of the way again.
-    let away = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 25.0, fz + 25.0);
-    h.stage_puppet(move |p| p.body = away);
-    let uses = h.bot.builder().stats.uses;
-    let mut resealed = false;
-    for _ in 0..60 * TICK_HZ {
+    for _ in 0..2 * TICK_HZ {
         h.step();
-        let me = h.view.get(ID).copied().unwrap();
-        if h.bot.builder().stats.uses >= uses + 4
-            && h.bot.stats.phase == server::explorer::Phase::LoggingOff
-            && h.bot.builder().region(&me) == Region::Room
-            && shut(&h, LOC_EDGE_XLO)
-            && shut(&h, LOC_EDGE_ZLO)
-        {
-            resealed = true;
-            break;
-        }
+        assert!(shut(&h, LOC_EDGE_XLO), "a stranger opened its locked door");
     }
-    assert!(
-        resealed,
-        "the door left open was never shut again: {:?} {}",
-        h.bot.builder().stats,
-        h.explain()
-    );
     assert_eq!(h.bot.mind.stats.requests, asked, "the mind is not asked");
     assert_eq!(h.heap_ops, 0);
 
@@ -3217,7 +3219,7 @@ impl server::mind::DecisionSource for VisitWhenOffered {
 
     fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
         let wood = Goal::Sell(server::mind::Name::new(b"Wood").unwrap());
-        let goal = [wood, Goal::FeedWork]
+        let goal = [wood, Goal::FeedWork, Goal::Research]
             .into_iter()
             .find(|g| s.offers(*g))
             .unwrap_or(Goal::Wait);
@@ -3272,6 +3274,73 @@ fn a_survivor_sells_its_surplus_wood_at_the_gate() {
     assert_eq!(units_of(h.me(), wood.item), 2000, "two lots kept");
     assert_eq!(units_of(h.me(), junk), 4, "a thousand wood is four junk");
     assert!(h.verbs.contains("vend"), "{:?}", h.verbs);
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// THE GATE's research table makes paper of what an agent found: carrying a
+/// revolver it has no blueprint for (its tree parent unlearned) and junk,
+/// the agent walks to the table, puts in the revolver and its price,
+/// switches it on, takes the paper off and reads it. From the south, round
+/// the workshop: long enough that the next decision falls mid-research,
+/// with the revolver in the table rather than the pack. Taken for done,
+/// that decision walked off and left the paper in the table, shut to
+/// everyone after (2026-10-17).
+#[test]
+fn a_survivor_researches_what_it_found_at_the_gate_s_table() {
+    let mind = Mind::inline(VisitWhenOffered, MindConfig::default()).unwrap();
+    let haven = sim_core::terrain::haven(SEED);
+    assert!(haven.town.live, "the fixture seed has a town");
+    let (_, tx, tz) = (0..sim_core::town::STATIONS.len())
+        .filter_map(|k| sim_core::town::station_world(&haven.town, k))
+        .find(|&(arch, ..)| arch == "research")
+        .unwrap();
+    let at = (tx, tz - 25.0);
+    let mut h = Harness::with_mind(false, at, mind);
+    for core in [&mut h.shard, &mut h.replay] {
+        core.world.seed_authored();
+    }
+    h.until(5, |_| false);
+    let content = common::content();
+    let revolver = common::stack(&content, "item.revolver");
+    let junk = sim_core::gather::ItemStack {
+        count: 100,
+        ..common::stack(&content, "item.junk")
+    };
+    h.stage(move |p| {
+        p.body = sim_core::movement::Body::at(SEED, &haven, at.0, at.1);
+        p.inv[HOTBAR_SLOTS] = revolver;
+        p.inv[HOTBAR_SLOTS + 1] = junk;
+    });
+    let done = h.until(120 * TICK_HZ, |b| {
+        b.history
+            .iter()
+            .any(|r| r.goal == Goal::Research && r.outcome == Outcome::Done)
+    });
+    assert!(done, "no research: {:?} {}", h.bot.oven_stats, h.explain());
+    let research = h.shard.world.research;
+    let row = *research.row_for(revolver.item).unwrap();
+    // The read goes out as the goal ends; its answer, a moment later.
+    h.until(3 * TICK_HZ, |_| false);
+    let me = h.me();
+    assert!(
+        sim_core::research::knows(me.known, row.recipe),
+        "the paper was not read: {:?} {:?} {:?}",
+        h.bot.oven_stats,
+        h.verbs,
+        me.inv.iter().filter(|s| s.count > 0).collect::<Vec<_>>()
+    );
+    assert_eq!(units_of(me, revolver.item), 0, "the revolver became paper");
+    assert_eq!(
+        units_of(me, research.blueprint),
+        0,
+        "and the paper was read"
+    );
+    assert_eq!(units_of(me, junk.item), 100 - u32::from(row.cost));
+    assert_eq!(h.bot.oven_stats.papers, 1);
+    assert_eq!(h.bot.oven_stats.placed, 0, "THE GATE's table, not its own");
+    for verb in ["container", "move", "use", "research"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
@@ -3625,9 +3694,12 @@ fn a_survivor_locks_its_doors_and_a_stranger_cannot_open_them() {
     let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
     // It answers a blow but starts nothing: the stranger at its door below
     // is unarmed, and an opportunist would not leave him standing.
+    // Code locks on the doors, as a guild's founder hangs them: a body
+    // living alone puts key locks on with its doors and keeps them.
     let opts = server::explorer::SurvivorOpts {
         lock: Some(LockSecret::Code(code)),
         temperament: server::agent::combat::Temperament::Defensive,
+        code_doors: true,
         ..Default::default()
     };
     let mut h = Harness::with_opts(false, scene(), mind, opts);
@@ -5490,4 +5562,29 @@ fn an_agent_put_upstairs_comes_down_for_a_ground_goal() {
         "a goal failed stuck on the way down"
     );
     assert_eq!(h.heap_ops, 0, "the frame path allocated");
+}
+
+/// The minds we ship hold no tools. A mind's inputs include strangers'
+/// chat, so a mind that could also run something is the one road from a
+/// chat line on the island to an act off it. Both of `claude_agent.py`'s
+/// paths ask for a schema answer and nothing else, and the daily recap
+/// asks the same way; a change to that is a decision, made here.
+#[test]
+fn the_minds_we_ship_hold_no_tools() {
+    let agent =
+        std::fs::read_to_string(root().join("crates/server/examples/claude_agent.py")).unwrap();
+    assert!(
+        agent.contains(r#""--tools", "", "--disallowedTools", "mcp__*", "--strict-mcp-config""#),
+        "the Claude Code path must run with no built-in tools and no MCP server"
+    );
+    for file in [
+        "crates/server/examples/claude_agent.py",
+        "ops/buddy/recap.py",
+    ] {
+        let text = std::fs::read_to_string(root().join(file)).unwrap();
+        assert!(
+            !text.contains("tools=") && !text.contains("\"tools\":"),
+            "{file} hands a model tools"
+        );
+    }
 }

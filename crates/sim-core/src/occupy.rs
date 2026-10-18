@@ -245,6 +245,18 @@ pub struct SlotCache {
     /// construction (a power of two; `crag_shift` takes the hash's top bits).
     crags: Box<[CragLine]>,
     crag_shift: u32,
+    /// The ground's height, the faces' coarse points (`face::coarse_at`),
+    /// the solid surface (`face::surface`) and its face law
+    /// (`movement::face_fall`), keyed by whole-metre point, and the skin
+    /// (`face::skin_point`) by half-metre point, each sized at construction
+    /// like the crags.
+    heights: Box<[SurfLine]>,
+    coarses: Box<[CoarseLine]>,
+    surfs: Box<[SurfLine]>,
+    falls: Box<[FallLine]>,
+    skins: Box<[SurfLine]>,
+    face_shift: u32,
+    skin_shift: u32,
     /// The worldgen memo a crag resolves through. It changes no answer.
     lat: Box<terrain::Lattice>,
 }
@@ -271,19 +283,52 @@ struct CragLine {
     c: crate::cliff::Crag,
 }
 
+#[derive(Clone, Copy)]
+struct FallLine {
+    key: u32,
+    /// The fall line, or `(0, 0)` where a body may stand.
+    fall: (f32, f32),
+}
+
+#[derive(Clone, Copy)]
+struct CoarseLine {
+    key: u32,
+    c: crate::face::Coarse,
+}
+
+#[derive(Clone, Copy)]
+struct SurfLine {
+    key: u32,
+    y: f32,
+}
+
+/// A whole- or half-metre point's key. Points are never negative on the
+/// island, and a coordinate past 0xFFFF is never a body's.
+#[inline]
+fn point_key(ix: i32, iz: i32) -> u32 {
+    ((ix as u32 & 0xFFFF) << 16) | (iz as u32 & 0xFFFF)
+}
+
 impl SlotCache {
     /// A cache for one body's queries: a client's prediction, a fixture.
     pub fn new() -> Self {
-        Self::with_crag_lines(crate::limits::CRAG_CACHE_LINES_ONE)
+        Self::with_lines(
+            crate::limits::CRAG_CACHE_LINES_ONE,
+            crate::limits::FACE_CACHE_LINES_ONE,
+        )
     }
 
     /// A cache for a whole shard's bodies.
     pub fn shard() -> Self {
-        Self::with_crag_lines(crate::limits::CRAG_CACHE_LINES)
+        Self::with_lines(
+            crate::limits::CRAG_CACHE_LINES,
+            crate::limits::FACE_CACHE_LINES,
+        )
     }
 
-    fn with_crag_lines(n: usize) -> Self {
+    fn with_lines(n: usize, faces: usize) -> Self {
         assert!(n.is_power_of_two() && n >= 2);
+        assert!(faces.is_power_of_two() && faces >= 2);
         Self {
             seed: 0,
             resolves: 0,
@@ -304,16 +349,50 @@ impl SlotCache {
             ]
             .into_boxed_slice(),
             crag_shift: 32 - n.trailing_zeros(),
+            heights: vec![
+                SurfLine {
+                    key: NO_KEY,
+                    y: 0.0
+                };
+                faces
+            ]
+            .into_boxed_slice(),
+            falls: vec![
+                FallLine {
+                    key: NO_KEY,
+                    fall: (0.0, 0.0),
+                };
+                faces
+            ]
+            .into_boxed_slice(),
+            coarses: vec![
+                CoarseLine {
+                    key: NO_KEY,
+                    c: crate::face::Coarse::default(),
+                };
+                faces
+            ]
+            .into_boxed_slice(),
+            surfs: vec![
+                SurfLine {
+                    key: NO_KEY,
+                    y: 0.0
+                };
+                faces
+            ]
+            .into_boxed_slice(),
+            skins: vec![
+                SurfLine {
+                    key: NO_KEY,
+                    y: 0.0
+                };
+                faces * 2
+            ]
+            .into_boxed_slice(),
+            face_shift: 32 - faces.trailing_zeros(),
+            skin_shift: 32 - (faces * 2).trailing_zeros(),
             lat: Box::new(terrain::Lattice::new()),
         }
-    }
-
-    /// The worldgen memo this cache owns, for callers that tap the terrain
-    /// through it (`terrain::ground_memo`). It changes no answer: the lattice
-    /// keys every entry by seed, so no reset is owed here.
-    #[inline]
-    pub(crate) fn lattice(&mut self) -> &mut terrain::Lattice {
-        &mut self.lat
     }
 
     /// The crag spot (`gi`, `gj`) grows, resolved once per seed.
@@ -330,6 +409,135 @@ impl SlotCache {
         let c = crate::cliff::crag(&mut self.lat, seed, haven, gi, gj);
         self.crags[ix] = CragLine { key, c };
         c
+    }
+
+    /// The sim's ground at whole-metre point (`ix`, `iz`), resolved once per
+    /// seed.
+    #[inline]
+    pub(crate) fn ground_at(&mut self, seed: u64, haven: &Haven, ix: i32, iz: i32) -> f32 {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = point_key(ix, iz);
+        let i = (key.wrapping_mul(2_654_435_761) >> self.face_shift) as usize;
+        if self.heights[i].key == key {
+            return self.heights[i].y;
+        }
+        let y = terrain::ground_memo(&mut self.lat, seed, haven, ix as f32, iz as f32);
+        self.heights[i] = SurfLine { key, y };
+        y
+    }
+
+    /// The faces' coarse point at whole-metre (`ix`, `iz`)
+    /// (`face::coarse_at`), resolved once per seed.
+    pub(crate) fn coarse(
+        &mut self,
+        seed: u64,
+        haven: &Haven,
+        ix: i32,
+        iz: i32,
+    ) -> crate::face::Coarse {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = point_key(ix, iz);
+        let i = (key.wrapping_mul(2_654_435_761) >> self.face_shift) as usize;
+        if self.coarses[i].key == key {
+            return self.coarses[i].c;
+        }
+        let c = crate::face::coarse_at(seed, haven, ix, iz, |i, j| {
+            self.ground_at(seed, haven, i, j)
+        });
+        self.coarses[i] = CoarseLine { key, c };
+        c
+    }
+
+    /// The skin's height at half-metre point (`hx`, `hz`) — (`hx / 2`,
+    /// `hz / 2`) metres — (`face::skin_point`), resolved once per seed.
+    pub(crate) fn skin(&mut self, seed: u64, haven: &Haven, hx: i32, hz: i32) -> f32 {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = point_key(hx, hz);
+        let i = (key.wrapping_mul(2_654_435_761) >> self.skin_shift) as usize;
+        if self.skins[i].key == key {
+            return self.skins[i].y;
+        }
+        let (x, z) = (hx as f32 * 0.5, hz as f32 * 0.5);
+        let (x0, z0) = (floor_i32(x), floor_i32(z));
+        let q = [
+            self.coarse(seed, haven, x0, z0),
+            self.coarse(seed, haven, x0 + 1, z0),
+            self.coarse(seed, haven, x0, z0 + 1),
+            self.coarse(seed, haven, x0 + 1, z0 + 1),
+        ];
+        let mut room = 0.0;
+        if q.iter().any(|q| q.fade > 0.0) {
+            room = 1.0f32;
+            crate::cliff::spots_near(x, z, crate::face::CRAG_FADE_M, |gi, gj| {
+                let c = self.crag(seed, haven, gi, gj);
+                room = room.min(crate::face::crag_room([&c], x, z));
+            });
+        }
+        let y = crate::face::skin_point(crate::face::seed_key(seed), x, z, &q, room).y;
+        self.skins[i] = SurfLine { key, y };
+        y
+    }
+
+    /// The solid surface at whole-metre (`ix`, `iz`) (`face::surface`),
+    /// resolved once per seed.
+    pub(crate) fn surf(&mut self, seed: u64, haven: &Haven, ix: i32, iz: i32) -> f32 {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = point_key(ix, iz);
+        let i = (key.wrapping_mul(2_654_435_761) >> self.face_shift) as usize;
+        if self.surfs[i].key == key {
+            return self.surfs[i].y;
+        }
+        // `face::surface` at a whole-metre point: its own coarse point and
+        // the skin there, or the ground off the faces.
+        let mut steep = false;
+        let mut drawn = 0.0;
+        for k in 0..4 {
+            let c = self.coarse(seed, haven, ix + k % 2, iz + k / 2);
+            steep |= c.gentlest > crate::face::SKIN_SLOPE_LO;
+            if k == 0 {
+                drawn = c.drawn;
+            }
+        }
+        let y = if steep {
+            drawn.max(self.skin(seed, haven, ix * 2, iz * 2))
+        } else {
+            drawn
+        };
+        self.surfs[i] = SurfLine { key, y };
+        y
+    }
+
+    /// The face law at whole-metre (`ix`, `iz`) (`movement::face_fall`),
+    /// resolved once per seed.
+    pub(crate) fn fall(
+        &mut self,
+        seed: u64,
+        haven: &Haven,
+        ix: i32,
+        iz: i32,
+    ) -> Option<(f32, f32)> {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = point_key(ix, iz);
+        let i = (key.wrapping_mul(2_654_435_761) >> self.face_shift) as usize;
+        if self.falls[i].key != key {
+            let fall = crate::movement::fall_at(ix, iz, |i, j| self.surf(seed, haven, i, j));
+            self.falls[i] = FallLine {
+                key,
+                fall: fall.unwrap_or((0.0, 0.0)),
+            };
+        }
+        let fall = self.falls[i].fall;
+        (fall != (0.0, 0.0)).then_some(fall)
     }
 
     /// The formation in rock cell (`bx`, `bz`), resolved once per seed.
@@ -372,6 +580,20 @@ impl SlotCache {
             i += 1;
         }
         for line in self.crags.iter_mut() {
+            line.key = NO_KEY;
+        }
+        for line in self.coarses.iter_mut() {
+            line.key = NO_KEY;
+        }
+        for line in self
+            .heights
+            .iter_mut()
+            .chain(self.surfs.iter_mut())
+            .chain(self.skins.iter_mut())
+        {
+            line.key = NO_KEY;
+        }
+        for line in self.falls.iter_mut() {
             line.key = NO_KEY;
         }
     }

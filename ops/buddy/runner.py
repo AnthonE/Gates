@@ -477,8 +477,12 @@ def main():
                 "address": address(i),
                 "friend_on": bool(agents[i].get("friend")) and i in running and now - last_t < FRIEND_FRESH_S,
                 "mind_seen": int(seen) if seen else None,
+                # rent.json is public; team chat carries lock codes and the
+                # base's whereabouts, so a team line shows that it was said
+                # and never what.
                 "live": [{"t": r.get("t"), "goal": r.get("goal"), "reason": r.get("reason"),
-                          "say": r.get("say"), "to": r.get("to")} for r in rows],
+                          "say": None if r.get("to") == "team" else r.get("say"), "to": r.get("to")}
+                         for r in rows],
                 "recaps": recap.recent(path("recaps", i + ".jsonl")),
                 "clips": clips_of(i),
             }

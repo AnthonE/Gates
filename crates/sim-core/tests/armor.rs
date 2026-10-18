@@ -42,7 +42,7 @@
 //! bake and the balance bands live.
 
 use sim_core::combat::{self, ArmorDef, CombatContent, ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
-use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+use sim_core::gather::{GatherContent, ItemStack, STRIKE_DELAY_TICKS, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{
     CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, REFUSE_M_NO_CONTAINER, REFUSE_M_SLOT, REFUSE_M_WEAR,
@@ -168,6 +168,13 @@ fn face_off(w: &mut World) -> u16 {
     yaw
 }
 
+/// The ticks between a swing being taken and its blow landing.
+fn wind_up(w: &mut World) {
+    for _ in 0..STRIKE_DELAY_TICKS {
+        w.tick(&[]);
+    }
+}
+
 /// Swings until player 1 falls, and answers how many landed. Bounded so a
 /// swing that stops connecting fails as a count rather than as a hang.
 /// "Falls" is the lethal blow — since wounded v0 that lays the body down
@@ -181,6 +188,7 @@ fn swings_to_kill(w: &mut World, yaw: u16) -> u32 {
             frame: swing_frame(w, seq, yaw),
             favour: 0,
         }]);
+        wind_up(w);
         hits += 1;
         if w.players[1].wounded || w.players[1].hp == 0 {
             return hits;
@@ -243,6 +251,7 @@ fn every_hit_arrives_reduced_not_only_the_killing_one() {
         frame: swing_frame(&w, 1, yaw),
         favour: 0,
     }]);
+    wind_up(&mut w);
     assert_eq!(
         w.players[1].hp,
         FIXTURE_HP - 27,
@@ -529,6 +538,7 @@ fn finish_off(w: &mut World, yaw: u16) {
         frame: swing_frame(w, 99, yaw),
         favour: 0,
     }]);
+    wind_up(w);
     assert!(w.players[1].dead, "the finishing blow did not land");
 }
 

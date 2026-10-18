@@ -42,6 +42,9 @@ pub struct Keypad {
     /// The address of the lock this keypad speaks to, if it is open at
     /// all: a door's edge address, or a box's plane address.
     pub at: Option<(u16, u16, u8, u8)>,
+    /// The lock is a key lock (wire v120): no digits, no code ops — the
+    /// panel offers lock, unlock and take ([`KEY_OPS_HINT`]).
+    pub keyed: bool,
     digits: [u8; DIGITS],
     len: usize,
 }
@@ -53,12 +56,36 @@ impl Keypad {
     /// a wrong code costs hp.
     pub fn open(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
         self.at = Some((cx, cz, level, loc));
+        self.keyed = false;
         self.clear();
+    }
+
+    /// Open the panel on a key lock: the same address, no keypad.
+    pub fn open_key(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        self.open(cx, cz, level, loc);
+        self.keyed = true;
     }
 
     pub fn close(&mut self) {
         self.at = None;
+        self.keyed = false;
         self.clear();
+    }
+
+    /// The key line this panel shows: the keypad's, or a key lock's.
+    pub fn hint(&self) -> &'static str {
+        if self.keyed {
+            KEY_OPS_HINT
+        } else {
+            OPS_HINT
+        }
+    }
+
+    /// Whether this panel sends `key` at all. A key lock has no keypad, so
+    /// the three code ops are not offered (the sim refuses them anyway,
+    /// `lock::apply`).
+    pub fn offers(&self, key: KeypadKey) -> bool {
+        !self.keyed || matches!(key, KeypadKey::Lock | KeypadKey::Unlock | KeypadKey::Take)
     }
 
     pub fn is_open(&self) -> bool {
@@ -74,7 +101,7 @@ impl Keypad {
     /// buffer that scrolled would let a fifth keystroke silently change
     /// the code a player is looking at.
     pub fn push(&mut self, d: u8) {
-        if self.len < DIGITS && d < 10 {
+        if !self.keyed && self.len < DIGITS && d < 10 {
             self.digits[self.len] = d;
             self.len += 1;
         }
@@ -139,6 +166,9 @@ impl Keypad {
 pub const OPS_HINT: &str =
     "[ENTER] TRY  [S] SET  [G] GUEST  [K] LOCK  [U] UNLOCK  [T] TAKE  [ESC] CLOSE";
 
+/// A key lock's ops: the three a padlock has ([`Keypad::offers`]).
+pub const KEY_OPS_HINT: &str = "[K] LOCK  [U] UNLOCK  [T] TAKE  [ESC] CLOSE";
+
 /// What the `L` press addresses, resolved from the pick.
 ///
 /// **The set of things a lock bolts to is the sim's, by import.** The pick
@@ -155,6 +185,8 @@ pub enum LockTarget {
     /// Open the keypad at this address — a door's edge, a box's plane;
     /// the six ops speak from there and the sim answers refusals.
     Pad(u16, u16, u8, u8),
+    /// A key lock at this address: the panel without a keypad.
+    Key(u16, u16, u8, u8),
     /// Lockable, but nothing bolted on: prompt to deploy a lock rather
     /// than opening an empty pad.
     Bare,
@@ -170,6 +202,9 @@ pub fn lock_target(pick: &crate::ui::interact::Pick) -> LockTarget {
     }
     if !pick.has_lock {
         return LockTarget::Bare;
+    }
+    if pick.keyed {
+        return LockTarget::Key(pick.cx, pick.cz, pick.level, pick.loc);
     }
     LockTarget::Pad(pick.cx, pick.cz, pick.level, pick.loc)
 }
@@ -262,6 +297,25 @@ mod tests {
         assert_eq!(k.code(), None);
         k.push(9);
         assert_eq!(k.code(), Some(1239));
+    }
+
+    #[test]
+    fn a_key_lock_has_no_keypad() {
+        let mut k = Keypad::default();
+        k.open_key(1, 2, 0, 3);
+        k.push(5);
+        assert!(k.is_empty(), "no digits at a padlock");
+        assert_eq!(k.hint(), KEY_OPS_HINT);
+        for key in [KeypadKey::Try, KeypadKey::Set, KeypadKey::Guest] {
+            assert!(!k.offers(key), "{key:?}");
+        }
+        for key in [KeypadKey::Lock, KeypadKey::Unlock, KeypadKey::Take] {
+            assert!(k.offers(key), "{key:?}");
+        }
+        // The next code lock gets its keypad back.
+        k.open(1, 2, 0, 3);
+        assert!(k.offers(KeypadKey::Try));
+        assert_eq!(k.hint(), OPS_HINT);
     }
 
     #[test]

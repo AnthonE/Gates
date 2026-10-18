@@ -1750,6 +1750,7 @@ pub fn event_deploy_placed() -> DeployRec {
         open: true,
         locked: true,
         has_lock: true,
+        keyed: true,
         grow: 0b11_00_10_01,
         // `event_piece_placed`'s rule for the hp (v102).
         hp: 0x5AC3,
@@ -1786,6 +1787,8 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
             has_lock: rng.next_bounded(2) == 0,
             // Off the index, not `rng` (v102): `event_piece_sync`'s rule.
             hp: u16::MAX - i as u16 * 2731,
+            // Off the index too (v120), so the draws above keep their order.
+            keyed: i % 3 == 0,
             ..DeployRec::default()
         };
         // A body slot stands anywhere; an insert hangs at the centre.
@@ -1881,8 +1884,17 @@ pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
 /// A door announcement: the same address, now open, still locked and
 /// still carrying its keypad — the state its owner sees after swinging
 /// their own door. All three bits are **1** for `action_access`'s reason.
-pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_XLO, true, true, true)
+pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool, bool) {
+    (
+        341,
+        682,
+        0,
+        sim_core::build::LOC_EDGE_XLO,
+        true,
+        true,
+        true,
+        true,
+    )
 }
 
 /// A knock: the same door, and player 9 outside it. The knocker is
@@ -1967,8 +1979,9 @@ pub fn event_hit() -> (u32, Part, u16) {
 /// sector 11 — west-north-west, a bearing that is on none of the four axes
 /// and in none of the four quadrant seams, so a transposed sign or a
 /// swapped quadrant in `bearing_sector` cannot land on it by accident.
-pub fn event_hurt() -> (u8, u16) {
-    (11, 25)
+/// To the head (v121), so the bit is set and a dropped one shows.
+pub fn event_hurt() -> (u8, u16, bool) {
+    (11, 25, true)
 }
 
 /// A health readout partway down the shipped 100-hp bar — three spear

@@ -129,13 +129,26 @@ fn hash_f32(h: &mut Xxh3, v: f32) {
     h.update(&v.to_bits().to_le_bytes());
 }
 
+/// The occupant byte the golden hashes: what the DRAW placed. A cactus is a
+/// desert shrub refined after the draw (`terrain::cactus_at`) — the same
+/// cell, position and scale — so it hashes as the shrub it stands in. No
+/// save ever keyed anything on a shrub, so seeing it as one is what holds
+/// the golden to the question it answers: did worldgen move what a save
+/// points at.
+fn drawn(o: terrain::Occupant) -> u8 {
+    match o {
+        terrain::Occupant::Cactus => terrain::Occupant::Shrub as u8,
+        o => o as u8,
+    }
+}
+
 fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, z: f32) {
     let table = ScatterTable::alpha_default();
     let (cx0, cz0) = probe_window_origin(x, z);
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             let s = terrain::scatter(seed, &table, haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw, s.species]);
+            h.update(&[drawn(s.occupant), s.yaw, s.species]);
             hash_f32(h, s.x);
             hash_f32(h, s.y);
             hash_f32(h, s.z);
@@ -361,7 +374,7 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     for cz in mid - 8..mid + 8 {
         for cx in mid - 8..mid + 8 {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw, s.species]);
+            h.update(&[drawn(s.occupant), s.yaw, s.species]);
             h.update(&s.x.to_bits().to_le_bytes());
             h.update(&s.y.to_bits().to_le_bytes());
             h.update(&s.z.to_bits().to_le_bytes());
@@ -1468,6 +1481,74 @@ pub fn run_rotation_probe(w: &mut World) -> u64 {
 #[no_mangle]
 pub extern "C" fn probe_rotation() -> u64 {
     run_rotation_probe(&mut rotation_probe_world())
+}
+
+/// Every `fmath` transcendental over a fixed sweep of inputs — wide, small,
+/// near the branch points of each function and the specials — hashed bit
+/// for bit, so a native/wasm difference in any of them is a diff. Packed
+/// `calls << 32 | digest32`, the count so a gate can see the sweep ran.
+#[no_mangle]
+pub extern "C" fn probe_math() -> u64 {
+    use crate::fmath as m;
+    let mut hash = Xxh3::new();
+    let mut calls: u64 = 0;
+    let mut out = |v: f32| {
+        hash.update(&v.to_bits().to_le_bytes());
+        calls += 1;
+    };
+    const N: u32 = 4096;
+    for i in 0..N {
+        // −64π..64π in uneven steps, then the unit interval, then tiny.
+        let t = i as f32 / N as f32;
+        let wide = (t - 0.5) * 402.123_86 + (i % 7) as f32 * 0.013;
+        let unit = t * 2.0 - 1.0;
+        let tiny = (t - 0.5) * 1.0e-4;
+        let pos = t * 1000.0 + 1.0e-3;
+        for x in [wide, unit, tiny] {
+            out(m::sin(x));
+            out(m::cos(x));
+            let (s, c) = m::sin_cos(x);
+            out(s);
+            out(c);
+            out(m::tan(x));
+            out(m::atan(x));
+            out(m::atan2(x, unit));
+            out(m::atan2(unit, x));
+            out(m::exp(x * 0.25));
+            out(m::exp2(x * 0.25));
+            out(m::cbrt(x));
+            out(m::hypot(x, unit));
+            out(m::floor(x));
+            out(m::ceil(x));
+            out(m::round(x));
+            out(m::trunc(x));
+        }
+        out(m::asin(unit));
+        out(m::acos(unit));
+        out(m::ln(pos));
+        out(m::log2(pos));
+        out(m::log10(pos));
+        out(m::powf(pos, unit * 3.0));
+    }
+    for x in [
+        0.0f32,
+        -0.0,
+        1.0,
+        -1.0,
+        core::f32::consts::PI,
+        core::f32::consts::FRAC_PI_2,
+        f32::MAX,
+        f32::MIN_POSITIVE,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ] {
+        out(m::sin(x));
+        out(m::cos(x));
+        out(m::atan2(x, 1.0));
+        out(m::exp(x));
+        out(m::ln(x));
+    }
+    (calls << 32) | (hash.digest() & 0xFFFF_FFFF)
 }
 
 /// Shared fixture for the parity and allocation gates. Construction allocates;

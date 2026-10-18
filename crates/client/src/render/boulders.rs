@@ -9,10 +9,11 @@
 //! darkened through the macro channel (`UV_1.x`) the way weathered rock is.
 //! Loose stones lie around every seated block's foot.
 //!
-//! The mesh departs from the collision box by under a metre either way: the
-//! sim holds a body `occupy::ROCK_SKIN_M` off the box, so a rock drawn much
-//! wider would swallow a player and one drawn much narrower would stop them
-//! in the air.
+//! The mesh stands inside the collision box, never out of it: its rounding,
+//! taper, chisel and fracture all cut in (until 2026-10-17 a facet stood up
+//! to half a fracture proud of the box, rock a body walked into). Under a
+//! metre in, so a body held `occupy::ROCK_SKIN_M` off the box is not
+//! stopped in the air.
 //!
 //! One entity per formation, built in world space, streamed by formation cell
 //! out to [`ROCK_RING`] cells — rocks are landmarks, so they are drawn far
@@ -61,8 +62,8 @@ pub const ROCK_TAPER: f32 = 0.12;
 /// The most a taper may take from a side, metres: the collision box does not
 /// taper, and a body should not stand a metre past the drawn edge.
 pub const ROCK_TAPER_MAX_M: f32 = 0.6;
-/// Most a face is pushed in or out, metres. Under a metre, for the reason in
-/// the module note.
+/// Most a face is pushed in, metres. Under a metre, for the reason in the
+/// module note.
 pub const ROCK_FRACTURE_MAX_M: f32 = 0.9;
 /// How far a rock resting on another is drawn down into it, metres.
 pub const STACK_SINK_M: f32 = 0.6;
@@ -70,6 +71,13 @@ pub const STACK_SINK_M: f32 = 0.6;
 const SEG_M: f32 = 1.6;
 /// Vertical size of one side segment, metres — finer, so the strata show.
 const SEG_V_M: f32 = 0.9;
+/// Segments across each rounded edge, per face: one a face draws an edge as
+/// a bevel of two facets. The round was cut by the face grid alone until
+/// 2026-10-17, and a segment is wider than the round, so every edge was
+/// drawn nearly sharp (operator, of a cliff ledge: "looks bad with its sharp
+/// edges"). Two a face drew it rounder for 70% more triangles, on rocks
+/// drawn out to [`ROCK_RING`].
+const ROUND_SEGS: usize = 1;
 
 /// The Verdigris' spires: black glass with green veins
 /// (`assets/models/MANIFEST.md`), each fitted to a unit box standing on its
@@ -486,23 +494,25 @@ impl RockShape {
 /// Draw one rock into `soup`.
 pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
     let hgt = (r.y1 - r.y0).max(0.3);
+    // One rounding radius in metres on every axis, as a share of each axis.
+    let half_h = hgt * 0.5;
+    let rw = (ROCK_ROUND * r.hx.min(r.hz).min(half_h)).min(ROCK_ROUND_MAX_M);
+    // Face segments over the flat between the rounds (`lines` below).
     let seg = |m: f32, per: f32| ((m / per).ceil() as usize).clamp(r.min_seg, 8);
     let (nx, ny, nz) = if r.min_seg <= 1 {
         (1, 1, 1)
     } else {
+        let under = if r.underside { 2.0 } else { 1.0 };
         (
-            seg(2.0 * r.hx, SEG_M),
-            seg(hgt, SEG_V_M),
-            seg(2.0 * r.hz, SEG_M),
+            seg(2.0 * (r.hx - rw), SEG_M),
+            seg(hgt - under * rw, SEG_V_M),
+            seg(2.0 * (r.hz - rw), SEG_M),
         )
     };
     let amp = (0.16 * r.hx.min(r.hz).min(hgt * 0.5)).min(ROCK_FRACTURE_MAX_M);
     // A few metres a stratum, per rock.
     let layer = 0.9 + 1.4 * h01(r.key, 3);
     let chunk = r.min_seg <= 1;
-    // One rounding radius in metres on every axis, as a share of each axis.
-    let half_h = hgt * 0.5;
-    let rw = (ROCK_ROUND * r.hx.min(r.hz).min(half_h)).min(ROCK_ROUND_MAX_M);
     let rho = Vec3::new(rw / r.hx, rw / half_h, rw / r.hz).min(Vec3::splat(0.95));
     let taper =
         (ROCK_TAPER * (0.4 + 0.6 * h01(r.key, 9))).min(ROCK_TAPER_MAX_M / r.hx.min(r.hz).max(0.1));
@@ -555,22 +565,59 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         let q = w * (1.0 / 2.6);
         let f = noise3(q, r.key) * 0.6 + noise3(q * 2.3, r.key ^ 0x5bd1) * 0.4;
         let stepped = ((f * 4.0).floor() / 3.0).clamp(0.0, 1.0);
-        let mut push = (stepped - 0.5) * amp;
         // A top is ground: pushed about less.
-        push *= 1.0 - 0.7 * n.y.max(0.0);
+        let flat = 1.0 - 0.85 * n.y.max(0.0);
+        // How proud the facet is, for the shading, about 0.
+        let mut proud = (stepped - 0.5) * flat;
         // Strata: a groove every `layer` metres up the sides, wandering.
         let side = 1.0 - n.y.abs();
         let band = (w.y - r.y0) / layer + noise3(q * 0.7, r.key ^ 0x77) * 0.6;
         if band - band.floor() < 0.2 {
-            push -= amp * 0.9 * side;
+            proud -= 0.9 * side;
         }
-        (w + wn * push, push / amp.max(1e-3), wn)
+        // Every facet pushed in, never out: the box is what the sim
+        // collides, so a facet proud of it is rock a body walks into.
+        let push = (proud - 0.5 * flat) * amp;
+        (w + wn * push, proud, wn)
     };
+    // Each axis' grid lines across the unit box: its `n` face segments over
+    // the flat middle and `ROUND_SEGS` more over the round at either end, so
+    // the round is drawn, and how many segments the low round took. A
+    // buried bottom's round is never seen and keeps one segment.
+    let lines = |n: usize, rho: f32, low: bool| -> (Vec<f32>, usize) {
+        if chunk {
+            return (
+                (0..=n).map(|i| -1.0 + 2.0 * i as f32 / n as f32).collect(),
+                0,
+            );
+        }
+        let flat = 1.0 - rho;
+        let round = |k: usize| rho * k as f32 / ROUND_SEGS as f32;
+        let mut v = Vec::with_capacity(n + 1 + 2 * ROUND_SEGS);
+        let lo = if low { ROUND_SEGS } else { 0 };
+        v.extend((0..lo).map(|k| -1.0 + round(k)));
+        let from = if low { -flat } else { -1.0 };
+        v.extend((0..=n).map(|i| from + (flat - from) * i as f32 / n as f32));
+        v.extend((1..=ROUND_SEGS).map(|k| flat + round(k)));
+        (v, lo)
+    };
+    let axes = [
+        lines(nx, rho.x, true),
+        lines(ny, rho.y, r.underside),
+        lines(nz, rho.z, true),
+    ];
+    // A segment's face segment: a round shades as the face it rounds off.
+    let flat_n = [nx, ny, nz];
+    let coarse = |a: usize, i: usize| i.saturating_sub(axes[a].1).min(flat_n[a] - 1);
     // The six faces as (normal axis, sign), each gridded along the other two
-    // axes with the same counts as its neighbours, so the edges they share
+    // axes on the same lines as its neighbours, so the edges they share
     // are the same points and the rock is closed. The bottom is buried and
     // skipped unless the rock stands on another (`underside`).
-    let counts = [nx, ny, nz];
+    let counts = [
+        axes[0].0.len() - 1,
+        axes[1].0.len() - 1,
+        axes[2].0.len() - 1,
+    ];
     let faces: [(usize, f32); 6] = [
         (1, 1.0),
         (0, 1.0),
@@ -592,8 +639,8 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
         let at = |i: usize, j: usize| {
             let mut u = Vec3::ZERO;
             u[axis] = sg;
-            u[a] = -1.0 + 2.0 * i as f32 / na as f32;
-            u[b] = -1.0 + 2.0 * j as f32 / nb as f32;
+            u[a] = axes[a].0[i];
+            u[b] = axes[b].0[j];
             u
         };
         let mut grid = Vec::with_capacity((na + 1) * (nb + 1));
@@ -637,7 +684,8 @@ pub fn rock_block(soup: &mut RockSoup, r: &RockShape) {
                     } else {
                         0.0
                     };
-                    let face = 0.8 + 0.4 * h01(r.key ^ 0x9e, (i * 131 + j * 17 + axis) as u32);
+                    let (ci, cj) = (coarse(a, i), coarse(b, j));
+                    let face = 0.8 + 0.4 * h01(r.key ^ 0x9e, (ci * 131 + cj * 17 + axis) as u32);
                     let value = |k: usize| {
                         let up = ((p[k].y - r.y0) / hgt).clamp(0.0, 1.0);
                         // Recesses darker: the cheap half of occlusion.
@@ -686,8 +734,10 @@ fn chisel_planes(r: &RockShape, half_h: f32, chunk: bool) -> [(Vec3, f32); CHISE
     cuts
 }
 
-/// Loose stones around a seated block's foot: a handful to a dozen, a hand
-/// to a knee high, lying on the ground just off its sides.
+/// Loose stones around a seated block's foot: a handful to a dozen, no
+/// higher than an ankle, lying on the ground just off its sides. Clutter, as
+/// grass is: nothing collides with them, so none stands high enough to read
+/// as rock a body walks through (they ran to knee height until 2026-10-17).
 fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
     let n = ((r.hx + r.hz) * 1.1) as usize;
     for k in 0..n.clamp(3, 14) {
@@ -704,7 +754,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
         let (ox, oz) = (lx + lx.signum() * out * 0.7, lz + lz.signum() * out * 0.7);
         let (x, z) = r.world(ox, oz);
         let gy = terrain::height(seed, x, z);
-        let size = 0.12 + 0.36 * h(3) * h(3);
+        let size = 0.1 + 0.12 * h(3) * h(3);
         let (s, c) = (h(4) * std::f32::consts::TAU).sin_cos();
         rock_block(
             soup,
@@ -715,7 +765,7 @@ fn talus(soup: &mut RockSoup, seed: u64, r: &RockShape) {
                 hz: size * (0.6 + 0.4 * h(5)),
                 dir: (s, c),
                 y0: gy - size * 0.7,
-                y1: gy + size * (0.6 + 0.6 * h(6)),
+                y1: gy + size * (0.4 + 0.5 * h(6)),
                 tx: (h(7) - 0.5) * 0.6,
                 tz: (h(8) - 0.5) * 0.6,
                 key: r.key ^ (k as u32 + 1).wrapping_mul(0x9E37_79B9),

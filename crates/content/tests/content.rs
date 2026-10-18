@@ -420,11 +420,11 @@ fn hash_moves_with_values() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    // The tree's mushrooms, since the bush's berries became its primary.
-    assert!(g.1.contains("output = \"item.mushrooms\"\nper_hit = 1"));
+    // Hemp's seed, since the tree stopped paying mushrooms (2026-10-17).
+    assert!(g.1.contains("output = \"item.hemp_seed\"\nper_hit = 1"));
     g.1 = g.1.replace(
-        "output = \"item.mushrooms\"\nper_hit = 1",
-        "output = \"item.mushrooms\"\nper_hit = 2",
+        "output = \"item.hemp_seed\"\nper_hit = 1",
+        "output = \"item.hemp_seed\"\nper_hit = 2",
     );
     assert_ne!(
         base,
@@ -833,8 +833,8 @@ fn orphan_refs_refused() {
     );
     refuses(
         "loot.toml",
-        "{ item = \"item.cloth\", weight = 181",
-        "{ item = \"item.ghost\", weight = 181",
+        "{ item = \"item.rope\", weight = 328",
+        "{ item = \"item.ghost\", weight = 328",
         "not an item",
     );
     refuses(
@@ -1011,8 +1011,10 @@ fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
     // (item, declared, at-node). Every node empties in the same
     // ceil(1000/150) = 7 marked swings, so the ceiling is just the node's
     // total × 1800 / (7 × 38 = 266): wood 870 → 5887, stone 1000 → 6766,
-    // metal 600 → 4060, sulfur 300 → 2030. Cloth is the bush's hand 10
-    // over one unmarked hit → 10 × 1800 / 38 = 473.
+    // metal 600 → 4060. Sulfur is its pickup's 50 in one unmarked pick →
+    // 50 × 1800 / 38 = 2368, over the node's 300 → 2030 since the ore
+    // pickups pay Rust's 50 (2026-10-17). Cloth is the bush's hand 10 over
+    // one unmarked hit → 10 × 1800 / 38 = 473.
     //
     // **The ceilings tripled on 2026-08-10 and the declared rates did
     // not**, so the gap widened from ~24–68× to ~24–135× (cloth 23.7×,
@@ -1027,7 +1029,7 @@ fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
         ("item.wood", 50, 5887),
         ("item.stone", 50, 6766),
         ("item.metal_ore", 30, 4060),
-        ("item.sulfur_ore", 30, 2030),
+        ("item.sulfur_ore", 30, 2368),
         ("item.cloth", 20, 473),
     ] {
         let row = rates
@@ -1504,12 +1506,7 @@ fn bake_combat_plays_the_band_the_data_declares() {
         }
         melee_rows += 1;
         assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
-        assert_eq!(
-            baked.reach_cm as u32,
-            w.range_m * 100,
-            "`{}` reach in cm",
-            w.id
-        );
+        assert_eq!(baked.reach_cm as u32, w.reach_cm, "`{}` reach in cm", w.id);
         // Hits to kill, computed the way the sim computes it: whole
         // swings, each removing `damage` from `player_hp`.
         let mut hp = cc.player_hp;
@@ -2349,25 +2346,22 @@ fn a_clock_with_no_answer_is_refused() {
         "archetype = \"berry_bush\"\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
-    // The honest version of the same defect — the rows simply absent. All
-    // three of them since world containers v0 widened the clock's
-    // reachable set (2026-08-17): the tree's mushrooms answer hunger on
-    // their own, and so does the barrel's corn now that a verb opens every
-    // shipped container — which is the redundancy working, not the check
-    // weakening.
+    // The honest version of the same defect — the rows simply absent: the
+    // bush, the mushroom patch and the cactus's flesh, the island's forage
+    // (the tree stopped paying mushrooms 2026-10-17).
     let mut srcs = sources();
     let g = srcs
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
     for row in [
-        "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n",
         "\n[[gatherable]]\nid = \"gather.bush\"\narchetype = \"berry_bush\"\n\
          output = \"item.berries\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 5\n",
         "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
          output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 3\n",
+        "\n[gatherable.secondary]\noutput = \"item.cactus_flesh\"\nper_hit = 1\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2375,18 +2369,10 @@ fn a_clock_with_no_answer_is_refused() {
         );
         g.1 = g.1.replace(row, "\n");
     }
-    // Positive control for the widening itself: with both secondaries gone
-    // the barrel's corn is the island's only food, and it counts — before
-    // 2026-08-17 this exact set was refused as unanswerable, which had
-    // become a false refusal the day the open verb landed.
-    build(&srcs).expect("the barrel's corn answers hunger since world containers v0");
-    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
-    let corn_row = "    { item = \"item.corn\", weight = 72, count_min = 2, count_max = 4 },\n";
-    assert!(
-        l.1.contains(corn_row),
-        "test fixture rot: the barrel's corn row moved"
-    );
-    l.1 = l.1.replace(corn_row, "");
+    // Positive control for world containers v0 (2026-08-17): with the forage
+    // gone the roadside food box is the island's only food, and it counts
+    // because a verb opens every shipped container.
+    build(&srcs).expect("the food box answers hunger since world containers v0");
     strip_food_box(&mut srcs);
     let err = build(&srcs).expect_err("a foodless island must be refused");
     assert!(
@@ -2416,12 +2402,16 @@ fn a_clock_with_no_answer_is_refused() {
                 "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 5",
                 "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 0",
             );
-            // The barrel's corn counts toward the clock since world
-            // containers v0 widened the reachable set, so the dry island
-            // has to dry it out too.
+            // Corn counts toward the clock wherever a container pays it
+            // (world containers v0), so the dry island dries it out too.
             *text = text.replace(
                 "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 20",
                 "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 0",
+            );
+            // And the cactus's flesh, the desert's drink.
+            *text = text.replace(
+                "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 20",
+                "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 0",
             );
         }
     }
@@ -2474,14 +2464,14 @@ fn a_drink_that_is_not_a_trade_is_refused() {
 fn a_secondary_that_pays_nothing_is_refused() {
     refuses(
         "gatherables.toml",
-        "output = \"item.mushrooms\"\nper_hit = 1",
-        "output = \"item.mushrooms\"\nper_hit = 0",
+        "output = \"item.hemp_seed\"\nper_hit = 1",
+        "output = \"item.hemp_seed\"\nper_hit = 0",
         "pays nothing",
     );
     refuses(
         "gatherables.toml",
-        "[gatherable.secondary]\noutput = \"item.mushrooms\"",
-        "[gatherable.secondary]\noutput = \"item.wood\"",
+        "[gatherable.secondary]\noutput = \"item.hemp_seed\"",
+        "[gatherable.secondary]\noutput = \"item.cloth\"",
         "repeats the primary output",
     );
 }
@@ -2502,12 +2492,10 @@ fn the_shipped_loot_tables_bake() {
     let t = lc
         .table(sim_core::loot::LOOT_BARREL)
         .expect("the barrel table is armed");
-    // 9 → 10 for crops v0's corn seed; → 19 for Rust's barrel components
-    // (2026-10-13).
-    assert_eq!(t.len, 19, "the barrel table lost or gained a row");
-    assert_eq!(t.rolls_min, 1);
-    // 1–2 → 1–3 so Rust's components ride on top of our own rows (2026-10-13).
-    assert_eq!(t.rolls_max, 3);
+    // 19 → 12 when the barrel became Rust's: its twelve parts and nothing
+    // else, one a barrel (2026-10-17).
+    assert_eq!(t.len, 12, "the barrel table lost or gained a row");
+    assert_eq!((t.rolls_min, t.rolls_max), (1, 1));
     assert_eq!(t.hits, 3, "the barrel's hits came from content");
 
     let summed: u32 = t.entries[..t.len as usize]
@@ -2523,17 +2511,20 @@ fn the_shipped_loot_tables_bake() {
     // The rarest thing on the island survived the bake at its authored
     // weight. A revolver quietly baked to weight 0 is unreachable loot
     // that every other gate would call fine.
+    let w = lc
+        .table(sim_core::loot::LOOT_CACHE)
+        .expect("the cache table is armed");
     let revolver = c.item_index("item.revolver").expect("shipped item");
-    let row = t.entries[..t.len as usize]
+    let row = w.entries[..w.len as usize]
         .iter()
         .find(|e| e.item == revolver)
-        .expect("the revolver is still a barrel drop");
-    // Its chance per barrel, per mille: mean rolls × weight ÷ total. It was
-    // weight 1 of 96 (15.6 ‰) until the 2026-10-13 component take re-scaled
-    // the table to 1,000, and it is 16 ‰ now — the rarity did not move.
-    let per_mille =
-        u32::from(t.rolls_min + t.rolls_max) * u32::from(row.weight) * 1000 / (2 * t.total_weight);
-    assert_eq!(per_mille, 16, "the revolver's rarity moved");
+        .expect("the revolver is a waystation drop");
+    // Its chance per cache, in tenths of a per mille: mean rolls × weight ÷
+    // total. Their brown crate's 0.44 % since 2026-10-17, when it left the
+    // barrel (16 ‰ there; theirs carries no gun).
+    let per_10k = u32::from(w.rolls_min + w.rolls_max) * u32::from(row.weight) * 10_000
+        / (2 * w.total_weight);
+    assert_eq!(per_10k, 45, "the revolver's rarity moved");
     assert_eq!((row.count_min, row.count_max), (1, 1));
 
     // Every row names a real item and a sane band.
@@ -2552,7 +2543,7 @@ fn the_shipped_loot_tables_bake() {
         .table(sim_core::loot::LOOT_CRATE)
         .expect("the crate table is armed");
     // 10 → 11: Rust's military crate components replaced gears, rope and
-    // tarp (2026-10-13).
+    // tarp (2026-10-13); still 11 once its raw materials went (2026-10-17).
     assert_eq!(k.len, 11);
     assert_eq!(k.hits, 5);
 }
@@ -2616,8 +2607,8 @@ fn a_roll_count_past_the_cap_is_refused_at_bake() {
 fn a_container_that_cannot_be_opened_is_refused() {
     refuses(
         "loot.toml",
-        "rolls_max = 3\nhits = 3",
-        "rolls_max = 3\nhits = 0",
+        "rolls_max = 1\nhits = 3",
+        "rolls_max = 1\nhits = 0",
         "would never open",
     );
 }
@@ -3921,12 +3912,6 @@ fn every_consumable_the_content_ships_is_reachable() {
         .iter_mut()
         .find(|(n, _)| *n == "gatherables.toml")
         .unwrap();
-    let row = "\n[gatherable.secondary]\noutput = \"item.mushrooms\"\nper_hit = 1\n";
-    assert!(
-        g.1.contains(row),
-        "fixture rot: the tree's mushroom row moved"
-    );
-    g.1 = g.1.replace(row, "\n");
     let patch =
         "\n[[gatherable]]\nid = \"gather.mushroom_patch\"\narchetype = \"mushroom_patch\"\n\
                  output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
@@ -3936,7 +3921,6 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the mushroom patch row moved"
     );
     g.1 = g.1.replace(patch, "\n");
-    strip_food_box(&mut srcs);
     let mutant = build(&srcs).expect("still valid — berries keep the clock answered");
     // The Charcoal Tonic is steeped from mushrooms, so it goes with them.
     assert_eq!(
@@ -3945,32 +3929,20 @@ fn every_consumable_the_content_ships_is_reachable() {
             "item.charcoal_tonic".to_string(),
             "item.mushrooms".to_string()
         ],
-        "deleting the tree's mushroom secondary must strand exactly the mushrooms \
-         and what is made of them"
+        "deleting the mushroom patch must strand exactly the mushrooms and what \
+         is made of them"
     );
 
+    // Corn grows in no node: the roadside food box is its one source (the
+    // planter's seed is cut from corn), so taking the box strands exactly it.
     let mut srcs = sources();
-    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
-    let row = "    { item = \"item.corn\", weight = 72, count_min = 2, count_max = 4 },\n";
-    assert!(
-        l.1.contains(row),
-        "fixture rot: the barrel's corn row moved"
-    );
-    l.1 = l.1.replace(row, "");
-    // The planter grows corn from the barrel's seed (crops v0), so the seed
-    // row goes too — or the corn is still reachable, as it should be.
-    let seed = "    { item = \"item.corn_seed\", weight = 54, count_min = 2, count_max = 4 },\n";
-    assert!(
-        l.1.contains(seed),
-        "fixture rot: the barrel's corn seed row moved"
-    );
-    l.1 = l.1.replace(seed, "");
     strip_food_box(&mut srcs);
-    let mutant = build(&srcs).expect("still valid — the bush and the tree keep the clock answered");
+    let mutant =
+        build(&srcs).expect("still valid — the bush and the patch keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
         vec!["item.corn".to_string()],
-        "deleting the barrel's corn row must strand exactly the corn"
+        "deleting the food box must strand exactly the corn"
     );
 
     // World containers v0 (2026-08-14) made the crate and the cache
@@ -3978,28 +3950,26 @@ fn every_consumable_the_content_ships_is_reachable() {
     // in one of their tables is reachable — the pre-widening walk (barrel
     // rows alone) called exactly this fixture stranded, which is the
     // regression this pins.
-    let corn_row = "    { item = \"item.corn\", weight = 72, count_min = 2, count_max = 4 },\n";
-    for anchor in [
-        // The crate's metal_frags row — unique counts, so the corn lands
-        // in the crate's table.
-        "    { item = \"item.metal_frags\", weight = 255, count_min = 25, count_max = 50 },\n",
-        // The cache's — same, for the third container kind.
-        "    { item = \"item.metal_frags\", weight = 332, count_min = 15, count_max = 30 },\n",
-    ] {
+    let corn_row = "    { item = \"item.corn\", weight = 50, count_min = 2, count_max = 4 },\n";
+    for table in ["loot.crate", "loot.cache"] {
         let mut srcs = sources();
+        strip_food_box(&mut srcs);
         let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
-        assert!(
-            l.1.contains(corn_row) && l.1.contains(anchor),
-            "fixture rot: the corn row or the metal_frags anchor moved"
-        );
-        l.1 = l.1.replace(corn_row, "");
-        l.1 = l.1.replace(anchor, &format!("{anchor}{corn_row}"));
+        let at =
+            l.1.find(&format!("id = \"{table}\""))
+                .and_then(|t| {
+                    l.1[t..]
+                        .find("entries = [\n")
+                        .map(|e| t + e + "entries = [\n".len())
+                })
+                .unwrap_or_else(|| panic!("fixture rot: {table}'s entries moved"));
+        l.1.insert_str(at, corn_row);
         let mutant = build(&srcs).expect("moving the corn between containers is legal content");
         assert_eq!(
             unreachable_consumables(&mutant),
             Vec::<String>::new(),
-            "corn only in a verb-openable container's table is reachable — \
-             a walk that counts barrels alone is stale since world containers v0"
+            "corn only in {table} is reachable — a walk that counts barrels \
+             alone is stale since world containers v0"
         );
     }
 }

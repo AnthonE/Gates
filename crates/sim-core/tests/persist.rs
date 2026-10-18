@@ -246,7 +246,7 @@ fn a_restore_carries_no_client_state_and_no_stale_clock() {
     let (mut w, _) = a_played_character();
     w.players[0].next_swing = 9_999;
     w.players[0].frame.seq = 4_242;
-    w.players[0].ws_hits = 5;
+    w.players[0].ws_mark = 5;
     let save = w.save_of(ID).expect("still there");
 
     let mut w2 = armed();
@@ -258,7 +258,7 @@ fn a_restore_carries_no_client_state_and_no_stale_clock() {
     );
     assert_eq!(p.next_swing, 0, "a cooldown from a dead clock came back");
     assert_eq!(
-        p.ws_hits, 0,
+        p.ws_mark, 0,
         "the weak-spot chase belongs to an old encounter"
     );
 }
@@ -794,7 +794,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 47] = [
+    pub const RE_DERIVED: [&str; 50] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // The life clock: the corpse keeps it for the death screen's
@@ -820,6 +820,11 @@ mod carried_through_death {
         // wrong way round.
         "worn",
         "next_swing",
+        // A swing on its way in dies with the arm that took it: a corpse
+        // lands no blow (`gather::strike_due`).
+        "strike_at",
+        "strike_sel",
+        "strike_favour",
         // **A corpse's cylinder does not follow it to the beach.** `worn`'s
         // argument one step on: the gun itself is on the other list by
         // being inside `inv`, so it goes to the death bag, and a magazine
@@ -841,7 +846,7 @@ mod carried_through_death {
         "mag",
         "mag_round",
         "ws_cell",
-        "ws_hits",
+        "ws_mark",
         "jobs",
         "craft_done_at",
         "hp",

@@ -44,6 +44,7 @@ const CH_CLUTTER: u32 = 80; // the sub-metre ground population
 const CH_COAST_BAY: u32 = 88; // the coastline's headlands and coves
 const CH_SPECIES: u32 = 96; // which species a stand is painted with
 const CH_PLANT: u32 = 152; // which plant the bush column grows (`plant_of`)
+const CH_CACTUS: u32 = 153; // which desert shrub is a cactus (`cactus_at`)
 const CH_MASSIF_PLACE: u32 = 128; // where each interior range stands
 const CH_GULLY: u32 = 136; // +octave index, GULLY_OCTAVES of them
 const CH_MASSIF_WARP: u32 = 144; // +0 the ranges' own warp in x, +2 in z
@@ -7041,6 +7042,11 @@ pub enum Occupant {
     MetalPile = 25,
     SulfurPile = 26,
     MushroomPatch = 27,
+    /// A saguaro: a desert shrub that rolled [`cactus_at`]. Solid like a
+    /// trunk, swung at for cloth (`gather.cactus`), and it pricks a body
+    /// pressed against it (`world::CACTUS_HP`). Drawn from a shrub cell
+    /// after the draw is settled, so no other cell moves for it.
+    Cactus = 28,
 }
 
 impl Occupant {
@@ -7198,6 +7204,24 @@ const _: () = {
         b += 1;
     }
 };
+
+/// A saguaro's trunk at scale 1, metres: the widest column the client draws
+/// (`render/plants::cactus`, 0.2–0.27 m), rounded outward; its arms are
+/// outside it, as a tree's limbs are. And its top: the shortest saguaro's,
+/// so nothing invisible blocks above a short one.
+pub const CACTUS_R_M: f32 = 0.27;
+pub const CACTUS_TOP_M: f32 = 2.4;
+
+/// Share of the desert's shrubs that stand as a cactus, per mille. **(knob)**
+/// The rest is dry scrub. Rust's arid biome is thick with them.
+pub const CACTUS_PERMILLE: u16 = 380;
+
+/// Whether the desert shrub in cell (`cell_x`, `cell_z`) is a cactus: its own
+/// hash channel, so the roll that grew a shrub there and this one are
+/// independent. Only [`scatter`] asks, and only of a desert shrub.
+pub fn cactus_at(seed: u64, cell_x: i32, cell_z: i32) -> bool {
+    (cell_hash(seed, cell_x, cell_z, CH_CACTUS) % 1000) < u64::from(CACTUS_PERMILLE)
+}
 
 /// Per-biome scatter weights in per-mille of a cell draw, order
 /// [Tree, Stone, Metal, Sulfur, Bush, Rock, Barrel]; remainder is None.
@@ -7900,34 +7924,27 @@ fn scatter_in<C: Corners>(
     // into the road. Reserve the actual scaled collision volume, with a
     // cheap segment bounding-box reject before the distance calculation.
     let reach = SIDE_ROAD_HALF_W + occupant_volume(occupant).0 * scale;
-    // The cheap reject is still the CHORD's box, grown by the widest a node
-    // may sit off it. Provable rather than measured — `bend_side_road`'s
-    // offset is `amp * bend_taper * bend_unit` with the last two at most 1
-    // and `amp <= SIDE_ROAD_BEND_M` — and `side_road.rs`'s
-    // `every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling` is what
-    // holds the half this line ASSUMES.
-    //
-    // ⚠ **What catches a box that is too tight is in another file, and the
-    // golden is blind to it.** Dropping the `+ SIDE_ROAD_BEND_M` was run as a
-    // mutant: `test_terrain_golden` stays GREEN — the props it strands are
-    // not in the cells `probe_sites` samples — and the only gate that reddens
-    // is `tests/depot.rs`'s
-    // `carriageways_clear_real_capsules_over_final_ground_including_both_edges`,
-    // which walks a real capsule down the road. So the failure mode is a
-    // boulder standing in the carriageway with the determinism gate happy,
-    // and that walk is the one thing in the way.
-    let box_r = reach + SIDE_ROAD_BEND_M;
-    for road in &haven.roads {
-        if road.live
-            && x >= road.px.min(road.rx) - box_r
-            && x <= road.px.max(road.rx) + box_r
-            && z >= road.pz.min(road.rz) - box_r
-            && z <= road.pz.max(road.rz) + box_r
-            && road.dist2(x, z).sqrt() <= reach
-        {
-            return none;
-        }
+    if !clears_side_roads(haven, x, z, reach) {
+        return none;
     }
+    // A desert shrub stands as a cactus when its own roll says so and its
+    // trunk clears the side roads, as any solid occupant's must; one that
+    // would stand in a carriageway stays scrub. Decided after the draw, so
+    // a cell that held a shrub still holds one, a cactus or not, and no
+    // other cell moves.
+    let occupant = if occupant == Occupant::Shrub
+        && cactus_at(seed, cell_x, cell_z)
+        && biome(hy, moisture_in(c, seed, x, z), fel) == Biome::Desert
+        && clears_side_roads(
+            haven,
+            x,
+            z,
+            SIDE_ROAD_HALF_W + occupant_volume(Occupant::Cactus).0 * scale,
+        ) {
+        Occupant::Cactus
+    } else {
+        occupant
+    };
 
     Slot {
         occupant,
@@ -7955,6 +7972,36 @@ fn scatter_in<C: Corners>(
             u8::from(((h >> 20) & 0xFF) as f32 * (1.0 / 255.0) < species_share_in(c, seed, x, z))
         },
     }
+}
+
+/// Whether a slot at (`x`, `z`) whose solid reach from its centre is `reach`
+/// metres stands clear of every live side road's carriageway.
+fn clears_side_roads(haven: &Haven, x: f32, z: f32, reach: f32) -> bool {
+    // The cheap reject is still the CHORD's box, grown by the widest a node
+    // may sit off it. Provable rather than measured — `bend_side_road`'s
+    // offset is `amp * bend_taper * bend_unit` with the last two at most 1
+    // and `amp <= SIDE_ROAD_BEND_M` — and `side_road.rs`'s
+    // `every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling` is what
+    // holds the half this line ASSUMES.
+    //
+    // ⚠ **What catches a box that is too tight is in another file, and the
+    // golden is blind to it.** Dropping the `+ SIDE_ROAD_BEND_M` was run as a
+    // mutant: `test_terrain_golden` stays GREEN — the props it strands are
+    // not in the cells `probe_sites` samples — and the only gate that reddens
+    // is `tests/depot.rs`'s
+    // `carriageways_clear_real_capsules_over_final_ground_including_both_edges`,
+    // which walks a real capsule down the road. So the failure mode is a
+    // boulder standing in the carriageway with the determinism gate happy,
+    // and that walk is the one thing in the way.
+    let box_r = reach + SIDE_ROAD_BEND_M;
+    !haven.roads.iter().any(|road| {
+        road.live
+            && x >= road.px.min(road.rx) - box_r
+            && x <= road.px.max(road.rx) + box_r
+            && z >= road.pz.min(road.rz) - box_r
+            && z <= road.pz.max(road.rz) + box_r
+            && road.dist2(x, z).sqrt() <= reach
+    })
 }
 
 // ── Ground clutter (ART.md rule 4) ─────────────────────────────────────────
@@ -8542,7 +8589,11 @@ pub fn clutter_channel(kind: Clutter) -> usize {
 /// comment names bits 0..7 as "this draw's one unspent slice"), and a second
 /// hash for a sub-kind would be a per-element cost on the densest population
 /// in the game.
-pub const BRUSH_SHARE_PERMILLE: u32 = 200;
+///
+/// 350, up from 200 (operator, 2026-10-17: "up the density of ... other
+/// shrubbery"), taken mostly from the sprigs so the twigs the ferns grow on
+/// keep most of their share.
+pub const BRUSH_SHARE_PERMILLE: u32 = 350;
 
 /// Share of the grass channel that lies as a [`Clutter::Stone`], per mille —
 /// spent the way [`BRUSH_SHARE_PERMILLE`] is. **(knob)**
@@ -8550,7 +8601,7 @@ pub const STONE_SHARE_PERMILLE: u32 = 30;
 
 /// Share of the forest-litter channel that grows as a [`Clutter::Sprig`],
 /// per mille, taken above the brush's share. **(knob)**
-pub const SPRIG_SHARE_PERMILLE: u32 = 300;
+pub const SPRIG_SHARE_PERMILLE: u32 = 220;
 
 /// One resolved clutter element. Deliberately the same shape as `Slot` minus
 /// the things clutter does not have (an occupant identity the sim knows, a
@@ -9779,8 +9830,10 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// Row 7 read 0.45 and cited `CylinderGeometry(0.45, 0.45, 0.95)` — the
 /// deleted browser client's geometry, a guess carried forward — and 0.9 m
 /// across by 0.95 tall is near-spherical where a 55-gallon drum is half again
-/// taller than it is wide. It is the measured object now: **0.585 m across by
-/// 0.88 tall**, so 0.585/2 here, 0.88 in `OCCUPANT_TOP_M`, and the client's
+/// taller than it is wide. It was the measured object, 0.585 m across by
+/// 0.88 tall, and that read small beside a Rust-sized player; it is Rust's
+/// drum now, grown 12/11 on 2026-10-17: **0.638 m across by 0.96 tall**, so
+/// 0.638/2 here, 0.96 in `OCCUPANT_TOP_M`, and the client's
 /// `archetype_lift` set to the half-height so the drum's base is the slot's
 /// ground. Two independent sources agree on the pair — the reference set's
 /// `barrelroad`, and Meshy's `auto_size` vision estimate, which returned it
@@ -9789,7 +9842,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 28] = [
+pub const OCCUPANT_R_M: [f32; 29] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -9825,7 +9878,7 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
     1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
-    0.2925,             // BarrelSlot — the drum is 0.585 m across, so 0.585/2
+    0.3191,             // BarrelSlot — the drum is 0.638 m across, so 0.638/2
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
@@ -9837,7 +9890,7 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     0.6801,        // GreenCrate — the crate's box
     0.6801,        // BlueCrate
     0.6801,        // EliteCrate
-    0.2925,        // OilBarrel — the barrel's drum
+    0.3191,        // OilBarrel — the barrel's drum
     ROAD_SIGN_R_M, // RoadSign — broad phase; ROAD_SIGN_BOXES is the volume
     0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
     CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
@@ -9849,6 +9902,7 @@ pub const OCCUPANT_R_M: [f32; 28] = [
     0.0,           // MetalPile
     0.0,           // SulfurPile
     0.0,           // MushroomPatch
+    CACTUS_R_M,    // Cactus — the saguaro's trunk
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -9865,7 +9919,7 @@ pub const OCCUPANT_R_M: [f32; 28] = [
 /// 42 m; the sim cannot tell the species apart, so the shorter one wins and
 /// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
-pub const OCCUPANT_TOP_M: [f32; 28] = [
+pub const OCCUPANT_TOP_M: [f32; 29] = [
     0.0,  // None
     33.0, // Tree — the broadleaf's drawn height (×3 on 2026-10-13)
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -9876,7 +9930,7 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     1.1269,         // SulfurNode
     0.0,            // Bush
     1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
-    0.88,           // BarrelSlot — lift 0.44 + half-height 0.44
+    0.96,           // BarrelSlot — lift 0.48 + half-height 0.48
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
@@ -9888,7 +9942,7 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.8,              // GreenCrate
     0.8,              // BlueCrate
     0.8,              // EliteCrate
-    0.88,             // OilBarrel
+    0.96,             // OilBarrel
     ROAD_SIGN_PEAK_M, // RoadSign — the plate's top
     0.4,              // FoodCrate — lift 0.2 + half-height 0.2
     CAR_WRECK_PEAK_M, // CarWreck — the roof
@@ -9900,6 +9954,7 @@ pub const OCCUPANT_TOP_M: [f32; 28] = [
     0.0,              // MetalPile
     0.0,              // SulfurPile
     0.0,              // MushroomPatch
+    CACTUS_TOP_M,     // Cactus
 ];
 
 /// Widest scale `scatter` can hand a slot. Both draws top out at
@@ -9988,13 +10043,13 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::BerryBush => (0.0, 0.0),
         Occupant::Rock => (1.1145, 1.5403),
-        Occupant::BarrelSlot => (0.2925, 0.88),
+        Occupant::BarrelSlot => (0.3191, 0.96),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
-        Occupant::OilBarrel => (0.2925, 0.88),
+        Occupant::OilBarrel => (0.3191, 0.96),
         Occupant::RoadSign => (ROAD_SIGN_R_M, ROAD_SIGN_PEAK_M),
         Occupant::FoodCrate => (0.5831, 0.4),
         Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
@@ -10005,6 +10060,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         | Occupant::MetalPile
         | Occupant::SulfurPile
         | Occupant::MushroomPatch => (0.0, 0.0),
+        Occupant::Cactus => (CACTUS_R_M, CACTUS_TOP_M),
     }
 }
 
@@ -10042,7 +10098,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 28 && OCCUPANT_TOP_M.len() == 28);
+    assert!(OCCUPANT_R_M.len() == 29 && OCCUPANT_TOP_M.len() == 29);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -10090,6 +10146,8 @@ const _: () = {
     assert!(occupant_volume(Occupant::Shrub).0 == OCCUPANT_R_M[22]);
     assert!(occupant_volume(Occupant::Hemp).1 == OCCUPANT_TOP_M[21]);
     assert!(occupant_volume(Occupant::Shrub).1 == OCCUPANT_TOP_M[22]);
+    assert!(occupant_volume(Occupant::Cactus).0 == OCCUPANT_R_M[28]);
+    assert!(occupant_volume(Occupant::Cactus).1 == OCCUPANT_TOP_M[28]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who

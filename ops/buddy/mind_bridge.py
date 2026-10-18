@@ -328,7 +328,8 @@ class Bridge:
                 seen = self.looks.pop(aid, None) or {}
             obs = seen.get("observation") if isinstance(seen.get("observation"), dict) else {}
             heard = seen.get("heard") if isinstance(seen.get("heard"), list) else []
-            to = args.get("to") if args.get("to") in ("local", "team") else None
+            # Missing is global, as jev-bot reads it (`external.rs`).
+            to = args.get("to") if args.get("to") in ("global", "local", "team") else "global"
             row = {
                 "t": round(time.time(), 2),
                 "goal": _clip(args.get("goal"), 32),

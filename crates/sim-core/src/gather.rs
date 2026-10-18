@@ -109,7 +109,7 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 12;
+pub const GATHERABLE_KINDS: usize = 13;
 
 /// The felled tree's stump (`NOW.md` §0stump): the last gatherable row, and
 /// the one no `Occupant` names. It is the tree slot's second life — a
@@ -117,6 +117,11 @@ pub const GATHERABLE_KINDS: usize = 12;
 /// fell, until the stump is grubbed ([`STUMP_GRUBBED`]); the sapling still
 /// comes on the tree's own timer. No new occupant, no wire byte.
 pub const STUMP_NODE: usize = 11;
+
+/// The desert's cactus (`Occupant::Cactus`): swung at for cloth. After the
+/// stump because the stump's row was there first and a row is a save's
+/// address for nothing, but a test's for plenty.
+pub const CACTUS_NODE: usize = 12;
 
 /// A harvested tree's `SlotLife::hits` once its stump is spent: nothing left
 /// to swing at until the sapling. Not a count any budget reaches.
@@ -153,6 +158,17 @@ pub const MAX_TOOLS_PER_NODE: usize = 8;
 /// at 30 Hz, the melee-band cadence. Paid per swing, hit or whiff.
 pub const SWING_INTERVAL_TICKS: u64 = 38;
 
+/// Ticks from a swing being taken to its blow landing: **4 (133 ms)**, the
+/// strike both swing animations draw — the first-person arc's apex
+/// (`viewmodel::swing_apex_s`) and the remote body's `Sword_Attack` as it is
+/// played (`client/tests/rig_asset.rs` holds both to this). Fast, the way
+/// the reference swings (operator, 2026-10-17: *"it swings pretty fast and
+/// almost seems to linger at most of the force is out"*). The blow is cast
+/// with the aim and the lag-comp favour of the strike tick, so what is
+/// judged is what the swinger watched the weapon land on.
+pub const STRIKE_DELAY_TICKS: u64 = 4;
+const _: () = assert!(STRIKE_DELAY_TICKS >= 1 && STRIKE_DELAY_TICKS < SWING_INTERVAL_TICKS);
+
 /// Budget one unmarked swing spends against a node's pool, and the
 /// denominator every proportional payout divides by. A node holds
 /// `NodeDef::hits × HIT_UNIT`; `SlotLife::hits` counts budget SPENT, not
@@ -160,8 +176,7 @@ pub const SWING_INTERVAL_TICKS: u64 = 38;
 /// without paying more in total (`NodeDef::weak_pct`). 100 so a content
 /// percentage lands on it exactly. Structural, not a knob.
 pub const HIT_UNIT: u32 = 100;
-/// Reach at a node in metres, whatever is in hand (matches the melee
-/// weapon rows' range_m = 2). Since melee aim v1 (2026-09-05) this is the
+/// Reach at a node in metres, whatever is in hand. Since melee aim v1 (2026-09-05) this is the
 /// length of the swing's **ray** at a node — `melee::Reaches::node` — and
 /// no longer the radius of a planar cone; the cone (`CONE_COS`, 30°) and its
 /// ±3 m vertical window (`DY_MAX_M`) are gone with the planar pick, and
@@ -548,6 +563,7 @@ impl GatherContent {
             (3, 1, 10, 0, 0, NO_ITEM, 0, 0), // SulfurPile
             (4, 1, 3, 0, 0, NO_ITEM, 0, 0),  // MushroomPatch
             (0, 3, 0, 0, 0, 1, 5, 4),        // Stump: the tree's tool, a smaller pool
+            (5, 2, 0, 0, 0, 0, 6, 3),        // Cactus: hemp's item off a tool
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -596,6 +612,7 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
         Occupant::MetalPile => Some(8),
         Occupant::SulfurPile => Some(9),
         Occupant::MushroomPatch => Some(10),
+        Occupant::Cactus => Some(CACTUS_NODE),
         Occupant::None
         | Occupant::Rock
         | Occupant::BarrelSlot
@@ -659,6 +676,7 @@ fn occupant_of(target: usize) -> u32 {
                 8 => Occupant::MetalPile,
                 9 => Occupant::SulfurPile,
                 10 => Occupant::MushroomPatch,
+                CACTUS_NODE => Occupant::Cactus,
                 // STUMP_NODE: what stood here was a tree.
                 _ => Occupant::Tree,
             }) as u32
@@ -1158,15 +1176,50 @@ pub fn cell_key(cx: u16, cz: u16) -> u32 {
     ((cx as u32) << 16) | cz as u32
 }
 
-/// The weak-spot mark after `n` landed hits by `pid` on the node at
-/// `(cx, cz)`: a heading over the 256-entry yaw LUT, pointing from the
-/// node toward where the swinger must stand. Per-player (the reference
-/// mechanic's mark is yours alone) and pure — server, replay, and any
-/// future client-side ghost all derive the same mark.
+/// How far the weak-spot mark travels round the node per step, in yaw-LUT
+/// entries (256 a turn): 20 + 0..=15, so 28°–49°. Against `WEAK_COS`'s
+/// 45° half-sector that is a step or two of footwork per mark, not a walk
+/// to the far side. The reference's tree X (Devblog 187): *"the first X
+/// appears relative to the first impact position"*, later ones *"rotate
+/// less each hit"* and *"will always go in the same direction"*.
+pub const MARK_STEP_MIN: u8 = 20;
+pub const MARK_STEP_SPAN: u8 = 15;
+
+/// `Player::ws_mark`'s bit naming which way round the mark travels; the
+/// low byte is the mark's heading over the yaw LUT.
+pub const WS_MARK_CCW: u16 = 1 << 8;
+
+/// The heading half of a `Player::ws_mark`.
 #[inline]
-pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
+pub fn mark8_of(ws_mark: u16) -> u8 {
+    ws_mark as u8
+}
+
+/// The mark one step on from `ws_mark` (heading | direction bit), for `pid`
+/// chasing the node at `(cx, cz)`: the same way round, by a hashed step in
+/// the [`MARK_STEP_MIN`] band. Pure, so a replay derives the same chase.
+#[inline]
+pub fn next_mark(seed: u64, cx: u16, cz: u16, pid: u32, ws_mark: u16) -> u16 {
     let h = cell_hash(seed, cx as i32, cz as i32, CH_WEAK);
-    (splitmix64(h ^ ((pid as u64) << 16) ^ n as u64) >> 32) as u8
+    let r = splitmix64(h ^ ((pid as u64) << 16) ^ ws_mark as u64) >> 32;
+    let step = MARK_STEP_MIN + (r % (MARK_STEP_SPAN as u64 + 1)) as u8;
+    let m = mark8_of(ws_mark);
+    let m = if ws_mark & WS_MARK_CCW != 0 {
+        m.wrapping_sub(step)
+    } else {
+        m.wrapping_add(step)
+    };
+    (ws_mark & WS_MARK_CCW) | m as u16
+}
+
+/// The first mark of a chase: one step on from `impact8`, the heading the
+/// first blow landed at, in a direction rolled for this chase.
+#[inline]
+pub fn first_mark(seed: u64, cx: u16, cz: u16, pid: u32, impact8: u8) -> u16 {
+    let h = cell_hash(seed, cx as i32, cz as i32, CH_WEAK);
+    let r = splitmix64(h ^ ((pid as u64) << 16) ^ (0x1_0000 | impact8 as u64));
+    let ccw = if r >> 63 != 0 { WS_MARK_CCW } else { 0 };
+    next_mark(seed, cx, cz, pid, ccw | impact8 as u16)
 }
 
 /// The cadence gate: does this body swing on this tick, and if so, pay it.
@@ -1191,6 +1244,21 @@ pub fn take_swing(tick: u64, events: &mut EventQueue, p: &mut Player) -> bool {
     p.next_swing = tick + SWING_INTERVAL_TICKS;
     events.push(crate::world::EV_SWING, p.id, 0, 0);
     true
+}
+
+/// Does the swing this body took land on this tick? Once, on exactly
+/// `Player::strike_at`, and only with the slot it was taken with still in
+/// hand. A strike whose tick passed with the arm skipped (downed, asleep,
+/// dead) is dropped rather than landing late.
+pub fn strike_due(tick: u64, p: &mut Player) -> bool {
+    if p.strike_at == 0 || tick < p.strike_at {
+        return false;
+    }
+    let due = tick == p.strike_at && p.frame.sel == p.strike_sel;
+    p.strike_at = 0;
+    p.strike_sel = 0;
+    p.strike_favour = 0;
+    due
 }
 
 /// Land a taken swing on the occupant the ray reached first.
@@ -1310,22 +1378,32 @@ pub fn land(
     if stump && (life.respawn_at == 0 || life.hits == STUMP_GRUBBED) {
         return Swing::Absorbed;
     }
-    // The weak-spot chase: switching nodes restarts it; the mark only
-    // exists after the first landed hit. A hit landed while standing in
-    // the current mark's sector spends the content's extra budget;
-    // point-blank has no bearing to judge, so it never marks.
+    // The weak-spot chase: the first landed hit on a node puts the mark a
+    // step round from where that blow struck the skin; it then stays put
+    // until a hit lands while standing in its sector, which spends the
+    // content's extra budget and moves it one step on, always the same way
+    // round. Point-blank has no bearing to judge, so it never marks.
     let ck = cell_key(cx, cz);
-    if p.ws_cell != ck {
-        p.ws_cell = ck;
-        p.ws_hits = 0;
-    }
     let mut weak_hit = false;
-    if def.weak_pct > 0 && p.ws_hits > 0 && d2 > POINT_BLANK_M2 {
-        let mark = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
-        let (wx, wz) = yaw_dir((mark as u16) << 8);
+    if p.ws_cell != ck {
+        let (ix, iz) = hit
+            .skin(ray)
+            .map_or((ox, oz), |(x, _, z)| (x - slot.x, z - slot.z));
+        let (ix, iz) = if ix * ix + iz * iz > 0.0 {
+            (ix, iz)
+        } else {
+            (ox, oz)
+        };
+        let impact8 = crate::terrain::bearing_index(ix, iz) as u8;
+        p.ws_cell = ck;
+        p.ws_mark = first_mark(seed, cx, cz, p.id, impact8);
+    } else if def.weak_pct > 0 && d2 > POINT_BLANK_M2 {
+        let (wx, wz) = yaw_dir((mark8_of(p.ws_mark) as u16) << 8);
         weak_hit = ox * wx + oz * wz > WEAK_COS * d2.sqrt();
+        if weak_hit {
+            p.ws_mark = next_mark(seed, cx, cz, p.id, p.ws_mark);
+        }
     }
-    p.ws_hits = p.ws_hits.saturating_add(1);
 
     // Spend the swing's budget against the node's pool. A marked swing
     // takes a bigger bite (`weak_pct`) and is paid pro rata for it, so
@@ -1508,11 +1586,11 @@ pub fn land(
             events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
         }
         p.ws_cell = NO_CELL;
-        p.ws_hits = 0;
+        p.ws_mark = 0;
         return Swing::Absorbed;
     }
     if def.weak_pct > 0 {
-        let next = weak_mark8(seed, cx, cz, p.id, p.ws_hits);
+        let next = mark8_of(p.ws_mark);
         events.push(
             EV_WEAK_MARK,
             p.id,
@@ -1665,7 +1743,7 @@ fn smash(
     // progress rather than leaving the mark pointed at a cell that pays no
     // bonus.
     p.ws_cell = NO_CELL;
-    p.ws_hits = 0;
+    p.ws_mark = 0;
 
     let Some(life) = lives.find_or_insert(cx, cz) else {
         return Swing::Absorbed; // store exhausted by harvested entries

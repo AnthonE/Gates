@@ -78,6 +78,9 @@ const TRAIL: usize = 32;
 /// client draws other bodies at, which the server rewinds a blow by when
 /// the input acks the newest tick (`server::stats::favour_for`).
 pub const SEAT_FAVOUR: u32 = sim_core::limits::INTERP_DELAY_TICKS as u32;
+/// How far inside its reach the Aimbot swings at an agent free to back off:
+/// what a body backing out covers in a blow's wind-up.
+const AIMBOT_SURE_M: f32 = 0.35;
 /// A placed seat waits at most this long for the agent to see it.
 const SIGHT_WAIT_TICKS: u32 = 5 * TICK_HZ;
 const NOTICE_TICKS: u32 = TICK_HZ;
@@ -392,7 +395,9 @@ impl Arena {
     }
 
     fn push(&mut self, slot: usize, frame: InputFrame, ack: (u16, u32)) {
-        let mut dg = InputDatagram::new(ack.0, ack.1, sim_core::limits::INTERP_DELAY_TICKS);
+        // What an agent reports on the shard (`botclient`), for the seats
+        // too, so a seat's blow is rewound to `seen(SEAT_FAVOUR)`.
+        let mut dg = InputDatagram::new(ack.0, ack.1, server::botclient::AGENT_PLAYOUT_REPORT);
         dg.push(frame).unwrap();
         let mut bytes = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
         let len = encode_input(&dg, &mut bytes).unwrap();
@@ -512,7 +517,14 @@ impl Arena {
                         // reach at a run while the agent's is ready, and
                         // wait at its edge while neither is.
                         let safe = agent_reach + 0.3;
-                        if ready || agent_reach == 0.0 {
+                        if mine.strike_at > tick {
+                            // Its blow on the way in: hold, or it lands on air.
+                            fwd = if d > 0.9 { 1.0 } else { 0.0 };
+                        } else if agent.strike_at > tick && d < safe {
+                            // The agent's on the way in: out of its reach.
+                            fwd = -1.0;
+                            run = true;
+                        } else if ready || agent_reach == 0.0 {
                             fwd = if d > 0.9 { 1.0 } else { 0.0 };
                             run = true;
                         } else if agent_ready && d < safe {
@@ -525,7 +537,13 @@ impl Arena {
                         }
                     }
                 }
-                if in_reach && ready {
+                // The Aimbot swings only at a blow that cannot be backed out
+                // of in its wind-up: the agent committed to its own, or
+                // deep inside reach.
+                let sure = s.seat != Seat::Aimbot
+                    || agent.strike_at > tick
+                    || d <= reach_m - AIMBOT_SURE_M;
+                if in_reach && ready && sure {
                     f.buttons |= BTN_PRIMARY;
                 }
             }

@@ -59,6 +59,39 @@ fn clustered_core(stats: &ShardStats) -> Box<ShardCore> {
     core
 }
 
+/// Stands the roster's first `n` animal slots up among the clustered
+/// players, still: no content is baked here, so no slot is homed and an
+/// unhomed slot never steps (`mob::step`). Since wire v121 the rank band is
+/// three snapshots' worth, `AOI_RANK_EXIT` = 192, and the hundred players
+/// `MAX_PLAYERS` allows cannot fill it on their own — this is the rest of
+/// the crowd.
+fn herd_in_cluster(core: &mut ShardCore, n: usize) {
+    assert!(n < sim_core::turret::TURRET_SLOT0, "past the animal slots");
+    let q = |m: f32| (m / 0.03) as i32;
+    for (s, m) in core.world.mobs.m.iter_mut().enumerate() {
+        m.alive = s < n;
+        m.respawn_at = u64::MAX;
+        if s < n {
+            // Between the players' 6 m grid points, in rows of ten.
+            m.body.qx = q(INTERIOR_M + 3.0 + (s % 10) as f32 * 6.0);
+            m.body.qz = q(INTERIOR_M + 3.0 + (s / 10) as f32 * 6.0);
+        }
+    }
+}
+
+/// The herd the forced-interest scenes stand up beside the players: 99
+/// peers and this many animals are past `AOI_RANK_EXIT`, so the exit rank
+/// has something to evict and the fill something to refuse.
+const FORCED_HERD: usize = 120;
+
+/// Only the snapshots of a round, one per client per cadence tick — not
+/// the overflow datagrams that follow one (wire v121).
+fn snapshots_only(sent: Vec<(usize, Vec<u8>)>) -> Vec<(usize, Vec<u8>)> {
+    sent.into_iter()
+        .filter(|(_, b)| protocol::peek_kind(b) == Ok(protocol::KIND_SNAPSHOT))
+        .collect()
+}
+
 /// Every entity id connection `slot` currently holds interest in — the
 /// server-side set the snapshot fill ranks, read off the two flag arrays
 /// that *are* that set (`ClientNetState::interest` / `m_interest`).
@@ -105,7 +138,7 @@ fn test_snapshot_budget() {
     for round in 0..rounds {
         let sent = snapshot_round(&mut core, &stats);
         assert_eq!(
-            sent.len(),
+            snapshots_only(sent.clone()).len(),
             MAX_PLAYERS,
             "round {round}: every connected client gets a snapshot"
         );
@@ -117,7 +150,7 @@ fn test_snapshot_budget() {
             );
             let view = &mut views[*slot];
             match view.apply(bytes).expect("server datagram decodes") {
-                Applied::Ok { .. } => {}
+                Applied::Ok { .. } | Applied::More => {}
                 other => panic!("round {round} slot {slot}: {other:?}"),
             }
             // Own entity rides every snapshot (reconciliation needs it).
@@ -180,9 +213,10 @@ fn test_snapshot_budget() {
             owed.len()
         );
         // And the set is a real one, not an empty promise the assert above
-        // would satisfy: this is the clustered worst case.
+        // would satisfy: more than one datagram can name, so the overflow
+        // (wire v121) carried part of it.
         assert!(
-            owed.len() > AOI_RANK_ENTER,
+            owed.len() > MAX_SNAPSHOT_ENTITIES,
             "slot {slot}: only {} entities subscribed in the clustered \
              scene — the ceiling is being asserted over nothing",
             owed.len()
@@ -287,6 +321,12 @@ fn the_shed_counter_sees_the_budget_refuse() {
             }
         }
     }
+    // And a herd, forced in the same way: a hundred players are under the
+    // 192-body band (wire v121), so the set at the eviction rank needs them.
+    herd_in_cluster(&mut core, FORCED_HERD);
+    for c in core.clients.iter_mut() {
+        c.m_interest[..FORCED_HERD].fill(true);
+    }
     for _ in 0..4 {
         snapshot_round(&mut core, &stats);
     }
@@ -305,8 +345,8 @@ fn the_shed_counter_sees_the_budget_refuse() {
          refusing or the counter is not wired to it"
     );
     // Sanity on the magnitude, not a pinned number: each of the 100 clients
-    // is offered 99 peers per snapshot and can carry a few dozen, so four
-    // snapshot rounds shed hundreds at minimum. A counter reading 1 would
+    // is offered a full band and can carry one fewer beside its own body,
+    // so four snapshot rounds shed hundreds at minimum. A counter reading 1 would
     // satisfy `> 0` and mean the bump landed inside a branch it should not.
     assert!(
         shed > MAX_PLAYERS as u64,
@@ -412,6 +452,12 @@ fn the_fill_counts_what_it_offered_and_what_it_carried() {
                 c.interest[w] = true;
             }
         }
+    }
+    // And a herd, forced in the same way: a hundred players are under the
+    // 192-body band (wire v121), so the set at the eviction rank needs them.
+    herd_in_cluster(&mut core, FORCED_HERD);
+    for c in core.clients.iter_mut() {
+        c.m_interest[..FORCED_HERD].fill(true);
     }
     let before = fill_counters(&stats);
     for _ in 0..4 {
@@ -546,7 +592,7 @@ fn the_offered_counter_is_the_interest_set_and_nothing_else() {
     let mut independent = 0u64;
     let mut snapshots = 0u64;
     for _ in 0..4 {
-        for (slot, _) in snapshot_round(&mut core, &stats) {
+        for (slot, _) in snapshots_only(snapshot_round(&mut core, &stats)) {
             independent += interest_of(&core, slot).len() as u64;
             snapshots += 1;
         }
@@ -672,6 +718,8 @@ fn the_offered_counter_is_the_interest_set_and_nothing_else() {
 fn the_interest_set_is_capped_at_what_a_snapshot_can_carry() {
     let stats = ShardStats::default();
     let mut core = clustered_core(&stats);
+    // The hundred players plus a herd: 249 candidates against a band of 192.
+    herd_in_cluster(&mut core, 150);
     // Several rounds: the set is settled by admission over ticks, and a cap
     // that only holds on the first tick is not a cap.
     for _ in 0..6 {
@@ -680,15 +728,14 @@ fn the_interest_set_is_capped_at_what_a_snapshot_can_carry() {
     for slot in 0..MAX_PLAYERS {
         let n = interest_of(&core, slot).len();
         assert!(
-            n <= MAX_SNAPSHOT_ENTITIES,
-            "slot {slot}: {n} entities in the interest set — \
-             MAX_SNAPSHOT_ENTITIES ({MAX_SNAPSHOT_ENTITIES}) is not a cap on \
-             it, only on one datagram"
+            n <= AOI_RANK_EXIT,
+            "slot {slot}: {n} entities in the interest set — a tick's \
+             snapshot and its overflow carry {AOI_RANK_EXIT}"
         );
         assert!(
             n >= AOI_RANK_ENTER,
-            "slot {slot}: only {n} of 99 peers in range are interesting — \
-             the cap bound harder than the rank band says it may"
+            "slot {slot}: only {n} of 249 candidates in range are \
+             interesting — the cap bound harder than the rank band says it may"
         );
     }
 }
@@ -710,43 +757,49 @@ fn a_rank_boundary_entity_does_not_flap() {
     let stats = ShardStats::default();
     let mut core = Box::new(ShardCore::new(SEED));
     // Two more than the admission rank, so ranks either side of it exist
-    // and the two we jitter are the pair that straddles it.
-    let n_players = AOI_RANK_ENTER + 3;
-    for slot in 0..n_players {
+    // and the two we jitter are the pair that straddles it. A hundred
+    // players cannot make 139 ranks (wire v121's band is 192), so the pair
+    // are players and every other rank is a still animal (`herd_in_cluster`
+    // says why they hold still).
+    let n_peers = AOI_RANK_ENTER + 2;
+    for slot in 0..3 {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
         core.tick_bare(&stats, |_, _, _| true);
     }
     for m in core.world.mobs.m.iter_mut() {
-        // Worldgen's roster would rank among the peers and move the
-        // boundary; this test is about the boundary, not about the pigs.
         m.alive = false;
+        m.respawn_at = u64::MAX;
     }
 
     let q = |m: f32| (m / 0.03) as i32;
     // Slot 0's player at the origin of the ranking; every peer on a ray
-    // east of it at 20 m + 2 m per rank, so peer `i` has rank `i` and the
-    // whole field sits inside the 176 m enter radius.
+    // east of it at 20 m + 1 m per rank, so the peer at rank `r` is `r`th
+    // nearest and the whole field sits inside the 176 m enter radius.
     let place = |core: &mut ShardCore, swap: bool| {
+        let at = |rank: usize| q(1000.0 + 20.0 + rank as f32);
+        // The pair straddling the admission rank trade places each round.
+        let (a, b) = if swap {
+            (AOI_RANK_ENTER + 1, AOI_RANK_ENTER)
+        } else {
+            (AOI_RANK_ENTER, AOI_RANK_ENTER + 1)
+        };
         for p in core.world.players.iter_mut() {
             if !p.active {
                 continue;
             }
             p.body.qz = q(1000.0);
-            let Some(rank) = (0..n_players).find(|&s| id_of(s) == p.id) else {
-                continue;
+            p.body.qx = match (0..3).find(|&s| id_of(s) == p.id) {
+                Some(1) => at(a),
+                Some(2) => at(b),
+                _ => q(1000.0),
             };
-            if rank == 0 {
-                p.body.qx = q(1000.0);
-                continue;
-            }
-            // The pair straddling the admission rank trade places each
-            // round; everyone else holds station.
-            let eff = match (swap, rank) {
-                (true, r) if r == AOI_RANK_ENTER => AOI_RANK_ENTER + 1,
-                (true, r) if r == AOI_RANK_ENTER + 1 => AOI_RANK_ENTER,
-                (_, r) => r,
-            };
-            p.body.qx = q(1000.0 + 20.0 + eff as f32 * 2.0);
+        }
+        let ranks = (1..=n_peers).filter(|r| *r != AOI_RANK_ENTER && *r != AOI_RANK_ENTER + 1);
+        for (slot, rank) in ranks.enumerate() {
+            let m = &mut core.world.mobs.m[slot];
+            m.alive = true;
+            m.body.qx = at(rank);
+            m.body.qz = q(1000.0);
         }
     };
 
@@ -756,11 +809,11 @@ fn a_rank_boundary_entity_does_not_flap() {
     }
     let settled = interest_of(&core, 0);
     assert!(
-        settled.len() < n_players - 1,
+        settled.len() < n_peers,
         "the field is not dense enough for the rank cap to bind: {} of {} \
          peers interesting",
         settled.len(),
-        n_players - 1
+        n_peers
     );
 
     // Now jitter the boundary pair for a while and watch for a body being
@@ -826,10 +879,11 @@ fn a_rank_boundary_entity_does_not_flap() {
 ///   the ranking decision actually lands.
 #[test]
 fn a_near_animal_outranks_a_far_player() {
-    // The herd: the roster's first 64 slots, which is the herd this was
-    // written for — the whole 256-slot roster at these spacings would run
-    // past the enter radius it stages inside.
-    const HERD: usize = 64;
+    // The herd: every animal slot but one (wire v121's band is 192, so the
+    // displacement needs nearly the whole roster between the near peer and
+    // the far ones), and the converse's far herd.
+    const HERD: usize = sim_core::turret::TURRET_SLOT0 - 1;
+    const FAR_HERD: usize = 64;
     /// Planar distance² in cm², the AOI convention (`core.rs`: 3 cm quanta
     /// widened into centimetres, in i64). Here to prove the scene rather
     /// than to re-check the server's arithmetic — "the far peer is not in
@@ -892,7 +946,8 @@ fn a_near_animal_outranks_a_far_player() {
             if !m.alive {
                 continue;
             }
-            m.body.qx = q(1030.0 + s as f32);
+            // 30–141 m, 0.6 m apart: every animal nearer than every far peer.
+            m.body.qx = q(1030.0 + s as f32 * 0.6);
             m.body.qz = q(1000.0);
             // Home moves with the body: the leash pulls a grazing pig back
             // to where the scene put it instead of across the island.
@@ -923,6 +978,10 @@ fn a_near_animal_outranks_a_far_player() {
     let mobs_in = (0..MAX_MOBS)
         .filter(|&s| set.contains(&sim_core::mob::mob_id(s)))
         .count();
+    // The near peer and the herd hold ranks 1 to 1 + HERD, so of the far
+    // peers only those inside the exit rank may stay — the nearest few — and
+    // the rest are evicted by animals.
+    let kept = AOI_RANK_EXIT - 1 - HERD;
     for slot in 2..n_ray {
         let id = id_of(slot);
         assert!(
@@ -930,11 +989,13 @@ fn a_near_animal_outranks_a_far_player() {
             "peer {id} is outside the enter radius, so the assert below would \
              pass on the distance band alone"
         );
-        assert!(
-            !set.contains(&id),
-            "peer {id} held its rank against {mobs_in} nearer animals — they \
-             are not competing for the same {MAX_SNAPSHOT_ENTITIES} records, \
-             so the rank cap is a cap on players only"
+        assert_eq!(
+            set.contains(&id),
+            slot < 2 + kept,
+            "peer {id} (rank {}) against {HERD} nearer animals — they are not \
+             competing for the same {AOI_RANK_EXIT} ranks, so the rank cap is \
+             a cap on players only",
+            HERD + slot
         );
     }
     assert!(
@@ -962,12 +1023,15 @@ fn a_near_animal_outranks_a_far_player() {
         m.alive = false;
         m.respawn_at = u64::MAX;
     }
-    // Five over the admission rank, so the players fill it on their own
-    // before an animal is standing anywhere.
-    let n_dense = AOI_RANK_ENTER + 5;
-    for slot in 0..n_dense {
+    // The whole player cap and enough animals beside them to fill the
+    // admission rank exactly before the far herd stands up: a hundred
+    // players alone cannot (wire v121's enter rank is 137).
+    let near_herd = AOI_RANK_ENTER - (MAX_PLAYERS - 1);
+    for slot in 0..MAX_PLAYERS {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        core.tick_bare(&stats, |_, _, _| true);
+        if (slot + 1) % 32 == 0 || slot + 1 == MAX_PLAYERS {
+            core.tick_bare(&stats, |_, _, _| true);
+        }
     }
     let place_dense = |core: &mut ShardCore, herd: bool| {
         for p in core.world.players.iter_mut() {
@@ -975,7 +1039,7 @@ fn a_near_animal_outranks_a_far_player() {
                 continue;
             }
             p.body.qz = q(1000.0);
-            let Some(slot) = (0..n_dense).find(|&s| id_of(s) == p.id) else {
+            let Some(slot) = (0..MAX_PLAYERS).find(|&s| id_of(s) == p.id) else {
                 continue;
             };
             p.body.qx = if slot == 0 {
@@ -985,13 +1049,18 @@ fn a_near_animal_outranks_a_far_player() {
             };
         }
         for (s, m) in core.world.mobs.m.iter_mut().enumerate() {
-            m.alive = herd && s < HERD;
+            m.alive = s < near_herd || (herd && s < near_herd + FAR_HERD);
             if !m.alive {
                 continue;
             }
-            // 140–172 m: past every peer in the ranking, inside the enter
-            // radius by 4 m at worst.
-            m.body.qx = q(1140.0 + s as f32 * 0.5);
+            m.body.qx = if s < near_herd {
+                // 110–147 m: past every player, ahead of the far herd.
+                q(1110.0 + s as f32)
+            } else {
+                // 150–172 m: past every peer and the near herd in the
+                // ranking, inside the enter radius by 4 m at worst.
+                q(1150.0 + (s - near_herd) as f32 * 0.35)
+            };
             m.body.qz = q(1000.0);
             m.home_qx = m.body.qx;
             m.home_qz = m.body.qz;
@@ -1004,8 +1073,8 @@ fn a_near_animal_outranks_a_far_player() {
     assert_eq!(
         interest_of(&core, 0).len(),
         AOI_RANK_ENTER,
-        "the peers must fill the admission rank before the roster stands up, \
-         or nothing is refusing the animals"
+        "the peers and the near herd must fill the admission rank before the \
+         far herd stands up, or nothing is refusing the animals"
     );
 
     for _ in 0..4 {
@@ -1014,7 +1083,7 @@ fn a_near_animal_outranks_a_far_player() {
     }
     let set = interest_of(&core, 0);
     let own = pos_of(&core, id_of(0));
-    for s in 0..HERD {
+    for s in near_herd..near_herd + FAR_HERD {
         let m = &core.world.mobs.m[s];
         assert!(
             m.alive && d2_cm((m.body.qx, m.body.qz), own) <= AOI_ENTER_CM * AOI_ENTER_CM,
@@ -1025,7 +1094,7 @@ fn a_near_animal_outranks_a_far_player() {
             !set.contains(&sim_core::mob::mob_id(s)),
             "animal {s} entered a field already full of nearer players — the \
              rank band admits animals where it refuses players, and the set \
-             is {} entities against a wire that can name {MAX_SNAPSHOT_ENTITIES}",
+             is {} entities against a band of {AOI_RANK_EXIT}",
             set.len()
         );
     }
@@ -1111,13 +1180,16 @@ fn test_aoi_hysteresis() {
 fn the_rank_band_agrees_with_a_full_sort_of_the_same_field() {
     let stats = ShardStats::default();
     let mut core = clustered_core(&stats);
-    // No content is baked here, so every species has zero hit points and no
-    // roster slot ever hatches (`mob.rs`). Asserted rather than assumed:
-    // one wandering animal would re-rank the field between the settle and
-    // the check, and the failure would read as an ordering bug.
+    // A hundred players cannot make the admission rank bind (137 since wire
+    // v121), so a still herd stands among them. No content is baked here,
+    // so no roster slot is homed and none steps (`mob.rs`). Asserted rather
+    // than assumed: one wandering animal would re-rank the field between
+    // the settle and the check, and the failure would read as an ordering
+    // bug.
+    herd_in_cluster(&mut core, 150);
     assert!(
-        core.world.mobs.m.iter().all(|m| !m.alive),
-        "a live animal makes this scene non-static — the rank would move \
+        core.world.mobs.m.iter().all(|m| !m.homed),
+        "a homed animal makes this scene non-static — the rank would move \
          under the check and this test would be measuring the roster"
     );
     for _ in 0..6 {
@@ -1129,18 +1201,34 @@ fn the_rank_band_agrees_with_a_full_sort_of_the_same_field() {
         let own_id = core.clients[slot].id;
         // The true order under the server's own key: planar centimetres
         // squared, ties broken by the packed candidate index.
+        let key = |b: sim_core::movement::Body| {
+            let dx = (b.qx - me.qx) as i64 * 3;
+            let dz = (b.qz - me.qz) as i64 * 3;
+            dx * dx + dz * dz
+        };
+        // Players and animals in one field, packed the server's way: a
+        // world slot, then `MAX_PLAYERS` + the roster slot.
         let mut field: Vec<(i64, u16, u32)> = (0..MAX_PLAYERS)
             .filter(|&w| core.world.players[w].active && core.world.players[w].id != own_id)
             .map(|w| {
-                let b = core.world.players[w].body;
-                let dx = (b.qx - me.qx) as i64 * 3;
-                let dz = (b.qz - me.qz) as i64 * 3;
-                (dx * dx + dz * dz, w as u16, core.world.players[w].id)
+                let p = &core.world.players[w];
+                (key(p.body), w as u16, p.id)
             })
+            .chain(
+                (0..MAX_MOBS)
+                    .filter(|&m| core.world.mobs.m[m].alive)
+                    .map(|m| {
+                        (
+                            key(core.world.mobs.m[m].body),
+                            (MAX_PLAYERS + m) as u16,
+                            sim_core::mob::mob_id(m),
+                        )
+                    }),
+            )
             .collect();
         assert!(
-            field.len() > AOI_RANK_ENTER,
-            "slot {slot}: {} peers cannot make the admission rank bind",
+            field.len() > AOI_RANK_EXIT,
+            "slot {slot}: {} candidates cannot make either rank bind",
             field.len()
         );
         field.sort_unstable();
@@ -1578,8 +1666,9 @@ fn the_filter_buys_nothing_on_a_clustered_shard() {
         .iter()
         .filter(|id| (0..MAX_PLAYERS).any(|s| id_of(s) == **id))
         .count();
-    assert!(
-        players > AOI_RANK_ENTER,
+    assert_eq!(
+        players,
+        MAX_PLAYERS - 1,
         "slot 0 can see only {players} of the 99 bodies stood on top of it — \
          the clustered fixture is not clustered, so the no-op claim is untested"
     );
@@ -1972,6 +2061,9 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
 /// | cap | what it bounds | peak | headroom |
 /// |---|---|---|---|
 /// | `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **196** | 1.31× |
+///
+/// (2026-10-17: the same storm peaked at **264**, past the 256 cap, and the
+/// cap went to 500 — `limits.rs` has the arithmetic.)
 /// | `EVENT_RING_CAP` 128 | pushes to one client in one tick | **81** | 1.58× |
 ///
 /// (2026-08-24, one broadcast arm: 144 and 50 against a 64-slot ring.)
@@ -2016,6 +2108,7 @@ fn the_event_lane_holds_at_population() {
         peak_push = peak_push.max(per_slot.iter().copied().max().unwrap_or(0));
     }
 
+    println!("peak {peak_events} sim events in a tick, {peak_push} pushes to one client");
     // Anti-vacuity first: a fixture that fired nothing satisfies every
     // bound below, and three separate mistakes made exactly that happen
     // while the counts looked plausible.
@@ -2025,8 +2118,10 @@ fn the_event_lane_holds_at_population() {
          arm's length firing lethal rounds should be well past that, so \
          the fixture is not storming and the bounds below prove nothing"
     );
+    // Against the players, not the ring: since wire v121 the ring is sized
+    // for a band of 192 bodies, and a hundred players cannot fill it.
     assert!(
-        peak_push > EVENT_RING_CAP / 4,
+        peak_push > MAX_PLAYERS / 2,
         "peak {peak_push} pushes to one client in a tick — same problem"
     );
 
@@ -2179,4 +2274,39 @@ fn the_reload_lane_holds_when_everyone_holds_reload() {
         0,
         "a client's event ring refused a push under reload traffic alone"
     );
+}
+
+/// The heli is on everyone's map, so it is in every client's set wherever
+/// it is and however crowded the client is: a full shard herded into one
+/// square fills every rank, and a heli 2.9 km off still takes a seat
+/// without the set growing past the cap.
+#[test]
+fn the_heli_holds_its_seat_in_a_crowd() {
+    use sim_core::heli::HELI_SLOT;
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    for m in core.world.mobs.m.iter_mut() {
+        m.alive = false;
+        m.respawn_at = u64::MAX;
+    }
+    let heli = &mut core.world.mobs.m[HELI_SLOT];
+    heli.alive = true;
+    heli.body.qx = (4000.0 / 0.03) as i32;
+    heli.body.qz = (3500.0 / 0.03) as i32;
+    for _ in 0..4 {
+        snapshot_round(&mut core, &stats);
+    }
+    let id = sim_core::mob::mob_id(HELI_SLOT);
+    for slot in 0..MAX_PLAYERS {
+        let set = interest_of(&core, slot);
+        assert!(
+            set.contains(&id),
+            "client {slot} lost the heli to the crowd"
+        );
+        assert!(
+            set.len() <= AOI_RANK_EXIT,
+            "client {slot} holds {} entities: the heli's seat broke the cap",
+            set.len()
+        );
+    }
 }

@@ -136,6 +136,43 @@ impl Clouds {
     pub const LADDER: [Clouds; 3] = [Clouds::Low, Clouds::Medium, Clouds::High];
 }
 
+/// When the microphone is on the air (`render/voice.rs`). Rust's own voice is
+/// push-to-talk only; the other two are for players who would rather not
+/// hold a key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TalkMode {
+    /// While the talk key is held.
+    #[default]
+    Hold,
+    /// The talk key turns it on, and again off.
+    Toggle,
+    /// Whenever the microphone hears more than `mic_gate_db`; the talk key
+    /// also forces it on while held.
+    Open,
+}
+
+impl TalkMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            TalkMode::Hold => "hold",
+            TalkMode::Toggle => "toggle",
+            TalkMode::Open => "open",
+        }
+    }
+
+    /// The inverse; `None` for anything else, as [`Ao::from_name`].
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "hold" => Some(TalkMode::Hold),
+            "toggle" => Some(TalkMode::Toggle),
+            "open" => Some(TalkMode::Open),
+            _ => None,
+        }
+    }
+
+    pub const LADDER: [TalkMode; 3] = [TalkMode::Hold, TalkMode::Toggle, TalkMode::Open];
+}
+
 /// How much ambient occlusion, as a name a settings file can carry.
 ///
 /// **A name and not a number, for [`Quality`]'s reason exactly**: the file is
@@ -226,7 +263,7 @@ pub struct GfxFile {
 /// render module's `Settings` because that type also carries UI state (the
 /// selected rail row, where Esc returns to) that has no business on disk —
 /// and because this module must build without Bevy.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Persisted {
     pub fov_deg: f32,
     /// How much the renderer is asked to do; see [`Quality`].
@@ -251,6 +288,18 @@ pub struct Persisted {
     pub vol_music: f32,
     /// Players' voices (proximity voice chat), 0..1.
     pub vol_voice: f32,
+    /// Proximity voice at all: off neither opens the microphone nor plays
+    /// anyone.
+    pub voice_chat: bool,
+    /// The microphone's gain before it is encoded, 0..2.
+    pub vol_mic: f32,
+    pub talk_mode: TalkMode,
+    /// The level that opens an open microphone, dBFS.
+    pub mic_gate_db: f32,
+    /// The input device by name; empty is the system's default.
+    pub mic_device: String,
+    /// Silence everything while the window is not focused.
+    pub mute_unfocused: bool,
     /// Walls muffle sound (`ui::occlusion`).
     pub occlusion: bool,
     /// How hard the camera shakes, 0..1 (`render/shake.rs`).
@@ -287,8 +336,8 @@ pub struct Loaded {
     pub unknown: Vec<String>,
     /// The starred shard ids, in file order.
     ///
-    /// **Not on [`Persisted`]**, which is `Copy` and eight scalars, and would
-    /// stop being either. It is also not the same *kind* of thing: every field
+    /// **Not on [`Persisted`]**, which is one value per knob. It is also not
+    /// the same *kind* of thing: every field
     /// up there is a knob with a range, and this is a list whose bound and
     /// whose deduplication live beside the star that writes it
     /// (`crate::ui::servers::Favourites::from_disk`) for the same reason the
@@ -366,6 +415,16 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_ambience" => num(&mut v.vol_ambience, value),
             "vol_music" => num(&mut v.vol_music, value),
             "vol_voice" => num(&mut v.vol_voice, value),
+            "voice_chat" => flag(&mut v.voice_chat, value),
+            "vol_mic" => num(&mut v.vol_mic, value),
+            "talk_mode" => {
+                if let Some(m) = TalkMode::from_name(value) {
+                    v.talk_mode = m;
+                }
+            }
+            "mic_gate_db" => num(&mut v.mic_gate_db, value),
+            "mic_device" => v.mic_device = value.to_string(),
+            "mute_unfocused" => flag(&mut v.mute_unfocused, value),
             "occlusion" => flag(&mut v.occlusion, value),
             "shake" => num(&mut v.shake, value),
             "discord_presence" => flag(&mut v.discord_presence, value),
@@ -489,6 +548,18 @@ fn opt_count<T: std::str::FromStr>(slot: &mut Option<T>, value: &str) {
     }
 }
 
+/// A device name as this file can carry it. The name is the OS's and may
+/// hold anything; a line break, a quote or a `#` (which the reader takes for
+/// a comment) would break the line, so they are dropped, and a device is
+/// matched by this form of its name.
+pub fn device_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '"' | '#' | '\n' | '\r'))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// Is this something a future build could plausibly have written as a key?
 /// ASCII word characters only — the preserve policy is for another version's
 /// knobs, not for arbitrary bytes to ride the file forever.
@@ -524,6 +595,15 @@ pub fn serialize(
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
     s.push_str(&format!("vol_music = {}\n", v.vol_music));
     s.push_str(&format!("vol_voice = {}\n", v.vol_voice));
+    s.push_str(&format!("voice_chat = {}\n", v.voice_chat));
+    s.push_str(&format!("vol_mic = {}\n", v.vol_mic));
+    s.push_str(&format!("talk_mode = \"{}\"\n", v.talk_mode.name()));
+    s.push_str(&format!("mic_gate_db = {}\n", v.mic_gate_db));
+    s.push_str(&format!(
+        "mic_device = \"{}\"\n",
+        device_name(&v.mic_device)
+    ));
+    s.push_str(&format!("mute_unfocused = {}\n", v.mute_unfocused));
     s.push_str(&format!("occlusion = {}\n", v.occlusion));
     s.push_str(&format!("shake = {}\n", v.shake));
     s.push_str(&format!("discord_presence = {}\n", v.discord_presence));
@@ -679,6 +759,12 @@ mod tests {
             vol_ambience: 1.0,
             vol_music: 1.0,
             vol_voice: 1.0,
+            voice_chat: true,
+            vol_mic: 1.0,
+            talk_mode: TalkMode::Hold,
+            mic_gate_db: -45.0,
+            mic_device: String::new(),
+            mute_unfocused: false,
             occlusion: true,
             shake: 1.0,
             discord_presence: false,
@@ -705,6 +791,12 @@ mod tests {
             vol_ambience: 0.0,
             vol_music: 0.45,
             vol_voice: 0.6,
+            voice_chat: false,
+            vol_mic: 1.5,
+            talk_mode: TalkMode::Open,
+            mic_gate_db: -30.0,
+            mic_device: "USB Headset: Mic (hw:2,0)".to_string(),
+            mute_unfocused: true,
             occlusion: false,
             shake: 0.5,
             discord_presence: true,

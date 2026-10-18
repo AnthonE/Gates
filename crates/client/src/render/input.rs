@@ -109,11 +109,7 @@ pub fn gather(
     cap: Option<Res<super::capture::Capture>>,
     // The door keypad takes the digits while it is up (`verbs::keypad_keys`)
     // and deliberately grabs no pointer, so nothing above sees it.
-    // Paired with the hearth's panel, which claims the digits the same way.
-    (pad, hearth): (
-        Option<Res<super::verbs::Pad>>,
-        Option<Res<super::verbs::HearthView>>,
-    ),
+    pad: Option<Res<super::verbs::Pad>>,
     // The pointer's memory across frames. A `Local` holding a pure type from
     // `ui::` rather than loose booleans, for that module's reason: the defect
     // it fixes is a SEQUENCE, and a sequence inside a system can only be
@@ -386,11 +382,7 @@ pub fn gather(
     // same test). And **not while the door keypad is up**: typing 1234 into
     // a lock used to walk the hand across four slots as well.
     let mut sel = net.sel;
-    let typing = pad.as_ref().is_some_and(|p| p.0.is_open())
-        || hearth
-            .as_ref()
-            .and_then(|h| h.0)
-            .is_some_and(|at| super::verbs::hearth_rows_known(&net.session.core, at));
+    let typing = pad.as_ref().is_some_and(|p| p.0.is_open());
     for (i, a) in HOTBAR.iter().enumerate() {
         let core = &net.session.core;
         let food = core
@@ -443,6 +435,13 @@ pub fn gather(
         sel,
     )
     .swings();
+    // A press that placed a lock (or anything) is not also a punch once the
+    // slot it emptied leaves the hand bare (`Pointer::spent`).
+    let spent = pointer.spent(
+        mouse.just_pressed(MouseButton::Left),
+        mouse.pressed(MouseButton::Left),
+        swings,
+    );
     // **A light is struck with the right hand** — the reference's own
     // binding for a torch — and with `F`, the flashlight key a player
     // reaches for. Right-click is already held-item modal in this
@@ -473,7 +472,7 @@ pub fn gather(
     // nothing fire there (`combat::holstered`), so the arm does not swing
     // and the bow does not draw — `hud::holster_hint` says why.
     let holstered = core.holstered();
-    if swings && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
+    if swings && !spent && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
     // **A bow is drawn with the right hand** (the reference's binding): held,

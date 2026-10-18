@@ -373,8 +373,9 @@ fn main() {
     let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[36], &buf[..len]);
 
-    let (cx, cz, level, loc, open, locked, has_lock) = goldens::event_door();
-    let len = encode_event_door(cx, cz, level, loc, open, locked, has_lock, &mut buf).unwrap();
+    let (cx, cz, level, loc, open, locked, has_lock, keyed) = goldens::event_door();
+    let len =
+        encode_event_door(cx, cz, level, loc, open, locked, has_lock, keyed, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[37], &buf[..len]);
 
     // Lock v1's two new lanes, written at the tail of the list for the
@@ -721,8 +722,8 @@ fn main() {
     // The victim's half of a landed blow (v57): a bearing sector and the
     // damage, unicast to the person it happened to.
     {
-        let (sector, damage) = goldens::event_hurt();
-        let len = encode_event_hurt(sector, damage, &mut buf).unwrap();
+        let (sector, damage, head) = goldens::event_hurt();
+        let len = encode_event_hurt(sector, damage, head, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[101], &buf[..len]);
     }
 

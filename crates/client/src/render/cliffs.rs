@@ -13,15 +13,11 @@
 //! swallowed by it.
 //!
 //! **The sim places and collides the crags** (`sim_core::cliff`, since
-//! 2026-10-07: a player walked through a tooth, because a body may walk down
-//! and along a face). This only draws each crag, its foot buried in the DRAWN
-//! face (`terrain_mesh::near_drawn_y`), which the cliff relief moves off the
-//! sim's height. A ledge is drawn down the face by the relief's offset there,
-//! as the face is, so a body on the face is as far off the ledge as off the
-//! rock beside it; a tooth's top is the lip's, which the relief never moves.
-//! Its edges are chipped by at most [`CRAG_CHISEL_MAX_M`], so what is drawn is
-//! what is stood on. The skin and the scree are the client's alone: the skin
-//! stands out only over faces too steep to climb, and the scree is
+//! 2026-10-07: a player walked through a tooth). This only draws each crag at
+//! the sim's heights, its foot buried in the drawn face
+//! (`terrain_mesh::near_drawn_y`). Its edges are chipped by at most
+//! [`CRAG_CHISEL_MAX_M`], so what is drawn is what is stood on. The skin is
+//! the sim's too (`sim_core::face`); the scree is the client's alone, and
 //! ankle-high, like the clutter a body already wades through.
 
 use bevy::light::NotShadowCaster;
@@ -286,13 +282,12 @@ fn crag(soup: &mut RockSoup, lat: &mut terrain::Lattice, seed: u64, haven: &Have
             .fold(f32::INFINITY, f32::min);
         (foot - LEDGE_BURY_M, c.y1)
     } else {
-        // The face it juts from, and the contour either side of it.
+        // The face it juts from, and the contour either side of it. The
+        // shelf is the sim's, which already stands over the drawn face.
         let y = drawn(lat, 0.0, c.hz);
         let yl = drawn(lat, c.hx, c.hz);
         let yr = drawn(lat, -c.hx, c.hz);
-        let (fx, fz) = c.to_world(0.0, c.hz);
-        let relief = y - terrain::ground(seed, haven, fx, fz);
-        (y.min(yl).min(yr) - LEDGE_BURY_M, c.y1 + relief)
+        (y.min(yl).min(yr) - LEDGE_BURY_M, c.y1)
     };
     rock_block(
         soup,
@@ -336,7 +331,8 @@ fn scree(
         let down = (h(2) - 0.3) * 2.4;
         let (px, pz) = (x + dx * down - dz * across, z + dz * down + dx * across);
         let gy = near_drawn_y(lat, seed, haven, px, pz);
-        let size = 0.1 + 0.32 * h(3) * h(3);
+        // Ankle-high at most: clutter nothing collides with.
+        let size = 0.1 + 0.12 * h(3) * h(3);
         let (sn, cs) = (h(4) * std::f32::consts::TAU).sin_cos();
         rock_block(
             soup,
@@ -347,7 +343,7 @@ fn scree(
                 hz: size * (0.55 + 0.45 * h(5)),
                 dir: (sn, cs),
                 y0: gy - size * 0.7,
-                y1: gy + size * (0.5 + 0.6 * h(6)),
+                y1: gy + size * (0.4 + 0.5 * h(6)),
                 tx: (h(7) - 0.5) * 0.6,
                 tz: (h(8) - 0.5) * 0.6,
                 key: k ^ (m + 1).wrapping_mul(0x85EB_CA6B),

@@ -1,29 +1,60 @@
-//! The hearth's upkeep panel (Rust's cupboard view): what the hearth holds,
-//! what a day of the base costs in each material, and how long it stays
-//! protected. The words and the arithmetic, kept out of `render` so a
-//! headless test can read them; `render/hud.rs::hearth_overlay` draws them.
+//! The hearth's upkeep panel (Rust's tool cupboard view): what the hearth
+//! holds, what a day of the base costs in each material, and how long it
+//! stays protected. The words and the arithmetic, kept out of `render` so a
+//! headless test can read them; `render/panels/hearth.rs` draws them as the
+//! right-hand column of the inventory page.
 //!
 //! **No wire of its own.** The rows are the stock ack a feed already sends
 //! (`EventMsg::Stock`, latched on `ClientCore::stock`): `E` at a hearth
-//! feeds it and opens this, and a feed with nothing to give still answers.
-//! The server answers only the crew, which is why an empty panel says so.
-//! The same ack is pushed to a crew member standing in the claim every ten
-//! seconds, and that is what the HUD's upkeep vital reads ([`vital`]).
+//! feeds it and opens the page, and a feed with nothing to give still
+//! answers. The server answers only the crew, which is why an empty panel
+//! says so. The same ack is pushed to a crew member standing in the claim
+//! every ten seconds, and that is what the HUD's upkeep vital reads
+//! ([`vital`]).
 //!
-//! A panel that does **not** grab the pointer, for the keypad's reason
-//! (`ui::keypad`): the hearth is in the room you are defending, so walking
-//! away closes it instead of a menu holding you still.
+//! **It is a full page, like the reference's.** It used to be a small HUD
+//! strip over the hotbar that kept the pointer locked, for the keypad's
+//! reason; the operator (2026-10-17) wanted Rust's cupboard, which is the
+//! inventory screen with the upkeep in the loot column, and it is that now.
 
 /// One upkeep period is one hour: `sim_core::deploy::UPKEEP_PERIOD_TICKS`
 /// at the sim's tick rate. A test pins the two together.
 pub const PERIOD_MINUTES: u64 = 60;
 
-/// The footer: how to close, what `E` did, and how the crew takes back.
-pub const HINT: &str = "[E] CLOSE  ·  E FEEDS UP TO 500 OF EACH  ·  [1]-[4] TAKE 500 BACK";
+/// The page's hint line: every gesture the hearth column answers.
+pub const HINT: &str = "drag or right-click materials in to feed it   -   \
+     click a stack to take 500 back   -   FEED puts in up to 500 of each   -   Tab or Esc closes";
+
+/// The upkeep box's explainer, the reference's own sentence in our words.
+pub const BLURB: &str = "Keep a day's materials in the hearth to stop your base from decaying. \
+     A base left without enough rots away piece by piece.";
 
 /// What the panel says when no stock ack names this hearth: the server
-/// reads a hearth out to its crew alone.
-pub const NO_REPORT: &str = "ONLY THE CREW CAN READ THIS HEARTH  ·  [L] JOIN CREW";
+/// reads a hearth out to its crew alone. `L` is a world key, so the page
+/// has to be shut to press it.
+pub const NO_REPORT: &str =
+    "Only the hearth's crew can read its stock and its clock. Close this and press L to join.";
+
+/// A stock or a price as the reference prints it: `x1,000`.
+pub fn count_label(n: u32) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    out.push('x');
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether `item` is one of the hearth's materials, as far as its stock ack
+/// says. With no ack (not crew) nothing is known, and the caller falls back
+/// to what the gesture would have done anyway.
+pub fn takes(stock: &[(u16, u32, u32)], item: u16) -> bool {
+    stock.iter().any(|&(i, _, _)| i == item)
+}
 
 /// One material row: its item, what the hearth holds, what a day costs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +174,14 @@ mod tests {
             status_line(&[(3, 0, 10)]),
             "NOT PROTECTED — THE BASE IS DECAYING"
         );
+    }
+
+    #[test]
+    fn counts_read_with_thousands() {
+        assert_eq!(count_label(0), "x0");
+        assert_eq!(count_label(538), "x538");
+        assert_eq!(count_label(1000), "x1,000");
+        assert_eq!(count_label(1234567), "x1,234,567");
     }
 
     #[test]

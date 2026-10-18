@@ -141,6 +141,12 @@ const NOT_DAMAGE: &[(&str, &str, &str)] = &[
          and there is nothing here for a reducer to reduce",
     ),
     (
+        "survival.rs",
+        "grant",
+        "the SPAWN hp — a fresh body (join or respawn) starting short of full, \
+         the way Rust's does. A body being made, not a body being hurt",
+    ),
+    (
         "exposure.rs",
         "step",
         "COMFORT (`NOW.md` §0wx item 1) — a warm, dry, fed body by a fire mending. \

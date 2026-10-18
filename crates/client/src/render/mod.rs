@@ -90,6 +90,7 @@ pub mod feed;
 pub mod fx;
 /// THE GATE's ruin, alive: hanging fragments, arcs, motes, beacons.
 pub mod gate_fx;
+pub mod guards;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -410,9 +411,9 @@ pub struct Eye {
     pub roll: f32,
 }
 
-/// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
-/// cosmetics — the same 1.6 the browser client stands at).
-pub const EYE_HEIGHT: f32 = 1.6;
+/// Eye height above the capsule's feet, metres: the sim's own
+/// (`ranged::ARROW_EYE_MM`), since a shot leaves from it.
+pub const EYE_HEIGHT: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 /// A crouched eye above the feet, metres: the sim's own
 /// (`ranged::CROUCH_EYE_MM`), since a crouched shot leaves from it.
@@ -1140,6 +1141,7 @@ impl Plugin for GatesRenderPlugin {
                     map::view,
                     map::track,
                     map::mates,
+                    map::heli,
                     map::blight_follow,
                     map::keys,
                 )
@@ -1202,6 +1204,7 @@ impl Plugin for GatesRenderPlugin {
                         .after(settings::follow_browser_fullscreen),
                     settings::fullscreen_key,
                     settings::follow_browser_fullscreen,
+                    settings::follow_focus,
                     settings::save_on_change,
                     // The graphics tier, and it belongs beside the other two
                     // appliers rather than in the world schedule: a player
@@ -1481,6 +1484,7 @@ impl Plugin for GatesRenderPlugin {
                 // it walks up to and the `Live` record it writes are both
                 // `bodies::stream`'s, spawned inside that set.
                 bodies::bind_hands.after(Stream),
+                guards::arm.after(Stream),
                 fingers::bind,
                 anim::bind_spine.after(Stream),
                 anim::reshade.after(Stream),
@@ -1758,7 +1762,7 @@ impl Plugin for GatesRenderPlugin {
                     // After `harvest`, which owns the discrete transition and
                     // arms the topple this integrates. Reversed, a tree would
                     // spend one frame at the pose the previous chop left it.
-                    props::fall,
+                    props::fall.after(props::harvest).after(props::harvest_new),
                     clutter::stream,
                     // Reconciles the whole piece/deploy/bag mirror, which is
                     // the right shape and the wrong cadence: it now runs only
@@ -1841,16 +1845,19 @@ impl Plugin for GatesRenderPlugin {
                         town::lamps,
                         landmarks::lamps,
                         town_signs::build,
-                        town_signs::shopkeepers,
+                        town_signs::machines,
+                        // THE GATE's guards, walked off the server's clock.
+                        guards::spawn,
+                        guards::walk,
                         ziggurat::dress,
                         ziggurat::doors,
                         // The works' terminals (`ARC.md` F1): stood up as
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
-                        (lore::spawn, lore::dials).chain(),
+                        (lore::spawn, lore::dials, lore::carve).chain(),
                     ),
-                    (hud::pad_overlay, hud::hearth_overlay, hud::lift_announce),
+                    (hud::pad_overlay, hud::lift_announce),
                 )
                     .in_set(Stream)
                     .run_if(world_placed),

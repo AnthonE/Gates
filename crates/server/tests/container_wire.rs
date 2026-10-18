@@ -586,17 +586,18 @@ fn a_seat_sees_the_container_its_player_has_open() {
     assert!(same(&mine, &of(&got, seat_a)), "{got:?}");
     assert!(same(&mine, &of(&got, seat_b)), "{got:?}");
 
-    // The player closes: no echo to them, a close to each seat, then quiet.
+    // The player closes: one close back to them and to each seat, then
+    // quiet. The player's own answer is what unlatches a box an open still
+    // in flight would otherwise re-latch on their client.
     ask(&mut core, 0, CONT_SELF, 0);
     let mut shut = Vec::new();
     for _ in 0..4 {
         pump(&mut core, &stats, &mut clients, &mut shut);
     }
     let got = syncs(&shut);
-    assert!(of(&got, 0).is_empty(), "{got:?}");
-    for seat in [seat_a, seat_b] {
+    for seat in [0, seat_a, seat_b] {
         let s = of(&got, seat);
-        assert_eq!(s.len(), 1, "one close per seat: {got:?}");
+        assert_eq!(s.len(), 1, "one close per view: {got:?}");
         assert_eq!(
             (s[0].1, s[0].2, s[0].3, s[0].4.len()),
             (CONT_SELF, 0, true, 0)
@@ -838,7 +839,7 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
 }
 
 #[test]
-fn a_client_close_shuts_the_view_without_a_reply() {
+fn a_client_close_shuts_the_view_with_one_reply() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     let mut clients = two_clients(&mut core, &stats);
@@ -854,10 +855,11 @@ fn a_client_close_shuts_the_view_without_a_reply() {
     for _ in 0..3 {
         pump(&mut core, &stats, &mut clients, &mut after);
     }
-    assert!(
-        syncs(&after).is_empty(),
-        "the client already knows it closed; an echo is bytes for nothing: {:?}",
-        syncs(&after)
+    let got = syncs(&after);
+    assert_eq!(got.len(), 1, "one close, not a stream: {got:?}");
+    assert_eq!(
+        (got[0].0, got[0].1, got[0].2, got[0].3, got[0].4.len()),
+        (0, CONT_SELF, 0, true, 0)
     );
 
     // And the view really is shut server-side: a change inside the bag

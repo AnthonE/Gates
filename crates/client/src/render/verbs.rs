@@ -62,9 +62,11 @@ pub struct InWeak(pub bool);
 #[derive(Resource, Default)]
 pub struct Pad(pub crate::ui::keypad::Keypad);
 
-/// The hearth's upkeep panel, when one is up: the hearth's address. A
-/// resource rather than a `Panel` for [`Pad`]'s reason — it must not hold
-/// the player still (`crate::ui::hearth`).
+/// The hearth the inventory page is showing, when one is: its address.
+/// `E` at a hearth feeds it and opens the page with the upkeep column in
+/// the loot's place (`panels::hearth`, Rust's tool cupboard); shutting the
+/// page clears it ([`hearth_close`]). A resource beside `Ui` rather than in
+/// it because the HUD reads it too, and `Ui` is absent on a capture run.
 #[derive(Resource, Default)]
 pub struct HearthView(pub Option<(u16, u16, u8)>);
 
@@ -115,6 +117,9 @@ pub fn drop_give_hold(mut give: ResMut<Give>) {
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
+/// Always what the crosshair is on, never merely the nearest to the feet:
+/// a hammer, a charge or `Backspace` acting on a wall the player is not
+/// looking at is the wrong wall.
 #[derive(Resource, Default)]
 pub struct Near(pub Option<Target>);
 
@@ -490,8 +495,7 @@ pub fn resolve(
     }
     // The hammer's and the charge's target: the free-placed deployable the
     // crosshair is on, by `E`'s own ray, else the piece or solid deployable
-    // the look ray meets (in reach, or nothing), else — only when the
-    // crosshair is on no built thing at all — the structure nearest the feet.
+    // the look ray meets (in reach), else nothing.
     let span =
         |rec: &sim_core::deploy::DeployRec, arch: u8| body_span(world.as_deref(), core, rec, arch);
     let seen = world.as_deref().and_then(|w| {
@@ -512,9 +516,9 @@ pub fn resolve(
             core.deploy_defs_have,
         )
     });
-    near.0 = seen.or_else(|| match built {
-        Some(hit) => structure::struck(
-            hit,
+    near.0 = seen.or_else(|| {
+        structure::struck(
+            built?,
             (x, z),
             core.pieces.entries(),
             &core.piece_defs,
@@ -522,16 +526,7 @@ pub fn resolve(
             core.deploys.entries(),
             &core.deploy_defs,
             core.deploy_defs_have,
-        ),
-        None => structure::nearest(
-            (x, z),
-            core.pieces.entries(),
-            &core.piece_defs,
-            core.piece_defs_have,
-            core.deploys.entries(),
-            &core.deploy_defs,
-            core.deploy_defs_have,
-        ),
+        )
     });
 }
 
@@ -697,14 +692,9 @@ pub fn keys(
         }
     }
     if on(Action::Interact) {
-        // A second `E` closes the hearth's panel rather than feeding again.
-        if hearth.0.is_some() {
-            hearth.0 = None;
-        } else {
-            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
-            if aimed.0.verb == Verb::Hearth {
-                hearth.0 = Some((aimed.0.cx, aimed.0.cz, aimed.0.level));
-            }
+        use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+        if aimed.0.verb == Verb::Hearth {
+            hearth.0 = Some((aimed.0.cx, aimed.0.cz, aimed.0.level));
         }
     }
     // The keypad claims its own keys while it is up, and gives every
@@ -713,30 +703,6 @@ pub fn keys(
     if pad.0.is_open() {
         keypad_keys(&keys, &net, &mut pad, &mut toast);
         return;
-    }
-    // **The hearth's panel takes back with the digits** while it is up and
-    // the crew can read it: `1`–`4` each take a feed's worth of that row
-    // into the pack (`deploy::take_stock`), so a misfed stack is never
-    // stuck. Claimed like the keypad's, ahead of the food keys below and of
-    // the hotbar (`input::gather` yields them too).
-    if let Some(at) = hearth
-        .0
-        .filter(|&a| hearth_rows_known(&net.session.core, a))
-    {
-        let rows = (net.session.core.stock_count as usize).min(sim_core::limits::HEARTH_STOCK_ROWS);
-        let mut took = false;
-        for (i, k) in super::ui::DIGITS.iter().enumerate().take(rows) {
-            if keys.just_pressed(*k) {
-                let (cx, cz, level) = at;
-                send(&net, &mut toast, "take", |buf| {
-                    protocol::encode_action_take_stock(cx, cz, level, i as u8, buf)
-                });
-                took = true;
-            }
-        }
-        if took {
-            return;
-        }
     }
     // **A food slot's key eats one** and leaves the hand as it was — the
     // other half of `input::gather`'s hotbar loop, off the same test
@@ -885,7 +851,7 @@ pub fn keys(
     if on(Action::SwitchOn) {
         light_aimed(&net, &aimed.0, &mut toast);
     }
-    // `Backspace` — take the nearest structure back down. A destructive
+    // `Backspace` — take the aimed structure back down. A destructive
     // verb gets a key nothing else is near, and one a hand resting on WASD
     // cannot reach by accident: the sim gates it on a ten-minute window
     // and a claim, but a misfire inside both is still a foundation gone.
@@ -1112,10 +1078,15 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         Verb::Hearth => {
+            // The feed is also the reading: its ack carries the stock the
+            // page draws. The page is Rust's tool cupboard, the inventory
+            // with the upkeep in the loot column (`panels::hearth`).
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
-            send(net, toast, "feed", |buf| {
+            if send(net, toast, "feed", |buf| {
                 protocol::encode_action_feed(cx, cz, level, buf)
-            });
+            }) {
+                open_panel(ui);
+            }
         }
         // A world container opens exactly the way a box does — the same
         // `ACT_CONTAINER`, the same panel — and the only difference is
@@ -1343,6 +1314,7 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, ask: A
     }
     match lock_target(pick) {
         LockTarget::Pad(cx, cz, level, loc) => pad.0.open(cx, cz, level, loc),
+        LockTarget::Key(cx, cz, level, loc) => pad.0.open_key(cx, cz, level, loc),
         LockTarget::Bare => toast.warn(format!(
             "no lock on that {} — deploy one",
             // "DOOR"/"BOX", said the toast's way. The label is never
@@ -1414,7 +1386,9 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
     if keys.just_pressed(KeyCode::KeyT) {
         want = Some(KeypadKey::Take);
     }
-    let Some(k) = want else { return };
+    let Some(k) = want.filter(|&k| pad.0.offers(k)) else {
+        return;
+    };
     let Some((op, needs)) = op_for(k) else { return };
     let code = match needs {
         Needs::Code => match pad.0.code() {
@@ -1641,15 +1615,20 @@ fn open_panel(ui: Option<&mut Ui>) {
 /// Called when the inventory panel closes, because the server's idea of an
 /// open container outlives the panel that was drawing it — and a container
 /// left open is one the sim keeps syncing to a screen nobody is looking at.
-pub fn close_container(net: &Net, toast: &mut Toast) {
+pub fn close_container(net: &mut Net, toast: &mut Toast) {
     // A watcher's open container is its player's (NOW §5sp): there is
     // nothing of its own to close, and the send would only toast read-only.
     if net.session.core.cont_kind == CONT_SELF || net.session.watching.is_some() {
         return;
     }
-    send(net, toast, "close", |buf| {
+    if send(net, toast, "close", |buf| {
         protocol::encode_action_container(CONT_SELF, 0, buf)
-    });
+    }) {
+        // Shut here too, not only on the server's answer: a shard that
+        // sends none left the box latched, and the next `Tab` drew it
+        // wherever the player had walked to.
+        net.session.core.shut_container();
+    }
 }
 
 /// Encode and queue one action, reporting both failure modes rather than
@@ -1661,12 +1640,6 @@ pub fn close_container(net: &Net, toast: &mut Toast) {
 /// to encode keeps the bug local instead of arriving as a disconnect, and a
 /// full lane means the move was **not** sent (wall 4's stated overflow policy
 /// for the reliable lane is to report, never drop).
-/// Whether the open hearth panel shows its rows — the crew's stock ack names
-/// this hearth — so its digits take back rather than select.
-pub fn hearth_rows_known(core: &client_core::core::ClientCore, at: (u16, u16, u8)) -> bool {
-    core.stock_addr == at && core.stock_count > 0
-}
-
 /// `R` with the inventory up: empty the held weapon's magazine into the
 /// pack (`Command::Unload`). Sent blind, `R`'s reload posture: a hand with
 /// no magazine or an empty one comes back as its own refusal sentence.
@@ -1696,22 +1669,17 @@ fn send(
     }
 }
 
-/// Close the hearth's panel on `Esc`, on walking out of feeding reach, or
-/// when the hearth is gone. Ordered before `pause::open` and consuming the
-/// `Esc`, so closing the panel does not also open the pause menu.
-pub fn hearth_close(
-    mut keys: ResMut<ButtonInput<KeyCode>>,
-    net: NonSend<Net>,
-    mut hearth: ResMut<HearthView>,
-) {
+/// Forget the hearth once its page is shut (`Tab`, `Esc`, `Q`), and shut
+/// the page when the hearth is gone or out of feeding reach, or its reader
+/// is down or dead. Ordered before `pause::open`, as the panels are.
+pub fn hearth_close(net: NonSend<Net>, mut hearth: ResMut<HearthView>, ui: Option<ResMut<Ui>>) {
     let Some((cx, cz, level)) = hearth.0 else {
         return;
     };
-    if keys.just_pressed(KeyCode::Escape) {
-        keys.clear_just_pressed(KeyCode::Escape);
+    let Some(mut ui) = ui.filter(|u| u.panel == Panel::Inventory) else {
         hearth.0 = None;
         return;
-    }
+    };
     let core = &net.session.core;
     let standing = core.deploys.entries().iter().find(|r| {
         (r.cx, r.cz, r.level) == (cx, cz, level)
@@ -1723,6 +1691,9 @@ pub fn hearth_close(
         || !standing.is_some_and(|r| crate::ui::hearth::in_reach(core.predict.position(), r.xz()))
     {
         hearth.0 = None;
+        ui.panel = Panel::None;
+        ui.drag = None;
+        ui.dirty = true;
     }
 }
 

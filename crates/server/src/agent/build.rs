@@ -72,16 +72,18 @@ pub enum Milestone {
     /// The cupboard, the foundations, the walls and doorways, in twig.
     #[default]
     Shell,
-    /// Wooden doors on both doorways, a sleeping bag and a box inside.
+    /// Wooden doors on both doorways, a key lock on each when it lives
+    /// alone, a sleeping bag and a box inside.
     Doors,
+    /// The stairs, the floor over the cupboard, its walls and the roof, in
+    /// twig: a roof before the long stone grind, as a player puts one on.
+    Upstairs,
     /// The ground floor graded to stone.
     Stone,
-    /// The stairs, the floor over the cupboard, its walls and the roof.
-    Upstairs,
     /// Whatever stone missed, graded to wood; the upper storey graded.
     Wood,
     /// A workbench behind the core, on a stone foundation of its own: its
-    /// 100 fragments are what the first loot runs are for.
+    /// 100 fragments are bought at THE GATE with the first loot runs' junk.
     Bench,
     /// A furnace on the floor over the cupboard, crafted at the bench; ore
     /// smelts there.
@@ -115,8 +117,8 @@ impl Milestone {
     pub const ALL: [Milestone; 17] = [
         Milestone::Shell,
         Milestone::Doors,
-        Milestone::Stone,
         Milestone::Upstairs,
+        Milestone::Stone,
         Milestone::Wood,
         Milestone::Bench,
         Milestone::Furnace,
@@ -169,6 +171,9 @@ pub const BENCH_ITEM: &str = "Workbench";
 pub const BENCH2_ITEM: &str = "Workbench-2";
 pub const FURNACE_ITEM: &str = "Furnace";
 pub const LOCK_ITEM: &str = "Code Lock";
+/// Rust's first lock: 75 wood, no bench, shut the moment it is on, and
+/// opened only by its placer and the base's hearth crew.
+pub const KEY_LOCK_ITEM: &str = "Key Lock";
 pub const METAL_DOOR_ITEM: &str = "Metal Door";
 /// What a player holds to place a piece, and to grade one.
 pub const PLAN_ITEM: &str = "Building Plan";
@@ -237,10 +242,30 @@ fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
 /// own behind the stair cell (`ANNEX`: every plane inside is taken, and
 /// the first rung stays, its recipes made at either); then the gear,
 /// each blueprint learned before it is made, a parent before its child
-/// (pistol rounds before the revolver: the tree's own edge). An optional op
-/// holds no milestone back: it is done when the pack pays for it on top of
-/// what the milestone in hand costs.
-const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 27] = [
+/// (pistol rounds before the revolver: the tree's own edge). First of all,
+/// a key lock on each door with the doors, when it lives alone (`keyed`):
+/// the blueprint's code locks wait for fragments, and a door anybody can
+/// open is no door. An optional op holds no milestone back: it is done when
+/// the pack pays for it on top of what the milestone in hand costs.
+const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 29] = [
+    (
+        Op::Lock(KEY_LOCK_ITEM),
+        FRONT.0,
+        FRONT.1,
+        FRONT.2,
+        FRONT.3,
+        Milestone::Doors,
+        false,
+    ),
+    (
+        Op::Lock(KEY_LOCK_ITEM),
+        INNER.0,
+        INNER.1,
+        INNER.2,
+        INNER.3,
+        Milestone::Doors,
+        false,
+    ),
     (
         Op::Piece(Part::Foundation),
         YARD.0,
@@ -268,7 +293,15 @@ const LATER: [(Op, i8, i8, u8, u8, Milestone, bool); 27] = [
         Milestone::Bench,
         false,
     ),
-    (Op::Lock, 0, 0, 0, LOC_PLANE, Milestone::Locks, false),
+    (
+        Op::Lock(LOCK_ITEM),
+        0,
+        0,
+        0,
+        LOC_PLANE,
+        Milestone::Locks,
+        false,
+    ),
     (Op::Code, 0, 0, 0, LOC_PLANE, Milestone::Locks, false),
     (
         Op::Swap(DOOR_ITEM, METAL_DOOR_ITEM),
@@ -494,8 +527,9 @@ enum Op {
     Kit(&'static str),
     /// Grade the piece at the address to a material: the hammer in hand.
     Grade(u8),
-    /// Bolt a code lock onto what stands at the address: the lock in hand.
-    Lock,
+    /// Bolt the named lock onto what stands at the address: the lock in
+    /// hand.
+    Lock(&'static str),
     /// Set this body's code on the lock at the address (the keypad), which
     /// arms it.
     Code,
@@ -533,7 +567,7 @@ impl Spec {
     /// where that door is the one `E` and the take-down's key take, the
     /// front from outside, the inner from the room.
     fn work_spot(&self) -> (usize, [f32; 2]) {
-        let door = matches!(self.op, Op::Lock | Op::Code | Op::Swap(..));
+        let door = matches!(self.op, Op::Lock(_) | Op::Code | Op::Swap(..));
         let here = (self.dx, self.dz, self.level, self.loc);
         if door && here == FRONT {
             (CHAIN.len() - 1, CHAIN[CHAIN.len() - 1])
@@ -613,7 +647,7 @@ fn spec(i: usize) -> Spec {
                     Some(Milestone::Locks),
                     false,
                 ),
-                Kit::Lock => (Op::Lock, Some(Milestone::Locks), false),
+                Kit::Lock => (Op::Lock(LOCK_ITEM), Some(Milestone::Locks), false),
             };
             Spec {
                 op,
@@ -1814,6 +1848,8 @@ pub struct BuildStats {
     pub made: u64,
     /// Codes entered at its own locks, to be let through.
     pub entered: u64,
+    /// Bases from an earlier session taken up again (`Builder::adopt`).
+    pub adopted: u64,
 }
 
 /// The base this body is building, and the op it is on. Outlives goals:
@@ -1864,6 +1900,9 @@ pub struct Builder {
     /// Where its guild builds (`agent::society::Board`): a plot is chosen
     /// near here before near where it stands.
     seat: Option<[f32; 2]>,
+    /// Its doors take key locks: it lives alone, not in a guild whose
+    /// crew comes in by the code.
+    keyed: bool,
     pub stats: BuildStats,
 }
 
@@ -1897,6 +1936,7 @@ impl Builder {
             passage: Passage::IDLE,
             use_out: false,
             seat: None,
+            keyed: true,
             survey: Survey {
                 milestone: Milestone::Shell,
                 needs: [(0, 0); NEED_ROWS],
@@ -1924,17 +1964,58 @@ impl Builder {
                 learned: 0,
                 made: 0,
                 entered: 0,
+                adopted: 0,
             },
         }
     }
 
-    /// A new session: the plot is chosen again (the mirror still shows
-    /// what stands, so what was built is not built twice).
+    /// A new session: no plot until [`Self::find_home`] finds the one from
+    /// before (or the body has none, and chooses one).
     pub fn reset(&mut self) {
-        let (stats, code) = (self.stats, self.code);
+        let (stats, code, keyed) = (self.stats, self.code, self.keyed);
         *self = Self::new();
         self.stats = stats;
         self.code = code;
+        self.keyed = keyed;
+    }
+
+    /// Its base from an earlier session: the plot one of its own bags lies
+    /// in the airlock of (`EXTRAS`), with something standing on the
+    /// cupboard's spot. Its bags are the one thing the island tells a body
+    /// it owns. Without this a new session (every shift, every restart)
+    /// walked away from its base, which it took for somebody else's, and
+    /// founded another that never got its roof.
+    pub fn find_home(
+        core: &ClientCore,
+        mut bags: impl Iterator<Item = (u16, u16, u8)>,
+    ) -> Option<BasePlan> {
+        let bag = EXTRAS.iter().find(|e| e.0 == BAG_ITEM)?;
+        let hearth = (0..STARTER.len())
+            .map(spec)
+            .find(|s| s.op == Op::Kit(HEARTH_ITEM))?;
+        bags.find_map(|(bx, bz, level)| {
+            let cx = bx.checked_sub(u16::try_from(bag.1).ok()?)?;
+            let cz = bz.checked_sub(u16::try_from(bag.2).ok()?)?;
+            let plan = BasePlan::new(0, cx, cz);
+            (level == bag.3 && deploy_at(core, addr(&plan, &hearth)).is_some()).then_some(plan)
+        })
+    }
+
+    /// Take that base up again: its plot, and its kit standing there its
+    /// own again, as when it put each down.
+    pub fn adopt(&mut self, core: &ClientCore, plan: BasePlan) {
+        self.plan = Some(plan);
+        for i in 0..OPS {
+            let s = spec(i);
+            if s.stage.is_some()
+                && matches!(s.op, Op::Kit(_))
+                && deploy_at(core, addr(&plan, &s)).is_some()
+            {
+                self.mine |= bit(i);
+            }
+        }
+        self.reconcile(core, &plan);
+        self.stats.adopted += 1;
     }
 
     /// The code its locks are set to and opened with. Never printed.
@@ -2454,7 +2535,11 @@ impl Builder {
             }
             let at = addr(plan, &s);
             let done = match s.op {
-                Op::Lock => deploy_rec(core, at).is_some_and(|d| d.has_lock),
+                // A key lock is no body's business in a guild: its crew
+                // comes in by the code, and the crew of a cupboard behind a
+                // key-locked door could never be joined.
+                Op::Lock(KEY_LOCK_ITEM) if !self.keyed => true,
+                Op::Lock(_) => deploy_rec(core, at).is_some_and(|d| d.has_lock),
                 Op::Code => deploy_rec(core, at).is_some_and(|d| d.locked),
                 Op::Swap(_, to) => {
                     item_named(core, to).is_some_and(|t| item_at(core, at) == Some(t))
@@ -2561,7 +2646,7 @@ impl Builder {
     fn made_item(&self, core: &ClientCore, s: &Spec) -> Option<u16> {
         match s.op {
             Op::Kit(name) | Op::Swap(_, name) | Op::Make(name, _) => item_named(core, name),
-            Op::Lock => item_named(core, LOCK_ITEM),
+            Op::Lock(name) => item_named(core, name),
             _ => None,
         }
     }
@@ -2627,7 +2712,7 @@ impl Builder {
                     }
                 }
                 Op::Kit(name) | Op::Swap(_, name) => kit(name),
-                Op::Lock => kit(LOCK_ITEM),
+                Op::Lock(name) => kit(name),
                 Op::Code => {}
                 Op::Learn(name) => {
                     if let Some((coin, cost, ..)) = item_named(core, name)
@@ -2740,7 +2825,7 @@ impl Builder {
             Op::Piece(_) => item_named(core, PLAN_ITEM),
             Op::Grade(_) => item_named(core, HAMMER_ITEM),
             Op::Kit(name) | Op::Swap(_, name) => item_named(core, name),
-            Op::Lock => item_named(core, LOCK_ITEM),
+            Op::Lock(name) => item_named(core, name),
             Op::Code | Op::Learn(_) | Op::Make(..) => None,
         }
     }
@@ -2778,7 +2863,7 @@ impl Builder {
         let mut bill = match s.op {
             Op::Piece(part) => piece_bill(core, piece_row(core, part_shape(part), MAT_TWIG)?),
             Op::Grade(material) => piece_bill(core, piece_row(core, shape_at(s)?, material)?),
-            Op::Kit(_) | Op::Lock | Op::Swap(..) => Bill::default(),
+            Op::Kit(_) | Op::Lock(_) | Op::Swap(..) => Bill::default(),
             Op::Code => return Some(Bill::default()),
             Op::Learn(name) => {
                 let item = item_named(core, name)?;
@@ -2816,7 +2901,7 @@ impl Builder {
             // bench in hand was "ready", and three deploys onto bare ground
             // gave the bench up for good.
             Op::Kit(_) => place_of(s).is_none() || piece_at(core, at).is_some(),
-            Op::Lock => {
+            Op::Lock(_) => {
                 self.ours_at(plan, at)
                     && deploy_rec(core, at).is_some_and(|d| {
                         !d.has_lock && deploy_def(core, d.row).is_some_and(|def| lockable(def.arch))
@@ -3007,6 +3092,13 @@ impl Builder {
         self.seat = seat;
     }
 
+    /// Whether its doors take key locks (it lives alone): a guild's crew
+    /// comes in by the code, which a key lock refuses.
+    pub const fn keyed(mut self, keyed: bool) -> Self {
+        self.keyed = keyed;
+        self
+    }
+
     /// Choose a plot near its guild's seat, else near here: the site
     /// rules, clear of its own bags, of what it has seen others build, of
     /// trees and rocks, and of plots that were refused.
@@ -3022,6 +3114,10 @@ impl Builder {
         wood: Option<[f32; 2]>,
         stone: Option<[f32; 2]>,
     ) -> Option<BasePlan> {
+        if let Some(plan) = Self::find_home(core, home.own_bags()) {
+            self.adopt(core, plan);
+            return Some(plan);
+        }
         let from = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
         let bad = self.bad;
         let (_, island) = core.island();
@@ -3237,6 +3333,11 @@ impl Builder {
         // station makes, on the stand spot, which its stations are in
         // reach of.
         if let Some(t) = tool.filter(|&t| count(core, t) == 0) {
+            // One in the box is fetched, not made again: the mind's visit
+            // home takes it out (`Survey::take_out`).
+            if self.stored.units(t) > 0 {
+                return Act::Fail(Why::MissingInputs);
+            }
             let at_station = recipe_for(core, t, &self.stations(core))
                 .is_some_and(|(.., station)| station != STATION_NONE);
             if !at_station {
@@ -3262,6 +3363,9 @@ impl Builder {
         }
         if let Some(t) = tool {
             if count(core, t) == 0 {
+                if self.stored.units(t) > 0 {
+                    return Act::Fail(Why::MissingInputs);
+                }
                 return self.craft(core, i, t, 1);
             }
         }
@@ -3335,7 +3439,7 @@ impl Builder {
                     Sent::Deploy,
                 )
             }),
-            Op::Lock => kit_row(core, tool).map(|row| {
+            Op::Lock(_) => kit_row(core, tool).map(|row| {
                 (
                     Act::Deploy {
                         row,
@@ -3877,17 +3981,17 @@ mod tests {
                 }
                 continue;
             }
-            if i < STARTER.len() && m < last && m != Milestone::Stone {
-                // Only the ground floor's stone grades come back down the
-                // list: the blueprint grades before it grows.
+            if i < STARTER.len() && m < last {
+                // The blueprint roofs before it grades, as it builds.
                 panic!("op {i} {:?} goes back to {m:?} after {last:?}", STARTER[i]);
             }
             last = last.max(m);
         }
         // The shell: two foundations, a triangle, five walls, two doorways,
-        // the diagonal, and the cupboard. Two doors, the box and the bag.
+        // the diagonal, and the cupboard. Two doors and a key lock on each,
+        // the box and the bag.
         assert_eq!(seen[Milestone::Shell as usize], 12);
-        assert_eq!(seen[Milestone::Doors as usize], 4);
+        assert_eq!(seen[Milestone::Doors as usize], 6);
         assert_eq!(seen[Milestone::Stone as usize], 11);
         assert!(seen[Milestone::Upstairs as usize] >= 10);
         // Its stations in reach of the stand spot, the bench on a stone
@@ -3973,6 +4077,58 @@ mod tests {
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
         let n = encode(&mut buf).unwrap();
         core.on_stream(&buf[..n]).unwrap();
+    }
+
+    /// A new session's builder knows no plot. Its bag in an airlock, with a
+    /// cupboard standing on that plot, is its base from before: taken up
+    /// again with its kit its own, not walked away from. A bag on open
+    /// ground is no base.
+    #[test]
+    fn a_new_session_takes_up_the_base_its_bag_lies_in() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let plan = BasePlan::new(0, 100, 100);
+        for i in
+            (0..OPS).filter(|&i| matches!(spec(i).stage, Some(Milestone::Shell | Milestone::Doors)))
+        {
+            let at = addr(&plan, &spec(i));
+            if matches!(spec(i).op, Op::Kit(_)) {
+                let rec = sim_core::deploy::DeployRec {
+                    cx: at.cx,
+                    cz: at.cz,
+                    level: at.level,
+                    loc: at.loc,
+                    ..Default::default()
+                };
+                stream(&mut core, |buf| {
+                    protocol::event::encode_event_deploy_placed(&rec, buf)
+                });
+            } else if matches!(spec(i).op, Op::Piece(_)) {
+                let rec = sim_core::build::PieceRec {
+                    cx: at.cx,
+                    cz: at.cz,
+                    level: at.level,
+                    loc: at.loc,
+                    ..Default::default()
+                };
+                stream(&mut core, |buf| {
+                    protocol::event::encode_event_piece_placed(&rec, buf)
+                });
+            }
+        }
+        let out_in_the_open = (140, 140, 0);
+        assert!(Builder::find_home(&core, [out_in_the_open].into_iter()).is_none());
+        let in_the_airlock = (101, 101, 0);
+        let found = Builder::find_home(&core, [out_in_the_open, in_the_airlock].into_iter());
+        assert_eq!(found.map(|p| (p.cx, p.cz)), Some((100, 100)));
+        let mut b = Builder::new();
+        b.adopt(&core, found.unwrap());
+        b.survey_now(&core, &Ledger::EMPTY);
+        assert!(b.survey().hearth, "its cupboard, its own again");
+        assert!(b.owns(101, 100, 0, LOC_PLANE));
+        // The doors stand and are its own: the key locks go on next, then
+        // the roof.
+        assert_eq!(b.survey().milestone, Milestone::Doors);
+        assert_eq!(b.stats.adopted, 1);
     }
 
     /// Twig rots within the upkeep hour it went down in, and a raid breaks

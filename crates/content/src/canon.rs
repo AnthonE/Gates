@@ -124,6 +124,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.limb_pct);
         h.u(w.rate_per_min);
         h.u(w.range_m);
+        h.u(w.reach_cm);
         h.u(w.lit_damage.unwrap_or(0));
         h.u(w.condition_loss.unwrap_or(0));
         // The round list walks in **declared order, not sorted**, and that
@@ -337,6 +338,12 @@ pub fn hash(c: &Content) -> u64 {
     h.u(g.repair_cost_pct);
     h.u(g.arrow_break_pct);
     h.u(g.arrow_lodge_s);
+    if let Some(f) = &g.fist {
+        h.s("fist");
+        h.u(f.damage);
+        h.u(f.range_m);
+        h.u(f.self_damage);
+    }
     // The decay ladder reaches the sim (`bake_deployables` → `decay_pct`) and
     // was the fourth field caught outside this walk: two contents rotting a
     // stone base in five hours and in fifty canonicalised identically. A
@@ -464,6 +471,9 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.water_minutes_to_empty);
     h.u(sv.starve_hp_per_min);
     h.u(sv.dehydrate_hp_per_min);
+    h.u(sv.spawn_hp);
+    h.u(sv.spawn_food);
+    h.u(sv.spawn_water);
     h.s(sv.vessel.as_deref().unwrap_or(""));
     h.s(sv.vessel_full.as_deref().unwrap_or(""));
 

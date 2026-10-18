@@ -110,7 +110,8 @@ impl Target {
 }
 
 /// The nearest structure within `BUILD_REACH_M` of the feet, over BOTH
-/// stores.
+/// stores. The game no longer asks it (the structure verbs are aim-only,
+/// `verbs::resolve`); the tests build their targets through it.
 ///
 /// Reach is measured to the anchor via `sim_core::build::anchor` — the sim's
 /// own function, not a copy — because that is what `repair` and `upgrade`
@@ -435,6 +436,7 @@ mod tests {
             // `deploy_table`'s own 200 — see `piece`.
             dmg: damage_band(hp, 200),
             grow: 0,
+            keyed: false,
         }
     }
 

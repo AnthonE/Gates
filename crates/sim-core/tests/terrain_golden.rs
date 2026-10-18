@@ -214,7 +214,10 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// **Moved → `0x22CE_F629_3692_1DF3` at the Verdigris** (2026-10-15,
 /// `terrain::fel`): no height moved, but its row carries ore, so
 /// `Haven::ore_pm` rescales.
-const GOLDEN_TERRAIN_HASH: u64 = 0x22CE_F629_3692_1DF3;
+/// **Moved → `0xED8E_B926_1565_BEF1` at the bigger boulders** (2026-10-17, wipe): every
+/// boulder and stray 1.4× (`boulder.rs`), so the scatter they veto moved,
+/// with the GATE guards and vending machines (#348), which moved it unpinned.
+const GOLDEN_TERRAIN_HASH: u64 = 0xED8E_B926_1565_BEF1;
 
 #[test]
 fn test_terrain_golden() {

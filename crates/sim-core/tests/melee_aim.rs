@@ -37,7 +37,7 @@ use sim_core::collide::Part;
 use sim_core::combat::CombatContent;
 use sim_core::deploy::DeployContent;
 use sim_core::fmath::fabs;
-use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::gather::{GatherContent, ItemStack, STRIKE_DELAY_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{IMPACT_MELEE, SURF_GROUND};
@@ -249,12 +249,16 @@ fn look_at_height(w: &World, up: f32) -> u8 {
 }
 
 /// Hold the primary button at `(yaw, pitch)` until **one** swing is taken,
-/// and return what player 1 lost on that tick.
+/// hold the same aim through its wind-up (`STRIKE_DELAY_TICKS`), and return
+/// what player 1 lost by the tick the blow lands on.
 ///
 /// One, not a window: cadence paces the swings, and a window of
 /// `SWING_INTERVAL_TICKS + 1` lands two — which is how the first draft of
 /// this file killed the victim with a headshot pair and then measured the
-/// next aim against an empty spot on the beach.
+/// next aim against an empty spot on the beach. And through the wind-up,
+/// not to the press: the blow is cast with the aim of the tick it lands on,
+/// so a helper that returned at the press would let the next call's aim
+/// steer this swing.
 fn swing_once(w: &mut World, yaw: u16, pitch: u8) -> Swung {
     let before = w.players[1].hp;
     let mut seq = w.players[0].frame.seq;
@@ -273,28 +277,31 @@ fn swing_once(w: &mut World, yaw: u16, pitch: u8) -> Swung {
             },
             favour: 0,
         }]);
-        let mut swung = false;
+        if !w.events.entries().iter().any(|e| e.code == EV_SWING) {
+            continue;
+        }
+        // Empty ticks keep the frame, so the aim is the one just sent.
         let mut structure = 0;
         let mut impact = None;
-        for e in w.events.entries() {
-            swung |= e.code == EV_SWING;
-            if e.code == EV_STRUCT_HIT {
-                structure += e.c >> 16;
-            }
-            if e.code == EV_IMPACT {
-                let (surf, kind, _) = impact_parts(e.a);
-                if kind == IMPACT_MELEE {
-                    impact = Some(surf);
+        for _ in 0..STRIKE_DELAY_TICKS {
+            w.tick(&[]);
+            for e in w.events.entries() {
+                if e.code == EV_STRUCT_HIT {
+                    structure += e.c >> 16;
+                }
+                if e.code == EV_IMPACT {
+                    let (surf, kind, _) = impact_parts(e.a);
+                    if kind == IMPACT_MELEE {
+                        impact = Some(surf);
+                    }
                 }
             }
         }
-        if swung {
-            return Swung {
-                hp: before.saturating_sub(w.players[1].hp),
-                structure,
-                impact,
-            };
-        }
+        return Swung {
+            hp: before.saturating_sub(w.players[1].hp),
+            structure,
+            impact,
+        };
     }
     panic!("no swing was taken in {MAX_STEPS} ticks");
 }

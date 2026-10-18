@@ -20,7 +20,7 @@
 #ifdef MOTION_VECTOR_PREPASS
 #import bevy_pbr::pbr_prepass_functions
 #endif
-#import "shaders/foliage_common.wgsl"::{displace, grazing_keep, local_height, origin_rand}
+#import "shaders/foliage_common.wgsl"::{displace, displace_prev, grazing_keep, local_height, origin_rand}
 #import "shaders/alpha_cut.wgsl"::{cut_read, cut_uv}
 
 @vertex
@@ -68,8 +68,16 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.color = in.color;
 #endif
 #ifdef MOTION_VECTOR_PREPASS
-    // Close enough for motion blur and TAA: this game runs neither.
-    out.previous_world_position = out.world_position;
+    // Where the sway had this vertex last frame. TAA runs at High and Ultra,
+    // and a swaying leaf that claimed to stand still ghosted and shimmered.
+    let prev_from_local = mesh_functions::get_previous_world_from_local(in.instance_index);
+    let pwp0 = mesh_functions::mesh_position_local_to_world(prev_from_local, vec4<f32>(in.position, 1.0)).xyz;
+#ifdef VERTEX_UVS_B
+    let panchor = pwp0;
+#else
+    let panchor = prev_from_local[3].xyz;
+#endif
+    out.previous_world_position = vec4<f32>(pwp0 + displace_prev(pwp0, panchor, h, rand), 1.0);
 #endif
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     out.instance_index = in.instance_index;

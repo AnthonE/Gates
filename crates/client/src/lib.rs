@@ -1127,7 +1127,7 @@ impl Session {
             if let Some(tap) = tap.as_mut() {
                 tap(film::Lane::Datagram, dgram);
             }
-            if core.on_datagram(dgram) != Ingest::Error {
+            if !matches!(core.on_datagram(dgram), Ingest::Error | Ingest::AppliedMore) {
                 *snapshots += 1;
             }
         });

@@ -435,7 +435,7 @@ fn the_ring_costs_what_limits_says() {
     // `MAX_PLAYERS * REWIND_TICKS * 20 B`. The 20 is the claim that carries
     // risk: another field, or a `u64` id, silently makes it wider.
     assert_eq!(size_of::<RewindPose>(), 20);
-    assert_eq!(MAX_PLAYERS * REWIND_TICKS * size_of::<RewindPose>(), 16_000);
+    assert_eq!(MAX_PLAYERS * REWIND_TICKS * size_of::<RewindPose>(), 32_000);
 
     // Boxed inside, not outside: the rows are on the heap and `World` pays
     // only a pointer plus the stamps.

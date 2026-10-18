@@ -113,6 +113,13 @@ struct GroundSplat {
     // x/y = streak lattice width/height (m), z/w = `sin(tilt)` where streaks
     // start / are full.
     rock_d: vec4<f32>,
+    // x = how far into a block its own draws hold (cells), y = the share of
+    // the lean a gentle summit keeps, z/w = `sin(tilt)` where the rest of it
+    // starts / is whole.
+    rock_e: vec4<f32>,
+    // The mid-scale break-up (`ground_splat::MOTTLE_*`): x = its wavelength
+    // (m), y = its peak departure. zw reserved and zero.
+    mottle: vec4<f32>,
     // x = the road aggregate's own `1 / linear-luma mean` (`AGGREGATE_GAIN`):
     // it is layer 4, not an identity, so `gain` has no slot for it. yzw
     // reserved and zero.
@@ -121,7 +128,9 @@ struct GroundSplat {
     // starts / is full, z = how far the noise moves that, w = its wavelength (m).
     cliff: vec4<f32>,
     // x = `WALL_PLANE_BLEND`: the share of each 45° step between two wall
-    // planes over which both are read. yzw reserved and zero.
+    // planes over which both are read. y/z = the cosine between the
+    // triangle's plane and the normal below which the projection follows the
+    // triangle / above which it follows the normal. w reserved and zero.
     wall_planes: vec4<f32>,
     // Caustics (`ground_splat::CAUSTIC_*`): x = the sea level, y = strength,
     // z/w = the depth where they start to fade / are gone (m).
@@ -325,8 +334,12 @@ struct RockCell {
     key: u32,
     // The second-nearest block's, so the boundary between the two has a key.
     key2: u32,
+    // The third-nearest's, for where three blocks meet.
+    key3: u32,
     // Distance to the nearest block boundary, in cell units.
     edge: f32,
+    // Distance to the boundary with the third-nearest block, in cell units.
+    edge3: f32,
 }
 
 // Nearest-feature cells over 3D world space, so a steep face and a flat
@@ -336,10 +349,13 @@ fn rock_cell(p: vec3<f32>) -> RockCell {
     let f = p - floor(p);
     var d1 = 1e9;
     var d2 = 1e9;
+    var d3 = 1e9;
     var f1 = vec3<f32>(0.0);
     var f2 = vec3<f32>(0.0);
+    var f3 = vec3<f32>(0.0);
     var k1 = 0u;
     var k2 = 0u;
+    var k3 = 0u;
     for (var k: i32 = -1; k <= 1; k = k + 1) {
         for (var j: i32 = -1; j <= 1; j = j + 1) {
             for (var i: i32 = -1; i <= 1; i = i + 1) {
@@ -348,6 +364,9 @@ fn rock_cell(p: vec3<f32>) -> RockCell {
                 let pt = vec3<f32>(o) + vec3<f32>(0.15) + draw3(key) * 0.7;
                 let d = dot(pt - f, pt - f);
                 if d < d1 {
+                    d3 = d2;
+                    f3 = f2;
+                    k3 = k2;
                     d2 = d1;
                     f2 = f1;
                     k2 = k1;
@@ -355,9 +374,16 @@ fn rock_cell(p: vec3<f32>) -> RockCell {
                     f1 = pt;
                     k1 = key;
                 } else if d < d2 {
+                    d3 = d2;
+                    f3 = f2;
+                    k3 = k2;
                     d2 = d;
                     f2 = pt;
                     k2 = key;
+                } else if d < d3 {
+                    d3 = d;
+                    f3 = pt;
+                    k3 = key;
                 }
             }
         }
@@ -366,8 +392,30 @@ fn rock_cell(p: vec3<f32>) -> RockCell {
     var out: RockCell;
     out.key = k1;
     out.key2 = k2;
+    out.key3 = k3;
     out.edge = max(-dot(f - 0.5 * (f1 + f2), n), 0.0);
+    out.edge3 = max(-dot(f - 0.5 * (f1 + f3), normalize(f3 - f1)), 0.0);
     return out;
+}
+
+// A per-block draw that turns over to its neighbours' across the seam instead
+// of stepping at it. A block's lean and value stepped at a hard edge and the
+// eye read every boundary as an outline: on a flat summit that was a
+// camouflage of dark and pale blobs, on a face a pasted-on polygon. Each of
+// the three nearest blocks is weighted by how near its boundary is, and every
+// weight is 1 on that boundary, so the blend is continuous across it and the
+// block's own draw holds only past `rock_e.x` cells in.
+fn rock_draw(c: RockCell, salt: u32) -> vec3<f32> {
+    let w2 = 1.0 - smoothstep(0.0, splat.rock_e.x, c.edge);
+    let w3 = 1.0 - smoothstep(0.0, splat.rock_e.x, c.edge3);
+    var sum = draw3(c.key ^ salt);
+    if w2 > 0.0 {
+        sum = sum + draw3(c.key2 ^ salt) * w2;
+    }
+    if w3 > 0.0 {
+        sum = sum + draw3(c.key3 ^ salt) * w3;
+    }
+    return sum / (1.0 + w2 + w3);
 }
 
 // Value noise over a 3D lattice, quintic-faded, in [0, 1].
@@ -388,6 +436,18 @@ fn value3(p: vec3<f32>) -> f32 {
     let x01 = mix(n001, n101, u.x);
     let x11 = mix(n011, n111, u.x);
     return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+// `value3` on the ground's own xz: four corners instead of eight.
+fn value2(p: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let n00 = unit_of(cell_key(vec3<i32>(i, 29)));
+    let n10 = unit_of(cell_key(vec3<i32>(i + vec2<i32>(1, 0), 29)));
+    let n01 = unit_of(cell_key(vec3<i32>(i + vec2<i32>(0, 1), 29)));
+    let n11 = unit_of(cell_key(vec3<i32>(i + vec2<i32>(1, 1), 29)));
+    return mix(mix(n00, n10, u.x), mix(n01, n11, u.x), u.y);
 }
 
 // --- The wall planes ----------------------------------------------------------
@@ -677,13 +737,34 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let wn = normalize(in.world_normal);
     let sin_tilt = length(wn.xz);
     let cos_tilt = abs(wn.y);
+    // **The projection follows the triangle the photograph is laid on, where
+    // that is not what the normal says.** A projection's stretch is the
+    // triangle's own, and the shading normal is smoothed across its
+    // neighbours. Where the cliff relief cuts a step one vertex wide, the
+    // central difference spreads it over two: the riser is shaded as a slope
+    // and read off the top plane, drawn three to ten times stretched down
+    // the fall line, and the tread beside it read off a wall. Where the two
+    // agree the normal still decides, because it is continuous across a
+    // triangle edge and the triangle's plane is not; where they part, the
+    // edge they part at is a crease in the drawn rock, and a seam along a
+    // crease reads as the rock's own.
+    var pn = wn;
+    let gc = cross(dp_dx, dp_dy);
+    if dot(gc, gc) > 0.0 {
+        var gn = normalize(gc);
+        if dot(gn, wn) < 0.0 {
+            gn = -gn;
+        }
+        pn = normalize(mix(gn, wn, smoothstep(splat.wall_planes.y, splat.wall_planes.z, dot(gn, wn))));
+    }
+    let p_sin = length(pn.xz);
     // `pow(cos, k)` against `pow(sin, k)`: the two foreshortenings are exact
     // complements, so this crosses over at 45° by construction rather than by a
     // tuned threshold.
-    let w_top = pow(cos_tilt, splat.wall.y);
-    let w_wall = pow(sin_tilt, splat.wall.y);
+    let w_top = pow(abs(pn.y), splat.wall.y);
+    let w_wall = pow(p_sin, splat.wall.y);
     var wall_mix = 0.0;
-    if sin_tilt > splat.wall.x {
+    if p_sin > splat.wall.x {
         wall_mix = w_wall / max(w_top + w_wall, 1e-6);
     }
 
@@ -754,7 +835,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
         // its sides) and counted in the 45° steps between planes: plane `ka`
         // and the next one round share it, over the middle
         // `WALL_PLANE_BLEND` of each step and nowhere else.
-        var bearing = atan2(wn.z, wn.x);
+        var bearing = atan2(pn.z, pn.x);
         if bearing < 0.0 {
             bearing = bearing + 3.14159265;
         }
@@ -843,7 +924,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
             // like a joint and is never a ruled polygon edge.
             let warp = vec3<f32>(value3(wp / 4.0), value3(wp / 4.0 + vec3<f32>(31.7, 11.3, 5.9)), value3(wp / 4.0 + vec3<f32>(7.1, 23.9, 17.3))) * 2.0 - 1.0;
             let big = rock_cell((wp + warp * splat.rock_b.w) / splat.rock_a.x);
-            let d = draw3(big.key);
+            let d = rock_draw(big, 0u);
             shade = 1.0 + splat.rock_b.x * (2.0 * d.y - 1.0) * near_big;
             // Only some boundaries are cracks: a key per PAIR of blocks, so a
             // crack runs the length of the boundary it chose and stops.
@@ -854,15 +935,18 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
                 shade = shade * (1.0 - splat.rock_c.z * on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)));
                 rock_crack = on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)) * near_big;
             }
-            t_big = (draw3(big.key ^ 0x68e31da4u) * 2.0 - 1.0) * (splat.rock_a.z * near_big);
+            t_big = (rock_draw(big, 0x68e31da4u) * 2.0 - 1.0) * (splat.rock_a.z * near_big);
         }
         var t_fine = vec3<f32>(0.0);
         if near_fine > 0.0 {
             let fine = rock_cell(wp / splat.rock_a.y + vec3<f32>(17.3, 5.1, 9.7));
-            t_fine = (draw3(fine.key ^ 0x1b873593u) * 2.0 - 1.0) * (splat.rock_a.w * near_fine);
-            shade = shade * (1.0 + 0.5 * splat.rock_b.x * (2.0 * draw3(fine.key).y - 1.0) * near_fine);
+            t_fine = (rock_draw(fine, 0x1b873593u) * 2.0 - 1.0) * (splat.rock_a.w * near_fine);
+            shade = shade * (1.0 + 0.5 * splat.rock_b.x * (2.0 * rock_draw(fine, 0u).y - 1.0) * near_fine);
         }
-        rock_tilt = t_big + t_fine;
+        // A facet leans on a face, where a scarp breaks into planes; on a
+        // gentle summit the same lean is a slab tipped at random, and keeps
+        // only `rock_e.y` of it.
+        rock_tilt = (t_big + t_fine) * mix(splat.rock_e.y, 1.0, smoothstep(splat.rock_e.z, splat.rock_e.w, sin_tilt));
         // Weathering: broad patches, the scale a player reads from across a
         // valley.
         let wx = value3(wp / splat.rock_b.y) * 0.65 + value3(wp / (splat.rock_b.y * 0.37)) * 0.35;
@@ -1030,6 +1114,19 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // keeps its own grain instead of having it multiplied back in at full dry
     // strength. `terrain_mesh::vertex_color` states why.
     base = base * in.uv_b.x;
+    // The mid-scale break-up, per pixel and smooth. It was a hash per mesh
+    // vertex, white noise interpolated across each triangle, and on sand,
+    // whose photograph has almost no grain to hide it, that drew a mottle of
+    // dark and pale blotches one vertex step wide. Two octaves of value noise
+    // over world xz instead: the same on every mesh that wears this material,
+    // so a boulder's foot and the ground under it agree. Each octave goes to
+    // its mean before it is finer than a few pixels, and each is odd about
+    // its mean, so this moves no average.
+    let mq = wp.xz / splat.mottle.x;
+    let m_broad = (2.0 * value2(mq) - 1.0) * (1.0 - smoothstep(0.1, 0.3, fp_m / splat.mottle.x));
+    let m_fine = (2.0 * value2(mq * 2.3 + vec2<f32>(5.2, 1.3)) - 1.0)
+        * (1.0 - smoothstep(0.1, 0.3, fp_m * 2.3 / splat.mottle.x));
+    base = base * (1.0 + splat.mottle.y * (0.6 * m_broad + 0.4 * m_fine));
     // Rain (weather v0): `identity[0].w` carries how wet the weather has
     // made the island, and it soaks what faces the sky — a cliff face sheds
     // it. The shoreline's own wet band is the floor under it.

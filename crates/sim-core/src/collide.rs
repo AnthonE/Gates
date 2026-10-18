@@ -285,13 +285,14 @@ pub fn floor_frame_solid(dx: f32, dz: f32, radius: f32) -> bool {
 pub const PLANE_THICKNESS_M: f32 = 0.3;
 
 /// The doorway opening's height, metres above the storey base — the
-/// lintel's underside. The client has always drawn the lintel at
-/// 2.1..3.0 (`render/structures.rs` derives it from `LINTEL_H_M`); the
+/// lintel's underside. 2.2 m, Rust's door leaf (it was 2.1 until
+/// 2026-10-17). The client draws the lintel from here to the storey top
+/// (`render/structures.rs` `lintel_band`); the
 /// sim never modelled it because a 1.7 m capsule cannot reach it without
 /// a jump, and that is still true for bodies. The **shot** walk is what
 /// finally reads it: an arrow is not a capsule, and an arrow through the
 /// drawn lintel was the frame lying to the other sense.
-pub const DOOR_HEAD_M: f32 = 2.1;
+pub const DOOR_HEAD_M: f32 = 2.2;
 
 /// The triangular floor frame's rim, measured in the same local half-cell
 /// as a triangle plane. Radius expands each rail for capsule/projectile tests.
@@ -827,7 +828,8 @@ impl ColIndex {
     /// Fibonacci-hash home slot — pure integer, wasm-identical.
     #[inline]
     fn home(key: u32) -> usize {
-        (key.wrapping_mul(0x9E37_79B1) >> 18) as usize & (COL_INDEX_SLOTS - 1)
+        (key.wrapping_mul(0x9E37_79B1) >> (32 - COL_INDEX_SLOTS.trailing_zeros())) as usize
+            & (COL_INDEX_SLOTS - 1)
     }
 
     /// The solid table's home slot, the same hash at its own width.
@@ -3427,7 +3429,12 @@ mod tests {
         // rule's to the bit, filled or not, and every filled band belongs to
         // the cell its slot holds — which is what pins `remove_slot` moving
         // the two arrays together.
-        const W: u16 = 48;
+        //
+        // 128 a side so the table is a quarter full: at the 48 this had
+        // while the table was 16,384 slots, the 65,536-slot table spread a
+        // contiguous grid with no collisions at all, and the deletions
+        // below need probe chains to shift.
+        const W: u16 = 128;
         let (x0, z0) = (CX - W / 2, CZ - W / 2);
         // Every piece in a column carries the column's plate (`build::place`).
         let plate_of = |cx: u16, cz: u16| ((cx ^ cz) % 7) as i8 - 3;

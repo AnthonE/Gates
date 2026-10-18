@@ -227,6 +227,7 @@ ITEMS = {
     "charcoal_tonic": "lorc/standing-potion",
     "berries": "delapouite/berries-bowl",
     "mushrooms": "delapouite/mushrooms",
+    "cactus_flesh": "delapouite/cactus",
     "corn": "delapouite/corn",
     "corn_seed": "delapouite/plant-seed",
     "hemp_seed": "delapouite/sesame",
@@ -327,6 +328,8 @@ MAP = {
     # rather than the crossed bones because the skull fills the frame, and
     # at a marker's 14 px the bones' skull is four pixels.
     "map_death": "lorc/skull-mask",
+    # The attack helicopter while it is over the island (`render::map`).
+    "map_heli": "delapouite/helicopter",
 }
 
 # Glyphs the panels draw OVER an item picture. Not items, so not `ITEMS`.

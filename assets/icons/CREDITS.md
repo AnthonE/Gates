@@ -43,6 +43,7 @@ every item either way, because the painted ones are derived works of it.
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
+| `cactus_flesh.png` | `delapouite/cactus` |
 | `camp_fire.png` | `lorc/campfire` |
 | `charcoal.png` | `delapouite/coal-pile` |
 | `charcoal_tonic.png` | `lorc/standing-potion` |
@@ -75,6 +76,7 @@ every item either way, because the painted ones are derived works of it.
 | `map_bed.png` | `delapouite/sleeping-bag` |
 | `map_death.png` | `lorc/skull-mask` |
 | `map_hearth.png` | `delapouite/fireplace` |
+| `map_heli.png` | `delapouite/helicopter` |
 | `map_site.png` | `delapouite/hut` |
 | `medical_syringe.png` | `lorc/syringe` |
 | `medkit.png` | `delapouite/first-aid-kit` |

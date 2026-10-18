@@ -306,62 +306,60 @@ mod tests {
     }
 }
 
-/// THE GATE's shopkeepers: one beside each stall, facing the street —
-/// drawn, never simulated (Rust's Bandit Town has shopkeepers, and a market
-/// of six empty counters reads as abandoned). The player rig at idle.
+/// THE GATE's kiosk vending machines: the player's vending machine model on
+/// each `town::MACHINES` box, facing the street under the stall's name
+/// board — the thing a shopper walks up to and presses E at. Drawn here;
+/// the box is the sim's.
 #[derive(Component)]
-pub struct Shopkeeper;
+pub struct KioskMachine(pub usize);
 
-/// Where kiosk `k`'s keeper stands (kit-local x, z): in the gap on the
-/// stall's south side, under nothing, out of the street.
-pub fn keeper_at(k: usize) -> Option<(f32, f32)> {
-    let &(kx, kz) = town::KIOSKS.get(k)?;
-    // `town::PARTS`' kiosks run 6.1 m along the street, centred on their
-    // trading spot: the keeper stands 0.6 m past the south end, level with
-    // the container's middle.
-    Some((if kx < 0.0 { -7.2 } else { 7.2 }, kz - 3.65))
+/// The vending model fits its `DEPLOY` row 1.53 m tall; the kiosk boxes
+/// are the generator's own 1.8 m (`tests/deploy_assets.rs` holds the two
+/// together).
+pub const KIOSK_MACHINE_SCALE: f32 = 1.18;
+
+/// Kiosk `k`'s machine in the town's local frame: the middle of its foot,
+/// its face to the street.
+pub fn machine_local(k: usize) -> Option<Transform> {
+    let b = town::MACHINES.get(k)?.b;
+    let face = if town::KIOSKS[k].0 < 0.0 {
+        std::f32::consts::FRAC_PI_2
+    } else {
+        -std::f32::consts::FRAC_PI_2
+    };
+    Some(
+        Transform::from_xyz((b[0] + b[3]) * 0.5, 0.0, (b[2] + b[5]) * 0.5)
+            .with_rotation(Quat::from_rotation_y(face))
+            .with_scale(Vec3::splat(KIOSK_MACHINE_SCALE)),
+    )
 }
 
-pub fn shopkeepers(
+pub fn machines(
     mut commands: Commands,
     world: Option<Res<WorldId>>,
-    rig: Res<super::anim::Rig>,
-    drawn: Query<(), With<Shopkeeper>>,
+    ring: Res<super::structures::StructRing>,
+    drawn: Query<(), With<KioskMachine>>,
 ) {
     let Some(world) = world else { return };
     let t = world.haven.town;
-    if !t.live || !drawn.is_empty() || !rig.ready() || !rig.shaded() {
+    if !t.live || !drawn.is_empty() {
         return;
     }
-    let Some(scene) = rig.scene.clone() else {
+    let arch = sim_core::deploy::ARCH_VENDING;
+    let (Some(mesh), Some(mat)) = (ring.deploy_mesh(arch), ring.deploy_mat(arch)) else {
         return;
     };
     let tf = super::town::transform(&t);
-    for k in 0..town::KIOSKS.len() {
-        let Some((lx, lz)) = keeper_at(k) else {
+    for k in 0..town::MACHINES.len() {
+        let Some(local) = machine_local(k) else {
             continue;
         };
-        // Facing the street: +X from the west row, −X from the east.
-        let face = if lx < 0.0 {
-            std::f32::consts::FRAC_PI_2
-        } else {
-            -std::f32::consts::FRAC_PI_2
-        };
-        let local = Transform::from_xyz(lx, 0.0, lz).with_rotation(Quat::from_rotation_y(face));
-        let world_tf = tf.mul_transform(local).with_scale(Vec3::splat(rig.scale));
         commands.spawn((
             WorldEntity,
-            Shopkeeper,
-            // Idle from the start: a default `BodyAnim` wants no clip until
-            // `observe` sees it move, and a keeper never moves, so it would
-            // stand in the rig's bind pose forever.
-            super::anim::BodyAnim {
-                clip: Some(super::anim::Clip::Idle),
-                ..default()
-            },
-            super::anim::Reshade(super::anim::Shade::Keeper),
-            SceneRoot(scene.clone()),
-            world_tf,
+            KioskMachine(k),
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(mat.clone()),
+            tf.mul_transform(local),
         ));
     }
 }

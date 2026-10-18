@@ -21,7 +21,8 @@ player_hp = 100
 # farmwalk.rs`, its meaning still the operator's knob (DECISIONS.md
 # §open, "the economy has never been measured").
 farm_per_min = { "item.wood" = 50, "item.stone" = 50, "item.metal_ore" = 30, "item.sulfur_ore" = 30, "item.cloth" = 20 }
-# Barrel-only drops (components, fat) priced as road-minutes per unit.
+# Drops nothing gathers (loot components, an animal's fat) priced as
+# road-minutes per unit.
 # Rust's components (2026-10-13) take the gear's rate per junk they recycle
 # into — a gear is 4 minutes for 12 junk, so one minute per 3 junk, never
 # under one.
@@ -96,6 +97,14 @@ arrow_break_pct = 10
 # runs — the "retrieved after 10 seconds" this was (§5) is not in their
 # code. 10 → 300.
 arrow_lodge_s = 300
+# The punch: what an empty hand does to a body or an animal. Rust has none;
+# the operator wanted one, weak and paid for in your own blood (2026-10-17:
+# *"what if we had it cost health LOL and make it pretty weak"*). Twenty to
+# kill a naked body, and every punch that lands on anything costs the
+# puncher `self_damage`, never their last hit point. No structure damage
+# and no mark on what it hits. Validate holds it weaker than every melee
+# weapon. Absent, an empty hand hits nothing.
+fist = { damage = 5, range_m = 1, self_damage = 2 }
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.
@@ -233,6 +242,11 @@ body_drops = [
 [survival]
 max_food = 500
 max_water = 250
+# A fresh body (join and respawn) starts the way Rust's does: hurt, hungry
+# and thirsty. Rust spawns you at 50–60 hp and roughly 50 food / 50 water.
+spawn_hp = 55
+spawn_food = 75
+spawn_water = 50
 food_minutes_to_empty = 60
 water_minutes_to_empty = 40
 starve_hp_per_min = 3

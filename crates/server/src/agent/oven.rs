@@ -303,6 +303,19 @@ pub fn stands(core: &ClientCore, work: Work, (cx, cz): (u16, u16)) -> bool {
         .any(|d| (d.cx, d.cz, d.level, d.loc) == (cx, cz, 0, LOC_PLANE) && u16::from(d.row) == row)
 }
 
+/// Every ground cell the work's device stands on, per the mirror: whoever
+/// put it down.
+pub fn standing(core: &ClientCore, work: Work) -> impl Iterator<Item = (u16, u16)> + '_ {
+    let row = device_row(core, work.device()).map(|(row, _)| row);
+    core.deploys
+        .entries()
+        .iter()
+        .filter(move |d| {
+            d.level == 0 && d.loc == LOC_PLANE && row.is_some_and(|r| u16::from(d.row) == r)
+        })
+        .map(|d| (d.cx, d.cz))
+}
+
 /// The nearest of these cells holding the work's device within `within`
 /// metres of (`x`, `z`).
 pub fn nearest(
@@ -322,6 +335,115 @@ pub fn nearest(
         }
     }
     best.map(|(_, cell)| cell)
+}
+
+/// THE GATE's research table, its ground cell, while the town stands: the
+/// public one anybody may use (`sim_core::town::STATIONS`).
+pub fn town_table(core: &ClientCore) -> Option<(u16, u16)> {
+    let town = core.haven().town;
+    if !town.live {
+        return None;
+    }
+    let cell = |m: f32| (m / sim_core::build::BUILD_CELL_M) as u16;
+    (0..sim_core::town::STATIONS.len())
+        .filter_map(|k| sim_core::town::station_world(&town, k))
+        .find(|&(arch, ..)| arch == "research")
+        .map(|(_, x, z)| (cell(x), cell(z)))
+}
+
+/// The research row of `item` while this body does not know its recipe.
+fn unknown_row(core: &ClientCore, item: u16) -> Option<sim_core::research::ResearchRow> {
+    let rc = &core.research;
+    if core.research_have < rc.row_count || item == rc.blueprint {
+        return None;
+    }
+    rc.row_for(item)
+        .copied()
+        .filter(|r| !sim_core::research::knows(core.known(), r.recipe))
+}
+
+/// The bench's tree would teach this row now: its parent learned and a
+/// bench of its rung this body's (`tier`, its best).
+fn tree_teaches(core: &ClientCore, tier: u8, row: &sim_core::research::ResearchRow) -> bool {
+    use sim_core::research::{knows, node_tier, NO_RECIPE};
+    let Some(def) = core.recipes.recipes.get(usize::from(row.recipe)) else {
+        return false;
+    };
+    (row.requires == NO_RECIPE || knows(core.known(), row.requires))
+        && tier >= node_tier(def.station)
+}
+
+/// The junk a research of `item` costs, while it is a found thing this
+/// body would take to a research table: one it has no blueprint for that
+/// the tree would not teach it now. The table eats the sample and the tree
+/// does not, for the same junk, so what the tree teaches is kept for use
+/// and researched only from a spare ([`research`]).
+pub fn for_paper(core: &ClientCore, tier: u8, item: u16) -> Option<u16> {
+    unknown_row(core, item)
+        .filter(|r| !tree_teaches(core, tier, r))
+        .map(|r| r.cost)
+}
+
+/// The research to go and do: the cheapest sample in the pack it would
+/// make paper of, with the junk for it carried too.
+pub fn research(core: &ClientCore, tier: u8) -> Option<Work> {
+    let junk = carried(core, core.research.coin);
+    core.inv[..INV_SLOTS]
+        .iter()
+        .filter(|s| s.count > 0)
+        .filter_map(|s| {
+            let row = unknown_row(core, s.item)?;
+            let spare = carried(core, s.item) >= 2;
+            (u32::from(row.cost) <= junk && (spare || !tree_teaches(core, tier, &row)))
+                .then_some((s.item, row.cost))
+        })
+        .min_by_key(|&(_, cost)| cost)
+        .map(|(sample, cost)| Work::Research { sample, cost })
+}
+
+/// A research of `sample` while its recipe is still unknown: the job that
+/// goes back for paper (or a sample) it left in a table.
+pub fn research_of(core: &ClientCore, sample: u16) -> Option<Work> {
+    unknown_row(core, sample).map(|r| Work::Research {
+        sample,
+        cost: r.cost,
+    })
+}
+
+/// A pack slot holding paper that teaches `item`.
+pub fn paper_of(core: &ClientCore, item: u16) -> Option<u8> {
+    (0..INV_SLOTS)
+        .find(|&i| sim_core::research::blueprint_target(&core.research, core.inv[i]) == Some(item))
+        .map(|i| i as u8)
+}
+
+/// A pack slot holding paper for a recipe this body does not know yet.
+pub fn unread(core: &ClientCore) -> Option<u8> {
+    let rc = &core.research;
+    (0..INV_SLOTS)
+        .find(|&i| {
+            sim_core::research::blueprint_target(rc, core.inv[i])
+                .and_then(|t| unknown_row(core, t))
+                .is_some()
+        })
+        .map(|i| i as u8)
+}
+
+/// A research table holds somebody else's work: running, or loaded with a
+/// sample or junk that is not this work's. Found so before this session put
+/// anything in, it is left to them. Paper left in an idle, unpaid table is
+/// anybody's, as at Rust's outpost, and comes off first: the player who ran
+/// it had the panel open when it landed, and a sheet left there would shut
+/// the table to everyone else for good.
+fn in_use(core: &ClientCore, work: Work, slots: &[ItemStack], lit: bool) -> bool {
+    let Work::Research { sample, .. } = work else {
+        return false;
+    };
+    let (item, coin) = (slots[TABLE_ITEM_SLOT], slots[TABLE_COIN_SLOT]);
+    let paper = sim_core::research::blueprint_target(&core.research, item);
+    let ours = item.item == sample || paper == Some(sample);
+    let left = paper.is_some() && coin.count == 0;
+    lit || (item.count > 0 && !ours && !left) || (item.count == 0 && coin.count > 0)
 }
 
 /// Can a cook or a recycle go now: what the work takes, in the pack (and
@@ -825,6 +947,9 @@ impl Session {
             return Tend::Close(look);
         }
         let slots = &core.cont[..BOX_SLOTS];
+        if self.moves == 0 && in_use(core, work, slots, lit) {
+            return Tend::Fail(Why::Refused);
+        }
         if let Some((into, from, to, count)) = plan(work, core, book, slots, lit, keep) {
             if into {
                 match work {
@@ -1155,8 +1280,10 @@ impl DeviceJob {
             .filter(|&d| stands(core, work, d))
             .or_else(|| go_to.filter(|&d| stands(core, work, d)));
         let Some(device) = device else {
-            if self.session.is_some() {
-                // It went out of the world under the session.
+            // It went out of the world under the session; or it is a
+            // research table, which is THE GATE's or one standing, never
+            // one put down.
+            if self.session.is_some() || matches!(work, Work::Research { .. }) {
                 return Tend::Fail(Why::NotFound);
             }
             return self.put_down(core, seed, haven, body, hands, row, item, avoid, tick);
@@ -1446,5 +1573,79 @@ mod tests {
         let (into, from, ..) = plan(work, &core, &book, &table, false, &Keep::NONE).unwrap();
         assert_eq!((into, usize::from(from)), (false, TABLE_ITEM_SLOT));
         assert!(!should_run(work, &core, &book, &table));
+    }
+
+    /// What goes to the table: a found thing with no blueprint and the junk
+    /// for it, the cheapest first. One the bench's tree would teach for the
+    /// same junk is kept for use, unless a second is carried; a table found
+    /// busy is somebody else's, and paper left in an idle one is anybody's.
+    #[test]
+    fn a_research_takes_what_the_tree_cannot_teach_and_leaves_a_busy_table() {
+        let (mut core, _, id) = shipped();
+        let content = content::Content::from_sources(&SOURCES).unwrap();
+        core.recipes = crate::net::bake_all(&content).unwrap().craft;
+        core.recipes_have = core.recipes.recipe_count;
+        core.research_have = core.research.row_count;
+        let (revolver, hatchet, satchel, junk) = (
+            id("item.revolver"),
+            id("item.hatchet_metal"),
+            id("item.satchel_charge"),
+            id("item.junk"),
+        );
+        let cost = |item| core.research.row_for(item).unwrap().cost;
+        let (revolver_cost, satchel_cost) = (cost(revolver), cost(satchel));
+        assert!(revolver_cost < satchel_cost);
+        core.inv[HOTBAR_SLOTS] = stack(satchel, 1);
+        core.inv[HOTBAR_SLOTS + 1] = stack(junk, revolver_cost - 1);
+        assert_eq!(research(&core, 0), None, "too little junk");
+        core.inv[HOTBAR_SLOTS + 1] = stack(junk, satchel_cost);
+        assert_eq!(
+            research(&core, 0),
+            Some(Work::Research {
+                sample: satchel,
+                cost: satchel_cost
+            })
+        );
+        // Cheapest first; and the revolver's tree parent is unlearned, so
+        // it goes to the table whatever bench this body has.
+        core.inv[HOTBAR_SLOTS + 2] = stack(revolver, 1);
+        let paper = Some(Work::Research {
+            sample: revolver,
+            cost: revolver_cost,
+        });
+        assert_eq!(research(&core, 0), paper);
+        assert_eq!(research(&core, 3), paper);
+        // A metal hatchet: the tree teaches it at the bench this body has,
+        // so the one it carries is kept; with no bench, or a spare, it goes.
+        core.inv[HOTBAR_SLOTS] = stack(hatchet, 1);
+        core.inv[HOTBAR_SLOTS + 2] = ItemStack::default();
+        assert_eq!(research(&core, 3), None);
+        assert_eq!(for_paper(&core, 3, hatchet), None);
+        assert!(research(&core, 0).is_some() && for_paper(&core, 0, hatchet).is_some());
+        core.inv[HOTBAR_SLOTS + 3] = stack(hatchet, 1);
+        assert!(research(&core, 3).is_some());
+        // Somebody's revolver in the table, or the table running: theirs.
+        let work = Work::Research {
+            sample: hatchet,
+            cost: cost(hatchet),
+        };
+        let mut table = [ItemStack::default(); BOX_SLOTS];
+        assert!(!in_use(&core, work, &table, false));
+        assert!(in_use(&core, work, &table, true));
+        table[TABLE_ITEM_SLOT] = stack(revolver, 1);
+        assert!(in_use(&core, work, &table, false));
+        table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&core.research, hatchet);
+        assert!(!in_use(&core, work, &table, false));
+        // Paper left in an idle, unpaid table is anybody's; junk beside it
+        // is somebody's.
+        table[TABLE_ITEM_SLOT] = sim_core::research::blueprint_of(&core.research, satchel);
+        assert!(!in_use(&core, work, &table, false));
+        table[TABLE_COIN_SLOT] = stack(junk, 5);
+        assert!(in_use(&core, work, &table, false));
+        table[TABLE_ITEM_SLOT] = ItemStack::default();
+        assert!(
+            in_use(&core, work, &table, false),
+            "junk loaded, sample to come"
+        );
     }
 }

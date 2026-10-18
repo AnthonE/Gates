@@ -48,7 +48,8 @@ use sim_core::limits::{
     ACT_HEAR_CM, AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, BLAST_REPORT_CM,
     CHAT_LOCAL_CM, CRAFT_QUEUE, DATAGRAM_BUDGET_BYTES, GUN_REPORT_CM, HEARTH_STOCK_ROWS,
     HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
-    MAX_SPECTATORS, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
+    MAX_SPECTATORS, SNAPSHOT_INTERVAL_TICKS, SNAPSHOT_PARTS, STALENESS_CEILING, SYNC_SCAN_PER_TICK,
+    WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -146,6 +147,24 @@ const PRIORITY_HALF_SCALE_M: f32 = 32.0;
 /// at 96 m, which is the trade this weight is claiming.
 const PRIORITY_W_MOB: f32 = 25.0;
 
+/// The heli's place in the rank band: ahead of every body, so it always
+/// holds one of a client's `AOI_RANK_EXIT` records and the farthest body
+/// gives way to it. The cap is still the cap; the heli just never loses
+/// its seat (it is on the map, and a gunship nobody is sent is a gunship
+/// that shoots from nowhere).
+const HELI_RANK_KEY: i64 = -1;
+
+/// The distance a roster slot ranks at: its own, or the heli's
+/// [`HELI_RANK_KEY`].
+#[inline]
+fn rank_d2(slot: usize, d2: i64) -> i64 {
+    if slot == sim_core::heli::HELI_SLOT {
+        HELI_RANK_KEY
+    } else {
+        d2
+    }
+}
+
 /// Consecutive byte-overflow refusals before the fill loop stops trying
 /// smaller records (bounded work per snapshot, not a wire number).
 const FILL_OVERFLOW_STREAK: u32 = 3;
@@ -199,6 +218,11 @@ pub struct ShardCore {
     removed_buf: [u32; MAX_SNAPSHOT_ENTITIES],
     /// Scratch: encode target; the closure receives its bytes.
     dg_buf: [u8; DATAGRAM_BUDGET_BYTES],
+    /// Scratch: the snapshot's overflow datagrams this tick (wire v121),
+    /// `more_n` of them, sent after `dg_buf`.
+    more_buf: [[u8; DATAGRAM_BUDGET_BYTES]; SNAPSHOT_PARTS - 1],
+    more_len: [usize; SNAPSHOT_PARTS - 1],
+    more_n: usize,
     /// Item display names with their condition ceilings (v46) and armor
     /// columns (v52), for the catalog drip. Boot input like the baked gather table: the shard installs it
     /// before the first tick; empty (the default) sends no catalog, which
@@ -637,6 +661,9 @@ impl ShardCore {
             sent_buf: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
+            more_buf: [[0; DATAGRAM_BUDGET_BYTES]; SNAPSHOT_PARTS - 1],
+            more_len: [0; SNAPSHOT_PARTS - 1],
+            more_n: 0,
             catalog: ItemCatalog::EMPTY,
             item_descs: Box::new(protocol::ItemDescs::EMPTY),
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
@@ -2538,12 +2565,11 @@ impl ShardCore {
                     // spammed to jump the queue — which is also the only
                     // rate limit on the roll.
                     ActionMsg::Container { kind, cont } => {
+                        // A close keeps `cont_shown`, so the drip answers it
+                        // with a close of its own: one ordered after any
+                        // open still in flight, which would otherwise latch
+                        // a box on the client that nothing feeds.
                         c.open_container(kind, cont);
-                        // A close is the client's own press: its panel is
-                        // already shut, so it is owed no word back.
-                        if kind == CONT_SELF {
-                            c.cont_shown = false;
-                        }
                         if kind == sim_core::inventory::CONT_WORLD {
                             Command::OpenWorldCont { id: c.id, cont }
                         } else {
@@ -2860,6 +2886,9 @@ impl ShardCore {
                 if let Some(len) = self.encode_snapshot(slot, stats) {
                     ShardStats::bump(&stats.snap_sent);
                     send(Lane::Snapshot, slot, &self.dg_buf[..len]);
+                    for p in 0..self.more_n {
+                        send(Lane::Snapshot, slot, &self.more_buf[p][..self.more_len[p]]);
+                    }
                 }
             }
             // A seat's own snapshot, against its own acked baselines — never
@@ -2873,6 +2902,9 @@ impl ShardCore {
                 if let Some(len) = self.encode_snapshot(slot, stats) {
                     ShardStats::bump(&stats.snap_sent);
                     send(Lane::Snapshot, slot, &self.dg_buf[..len]);
+                    for p in 0..self.more_n {
+                        send(Lane::Snapshot, slot, &self.more_buf[p][..self.more_len[p]]);
+                    }
                 }
             }
         }
@@ -4204,7 +4236,8 @@ impl ShardCore {
                     // anyway; a widened `HURT_SECTORS` that outgrew the field
                     // lands here as a counted encode error rather than as a
                     // marker pointing the wrong way.
-                    match encode_event_hurt(ev.b as u8, ev.c as u16, &mut self.ev_buf) {
+                    let head = ev.c & sim_core::world::HURT_HEAD != 0;
+                    match encode_event_hurt(ev.b as u8, ev.c as u16, head, &mut self.ev_buf) {
                         Ok(len) => {
                             if send(Lane::Event, slot, &self.ev_buf[..len]) {
                                 ShardStats::bump(&stats.ev_sent);
@@ -4591,6 +4624,9 @@ impl ShardCore {
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     let has_lock = ev.b & 4 != 0;
+                    // Which kind of lock, off the store at encode (v120):
+                    // the sim's event carries only the three bits.
+                    let keyed = has_lock && self.world.deploys.lock_keyed(cx, cz, level, loc);
                     match encode_event_door(
                         cx,
                         cz,
@@ -4599,6 +4635,7 @@ impl ShardCore {
                         open,
                         locked,
                         has_lock,
+                        keyed,
                         &mut self.ev_buf,
                     ) {
                         Ok(len) => {
@@ -6760,6 +6797,11 @@ impl ShardCore {
                 let dst = &mut wire[n];
                 *dst = *src;
                 dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
+                dst.keyed = src.has_lock
+                    && self
+                        .world
+                        .deploys
+                        .lock_keyed(src.cx, src.cz, src.level, src.loc);
                 let oven = self
                     .world
                     .deploys
@@ -7270,6 +7312,19 @@ impl ShardCore {
                     }
                 }
             }
+        } else if c.open_cont_kind == CONT_SELF && c.cont_shown {
+            // The client shut it. Say so back (see `ActionMsg::Container`).
+            match encode_event_cont_sync(CONT_SELF, 0, true, &[], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].cont_shown = false;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
         }
 
         // **The body, beside the container and never instead of it.**
@@ -7638,13 +7693,17 @@ impl ShardCore {
             let dx = (m.body.qx - own.qx) as i64 * 3;
             let dz = (m.body.qz - own.qz) as i64 * 3;
             let mut d2 = dx * dx + dz * dz;
-            // The heli is heard from far off, so it is subscribed from far
-            // off: in both bands as if it were `HELI_AOI_SCALE` times closer.
+            // The heli is heard from far off, so its updates come as if it
+            // were `HELI_AOI_SCALE` times closer, and it is on everyone's map
+            // (Rust's patrol heli is), so past the enter band it is held at
+            // its edge: subscribed island-wide, at a far body's rate. And it
+            // ranks first ([`HELI_RANK_KEY`]), so a crowd cannot push it out.
             if s == sim_core::heli::HELI_SLOT {
-                d2 /= sim_core::heli::HELI_AOI_SCALE * sim_core::heli::HELI_AOI_SCALE;
+                d2 = (d2 / (sim_core::heli::HELI_AOI_SCALE * sim_core::heli::HELI_AOI_SCALE))
+                    .min(AOI_ENTER_CM * AOI_ENTER_CM);
             }
             d2_of[MAX_PLAYERS + s] = d2;
-            ranked[n_ranked] = (d2, (MAX_PLAYERS + s) as u16);
+            ranked[n_ranked] = (rank_d2(s, d2), (MAX_PLAYERS + s) as u16);
             n_ranked += 1;
             n_near += usize::from(d2 <= AOI_EXIT_CM * AOI_EXIT_CM);
         }
@@ -7737,7 +7796,7 @@ impl ShardCore {
             if d2 == ABSENT {
                 continue;
             }
-            let key = (d2, (MAX_PLAYERS + s) as u16);
+            let key = (rank_d2(s, d2), (MAX_PLAYERS + s) as u16);
             if c.m_interest[s] {
                 if d2 > AOI_EXIT_CM * AOI_EXIT_CM || key > exit_key {
                     c.m_interest[s] = false;
@@ -7882,6 +7941,7 @@ impl ShardCore {
     /// or None only on an encoder-refusal bug (counted, never panicking).
     fn encode_snapshot(&mut self, slot: usize, stats: &ShardStats) -> Option<usize> {
         let tick = self.world.tick;
+        self.more_n = 0;
         let c = &mut self.clients[slot];
         if c.own_wslot == usize::MAX {
             return None; // not in the world yet: nothing to snapshot
@@ -8010,12 +8070,89 @@ impl ShardCore {
             }
         }
 
+        let len = match enc.finish() {
+            Ok(len) => len,
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                return None;
+            }
+        };
+
+        // **Overflow (wire v121): what the snapshot had no room for rides
+        // up to `SNAPSHOT_PARTS - 1` more datagrams this tick**, absolute,
+        // in the same priority order. Only the snapshot's own records are
+        // recorded as the baseline below, so acks and deltas mean what they
+        // always did; a body carried here is simply sent, for the staleness
+        // bookkeeping, and arrives absolute again next tick unless it makes
+        // the snapshot. A part refusing a record is a full part: the record
+        // goes to the next one.
+        let mut extra = 0usize;
+        let mut next = 0usize;
+        for part in 1..SNAPSHOT_PARTS {
+            while next < n_cand && sent_mask[order[next].0 as usize] {
+                next += 1;
+            }
+            if next >= n_cand {
+                break;
+            }
+            let mut more = match SnapshotEncoder::begin_more(
+                &mut self.more_buf[part - 1],
+                tick as u32,
+                part as u8,
+            ) {
+                Ok(more) => more,
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    break;
+                }
+            };
+            let mut n_part = 0usize;
+            while next < n_cand {
+                let w = order[next].0 as usize;
+                if sent_mask[w] {
+                    next += 1;
+                    continue;
+                }
+                let e = if w < MAX_PLAYERS {
+                    Self::wire_entity(&self.world.players[w], &self.world.gather)
+                } else {
+                    Self::wire_mob(w - MAX_PLAYERS, &self.world.mobs.m[w - MAX_PLAYERS])
+                };
+                match more.add_entity(&e) {
+                    Ok(()) => {
+                        sent_mask[w] = true;
+                        n_part += 1;
+                        next += 1;
+                    }
+                    Err(WireError::Overflow) | Err(WireError::Cap) => break,
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        next += 1;
+                    }
+                }
+            }
+            if n_part == 0 {
+                break;
+            }
+            match more.finish() {
+                Ok(n) => {
+                    self.more_len[self.more_n] = n;
+                    self.more_n += 1;
+                    extra += n_part;
+                }
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    break;
+                }
+            }
+        }
+
         // What the fill could not carry. Counted once, here, rather than at
         // the three ways out of the loop above — an entity can be skipped by
         // an overflow and then skipped again by the break, so counting at
         // the refusal sites double-counts exactly when the budget is
         // tightest. `n_sent` includes the own entity, which is not a
-        // candidate, hence the `- 1`.
+        // candidate, hence the `- 1`; `extra` is what the overflow carried.
         //
         // Not an error. Shedding is the designed degradation (NETCODE.md §3:
         // shed, never fragment) and it was previously the only path by which
@@ -8031,21 +8168,13 @@ impl ShardCore {
         // sort above, but there is a `return None` between that and here for
         // the own-entity refusal, and a snapshot that never went out must
         // not appear in any of the three.
-        let carried = n_sent.saturating_sub(1);
+        let carried = n_sent.saturating_sub(1) + extra;
         let shed = n_cand.saturating_sub(carried);
         ShardStats::add(&stats.snap_candidates, n_cand as u64);
         ShardStats::add(&stats.snap_entities_sent, carried as u64);
         if shed > 0 {
             ShardStats::add(&stats.snap_entities_shed, shed as u64);
         }
-
-        let len = match enc.finish() {
-            Ok(len) => len,
-            Err(_) => {
-                ShardStats::bump(&stats.encode_range_errors);
-                return None;
-            }
-        };
 
         // The staleness bookkeeping, over the **candidate list** rather than
         // the whole packed index. `order[..n_cand]` *is* the interest set —
