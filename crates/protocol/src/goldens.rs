@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 175] = [
+pub const FIXTURES: [&str; 181] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -316,6 +316,14 @@ pub const FIXTURES: [&str; 175] = [
     "event_shop_result.bin",
     // An achievement earned (v119): every optional field present.
     "event_achievement.bin",
+    // THE GATE's casino (v123): a bet, a lever, the spin, a bet's answer,
+    // the pay and a spin's answer.
+    "action_wheel.bin",
+    "action_slots.bin",
+    "event_wheel_spin.bin",
+    "event_wheel_bet.bin",
+    "event_wheel_paid.bin",
+    "event_slots.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2033,6 +2041,44 @@ pub fn event_achievement() -> crate::event::Achieved {
         done: 12,
         total: 40,
     }
+}
+
+/// A wheel bet (v123): red, the top colour, at the top stake, so a narrowed
+/// field drops a bit.
+pub fn action_wheel() -> (u8, u16) {
+    (4, sim_core::casino::WHEEL_STAKE_MAX as u16)
+}
+
+/// A lever (v123): the last machine at the top multiplier.
+pub fn action_slots() -> (u8, u8) {
+    (3, sim_core::casino::SLOT_MULT_MAX)
+}
+
+/// The wheel turns (v123): a round past 16 bits, the last segment.
+pub fn event_wheel_spin() -> (u32, u8) {
+    (0x0003_A1C5, 24)
+}
+
+/// A refused bet (v123): blue, the stake asked, the cap.
+pub fn event_wheel_bet() -> (u8, u16, u8) {
+    (2, 0x0061, sim_core::casino::REFUSE_CA_CAP as u8)
+}
+
+/// The wheel paid (v123): 12 staked, 132 back.
+pub fn event_wheel_paid() -> (u32, u32) {
+    (12, 132)
+}
+
+/// A spin (v123): machine 2 at ×3, three different reels, and a pay past 16
+/// bits so a narrowed field moves a byte.
+pub fn event_slots() -> (u8, u8, u8, u16, u32) {
+    (
+        2,
+        3,
+        0,
+        sim_core::casino::pack_reels([15, 3, 9]) as u16,
+        0x0001_3A07,
+    )
 }
 
 /// Where you fell (v116): x and z different and x past 17 bits, so a

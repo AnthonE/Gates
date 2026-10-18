@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 175] = [
+const GOLDEN: [&[u8]; 181] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -238,6 +238,12 @@ const GOLDEN: [&[u8]; 175] = [
     include_bytes!("golden/event_shop.bin"),
     include_bytes!("golden/event_shop_result.bin"),
     include_bytes!("golden/event_achievement.bin"),
+    include_bytes!("golden/action_wheel.bin"),
+    include_bytes!("golden/action_slots.bin"),
+    include_bytes!("golden/event_wheel_spin.bin"),
+    include_bytes!("golden/event_wheel_bet.bin"),
+    include_bytes!("golden/event_wheel_paid.bin"),
+    include_bytes!("golden/event_slots.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -531,8 +537,15 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 173);
     // Achievements (v119).
     g!(seen, golden_event, 174);
+    // THE GATE's casino (v123).
+    g!(seen, golden_action, 175);
+    g!(seen, golden_action, 176);
+    g!(seen, golden_event, 177);
+    g!(seen, golden_event, 178);
+    g!(seen, golden_event, 179);
+    g!(seen, golden_event, 180);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 175, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 181, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -664,6 +677,24 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_treat(slot, target, &mut buf).unwrap()
+        }
+        "action_wheel.bin" => {
+            let (colour, stake) = protocol::goldens::action_wheel();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Wheel { colour, stake },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_wheel(colour, stake, &mut buf).unwrap()
+        }
+        "action_slots.bin" => {
+            let (machine, mult) = protocol::goldens::action_slots();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Slots { machine, mult },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_slots(machine, mult, &mut buf).unwrap()
         }
         "action_shop.bin" => {
             let (key, act) = protocol::goldens::action_shop();
@@ -1353,6 +1384,52 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_shop_result(key, op, row, times, code, &mut buf).unwrap()
+        }
+        "event_wheel_spin.bin" => {
+            let (round, segment) = protocol::goldens::event_wheel_spin();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::WheelSpin { round, segment },
+                "{name}"
+            );
+            protocol::encode_event_wheel_spin(round, segment, &mut buf).unwrap()
+        }
+        "event_wheel_bet.bin" => {
+            let (colour, stake, code) = protocol::goldens::event_wheel_bet();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::WheelBet {
+                    colour,
+                    stake,
+                    code
+                },
+                "{name}"
+            );
+            protocol::encode_event_wheel_bet(colour, stake, code, &mut buf).unwrap()
+        }
+        "event_wheel_paid.bin" => {
+            let (staked, paid) = protocol::goldens::event_wheel_paid();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::WheelPaid { staked, paid },
+                "{name}"
+            );
+            protocol::encode_event_wheel_paid(staked, paid, &mut buf).unwrap()
+        }
+        "event_slots.bin" => {
+            let (machine, mult, code, reels, pay) = protocol::goldens::event_slots();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Slots {
+                    machine,
+                    mult,
+                    code,
+                    reels,
+                    pay
+                },
+                "{name}"
+            );
+            protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap()
         }
         "event_achievement.bin" => {
             let a = protocol::goldens::event_achievement();

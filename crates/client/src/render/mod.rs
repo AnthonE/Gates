@@ -37,6 +37,7 @@ pub mod music_out;
 #[cfg(target_arch = "wasm32")]
 pub mod audio_web;
 pub mod bodies;
+pub mod casino;
 // The Verdigris as drawn: this wipe's outbreaks and the spread at the arc's
 // tick, read once a frame for the ground, the weather and the map.
 pub mod blight;
@@ -1832,6 +1833,9 @@ impl Plugin for GatesRenderPlugin {
                         landmarks::lamps,
                         town_signs::build,
                         town_signs::machines,
+                        // THE GATE's casino: the stand, the cabinets, the
+                        // wheel turning on the shard's clock.
+                        (casino::spawn, casino::spin).chain(),
                         // THE GATE's guards, walked off the server's clock.
                         guards::spawn,
                         guards::walk,

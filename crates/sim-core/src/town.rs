@@ -263,6 +263,84 @@ pub const MACHINES: [KitPart; KIOSKS.len()] = {
     out
 };
 
+/// The casino in the NE yard (`casino.rs`): Rust's Bandit Camp wheel and slot
+/// machines. Where a bettor stands at each of the wheel's terminals, local
+/// (x, z), facing the wheel to the east.
+pub const WHEEL_TERMINALS: [(f32, f32); 5] = [
+    (25.0, 10.0),
+    (25.0, 12.0),
+    (25.0, 14.0),
+    (25.0, 16.0),
+    (25.0, 18.0),
+];
+/// The wheel's hub, local (x, height over the floor, z): it stands upright
+/// with its face to the west, toward the terminals.
+pub const WHEEL_HUB: (f32, f32, f32) = (30.2, 3.2, 14.0);
+pub const WHEEL_RADIUS_M: f32 = 2.4;
+/// Where a player stands at each slot machine, local (x, z), facing it to
+/// the north.
+pub const SLOT_SPOTS: [(f32, f32); 4] = [(17.0, 20.0), (19.0, 20.0), (21.0, 20.0), (23.0, 20.0)];
+/// A terminal's and a slot cabinet's boxes, metres.
+const TERMINAL_HALF_W: f32 = 0.3;
+const TERMINAL_H: f32 = 1.1;
+const CABINET_HALF_W: f32 = 0.45;
+pub const CABINET_H: f32 = 1.9;
+/// How far in front of its terminal or cabinet a bettor's spot is.
+const CASINO_GAP_M: f32 = 0.6;
+
+/// The casino's collided boxes, drawn by the client (`render/casino.rs`) and
+/// never by the kit dresser, like [`MACHINES`]: the wheel's stand first, then
+/// a terminal before each of [`WHEEL_TERMINALS`], then a cabinet behind each
+/// of [`SLOT_SPOTS`].
+pub const CASINO: [KitPart; 1 + WHEEL_TERMINALS.len() + SLOT_SPOTS.len()] = {
+    let mut out = [part([0.0; 6], M::Steel); 1 + WHEEL_TERMINALS.len() + SLOT_SPOTS.len()];
+    let (hx, _, hz) = WHEEL_HUB;
+    out[0] = part(
+        [
+            hx,
+            0.0,
+            hz - WHEEL_RADIUS_M - 0.2,
+            hx + 1.0,
+            WHEEL_HUB.1 + WHEEL_RADIUS_M + 0.4,
+            hz + WHEEL_RADIUS_M + 0.2,
+        ],
+        M::Steel,
+    );
+    let mut k = 0;
+    while k < WHEEL_TERMINALS.len() {
+        let (x, z) = WHEEL_TERMINALS[k];
+        out[1 + k] = part(
+            [
+                x + CASINO_GAP_M,
+                0.0,
+                z - TERMINAL_HALF_W,
+                x + CASINO_GAP_M + 2.0 * TERMINAL_HALF_W,
+                TERMINAL_H,
+                z + TERMINAL_HALF_W,
+            ],
+            M::Steel,
+        );
+        k += 1;
+    }
+    let mut k = 0;
+    while k < SLOT_SPOTS.len() {
+        let (x, z) = SLOT_SPOTS[k];
+        out[1 + WHEEL_TERMINALS.len() + k] = part(
+            [
+                x - CABINET_HALF_W,
+                0.0,
+                z + CASINO_GAP_M,
+                x + CABINET_HALF_W,
+                CABINET_H,
+                z + CASINO_GAP_M + 0.7,
+            ],
+            M::Steel,
+        );
+        k += 1;
+    }
+    out
+};
+
 /// Night lights, local (x, y, z) — drawn, never simulated.
 pub const LAMPS: [(f32, f32, f32); 12] = [
     (-5.8, 5.0, -30.0),
@@ -330,6 +408,11 @@ pub const SPAWN_STREET: (f32, f32) = (0.0, -24.0);
 const _: () = {
     assert!(kit::well_formed(PARTS));
     assert!(kit::well_formed(&MACHINES));
+    assert!(kit::well_formed(&CASINO));
+    // A bettor's spot is clear of its terminal's or cabinet's face.
+    assert!(CASINO_GAP_M > crate::collide::CAPSULE_RADIUS_M);
+    // The wheel's stand stands behind the terminals with room to walk.
+    assert!(CASINO[0].b[0] - (WHEEL_TERMINALS[0].0 + CASINO_GAP_M + 2.0 * TERMINAL_HALF_W) > 3.0);
     // A shopper stands on the trading spot clear of the machine's face.
     let mut i = 0;
     while i < KIOSKS.len() {
@@ -402,6 +485,7 @@ pub fn blocks(t: &Town, x: f32, z: f32, feet: f32, r: f32, h: f32) -> bool {
     let (lx, lz) = kit::to_local(&t.placed(), x, z);
     kit::blocks_local(PARTS, t.floor_y, 0, lx, lz, feet, r, h)
         || kit::blocks_local(&MACHINES, t.floor_y, 0, lx, lz, feet, r, h)
+        || kit::blocks_local(&CASINO, t.floor_y, 0, lx, lz, feet, r, h)
 }
 
 /// The highest town surface within a step of `feet` under a disc of radius
@@ -413,6 +497,7 @@ pub fn ground(t: &Town, x: f32, z: f32, feet: f32, r: f32) -> f32 {
     let (lx, lz) = kit::to_local(&t.placed(), x, z);
     kit::ground_local(PARTS, t.floor_y, 0, lx, lz, feet, r)
         .max(kit::ground_local(&MACHINES, t.floor_y, 0, lx, lz, feet, r))
+        .max(kit::ground_local(&CASINO, t.floor_y, 0, lx, lz, feet, r))
 }
 
 /// Whether a roof keeps the rain off a body here.
@@ -447,6 +532,18 @@ pub fn covers(t: &Town, x: f32, z: f32, pad: f32) -> bool {
 /// Kiosk `k`'s trading spot in world space.
 pub fn kiosk_world(t: &Town, k: usize) -> Option<(f32, f32)> {
     let &(x, z) = KIOSKS.get(k)?;
+    Some(kit::to_world(&t.placed(), x, z))
+}
+
+/// Wheel terminal `k`'s bettor spot in world space.
+pub fn wheel_terminal_world(t: &Town, k: usize) -> Option<(f32, f32)> {
+    let &(x, z) = WHEEL_TERMINALS.get(k)?;
+    Some(kit::to_world(&t.placed(), x, z))
+}
+
+/// Slot machine `k`'s player spot in world space.
+pub fn slot_world(t: &Town, k: usize) -> Option<(f32, f32)> {
+    let &(x, z) = SLOT_SPOTS.get(k)?;
     Some(kit::to_world(&t.placed(), x, z))
 }
 

@@ -1246,6 +1246,12 @@ impl ClientCore {
     /// and a count of answers so far: a press is answered when the count
     /// moves. `code` is 0 when it went through, else a
     /// `sim_core::shop::REFUSE_SH_*`.
+    /// The server tick this client estimates it is now, for anything drawn on
+    /// the shard's clock (THE GATE's wheel, `casino`).
+    pub fn server_tick_est(&self) -> f64 {
+        self.clock.server_est
+    }
+
     pub fn shop_last_result(&self) -> (u32, Option<ShopResult>) {
         (self.shop_result_seq, self.shop_result)
     }
@@ -1539,6 +1545,40 @@ pub struct Tag {
 /// Vending machines a client remembers the offers of (`ClientCore::shop_offers`).
 pub const SHOP_VIEWS: usize = 8;
 
+/// THE GATE's casino as this client was told it (wire v123,
+/// `sim_core::casino`). Every answer bumps [`ClientCore::casino_gen`] and its
+/// own counter, so two identical answers read as two.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CasinoView {
+    /// The last spin told (`EventMsg::WheelSpin`): its round and the segment
+    /// it lands on.
+    pub spin: Option<(u32, u8)>,
+    /// This player's stakes on the wheel this round, by colour: set by each
+    /// bet taken, cleared when the wheel pays.
+    pub stakes: [u16; sim_core::casino::WHEEL_COLOURS],
+    /// The last bet answer: colour, stake and code (0 taken, else a
+    /// `sim_core::casino::REFUSE_CA_*`).
+    pub bet: Option<(u8, u16, u8)>,
+    pub bet_seq: u32,
+    /// What the wheel last paid: staked and paid.
+    pub paid: Option<(u32, u32)>,
+    pub paid_seq: u32,
+    /// The last lever answer, and the server tick it arrived at.
+    pub slots: Option<SlotsResult>,
+    pub slots_at: f64,
+    pub slots_seq: u32,
+}
+
+/// A slot machine's lever answered (`EventMsg::Slots`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotsResult {
+    pub machine: u8,
+    pub mult: u8,
+    pub code: u8,
+    pub reels: [u8; 3],
+    pub pay: u32,
+}
+
 /// The answer to a shop press (`EventMsg::ShopResult`, v118): the machine's
 /// box key, the op (`sim_core::shop::SHOP_OP_*`) and row as sent, the lots
 /// of a buy, and `code`: 0 when it went through, else a
@@ -1726,6 +1766,11 @@ pub struct ClientCore {
     /// Bumped on every `Shop` and `ShopResult`, so a renderer redraws only
     /// when one moved.
     pub shop_gen: u32,
+    /// THE GATE's casino as told (`EventMsg::Wheel*`, `Slots`, v123).
+    pub casino: CasinoView,
+    /// Bumped on every casino answer and spin, so a panel redraws only when
+    /// one moved.
+    pub casino_gen: u32,
     /// The answer to this client's last shop press, and how many answers
     /// have arrived (so two identical refusals read as two).
     shop_result: Option<ShopResult>,
@@ -2362,6 +2407,8 @@ impl ClientCore {
             shop_gen: 0,
             shop_result: None,
             shop_result_seq: 0,
+            casino: CasinoView::default(),
+            casino_gen: 0,
             bodies_worn: vec![(0, WornLook::NONE); 2 * sim_core::limits::MAX_PLAYERS]
                 .into_boxed_slice(),
             worn_next: 0,
@@ -3077,6 +3124,48 @@ impl ClientCore {
                     });
                 self.shops[k] = view;
                 self.shop_told[k] = self.shop_gen;
+            }
+            EventMsg::WheelSpin { round, segment } => {
+                self.casino_gen = self.casino_gen.wrapping_add(1);
+                self.casino.spin = Some((round, segment));
+            }
+            EventMsg::WheelBet {
+                colour,
+                stake,
+                code,
+            } => {
+                self.casino_gen = self.casino_gen.wrapping_add(1);
+                if code == 0 {
+                    if let Some(s) = self.casino.stakes.get_mut(colour as usize) {
+                        *s = stake;
+                    }
+                }
+                self.casino.bet = Some((colour, stake, code));
+                self.casino.bet_seq = self.casino.bet_seq.wrapping_add(1);
+            }
+            EventMsg::WheelPaid { staked, paid } => {
+                self.casino_gen = self.casino_gen.wrapping_add(1);
+                self.casino.stakes = [0; sim_core::casino::WHEEL_COLOURS];
+                self.casino.paid = Some((staked, paid));
+                self.casino.paid_seq = self.casino.paid_seq.wrapping_add(1);
+            }
+            EventMsg::Slots {
+                machine,
+                mult,
+                code,
+                reels,
+                pay,
+            } => {
+                self.casino_gen = self.casino_gen.wrapping_add(1);
+                self.casino.slots = Some(SlotsResult {
+                    machine,
+                    mult,
+                    code,
+                    reels: sim_core::casino::unpack_reels(reels as u32),
+                    pay,
+                });
+                self.casino.slots_at = self.clock.server_est;
+                self.casino.slots_seq = self.casino.slots_seq.wrapping_add(1);
             }
             EventMsg::ShopResult {
                 key,

@@ -467,6 +467,13 @@ pub fn resolve(
             aimed.0 = trade;
         }
     }
+    // THE GATE's casino: a wheel terminal or a slot machine, the same way.
+    if aimed.0.is_none() {
+        let casino = interact::resolve_casino(x, z, &core.haven().town);
+        if casino.verb != interact::Verb::None {
+            aimed.0 = casino;
+        }
+    }
     // A ziggurat door's reader or lever, the same way.
     if aimed.0.is_none() {
         let swipe = interact::resolve_swipe(x, y, z, &core.haven().ziggurat);
@@ -1145,6 +1152,25 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Vendor;
                     ui.vendor = pick.handle as u8;
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
+        // THE GATE's casino (`panels::casino`): the wheel's betting panel, or
+        // a slot machine's.
+        Verb::Wheel | Verb::Slots => {
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = if pick.verb == Verb::Wheel {
+                        Panel::BigWheel
+                    } else {
+                        Panel::Slots
+                    };
+                    ui.slot_machine = pick.handle as u8;
+                    // Answers that came while it was shut are not news.
+                    let c = &net.session.core.casino;
+                    ui.casino_seq = (c.bet_seq, c.paid_seq, c.slots_seq);
                     ui.status.clear();
                     ui.dirty = true;
                 }

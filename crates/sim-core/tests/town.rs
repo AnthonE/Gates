@@ -171,6 +171,14 @@ fn stations_and_kiosks_land_on_their_cells_and_inside_the_safe_zone() {
             let (x, z) = town::kiosk_world(&t, k).unwrap();
             assert!(town::safe(&t, x, z));
         }
+        for k in 0..town::WHEEL_TERMINALS.len() {
+            let (x, z) = town::wheel_terminal_world(&t, k).unwrap();
+            assert!(town::safe(&t, x, z));
+        }
+        for k in 0..town::SLOT_SPOTS.len() {
+            let (x, z) = town::slot_world(&t, k).unwrap();
+            assert!(town::safe(&t, x, z));
+        }
         // Scatter leaves the town alone.
         let table = ScatterTable::alpha_default();
         let c0x = ((t.x - 60.0) / terrain::CELL_SIZE) as i32;
@@ -212,7 +220,11 @@ fn guards_walk_clear_of_the_town() {
             for s in 0..=steps {
                 let u = s as f32 / steps as f32;
                 let (x, z) = (ax + (bx - ax) * u, az + (bz - az) * u);
-                for p in town::PARTS.iter().chain(town::MACHINES.iter()) {
+                for p in town::PARTS
+                    .iter()
+                    .chain(town::MACHINES.iter())
+                    .chain(town::CASINO.iter())
+                {
                     if p.flags & kit::DECOR == 0 && solid(p.b) {
                         assert!(
                             off(p.b, x, z) > CAPSULE_RADIUS_M,

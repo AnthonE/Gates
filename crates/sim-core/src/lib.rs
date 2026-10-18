@@ -12,6 +12,7 @@ pub mod bots;
 pub mod boulder;
 pub mod brain;
 pub mod build;
+pub mod casino;
 pub mod charge;
 pub mod circulation;
 pub mod claim;

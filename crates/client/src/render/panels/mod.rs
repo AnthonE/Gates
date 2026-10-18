@@ -48,6 +48,7 @@ use crate::ui::slots::Drag;
 use sim_core::gather::ItemStack;
 
 pub mod arc;
+pub mod casino;
 pub mod craft;
 pub mod hearth;
 pub mod inv;
@@ -101,6 +102,11 @@ pub enum Panel {
     /// A player's vending machine (`E` at one, `shop.rs`): its offers, and
     /// for its owner's crew the editor. The machine is the open container.
     Shop,
+    /// THE GATE's big wheel (`E` at a terminal, `casino.rs`): the colours,
+    /// your stakes, the clock.
+    BigWheel,
+    /// One of THE GATE's slot machines (`E` at one, `casino.rs`).
+    Slots,
 }
 
 impl Panel {
@@ -127,7 +133,9 @@ impl Panel {
             | Panel::Talk
             | Panel::Read
             | Panel::Team
-            | Panel::Shop => Page::Other,
+            | Panel::Shop
+            | Panel::BigWheel
+            | Panel::Slots => Page::Other,
         }
     }
 
@@ -244,6 +252,13 @@ pub struct Ui {
     pub shop_draft: [(u16, u16, u16); sim_core::limits::SHOP_ROWS],
     pub shop_draft_key: u32,
     pub shop_seq: u32,
+    /// The casino (`casino.rs`): the slot machine open, its multiplier, the
+    /// wheel's stake (an index into its stepper), and the bet, pay and spin
+    /// answers already read.
+    pub slot_machine: u8,
+    pub slot_mult: u8,
+    pub wheel_stake: u8,
+    pub casino_seq: (u32, u32, u32),
     /// Change detection against the core. A menu that rebuilt every frame
     /// would allocate a node tree per frame for a screen that changes when
     /// a player clicks — so the rebuild is driven by these snapshots, and
@@ -316,6 +331,8 @@ pub(crate) struct Seen {
     /// `ClientCore::shop_gen` at the last redraw: a machine's offers or a
     /// shop answer arriving.
     pub shop_gen: u32,
+    /// `ClientCore::casino_gen` at the last redraw.
+    pub casino_gen: u32,
     /// The latched hearth stock ack — address, live rows, rows — so the
     /// hearth's column redraws when a feed, a take or the decay moves it.
     pub stock: StockSeen,
@@ -362,6 +379,10 @@ impl Default for Ui {
             shop_draft: [(0, 1, 1); sim_core::limits::SHOP_ROWS],
             shop_draft_key: 0,
             shop_seq: 0,
+            slot_machine: 0,
+            slot_mult: 1,
+            wheel_stake: 2,
+            casino_seq: (0, 0, 0),
             seen: Seen::default(),
         }
     }
@@ -845,7 +866,7 @@ pub fn register(app: &mut App) {
                 craft::scroll,
                 tech::clicks,
                 tech::scroll,
-                (vendor::clicks, shop::clicks, shop::follow).chain(),
+                (vendor::clicks, shop::clicks, shop::follow, casino::clicks).chain(),
                 (arc::clicks, team::clicks),
                 arc::tabs,
                 lore::clicks,
@@ -879,6 +900,7 @@ pub fn register(app: &mut App) {
                 craft::sync_status,
                 vendor::sync_status,
                 shop::sync_status,
+                casino::sync_status,
                 arc::sync_status,
                 lore::sync_status,
             )
@@ -893,6 +915,13 @@ pub fn register(app: &mut App) {
             Update,
             craft::queue_tick
                 .after(super::hud::craft_clock)
+                .after(rebuild)
+                .run_if(in_state(super::Screen::InWorld)),
+        )
+        // The casino's clock and turning reels, every frame and in place.
+        .add_systems(
+            Update,
+            casino::tick
                 .after(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
         )
@@ -1182,6 +1211,8 @@ pub fn keys(
             | Panel::Read
             | Panel::Team
             | Panel::Shop
+            | Panel::BigWheel
+            | Panel::Slots
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1426,6 +1457,15 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             shop::build_screen(&mut commands, &ui, core, icons)
         }
+        Panel::BigWheel | Panel::Slots => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            if ui.panel == Panel::BigWheel {
+                casino::build_wheel(&mut commands, &ui, core, icons)
+            } else {
+                casino::build_slots(&mut commands, &ui, core, icons)
+            }
+        }
     }
 }
 
@@ -1463,6 +1503,8 @@ fn detect_changes(
             || (ui.panel == Panel::Work && core.bank_gen != ui.seen.bank_gen)
             || (ui.panel == Panel::Team && core.team_gen != ui.seen.team_gen)
             || (ui.panel == Panel::Shop && core.shop_gen != ui.seen.shop_gen)
+            || (matches!(ui.panel, Panel::BigWheel | Panel::Slots)
+                && core.casino_gen != ui.seen.casino_gen)
             || (core.stock_addr, core.stock_count, core.stock) != ui.seen.stock
         {
             ui.seen.inv = inv;
@@ -1487,6 +1529,7 @@ fn detect_changes(
             ui.seen.bank_gen = core.bank_gen;
             ui.seen.team_gen = core.team_gen;
             ui.seen.shop_gen = core.shop_gen;
+            ui.seen.casino_gen = core.casino_gen;
             ui.seen.stock = (core.stock_addr, core.stock_count, core.stock);
             ui.dirty = true;
         }
