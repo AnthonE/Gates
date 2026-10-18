@@ -60,7 +60,7 @@ the first ladder, not after it.
    **BUILT for the local agent** — `crates/server/tests/agent_walls.rs` reads
    the `encode_action_*` verbs off the agent's source and the human client's
    and requires a subset, requires it to speak only through the chat box's
-   own `encode_chat` and only locally, decodes every action a full life actually sent,
+   own `encode_chat` (locally, in the scripted life it runs), decodes every action a full life actually sent,
    holds frames to the buttons a player's keys produce, and refuses a `World`
    name in the encoder and mind sources; `explorer::observe` is the encoder.
 
@@ -117,9 +117,11 @@ purpose — the interesting behaviour is social, not mechanical.
 
 Built so far: movement, look, swing, sprint, jump and hotbar frames, the
 actions `agent_walls.rs` lists in `EXPECTED_VERBS` (it fights, builds, opens,
-loots and takes, trades at THE GATE and feeds the works), and `speak`: one
-local or team chat line per decision through the human chat box's encoder, from an external source only (`JEV.md`) — every one
-a human verb. `give` and `authorize` are not built for the agent.
+loots and takes, trades at THE GATE and feeds the works), `give` (a society
+crew hands its haul to its founder), and `speak`: one chat line per decision,
+global unless it asks for team or local, through the human chat box's encoder,
+from an external source only (`JEV.md`) — every one a human verb. `authorize`
+is not built for the agent.
 
 An agent is marked: it declares `HELLO_AGENT`, the shard tells every client
 (`EventMsg::Agent`, guests included), and the game names it `(agent)` in

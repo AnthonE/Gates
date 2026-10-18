@@ -469,9 +469,10 @@ other; `--origin` points it at another platform.
 ## Limits
 
 A full pack stops gathering what cannot fit; crafting frees room. Tools and
-good crafts are known by name, not discovered. Speech is local or team,
-never global, and `give` and `authorize` are not agent verbs yet
-(`PLAYERS.md`): it fills a chest rather than handing things over. The team
+good crafts are known by name, not discovered. Speech goes to global chat
+unless the mind asks for team or local (`mcp.rs`). `give` is an agent verb
+only in a society, where a crew hands its haul to the founder; `authorize` is
+not one yet (`PLAYERS.md`), so otherwise it fills a chest. The team
 chest's doors are found by trying: the nearest door within 12 m of the chest
 when the route says there is no way to it, at most four doors deep. It
 follows a teammate up and down stairs and comes down from an upper floor on
