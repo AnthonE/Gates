@@ -353,6 +353,17 @@ const SUBJECTS: &[Subject] = &[
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
     kit("wood_shutters", [90.0, 0.0, 0.0]),
+    // Rust's tree items (2026-10-17).
+    kit_long("salvaged_hammer", -45.0),
+    kit_long("salvaged_sword", -45.0),
+    kit_long("mace", -45.0),
+    kit_long("salvaged_cleaver", -45.0),
+    kit_long("longsword", -45.0),
+    kit_long("salvaged_axe", -45.0),
+    kit_long("salvaged_icepick", -45.0),
+    kit("coffee_can_helmet", [30.0, 0.0, 0.0]),
+    kit("tank_top", [30.0, -20.0, 0.0]),
+    kit("beancan_grenade", [30.0, 0.0, 0.0]),
 ];
 
 /// Where the camera sits relative to the subject: right, above and in front,

@@ -189,7 +189,7 @@ structure = 2
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 60
-reach_cm = 103
+reach_cm = 102
 
 [[weapon]]
 id = "item.sword_salvaged"
@@ -255,7 +255,7 @@ structure = 2
 headshot_pct = 200
 limb_pct = 50
 rate_per_min = 48
-reach_cm = 110
+reach_cm = 106
 
 # **Neither bow carries a `range_m`**: an arrow flies until something stops
 # it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) — a

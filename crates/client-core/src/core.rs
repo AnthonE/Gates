@@ -3144,7 +3144,8 @@ impl ClientCore {
             EventMsg::Known { word, bits } => {
                 // The word replaces its half whole; the other half stands.
                 let shift = 64 * word as u32;
-                self.known = (self.known & !((u64::MAX as u128) << shift)) | (bits as u128) << shift;
+                self.known =
+                    (self.known & !((u64::MAX as u128) << shift)) | (bits as u128) << shift;
                 self.applied2 |= APPLIED2_RESEARCH;
             }
             EventMsg::Research { recipe, cost } => {

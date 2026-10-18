@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 139] = [
+pub const STEMS: [&str; 149] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -126,6 +126,17 @@ pub const STEMS: [&str; 139] = [
     "rifle_body",
     "tech_trash",
     "electric_fuse",
+    // Rust's tree items (2026-10-17).
+    "salvaged_hammer",
+    "salvaged_sword",
+    "mace",
+    "salvaged_cleaver",
+    "longsword",
+    "salvaged_axe",
+    "salvaged_icepick",
+    "coffee_can_helmet",
+    "tank_top",
+    "beancan_grenade",
     "blueprint",
     "bat",
     "torch",

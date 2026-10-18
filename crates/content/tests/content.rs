@@ -214,7 +214,10 @@ fn the_body_part_ladder_is_the_band_on_every_row() {
         banded += 1;
     }
     assert!(banded >= 10, "only {banded} banded rows: the file shrank");
-    assert_eq!(opted_out, 2, "two throwables ship: the satchel and the beancan");
+    assert_eq!(
+        opted_out, 2,
+        "two throwables ship: the satchel and the beancan"
+    );
 }
 
 /// The ladder's refusals, driven from the file rather than from the

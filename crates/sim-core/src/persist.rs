@@ -785,7 +785,11 @@ mod tests {
             "glyphs at 81 — the glyph mask closed the head at store format 8"
         );
         assert_eq!(&buf[97..99], &2u16.to_le_bytes(), "jobs[0].recipe at 97");
-        assert_eq!(&buf[99..101], &5u16.to_le_bytes(), "jobs[0].remaining at 99");
+        assert_eq!(
+            &buf[99..101],
+            &5u16.to_le_bytes(),
+            "jobs[0].remaining at 99"
+        );
         assert_eq!(
             &buf[101..103],
             &0x0C0Du16.to_le_bytes(),
