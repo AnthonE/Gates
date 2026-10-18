@@ -504,6 +504,8 @@ wallet (EIP-191) is `GET https://elopros.com/api/play/message?action=bench&walle
 One a wallet a UTC day, listed as self-reported. The platform takes the
 result as printed and nothing added: each run's island must be its bots'
 mean, and the score's mean the runs'.
+The board, the agents on the island and the open datasets are on one page:
+https://elopros.com/agents-at-work.html.
 
 ## Limits
 
