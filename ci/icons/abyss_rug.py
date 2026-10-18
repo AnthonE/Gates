@@ -2,24 +2,36 @@
 """Make the Abyss Rug: its model (assets/models/deploy/abyss_rug.glb) and its
 icon (assets/icons/abyss_rug.png).
 
-    python3 ci/icons/abyss_rug.py
+    python3 ci/icons/abyss_rug.py            # from Meshy's painting (ships)
+    python3 ci/icons/abyss_rug.py --drawn    # the rug drawn in code
 
-Our own work, drawn in code: a deep-teal woven field under a faint caustic
-ripple, a gold Art Deco double border with stepped corners, and the Abyss mark
-in the middle (Abyss is the DEX the JUNK coin launches on). The palette is
-theirs: abyss #07161c, deep teal #0e3b43, gold #c7a05a, pale gold #f3dda0,
-cream #f8f1e0.
+**What ships is painted by Meshy** (`nano-banana-pro` image-to-image, with
+abyss.trading's own icon as the reference, so the mark is theirs and not a
+guess): the rug laid flat and shot straight down on magenta,
+`abyss_rug_painting.png` beside this script. Meshy's image-to-3d was tried
+first and rebuilt the flat rug as a 0.4 m box with the mark smeared over its
+sides, so the geometry is ours: a 1.56 x 0.02 x 0.97 m slab (the painting's
+own aspect; stretching it to the 1.1 m row would squash the mark) with 7 cm
+alpha-cut tassels off each short end, 1.7 m overall. The painting is keyed,
+squared up by its four fitted corners and becomes the albedo; the normal map
+comes off its luminance and a pile grain, and the metal/rough map makes the
+gold thread satin against matte wool.
 
-**The mark is one function, `abyss_mark`.** It is their logo (a gold triangle
-"A" with four stripes rising inside it) and is pending their permission; to
-swap it for a homage, change that function and re-run this script.
+`--drawn` is the rug drawn in code: a deep-teal woven field under a faint
+caustic ripple, a gold Art Deco double border with stepped corners, and the
+Abyss mark in the middle. **There the mark is one function, `abyss_mark`**;
+the logo is pending Abyss's permission, and if a homage has to replace it,
+it is either that function and `--drawn`, or a new painting off a new
+reference. Palette (theirs): abyss #07161c, deep teal #0e3b43, gold #c7a05a,
+pale gold #f3dda0, cream #f8f1e0.
 
-The model is a 1.7 x 0.02 x 1.1 m slab, feet at y = 0, front toward +Z, one
-mesh, one primitive, one material: what `tests/deploy_assets.rs` holds a
-deploy model to, sized to the `DEPLOY` row in `render/structures.rs`. Its two
-maps are packed to KTX2 by `ci/ktx_pack.py` (needs the `ktx` CLI). Needs
-numpy, Pillow and scipy. Deterministic: same tools, same bytes.
+Feet at y = 0, front toward +Z, one mesh, one primitive, one material: what
+`tests/deploy_assets.rs` holds a deploy model to, inside the `DEPLOY` row in
+`render/structures.rs`. Maps are packed to KTX2 by `ci/ktx_pack.py` (needs
+the `ktx` CLI). Needs numpy, Pillow and scipy. Deterministic: same tools,
+same bytes.
 """
+import argparse
 import json
 import os
 import struct
@@ -38,6 +50,16 @@ ICON_OUT = os.path.join(ROOT, "assets/icons/abyss_rug.png")
 
 # The rug, metres: the `DEPLOY` row (and `footprint::DEPLOY_FOOT`).
 W_M, H_M, D_M = 1.7, 0.02, 1.1
+
+# Meshy's painting (assets/models/MANIFEST.md has its prompt and task ids).
+PAINTING = os.path.join(os.path.dirname(os.path.abspath(__file__)), "abyss_rug_painting.png")
+# Where the woven body's corners are in it, px, TL TR BR BL: the teal
+# binding's four edges, each fitted as a line and intersected (it came back
+# about 0.4 degrees off square).
+BODY_PX = ((126.1, 36.6), (1250.0, 38.4), (1250.1, 739.3), (121.1, 736.4))
+FRINGE_PX = 52  # the tassels, past each short end
+SPREAD_PX = 10  # how far they splay past the long sides
+FRINGE_Y = 0.002  # the tassels lie on the floor, just off it
 # The design's canvas, px: the rug's aspect, at ~0.8 mm a pixel.
 CW, CH = 2048, round(2048 * D_M / W_M)
 MAP_PX = 1024  # what ktx_pack.py packs each map to
@@ -238,6 +260,122 @@ def png_bytes(arr_u8, mode):
     return b.getvalue()
 
 
+# --- the painting ------------------------------------------------------------
+
+def painted_layout():
+    """The painted rug in metres: body half-extents, the canvas's half-depth
+    (body plus the tassels' splay), and the canvas size in px."""
+    (tl, tr, br, bl) = [np.array(p) for p in BODY_PX]
+    length = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2
+    depth = (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2
+    m = W_M / (length + 2 * FRINGE_PX)  # metres a painted pixel
+    bx, bz = length * m / 2, depth * m / 2
+    fz = bz + SPREAD_PX * m
+    return bx, bz, fz, (2048, round(2048 * 2 * fz / W_M))
+
+
+def homography(dst, src):
+    """PIL's PERSPECTIVE coefficients taking output points `dst` to input
+    points `src` (four each)."""
+    a, b = [], []
+    for (x, y), (u, v) in zip(dst, src):
+        a.append([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.append(u)
+        a.append([0, 0, 0, x, y, 1, -v * x, -v * y]); b.append(v)
+    return tuple(np.linalg.solve(np.array(a, float), np.array(b, float)))
+
+
+def smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0, 1)
+    return t * t * (3 - 2 * t)
+
+
+def painted_design():
+    """The painting squared up onto the rug's canvas: albedo RGBA (alpha is
+    the tassels' cutout), height, and metal/rough, all 0..1 at the canvas
+    size, plus the layout."""
+    bx, bz, fz, (w, h) = painted_layout()
+    px = lambda x, z: ((x + W_M / 2) / W_M * w, (z + fz) / (2 * fz) * h)  # noqa: E731
+    body = [px(-bx, -bz), px(bx, -bz), px(bx, bz), px(-bx, bz)]
+    src = Image.open(PAINTING).convert("RGB")
+    sq = src.transform((w, h), Image.PERSPECTIVE, homography(body, BODY_PX), Image.BICUBIC)
+    rgb = np.asarray(sq, dtype=np.float64) / 255.0
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    yy, xx = np.mgrid[0:h, 0:w]
+    in_body = ((xx >= body[0][0] - 1) & (xx <= body[1][0] + 1)
+               & (yy >= body[0][1] - 1) & (yy <= body[2][1] + 1))
+    # The key: magenta is red and blue over green. Then take the spill back
+    # out of the tassels' edges, and give the cut-away texels the tassels'
+    # own cream so a mip level does not blend magenta back in.
+    mag = np.minimum(r, b) - g
+    alpha = np.where(in_body, 1.0, 1 - smoothstep(0.15, 0.45, mag))
+    rgb = np.clip(rgb - np.clip(mag, 0, None)[..., None] * np.array([1.0, 0.0, 1.0]), 0, 1)
+    cream = rgb[(~in_body) & (alpha > 0.95)].mean(0)
+    rgb[alpha < 0.05] = cream
+    # Off the long sides no face samples the canvas, but the filter and the
+    # mips reach there from the body's edge and from the slab's sides, which
+    # sample that edge: carry the binding out, opaque, or both pick up the
+    # key's fringe and the edge erodes at a distance.
+    x0, x1 = int(np.ceil(body[0][0])), int(np.floor(body[1][0])) + 1
+    y0, y1 = int(np.ceil(body[0][1])), int(np.floor(body[2][1]))
+    rgb[:y0 + 2, x0:x1] = rgb[y0 + 2, x0:x1]
+    rgb[y1 - 1:, x0:x1] = rgb[y1 - 2, x0:x1]
+    alpha[:, x0:x1] = 1.0
+    # Gold thread: saturated, red well over blue. Teal has blue over red and
+    # the cream tassels too little saturation to pass.
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    gold = smoothstep(0.30, 0.45, sat) * smoothstep(0.12, 0.22, r - b) * smoothstep(0.25, 0.4, mx)
+    gold = np.where(in_body, gold, 0.0)
+    # Height: the painted pattern's relief (the wave lines and the thread
+    # stand a little proud of the field) and a cut-pile grain under it.
+    lum = rgb @ np.array([0.2126, 0.7152, 0.0722])
+    relief = lum - ndimage.gaussian_filter(lum, 6)
+    height = 2.5 * relief + 0.3 * gold + 0.12 * smooth_noise((h, w), 0.8, 21)
+    rough = np.where(in_body, 0.93 - 0.45 * gold, 0.88)
+    metal = 0.45 * gold
+    return np.dstack([rgb, alpha]), height, np.dstack([rough, metal]), (bx, bz, fz)
+
+
+def painted_mesh(bx, bz, fz):
+    """The body slab (top carries the painting's body, its sides and
+    underside sample the edge of the binding) and a tassel strip lying on
+    the floor off each short end."""
+    hx = W_M / 2
+    U = lambda x: (x + hx) / W_M  # noqa: E731
+    V = lambda z: (z + fz) / (2 * fz)  # noqa: E731
+    e = 4 / 2048  # a few texels in, clear of the key
+    u0, u1, v0, v1 = U(-bx) + e, U(bx) - e, V(-bz) + e, V(bz) - e
+    # Each side is the top's outer band of binding folded down over the
+    # edge: its top row is the edge, its foot the band `H_M` in from it.
+    du, dv = H_M / W_M, H_M / (2 * fz)
+    faces = [
+        ((0, 1, 0), [(-bx, H_M, bz), (bx, H_M, bz), (bx, H_M, -bz), (-bx, H_M, -bz)],
+         [(u0, v1), (u1, v1), (u1, v0), (u0, v0)]),
+        ((0, -1, 0), [(-bx, 0, -bz), (bx, 0, -bz), (bx, 0, bz), (-bx, 0, bz)], [(u0, 0.5)] * 4),
+        ((0, 0, 1), [(-bx, 0, bz), (bx, 0, bz), (bx, H_M, bz), (-bx, H_M, bz)],
+         [(u0, v1 - dv), (u1, v1 - dv), (u1, v1), (u0, v1)]),
+        ((0, 0, -1), [(bx, 0, -bz), (-bx, 0, -bz), (-bx, H_M, -bz), (bx, H_M, -bz)],
+         [(u1, v0 + dv), (u0, v0 + dv), (u0, v0), (u1, v0)]),
+        ((1, 0, 0), [(bx, 0, bz), (bx, 0, -bz), (bx, H_M, -bz), (bx, H_M, bz)],
+         [(u1 - du, v1), (u1 - du, v0), (u1, v0), (u1, v1)]),
+        ((-1, 0, 0), [(-bx, 0, -bz), (-bx, 0, bz), (-bx, H_M, bz), (-bx, H_M, -bz)],
+         [(u0 + du, v0), (u0 + du, v1), (u0, v1), (u0, v0)]),
+    ]
+    for x0, x1 in ((-hx, -bx), (bx, hx)):
+        faces.append(((0, 1, 0), [(x0, FRINGE_Y, fz), (x1, FRINGE_Y, fz), (x1, FRINGE_Y, -fz),
+                                  (x0, FRINGE_Y, -fz)],
+                      [(U(x0), 1), (U(x1), 1), (U(x1), 0), (U(x0), 0)]))
+    pos, nrm, uv, idx = [], [], [], []
+    for n, quad, uvs in faces:
+        b = len(pos)
+        pos += quad
+        nrm += [n] * 4
+        uv += uvs
+        idx += [b, b + 1, b + 2, b, b + 2, b + 3]
+    return (np.array(pos, np.float32), np.array(nrm, np.float32),
+            np.array(uv, np.float32), np.array(idx, np.uint16))
+
+
 # --- the model ---------------------------------------------------------------
 
 def slab():
@@ -267,8 +405,10 @@ def slab():
             np.array(uv, np.float32), np.array(idx, np.uint16))
 
 
-def write_glb(path, albedo_png, normal_png):
-    pos, nrm, uv, idx = slab()
+def write_glb(path, mesh, albedo_png, normal_png, mr_png=None):
+    """One mesh, one primitive, one material. With a metal/rough map the
+    albedo's alpha is a cutout (the tassels)."""
+    pos, nrm, uv, idx = mesh
     blob = bytearray()
     views = []
 
@@ -290,6 +430,17 @@ def write_glb(path, albedo_png, normal_png):
     ]
     img_a = view(albedo_png)
     img_n = view(normal_png)
+    pbr = {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 0.9}
+    mat = {"name": "abyss_rug", "pbrMetallicRoughness": pbr, "normalTexture": {"index": 1},
+           "emissiveFactor": [0.0, 0.0, 0.0]}
+    textures = [{"sampler": 0, "source": 0}, {"sampler": 0, "source": 1}]
+    images = [{"bufferView": img_a, "mimeType": "image/png", "name": "albedo"},
+              {"bufferView": img_n, "mimeType": "image/png", "name": "normal"}]
+    if mr_png is not None:
+        images.append({"bufferView": view(mr_png), "mimeType": "image/png", "name": "metal_rough"})
+        textures.append({"sampler": 0, "source": 2})
+        pbr.update(metallicFactor=1.0, roughnessFactor=1.0, metallicRoughnessTexture={"index": 2})
+        mat.update(alphaMode="MASK", alphaCutoff=0.5)
     gltf = {
         "asset": {"version": "2.0", "generator": "ci/icons/abyss_rug.py"},
         "scene": 0,
@@ -297,16 +448,9 @@ def write_glb(path, albedo_png, normal_png):
         "nodes": [{"mesh": 0, "name": "abyss_rug"}],
         "meshes": [{"name": "abyss_rug", "primitives": [
             {"attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}, "indices": 3, "material": 0}]}],
-        "materials": [{
-            "name": "abyss_rug",
-            "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0,
-                                     "roughnessFactor": 0.9},
-            "normalTexture": {"index": 1},
-            "emissiveFactor": [0.0, 0.0, 0.0],
-        }],
-        "textures": [{"sampler": 0, "source": 0}, {"sampler": 0, "source": 1}],
-        "images": [{"bufferView": img_a, "mimeType": "image/png", "name": "albedo"},
-                   {"bufferView": img_n, "mimeType": "image/png", "name": "normal"}],
+        "materials": [mat],
+        "textures": textures,
+        "images": images,
         "samplers": [{"magFilter": 9729, "minFilter": 9987}],
         "accessors": acc,
         "bufferViews": views,
@@ -323,11 +467,15 @@ def write_glb(path, albedo_png, normal_png):
 
 # --- the icon ----------------------------------------------------------------
 
-def icon(albedo):
+def icon(albedo, body_u=(0.0, 1.0)):
     """The rug seen from high in front, as the renders frame an item, on a
-    transparent ground with the finisher's outline and drop shadow."""
+    transparent ground with the finisher's outline and drop shadow. `albedo`
+    is RGB or RGBA; `body_u` is the span of it that has a thickness (the
+    tassels have none)."""
     work = 512
-    src = Image.fromarray((albedo * 255).round().astype(np.uint8), "RGB").convert("RGBA")
+    if albedo.shape[-1] == 3:
+        albedo = np.dstack([albedo, np.ones(albedo.shape[:2])])
+    src = Image.fromarray((albedo * 255).round().astype(np.uint8), "RGBA")
     sw, sh = src.size
     # Where the rug's four corners land: far edge narrower and higher.
     far_y, near_y = 0.20 * work, 0.80 * work
@@ -346,9 +494,10 @@ def icon(albedo):
     rgba = np.asarray(top, dtype=np.float64) / 255.0
     # The rug's near edge, its thickness: a dark strip under the front.
     t = 0.022 * work
+    (x3, y3), (x2, _) = quad[3], quad[2]
+    nl, nr = x3 + body_u[0] * (x2 - x3), x3 + body_u[1] * (x2 - x3)
     edge = Image.new("L", (work, work), 0)
-    ImageDraw.Draw(edge).polygon([quad[3], quad[2], (quad[2][0], quad[2][1] + t),
-                                  (quad[3][0], quad[3][1] + t)], fill=255)
+    ImageDraw.Draw(edge).polygon([(nl, y3), (nr, y3), (nr, y3 + t), (nl, y3 + t)], fill=255)
     e = np.asarray(edge, dtype=np.float64)[..., None] / 255.0
     rgb = rgba[..., :3] * rgba[..., 3:] + c(ABYSS) * 0.8 * e * (1 - rgba[..., 3:])
     alpha = np.clip(rgba[..., 3] + e[..., 0], 0, 1)
@@ -378,13 +527,23 @@ def icon(albedo):
 
 
 def main():
-    albedo, height = rug_design()
-    icon(albedo).save(ICON_OUT, optimize=True)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--drawn", action="store_true", help="the rug drawn in code, not the painting")
+    drawn = ap.parse_args().drawn
+    mr = None
+    if drawn:
+        albedo, height = rug_design()
+        mesh, body_u = slab(), (0.0, 1.0)
+    else:
+        albedo, height, mr, (bx, bz, fz) = painted_design()
+        mesh, body_u = painted_mesh(bx, bz, fz), (0.5 - bx / W_M, 0.5 + bx / W_M)
+    icon(albedo, body_u).save(ICON_OUT, optimize=True)
     print(f"  {os.path.relpath(ICON_OUT, ROOT)}")
 
     sq = (MAP_PX, MAP_PX)
     a8 = (albedo * 255).round().astype(np.uint8)
-    a8 = np.asarray(Image.fromarray(a8, "RGB").resize(sq, Image.LANCZOS).convert("RGBA"))
+    a8 = np.asarray(Image.fromarray(a8, "RGBA" if a8.shape[-1] == 4 else "RGB")
+                    .resize(sq, Image.LANCZOS).convert("RGBA"))
     # The height field at the map's own size, then its normals, so the weave
     # is a few texels a thread and the map stays near flat on average.
     h = np.asarray(Image.fromarray(height.astype(np.float32), "F").resize(sq, Image.LANCZOS),
@@ -392,9 +551,16 @@ def main():
     n = normal_map(h, 1.2)
     n8 = np.round((n + 1) * 127.5).clip(0, 255).astype(np.uint8)
     n8 = np.dstack([n8, np.full(sq, 255, np.uint8)])
+    mr_png = None
+    if mr is not None:
+        # glTF's metal/rough: green is roughness, blue is metalness.
+        m8 = np.round(mr * 255).clip(0, 255).astype(np.uint8)
+        full = np.full(m8.shape[:2], 255, np.uint8)
+        m8 = np.dstack([full, m8[..., 0], m8[..., 1], full])
+        mr_png = png_bytes(np.asarray(Image.fromarray(m8, "RGBA").resize(sq, Image.LANCZOS)), "RGBA")
     with tempfile.TemporaryDirectory() as tmp:
         raw = os.path.join(tmp, "abyss_rug.png.glb")
-        write_glb(raw, png_bytes(a8, "RGBA"), png_bytes(n8, "RGBA"))
+        write_glb(raw, mesh, png_bytes(a8, "RGBA"), png_bytes(n8, "RGBA"), mr_png)
         subprocess.run([sys.executable, os.path.join(ROOT, "ci/ktx_pack.py"), raw, GLB_OUT,
                         "--size", str(MAP_PX)], check=True)
     print(f"  {os.path.relpath(GLB_OUT, ROOT)}")
