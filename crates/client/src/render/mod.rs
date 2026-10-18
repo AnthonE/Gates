@@ -914,6 +914,7 @@ impl Plugin for GatesRenderPlugin {
             // picture and in step with it (`film::roll`).
             let (native, feed) = audio_out::pair(film::FILM_RATE);
             app.world_mut().resource_mut::<audio::Engine>().out_rate = film::FILM_RATE;
+            app.world_mut().resource_mut::<audio::Sound>().film = true;
             app.insert_non_send_resource(native);
             app.insert_non_send_resource(film::Mix::new(feed));
             app.add_systems(PostUpdate, audio_out::flush);
