@@ -1221,6 +1221,7 @@ pub fn roll(
     ring: Res<Ring>,
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
+    forest: Res<super::far_trees::FarForest>,
     screen: Res<State<super::Screen>>,
     backlog: Res<super::pipelines::PipelineBacklog>,
 ) {
@@ -1235,6 +1236,7 @@ pub fn roll(
         && props.is_full()
         && props.stale_len() == 0
         && clutter.is_full()
+        && forest.is_carded()
         // The world camera was dark while the film booted (`dark_boot`), so
         // its pipelines compile during the first settle; a mesh whose
         // pipeline is still compiling is not drawn at all.
