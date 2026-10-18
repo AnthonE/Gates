@@ -277,6 +277,10 @@ pub struct ShardStats {
     pub skin_prices_read: AtomicU64,
     pub skin_prices_unknown: AtomicU64,
     pub refused_full: AtomicU64,
+    /// Declared agents refused `REFUSE_FULL` because the shard's
+    /// `agent_seats` were taken — the seats kept for people doing their job,
+    /// counted apart from `refused_full`, which is a shard with no room at all.
+    pub refused_agents: AtomicU64,
     /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
     /// the door before claiming a slot (`admin::Bans`).
     pub refused_banned: AtomicU64,

@@ -40,7 +40,9 @@ once every SHARE_EVERY_S seconds.
 
 GATES_JOURNAL names a file each decision is appended to as one JSON line
 (the time, the goal, the reason, what it said and heard, a few observation
-fields): what `ops/buddy/clips.py` reads to find a buddy's moments.
+fields, and the harness and model that answered): what `ops/buddy/clips.py`
+reads to find a buddy's moments. GATES_HARNESS names the harness on that
+line (default `claude_agent.py/api` or `claude_agent.py/claude-code`).
 
 GATES_SPEND names a file each API call's cost is appended to (dollars at
 Anthropic's posted prices, from the usage the call reports). With
@@ -84,6 +86,7 @@ FRAME_URL = os.environ.get("GATES_FRAME_URL", "")
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SHARE_EVERY_S = float(os.environ.get("SHARE_EVERY_S", "300"))
 JOURNAL = os.environ.get("GATES_JOURNAL", "")
+HARNESS = os.environ.get("GATES_HARNESS", "")
 # The observation fields a journal line keeps: enough to tell a fight, a
 # death or a haul from a walk, and small enough to write every turn.
 JOURNAL_OBS = ("health", "food", "water", "threats", "last_fight", "last_goal",
@@ -405,6 +408,7 @@ class Spend:
 
     def __init__(self):
         self.usd = 0.0
+        self.model = MODEL
         try:
             with open(SPEND) as f:
                 for line in f:
@@ -429,6 +433,8 @@ class Spend:
     def bill(self, model, usage):
         cost = call_usd(model, usage)
         self.usd += cost
+        # The model that answered, which a server-side fallback may change.
+        self.model = model
         if not SPEND:
             return
         n = lambda k: getattr(usage, k, 0) or 0
@@ -527,7 +533,13 @@ def post_share(caption, jpeg):
         return r.status
 
 
-def journal(request, goal, reason, say, to, speak=""):
+def label(v):
+    """A harness or model label as the platform takes one (1-48 of
+    [A-Za-z0-9 ._:/@+-]), or None."""
+    return re.sub(r"[^A-Za-z0-9 ._:/@+-]", "", str(v or "")).strip()[:48].strip() or None
+
+
+def journal(request, goal, reason, say, to, speak="", harness=None, model=None):
     """One line in GATES_JOURNAL. A journal that cannot be written costs a log
     line, never a decision."""
     obs = request.get("observation") or {}
@@ -538,7 +550,8 @@ def journal(request, goal, reason, say, to, speak=""):
         "say": say,
         "to": to,
         "speak": speak,
-        "heard": [{"from": h["from"], "friend": h.get("friend", False),
+        "heard": [{"from": h["from"], "agent": h.get("agent") is True,
+                   "friend": h.get("friend", False),
                    "channel": h.get("channel", "local"), "text": h["text"],
                    "voice": h.get("voice", False)}
                   for h in request.get("heard", []) if not h.get("me")],
@@ -546,6 +559,9 @@ def journal(request, goal, reason, say, to, speak=""):
         "obs": {**{k: obs[k] for k in JOURNAL_OBS if k in obs},
                 **({"players": obs["in_view"]["players"]}
                    if isinstance(obs.get("in_view"), dict) and "players" in obs["in_view"] else {})},
+        "harness": label(harness),
+        "model": label(model),
+        "answered_by": "harness",
     }
     try:
         with open(JOURNAL, "a") as f:
@@ -568,6 +584,7 @@ def main():
         else:
             sys.exit(usage)
     persona = " ".join(persona.split())[:600]
+    harness = HARNESS or f"claude_agent.py/{via}"
     spend = Spend()
     if via == "api":
         import anthropic
@@ -637,7 +654,7 @@ def main():
             continue
         recent.append({"goal": goal, "said": say, "to": to, "spoke": speak})
         if JOURNAL:
-            journal(request, goal, reason, say, to, speak)
+            journal(request, goal, reason, say, to, speak, harness, spend.model)
         print(f"{goal}: {reason}" + (f' / says to {to} "{say}"' if say else "")
               + (f' / speaks "{speak}"' if speak else ""), file=sys.stderr)
         reply = {"id": request["id"], "goal": goal, "reason": reason}

@@ -556,13 +556,16 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 /// One row of a saved standings file, as the wipe reads it back.
-struct Saved {
-    key: String,
-    label: String,
-    scores: [u64; BOARDS],
-    played: u32,
-    agent: bool,
-    extracted: u64,
+pub struct Saved {
+    pub key: String,
+    pub label: String,
+    /// Whole points by board, in wire order: THE ISLAND, THE WORKS, THE
+    /// HOARD, THE FIGHT (kills).
+    pub scores: [u64; BOARDS],
+    pub deaths: u32,
+    pub played: u32,
+    pub agent: bool,
+    pub extracted: u64,
 }
 
 fn read_saved(text: &str) -> Vec<Saved> {
@@ -578,12 +581,26 @@ fn read_saved(text: &str) -> Vec<Saved> {
             key: f[1].to_string(),
             label: f.get(ROW_FIELDS - 1).copied().unwrap_or("").to_string(),
             scores: [island, (given + deeds) / 100, hoard / 100, kills],
+            deaths: n(5) as u32,
             played: n(8) as u32,
             agent: n(9) & FLAG_AGENT != 0,
             extracted: n(10),
         });
     }
     out
+}
+
+/// Every row of `<base>.standings` by key, as the wipe reads them; empty
+/// when there is no file. What the bench scores a run by (`bench.rs`).
+pub fn saved_rows(base: &Path) -> BTreeMap<String, Saved> {
+    std::fs::read_to_string(standings_path(base))
+        .map(|t| {
+            read_saved(&t)
+                .into_iter()
+                .map(|r| (r.key.clone(), r))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Whether wipe `wipe` is already closed into the hall beside `base`: its
@@ -1554,6 +1571,21 @@ mod tests {
         );
         assert_eq!(s.would_win(BOARD_FIGHT, BOT), 0);
         s.save_now().unwrap();
+
+        // What the bench reads: whole points by board, and the fight's both
+        // sides.
+        s.kill(Some((BOT, "BOT")), Some((CAROL, "CAROL")));
+        s.save_now().unwrap();
+        let rows = saved_rows(&base);
+        let (bot, carol) = (&rows[BOT], &rows[CAROL]);
+        assert_eq!((bot.scores[BOARD_FIGHT as usize], bot.deaths), (3, 0));
+        assert_eq!((carol.scores[BOARD_FIGHT as usize], carol.deaths), (1, 1));
+        assert!(bot.agent && !carol.agent);
+        assert_eq!(
+            rows[ALICE].scores[BOARD_ISLAND as usize],
+            s.row_of(ALICE).unwrap().score(BOARD_ISLAND, &rules())
+        );
+        assert!(saved_rows(&dir.join("nothing")).is_empty());
 
         // A restart mid-wipe reads the same rows back.
         let again = Standings::open(rules(), prizes.clone(), Some(&base), 3);

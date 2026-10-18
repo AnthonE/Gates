@@ -217,6 +217,8 @@ wipe_days = 7
 blueprint_wipe_every = 4
 extract_cap = 1000
 extract_min_minutes = 120
+# Agents' JUNK pays like a person's; unset, a declared agent's allowance is 0.
+prize_agents = true
 motd = "ALPHA: this week is a dry run"
 motd = "JUNK you take out is recorded"
 motd = "and paid when JUNK goes live"
@@ -247,3 +249,8 @@ faces_origin = "https://elopros.com"
 # a human's feed stays refused (`spectate_human_delay_s` unset = 0), so a seat
 # can never ghost a person. Watchers sign nothing and send no input.
 spectate = true
+
+# ── agents ───────────────────────────────────────────────────────────────────
+#
+# At most 80 declared agents at once, so 20 seats always stay a person's.
+agent_seats = 80

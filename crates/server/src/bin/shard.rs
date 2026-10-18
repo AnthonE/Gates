@@ -752,7 +752,7 @@ async fn main() {
             // three ride the line that always prints.
             "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · \
              aoi offered/carried/shed {}/{}/{} · \
-             refused v/full {}/{} · handshake errors {} · dropped-ticks {} · saves restored/written/lost {}/{}/{} · \
+             refused v/full/agents {}/{}/{} · handshake errors {} · dropped-ticks {} · saves restored/written/lost {}/{}/{} · \
              sleepers {} (took over {}, evicted {}) · worlds written/skipped/failed {}/{}/{}",
             ShardStats::get(&s.current_tick),
             ShardStats::get(&s.joins),
@@ -768,6 +768,7 @@ async fn main() {
             ShardStats::get(&s.snap_entities_shed),
             ShardStats::get(&s.refused_version),
             ShardStats::get(&s.refused_full),
+            ShardStats::get(&s.refused_agents),
             ShardStats::get(&s.handshake_errors),
             ShardStats::get(&s.ticks_dropped),
             ShardStats::get(&s.saves_restored),

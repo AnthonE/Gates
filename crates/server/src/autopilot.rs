@@ -72,10 +72,19 @@ impl<P: DecisionSource> Autopilot<P> {
 
     fn fly(&mut self, why: &str, s: &Summary) -> Result<Choice, String> {
         let mut choice = self.scripted.decide(s)?;
-        choice.reason =
-            Reason::from_text(&format!("autopilot ({why}): {}", choice.reason.as_str()));
+        choice.reason = Reason::from_text(&format!("{SAYS}{why}): {}", choice.reason.as_str()));
         Ok(choice)
     }
+}
+
+/// How every turn the autopilot plays begins its reason.
+const SAYS: &str = "autopilot (";
+
+/// Whether a decision's reason is the autopilot's (`fly`): what a log, the
+/// distiller (`ops/distill/train.py`) and the bench (`bench.rs`) tell its
+/// turns by.
+pub fn is_autopilot(reason: &str) -> bool {
+    reason.starts_with(SAYS)
 }
 
 impl<P: DecisionSource> DecisionSource for Autopilot<P> {

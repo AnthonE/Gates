@@ -312,6 +312,12 @@ pub struct ShardConfig {
     /// so at least one seat is always a person's. Refused outright when
     /// `require_auth` is set, because an inhabitant handshakes as a guest.
     pub population: usize,
+    /// **The most declared agents (`HELLO_AGENT`) seated at once**
+    /// (`agent_seats`). A joining agent meets `REFUSE_FULL` once the shard's
+    /// connected-agent gauge reaches it, so the rest of the seats stay a
+    /// person's however many agents dial. People are never counted against
+    /// it. Zero is the shipping default and caps nothing.
+    pub agent_seats: u32,
     /// Which congestion controller quinn runs (`cc = "cubic" | "bbr"`).
     ///
     /// **CUBIC is the default and stays the default.** `NETCODE.md` §2.1
@@ -445,6 +451,7 @@ impl ShardConfig {
             anomaly_file: None,
             ban_file: None,
             population: 0,
+            agent_seats: 0,
             spectate: Spectate::OFF,
             team_max: protocol::TEAM_MAX as u8,
         }
@@ -627,6 +634,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut anomaly_file: Option<String> = None;
     let mut ban_file: Option<String> = None;
     let mut population: Option<usize> = None;
+    let mut agent_seats: u32 = 0;
     let mut team_max: Option<u8> = None;
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
@@ -1223,6 +1231,15 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 population = Some(v);
             }
+            "agent_seats" => {
+                agent_seats = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: agent_seats must be a whole number of \
+                         seats (0 caps nothing, which is the default)",
+                        n + 1
+                    )
+                })?;
+            }
             // Refused rather than defaulted on an unknown value: an
             // operator who typed `cc = "bbr2"` wanted something other than
             // CUBIC, and silently giving them CUBIC is the A/B reporting a
@@ -1482,6 +1499,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         ban_file,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
+        agent_seats,
         spectate,
         team_max: team_max.unwrap_or(protocol::TEAM_MAX as u8),
     })
@@ -1990,6 +2008,23 @@ mod auth_cfg_tests {
         ] {
             let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
             assert!(err.contains("dev_arc_hour"), "{err}");
+        }
+    }
+
+    #[test]
+    fn agent_seats_default_off_and_read_whole_numbers() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert_eq!(parse_shard_toml(base).unwrap().agent_seats, 0);
+        assert_eq!(ShardConfig::ephemeral(1).agent_seats, 0);
+        let capped = parse_shard_toml(&format!("{base}agent_seats = 80\n")).unwrap();
+        assert_eq!(capped.agent_seats, 80);
+        for bad in [
+            "agent_seats = -1\n",
+            "agent_seats = most\n",
+            "agent_seats = \n",
+        ] {
+            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
+            assert!(err.contains("agent_seats"), "{err}");
         }
     }
 

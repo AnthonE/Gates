@@ -1,0 +1,17 @@
+# Daily in a quiet hour, so a wipe closed on Thursday evening (`shard.toml`
+# `wipe_anchor`, 19:00 UTC by default) is out by the next morning.
+# `Persistent` runs on boot what a powered-off box missed.
+#
+#   sudo systemctl enable --now gates-research-pack.timer
+#   systemctl list-timers gates-research-pack.timer
+
+[Unit]
+Description=Pack closed Gates wipes daily
+
+[Timer]
+OnCalendar=*-*-* 04:17:00 UTC
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

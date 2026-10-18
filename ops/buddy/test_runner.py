@@ -134,7 +134,8 @@ code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": "p", "method": "ping"})
 check("ping is answered with no body on the island", code == 200 and got == {"jsonrpc": "2.0", "id": "p", "result": {}})
 check("a ping brings nobody in", not bodies)
 code, got = post(PORT, AID, {"jsonrpc": "2.0", "id": "init-1", "method": "initialize",
-                             "params": {"protocolVersion": "2025-06-18"}})
+                             "params": {"protocolVersion": "2025-06-18",
+                                        "clientInfo": {"name": "claude-code", "version": "2.1.0"}}})
 check("the first initialize brings a body and is answered under the caller's id",
       code == 200 and got["id"] == "init-1" and got["result"]["protocolVersion"] == "2025-06-18")
 code, got = post(PORT, AID, {"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -154,6 +155,12 @@ rows = [json.loads(x) for x in open(journal)] if os.path.exists(journal) else []
 check("an answered act is journalled with the look it answered", len(rows) == 1 and rows[0]["goal"] == "meet"
       and rows[0]["say"] == "hi friend" and rows[0]["to"] == "team" and rows[0]["obs"] == {"health": 80, "players": 2}
       and rows[0]["heard"][0]["friend"] is True)
+check("the line names the harness its initialize said, and that it answered",
+      rows and rows[0]["harness"] == "claude-code/2.1.0" and rows[0]["answered_by"] == "harness"
+      and rows[0]["model"] is None and rows[0]["heard"][0]["agent"] is False)
+check("a harness label keeps only what the platform takes",
+      mind_bridge.harness_of({"name": "my \"harness\"\n", "version": "1"}) == "my harness/1"
+      and mind_bridge.harness_of({"version": "1"}) is None and mind_bridge.label("x" * 60) == "x" * 48)
 check("a journalled reason is one short line", rows and "\n" not in rows[0]["reason"] and len(rows[0]["reason"]) <= 96)
 post(PORT, AID, {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {
     "name": "act", "arguments": {"id": 99, "goal": "gather"}}})

@@ -14,7 +14,9 @@
 //! 4. a key that is not the claimed address's is refused (`REFUSE_AUTH`);
 //! 5. the agent endpoint validates certificates off loopback: an unpinned
 //!    self-signed shard is refused at the transport, its own pin admits it,
-//!    and a wrong pin is refused.
+//!    and a wrong pin is refused;
+//! 6. `agent_seats` refuses the agent past the cap (`REFUSE_FULL`) and still
+//!    seats a person.
 
 use server::botclient::{agent_endpoint, run_agent_bot, AgentIdentity, BotDriver, BotReport};
 use server::config::ShardConfig;
@@ -239,6 +241,49 @@ async fn a_key_that_is_not_the_claimed_addresss_is_refused() {
     );
     assert_eq!(ShardStats::get(&h.stats.refused_auth), 1);
     assert_eq!(ShardStats::get(&h.stats.refused_ticket), 0);
+    h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **Claim 6.** One agent seat: the first agent sits, the second meets
+/// `REFUSE_FULL` and is counted as an agent refusal, and a person still gets
+/// in — the seats past the cap are theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agent_seats_refuse_the_agent_past_the_cap_and_seat_a_person() {
+    let mut cfg = ShardConfig::ephemeral(20_261_018);
+    cfg.agent_seats = 1;
+    let h = spawn_shard(
+        cfg,
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("boots");
+    let server = h.local_addr.to_string();
+    let ep = client::client_endpoint(&server, None).expect("endpoint");
+    let first = Session::connect_agent(&ep, &server, &key(6), protocol::Name::new("a").unwrap())
+        .await
+        .expect("the first agent sits");
+    // The cap reads the sim's gauge, which lands on the next tick.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while ShardStats::get(&h.stats.agents) < 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the gauge never read 1"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let r = Session::connect_agent(&ep, &server, &key(7), protocol::Name::new("b").unwrap()).await;
+    assert!(
+        matches!(r, Err(JoinError::Refused(c)) if c == protocol::REFUSE_FULL),
+        "the agent past the cap must be refused full"
+    );
+    assert_eq!(ShardStats::get(&h.stats.refused_agents), 1);
+    assert_eq!(ShardStats::get(&h.stats.refused_full), 0);
+    let person = Session::connect(&ep, &server, protocol::Address::GUEST, |_, _, _| None)
+        .await
+        .expect("a person still gets a seat");
+    assert_ne!(person.welcome.player_id, first.welcome.player_id);
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 

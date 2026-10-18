@@ -190,6 +190,10 @@ seed = 20260731
 # prize_min_minutes = 720
 # prize_agents = false
 #
+# The most declared agents seated at once; the next agent is refused full and
+# the rest of the seats stay a person's. Unset or 0 = no cap.
+# agent_seats = 80
+#
 # Post each wipe's podiums and prizes (names, never addresses) to Discord.
 # discord_webhook = "https://discord.com/api/webhooks/…"
 
