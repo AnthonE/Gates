@@ -62,14 +62,14 @@ const SYMBOLS: [(&str, &str); SLOT_SYMBOLS] = [
     ("Bandage", "BANDAGE"),
     ("Charcoal", "CHARCOAL"),
     ("Gunpowder", "POWDER"),
-    ("", "GATE"),
+    ("", "THE GATE"),
     ("Cooked Meat", "MEAT"),
     ("Hammer", "HAMMER"),
     ("Sulfur", "SULFUR"),
     ("Gears", "GEARS"),
     ("Metal Fragments", "FRAGS"),
     ("Cloth", "CLOTH"),
-    ("", "7 7 7"),
+    ("", "LUCKY 7"),
 ];
 
 pub fn colour(c: usize) -> Color {
@@ -94,6 +94,27 @@ pub struct CasinoClock;
 pub struct ReelPic(pub usize);
 #[derive(Component)]
 pub struct ReelWord(pub usize);
+/// Reel `r`'s painted symbol, shown in place of the picture for a symbol no
+/// item icon draws (the seven, the gate).
+#[derive(Component)]
+pub struct ReelGlyph(pub usize);
+
+/// The painted symbol for a reel face with no item icon.
+fn glyph(sym: u8) -> &'static str {
+    if sym == casino::SYM_SEVEN {
+        "7"
+    } else {
+        "GATE"
+    }
+}
+
+fn shown_if(on: bool) -> Display {
+    if on {
+        Display::Flex
+    } else {
+        Display::None
+    }
+}
 
 fn header(
     p: &mut ChildSpawnerCommands,
@@ -494,13 +515,25 @@ pub fn build_slots(
                     ))
                     .with_children(|cell| {
                         let (name, word) = SYMBOLS[sym as usize % SLOT_SYMBOLS];
-                        let pic = icons.item(name).unwrap_or_default();
+                        let pic = icons.item(name);
                         cell.spawn((
-                            ImageNode::new(pic),
+                            ImageNode::new(pic.clone().unwrap_or_default()),
                             ReelPic(r),
                             Node {
                                 width: Val::Px(64.0),
                                 height: Val::Px(64.0),
+                                display: shown_if(pic.is_some()),
+                                ..default()
+                            },
+                        ));
+                        cell.spawn((
+                            Text::new(glyph(sym)),
+                            font_bold(40.0),
+                            TextColor(Color::srgb(0.78, 0.12, 0.1)),
+                            ReelGlyph(r),
+                            Node {
+                                height: Val::Px(64.0),
+                                display: shown_if(pic.is_none()),
                                 ..default()
                             },
                         ));
@@ -599,10 +632,14 @@ fn clock_line(core: &ClientCore) -> String {
         }
         _ => String::new(),
     };
+    let left = secs(WHEEL_ROUND_TICKS - phase);
     if phase < WHEEL_OPEN_TICKS {
         format!("BETS CLOSE IN {}s{last}", secs(WHEEL_OPEN_TICKS - phase))
+    } else if core.casino.spin.is_some_and(|(r, _)| r as u64 == round) {
+        format!("SPINNING — STOPS IN {left}s")
     } else {
-        format!("SPINNING — STOPS IN {}s", secs(WHEEL_ROUND_TICKS - phase))
+        // The wheel turns only for money (`casino.rs`).
+        format!("BETS SHUT — NO STAKES THIS ROUND · NEXT IN {left}s")
     }
 }
 
@@ -640,17 +677,29 @@ fn slots_line(r: &client_core::core::SlotsResult) -> String {
 
 /// Every frame, in place: the wheel's clock and the turning reels; and as a
 /// spin stops, its line on the status bar.
+#[allow(clippy::type_complexity)]
 pub fn tick(
     mut ui: ResMut<Ui>,
     net: NonSend<super::super::Net>,
     icons: Option<Res<super::super::icons::Icons>>,
-    mut clock: Query<&mut Text, (With<CasinoClock>, Without<ReelWord>)>,
-    mut pics: Query<(&ReelPic, &mut ImageNode)>,
-    mut words: Query<(&ReelWord, &mut Text), Without<CasinoClock>>,
+    mut clock: Query<&mut Text, (With<CasinoClock>, Without<ReelWord>, Without<ReelGlyph>)>,
+    mut pics: Query<(&ReelPic, &mut ImageNode, &mut Node), Without<ReelGlyph>>,
+    mut words: Query<(&ReelWord, &mut Text), (Without<CasinoClock>, Without<ReelGlyph>)>,
+    mut glyphs: Query<
+        (&ReelGlyph, &mut Text, &mut Node),
+        (Without<CasinoClock>, Without<ReelWord>),
+    >,
 ) {
     let core = &net.session.core;
     match ui.panel {
         Panel::BigWheel => {
+            // The BET buttons light by whether bets are open: redraw as the
+            // window shuts and opens.
+            let open = casino::wheel_open(core.server_tick_est().max(0.0) as u64);
+            if ui.casino_open != open {
+                ui.casino_open = open;
+                ui.dirty = true;
+            }
             let line = clock_line(core);
             for mut t in clock.iter_mut() {
                 if t.0 != line {
@@ -660,14 +709,29 @@ pub fn tick(
         }
         Panel::Slots => {
             let (shown, turning) = reels_now(core, ui.slot_machine);
-            if let Some(icons) = icons.as_deref() {
-                for (r, mut img) in pics.iter_mut() {
-                    let pic = icons
-                        .item(SYMBOLS[shown[r.0] as usize].0)
-                        .unwrap_or_default();
-                    if img.image != pic {
-                        img.image = pic;
-                    }
+            let pic_of = |sym: u8| {
+                icons
+                    .as_deref()
+                    .and_then(|i| i.item(SYMBOLS[sym as usize % SLOT_SYMBOLS].0))
+            };
+            for (r, mut img, mut node) in pics.iter_mut() {
+                let pic = pic_of(shown[r.0]);
+                let display = shown_if(pic.is_some());
+                if node.display != display {
+                    node.display = display;
+                }
+                if let Some(pic) = pic.filter(|p| *p != img.image) {
+                    img.image = pic;
+                }
+            }
+            for (r, mut t, mut node) in glyphs.iter_mut() {
+                let display = shown_if(pic_of(shown[r.0]).is_none());
+                if node.display != display {
+                    node.display = display;
+                }
+                let g = glyph(shown[r.0]);
+                if t.0 != g {
+                    t.0 = g.to_string();
                 }
             }
             for (r, mut t) in words.iter_mut() {

@@ -259,6 +259,9 @@ pub struct Ui {
     pub slot_mult: u8,
     pub wheel_stake: u8,
     pub casino_seq: (u32, u32, u32),
+    /// Whether the wheel's bets were open at the last look, so the panel
+    /// redraws its BET buttons as the window turns.
+    pub casino_open: bool,
     /// Change detection against the core. A menu that rebuilt every frame
     /// would allocate a node tree per frame for a screen that changes when
     /// a player clicks — so the rebuild is driven by these snapshots, and
@@ -383,6 +386,7 @@ impl Default for Ui {
             slot_mult: 1,
             wheel_stake: 2,
             casino_seq: (0, 0, 0),
+            casino_open: false,
             seen: Seen::default(),
         }
     }
