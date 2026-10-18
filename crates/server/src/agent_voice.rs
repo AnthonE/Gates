@@ -11,7 +11,11 @@
 //! - **Voice.** A line the mind says (`speak` in the external protocol, or
 //!   its chat line) goes to a text-to-speech service on the `agent-mouth`
 //!   thread; the samples come back, are encoded into 20 ms Opus frames and
-//!   go out at the pace a microphone would send them.
+//!   go out at the pace a microphone would send them. One line is said at a
+//!   time and at most one waits behind it (the newest), so it is never more
+//!   than a line behind the mind; a line the voice cannot say (the service
+//!   failed, or the hour's lines are spent) is typed instead
+//!   ([`AgentVoice::take_unsaid`]).
 //!
 //! The services are any OpenAI-compatible `audio/transcriptions` and
 //! `audio/speech` endpoints (OpenAI itself, a local server, a proxy), and
@@ -22,6 +26,8 @@
 
 use protocol::VoiceFrame;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The longest utterance sent to be transcribed; a longer one is cut.
@@ -38,6 +44,9 @@ const EARS: usize = 8;
 pub const MAX_SPEECH_CHARS: usize = 240;
 /// Frames sent ahead of real time, so a listener's buffer fills promptly.
 const LEAD_FRAMES: u32 = 3;
+/// How much of the line being said may be left (20 ms frames) when the next
+/// one goes to be voiced, so it is ready as this one ends.
+const NEXT_AT_FRAMES: usize = 75;
 /// How long a service call may take before the line is given up.
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The biggest answer read from a service (30 s of 24 kHz speech).
@@ -132,6 +141,8 @@ pub struct VoiceStats {
     pub heard_dropped: u64,
     pub lines_spoken: u64,
     pub said_dropped: u64,
+    /// Lines the voice could not say, typed instead.
+    pub said_typed: u64,
     pub frames_sent: u64,
     pub failures: u64,
 }
@@ -143,9 +154,20 @@ pub struct AgentVoice {
     to_ears: rtrb::Producer<(u32, Vec<f32>)>,
     from_ears: rtrb::Consumer<(u32, String)>,
     to_mouth: rtrb::Producer<String>,
-    from_mouth: rtrb::Consumer<Vec<f32>>,
-    /// Lines the mind asked to have spoken (`External`'s `speak`).
-    speech: rtrb::Consumer<String>,
+    from_mouth: rtrb::Consumer<Result<Vec<f32>, String>>,
+    /// Lines the mind asked to have spoken (`External`'s `speak`), and
+    /// whether each was also typed.
+    speech: rtrb::Consumer<(String, bool)>,
+    /// The line at the speech service, if one is.
+    in_mouth: Option<(String, bool)>,
+    /// Its samples, back and waiting for the line being said to end.
+    ready: Option<Vec<f32>>,
+    /// The next line, not yet sent to be voiced. A newer one replaces it.
+    queued: Option<(String, bool)>,
+    /// A line it could not say, for its body to type.
+    unsaid: Option<String>,
+    /// [`Self::busy`], for the mind's door ([`SpeechTx::speaking`]).
+    speaking: Arc<AtomicBool>,
     talker: ::voice::Talker,
     /// The line being sent: its frames, and when its first was due.
     out: std::collections::VecDeque<VoiceFrame>,
@@ -156,8 +178,8 @@ pub struct AgentVoice {
     heard_window: Window,
     said_window: Window,
     pub stats: VoiceStats,
-    /// What went wrong on either thread, said on the bot's stderr.
-    errors: [rtrb::Consumer<String>; 2],
+    /// What went wrong hearing, said on the bot's stderr.
+    ear_errors: rtrb::Consumer<String>,
 }
 
 /// A spend ceiling per rolling hour.
@@ -189,8 +211,27 @@ impl Window {
     }
 }
 
-/// The producer end the mind's external door pushes `speak` lines into.
-pub type SpeechTx = rtrb::Producer<String>;
+/// Where the mind's external door hands its lines to the voice.
+pub struct SpeechTx {
+    tx: rtrb::Producer<(String, bool)>,
+    speaking: Arc<AtomicBool>,
+}
+
+impl SpeechTx {
+    /// Have `text` said; `typed` when it also went out as typed chat, so a
+    /// line the voice cannot say is not typed twice. `Err` when the voice
+    /// has not caught up with the last few.
+    pub fn push(&mut self, text: String, typed: bool) -> Result<(), String> {
+        self.tx
+            .push((text, typed))
+            .map_err(|_| "the voice is behind".to_string())
+    }
+
+    /// Whether the voice is still saying a line, or has one waiting.
+    pub fn speaking(&self) -> bool {
+        self.speaking.load(Ordering::Relaxed)
+    }
+}
 
 impl AgentVoice {
     /// Start the two service threads. The returned producer is where the
@@ -198,11 +239,12 @@ impl AgentVoice {
     pub fn spawn(cfg: VoiceConfig) -> Result<(Self, SpeechTx), String> {
         let (to_ears, mut ears_rx) = rtrb::RingBuffer::<(u32, Vec<f32>)>::new(4);
         let (mut ears_tx, from_ears) = rtrb::RingBuffer::<(u32, String)>::new(8);
+        // One line at the service at a time (`in_mouth`), so neither mouth
+        // ring can fill.
         let (to_mouth, mut mouth_rx) = rtrb::RingBuffer::<String>::new(2);
-        let (mut mouth_tx, from_mouth) = rtrb::RingBuffer::<Vec<f32>>::new(2);
-        let (speech_tx, speech) = rtrb::RingBuffer::<String>::new(2);
-        let (mut err_ears, ears_errors) = rtrb::RingBuffer::<String>::new(8);
-        let (mut err_mouth, mouth_errors) = rtrb::RingBuffer::<String>::new(8);
+        let (mut mouth_tx, from_mouth) = rtrb::RingBuffer::<Result<Vec<f32>, String>>::new(2);
+        let (speech_tx, speech) = rtrb::RingBuffer::<(String, bool)>::new(4);
+        let (mut err_ears, ear_errors) = rtrb::RingBuffer::<String>::new(8);
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(SERVICE_TIMEOUT))
             .http_status_as_error(false)
@@ -235,20 +277,24 @@ impl AgentVoice {
             .name("agent-mouth".into())
             .spawn(move || loop {
                 match mouth_rx.pop() {
-                    Ok(text) => match synthesize(&agent, &cfg, &text) {
-                        Ok(pcm) => {
-                            let _ = mouth_tx.push(pcm);
+                    Ok(text) => {
+                        // Paid for once made: it waits for room, never drops.
+                        let mut made = synthesize(&agent, &cfg, &text);
+                        while let Err(rtrb::PushError::Full(back)) = mouth_tx.push(made) {
+                            if mouth_tx.is_abandoned() {
+                                return;
+                            }
+                            made = back;
+                            std::thread::sleep(Duration::from_millis(20));
                         }
-                        Err(e) => {
-                            let _ = err_mouth.push(e);
-                        }
-                    },
+                    }
                     Err(_) if mouth_rx.is_abandoned() => return,
                     Err(_) => std::thread::sleep(Duration::from_millis(20)),
                 }
             })
             .map_err(|e| format!("agent-mouth: {e}"))?;
         let now = Instant::now();
+        let speaking = Arc::new(AtomicBool::new(false));
         Ok((
             Self {
                 ears: Vec::with_capacity(EARS),
@@ -257,6 +303,11 @@ impl AgentVoice {
                 to_mouth,
                 from_mouth,
                 speech,
+                in_mouth: None,
+                ready: None,
+                queued: None,
+                unsaid: None,
+                speaking: speaking.clone(),
                 talker: ::voice::Talker::new(),
                 out: std::collections::VecDeque::new(),
                 out_start: now,
@@ -265,9 +316,12 @@ impl AgentVoice {
                 heard_window: Window::new(max_heard),
                 said_window: Window::new(max_said),
                 stats: VoiceStats::default(),
-                errors: [ears_errors, mouth_errors],
+                ear_errors,
             },
-            speech_tx,
+            SpeechTx {
+                tx: speech_tx,
+                speaking,
+            },
         ))
     }
 
@@ -329,18 +383,30 @@ impl AgentVoice {
             self.stats.transcribed += 1;
             heard(from, &text);
         }
-        for errors in &mut self.errors {
-            while let Ok(e) = errors.pop() {
-                self.stats.failures += 1;
-                eprintln!("voice: {e}");
+        while let Ok(e) = self.ear_errors.pop() {
+            self.stats.failures += 1;
+            eprintln!("voice: {e}");
+        }
+        // What the service made of the line it had.
+        while let Ok(made) = self.from_mouth.pop() {
+            let line = self.in_mouth.take();
+            match made {
+                Ok(pcm) => self.ready = Some(pcm),
+                Err(e) => {
+                    self.stats.failures += 1;
+                    eprintln!("voice: {e}");
+                    if let Some((text, typed)) = line {
+                        self.unsay(text, typed);
+                    }
+                }
             }
         }
-        while let Ok(text) = self.speech.pop() {
-            self.say(&text, now);
+        while let Ok((text, typed)) = self.speech.pop() {
+            self.say(&text, typed);
         }
         // The next line's samples, once the last line has gone out.
         if self.out.is_empty() {
-            if let Ok(pcm) = self.from_mouth.pop() {
+            if let Some(pcm) = self.ready.take() {
                 let out = &mut self.out;
                 self.talker.push(&pcm, |seq, _, p| {
                     if let Some(f) = VoiceFrame::new(seq, 0, p) {
@@ -357,22 +423,55 @@ impl AgentVoice {
                 self.stats.lines_spoken += 1;
             }
         }
+        // The waiting line goes to be voiced as the one being said nears its
+        // end: ready on time, and the newest line is the one said.
+        if self.in_mouth.is_none() && self.ready.is_none() && self.out.len() <= NEXT_AT_FRAMES {
+            if let Some((text, typed)) = self.queued.take() {
+                if self.said_window.take(now) && self.to_mouth.push(text.clone()).is_ok() {
+                    self.in_mouth = Some((text, typed));
+                } else {
+                    self.unsay(text, typed);
+                }
+            }
+        }
+        self.speaking.store(self.busy(), Ordering::Relaxed);
     }
 
-    /// Have `text` spoken. A line while another waits replaces it.
-    pub fn say(&mut self, text: &str, now: Instant) {
+    /// Have `text` said after the line being said, if one is. A line still
+    /// waiting is replaced: the newest is the one worth saying.
+    pub fn say(&mut self, text: &str, typed: bool) {
         let text = clean(text);
         if text.is_empty() {
             return;
         }
-        if !self.said_window.take(now) || self.to_mouth.push(text).is_err() {
+        if self.queued.replace((text, typed)).is_some() {
             self.stats.said_dropped += 1;
         }
     }
 
-    /// Whether a line is being sent or waits to be.
+    /// A line the voice could not say goes to be typed, unless it was.
+    fn unsay(&mut self, text: String, typed: bool) {
+        if typed {
+            self.stats.said_dropped += 1;
+            return;
+        }
+        self.stats.said_typed += 1;
+        if self.unsaid.replace(text).is_some() {
+            self.stats.said_dropped += 1;
+        }
+    }
+
+    /// The last line the voice could not say, for the body to type.
+    pub fn take_unsaid(&mut self) -> Option<String> {
+        self.unsaid.take()
+    }
+
+    /// Whether a line is being said, or one waits to be.
     pub fn busy(&self) -> bool {
         !self.out.is_empty()
+            || self.in_mouth.is_some()
+            || self.ready.is_some()
+            || self.queued.is_some()
     }
 
     /// The frames due by `now` (a few ahead of it), oldest first.
@@ -388,6 +487,9 @@ impl AgentVoice {
             n += 1;
             self.out_sent += 1;
             self.stats.frames_sent += 1;
+        }
+        if n > 0 && self.out.is_empty() {
+            self.speaking.store(self.busy(), Ordering::Relaxed);
         }
         n
     }
@@ -653,12 +755,9 @@ mod tests {
         addr
     }
 
-    #[test]
-    fn it_hears_a_talker_and_speaks_a_line_through_the_services() {
-        let (seen_tx, mut seen) = rtrb::RingBuffer::new(8);
-        let addr = mock(seen_tx);
-        let cfg = VoiceConfig {
-            base: format!("http://{addr}/v1"),
+    fn config(base: String) -> VoiceConfig {
+        VoiceConfig {
+            base,
             key: "test".into(),
             stt_model: "stt".into(),
             tts_model: "tts".into(),
@@ -668,8 +767,74 @@ mod tests {
             vocabulary: "Doctor Wood".into(),
             max_heard_hour: 10,
             max_said_hour: 10,
-        };
-        let (mut v, mut speech) = AgentVoice::spawn(cfg).unwrap();
+        }
+    }
+
+    /// Tick the voice and drain its frames until `done` or ten seconds.
+    fn run(v: &mut AgentVoice, mut done: impl FnMut(&mut AgentVoice) -> bool) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && !done(v) {
+            let now = Instant::now();
+            v.tick(now, |_, _| {});
+            let mut buf = [VoiceFrame::EMPTY; 4];
+            v.due(now, &mut buf);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// One line said at a time and one waiting, the newest: two lines asked
+    /// for while the first is said leave the second unsaid, and nothing the
+    /// service made is thrown away.
+    #[test]
+    fn a_newer_line_replaces_the_one_waiting() {
+        let (seen_tx, mut seen) = rtrb::RingBuffer::new(8);
+        let addr = mock(seen_tx);
+        let (mut v, mut speech) = AgentVoice::spawn(config(format!("http://{addr}/v1"))).unwrap();
+        speech.push("one".into(), false).unwrap();
+        run(&mut v, |v| v.stats.lines_spoken == 1);
+        assert!(speech.speaking());
+        speech.push("two".into(), false).unwrap();
+        speech.push("three".into(), false).unwrap();
+        run(&mut v, |v| v.stats.lines_spoken == 2 && !v.busy());
+        assert_eq!(v.stats.lines_spoken, 2, "{:?}", v.stats);
+        assert_eq!(v.stats.said_dropped, 1);
+        assert!(!speech.speaking());
+        let mut asked = Vec::new();
+        while let Ok((_, body)) = seen.pop() {
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            asked.push(body["input"].as_str().unwrap().to_string());
+        }
+        assert_eq!(asked, ["one", "three"]);
+    }
+
+    /// A line the service cannot say is typed instead, once: a line that
+    /// already went out typed is not typed again.
+    #[test]
+    fn a_line_the_service_cannot_say_is_typed_unless_it_was() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (mut v, mut speech) = AgentVoice::spawn(config(format!("http://{closed}/v1"))).unwrap();
+        speech.push("Over here, friend!".into(), false).unwrap();
+        let mut unsaid = None;
+        run(&mut v, |v| {
+            unsaid = v.take_unsaid();
+            unsaid.is_some()
+        });
+        assert_eq!(unsaid.as_deref(), Some("Over here, friend!"));
+        speech.push("hi".into(), true).unwrap();
+        run(&mut v, |v| v.stats.failures == 2 && !v.busy());
+        assert_eq!(v.stats.failures, 2);
+        assert_eq!(v.take_unsaid(), None);
+        assert_eq!(v.stats.said_typed, 1);
+    }
+
+    #[test]
+    fn it_hears_a_talker_and_speaks_a_line_through_the_services() {
+        let (seen_tx, mut seen) = rtrb::RingBuffer::new(8);
+        let addr = mock(seen_tx);
+        let (mut v, mut speech) = AgentVoice::spawn(config(format!("http://{addr}/v1"))).unwrap();
         // A friend says half a second of something, then lets go of the key.
         let tone: Vec<f32> = (0..8_000)
             .map(|i| 0.3 * (std::f32::consts::TAU * 250.0 * i as f32 / 16_000.0).sin())
@@ -687,7 +852,7 @@ mod tests {
             v.hear(&f, now);
         }
         // The mind asks for a line.
-        speech.push("Hold still, friend!".into()).unwrap();
+        speech.push("Hold still, friend!".into(), false).unwrap();
 
         let mut heard = Vec::new();
         let mut out = Vec::new();

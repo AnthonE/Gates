@@ -41,7 +41,7 @@ use crate::sound::birds::{self, Birds};
 use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS};
 use crate::sound::mixer::{Mixer, Request, Start, Takes};
 use crate::sound::music::{self, Director, Track};
-use crate::sound::steps::Steps;
+use crate::sound::steps::{Steps, Strokes};
 use crate::sound::talk::TalkMsg;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
@@ -428,6 +428,8 @@ pub struct Sound {
     /// Which take each cue plays next (`sound::mixer::Takes`).
     pub takes: Takes,
     pub steps: Steps,
+    /// The local body's swim strokes.
+    pub strokes: Strokes,
     /// The waterline, as a thing the local body crosses.
     pub waterline: Waterline,
     /// Each roster slot's voice clock (`sound::voice` — pure; [`voices`] is
@@ -746,8 +748,11 @@ pub fn steps(
             let gain = ((v - LAND_SOUND_MPS) / 7.0).clamp(0.45, 1.0);
             sound.play(Request::own(Cue::Land).with_gain(gain));
             if let Some(fx) = fx.as_deref_mut() {
-                let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
-                let ground = crate::sound::steps::surface_cue(splat, false);
+                // A floor kicks nothing up (`body_landing` knows no floor).
+                let ground = floor_step(&net.session.core, &world, pos).unwrap_or_else(|| {
+                    let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+                    crate::sound::steps::surface_cue(splat, false)
+                });
                 super::fx::world::body_landing(fx, ground, Vec3::from(pos));
             }
         }
@@ -756,6 +761,10 @@ pub fn steps(
     // rule a remote's drawn swim and its silence use (NOW §0chr 1). Banked
     // ground is dropped like an airborne stretch's.
     air.swimming = client_core::interp::swimming(pos[1], air.swimming);
+    // A swimmer strokes instead: the wading recording, once a stroke.
+    if let Some(gain) = sound.strokes.sample(pos, air.swimming, time.delta_secs()) {
+        sound.play(Request::own(Cue::StepWater).with_gain(gain));
+    }
     let walking = body.grounded && !air.swimming;
     let Some(mut step) = sound.steps.sample(pos, walking, time.delta_secs()) else {
         return;
@@ -763,13 +772,16 @@ pub fn steps(
     if net.session.core.crouched() {
         step.gain *= CROUCH_STEP_GAIN;
     }
-    // The same `splat` the ground under the player is DRAWN with, so the
-    // sound cannot disagree with the picture — see `sound::steps`.
-    let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
-    let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
-    let cue = crate::sound::steps::surface_cue(splat, below_sea);
-    sound.play(Request::own(cue).with_gain(step.gain));
+    // A built floor's own material, else the same `splat` the ground under
+    // the player is DRAWN with, so the sound cannot disagree with the
+    // picture — see `sound::steps`.
     let core = &net.session.core;
+    let cue = floor_step(core, &world, pos).unwrap_or_else(|| {
+        let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+        let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
+        crate::sound::steps::surface_cue(splat, below_sea)
+    });
+    sound.play(Request::own(cue).with_gain(step.gain));
     let now = blight.as_deref().and_then(|b| b.now.as_ref());
     if let Some(depth) = in_leaves_at(&world, pos, |key| plant_size(core, key), now) {
         sound.play(Request::own(Cue::Brush).with_gain(step.gain * brush_gain(depth)));
@@ -777,6 +789,49 @@ pub fn steps(
     if let Some(mut fx) = fx {
         super::fx::world::footstep(&mut fx, cue, Vec3::from(pos), step.gain);
     }
+}
+
+/// The step a body with its feet at `pos` takes on a built floor: the
+/// floor's material, off the piece record under it
+/// (`sim_core::collide::floor_under`). `None` off the pieces, where the
+/// ground's splat decides. Twig and wood are boards, stone is a slab, metal
+/// is sheet.
+pub fn floor_step(
+    core: &client_core::core::ClientCore,
+    world: &super::WorldId,
+    pos: [f32; 3],
+) -> Option<Cue> {
+    use sim_core::build::{
+        MAT_METAL, MAT_STONE, SHAPE_DOORWAY, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL,
+        SHAPE_WALL, SHAPE_WINDOW,
+    };
+    let cols = core.pieces.cols();
+    let (cx, cz, level) =
+        sim_core::collide::floor_under(world.seed, &world.haven, cols, pos[0], pos[2], pos[1])?;
+    let defs = &core.piece_defs;
+    let def = core
+        .pieces
+        .entries()
+        .iter()
+        .filter(|r| r.cx == cx && r.cz == cz && r.level == level)
+        .filter(|r| u16::from(r.row) < core.piece_defs_have.min(defs.piece_count))
+        .map(|r| defs.pieces[r.row as usize])
+        .find(|d| {
+            !matches!(
+                d.shape,
+                SHAPE_WALL
+                    | SHAPE_DOORWAY
+                    | SHAPE_WINDOW
+                    | SHAPE_FRAME
+                    | SHAPE_HALF_WALL
+                    | SHAPE_LOW_WALL
+            )
+        })?;
+    Some(match def.material {
+        MAT_STONE => Cue::StepConcrete,
+        MAT_METAL => Cue::StepMetal,
+        _ => Cue::StepWood,
+    })
 }
 
 /// A body's half-width for brushing a plant, metres: its legs and shoulders
@@ -967,7 +1022,7 @@ pub fn geiger(
 /// map to sweep, no reset to remember). `bodies::stream` inserts it at
 /// spawn.
 #[derive(Component, Default)]
-pub struct RemoteSteps(pub Steps);
+pub struct RemoteSteps(pub Steps, pub Strokes);
 
 /// Another player's footsteps — the sound that decides fights, and until
 /// this system nothing produced it: only the local body has a predictor,
@@ -1005,15 +1060,24 @@ pub fn remote_steps(
         // air, off the wire's airborne bit, or from a body drawn swimming
         // (whose clip has no stride, so it would fall back to `stride_m`).
         let walking = !anim.airborne && !anim.swimming;
+        // A swimmer is heard stroking, at the body.
+        if let Some(gain) = steps.1.sample(pos, anim.swimming, dt) {
+            sound.play(Request::at(Cue::RemoteStepWater, pos).with_gain(gain));
+        }
         let Some(mut step) = steps.0.sample_with(pos, walking, dt, rig.step_m(anim)) else {
             continue;
         };
         if anim.crouched {
             step.gain *= CROUCH_STEP_GAIN;
         }
-        let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
-        let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
-        let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));
+        let floor = net
+            .as_deref()
+            .and_then(|n| floor_step(&n.session.core, &world, pos));
+        let cue = crate::sound::steps::remote(floor.unwrap_or_else(|| {
+            let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
+            let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
+            crate::sound::steps::surface_cue(splat, below_sea)
+        }));
         sound.play(Request::at(cue, pos).with_gain(step.gain));
         // Only within earshot: the leaves are nine scatter lookups, and a
         // body across the valley would be culled by the mixer anyway.
@@ -2504,6 +2568,7 @@ pub fn pump(
     let mut chosen = [None::<Start>; crate::sound::STARTS_PER_FRAME];
     // Ears under water hear every one-shot through the water's low-pass.
     let under = engine::lp_under(sound.snapshots.t(), out_rate);
+    sound.mixer.set_live_of(engine.live.counts());
     {
         let starts = sound.mixer.tick(dt_ms, listener, live, &mix);
         for (slot, s) in chosen.iter_mut().zip(starts.iter()) {
@@ -2530,11 +2595,15 @@ pub fn pump(
         // The take is the bank's to count and never the last one played.
         let takes = bank.takes(start.cue);
         let take = sound.takes.pick(start.cue, takes);
+        let rear = start
+            .at
+            .map_or(0, |at| rear_lp(listener, at, right, out_rate));
         engine.push(
             engine::start_cmd(&start, listener, right, out_rate)
                 .with_take(take, takes)
                 .muffled(under)
-                .muffled(walled),
+                .muffled(walled)
+                .muffled(rear),
         );
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence
@@ -2542,7 +2611,9 @@ pub fn pump(
         // its length. The ledger's own refusal (`false`) is the renderer's
         // refusal one frame early and needs no second count.
         if bank.installed(start.cue) {
-            engine.live.start(bank.len_s(start.cue), start.speed);
+            engine
+                .live
+                .start_cue(start.cue, bank.len_s(start.cue), start.speed);
         }
     }
     // A dropped request is a caller over `CUE_QUEUE_CAP`, which is a bug in
@@ -2681,6 +2752,35 @@ fn mix_of(s: &super::Settings) -> Mix {
         steps: s.vol_steps,
         interface: s.vol_interface,
     }
+}
+
+/// The cutoff a sound straight behind the head is heard through, Hz. Stereo
+/// pans left and right and cannot say front from back; the top end can, as
+/// the ear's own shadow does, so a step behind you is a duller step.
+pub const REAR_HZ: f32 = 5_000.0;
+/// Where the rear shadow starts, Hz: a sound beside you is unfiltered.
+pub const REAR_OPEN_HZ: f32 = 18_000.0;
+
+/// The low-pass byte for a source at `at` heard by ears at `listener` whose
+/// right is `right` (world XZ): 0 in front and beside, darker the further
+/// behind, [`REAR_HZ`] dead behind. Nothing for a source at the ears.
+pub fn rear_lp(listener: [f32; 3], at: [f32; 3], right: [f32; 2], out_rate: u32) -> u8 {
+    let (dx, dz) = (at[0] - listener[0], at[2] - listener[2]);
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < 1.0 {
+        return 0;
+    }
+    // Forward is the right turned a quarter (`look::right_dir`'s inverse).
+    let (fx, fz) = (right[1], -right[0]);
+    let ahead = (dx * fx + dz * fz) / len;
+    // Beside the head is open: a rounding hair behind it is not a shadow.
+    if ahead >= -0.05 {
+        return 0;
+    }
+    engine::lp_hz(
+        REAR_OPEN_HZ * (REAR_HZ / REAR_OPEN_HZ).powf(-ahead),
+        out_rate,
+    )
 }
 
 /// The frame budget must not exceed the pool it draws from.

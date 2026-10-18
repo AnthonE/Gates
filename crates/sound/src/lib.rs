@@ -58,6 +58,9 @@ pub mod geiger;
 // silent for all three with every gate green.
 pub mod hit;
 pub mod hurt;
+// The last stage before the device, after the score and the voices are summed
+// in: a peak limiter, so a voice over a gunshot cannot clip.
+pub mod limit;
 pub mod mixer;
 // When a song plays and which piece it is. `reference/AUDIO.md` §8 is the
 // design; this is the whole of it.
@@ -447,11 +450,25 @@ pub enum Cue {
     /// smashy crunchy sound when you get head shot"*). Yours, so not
     /// positional. Appended, the enum's append-order rule.
     Headshot,
+    /// A step on a built floor of twig or wood. The step family's grounds
+    /// that are not the island's: `render/audio.rs` picks one when the body
+    /// stands on a piece (`sim_core::collide::floor_under`), so a player
+    /// upstairs sounds like one. Appended, the enum's append-order rule, like
+    /// the five after it.
+    StepWood,
+    /// A step on a stone floor.
+    StepConcrete,
+    /// A step on a sheet-metal floor.
+    StepMetal,
+    /// The three floors heard at another body, as [`Cue::RemoteStepSand`].
+    RemoteStepWood,
+    RemoteStepConcrete,
+    RemoteStepMetal,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 103;
+pub const CUE_COUNT: usize = 109;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -563,6 +580,12 @@ impl Cue {
         Cue::MapPin,
         Cue::Geiger,
         Cue::Headshot,
+        Cue::StepWood,
+        Cue::StepConcrete,
+        Cue::StepMetal,
+        Cue::RemoteStepWood,
+        Cue::RemoteStepConcrete,
+        Cue::RemoteStepMetal,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -646,7 +669,13 @@ impl Cue {
             | Cue::RemoteStepGrass
             | Cue::RemoteStepLitter
             | Cue::RemoteStepRock
-            | Cue::RemoteStepWater => 0.10,
+            | Cue::RemoteStepWater
+            | Cue::StepWood
+            | Cue::StepConcrete
+            | Cue::StepMetal
+            | Cue::RemoteStepWood
+            | Cue::RemoteStepConcrete
+            | Cue::RemoteStepMetal => 0.10,
             Cue::Swing
             | Cue::RemoteSwing
             | Cue::ImpactWood
@@ -1119,6 +1148,9 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // A headshot taken: as loud and as high as being killed, because it is
     // usually the first half of it.
     row(GAME,  0.0, 0.95, 150, 8, false),  // headshot
+    // The built floors: the step family's numbers, yours then theirs.
+    STEP, STEP, STEP,
+    RSTEP, RSTEP, RSTEP,
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1147,12 +1179,9 @@ const SWING: CueDef = row(GAME, 20.0, 0.45, 120, 3, false);
 ///   pressed. That puts it level with the impacts, which is the register it
 ///   belongs in; ties break on distance, so the nearer swing wins.
 /// - **a 40 ms cooldown** rather than the local 120 ms — [`RSTEP`]'s value,
-///   taken for [`RSTEP`]'s reason. The cooldown is per-CUE and therefore
-///   shared across every swinger in earshot, and ⚠ **it binds inside a
-///   frame** (`tests/sound.rs::a_cooldown_binds_within_one_frame`), so it is
-///   a hard rate limit over the whole crew rather than a stagger on one arm.
-///   At 40 ms a second raider swinging three frames later is heard; at the
-///   local swing rate he waits an eighth of a second.
+///   taken for [`RSTEP`]'s reason. The cooldown is per SOURCE for a
+///   positional cue (`mixer::SAME_SOURCE_M`), so two raiders swinging at once
+///   are two swings; the 40 ms is one arm's floor.
 const RSWING: CueDef = CueDef {
     bus: Bus::Game,
     radius_m: SWING.radius_m,
@@ -1162,16 +1191,17 @@ const RSWING: CueDef = CueDef {
     positional: true,
 };
 
-/// The five footsteps share every number but their timbre — see [`CUES`].
+/// The footsteps share every number but their timbre — see [`CUES`].
 ///
-/// **40 m, not the 24 it opened at**: the reference's client spawns another
-/// player's footstep out to 75 m from the camera (`BaseFootstepEffect`, its
-/// hard cull), so a step is a sound you hear coming, not one that arrives
-/// with the swing. Under `(1 - d/R)²` a step at 20 m is a quarter of one at
-/// your feet; crouching halves it again (`render/audio.rs`).
+/// **75 m, the reference's own number** (it opened at 24, then 40): its
+/// client spawns another player's footstep out to 75 m from the camera
+/// (`BaseFootstepEffect`, its hard cull), so a step is a sound you hear
+/// coming, not one that arrives with the swing. Under `(1 - d/R)²` a step at
+/// 20 m is half of one at your feet and at 40 m a fifth; crouching halves it
+/// again (`render/audio.rs`).
 const STEP: CueDef = CueDef {
     bus: Bus::Steps,
-    radius_m: 40.0,
+    radius_m: 75.0,
     gain: 0.35,
     cooldown_ms: 90,
     priority: 1,
@@ -1179,16 +1209,16 @@ const STEP: CueDef = CueDef {
 };
 
 /// The remote five (`DECISIONS.md` §open, "remote footsteps v0"). Radius and
-/// gain are read off [`STEP`] rather than restated — the 24 m the local row
+/// gain are read off [`STEP`] rather than restated — the radius the local row
 /// always carried was written for exactly this positional half, and tying
 /// them means the two families cannot drift apart on how far a boot carries.
 /// What differs is deliberate: **positional** (the whole point — the cue is
 /// at the body, panned and culled by the one falloff law); **priority 2**,
 /// above your own feet, because another player's step is the sound that
 /// decides fights and yours tells you nothing; and a **40 ms cooldown** (the
-/// impacts' register, not the local 90 ms) since the cooldown is per-CUE and
-/// therefore shared across every remote on that surface — a stride-length
-/// cooldown would let your own pool mask a second attacker entirely.
+/// impacts' register, not the local 90 ms). The cooldown is per source
+/// (`mixer::SAME_SOURCE_M`), so a squad on one surface is every one of its
+/// steps, not one.
 const RSTEP: CueDef = CueDef {
     bus: Bus::Steps,
     radius_m: STEP.radius_m,
@@ -1220,6 +1250,20 @@ pub const MAX_AUDIBLE_M: f32 = 1500.0;
 /// stolen voice is an audible cut, and at this cap the thing being refused is
 /// the 25th simultaneous sound, which nobody can pick out of the other 24.
 pub const VOICE_CAP: usize = 24;
+
+/// Voices past [`VOICE_CAP`] that only a cue of [`RESERVE_PRIORITY`] or
+/// more may take: in a raid the pool fills with long tails (blasts,
+/// collapses, far shots), and the reload or the hit beside you is the sound
+/// that must still get in.
+pub const VOICE_RESERVE: usize = 8;
+
+/// The priority a cue needs to use [`VOICE_RESERVE`]: the impacts, a remote
+/// swing or reload, the hitmarkers, being hurt, the shots.
+pub const RESERVE_PRIORITY: u8 = 4;
+
+/// How many voices of one cue may sound at once, so one sound repeated (a
+/// raid's charges, a fusillade's far reports) cannot take the whole pool.
+pub const MAX_SAME_CUE: u8 = 6;
 
 /// How many voices may START in one frame.
 ///
