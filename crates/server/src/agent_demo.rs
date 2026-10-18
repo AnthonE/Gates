@@ -10,7 +10,7 @@ use crate::explorer::SurvivorOpts;
 /// Explicit offline goals (`mind::Scripted`), never a fallback for a
 /// failed model request. Re-exported here for the bins that name it.
 pub use crate::mind::Scripted;
-use crate::mind::{Mind, MindConfig};
+use crate::mind::{DecisionSource, Mind, MindConfig};
 use agentkey::AgentKey;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -233,7 +233,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --mcp | --external PROGRAM [ARG...]] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge.";
+pub const MIND_USAGE: &str = "[--scripted | --mcp | --student FILE | --external PROGRAM [ARG...]] [--record DIR] [--autopilot-s 45] [--friend 0xWALLET] [--friend-away autopilot|think] [--alone think|autopilot] [--voice] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro] [--temperament passive|defensive|opportunist|kos]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. --mcp makes this process an MCP server on its own stdin/stdout, so an MCP harness (Claude Code, Hermes, Codex, OpenClaw...) decides with the tools look, act and status; a turn it has not answered in --autopilot-s is played by the scripted policy. --friend names the one wallet it plays with: it meets them at THE GATE, teams up, follows; while they are away the scripted policy plays and no model is asked, unless --friend-away think, which keeps the mind deciding on its own. --alone autopilot hands every turn with no person near (no friend on the island, no human in view or heard) to the scripted policy, so a crowd of minds costs nothing while the island is empty. --voice gives an external or MCP mind ears and a voice: what players near it say out loud is transcribed into what it hears, and its lines are spoken (GATES_VOICE_KEY or OPENAI_API_KEY; JEV.md). Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides. --temperament sets when it fights (default opportunist): it always answers an attack, and starts a fight only with a clear edge. --record DIR writes every decision, whoever makes it, to a new JSON-lines file in DIR for distilling (ops/distill/train.py); --student FILE decides with the classifier that trainer wrote, with no model calls.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -244,6 +244,8 @@ pub enum Source {
     External(String, Vec<String>),
     /// An MCP harness on this process's own stdio (`mcp.rs`).
     Mcp,
+    /// A classifier trained on recorded decisions (`distill.rs`).
+    Student(std::path::PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -275,6 +277,8 @@ pub struct MindArgs {
     /// Ears and a voice (`--voice`, `agent_voice.rs`): it hears what the
     /// players near it say out loud and speaks its lines.
     pub voice: bool,
+    /// Where every decision is recorded for distilling (`--record DIR`).
+    pub record: Option<std::path::PathBuf>,
 }
 
 /// `--autopilot-s`'s default: a long think for a big model, well inside the
@@ -297,6 +301,7 @@ impl Default for MindArgs {
             alone_autopilot: false,
             autopilot: AUTOPILOT_DEFAULT,
             voice: false,
+            record: None,
         }
     }
 }
@@ -337,6 +342,12 @@ impl MindArgs {
             }
             "--mcp" => self.source = Source::Mcp,
             "--voice" => self.voice = true,
+            "--record" => {
+                self.record = Some(args.next().ok_or("--record needs a directory")?.into())
+            }
+            "--student" => {
+                self.source = Source::Student(args.next().ok_or("--student needs a file")?.into())
+            }
             "--autopilot-s" => {
                 let secs = number(arg)?;
                 if !(5..=55).contains(&secs) {
@@ -395,6 +406,7 @@ impl MindArgs {
                 "MCP harness on stdio; autopilot after {} s",
                 self.autopilot.as_secs()
             ),
+            Source::Student(file) => format!("STUDENT {}; no model calls", file.display()),
         }
     }
 
@@ -431,7 +443,8 @@ impl MindArgs {
             None => mind,
         };
         match &self.source {
-            Source::Scripted => Mind::new(Scripted::default(), self.cfg),
+            Source::Scripted => self.start(Scripted::default(), self.cfg),
+            Source::Student(file) => self.start(crate::distill::Student::load(file)?, self.cfg),
             Source::Mcp => {
                 let cfg = MindConfig {
                     timeout: MCP_DECISION_TIMEOUT,
@@ -439,7 +452,7 @@ impl MindArgs {
                 };
                 cfg.check()?;
                 let door = voiced(crate::mcp::spawn(self.autopilot)?);
-                Mind::new(Autopilot::new(door, gate), cfg).map(priced)
+                self.start(Autopilot::new(door, gate), cfg).map(priced)
             }
             Source::External(program, args) => {
                 let env: Vec<(&str, String)> = self
@@ -454,9 +467,9 @@ impl MindArgs {
                     let door = voiced(crate::external::External::spawn_with_env(
                         program, args, &env, inner,
                     )?);
-                    return Mind::new(Autopilot::new(door, gate), self.cfg).map(priced);
+                    return self.start(Autopilot::new(door, gate), self.cfg).map(priced);
                 }
-                Mind::new(
+                self.start(
                     voiced(crate::external::External::spawn_with_env(
                         program,
                         args,
@@ -470,8 +483,17 @@ impl MindArgs {
                 let key = std::env::var("TYPESAFE_API_KEY").map_err(|_| {
                     "set TYPESAFE_API_KEY, or choose --scripted or --external explicitly"
                 })?;
-                Mind::new(crate::jev::Jev::new(key, self.cfg.timeout)?, self.cfg)
+                self.start(crate::jev::Jev::new(key, self.cfg.timeout)?, self.cfg)
             }
+        }
+    }
+
+    /// The decision worker for `source`, recording what it decides when
+    /// `--record` named a directory.
+    fn start(&self, source: impl DecisionSource, cfg: MindConfig) -> Result<Mind, String> {
+        match &self.record {
+            Some(dir) => Mind::new(crate::distill::Recorder::open(source, dir)?, cfg),
+            None => Mind::new(source, cfg),
         }
     }
 }
@@ -542,6 +564,10 @@ mod tests {
         assert!(parse("--heartbeat-s").is_err());
         assert_eq!(parse("--scripted").unwrap().source, Source::Scripted);
         assert_eq!(parse("--scripted").unwrap().skill, Preset::Good);
+        let taught = parse("--record runs --student brain.json").unwrap();
+        assert_eq!(taught.source, Source::Student("brain.json".into()));
+        assert_eq!(taught.record, Some("runs".into()));
+        assert!(parse("--student").is_err() && parse("--record").is_err());
         let pro = parse("--skill pro --scripted").unwrap();
         assert_eq!(pro.opts().skill, crate::agent::hands::Skill::PRO);
         assert!(parse("--skill").is_err());
