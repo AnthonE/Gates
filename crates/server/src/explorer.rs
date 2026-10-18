@@ -1034,8 +1034,8 @@ pub struct Survivor {
     learning: Option<(u16, u16, u16)>,
     /// Its ears and voice, when it has them (`--voice`, `agent_voice.rs`).
     pub voice: Option<Box<crate::agent_voice::AgentVoice>>,
-    /// When it last filed a bug report its mind wrote (`bugs.rs`).
-    bug_at: Option<Instant>,
+    /// Bug reports its mind wrote, waiting out the gap (`bugs.rs`).
+    bugs: crate::bugs::Tray,
 }
 
 impl Survivor {
@@ -1179,7 +1179,7 @@ impl Survivor {
             verdict: None,
             learning: None,
             voice: None,
-            bug_at: None,
+            bugs: crate::bugs::Tray::default(),
         }
     }
 
@@ -1363,28 +1363,16 @@ impl Survivor {
         frame
     }
 
-    /// File a bug report its mind wrote (`bugs.rs`), with what the body
+    /// Hold a bug report its mind wrote (`bugs.rs`) with what the body
     /// knows and the mind is never shown: the seed and where it stands.
-    fn file_bug(
+    fn hold_bug(
         &mut self,
-        note: &crate::bugs::Note,
+        note: crate::bugs::Note,
         core: &mut ClientCore,
         view: &ClientView,
         player: u32,
         body: &EntityState,
-        now: Instant,
     ) {
-        if self
-            .bug_at
-            .is_some_and(|t| now.saturating_duration_since(t) < crate::bugs::GAP)
-        {
-            eprintln!(
-                "bug report dropped: a body files one per {} s",
-                crate::bugs::GAP.as_secs()
-            );
-            return;
-        }
-        self.bug_at = Some(now);
         let (seed, _) = core.island();
         let summary = self.summarize(core, view, player);
         let mut seen = crate::external::External::observation(0, &summary);
@@ -1414,7 +1402,7 @@ impl Survivor {
                 .map(|r| format!("{} ({})", r.goal.label().as_str(), r.outcome.word())),
             seen,
         };
-        eprintln!("{}", crate::bugs::file(note, facts));
+        self.bugs.hold(note, facts);
     }
 
     /// Stop what this body was doing: down, dead, a stale link or a new
@@ -1613,7 +1601,10 @@ impl Survivor {
         }
         self.mind.expire(now);
         if let Some(note) = self.mind.take_note() {
-            self.file_bug(&note, core, view, player, &body, now);
+            self.hold_bug(note, core, view, player, &body);
+        }
+        if let Some((note, facts)) = self.bugs.due(now) {
+            eprintln!("{}", crate::bugs::file(&note, facts));
         }
         if body.dead || core.dead {
             // The death screen's answer: one of its own ready bags, unless
