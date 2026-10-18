@@ -195,7 +195,7 @@ the reason the coast road matters)
 
 **T0 — naked era**: rock · torch · spear_wood · hatchet_stone ·
 pickaxe_stone · bow · arrow_wood · bandage · sleeping_bag (cloth) ·
-box_small · fire_pit
+box_small · fire_pit · abyss_rug (cloth; comfort with no fire)
 
 **T1 — workbench era**: workbench1 · hearth (the cupboard) · hatchet_metal
 · pickaxe_metal · spear_metal · furnace · box_large · door_wood ·

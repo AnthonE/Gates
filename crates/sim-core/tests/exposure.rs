@@ -399,10 +399,10 @@ fn calm() -> Inputs {
 #[test]
 fn a_fire_gives_half_comfort_and_company_adds() {
     let ec = regen_fixture();
-    assert_eq!(exposure::comfort_target(&ec, false, 3, 0), 0);
-    assert_eq!(exposure::comfort_target(&ec, true, 0, 0), 500);
-    assert_eq!(exposure::comfort_target(&ec, true, 1, 1), 875);
-    assert_eq!(exposure::comfort_target(&ec, true, 4, 0), 1000, "capped");
+    assert_eq!(exposure::comfort_target(&ec, false, 3, 0, 0), 0);
+    assert_eq!(exposure::comfort_target(&ec, true, 0, 0, 0), 500);
+    assert_eq!(exposure::comfort_target(&ec, true, 1, 1, 0), 875);
+    assert_eq!(exposure::comfort_target(&ec, true, 4, 0, 0), 1000, "capped");
     let mut p = fed();
     let mut ev = EventQueue::default();
     let fire = Inputs {

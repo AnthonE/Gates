@@ -1313,3 +1313,36 @@ each to its player.
 > **slot_machine** — "A single old casino slot machine cabinet standing upright on a plain white background, three-quarter front view. A tall rectangular steel cabinet 90 centimetres wide, 70 centimetres deep and 190 centimetres tall. Its front face has a wide glass window at chest height showing three vertical spinning reels with plain fruit and bar pictures, a rounded glowing marquee lamp box on top, a small button panel and coin slot below the window, a chrome payout tray near the bottom, and a long chrome pull lever with a red ball knob on its right side. Painted deep red and cream enamel with chrome trim, scratched, dented and chipped through to grey metal, rust at the bottom edge, a salvaged post-apocalyptic look. Exactly one slot machine. No ground, no people, no text, no letters, no numbers, no logos, no brand names, no scale bar."  ·  texture: "Deep red and cream enamel steel cabinet with chrome trim, scratched and chipped through to grey metal, rust at the bottom edge, glass window over three reels of fruit and bar pictures, glowing yellow marquee lamp, chrome lever with red knob, no text, no letters, no numbers, no logos"
 >
 > **bet_terminal** — "A single small betting terminal kiosk standing upright on a plain white background, three-quarter front view. A squat steel pedestal 60 centimetres wide, 60 centimetres deep and 110 centimetres tall, with a sloped control desk on top facing the viewer that carries a dark glass screen and a row of five big round arcade buttons coloured yellow, green, blue, purple and red, a coin slot and a small chrome tray on the front of the pedestal, a bolted foot plate. Dark grey painted steel with brass trim, scratched and chipped, rust at the bolts, a salvaged post-apocalyptic look. Exactly one terminal. No stool, no ground, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted steel with brass trim, scratched and chipped, rusty bolts, dark glass screen, five big round arcade buttons coloured yellow, green, blue, purple and red, no text, no letters, no numbers, no logos"
+
+## `deploy/abyss_rug.glb` — the Abyss Rug, painted by Meshy (2026-10-18)
+
+Meshy paid plan, commissioned output, same terms as the rows above. **Except
+the mark**, which is Abyss's logo (the DEX the JUNK coin launches on) and is
+pending their permission. `ci/meshy_gen.py --ref` sends abyss.trading's own
+`abyss-icon.png` as the reference, so `nano-banana-pro` (image-to-image)
+paints their mark rather than something logo-shaped.
+
+**image-to-3d does not make a rug.** The three-quarter reference came back
+as a 0.37 × 0.50 × 0.47 m box (mesh task `01a150b9-e842`, 15 credits),
+the mark smeared into a "Y" over its sides: one view of a flat thing reads
+as a block. So Meshy paints and the geometry is ours: a second image-to-image
+pass (references: the first painting and the icon) shot the rug straight
+down on magenta, saved as `ci/icons/abyss_rug_painting.png`, and
+`ci/icons/abyss_rug.py` keys it, squares it up by four fitted corners, and
+puts it on a 1.56 × 0.02 × 0.97 m slab with 7 cm alpha-cut tassels
+(`alphaMode: MASK`) lying off each short end, 1.70 m overall. 0.97 rather
+than the row's 1.1 because that is the painting's aspect, and stretching it
+squashes the mark. Maps: the albedo, a normal map off its luminance and a
+pile grain, and metal/rough so the gold thread is satin (metal 0.45, rough
+0.48) against matte wool (rough 0.93); `ktx_pack.py --size 1024`.
+`--drawn` still builds the earlier rug drawn in code, whose mark is the one
+function `abyss_mark`. 69 credits all told across six images and the
+rejected mesh.
+
+| file | item | image tasks | size (m) | note |
+|---|---|---|---|---|
+| `deploy/abyss_rug.glb` | Abyss Rug (arch 22) | `01a150b9-09b4` (three-quarter), `01a150bd-e819` (top-down) | 1.70 × 0.02 × 0.97 | 32 vertices; the slab's sides fold the binding's outer 2 cm over the edge |
+
+> **three-quarter** (ref: `abyss-icon.png`) — "A single woven rug lying perfectly flat, viewed from directly above at a slight angle, on a plain white background. Rectangular, 170 by 110 centimetres, two centimetres thick, with short cream tassel fringe on the two short ends. Deep dark teal wool (#0e3b43) with a subtle tonal pattern of thin wavy lines like light rippling far underwater. Framed by a metallic gold Art Deco border: an outer gold band and an inner thin gold line, with stepped zigurrat corners and small gold chevron fans at the middle of each side. In the centre, the gold emblem from the reference image woven in gold thread on the teal: a triangle 'A' whose left half is four slanted stripes. Match the emblem exactly. Rich, plush, slightly worn at the edges. Exactly one rug. No people, no objects, no text, no letters, no words."
+>
+> **top-down** (refs: the three-quarter painting, `abyss-icon.png`) — "The exact rug from the first reference image, scanned flat on a large-format scanner: perfectly orthographic top-down view, no perspective, no tilt, edges straight and parallel to the frame, all four corners square. Landscape orientation: the rug's long sides run left to right along the top and bottom, and the cream wool tassel fringe hangs off the left and right short ends. Same design as the reference: plush deep teal wool (#0e3b43) with thin tonal darker wave lines like light rippling underwater, evenly coloured across the whole rug; a metallic gold Art Deco frame of one wide outer band and one thin inner line, stepped ziggurat corners, and small gold chevron fans centred on all four sides. In the exact centre, woven in gold thread and standing upright with its apex toward the top edge, the emblem from the second reference image reproduced precisely: a triangle A whose lower left is cut into four parallel slanted stripes. The rug fills most of the frame with a margin all round. Solid flat bright magenta (#ff00ff) background. Bright, even, shadowless lighting with true colours, no vignette, no dark corners. Exactly one rug. No text, no letters, no words."

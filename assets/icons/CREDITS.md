@@ -167,6 +167,7 @@ more (`ci/bake_icons.py` fetches from GitHub).
 
 | file | source |
 |---|---|
+| `abyss_rug.png` | `ci/icons/abyss_rug.py`, off Meshy's painting (commissioned, ours) |
 | `blue_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
 | `green_keycard.png` | `ci/icons/keycards.py` (ours) |

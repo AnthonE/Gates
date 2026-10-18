@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 22] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -546,6 +546,14 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 22] = [
     // 21 · floor spikes: a board of stakes, walked over (`DEPLOY_VOL` has
     // none: the box is the model's).
     ([1.4, 0.42, 1.4], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
+    // 22 · rug: a woven floor covering two centimetres thick, walked over;
+    // `DEPLOY_FOOT`'s rectangle, in the deep teal its weave is dyed.
+    (
+        [1.7, 0.02, 1.1],
+        Color::srgb(0.055, 0.231, 0.263),
+        0.95,
+        0.0,
+    ),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2294,6 +2302,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/vending.glb"),          // 19 vending machine
     Some("models/deploy/barbed_barricade.glb"), // 20 barbed barricade
     Some("models/deploy/floor_spikes.glb"),     // 21 floor spikes
+    Some("models/deploy/abyss_rug.glb"),        // 22 rug
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too

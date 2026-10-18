@@ -181,6 +181,9 @@ pub const ARCH_BARRICADE_BARBED: u8 = 20;
 /// Rust's wooden floor spikes: a board of stakes a body walks over and is
 /// hurt standing on (`World::prick_deploys`). Walk-over, like a fire pit.
 pub const ARCH_FLOOR_SPIKES: u8 = 21;
+/// A rug: a flat cloth floor piece a body walks over. Its row's comfort
+/// (`deployables.toml` `comfort`, `World::furnish_comfort`) is what it does.
+pub const ARCH_RUG: u8 = 22;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -203,7 +206,7 @@ pub const ARCH_FLOOR_SPIKES: u8 = 21;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 22] = [
+pub const DEPLOY_VOL: [[f32; 3]; 23] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -226,6 +229,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 22] = [
     [0.9, 1.9, 0.8],   // 19 vending machine
     [1.8, 1.4, 0.6],   // 20 barbed barricade — the barricade's wall
     [0.0, 0.0, 0.0],   // 21 floor spikes — walk-over, and that is the trap
+    [0.0, 0.0, 0.0],   // 22 rug — a floor covering, walked on
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for

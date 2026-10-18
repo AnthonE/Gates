@@ -1250,7 +1250,10 @@ pub use voice::{
 /// lever; `SUB_WHEEL_SPIN` (104) tells everyone where the wheel will land,
 /// `SUB_WHEEL_BET` (105) and `SUB_WHEEL_PAID` (106) answer a bettor, and
 /// `SUB_SLOTS` (107) a spinner.
-pub const PROTO_VER: u16 = 125;
+/// v126 — the Abyss Rug: a deploy archetype (22, `ARCH_RUG`) both ends
+/// admit, a flat cloth floor piece whose row's comfort warms a body with no
+/// fire.
+pub const PROTO_VER: u16 = 126;
 
 /// This game's slug in the elo catalog.
 ///
