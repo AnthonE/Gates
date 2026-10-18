@@ -2246,7 +2246,14 @@ impl Plugin for GatesRenderPlugin {
                 Update,
                 (
                     film::feed.before(input::place_eye),
-                    film::aim.after(input::place_eye).before(Stream),
+                    // Before the drain too: everything after it (the
+                    // weather's Verdigris depth, the shelter) reads `Eye`,
+                    // and unordered it read the recorder's spot on some
+                    // frames and flashed its sky into the shot.
+                    film::aim
+                        .after(input::place_eye)
+                        .before(feed::drain)
+                        .before(Stream),
                     film::lens.after(film::aim),
                     film::dark_boot,
                 )
