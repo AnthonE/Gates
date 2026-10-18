@@ -498,8 +498,26 @@ mod tests {
         shard.shutdown.store(true, Ordering::Relaxed);
     }
 
-    #[tokio::test]
-    async fn continuous_runs_outlive_death_and_the_timer_but_not_a_lost_session() {
+    // A local shard and the bot's world on one current-thread runtime
+    // overflow a debug test thread's 2 MiB since guns v1 took `World` to
+    // 124 kB, so this one runs on a stack sized for both (as chat_wire does).
+    #[test]
+    fn continuous_runs_outlive_death_and_the_timer_but_not_a_lost_session() {
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(continuous_runs_body())
+            })
+            .expect("spawn")
+            .join()
+            .expect("the test thread");
+    }
+
+    async fn continuous_runs_body() {
         use bevy::ecs::system::RunSystemOnce;
 
         let shard = crate::agent_demo::spawn_local().await.unwrap();
