@@ -1,0 +1,34 @@
+# Free till December (operator, 2026-10-19): at 00:00 UTC on 1 Dec 2026 the
+# owner posts `setFreePerWallet(0)` on `EloGameTicket:GATES`, so no copy of
+# Gates is minted free after it (`ops/mint_pending.py --close-free-door`, run
+# on morr where the key is). Copies already given stay given. Run before
+# then it does nothing; run again it notes the door is already shut.
+#
+# `ci/deploy_shard.sh` installs and enables it with the minter. By hand:
+#
+#   sudo cp ops/gates-free-door.service ops/gates-free-door.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-free-door.timer
+#   systemctl list-timers gates-free-door.timer
+
+[Unit]
+Description=Close the free door on the Gates copy (1 Dec 2026)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-deploy
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /home/master/gates-deploy/mint_pending.py --world /home/master/gates-data/island.world --close-free-door
+TimeoutStartSec=600
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/master/gates-data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+StandardOutput=journal

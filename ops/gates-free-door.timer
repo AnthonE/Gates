@@ -1,0 +1,14 @@
+# At the start of December, and hourly through it: a failed close (morr or
+# the chain down) is tried again, and once shut each run only notes so.
+# `Persistent` runs it at boot if the box was off at midnight.
+
+[Unit]
+Description=Close the free door on the Gates copy, 1 Dec 2026 00:00 UTC
+
+[Timer]
+OnCalendar=2026-12-01 00:00:00 UTC
+OnCalendar=2026-12-01..31 *:05:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -69,10 +69,29 @@ with tempfile.TemporaryDirectory() as d:
     mp.run_remote_copies = lambda host, ws, mode="send": (asked.append(list(ws)) or
                                                           "".join(f"ok {w} 0xc0" + "\n" for w in ws))
     Path(f"{world}.online.json").write_text(online)
-    check("a person online is given a copy", mp.main(["--world", str(world)]) == 0 and asked == [[A]])
+    NOV = ["--now", "2026-11-01T00:00:00+00:00"]  # inside the free window, whatever today is
+    check("a person online is given a copy", mp.main(["--world", str(world), *NOV]) == 0 and asked == [[A]])
     check("and it is logged", Path(f"{world}.copies").read_text() == f"{A} ok 0xc0\n")
-    check("and never asked again", mp.main(["--world", str(world)]) == 0 and len(asked) == 1)
-    check("--no-copies leaves them", mp.main(["--world", str(world), "--no-copies"]) == 0 and len(asked) == 1)
+    check("and never asked again", mp.main(["--world", str(world), *NOV]) == 0 and len(asked) == 1)
+    check("--no-copies leaves them", mp.main(["--world", str(world), "--no-copies", *NOV]) == 0 and len(asked) == 1)
+
+# ── free till December ─────────────────────────────────────────────────────
+with tempfile.TemporaryDirectory() as d:
+    world = Path(d) / "island.world"
+    asked.clear()
+    Path(f"{world}.online.json").write_text(online)
+    check("no copy is given from December on",
+          mp.main(["--world", str(world), "--now", "2026-12-01T00:00:00+00:00"]) == 0 and not asked)
+    check("one is given on the last day of November",
+          mp.main(["--world", str(world), "--now", "2026-11-30T23:59:00+00:00"]) == 0 and asked == [[A]])
+    closed = []
+    mp.close_free_door = lambda host: closed.append(host) or 0
+    check("the door stays open in November",
+          mp.main(["--world", str(world), "--close-free-door", "--now", "2026-11-30T23:59:00+00:00"]) == 0
+          and not closed)
+    check("and closes in December",
+          mp.main(["--world", str(world), "--close-free-door", "--now", "2026-12-01T00:00:05+00:00"]) == 0
+          and closed == ["morr"])
 
 print("\nall minter checks pass" if not FAILS else f"\n{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

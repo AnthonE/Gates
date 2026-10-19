@@ -157,9 +157,10 @@ fi
 
 echo
 echo "== 3a. the minter's timer =="
-# THE OUTFITTER's sales become tokens (`ops/mint_pending.py`): installed and
-# enabled with the shard that writes them.
-for u in gates-mint.service gates-mint.timer; do
+# THE OUTFITTER's sales and the free copies become tokens
+# (`ops/mint_pending.py`), and the free door shuts on 1 Dec
+# (`gates-free-door.timer`): installed and enabled with the shard.
+for u in gates-mint.service gates-mint.timer gates-free-door.service gates-free-door.timer; do
   if ! sudo -n cmp -s "ops/$u" "/etc/systemd/system/$u" 2>/dev/null; then
     run sudo cp -f "ops/$u" "/etc/systemd/system/$u"
     MINT_CHANGED=1
@@ -168,8 +169,10 @@ done
 if [ "${MINT_CHANGED:-0}" = 1 ]; then
   run sudo systemctl daemon-reload
 fi
-if ! systemctl is-enabled --quiet gates-mint.timer 2>/dev/null || [ "${MINT_CHANGED:-0}" = 1 ]; then
-  run sudo systemctl enable --now gates-mint.timer
+if ! systemctl is-enabled --quiet gates-mint.timer 2>/dev/null \
+   || ! systemctl is-enabled --quiet gates-free-door.timer 2>/dev/null \
+   || [ "${MINT_CHANGED:-0}" = 1 ]; then
+  run sudo systemctl enable --now gates-mint.timer gates-free-door.timer
 else
   echo "  unchanged"
 fi
