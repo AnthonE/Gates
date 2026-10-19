@@ -108,9 +108,9 @@ use sim_core::world::{
     STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_GIVE, TRUST_VERB_MAX,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_SHOP,
-    EV_SHOP_REFUSED, EV_SLOTS, EV_SLOTS_REFUSED, EV_STUMP_GRUBBED, EV_WHEEL_BET, EV_WHEEL_PAID,
-    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
+    EV_SHOP, EV_SHOP_REFUSED, EV_SLOTS, EV_SLOTS_REFUSED, EV_STUMP_GRUBBED, EV_WHEEL_BET,
+    EV_WHEEL_PAID, EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_NO_BODY, PAID_SHORT,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -4419,8 +4419,9 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 72] = [
+    const COVERED: [(&str, u8); 73] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_PAID", EV_PAID),
         ("EV_WHEEL_BET", EV_WHEEL_BET),
         ("EV_WHEEL_REFUSED", EV_WHEEL_REFUSED),
         ("EV_WHEEL_SPIN", EV_WHEEL_SPIN),
@@ -6253,6 +6254,56 @@ fn extraction_names_the_player_the_exchange_and_what_left() {
         "taken up to the allowance"
     );
     assert_eq!(sim_core::craft::inv_count(&w.players[0].inv, 2), 20);
+}
+
+/// `EV_PAID: a = player, b = PAID_*, c = the server's tag`: the price
+/// leaves the pack all at once or not at all, and a body that is not there
+/// is still answered.
+#[test]
+fn a_payment_names_the_payer_the_outcome_and_the_tag() {
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.tick(&[Command::Join { id: BUILDER }]);
+    for s in w.players[0].inv.iter_mut() {
+        *s = ItemStack::default();
+    }
+    w.players[0].inv[0] = ItemStack {
+        item: FILLER,
+        count: 60,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: FILLER,
+        count: 50,
+        cond: 0,
+        skin: 0,
+    };
+    let pay = |id, count| Command::Pay {
+        id,
+        item: FILLER,
+        count,
+        tag: 0x0102,
+    };
+    w.tick(&[pay(BUILDER, 200)]);
+    let ev = only(&w, EV_PAID);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, PAID_SHORT, 0x0102));
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[0].inv, FILLER),
+        110,
+        "nothing moved"
+    );
+    w.tick(&[pay(BUILDER, 100)]);
+    let ev = only(&w, EV_PAID);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, PAID_DONE, 0x0102));
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[0].inv, FILLER),
+        10,
+        "across stacks"
+    );
+    w.tick(&[pay(VICTIM, 1)]);
+    let ev = only(&w, EV_PAID);
+    assert_eq!((ev.a, ev.b, ev.c), (VICTIM, PAID_NO_BODY, 0x0102));
 }
 
 /// `EV_ARC_DID: a = player, b = op, c = target << 8 | arg` for a word and a

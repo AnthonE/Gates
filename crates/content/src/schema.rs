@@ -1723,6 +1723,11 @@ pub struct Topic {
     /// outcomes (`server/src/gifts.rs`).
     #[serde(default)]
     pub gift: Option<String>,
+    /// What a gift topic costs, taken from the asker's pack when it gives
+    /// (THE OUTFITTER's Abyss Rug, for junk). A priced gift also says a
+    /// `gift:short` line to whoever cannot pay.
+    #[serde(default)]
+    pub price: Option<Stack>,
     pub lines: Vec<Line>,
 }
 

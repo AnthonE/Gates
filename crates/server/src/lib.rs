@@ -67,6 +67,7 @@ pub mod jev;
 pub mod mcp;
 /// The agent's goals, observation summary and decision worker (`JEV.md`).
 pub mod mind;
+pub mod mints;
 pub mod net;
 pub mod online;
 /// Per-connection pace on the action lane: no one acts faster than a person.

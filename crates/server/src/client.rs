@@ -458,6 +458,9 @@ pub struct ClientNetState {
     /// The platform's last answer for this connection, kept so a gift
     /// handed out later is added to it rather than replacing it.
     pub skins_platform: sim_core::skin::SkinSet,
+    /// A priced gift's payment is queued and not yet answered
+    /// (`Command::Pay`): asking again meanwhile charges nothing twice.
+    pub paying: bool,
     /// The wet/cold readout as last sent, `(wet %, cold %, hurting)`.
     /// `None` owes the client the reading.
     pub last_expo: Option<sim_core::exposure::Readout>,
@@ -585,6 +588,7 @@ impl ClientNetState {
             worn_owed: TAGS_ALL,
             skins_pending: None,
             skins_platform: sim_core::skin::SkinSet::EMPTY,
+            paying: false,
             last_expo: None,
             last_hostile: None,
             last_gate_spawn: None,

@@ -1,0 +1,37 @@
+# The minter (`ops/mint_pending.py`): sends the tokens THE OUTFITTER sold.
+# The shard writes each sale to `<world>.mints`; this mints it on morr over
+# ssh (the item contract's key stays there) and appends the transaction to
+# `<world>.minted`, which the shard watches to read the buyer's items again.
+# Run every 30 s by gates-mint.timer; with no sale it does nothing, not even
+# the ssh.
+#
+# `ci/deploy_shard.sh` copies the script beside the shard and installs and
+# enables this unit and its timer. By hand:
+#
+#   sudo cp ops/gates-mint.service ops/gates-mint.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-mint.timer
+#   journalctl -u gates-mint
+#   python3 ops/mint_pending.py --world /home/master/gates-data/island.world --check
+
+[Unit]
+Description=Mint the Gates unlocks THE OUTFITTER sold
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-deploy
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /home/master/gates-deploy/mint_pending.py --world /home/master/gates-data/island.world
+TimeoutStartSec=900
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/master/gates-data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+StandardOutput=journal

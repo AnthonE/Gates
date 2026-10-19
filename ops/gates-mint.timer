@@ -1,0 +1,16 @@
+# Every 30 s: a sale reaches the buyer's wallet within a minute or so.
+#
+#   sudo systemctl enable --now gates-mint.timer
+#   systemctl list-timers gates-mint.timer
+
+[Unit]
+Description=Mint the Gates unlocks THE OUTFITTER sold, every 30 s
+
+[Timer]
+OnBootSec=60
+OnActiveSec=10
+OnUnitInactiveSec=30
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
