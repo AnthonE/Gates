@@ -241,6 +241,11 @@ pub enum Goal {
     /// Walk up to its founder and hand over the wood, stone and ore the
     /// pack carries for the base (`agent::society`).
     HandOver,
+    /// Walk to the named public place (THE GATE, a work, a lock: the names
+    /// `places` gives them) and stop there. Offered only to a source that
+    /// is sent `places` (an external one); an agent asked for a plain trip
+    /// to THE GATE, having walked there by trades (2026-10-18).
+    Go(Name),
 }
 
 /// `craft:` plus the longest catalog name.
@@ -357,6 +362,7 @@ impl Goal {
             Goal::Patrol => "patrol",
             Goal::KeepShop => "keep_shop",
             Goal::HandOver => "hand_over",
+            Goal::Go(_) => "go",
         }
     }
 
@@ -369,7 +375,7 @@ impl Goal {
             len += n;
         };
         put(self.key().as_bytes());
-        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) = self {
+        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) | Goal::Go(name) = self {
             put(b":");
             put(name.as_bytes());
         }
@@ -403,6 +409,7 @@ impl Goal {
             "craft" => Some(Goal::Craft(name)),
             "buy" => Some(Goal::Buy(name)),
             "sell" => Some(Goal::Sell(name)),
+            "go" => Some(Goal::Go(name)),
             _ => None,
         }
     }
@@ -465,6 +472,7 @@ impl Goal {
             Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
             Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
             Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
+            Goal::Go(name) => format!("Walk to {} and stop there.", name.as_str()),
         }
     }
 }
@@ -501,6 +509,13 @@ pub enum Why {
     BoxFull,
     /// Marked hostile: the gate's guns would shoot it.
     Wanted,
+    /// The invite it was to say yes to was gone: lapsed, or taken back.
+    NoInvite,
+    /// What it reached for, `E` would not take from where it stood:
+    /// something else nearer is on the aim line. Nothing was sent.
+    Blocked,
+    /// Its session ended (a shift's end, a dropped link) while it ran.
+    Session,
 }
 
 impl Why {
@@ -532,6 +547,9 @@ impl Why {
             Why::Locked => "a lock it has no code for is in the way",
             Why::BoxFull => "the box is full",
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
+            Why::NoInvite => "no invite was waiting any more",
+            Why::Blocked => "something else is in the way of it, so it could not reach it",
+            Why::Session => "the session ended while it ran",
         }
     }
 }
@@ -1243,6 +1261,17 @@ pub struct HomeSense {
     pub attacked: bool,
     /// Something of it is damaged that a repair would mend.
     pub damaged: bool,
+    /// Doors hanging in its doorways; of those, how many are locked (a
+    /// lock on and armed), and how many of the locks are key locks rather
+    /// than code locks. An agent past the doors milestone could not tell
+    /// whether its base was shut to strangers (2026-10-18).
+    pub doors: u8,
+    pub doors_locked: u8,
+    pub key_locks: u8,
+    /// A walk home (or a visit to the box) could not reach it from about
+    /// here a moment ago: neither is offered until the body has moved off
+    /// or a while has passed (`explorer::HOME_STUCK_NEAR_M`).
+    pub unreachable: bool,
 }
 
 impl HomeSense {
@@ -1250,14 +1279,25 @@ impl HomeSense {
         if self.state == HomeState::None {
             return json!({ "state": "none" });
         }
-        json!({
+        let mut v = json!({
             "state": self.state.word(),
             "distance": self.distance.word(),
             "metres": tens(self.metres),
             "bearing": BEARINGS[self.bearing as usize % 8],
             "under_attack": self.attacked,
             "damaged": self.damaged,
-        })
+            "doors": {
+                "count": self.doors,
+                "locked": self.doors_locked,
+                "key_locks": self.key_locks,
+            },
+        });
+        if self.unreachable {
+            v["no_way_from_here"] = json!(
+                "the last walk home could not reach it from near here: go_home and stash wait until you have moved away or a few minutes have passed"
+            );
+        }
+        v
     }
 }
 
@@ -1315,8 +1355,14 @@ pub const RUNNER_BANK_AT: u32 = 100;
 /// The scripted policy catches up with a teammate farther than this.
 pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 
-/// The most goals one request can offer: the fixed set and every craft.
-pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS;
+/// Places a request can offer a trip to (`Goal::Go`): THE GATE, the works
+/// and the locks.
+pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits::MAX_MECHS;
+
+/// The most goals one request can offer: the fixed set, every craft and
+/// trade, and the trips.
+pub const MAX_OPTIONS: usize =
+    Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS + GO_PLACES;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no
@@ -1516,6 +1562,10 @@ impl Summary {
             metres: 0,
             attacked: false,
             damaged: false,
+            doors: 0,
+            doors_locked: 0,
+            key_locks: 0,
+            unreachable: false,
         },
         bag_ready: false,
         night: false,
@@ -1640,6 +1690,15 @@ impl Summary {
         if !self.offers(goal) && (self.options_len as usize) < MAX_OPTIONS {
             self.options[self.options_len as usize] = goal;
             self.options_len += 1;
+        }
+    }
+
+    /// Take a goal back off the list.
+    pub fn withdraw(&mut self, goal: Goal) {
+        let n = self.options_len as usize;
+        if let Some(i) = self.options[..n].iter().position(|&g| g == goal) {
+            self.options.copy_within(i + 1..n, i);
+            self.options_len -= 1;
         }
     }
 
@@ -1939,6 +1998,20 @@ impl SourceKind {
 pub trait DecisionSource: Send + 'static {
     fn kind(&self) -> SourceKind;
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String>;
+    /// [`Self::decide`], told while it waits of a newer look at the same
+    /// decision: `fresher()` hands one when the body's team changed since
+    /// it asked (`Mind::refresh`). A source that shows its asker the
+    /// decision (an external agent, an MCP harness) shows the newer one
+    /// under the same id and deadline and judges the answer by its
+    /// options; the rest ignore it.
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
+        let _ = fresher;
+        self.decide(summary)
+    }
     /// A bug report the last answer carried (`bugs.rs`), for the body to
     /// file. Only an external or MCP mind writes them.
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
@@ -2185,6 +2258,8 @@ impl Mode {
 
 type Ask = (u32, Summary);
 type Reply = (u32, Option<Choice>);
+/// A newer look at request `.0` (`Mind::refresh`).
+type Fresh = (u32, Summary);
 
 /// One request outstanding, a bounded answer, strict acceptance, explicit
 /// failure, and no substitute decisions: a failed or refused request leaves
@@ -2197,6 +2272,9 @@ pub struct Mind {
     replies: Option<rtrb::Consumer<Reply>>,
     /// Bug reports from the worker's source, for the body to file.
     notes: Option<rtrb::Consumer<crate::bugs::Note>>,
+    /// Newer looks at the request out, for a source that shows its asker
+    /// the decision (an external agent or MCP harness).
+    fresh: Option<rtrb::Producer<Fresh>>,
     worker: Option<std::thread::JoinHandle<()>>,
     cfg: MindConfig,
     next_allowed: Instant,
@@ -2223,6 +2301,10 @@ impl Mind {
         let (mut outbox, replies) = rtrb::RingBuffer::<Reply>::new(1);
         // Full: the body has not filed the last one yet; this one is dropped.
         let (mut notes_out, notes) = rtrb::RingBuffer::<crate::bugs::Note>::new(2);
+        // Only a source that shows its asker the decision takes a newer
+        // look at it; for the rest the body never builds one.
+        let (fresh, mut fresh_in) = rtrb::RingBuffer::<Fresh>::new(1);
+        let fresh = (kind == SourceKind::External).then_some(fresh);
         let mut source = source;
         let worker = std::thread::Builder::new()
             .name("jev-decisions".into())
@@ -2236,7 +2318,16 @@ impl Mind {
                     }
                 };
                 let start = Instant::now();
-                let answer = source.decide(&summary);
+                // A newer look at this request; one at an older is dropped.
+                let mut fresher = || {
+                    while let Ok((of, newer)) = fresh_in.pop() {
+                        if of == id {
+                            return Some(newer);
+                        }
+                    }
+                    None
+                };
+                let answer = source.decide_fresh(&summary, &mut fresher);
                 // How the goal before ended, when that is why it was asked:
                 // a goal that keeps ending at once is otherwise a line that
                 // only repeats.
@@ -2281,6 +2372,7 @@ impl Mind {
             .map_err(|e| format!("decision worker: {e}"))?;
         let mut mind = Self::with(kind, None, Some(asks), Some(replies), Some(worker), cfg);
         mind.notes = Some(notes);
+        mind.fresh = fresh;
         Ok(mind)
     }
 
@@ -2316,6 +2408,7 @@ impl Mind {
             asks,
             replies,
             notes: None,
+            fresh: None,
             worker,
             cfg,
             next_allowed: now,
@@ -2456,6 +2549,22 @@ impl Mind {
         self.stats.requests += 1;
         self.next_allowed = now + self.cfg.interval;
         true
+    }
+
+    /// Whether a newer look at the request out would reach its source: one
+    /// is out, and the source shows its asker the decision.
+    pub fn refreshes(&self) -> bool {
+        self.pending.is_some() && self.fresh.is_some()
+    }
+
+    /// Hand the source a newer look at the request out, for the asker to
+    /// read under the same id and deadline (`DecisionSource::decide_fresh`).
+    /// Not a request: no floor, guard or count. True when it went.
+    pub fn refresh(&mut self, summary: &Summary) -> bool {
+        let (Some((id, _)), Some(tx)) = (self.pending, self.fresh.as_mut()) else {
+            return false;
+        };
+        tx.push((id, *summary)).is_ok()
     }
 
     /// Forget an outstanding request whose answer can no longer be used
@@ -2666,17 +2775,23 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
                 run.1 = held(name).saturating_mul(100) / aim;
             }
             // A run that just found none of its kind in sight goes last: the
-            // land round here is bare of it for now.
+            // land round here is bare of it for now. Ahead of the others, a
+            // run of a kind in view or remembered near: one of a kind it
+            // knows of none of is a search, and searching for the shortest
+            // kind every time (ore, which is rare) was all a farmer did,
+            // turn about with stone, failing both (#362).
             let bare = s
                 .last
                 .filter(|r| matches!(r.outcome, Outcome::Failed(Why::NotFound)))
                 .map(|r| r.goal);
-            for run in runs.iter_mut() {
-                if bare == Some(run.0) {
-                    run.1 = u32::MAX;
-                }
-            }
-            runs.sort_by_key(|r| r.1);
+            let known = |run: Goal| match run {
+                Goal::SupplyWood => s.trees.count > 0,
+                Goal::SupplyStone => s.stone_nodes.count > 0,
+                Goal::SupplyOre => s.ore_nodes.count > 0,
+                Goal::SupplyHemp => s.hemp.count > 0,
+                _ => false,
+            };
+            runs.sort_by_key(|r| (bare == Some(r.0), !known(r.0), r.1));
             if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
                 return Some((goal, "society: a supply run for the crew's boxes"));
             }
@@ -3736,6 +3851,22 @@ mod tests {
         });
         assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
         s.last = None;
+        // Ore is shortest of all, but none is in view or remembered while
+        // trees are: wood, not a search for ore, and the two runs it knows
+        // nothing of are not taken turn about while it does (#362).
+        s.offer(Goal::SupplyOre);
+        s.trees.add(20.0, 0);
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
+        s.ore_nodes.add(30.0, 2);
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyOre, "ore in view");
+        s.ore_nodes = Sighting::default();
+        s.trees = Sighting::default();
+        assert_eq!(
+            pick(&mut scripted, &s),
+            Goal::SupplyOre,
+            "nothing known: the shortest"
+        );
+        s.options_len -= 1;
         // Carrying plenty, with its founder near: into the founder's hands.
         s.offer(Goal::HandOver);
         assert_eq!(pick(&mut scripted, &s), Goal::HandOver);

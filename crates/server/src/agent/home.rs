@@ -17,7 +17,7 @@ use crate::agent::hands::Hands;
 use crate::agent::intent::{yaw_toward, Intent, Look};
 use crate::agent::route::{Route, Step};
 use crate::agent::site::foundation_goes;
-use crate::agent::stash::STASH_RETRY_TICKS;
+use crate::agent::stash::{STASH_BLOCKED_RETRY_TICKS, STASH_RETRY_TICKS};
 use crate::mind::Why;
 use client_core::core::ClientCore;
 use protocol::EntityState;
@@ -165,8 +165,9 @@ pub struct Home {
     base: Option<[f32; 2]>,
     /// The last feed's reply.
     upkeep: Option<Reading>,
-    /// When the last visit to the box came to nothing.
-    stash_failed: Option<u32>,
+    /// When the last visit to the box came to nothing, and for how long
+    /// another is not tried.
+    stash_failed: Option<(u32, u32)>,
     pub stats: HomeStats,
 }
 
@@ -496,13 +497,20 @@ impl Home {
 
     /// A visit to the box came to nothing here and now.
     pub fn stash_failed(&mut self, tick: u32) {
-        self.stash_failed = Some(tick);
+        self.stash_failed = Some((tick, STASH_RETRY_TICKS));
+    }
+
+    /// A visit to the box could not get `E` onto it from where it stands
+    /// in the base (something else takes the press there): that is not
+    /// over in a minute, so it waits longer before it tries again.
+    pub fn stash_blocked(&mut self, tick: u32) {
+        self.stash_failed = Some((tick, STASH_BLOCKED_RETRY_TICKS));
     }
 
     /// Is a visit to the box not worth another try yet?
     pub fn stash_held(&self, tick: u32) -> bool {
         self.stash_failed
-            .is_some_and(|t| tick.wrapping_sub(t) < STASH_RETRY_TICKS)
+            .is_some_and(|(t, hold)| tick.wrapping_sub(t) < hold)
     }
 
     /// Where its base stands, while a blow, break or blast on it is
@@ -602,6 +610,25 @@ pub fn death_bag(core: &ClientCore) -> Option<[f32; 3]> {
                 b.qz as f32 * POS_XZ_Q,
             ]
         })
+}
+
+/// Would the shard's loot hand reach the death backpack from where the body
+/// stands: the same storey and a clear line, the test `Command::Loot` asks
+/// of each bag (`reach::clear_from` over `Target::lying`). `true` when
+/// there is no death backpack to ask about.
+fn hand_reaches_bag(core: &ClientCore, body: &EntityState) -> bool {
+    let Some(bag) = core.bags.entries().iter().find(|b| b.id == core.own_bag) else {
+        return true;
+    };
+    let (seed, haven, cols) = (core.predict.seed(), core.haven(), core.pieces.cols());
+    let feet = body.qy as f32 * POS_Y_Q;
+    let eye = (
+        body.qx as f32 * POS_XZ_Q,
+        feet + sim_core::ranged::eye_mm(core.crouched()) as f32 / sim_core::ranged::MM_PER_M,
+        body.qz as f32 * POS_XZ_Q,
+    );
+    let at = sim_core::reach::Target::lying(seed, haven, cols, (bag.qx, bag.qy, bag.qz));
+    sim_core::reach::clear_from(seed, haven, cols, core.card_doors, eye, feet, at)
 }
 
 /// A cell to put a bag down in, on bare ground within reach of the feet:
@@ -1010,7 +1037,10 @@ impl RecoverJob {
         tick: u32,
     ) -> Do {
         let step = self.next(core, body, route, hands, hostile, gained, tick);
-        let ended = matches!(step, Do::Done | Do::Fail(Why::Refused | Why::Stuck));
+        let ended = matches!(
+            step,
+            Do::Done | Do::Fail(Why::Refused | Why::Stuck | Why::Blocked)
+        );
         if ended && death_bag(core).is_some() {
             home.pack_tried(core);
         }
@@ -1071,6 +1101,13 @@ impl RecoverJob {
         }
         if d > LOOT_REACH_M - 0.5 {
             return Do::Go(Intent::walk(yaw_toward(bx - x, bz - z)));
+        }
+        // The shard's hand (`reach.rs`): the same storey and nothing built
+        // in the way, or the press takes nothing, three times over, and the
+        // walk back was for nothing (a bag fallen on another floor, or
+        // behind a wall). Not pressed, then.
+        if !hand_reaches_bag(core, body) {
+            return Do::Fail(Why::Blocked);
         }
         // The press a person makes once the prompt is on the bag.
         if hands.settled() {
@@ -1289,6 +1326,10 @@ mod tests {
         home.stash_failed(1000);
         assert!(home.stash_held(1000 + STASH_RETRY_TICKS - 1));
         assert!(!home.stash_held(1000 + STASH_RETRY_TICKS));
+        // One that could not get `E` onto the box waits longer.
+        home.stash_blocked(1000);
+        assert!(home.stash_held(1000 + STASH_RETRY_TICKS));
+        assert!(!home.stash_held(1000 + STASH_BLOCKED_RETRY_TICKS));
     }
 
     /// A feed takes a chunk of all the cupboard eats: what a current

@@ -26,7 +26,11 @@
 //! The same rules as Jev: one request outstanding, the reply must echo the
 //! id and name an offered goal, lines are bounded, a missing or late answer
 //! is an explicit failure and never a substituted decision. Replies to an
-//! older id are skipped. `JEV.md` has the schema.
+//! older id are skipped. A request can come again under the same id, with
+//! the same deadline: a newer look at the same decision, sent when the
+//! body's team changed while the agent thinks (an invite came). The newest
+//! line is the decision, and the answer is judged by its options. `JEV.md`
+//! has the schema.
 
 use crate::agent::lock::LockCode;
 use crate::mind::{Choice, DecisionSource, Goal, Reason, Say, SourceKind, Summary};
@@ -258,6 +262,31 @@ impl External {
         })
     }
 
+    /// Write request `id`'s observation line to the agent.
+    fn send(&mut self, id: u64, summary: &Summary) -> Result<(), String> {
+        let mut request = Self::observation(id, summary);
+        if let Some(speech) = self.speech.as_ref() {
+            request["voice"] = Value::Bool(true);
+            // Still saying its last line: a new one would wait its turn.
+            request["speaking"] = Value::Bool(speech.speaking());
+        }
+        let mut line = request.to_string();
+        line.push('\n');
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or("external agent input is closed")?;
+        if stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.flush())
+            .is_err()
+        {
+            self.stdin = None;
+            return Err("external agent closed its input".into());
+        }
+        Ok(())
+    }
+
     /// A reply's `say`: missing, null or blank is quiet; a string the chat
     /// rule takes (and that is not a `/command` for the shard) is a line;
     /// any other string is refused rather than repaired. `to` is
@@ -403,34 +432,40 @@ impl DecisionSource for External {
     }
 
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
+        self.decide_fresh(summary, &mut || None)
+    }
+
+    /// A newer look at the decision (its team changed while the agent
+    /// thinks: an invite came) goes out as the same request again, same id
+    /// and deadline, and the answer is judged by its options: an agent that
+    /// reads the decision late reads the invite on it.
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
         let id = self.next_id;
         self.next_id += 1;
         let deadline = Instant::now() + self.timeout;
-        let mut request = Self::observation(id, summary);
-        if let Some(speech) = self.speech.as_ref() {
-            request["voice"] = Value::Bool(true);
-            // Still saying its last line: a new one would wait its turn.
-            request["speaking"] = Value::Bool(speech.speaking());
-        }
-        let mut line = request.to_string();
-        line.push('\n');
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or("external agent input is closed")?;
-        if stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| stdin.flush())
-            .is_err()
-        {
-            self.stdin = None;
-            return Err("external agent closed its input".into());
-        }
-        let lines = self
-            .lines
-            .as_mut()
-            .ok_or("external agent output is closed")?;
-        let (choice, reply) = wait(lines, id, deadline, summary, &mut self.stale)?;
+        self.send(id, summary)?;
+        let mut current = *summary;
+        let (choice, reply) = loop {
+            if let Some(newer) = fresher() {
+                self.send(id, &newer)?;
+                current = newer;
+            }
+            let lines = self
+                .lines
+                .as_mut()
+                .ok_or("external agent output is closed")?;
+            if let Some(answer) = take_reply(lines, id, &current, &mut self.stale)? {
+                break answer;
+            }
+            if Instant::now() >= deadline {
+                return Err("external agent did not answer in time".into());
+            }
+            std::thread::sleep(POLL);
+        };
         if let (Some(tx), Some((text, typed))) = (self.speech.as_mut(), Self::spoken(&reply)) {
             // Full only if the voice has stopped ticking; the line goes unsaid.
             let _ = tx.push(text, typed);
@@ -459,28 +494,25 @@ impl DecisionSource for External {
     }
 }
 
-/// Read replies until the one for `id`, skipping older ones, or fail.
-fn wait(
+/// The reply to `id` among the lines in so far, skipping older ones;
+/// `None` while it has not come.
+fn take_reply(
     lines: &mut rtrb::Consumer<Line>,
     id: u64,
-    deadline: Instant,
     summary: &Summary,
     stale: &mut u64,
-) -> Result<(Choice, String), String> {
+) -> Result<Option<(Choice, String)>, String> {
     loop {
         match lines.pop() {
             Ok(Line::Text(text)) => match External::reply(&text, id, summary)? {
-                Some(choice) => return Ok((choice, text)),
+                Some(choice) => return Ok(Some((choice, text))),
                 None => *stale += 1,
             },
             Ok(Line::TooLong) => {
                 return Err("external agent reply over the line limit or not UTF-8".into())
             }
             Err(_) if lines.is_abandoned() => return Err("external agent closed its output".into()),
-            Err(_) if Instant::now() >= deadline => {
-                return Err("external agent did not answer in time".into())
-            }
-            Err(_) => std::thread::sleep(POLL),
+            Err(_) => return Ok(None),
         }
     }
 }
@@ -613,6 +645,30 @@ mod tests {
             assert_eq!(choice.reason.as_str(), "sh");
         }
         assert_eq!(agent.stale, 2);
+    }
+
+    /// A newer look at the decision goes out under the same id, and the
+    /// answer is judged by its options: the agent reads both lines and says
+    /// yes to the invite only the second one offers.
+    #[test]
+    fn a_newer_look_goes_out_under_the_same_id_and_judges_the_answer() {
+        let mut agent = sh(r#"read first; read second
+            a=$(printf '%s' "$first" | sed 's/.*"id":\([0-9]*\).*/\1/')
+            b=$(printf '%s' "$second" | sed 's/.*"id":\([0-9]*\).*/\1/')
+            case "$first" in *join_team*) exit 1;; esac
+            case "$second" in *join_team*) ;; *) exit 1;; esac
+            [ "$a" = "$b" ] || exit 1
+            printf '{"id":%s,"goal":"join_team","reason":"invited"}\n' "$b""#);
+        let mut first = Summary::EMPTY;
+        for g in Goal::FIXED.into_iter().filter(|&g| g != Goal::JoinTeam) {
+            first.offer(g);
+        }
+        let mut newer = first;
+        newer.offer(Goal::JoinTeam);
+        let mut once = Some(newer);
+        let choice = agent.decide_fresh(&first, &mut || once.take()).unwrap();
+        assert_eq!(choice.goal, Goal::JoinTeam);
+        assert_eq!(choice.reason.as_str(), "invited");
     }
 
     #[test]

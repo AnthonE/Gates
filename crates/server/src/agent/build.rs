@@ -2150,6 +2150,27 @@ impl Builder {
         })
     }
 
+    /// Its doors per the mirror: how many hang in its doorways, how many
+    /// of those are locked (a lock on and armed), and how many of the
+    /// locks are key locks rather than code locks.
+    pub fn doors(&self, core: &ClientCore) -> (u8, u8, u8) {
+        let Some(p) = self.plan else {
+            return (0, 0, 0);
+        };
+        let mut out = (0, 0, 0);
+        for d in [FRONT, INNER] {
+            if door_open(core, door_addr(&p, d)).is_none() {
+                continue;
+            }
+            out.0 += 1;
+            if let Some(rec) = deploy_rec(core, door_addr(&p, d)).filter(|r| r.has_lock) {
+                out.1 += u8::from(rec.locked);
+                out.2 += u8::from(rec.keyed);
+            }
+        }
+        out
+    }
+
     /// A walk through the doors is under way.
     pub fn passing(&self) -> bool {
         self.passage.busy()

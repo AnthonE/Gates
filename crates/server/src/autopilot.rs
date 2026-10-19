@@ -93,10 +93,26 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
     }
 
     fn decide(&mut self, s: &Summary) -> Result<Choice, String> {
+        self.decide_fresh(s, &mut || None)
+    }
+
+    /// A turn the source missed is played on the newest look at it.
+    fn decide_fresh(
+        &mut self,
+        s: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
         if let Some(g) = self.gate.filter(|g| (g.rule)(s)) {
             return self.fly((g.why)(s), s);
         }
-        let answer = self.primary.decide(s);
+        let mut newest = *s;
+        let answer = self.primary.decide_fresh(s, &mut || {
+            let newer = fresher();
+            if let Some(n) = newer {
+                newest = n;
+            }
+            newer
+        });
         // A plan the answer left is the autopilot's from now on, for the
         // turns the source misses.
         if let Some(plan) = self.primary.take_plan() {
@@ -104,7 +120,7 @@ impl<P: DecisionSource> DecisionSource for Autopilot<P> {
         }
         match answer {
             Ok(choice) => Ok(choice),
-            Err(e) => self.fly(&e, s),
+            Err(e) => self.fly(&e, &newest),
         }
     }
 

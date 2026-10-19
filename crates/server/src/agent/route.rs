@@ -15,8 +15,11 @@
 //! Between a base's floors the route takes the stairs (`agent::floors`):
 //! a goal on another floor than the body's is a trip of walks on one floor
 //! and climbs between them, and the grid walks each floor at its own
-//! height. Ground to ground is the grid alone, as it always was.
+//! height. Ground to ground is the grid alone, as it always was, until it
+//! finds no way toward a goal well off: then the coarse map (`agent::far`)
+//! finds the way round, and the grid walks that a waypoint at a time.
 
+use super::far::{Far, Search, FAR_CELL_M, FAR_EXPAND_PER_FRAME, FAR_REACH_M};
 use super::floors::{self, Fails, Flight, Flights, Layer, Leg, Target, Trip};
 use super::intent::{yaw_toward, Intent};
 use client_core::core::ClientCore;
@@ -66,6 +69,20 @@ const CLIMB_REACH_M: f32 = 0.15;
 const CLIMB_END_M: f32 = 0.25;
 const CLIMB_STALL_TICKS: u32 = 2 * TICK_HZ;
 const CLIMB_FELL_M: f32 = 1.2;
+/// A goal at least this far off that the grid finds no way toward gets a
+/// look over the coarse map (`agent::far`). Nearer, no way is a wall or a
+/// shut door, which is the skills' to answer (a door to work).
+pub const FAR_MIN_M: f32 = 24.0;
+/// Searches of the coarse map for one goal, before it is out of reach from
+/// here...
+pub const FAR_TRIES: u8 = 8;
+/// ...and how long a goal not walked toward keeps its count.
+pub const FAR_FORGET_TICKS: u32 = 60 * TICK_HZ;
+/// A goal that moved less than this is the one the way was found for (a
+/// teammate walking on is not a new search a step).
+const FAR_SAME_M: f32 = 4.0 * FAR_CELL_M;
+/// A body this far from where the coarse map found no way looks again.
+const FAR_MOVED_M: f32 = 4.0 * FAR_CELL_M;
 
 /// What the trip in hand is for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -135,6 +152,11 @@ pub struct RouteStats {
     pub floor_plans: u64,
     pub flights: u64,
     pub floor_fails: u64,
+    /// Searches of the coarse map, the ways they found, and the waypoints
+    /// the grid could not get to.
+    pub far_searches: u64,
+    pub far_found: u64,
+    pub far_barred: u64,
 }
 
 pub struct Route {
@@ -153,6 +175,8 @@ pub struct Route {
     /// The path in hand has had a corner to walk to since it was planned.
     walked: bool,
     called_at: Option<u32>,
+    /// The path's corner being walked to, the closest to it yet, and when.
+    corner: Option<((i32, i32), f32, u32)>,
     unstick: Unstick,
     /// Alternates the side-step, so two stalls in a row try both sides.
     strafe_left: bool,
@@ -177,6 +201,16 @@ pub struct Route {
     /// A goal no trip could be planned to, its floor, and when: not looked
     /// for again inside [`REPLAN_TICKS`].
     no_trip: Option<([f32; 2], Layer, u32)>,
+    /// The long way round (`agent::far`): the goal it is for, the searches
+    /// made for it, the last tick it was walked toward, and how far off the
+    /// goal was when the last search began.
+    far: Box<Far>,
+    far_for: Option<[f32; 2]>,
+    far_tries: u8,
+    far_used: u32,
+    far_from_m: f32,
+    /// Where the body stood when the search in hand began.
+    far_at: [f32; 2],
     pub stats: RouteStats,
 }
 
@@ -200,6 +234,7 @@ impl Route {
             best: None,
             walked: false,
             called_at: None,
+            corner: None,
             unstick: Unstick::Walking,
             strafe_left: false,
             on_deck: false,
@@ -215,6 +250,12 @@ impl Route {
             climb_best: None,
             fails: Fails::default(),
             no_trip: None,
+            far: Box::default(),
+            far_for: None,
+            far_tries: 0,
+            far_used: 0,
+            far_from_m: 0.0,
+            far_at: [0.0; 2],
             stats: RouteStats::default(),
         }
     }
@@ -229,9 +270,13 @@ impl Route {
         self.mark = None;
         self.best = None;
         self.called_at = None;
+        self.corner = None;
         self.unstick = Unstick::Walking;
         self.end_trip();
         self.fails.clear();
+        self.far.clear();
+        self.far_for = None;
+        self.far_tries = 0;
     }
 
     /// Once per frame, before any skill asks for a step.
@@ -304,7 +349,7 @@ impl Route {
         let mut direct = true;
         match (here, want) {
             (Layer::Ground, Layer::Ground) => {
-                return self.leg(core, body, goal, stop_m, hurry, tick, None);
+                return self.ground(core, body, goal, stop_m, hurry, tick);
             }
             (Layer::Deck(d), w) if w.same(here) => {
                 let step = self.leg(core, body, goal, stop_m, hurry, tick, Some(d));
@@ -545,6 +590,130 @@ impl Route {
         Ok(None)
     }
 
+    /// Ground to ground: the grid, and the long way round when it finds
+    /// no way toward a goal well off. The grid's window ends 48 m out and
+    /// a plan spends a few hundred cells, so from the foot of a cliff, or a
+    /// ledge on one, toward a goal past it, nothing it can reach is closer
+    /// and it says "no way" at once; a walk home offered over and over
+    /// failed so in 0 s each time. A goal the coarse map finds no way to
+    /// either, or that [`FAR_TRIES`] searches have not got it to, is out of
+    /// reach from here.
+    fn ground(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        goal: [f32; 2],
+        stop_m: f32,
+        hurry: bool,
+        tick: u32,
+    ) -> Step {
+        let (x, y, z) = feet(body);
+        let same = self
+            .far_for
+            .is_some_and(|g| (g[0] - goal[0]).hypot(g[1] - goal[1]) <= FAR_SAME_M);
+        if !same || tick.wrapping_sub(self.far_used) >= FAR_FORGET_TICKS {
+            if self.far_for.is_some() {
+                self.far.clear();
+            }
+            self.far_for = None;
+            self.far_tries = 0;
+        }
+        // No way from where it stood is not no way from here.
+        if self.far.state() == Search::NoWay
+            && (self.far_at[0] - x).hypot(self.far_at[1] - z) > FAR_MOVED_M
+        {
+            self.far.done();
+        }
+        if self.far_for.is_some() {
+            self.far_used = tick;
+            if let Some(step) = self.detour(core, body, hurry, tick) {
+                return step;
+            }
+        }
+        let step = self.leg(core, body, goal, stop_m, hurry, tick, None);
+        let left = (goal[0] - x).hypot(goal[1] - z);
+        if step != Step::Blocked || left < FAR_MIN_M || self.far_tries >= FAR_TRIES {
+            return step;
+        }
+        self.far.begin([x, y, z], goal);
+        self.far_for = Some(goal);
+        self.far_tries += 1;
+        self.far_used = tick;
+        self.far_from_m = left;
+        self.far_at = [x, z];
+        self.stats.far_searches += 1;
+        self.detour(core, body, hurry, tick)
+            .unwrap_or(Step::Blocked)
+    }
+
+    /// The long way round's next step: the search while it runs, then the
+    /// grid to each waypoint in turn. `None` once the way is walked (the
+    /// grid takes the goal from there); `Blocked` when there is no way.
+    fn detour(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        hurry: bool,
+        tick: u32,
+    ) -> Option<Step> {
+        if self.far.state() == Search::Running {
+            let far = &mut self.far;
+            core.with_ground(|g| far.run(g, FAR_EXPAND_PER_FRAME));
+            if self.far.state() == Search::Found {
+                self.stats.far_found += 1;
+            }
+        }
+        match self.far.state() {
+            Search::Running => return Some(Step::Wait),
+            Search::NoWay => return Some(Step::Blocked),
+            Search::Idle => return None,
+            Search::Found => {}
+        }
+        let (x, y, z) = feet(body);
+        while let Some(p) = self.far.point() {
+            if (p[0] - x).hypot(p[1] - z) > FAR_REACH_M {
+                break;
+            }
+            self.far.advance();
+        }
+        let Some(p) = self.far.point() else {
+            // Walked. A way that got it well on toward the goal gives the
+            // next search its try back.
+            self.far.done();
+            let goal = self.far.target();
+            if (goal[0] - x).hypot(goal[1] - z) <= self.far_from_m * 0.6 {
+                self.far_tries = self.far_tries.saturating_sub(1);
+            }
+            return None;
+        };
+        match self.leg(core, body, p, FAR_REACH_M, hurry, tick, None) {
+            Step::Arrived => {
+                self.far.advance();
+                Some(Step::Wait)
+            }
+            // Something the coarse map does not show is in the way there
+            // (a base, a rock, a crag): round it, while tries last. Near
+            // the goal, what is in the way is the skill's to answer (the
+            // walls of the base it is going into, and their doors).
+            Step::Blocked => {
+                self.stats.far_barred += 1;
+                self.far.bar(p);
+                let goal = self.far.target();
+                if self.far_tries >= FAR_TRIES || (goal[0] - x).hypot(goal[1] - z) < FAR_MIN_M {
+                    self.far.done();
+                    return Some(Step::Blocked);
+                }
+                self.far.begin([x, y, z], goal);
+                self.far_tries += 1;
+                self.far_from_m = (goal[0] - x).hypot(goal[1] - z);
+                self.far_at = [x, z];
+                self.stats.far_searches += 1;
+                Some(Step::Wait)
+            }
+            step => Some(step),
+        }
+    }
+
     /// One step toward `goal` on one layer: the grid at the terrain's
     /// height, or at a floor's (`deck`).
     #[allow(clippy::too_many_arguments)]
@@ -656,6 +825,26 @@ impl Route {
         let Some((tx, tz)) = next else {
             return Step::Wait;
         };
+        // A whole path is judged by the corner it walks to: walking one,
+        // the body gets closer to it. A corner it has come no closer to in
+        // `GIVE_UP_TICKS` is one it cannot get to (the capsule held by
+        // what the grid let through), however busy the legs: a side-step
+        // moves the body enough to start the stall ladder over every time,
+        // and it never got to the end of it.
+        let corner = (tx, tz);
+        let near = ((tx - body.qx) as f32 * POS_XZ_Q).hypot((tz - body.qz) as f32 * POS_XZ_Q);
+        match self.corner {
+            Some((c, best, at)) if c == corner && !resumed && near + CLOSER_M > best => {
+                if tick.wrapping_sub(at) >= GIVE_UP_TICKS {
+                    self.corner = None;
+                    self.stats.blocked += 1;
+                    self.path.clear();
+                    self.last = None;
+                    return Step::Blocked;
+                }
+            }
+            _ => self.corner = Some((corner, near, tick)),
+        }
         let mut yaw = yaw_toward(
             (tx - body.qx) as f32 * POS_XZ_Q,
             (tz - body.qz) as f32 * POS_XZ_Q,
@@ -931,6 +1120,70 @@ mod tests {
         assert!((4 * STALL_TICKS..5 * STALL_TICKS).contains(&at), "{at}");
         // One plan for the route, one for the replan rung.
         assert_eq!(route.stats.plans, 2, "{:?}", route.stats);
+    }
+
+    /// The report's dead end (seed 20260731, 2026-10-19): a body on a
+    /// cliff face whose goal lies up and past it. The grid alone says no
+    /// way at once, which failed a walk home in 0 s every time it was
+    /// offered; the coarse map finds the way round, and the body walks it
+    /// there under the sim's own movement.
+    #[test]
+    fn a_goal_past_a_cliff_face_is_walked_to_the_long_way_round() {
+        use sim_core::input::InputFrame;
+        let seed = 20260731;
+        let haven = terrain::haven(seed);
+        let mut core = ClientCore::new(seed, 1, 0);
+        let mut body = sim_core::movement::Body::at(seed, &haven, 2810.5, 2594.5);
+        let goal = [3088.0, 2709.0];
+        let state = |b: &sim_core::movement::Body| EntityState {
+            id: 1,
+            qx: b.qx,
+            qy: b.qy,
+            qz: b.qz,
+            grounded: b.grounded,
+            ..EntityState::default()
+        };
+        // The grid alone: no way.
+        let mut grid = Route::new();
+        grid.begin_tick();
+        let me = state(&body);
+        let (x, y, z) = feet(&me);
+        let alone = grid.leg(&mut core, &me, goal, 2.0, false, 0, None);
+        assert_eq!(alone, Step::Blocked, "the dead end, from ({x}, {y}, {z})");
+
+        let mut route = Route::new();
+        let mut arrived = None;
+        for tick in 0..240 * TICK_HZ {
+            route.begin_tick();
+            let me = state(&body);
+            let frame = match route.to(&mut core, &me, goal, 2.0, false, tick) {
+                Step::Walk { yaw, jump, .. } => InputFrame {
+                    yaw,
+                    move_z: 127,
+                    buttons: if jump { BTN_JUMP } else { 0 },
+                    ..InputFrame::default()
+                },
+                Step::Wait => InputFrame::default(),
+                Step::Arrived => {
+                    arrived = Some(tick);
+                    break;
+                }
+                Step::Blocked => {
+                    panic!("blocked at {tick} at {:?}: {:?}", feet(&me), route.stats)
+                }
+            };
+            core.with_ground(|g| {
+                sim_core::movement::step(g.seed, g.haven, g.cols, g.occ, &mut body, &frame)
+            });
+        }
+        let me = state(&body);
+        assert!(
+            arrived.is_some(),
+            "not there: at {:?}, {:?}",
+            feet(&me),
+            route.stats
+        );
+        assert!(route.stats.far_found >= 1, "{:?}", route.stats);
     }
 
     #[test]

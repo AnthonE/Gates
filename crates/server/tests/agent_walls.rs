@@ -1348,8 +1348,9 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
     let core = h.bot.core().unwrap();
     println!("minimum food {food}, water {water}; {}", h.explain());
     assert_eq!(h.bot.stats.deaths, 0, "{}", h.explain());
-    // 30 %: the healthy run bottoms out near 39 % water and 59 % food; a
-    // body that never learns which food carries water is near 21 % here.
+    // 30 %: a body that never learns which food carries water fell near
+    // 21 % here. At Rust's idle drain (#383) the healthy run bottoms out
+    // near 74 % water and 80 % food.
     assert!(
         u32::from(food) * 10 >= u32::from(core.max_food) * 3,
         "food fell to {food}"
@@ -1359,11 +1360,8 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
         "water fell to {water}"
     );
     assert!(h.bot.gathered_of("Wood") > 0 && h.bot.gathered_of("Stone") > 0);
-    assert!(
-        h.bot.stats.crafted >= 2 && h.bot.stats.eaten > 0,
-        "{}",
-        h.explain()
-    );
+    // Not `eaten`: at Rust's idle drain half an hour never makes it hungry.
+    assert!(h.bot.stats.crafted >= 2, "{}", h.explain());
     // With stone tools in hand the playbook forages the cloth for a
     // sleeping bag, crafts it and puts it down, unstaged; then it gathers
     // for a base and builds one, whose second milestone puts a bag inside.
@@ -2563,6 +2561,264 @@ fn a_teammate_given_the_code_fills_the_chest_behind_a_lock() {
 #[test]
 fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
     a_teammate_fills_the_team_chest(false, true);
+}
+
+/// The starter's ground floor as a founder leaves it (`sim_core::bots::
+/// STARTER`, its box where the agent's builder puts its own, `agent::build`
+/// `EXTRAS`): the core and the stair cell one room, the triangle airlock
+/// off the stair cell with its long side a diagonal wall, the front door
+/// on the airlock's west edge and the inner door between it and the stair
+/// cell, both shut; a cupboard in the core and a box in the stair cell.
+/// Returns the plot cell; the puppet is left in the core.
+fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
+    use server::population::base_rows;
+    use sim_core::bots::{BasePlan, STARTER_FOOTPRINT, STARTER_STAND_M};
+    use sim_core::build::{
+        anchor, build_cell_of, foundation_terrain_ok, terrain_band, BUILD_CELL_M, LOC_DIAG_B,
+        LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_TRI_XLO_ZLO,
+    };
+
+    let haven = h.shard.world.haven;
+    let buildable = |cx: u16, cz: u16| {
+        let (ax, az) = anchor(cx, cz, LOC_PLANE);
+        foundation_terrain_ok(SEED, &haven, ax, az)
+            && !sim_core::terrain::build_reserved(&haven, ax, az, BUILD_CELL_M * 1.5)
+    };
+    let (c0, r0) = (build_cell_of(near.0) as i32, build_cell_of(near.1) as i32);
+    let mut plot = None;
+    'search: for r in 0..64i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let (cx, cz) = ((c0 + dx) as u16, (r0 + dz) as u16);
+                let band = terrain_band(SEED, &haven, cx, cz);
+                // Even ground under the base and a cell round it, so the
+                // walk round to the front door is open ground.
+                let even = (-1..=3).all(|ox| {
+                    (-1..=2).all(|oz| {
+                        let (x, z) = ((cx as i32 + ox) as u16, (cz as i32 + oz) as u16);
+                        (terrain_band(SEED, &haven, x, z) - band).abs() <= 1
+                    })
+                });
+                let plan = BasePlan::new(0, cx, cz);
+                if even
+                    && STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
+                        let (x, z) = plan.cell(dx, dz);
+                        buildable(x, z)
+                    })
+                {
+                    plot = Some((cx, cz));
+                    break 'search;
+                }
+            }
+        }
+    }
+    let (bx, bz) = plot.expect("an even plot near the scene");
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    let rows = base_rows(&content).unwrap();
+    h.with_puppet();
+    h.until(2, |_| false);
+    let (x0, z0) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let stand = (x0 + STARTER_STAND_M.0, z0 + STARTER_STAND_M.1);
+    let pocket = [
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.hearth", 1),
+        stack("item.door_wood", 2),
+        stack("item.box_small", 1),
+    ];
+    for core in [&mut h.shard, &mut h.replay] {
+        let haven = core.world.haven;
+        let p = core
+            .world
+            .players
+            .iter_mut()
+            .find(|p| p.active && p.id == PUPPET)
+            .unwrap();
+        p.body = sim_core::movement::Body::at(SEED, &haven, stand.0, stand.1);
+        for (i, s) in pocket.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    }
+    let place = |row: u16, cx: u16, cz: u16, loc: u8| ActionMsg::Place {
+        row,
+        cx,
+        cz,
+        level: 0,
+        loc,
+        freehand: false,
+        plate: 0,
+    };
+    let deploy = |row: u16, cx: u16, cz: u16, loc: u8| ActionMsg::Deploy {
+        row,
+        cx,
+        cz,
+        level: 0,
+        loc,
+        pose: sim_core::footprint::Pose::CENTRE,
+    };
+    let shell = [
+        (bx, bz, LOC_EDGE_XLO, rows.wall),
+        (bx, bz, LOC_EDGE_ZLO, rows.wall),
+        (bx, bz + 1, LOC_EDGE_ZLO, rows.wall),
+        (bx + 1, bz, LOC_EDGE_ZLO, rows.wall),
+        (bx + 2, bz, LOC_EDGE_XLO, rows.wall),
+        (bx + 1, bz + 1, LOC_EDGE_ZLO, rows.doorway),
+        (bx + 1, bz + 1, LOC_EDGE_XLO, rows.doorway),
+        (bx + 1, bz + 1, LOC_DIAG_B, rows.wall),
+    ];
+    let mut acts = vec![
+        place(rows.foundation, bx, bz, LOC_PLANE),
+        deploy(rows.hearth, bx, bz, LOC_PLANE),
+        place(rows.foundation, bx + 1, bz, LOC_PLANE),
+        place(rows.tri_foundation, bx + 1, bz + 1, LOC_TRI_XLO_ZLO),
+    ];
+    for &(cx, cz, loc, row) in &shell {
+        acts.push(place(row, cx, cz, loc));
+    }
+    acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_XLO));
+    acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_ZLO));
+    acts.push(deploy(rows.container, bx + 1, bz, LOC_PLANE));
+    for a in acts {
+        h.puppet_act(a);
+    }
+    for core in [&mut h.shard, &mut h.replay] {
+        let w = &core.world;
+        for &(cx, cz, loc, _) in &shell {
+            assert!(
+                w.pieces.find(cx, cz, 0, loc).is_some(),
+                "a wall at {cx},{cz},{loc}"
+            );
+        }
+        for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
+            assert!(
+                w.deploys
+                    .find(bx + 1, bz + 1, 0, loc)
+                    .is_some_and(|d| !d.open),
+                "a shut door at {loc}"
+            );
+        }
+        assert!(w
+            .deploys
+            .box_index(sim_core::deploy::box_key(bx + 1, bz, 0, 0))
+            .is_some());
+    }
+    (bx, bz)
+}
+
+/// #364: the deliveries of a crew whose founder built the starter failed
+/// nearly every time ("could not reach a target", a minute and more in,
+/// home 3 m away). Arriving round the back of the base, the route ends by
+/// the stair cell's wall, where the airlock's inner door is the nearest
+/// door to the box: it cannot be got to from out there (the airlock's
+/// diagonal wall is in the way), and given up from outside it stayed given
+/// up for the whole trip, so once in through the front door the only door
+/// left was the one just come through. Given up doors are tried again from
+/// the far side of a door, and one that a wall or a shut door stands in
+/// front of is given up at once rather than walked into.
+#[test]
+fn a_teammate_fills_the_team_chest_through_an_airlock_from_behind_the_base() {
+    use sim_core::build::BUILD_CELL_M;
+
+    let at = common::clearing(3);
+    let mind = Mind::inline(ChestWhenOffered(None, false), MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    h.until(5, |_| false);
+    let (bx, bz) = stage_airlock_base(&mut h, at);
+    let (x0, z0) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
+    let haven = h.shard.world.haven;
+    let place = move |x: f32, z: f32| sim_core::movement::Body::at(SEED, &haven, x, z);
+
+    // A team, face to face, then both in the stair cell, the teammate at
+    // its box: the agent learns the team's chest.
+    let body = h
+        .shard
+        .world
+        .players
+        .iter()
+        .find(|p| p.id == PUPPET)
+        .unwrap()
+        .body;
+    h.stage(move |p| p.body = body);
+    h.puppet_act(ActionMsg::Team {
+        op: protocol::TEAM_OP_INVITE,
+        target: ID,
+    });
+    let joined = |h: &Harness| h.shard.teams.team_of(ID).len() == 2;
+    for _ in 0..30 * TICK_HZ {
+        if joined(&h) {
+            break;
+        }
+        h.step();
+    }
+    assert!(joined(&h), "the agent never joined: {}", h.explain());
+    let (mate, me) = (
+        place(x0 + BUILD_CELL_M + 2.4, z0 + 2.4),
+        place(x0 + BUILD_CELL_M + 0.6, z0 + 0.6),
+    );
+    h.stage_puppet(move |p| p.body = mate);
+    h.stage(move |p| p.body = me);
+    let learnt = h.until(30 * TICK_HZ, |b| b.senses().team_home.count > 0);
+    assert!(learnt, "the chest was never learnt: {}", h.explain());
+
+    // Nobody home; the agent round the back of the base, east of the stair
+    // cell, with wood to put away.
+    let away = place(at.0 + 300.0, at.1 - 300.0);
+    h.stage_puppet(move |p| p.body = away);
+    let wood = sim_core::gather::ItemStack {
+        count: 500,
+        ..common::stack(&content, "item.wood")
+    };
+    let wood_item = wood.item;
+    let slot = h
+        .me()
+        .inv
+        .iter()
+        .enumerate()
+        .skip(HOTBAR_SLOTS)
+        .find(|(_, s)| s.count == 0)
+        .map(|(i, _)| i)
+        .unwrap();
+    let behind = place(x0 + 3.0 * BUILD_CELL_M + 2.0, z0 + 1.5);
+    h.stage(move |p| {
+        p.body = behind;
+        p.inv[slot] = wood;
+    });
+
+    let delivered = h.until(150 * TICK_HZ, |b| {
+        b.history.iter().any(|r| r.goal == Goal::Deliver)
+    });
+    assert!(delivered, "no delivery ended: {}", h.explain());
+    let report = h
+        .bot
+        .history
+        .iter()
+        .find(|r| r.goal == Goal::Deliver)
+        .unwrap();
+    assert_eq!(report.outcome, Outcome::Done, "{report:?}: {}", h.explain());
+    // Round the base, in by both doors, the box, out by both: no stage of
+    // a door walked into for its whole time on the way (46 s when written).
+    assert!(report.secs < 60, "{report:?}: {}", h.explain());
+    let w = &h.shard.world;
+    let i = w
+        .deploys
+        .box_index(sim_core::deploy::box_key(bx + 1, bz, 0, 0))
+        .expect("the box");
+    let boxed: u32 = (0..sim_core::limits::BOX_SLOTS)
+        .map(|s| w.deploys.box_slot(i, s))
+        .filter(|s| s.count > 0 && s.item == wood_item)
+        .map(|s| u32::from(s.count))
+        .sum();
+    assert_eq!(boxed, 500, "the wood is in the box: {}", h.explain());
+    assert_eq!(h.heap_ops, 0, "the frame path allocated");
 }
 
 /// The follow test's decision source: yes to a team, then with them.

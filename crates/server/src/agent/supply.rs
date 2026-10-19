@@ -62,6 +62,10 @@ pub const HOME_BOXES: usize = 6;
 pub const WANT_ROWS: usize = 4;
 /// A trip home that failed is not offered again for this long.
 pub const DELIVER_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A supply run that found the boxes full is not offered again for this
+/// long: the next would gather a pack's worth with nowhere to put it, and
+/// farmers made that trip every few minutes, the box full every time.
+pub const BOX_FULL_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// A trip that stays (home to sleep or to hold it, or to a station) stops
 /// this near what it walked to.
 pub const STAY_NEAR_M: f32 = 2.0;
@@ -172,6 +176,25 @@ impl TeamHome {
                 (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc) && d.has_lock
             })
         })
+    }
+
+    /// The cupboard stands in the mirror with no lock on it: nobody gets
+    /// onto its crew, code or not, so its floor refuses a bag from anyone
+    /// not on it already (`deploy::hearth_admits`, the claim).
+    pub fn hearth_unlocked(&self, core: &ClientCore) -> bool {
+        self.hearth.is_some_and(|at| {
+            core.deploys.entries().iter().any(|d| {
+                (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc) && !d.has_lock
+            })
+        })
+    }
+
+    /// Could a bag go down on the team's floor: it is on the cupboard's
+    /// crew, or has the team's code for a cupboard that is not seen bare
+    /// of a lock. Otherwise the shard refuses the bag on the floor (a
+    /// claim it is not on), however often it is tried.
+    pub fn may_bag(&self, core: &ClientCore, code: bool) -> bool {
+        self.crewed || (code && !self.hearth_unlocked(core))
     }
 
     /// A lock's or a cupboard's answer: at the team's cupboard, whether it
@@ -868,13 +891,26 @@ impl HomeJob {
             {
                 Through::Passed(at) => {
                     let top = usize::from(self.passed_len).checked_sub(1);
-                    if top.is_some_and(|t| self.passed[t] == Some(at)) {
+                    let back = top.is_some_and(|t| self.passed[t] == Some(at));
+                    if back {
                         // Back out through it.
                         self.passed_len -= 1;
                         self.passed[usize::from(self.passed_len)] = None;
                     } else if usize::from(self.passed_len) < MAX_DOORS {
                         self.passed[usize::from(self.passed_len)] = Some(at);
                         self.passed_len += 1;
+                    }
+                    // Through a door, it is somewhere else: a door it could
+                    // not get to from the other side may be the way from
+                    // this one (the inner door of an airlock, given up from
+                    // outside the base, is the one in from inside the
+                    // airlock). The one it just came back out of is not
+                    // tried again straight away.
+                    if self.leg != Leg::Out {
+                        self.tried = [None; MAX_DOORS];
+                        if back {
+                            self.tried[0] = Some(at);
+                        }
                     }
                     Deliver::IDLE
                 }
@@ -953,13 +989,21 @@ impl HomeJob {
                     // No way there from here: a door is in the way, the
                     // nearest one near where it is going not tried yet.
                     Step::Blocked => {
-                        // Not a door it is inside of, but the innermost,
-                        // which is the way back out.
+                        // Not a door it is inside of; the innermost, which
+                        // is the way back out, only when no other will do.
+                        // Just through it, it is the nearest door there is,
+                        // and taking it again walks back out the way the
+                        // trip came in.
                         let mut skip = [None; 2 * MAX_DOORS];
-                        let inner = usize::from(self.passed_len.saturating_sub(1));
-                        skip[..inner].copy_from_slice(&self.passed[..inner]);
+                        skip[..MAX_DOORS].copy_from_slice(&self.passed);
                         skip[MAX_DOORS..].copy_from_slice(&self.tried);
-                        match nearest_door(core, goal, HOP_M, 0, &skip, x, z) {
+                        let mut door = nearest_door(core, goal, HOP_M, 0, &skip, x, z);
+                        if door.is_none() {
+                            let inner = usize::from(self.passed_len.saturating_sub(1));
+                            skip[inner] = None;
+                            door = nearest_door(core, goal, HOP_M, 0, &skip, x, z);
+                        }
+                        match door {
                             Some(door) => {
                                 self.doors.begin_toward(door, goal, tick);
                                 Deliver::IDLE

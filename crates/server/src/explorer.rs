@@ -63,7 +63,7 @@ use client_core::core::{
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
-use sim_core::craft::STATION_FURNACE;
+use sim_core::craft::{STATION_FURNACE, STATION_NONE};
 use sim_core::deploy::{box_key, cell_center, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
@@ -136,6 +136,11 @@ pub const INVITE_REACH_M: f32 = 3.0;
 /// this long before it asks again, standing this near the stall.
 pub const MEET_GOAL_SECS: u32 = 180;
 pub const MEET_STOP_M: f32 = 6.0;
+/// A trip to a named place (`Goal::Go`) ends this near it, inside the
+/// summary's "here"; one not there in this long is stuck (half the island
+/// is a few minutes' walk, and the watchdog catches a body that stands).
+pub const GO_STOP_M: f32 = 8.0;
+pub const GO_GOAL_SECS: u32 = 600;
 /// Before a team says where its friend is, a friend who joined or was seen
 /// this recently counts as on the island. A shard keeps a tag after its
 /// player leaves, so an older one says nothing.
@@ -162,10 +167,34 @@ pub const GO_HOME_GOAL_SECS: u32 = 120;
 /// After a walk home came to nothing (its own lock would not take the
 /// code, say), this long before the next.
 pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A walk home (or a visit to the box) that could not reach home is not
+/// offered again while the body stays within this of where it failed, for
+/// up to [`HOME_STUCK_TICKS`]: from the same spot it fails the same way,
+/// in a second, every time it is offered (a report, 2026-10-19).
+pub const HOME_STUCK_NEAR_M: f32 = 16.0;
+pub const HOME_STUCK_TICKS: u32 = 5 * 60 * TICK_HZ;
+/// After a walk to its stations came to nothing, this long before a craft
+/// that needs one is offered again: from where it stands it fails the same
+/// way at once, and the policy offered it again a second later, for half
+/// an hour (Flint, 2026-10-19: 2,135 of them).
+pub const STATION_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A craft's walk to its stations that has not got there in this long is
+/// stuck.
+pub const CRAFT_WALK_SECS: u32 = 180;
+/// On the stand spot: this near it.
+const STAND_ON_M: f32 = 0.5;
 /// After a build goal could not reach its work (a spot nothing routes to,
 /// a passage that will not open) or failed as it began, this long before
 /// the next.
 pub const BUILD_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A goal that has failed the moment it began twice running is off the
+/// list this long after each such failure: the same summary would choose
+/// it again at once and it would fail the same way, a try a second, and
+/// the body would stand there doing it for an hour (a heal with no med it
+/// could take, a craft whose bench it could not reach: Flint, 2026-10-19).
+pub const FLOP_RETRY_TICKS: u32 = 15 * TICK_HZ;
+/// How many goals' runs of such failures are kept at once.
+const FLOPS: usize = 4;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
 /// A cook at a fire that has not finished in this long is stuck. A camp
@@ -233,8 +262,19 @@ pub const DRINK_MIN_HP_PCT: u32 = 20;
 pub const MAX_ABANDONS: u32 = 3;
 /// Distances probed for open water on eight bearings, once a second.
 pub const WATER_PROBE_M: [f32; 4] = [8.0, 16.0, 24.0, 32.0];
-/// How long a resource seen in view is remembered once it leaves it.
-pub const RECALL_SECS: u32 = 60;
+/// How long a resource seen in view is remembered once it leaves it: long
+/// enough for a supply run's trip home and back, so the next run walks
+/// back to the rocks it was working rather than searching afresh.
+pub const RECALL_SECS: u32 = 300;
+/// A remembered resource this far off or nearer counts as known (the
+/// census, the gather goal's walk back to it); farther, it is forgotten.
+/// At the walk's 3 m/s this is about 80 s of walking.
+pub const RECALL_WALK_M: f32 = 240.0;
+/// The walk back to a remembered resource may take this long before the
+/// gather goal gives it up. The search's own [`SEARCH_GOAL_SECS`] does not
+/// cut it short: it is 60 m of walking, and a node remembered farther off
+/// than that was never reached (#362).
+pub const RECALL_WALK_SECS: u32 = 120;
 /// Sight-window cells examined per call: one per game tick elapsed since
 /// the last call, at most this many. A controller sampled once per slow
 /// rendered frame still sweeps at the game's pace, and a call's work stays
@@ -470,6 +510,11 @@ pub struct Senses {
     pub backpack: Sighting,
     /// A person or a wolf seen within `THREAT_RECALL_SECS`.
     pub hostile: bool,
+    /// The same, not counting people inside the town's safe zone, where
+    /// the gate's guns keep the peace: what THE GATE's own goals (trades,
+    /// research, a meeting there) go by. Players crowd the gate, and its
+    /// trades vanished whenever one was in view (an agent, 2026-10-18).
+    pub hostile_afield: bool,
     /// Barrels and crates it knows of and has not emptied, and the nearest
     /// place on the map that keeps crates.
     pub loot: Sighting,
@@ -525,8 +570,12 @@ pub struct Memory {
     pub put_away: bool,
     /// A visit to the box failed a moment ago (`Home::stash_held`).
     pub stash_held: bool,
-    /// A walk home failed a moment ago (`GO_HOME_RETRY_TICKS`).
+    /// A walk home failed a moment ago (`GO_HOME_RETRY_TICKS`), or could
+    /// not reach home from about here (`HOME_STUCK_NEAR_M`).
     pub home_held: bool,
+    /// A walk to its stations came to nothing a moment ago
+    /// (`STATION_RETRY_TICKS`): no craft that needs one is offered.
+    pub station_held: bool,
     /// What the box held when it was last open.
     pub stored: [(u16, u32); stash::STORED_ROWS],
     pub stored_len: u8,
@@ -553,6 +602,9 @@ pub struct Memory {
     /// (`defend::mendable`), seen from near it (`defend::MEND_SIGHT_M`);
     /// a defence came to nothing a moment ago.
     pub damaged: bool,
+    /// Its doors, those locked, and the key locks among them
+    /// (`Builder::doors`), looked at once a second.
+    pub doors: (u8, u8, u8),
     pub defend_held: bool,
     /// Its temperament raids; a raid came to nothing a moment ago.
     pub raids: bool,
@@ -587,6 +639,9 @@ pub struct Memory {
     pub shared: bool,
     pub deliver: bool,
     pub deliver_held: bool,
+    /// A supply run found the team's boxes full a while ago: what another
+    /// would gather has nowhere to go.
+    pub box_full_held: bool,
     pub home_holds: [(u16, u32); crate::mind::SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
     pub home_boxes: u8,
@@ -605,6 +660,10 @@ pub struct Memory {
     pub work_held: bool,
     /// A read, a solve, a swipe came to nothing a moment ago.
     pub lore_held: [bool; 3],
+    /// Its mind is sent `places` (an external one), so it is offered trips
+    /// to them (`Goal::Go`); the place a trip came to nothing a moment ago.
+    pub travels: bool,
+    pub go_held: Option<Name>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -900,8 +959,18 @@ pub struct Survivor {
     shop_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
+    /// When and where a walk home or a visit to the box last could not
+    /// reach home (`HOME_STUCK_NEAR_M`).
+    home_stuck: Option<(u32, [f32; 2])>,
+    /// When a walk to its stations last came to nothing.
+    station_failed: Option<u32>,
+    /// Where the body stood this frame.
+    here: [f32; 2],
     /// When a build goal last could not reach its work.
     build_failed: Option<u32>,
+    /// Goals that failed the moment they began: when last, and how many
+    /// times running.
+    flops: [Option<(Goal, u32, u8)>; FLOPS],
     /// A defence of home, and what defences came to.
     defend_job: DefendJob,
     pub defend_stats: DefendStats,
@@ -924,6 +993,9 @@ pub struct Survivor {
     pub delivered: u64,
     pub took: u64,
     deliver_failed: Option<u32>,
+    /// A supply run last found the team's boxes full, then: no run for a
+    /// while ([`supply::BOX_FULL_RETRY_TICKS`]).
+    box_full: Option<u32>,
     home_alarm: Option<u32>,
     team_code: Option<LockCode>,
     /// A trade at THE GATE and a feed at a work, and when one last came to
@@ -932,6 +1004,8 @@ pub struct Survivor {
     work_job: WorkJob,
     trade_failed: Option<u32>,
     work_failed: Option<u32>,
+    /// The place a trip (`Goal::Go`) last came to nothing at, and when.
+    go_failed: Option<(Name, u32)>,
     /// A stone read, a lock solved, a card door opened, the way out of a
     /// card room (`agent::lore`), and when a read, a solve or a swipe last
     /// came to nothing (in that order).
@@ -1020,6 +1094,10 @@ pub struct Survivor {
     patrol_failed: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
+    /// What the request out was told it had heard, and the hits it had
+    /// taken: a newer look at it keeps them beside what came since.
+    asked_heard: Heard,
+    asked_hits: u16,
     say_at: u32,
     /// The server's per-kind pace, kept on this side the way an honest
     /// client keeps it: an early action waits in the outbox rather than in
@@ -1096,7 +1174,11 @@ impl Survivor {
             research_left: None,
             shop_failed: None,
             home_failed: None,
+            home_stuck: None,
+            station_failed: None,
+            here: [0.0; 2],
             build_failed: None,
+            flops: [None; FLOPS],
             defend_job: DefendJob::default(),
             defend_stats: DefendStats::default(),
             defend_failed: None,
@@ -1112,10 +1194,12 @@ impl Survivor {
             delivered: 0,
             took: 0,
             deliver_failed: None,
+            box_full: None,
             home_alarm: None,
             team_code: None,
             trade_job: TradeJob::default(),
             work_job: WorkJob::default(),
+            go_failed: None,
             trade_failed: None,
             work_failed: None,
             read_job: ReadJob::default(),
@@ -1171,6 +1255,8 @@ impl Survivor {
             hand_failed: None,
             patrol_failed: None,
             team_seen: (0, 0),
+            asked_heard: Heard::EMPTY,
+            asked_hits: 0,
             say_at: 0,
             pace: Pace::default(),
             rules: None,
@@ -1333,8 +1419,21 @@ impl Survivor {
 
     /// `observe`, plus the goal this body is running now.
     fn summarize(&self, core: &ClientCore, view: &ClientView, player: u32) -> Summary {
-        let mut s = observe(core, view, player, &self.senses, &self.memory, &self.book);
+        let mut s = observe(
+            core,
+            view,
+            player,
+            &self.senses,
+            &self.memory,
+            &self.book,
+            &self.loadout,
+        );
         let tick = view.newest_applied.unwrap_or_default();
+        for &(goal, at, runs) in self.flops.iter().flatten() {
+            if runs >= 2 && tick.wrapping_sub(at) < FLOP_RETRY_TICKS {
+                s.withdraw(goal);
+            }
+        }
         s.current = self.goal.map(|a| Report {
             goal: a.goal,
             outcome: Outcome::Running,
@@ -1685,6 +1784,7 @@ impl Survivor {
         self.perceive(core, &body, tick);
         let x = body.qx as f32 * POS_XZ_Q;
         let z = body.qz as f32 * POS_XZ_Q;
+        self.here = [x, z];
         self.frontier.visit(Frontier::cell_of(x, z));
         let (ranged, rounds, loaded) = self.shooter(core);
         let kit = Kit {
@@ -1760,6 +1860,11 @@ impl Survivor {
         if logging_off {
             let intent = self.log_off(core, &body, tick);
             return self.overlay(intent, tick);
+        }
+        // Its team changed while a decision is out (an invite came): the
+        // mind's asker reads it on that decision, not the next.
+        if self.memory.team_wake && self.mind.refreshes() {
+            self.refresh(core, view, player);
         }
         let intent = match self.goal {
             None => {
@@ -1999,6 +2104,8 @@ impl Survivor {
         if summary.options_len == 0 || !self.mind.ask(now, &summary) {
             return false;
         }
+        self.asked_heard = summary.heard;
+        self.asked_hits = summary.hits;
         self.memory.hits = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
@@ -2007,6 +2114,33 @@ impl Survivor {
             a.asked = tick;
         }
         true
+    }
+
+    /// A newer look at the decision out, for a mind that shows it to its
+    /// asker (`Mind::refresh`): its team changed while the mind thinks. An
+    /// agent that takes a minute over a decision reads the invite on the
+    /// one it is reading, not on the next, by when the inviter may have
+    /// given up. What it had heard and the hits it had taken stay on it
+    /// beside what came since, and are not told again on the next. One that
+    /// does not go is tried again next frame.
+    fn refresh(&mut self, core: &ClientCore, view: &ClientView, player: u32) {
+        self.memory.trigger = Trigger::Team;
+        let mut s = self.summarize(core, view, player);
+        let mut heard = self.asked_heard;
+        for &line in s.heard.lines() {
+            heard.push(line);
+        }
+        s.heard = heard;
+        s.hits = s.hits.saturating_add(self.asked_hits);
+        if s.options_len == 0 || !self.mind.refresh(&s) {
+            return;
+        }
+        self.asked_heard = s.heard;
+        self.asked_hits = s.hits;
+        self.memory.hits = 0;
+        self.memory.chat.clear();
+        self.memory.chat_wake = false;
+        self.memory.team_wake = false;
     }
 
     /// An answer's line, kept for [`BotDriver::say`]. An external source
@@ -2157,6 +2291,15 @@ impl Survivor {
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
             self.home_failed = Some(tick);
         }
+        if let (Goal::Go(place), Outcome::Failed(_)) = (active.goal, outcome) {
+            self.go_failed = Some((place, tick));
+            self.memory.go_held = Some(place);
+        }
+        if matches!(active.goal, Goal::GoHome | Goal::Stash)
+            && outcome == Outcome::Failed(Why::Stuck)
+        {
+            self.home_stuck = Some((tick, self.here));
+        }
         // A build that failed the moment it began would fail the same way
         // the next second; one that ran out of materials partway goes for
         // more and is back when it has them.
@@ -2165,6 +2308,22 @@ impl Survivor {
                 || matches!(outcome, Outcome::Failed(_)) && report.secs == 0)
         {
             self.build_failed = Some(tick);
+        }
+        // Any other goal failing as it began, again, sits out a few seconds;
+        // once is often the moment changing under it (a pack just filled).
+        // Not flight or a fight: what they answer is still there.
+        let same = (0..FLOPS).find(|&i| self.flops[i].is_some_and(|(g, ..)| g == active.goal));
+        if matches!(outcome, Outcome::Failed(_))
+            && report.secs == 0
+            && !matches!(active.goal, Goal::Flee | Goal::Fight)
+        {
+            let runs = same.and_then(|i| self.flops[i]).map_or(0, |(.., n)| n);
+            let oldest = (0..FLOPS).min_by_key(|&i| self.flops[i].map_or(0, |(_, at, _)| at));
+            if let Some(i) = same.or(oldest) {
+                self.flops[i] = Some((active.goal, tick, runs.saturating_add(1)));
+            }
+        } else if let Some(i) = same {
+            self.flops[i] = None;
         }
         self.memory.trigger = match outcome {
             Outcome::Done | Outcome::Running => {
@@ -2249,7 +2408,8 @@ impl Survivor {
             | Goal::FeedWork
             | Goal::ReadStone
             | Goal::SolveLock
-            | Goal::SwipeCard => true,
+            | Goal::SwipeCard
+            | Goal::Go(_) => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -2399,8 +2559,14 @@ impl Survivor {
                 let team = *core.team();
                 if team.count > 0 {
                     self.end_goal(tick, Outcome::Done);
-                } else if team.invite == 0 || elapsed >= JOIN_GOAL_SECS * TICK_HZ {
-                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                } else if team.invite == 0 && active.fled {
+                    // The yes went, and the invite is gone with no team:
+                    // the shard said no (its line says why).
+                    self.end_goal(tick, Outcome::Failed(Why::Refused));
+                } else if team.invite == 0 {
+                    self.end_goal(tick, Outcome::Failed(Why::NoInvite));
+                } else if elapsed >= JOIN_GOAL_SECS * TICK_HZ {
+                    self.end_goal(tick, Outcome::Failed(Why::NoAnswer));
                 } else if !active.fled
                     && self.queue(|b| {
                         protocol::encode_action_team(protocol::TEAM_OP_ACCEPT, team.invite, b)
@@ -2451,6 +2617,11 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Meet => self.meet(core, body, tick),
+            Goal::Go(_) if elapsed >= GO_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Go(place) => self.travel(core, body, place, tick),
             Goal::Patrol if elapsed >= society::PATROL_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
@@ -2492,6 +2663,36 @@ impl Survivor {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
             },
+        }
+    }
+
+    /// A trip (`Goal::Go`): to the named place by the route, done once
+    /// within [`GO_STOP_M`] of it. A place it no longer knows is not found;
+    /// a way the route cannot find is stuck.
+    fn travel(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        place: Name,
+        tick: u32,
+    ) -> Intent {
+        let Some(to) = gate::place(core, place.as_str()) else {
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+            return Intent::IDLE;
+        };
+        match gate::walk(core, body, &mut self.route, to, GO_STOP_M, tick) {
+            Some(Ok(intent)) => {
+                self.stats.phase = Phase::Approaching;
+                intent
+            }
+            Some(Err(why)) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            None => {
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
         }
     }
 
@@ -3780,6 +3981,10 @@ impl Survivor {
         if matches!(outcome, Outcome::Failed(_)) {
             self.deliver_failed = Some(tick);
         }
+        if outcome == Outcome::Failed(Why::BoxFull) && self.goal.is_some_and(|a| a.goal.supplies())
+        {
+            self.box_full = Some(tick);
+        }
         self.home_job = HomeJob::default();
         self.end_goal(tick, outcome);
     }
@@ -3827,18 +4032,21 @@ impl Survivor {
             }
         }
         let Some(target) = self.target else {
-            if tick.wrapping_sub(active.leg) >= SEARCH_GOAL_SECS * TICK_HZ {
-                self.gather_over(tick, Outcome::Failed(Why::NotFound));
-                return hold;
-            }
+            let searched = tick.wrapping_sub(active.leg);
             // Head back toward the nearest one remembered: facing it puts
             // it in the cone, where the scan acquires it like any other.
+            // The walk there has its own time: the search's is for looking
+            // round, and is gone before a node 100 m off is in sight.
             if let Some((seen, at)) = self.recall[kind as usize] {
                 let fresh = tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ
                     && !seen.gone(core)
                     && Some(seen.key()) != self.skipped;
                 let (yaw, _, distance) = aim(body, &seen.slot);
-                let step = if fresh && distance > REACH_M {
+                let step = if fresh
+                    && distance > REACH_M
+                    && distance <= RECALL_WALK_M
+                    && searched < RECALL_WALK_SECS * TICK_HZ
+                {
                     self.route
                         .to(core, body, [seen.slot.x, seen.slot.z], REACH_M, true, tick)
                 } else {
@@ -3865,6 +4073,10 @@ impl Survivor {
                 }
                 // Arrived and still not acquired, or gone: forget it.
                 self.recall[kind as usize] = None;
+            }
+            if searched >= SEARCH_GOAL_SECS * TICK_HZ {
+                self.gather_over(tick, Outcome::Failed(Why::NotFound));
+                return hold;
             }
             self.stats.phase = Phase::Exploring;
             return Intent {
@@ -4152,7 +4364,11 @@ impl Survivor {
     }
 
     /// Home to its stations: in through the doors to the stand spot, which
-    /// its workbench and furnace are both in reach of.
+    /// its workbench and furnace are both in reach of. A walk that comes to
+    /// nothing holds every craft that needs a station a while
+    /// (`STATION_RETRY_TICKS`); one that has not got there in
+    /// `CRAFT_WALK_SECS`, or got to the stand spot and is still out of the
+    /// station's reach, has come to nothing.
     fn walk_to_station(
         &mut self,
         core: &mut ClientCore,
@@ -4161,6 +4377,12 @@ impl Survivor {
         tick: u32,
     ) -> Intent {
         self.stats.phase = Phase::GoingHome;
+        if self
+            .goal
+            .is_some_and(|a| tick.wrapping_sub(a.started) >= CRAFT_WALK_SECS * TICK_HZ)
+        {
+            return self.station_over(tick, Why::Stuck);
+        }
         // None of its own: the team's, in through the team's doors.
         if self.builder.stations(core).spot(station).is_none() {
             if let Some(spot) = self.shared.stations().spot(station) {
@@ -4168,15 +4390,16 @@ impl Survivor {
                     self.home_job = HomeJob::new(Trip::Point(spot));
                 }
                 let (intent, over) = self.home_step(core, body, tick);
-                if let Some(Outcome::Failed(why)) = over {
-                    self.end_goal(tick, Outcome::Failed(why));
-                }
-                return intent;
+                return match over {
+                    Some(Outcome::Failed(why)) => self.station_over(tick, why),
+                    // There, and still out of the station's reach.
+                    Some(_) => self.station_over(tick, Why::Stuck),
+                    None => intent,
+                };
             }
         }
         let (Some(haven), Some(stand)) = (self.haven, self.builder.stand()) else {
-            self.end_goal(tick, Outcome::Failed(Why::NoRecipe));
-            return Intent::IDLE;
+            return self.station_over(tick, Why::NoRecipe);
         };
         let (seed, _) = core.island();
         if self.builder.walled(core) && self.builder.region(body) != Region::Room {
@@ -4192,22 +4415,29 @@ impl Survivor {
             );
             match act {
                 Act::Done => {}
-                Act::Fail(why) => {
-                    self.end_goal(tick, Outcome::Failed(why));
-                    return Intent::IDLE;
-                }
+                Act::Fail(why) => return self.station_over(tick, why),
                 act => return self.act(act, tick),
             }
         }
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         match self.route.to(core, body, stand, 1.0, false, tick) {
             step @ Step::Walk { .. } => step.walk().unwrap_or(Intent::IDLE),
-            Step::Blocked => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
-                Intent::IDLE
+            Step::Blocked => self.station_over(tick, Why::Stuck),
+            // On the stand spot and still out of the station's reach: the
+            // station is not where the stand spot reaches, and walking at
+            // the spot would go on for ever.
+            Step::Arrived if (stand[0] - x).hypot(stand[1] - z) <= STAND_ON_M => {
+                self.station_over(tick, Why::Stuck)
             }
             Step::Arrived | Step::Wait => Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)),
         }
+    }
+
+    /// The walk to its stations came to nothing.
+    fn station_over(&mut self, tick: u32, why: Why) -> Intent {
+        self.station_failed = Some(tick);
+        self.end_goal(tick, Outcome::Failed(why));
+        Intent::IDLE
     }
 
     /// A loot run (`agent::loot`): the nearest barrel or crate it knows of,
@@ -5210,7 +5440,17 @@ impl Survivor {
                         self.bag_knocked = true;
                         self.bag_leg = BagLeg::In;
                     }
-                    // On the crew, or no way onto it: the floor says.
+                    // Not on the crew, and the code did not put it there
+                    // (or there is no lock to enter one at): the floor would
+                    // refuse the bag, the claim's, so it is not sent.
+                    None if self.shared.hearth().is_some()
+                        && !self.shared.crewed()
+                        && (self.bag_knocked || self.shared.hearth_unlocked(core)) =>
+                    {
+                        self.team_bag_failed = Some(tick);
+                        self.end_goal(tick, Outcome::Failed(Why::Locked));
+                    }
+                    // On the crew, or no way to know: the floor says.
                     None => self.bag_leg = BagLeg::Floor,
                 }
                 Some(Intent::IDLE)
@@ -5372,7 +5612,11 @@ impl Survivor {
                 return Intent::IDLE;
             }
             Chore::Fail(why) => {
-                self.home.stash_failed(tick);
+                if why == Why::Blocked {
+                    self.home.stash_blocked(tick);
+                } else {
+                    self.home.stash_failed(tick);
+                }
                 self.end_goal(tick, Outcome::Failed(why));
                 return Intent::IDLE;
             }
@@ -5437,6 +5681,20 @@ impl Survivor {
     fn home_held(&self, tick: u32) -> bool {
         self.home_failed
             .is_some_and(|at| tick.wrapping_sub(at) < GO_HOME_RETRY_TICKS)
+    }
+
+    /// Did a walk home, or a visit to the box, fail to reach home from
+    /// about here a moment ago?
+    fn home_unreachable(&self, tick: u32) -> bool {
+        self.home_stuck.is_some_and(|(at, [x, z])| {
+            let near = (x - self.here[0]).hypot(z - self.here[1]) <= HOME_STUCK_NEAR_M;
+            tick.wrapping_sub(at)
+                < if near {
+                    HOME_STUCK_TICKS
+                } else {
+                    GO_HOME_RETRY_TICKS
+                }
+        })
     }
 
     fn oven_failed(&mut self, tick: u32) {
@@ -6016,6 +6274,15 @@ impl Survivor {
             .tracks
             .recent(tick, THREAT_RECALL_SECS * TICK_HZ)
             .any(|t| t.species != Species::Pig);
+        let town = core.haven().town;
+        self.senses.hostile_afield =
+            self.tracks
+                .recent(tick, THREAT_RECALL_SECS * TICK_HZ)
+                .any(|t| match t.species {
+                    Species::Pig => false,
+                    Species::Wolf => true,
+                    Species::Player => !sim_core::town::safe(&town, t.pos[0], t.pos[2]),
+                });
         // Its team (wire v108): nobody's quarry, and a stranger swinging or
         // shooting near one of them is who `follow` goes for.
         let team = *core.team();
@@ -6026,6 +6293,21 @@ impl Survivor {
             self.kin.refresh(&soc, core, tick);
             for id in self.kin.ids() {
                 self.tracks.spare(id);
+            }
+        }
+        // Whoever is asking it onto their team, face to face, is not a
+        // threat for asking: spared while the invite waits. Not a truce:
+        // seen swinging or shooting lately, they are sized up like anyone.
+        if team.count == 0 && team.invite != 0 {
+            let recall = THREAT_RECALL_SECS * TICK_HZ;
+            let peaceful = self.tracks.get(team.invite).is_none_or(|t| {
+                [t.last_swing, t.last_shot]
+                    .into_iter()
+                    .flatten()
+                    .all(|when| tick.wrapping_sub(when) >= recall)
+            });
+            if peaceful {
+                self.tracks.spare(team.invite);
             }
         }
         let mut guard: Option<(f32, u32)> = None;
@@ -6159,8 +6441,12 @@ impl Survivor {
             self.memory.base.ready = false;
         }
         self.home.set_base(self.builder.stand());
-        self.memory.stash_held = self.home.stash_held(tick);
-        self.memory.home_held = self.home_held(tick);
+        let unreachable = self.home_unreachable(tick);
+        self.memory.stash_held = self.home.stash_held(tick) || unreachable;
+        self.memory.home_held = self.home_held(tick) || unreachable;
+        self.memory.station_held = self
+            .station_failed
+            .is_some_and(|at| tick.wrapping_sub(at) < STATION_RETRY_TICKS);
         self.memory.home = match self.builder.stand() {
             None => HomeSense::default(),
             Some([hx, hz]) => {
@@ -6179,6 +6465,10 @@ impl Survivor {
                     metres: d.clamp(0.0, f32::from(u16::MAX)) as u16,
                     attacked: self.home.alarmed(tick, home::HOME_ALARM_TICKS),
                     damaged: self.memory.damaged,
+                    doors: self.memory.doors.0,
+                    doors_locked: self.memory.doors.1,
+                    key_locks: self.memory.doors.2,
+                    unreachable,
                 }
             }
         };
@@ -6187,6 +6477,7 @@ impl Survivor {
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
         {
             self.water_at = Some(tick);
+            self.memory.doors = self.builder.doors(core);
             // A new session knows no plot: the base from before is taken up
             // again where its own bag lies in the airlock, not taken for a
             // stranger's and walked away from. A crewmate's bag lies in its
@@ -6286,6 +6577,9 @@ impl Survivor {
             self.memory.deliver_held = self
                 .deliver_failed
                 .is_some_and(|at| tick.wrapping_sub(at) < supply::DELIVER_RETRY_TICKS);
+            self.memory.box_full_held = self
+                .box_full
+                .is_some_and(|at| tick.wrapping_sub(at) < supply::BOX_FULL_RETRY_TICKS);
             self.memory.home_alarm = self
                 .home_alarm
                 .is_some_and(|at| tick.wrapping_sub(at) < home::HOME_ALARM_TICKS);
@@ -6297,6 +6591,7 @@ impl Survivor {
                 .is_some_and(|at| self.home.bag_near(at, supply::HOME_M));
             self.memory.team_bag = self.memory.shared
                 && !self.memory.bag_home
+                && self.shared.may_bag(core, self.team_code.is_some())
                 && self
                     .team_bag_failed
                     .is_none_or(|at| tick.wrapping_sub(at) >= TEAM_BAG_RETRY_TICKS);
@@ -6305,6 +6600,11 @@ impl Survivor {
             self.memory.trade_held = held(self.trade_failed);
             self.memory.work_held = held(self.work_failed);
             self.memory.lore_held = self.lore_failed.map(held);
+            self.memory.go_held = self
+                .go_failed
+                .filter(|&(_, at)| held(Some(at)))
+                .map(|(name, _)| name);
+            self.memory.travels = self.mind.kind() == SourceKind::External;
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
             let fire = self.device_near(core, Work::Cook, x, z);
             // Mid-cook the meat is on the grill rather than in the pack, and a
@@ -6378,9 +6678,13 @@ impl Survivor {
                     .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
+            // What a loot run would set off for (`loot::TRIP_M`): one known
+            // farther off was offered, and the run ended at once on it.
             for spot in self.loot.live(core, tick).filter(|s| !s.roadside()) {
                 let (d, b) = relative(body, spot.slot.x, spot.slot.z);
-                known.add(d, b);
+                if d <= loot::TRIP_M {
+                    known.add(d, b);
+                }
             }
             self.senses.loot = known;
             self.senses.loot_place = self.loot.place(&haven, here, tick).map(|(_, [x, z])| {
@@ -6472,7 +6776,11 @@ impl Survivor {
                 if !target.gone(core) && in_view(body, &slot) && visible(core, &haven, body, target)
                 {
                     let (d, b) = relative(body, slot.x, slot.z);
-                    self.sweep.cells[kind as usize].add(d, b);
+                    // The census counts what a gather goal would go for:
+                    // not the node it gave up on a moment ago.
+                    if Some(target.key()) != self.skipped {
+                        self.sweep.cells[kind as usize].add(d, b);
+                    }
                     let nearer = self.recall[kind as usize].is_none_or(|(old, at)| {
                         tick.wrapping_sub(at) >= RECALL_SECS * TICK_HZ
                             || old.gone(core)
@@ -6520,15 +6828,20 @@ impl Survivor {
         }
         if self.scan == 0 {
             // In view now, or seen within the recall window and still
-            // standing: a player remembers the rock they just turned from.
+            // standing: a player remembers the rock they just turned from,
+            // and the gather goal walks back to it (`RECALL_WALK_M`).
             let mut cells = self.sweep.cells;
             for (kind, cell) in cells.iter_mut().enumerate() {
                 if cell.count > 0 {
                     continue;
                 }
                 if let Some((t, at)) = self.recall[kind] {
-                    if tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ && !t.gone(core) {
-                        let (d, b) = relative(body, t.slot.x, t.slot.z);
+                    let (d, b) = relative(body, t.slot.x, t.slot.z);
+                    if tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ
+                        && !t.gone(core)
+                        && Some(t.key()) != self.skipped
+                        && d <= RECALL_WALK_M
+                    {
                         cell.add(d, b);
                     }
                 }
@@ -6933,6 +7246,15 @@ impl Survivor {
 
 impl BotDriver for Survivor {
     fn welcome(&mut self, welcome: &Welcome) {
+        // A goal still in hand is the last session's (a shift that ended
+        // mid-walk home, a dropped link). Kept, its clock would count the
+        // time away: the log-off walk home a shift's end cut short failed
+        // as stuck at 1900 s the moment the next shift began (#363). It
+        // ends where that session left it.
+        if self.goal.is_some() {
+            let last = self.seen_tick.unwrap_or(welcome.tick);
+            self.end_goal(last, Outcome::Interrupted(Why::Session));
+        }
         let mut core = Box::new(ClientCore::new(
             welcome.seed,
             welcome.player_id,
@@ -6966,6 +7288,7 @@ impl BotDriver for Survivor {
         self.home_alarm = None;
         self.leave = Leave::default();
         self.deliver_failed = None;
+        self.box_full = None;
         // A crewmate lives behind its founder's doors: the crew's code is
         // what its clan would have told it, never printed.
         self.team_code = self
@@ -7193,6 +7516,39 @@ pub fn best_tool(core: &ClientCore, kind: Kind) -> Option<u8> {
     None
 }
 
+/// A craft of a tool or weapon that would be a second one: a working one
+/// of it is carried, or a better one on every tool ladder it stands on
+/// ([`TREE_TOOLS`], [`NODE_TOOLS`]), or one that outclasses it
+/// (`loadout::outclassed`). A player looks in the pack before crafting
+/// (an agent was offered the stone hatchet and pickaxe it carried,
+/// 2026-10-18). One worn out does not count: making another is the repair.
+fn needless_gear(core: &ClientCore, book: &Book, item: u16, name: &str) -> bool {
+    let gear = matches!(
+        book.page(item).class,
+        Class::Melee | Class::Ranged | Class::Tool
+    ) && core.catalog.row(usize::from(item)).stack_max <= 1;
+    if !gear {
+        return false;
+    }
+    let working = |n: &str| {
+        core.inv.iter().any(|st| {
+            st.count > 0
+                && core.catalog.name(usize::from(st.item)) == n.as_bytes()
+                && (core.catalog.row(usize::from(st.item)).cond_max == 0 || st.cond > 0)
+        })
+    };
+    if working(name) {
+        return true;
+    }
+    let mut rungs = [TREE_TOOLS, NODE_TOOLS]
+        .into_iter()
+        .filter_map(|ladder| Some((ladder, ladder.iter().position(|t| *t == name)?)))
+        .peekable();
+    let laddered = rungs.peek().is_some();
+    (laddered && rungs.all(|(ladder, rank)| ladder[..rank].iter().any(|t| working(t))))
+        || crate::agent::loadout::outclassed(name, working)
+}
+
 /// The move that puts on better armour than is worn, if the pack holds
 /// some: `(pack slot, wear slot)`, by the catalog's wear slot and armour
 /// share, the best piece for each slot first.
@@ -7365,6 +7721,7 @@ pub fn observe(
     senses: &Senses,
     memory: &Memory,
     book: &Book,
+    loadout: &Loadout,
 ) -> Summary {
     let mut s = Summary::EMPTY;
     s.tick = view.newest_applied.unwrap_or_default();
@@ -7457,6 +7814,7 @@ pub fn observe(
                     || usize::from(core.jobs_count) >= CRAFT_QUEUE
                     || queued(core, r as u16)
                     || !memory.stations.usable(def.station)
+                    || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
                     || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
@@ -7474,6 +7832,7 @@ pub fn observe(
                 if rank(def.output, &name) == pass
                     && n < SUMMARY_CRAFTS
                     && !s.craftable[..n].contains(&name)
+                    && !needless_gear(core, book, def.output, name.as_str())
                 {
                     s.craftable[n] = name;
                     s.craftable_len += 1;
@@ -7733,10 +8092,9 @@ pub fn observe(
                     && page.ranged.round != sim_core::gather::NO_ITEM
                     && count_item(core, page.ranged.round) > 0))
     });
-    let meds = core.inv.iter().any(|st| {
-        let page = book.page(st.item);
-        st.count > 0 && page.class == Class::Med && page.heal > 0
-    });
+    // What `dose` can take, by the same ladder: a med it cannot pick would
+    // offer a heal that fails at once and is chosen again, every tick.
+    let meds = loadout.best(core, Role::Meds).is_some();
     let player = senses.threats[..usize::from(senses.threats_len)]
         .iter()
         .any(|t| t.arms != Arms::Teeth);
@@ -7793,7 +8151,7 @@ pub fn observe(
         s.offer(Goal::Recycle);
     }
     // The gate's guns shoot whoever fought a player lately.
-    if memory.research && !senses.hostile && core.hostile_left() == 0 {
+    if memory.research && !senses.hostile_afield && core.hostile_left() == 0 {
         s.offer(Goal::Research);
     }
     if memory.shop && !senses.hostile {
@@ -7843,12 +8201,12 @@ pub fn observe(
         && !f.reachable
         && !f.invited_me
         && s.gate.is_some()
-        && !senses.hostile
+        && !senses.hostile_afield
     {
         s.offer(Goal::Meet);
     }
     // Its society's crew, coming together there (`agent::society`).
-    if senses.society_meet && s.gate.is_some() && !senses.hostile {
+    if senses.society_meet && s.gate.is_some() && !senses.hostile_afield {
         s.offer(Goal::Meet);
     }
     // A home to walk a ring round, and something in hand to meet an
@@ -7883,14 +8241,17 @@ pub fn observe(
             (Goal::GatherOre, Goal::SupplyOre),
             (Goal::GatherHemp, Goal::SupplyHemp),
         ] {
-            if s.offers(gather) {
+            if s.offers(gather) && !memory.box_full_held {
                 s.offer(run);
             }
         }
     }
     // THE GATE's trades, while it is not marked hostile (its guns shoot),
     // and a feed for the nearest work that takes what the pack holds.
-    if !senses.hostile && core.hostile_left() == 0 && s.gate.is_some() && !memory.trade_held {
+    // Strangers at the gate itself do not take them away: it is where
+    // everybody trades.
+    if !senses.hostile_afield && core.hostile_left() == 0 && s.gate.is_some() && !memory.trade_held
+    {
         let mut rows = [(0u16, false); gate::TRADE_ROWS];
         let wants = memory
             .base
@@ -7928,6 +8289,35 @@ pub fn observe(
             }
             if !memory.lore_held[2] && lore::swipeable(core).is_some() {
                 s.offer(Goal::SwipeCard);
+            }
+        }
+    }
+    // Trips to the places an external mind is told of: THE GATE (not while
+    // its guns would shoot), each work and each lock it knows, while it is
+    // not there already and no trip there came to nothing a moment ago.
+    // Strangers in view do not take them away: a person walks past people.
+    if memory.travels {
+        let gate = s
+            .gate
+            .filter(|_| core.hostile_left() == 0)
+            .and_then(|at| Some((Name::new(gate::GATE_NAME.as_bytes())?, at)));
+        let (works, locks) = (s.works, s.locks);
+        let trips = gate
+            .into_iter()
+            .chain(
+                works[..usize::from(s.works_len)]
+                    .iter()
+                    .filter_map(|w| Some((w.name, w.at?))),
+            )
+            .chain(
+                locks[..usize::from(s.locks_len)]
+                    .iter()
+                    .filter_map(|l| Some((l.name, l.at?))),
+            );
+        for (name, at) in trips {
+            if name != Name::EMPTY && at.distance != Distance::Here && memory.go_held != Some(name)
+            {
+                s.offer(Goal::Go(name));
             }
         }
     }
@@ -8149,7 +8539,6 @@ mod tests {
     use super::*;
     use crate::mind::{MindConfig, Scripted};
     use protocol::{InvSlot, ItemRow};
-    use sim_core::craft::STATION_NONE;
     use sim_core::gather::ItemStack;
     use sim_core::movement::{quant_xz, quant_y};
 
@@ -8388,6 +8777,84 @@ mod tests {
             assert!(wx * sx + wz * sz > 120.0, "({wx}, {wz})");
             assert_eq!(frame.buttons, 0);
         }
+    }
+
+    /// A node remembered farther off than the search's 20 s of walking
+    /// (60 m): the gather goal walks back to it, where it used to fail
+    /// "none in sight" with the node in its own census (#362).
+    #[test]
+    fn a_gather_walks_back_to_a_node_remembered_beyond_the_search() {
+        let (mut bot, mut view, _) = fixture();
+        let haven = *bot.haven.as_ref().unwrap();
+        let core = bot.core.as_mut().unwrap();
+        let mut slot_at = |cx: i32, cz: i32| {
+            let (seed, island) = core.island();
+            island.cache.slot(seed, island.table, island.haven, cx, cz)
+        };
+        // An ore node, and dry ground 100 m from it with no ore in sight.
+        let r = SIGHT_CELLS + 1;
+        let (target, (x, y, z)) = (40..216)
+            .flat_map(|cz| (40..216).map(move |cx| (cx, cz)))
+            .find_map(|(cx, cz)| {
+                let slot = slot_at(cx, cz);
+                if Kind::of(slot.occupant) != Some(Kind::Ore) {
+                    return None;
+                }
+                let spot = (0..16).find_map(|i| {
+                    let a = i as f32 * std::f32::consts::TAU / 16.0;
+                    let (x, z) = (slot.x + 100.0 * a.sin(), slot.z + 100.0 * a.cos());
+                    let y = terrain::ground(SEED, &haven, x, z);
+                    let (bx, bz) = (
+                        (x / CELL_SIZE).floor() as i32,
+                        (z / CELL_SIZE).floor() as i32,
+                    );
+                    let bare = (-r..=r).all(|dz| {
+                        (-r..=r).all(|dx| {
+                            Kind::of(slot_at(bx + dx, bz + dz).occupant) != Some(Kind::Ore)
+                        })
+                    });
+                    (y > 1.0 && bare).then_some((x, y, z))
+                })?;
+                let target = Target {
+                    cx: cx as u16,
+                    cz: cz as u16,
+                    slot,
+                };
+                Some((target, spot))
+            })
+            .expect("an ore node with bare ground 100 m off");
+        view.entities[0].1 = EntityState {
+            id: 1,
+            qx: quant_xz(x),
+            qy: quant_y(y),
+            qz: quant_xz(z),
+            grounded: true,
+            ..EntityState::default()
+        };
+        let t0 = 10;
+        view.newest_applied = Some(t0);
+        goal(&mut bot, Goal::GatherOre, t0);
+        bot.recall[Kind::Ore as usize] = Some((target, t0));
+        let now = Instant::now();
+        let until = t0 + (SEARCH_GOAL_SECS + 5) * TICK_HZ;
+        for (seq, tick) in (t0..until).step_by(SCAN_CELLS_MAX as usize).enumerate() {
+            view.newest_applied = Some(tick);
+            bot.frame_at(&view, 1, seq as u16 + 1, now);
+        }
+        assert!(
+            bot.goal.is_some_and(|a| a.goal == Goal::GatherOre),
+            "the walk back was cut short: {:?}",
+            bot.memory.last
+        );
+        assert!(
+            bot.history
+                .iter()
+                .all(|r| r.outcome != Outcome::Failed(Why::NotFound)),
+            "it gave up the search with the node remembered: {:?}",
+            bot.memory.last
+        );
+        assert_eq!(bot.stats.phase, Phase::Approaching);
+        assert!(bot.senses.ore_nodes.count > 0, "the census knows of it");
     }
 
     /// A harvest swing never lands on a body: one standing across the
@@ -8808,6 +9275,34 @@ mod tests {
         assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
     }
 
+    /// A goal that fails as it begins twice running is off the list for a
+    /// few seconds, so the next choice is something else; one that failed
+    /// after trying a while is offered again at once.
+    #[test]
+    fn a_goal_that_fails_as_it_begins_sits_out_a_few_seconds() {
+        let (mut bot, mut view, _) = fixture();
+        let flop = |bot: &mut Survivor, at: u32| {
+            goal(bot, Goal::Explore, at);
+            bot.end_goal(at, Outcome::Failed(Why::Stuck));
+        };
+        let offered =
+            |bot: &Survivor, view: &ClientView| bot.summary(view, 1).unwrap().offers(Goal::Explore);
+        view.newest_applied = Some(100);
+        flop(&mut bot, 100);
+        assert!(offered(&bot, &view), "once may be the moment changing");
+        flop(&mut bot, 100);
+        assert!(!offered(&bot, &view), "twice running is a loop");
+        view.newest_applied = Some(100 + FLOP_RETRY_TICKS);
+        assert!(offered(&bot, &view));
+        flop(&mut bot, 100 + FLOP_RETRY_TICKS);
+        assert!(!offered(&bot, &view), "still the same loop");
+        // A run that tried for a while ends the loop.
+        let at = 100 + FLOP_RETRY_TICKS;
+        goal(&mut bot, Goal::Explore, at);
+        bot.end_goal(at + 5 * TICK_HZ, Outcome::Failed(Why::Stuck));
+        assert!(offered(&bot, &view));
+    }
+
     #[test]
     fn a_craftable_tool_is_never_crowded_off_the_bounded_list() {
         let (mut bot, view, _) = fixture();
@@ -8849,6 +9344,93 @@ mod tests {
         let summary = bot.summary(&view, 1).unwrap();
         assert_eq!(summary.craftable()[0].as_str(), "Stone Hatchet");
         assert!(summary.offers(Goal::Craft(Name::new(b"Stone Hatchet").unwrap())));
+    }
+
+    #[test]
+    fn a_tool_or_weapon_carried_is_not_offered_again_until_worn_out() {
+        // Report 3c435c78: an agent was offered the stone hatchet and
+        // pickaxe it carried.
+        let (mut bot, view, _) = fixture();
+        let core = bot.core.as_mut().unwrap();
+        core.recipes.recipe_count = 2;
+        core.recipes_have = 2;
+        for (r, output) in [(0, 9u16), (1, 3)] {
+            core.recipes.recipes[r] = sim_core::craft::RecipeDef {
+                output,
+                out_count: 1,
+                ticks: 1,
+                station: STATION_NONE,
+                blueprint: false,
+                unlock: 0,
+                n_inputs: 1,
+                inputs: [(5, 1), (0, 0), (0, 0), (0, 0)],
+            };
+        }
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 10,
+            cond: 0,
+            skin: 0,
+        };
+        let rules = Rules::shipped().unwrap();
+        bot.book.learn(&rules, &bot.core.as_ref().unwrap().catalog);
+        let (hatchet, bat) = (
+            Name::new(b"Stone Hatchet").unwrap(),
+            Name::new(b"Bat").unwrap(),
+        );
+        let s = bot.summary(&view, 1).unwrap();
+        assert!(s.offers(Goal::Craft(hatchet)));
+        assert!(!s.craftable().contains(&bat), "the bat it carries");
+        bot.core.as_mut().unwrap().inv[8] = ItemStack {
+            item: 9,
+            count: 1,
+            cond: 100,
+            skin: 0,
+        };
+        assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
+        // Worn out, making another is the repair.
+        bot.core.as_mut().unwrap().inv[8].cond = 0;
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
+    }
+
+    #[test]
+    fn an_external_mind_may_walk_to_the_gate_and_stop_there() {
+        // Report 215046-e68f8c35: no goal walked to THE GATE but a meet
+        // with a friend, so an agent walked there by trades.
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let trip = Goal::Go(Name::new(gate::GATE_NAME.as_bytes()).unwrap());
+        assert_eq!(trip.label().as_str(), "go:THE GATE");
+        assert_eq!(Goal::named("go:THE GATE"), Some(trip));
+        let s = bot.summary(&view, 1).unwrap();
+        assert!(s.gate.is_some_and(|p| p.distance != Distance::Here));
+        assert!(!s.offers(trip), "only a mind that is told of places");
+        bot.memory.travels = true;
+        assert!(bot.summary(&view, 1).unwrap().offers(trip));
+        goal(&mut bot, trip, 1);
+        bot.frame_at(&view, 1, 1, now);
+        assert_eq!(bot.goal(), Some(trip));
+        assert_eq!(bot.stats.phase, Phase::Approaching);
+        // Beside the stall it is there: done, and no longer offered.
+        let [gx, gz] = gate::gate(bot.core.as_ref().unwrap()).unwrap();
+        let haven = *bot.haven.as_ref().unwrap();
+        let start = view.entities[0].1;
+        let body = &mut view.entities[0].1;
+        body.qx = quant_xz(gx + 3.0);
+        body.qz = quant_xz(gz);
+        body.qy = quant_y(terrain::ground(SEED, &haven, gx + 3.0, gz));
+        bot.frame_at(&view, 1, 2, now);
+        let report = bot.memory.last.unwrap();
+        assert_eq!((report.goal, report.outcome), (trip, Outcome::Done));
+        // (The frames read the fixture's scripted mind: it is told again.)
+        bot.memory.travels = true;
+        assert!(!bot.summary(&view, 1).unwrap().offers(trip), "it is here");
+        // A trip that came to nothing is not offered again at once.
+        view.entities[0].1 = start;
+        assert!(bot.summary(&view, 1).unwrap().offers(trip));
+        goal(&mut bot, trip, 3);
+        bot.end_goal(3, Outcome::Failed(Why::Stuck));
+        assert!(!bot.summary(&view, 1).unwrap().offers(trip));
     }
 
     #[test]
@@ -9387,6 +9969,100 @@ mod tests {
         assert!(bot.tracks.aim_pose(2).is_none(), "nobody aims at a memory");
     }
 
+    /// #363: a walk home a shift's end cut short was still the goal when
+    /// the next shift began half an hour later, and its clock, counting the
+    /// time away, failed it as stuck at once ("go_home failed after 1900
+    /// s"). A new session ends what the last one left running, at the time
+    /// it really ran.
+    #[test]
+    fn a_goal_the_last_session_left_running_ends_with_that_session() {
+        let (mut bot, _, _) = fixture();
+        goal(&mut bot, Goal::GoHome, 100);
+        bot.seen_tick = Some(100 + 30 * TICK_HZ);
+        bot.welcome(&Welcome {
+            seed: SEED,
+            player_id: 1,
+            tick: 100 + 1900 * TICK_HZ,
+            dev: true,
+            blight_salt: 0,
+        });
+        assert_eq!(bot.goal(), None, "nothing carried over");
+        let last = bot.memory.last.expect("the walk's report");
+        assert_eq!(last.goal, Goal::GoHome);
+        assert_eq!(last.outcome, Outcome::Interrupted(Why::Session));
+        assert_eq!(last.secs, 30, "the time it ran, not the time away");
+        assert!(
+            !bot.home_held(100 + 1900 * TICK_HZ),
+            "a cut-short walk is not a failed one"
+        );
+    }
+
+    /// A walk home that could not reach home is not offered again from
+    /// about the same spot (a report, 2026-10-19: offered, failed in 0 s,
+    /// offered again a minute later, the body starving), and the summary
+    /// says why; a walk to the stations that came to nothing holds the
+    /// crafts that need one (Flint, the same day: 2,135 in half an hour).
+    #[test]
+    fn a_walk_that_could_not_get_there_is_not_offered_again_from_the_same_spot() {
+        let (mut bot, view, _) = fixture();
+        bot.here = [100.0, 100.0];
+        bot.home_stuck = Some((1000, [100.0, 100.0]));
+        assert!(
+            bot.home_unreachable(1000 + GO_HOME_RETRY_TICKS + 1),
+            "held on the spot"
+        );
+        assert!(
+            !bot.home_unreachable(1000 + HOME_STUCK_TICKS),
+            "not for ever"
+        );
+        bot.here = [100.0 + HOME_STUCK_NEAR_M + 1.0, 100.0];
+        assert!(
+            !bot.home_unreachable(1000 + GO_HOME_RETRY_TICKS + 1),
+            "moved off"
+        );
+        assert!(
+            bot.home_unreachable(1000 + GO_HOME_RETRY_TICKS - 1),
+            "the minute anywhere"
+        );
+        bot.memory.home = HomeSense {
+            state: HomeState::Built,
+            unreachable: true,
+            ..HomeSense::default()
+        };
+        let v = bot.summary(&view, 1).unwrap().to_json();
+        assert!(v["home"]["no_way_from_here"].is_string(), "{}", v["home"]);
+
+        // A hatchet made at the bench, from wood in the pack.
+        let core = bot.core.as_mut().unwrap();
+        core.recipes.recipe_count = 3;
+        core.recipes_have = 3;
+        core.recipes.recipes[2] = sim_core::craft::RecipeDef {
+            output: 9,
+            out_count: 1,
+            ticks: 10,
+            station: sim_core::craft::STATION_WORKBENCH1,
+            blueprint: false,
+            unlock: 0,
+            n_inputs: 1,
+            inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
+        };
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 30,
+            cond: 0,
+            skin: 0,
+        };
+        bot.memory.stations = Stations {
+            bench: Some([0.0, 0.0]),
+            tier: 1,
+            ..Stations::NONE
+        };
+        let hatchet = Goal::Craft(Name::new(b"Stone Hatchet").unwrap());
+        assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
+        bot.memory.station_held = true;
+        assert!(!bot.summary(&view, 1).unwrap().offers(hatchet));
+    }
+
     #[test]
     fn the_observation_is_a_pure_function_of_received_state() {
         let (bot, mut view, _) = fixture();
@@ -9403,5 +10079,150 @@ mod tests {
         for banned in ["seed", "20260731", "qx", "player_id"] {
             assert!(!text.contains(banned), "{banned} in {text}");
         }
+    }
+
+    /// An external mind that holds its answer for a newer look at the
+    /// decision and says yes to the invite on it. The decision it was
+    /// asked first has no invite on it and offers a flight from the
+    /// stranger; the newer look must offer the yes and no flight.
+    struct YesOnTheNewerLook;
+
+    impl crate::mind::DecisionSource for YesOnTheNewerLook {
+        fn kind(&self) -> SourceKind {
+            SourceKind::External
+        }
+
+        fn decide(&mut self, _: &Summary) -> Result<Choice, String> {
+            Err("no newer look came".into())
+        }
+
+        fn decide_fresh(
+            &mut self,
+            first: &Summary,
+            fresher: &mut dyn FnMut() -> Option<Summary>,
+        ) -> Result<Choice, String> {
+            if first.offers(Goal::JoinTeam) || !first.offers(Goal::Flee) {
+                return Err("the first look was not the stale one".into());
+            }
+            let until = Instant::now() + std::time::Duration::from_secs(10);
+            while Instant::now() < until {
+                if let Some(newer) = fresher() {
+                    if !newer.offers(Goal::JoinTeam) || newer.offers(Goal::Flee) {
+                        return Err("the newer look did not show the invite".into());
+                    }
+                    return Ok(Choice {
+                        goal: Goal::JoinTeam,
+                        confidence: 1.0,
+                        reason: crate::mind::Reason::EMPTY,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        say: crate::mind::Say::Quiet,
+                        code: None,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err("no newer look came".into())
+        }
+    }
+
+    /// 2026-10-19 (Moss): a harness sat over a minute on each decision; a
+    /// person beside it invited it meanwhile. It read the decision asked
+    /// before the invite (no join_team, flight and fight from the inviter),
+    /// and the yes it gave a decision later came after the invite lapsed.
+    /// Now the invite sends a newer look at the decision out, under the
+    /// same request: the inviter is no threat on it, the yes is on offer,
+    /// and the yes goes to the shard. An inviter seen swinging is sized up
+    /// again like anyone.
+    #[test]
+    fn an_invite_while_the_mind_thinks_is_on_the_decision_it_is_reading() {
+        let (mut bot, view, _) = fixture();
+        let me = *view.get(1).unwrap();
+        let haven = *bot.haven.as_ref().unwrap();
+        let (mx, mz) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
+        let eye = eye_point(&me);
+        let core = bot.core.as_mut().unwrap();
+        // A person in the open a few metres ahead, as the inviter stood.
+        let mut pick = None;
+        'search: for k in 0..32u16 {
+            let yaw = k << 11;
+            let (fx, fz) = yaw_dir(yaw);
+            for step in 2..6 {
+                let (x, z) = (mx + fx * step as f32, mz + fz * step as f32);
+                let b = stander(0, &haven, x, z);
+                let to = [x, b.qy as f32 * POS_Y_Q + 1.4, z];
+                if tracks::clear_line(core, &haven, eye, to, tracks::PLAYER_SIGHT_M) == Sight::Clear
+                {
+                    pick = Some((yaw, x, z));
+                    break 'search;
+                }
+            }
+        }
+        let (yaw, x, z) = pick.expect("an open spot ahead");
+        let mut me = me;
+        me.yaw = yaw;
+        let bodies = [me, stander(2, &haven, x, z)];
+        let mut view = ClientView::new();
+        goal(&mut bot, Goal::Wait, 1);
+        let now = Instant::now();
+        let mut tick = 2u32;
+        let mut frame = |bot: &mut Survivor, view: &mut ClientView| {
+            keyframe(view, tick, &bodies);
+            bot.frame_at(view, 1, tick as u16, now);
+            tick += 1;
+        };
+        for _ in 0..60 {
+            if bot.tracks.get(2).is_some() {
+                break;
+            }
+            frame(&mut bot, &mut view);
+        }
+        frame(&mut bot, &mut view);
+        assert_eq!(bot.senses.players.count, 1, "the person is seen");
+        // The decision goes out with the person a stranger, and its mind
+        // takes its time over it.
+        bot.mind = Mind::new(YesOnTheNewerLook, MindConfig::default()).unwrap();
+        let first = bot.summary(&view, 1).unwrap();
+        assert!(first.offers(Goal::Flee) && !first.offers(Goal::JoinTeam));
+        assert!(bot.mind.ask(Instant::now(), &first));
+        // The person invites it.
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let invite = protocol::TeamView {
+            invite: 2,
+            ..protocol::TeamView::NONE
+        };
+        let n = protocol::event::encode_event_team(&invite, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        for _ in 0..2000 {
+            frame(&mut bot, &mut view);
+            if bot.goal() == Some(Goal::JoinTeam) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            bot.goal(),
+            Some(Goal::JoinTeam),
+            "the yes on the newer look was taken: {:?}",
+            bot.mind.stats
+        );
+        let (out, len) = bot.outbox.expect("the yes is on its way");
+        assert!(matches!(
+            protocol::decode_action(&out[..len]),
+            Ok(protocol::ActionMsg::Team {
+                op: protocol::TEAM_OP_ACCEPT,
+                target: 2
+            })
+        ));
+        assert_eq!(bot.senses.players.count, 0, "the inviter is no threat");
+        // A swing from the inviter: sized up like anyone again.
+        let n = protocol::event::encode_event_swing(2, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        frame(&mut bot, &mut view);
+        frame(&mut bot, &mut view);
+        assert_eq!(
+            bot.senses.players.count, 1,
+            "an inviter who swings is watched"
+        );
     }
 }

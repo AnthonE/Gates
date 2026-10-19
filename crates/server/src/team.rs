@@ -33,10 +33,14 @@ use std::path::{Path, PathBuf};
 /// How far the leader may be from the player they invite: Rust's 7 m
 /// look-and-press reach, in centimetres.
 pub const INVITE_REACH_CM: i64 = 700;
-/// How long an invite waits for an answer, in ticks (60 s). Rust keeps
-/// them until answered; a stale one here would only be a prompt nobody
-/// remembers asking for.
-pub const INVITE_TICKS: u64 = 60 * sim_core::limits::TICK_HZ as u64;
+/// How long an invite waits for an answer, in ticks (five minutes). Rust
+/// keeps them until answered; a stale one here would only be a prompt
+/// nobody remembers asking for. Five, not one: an agent whose mind is a
+/// harness thinks for up to its autopilot window (`--autopilot-s`, up to
+/// 165 s; the island's own run two minutes) before its yes comes, and at
+/// one minute a person inviting one watched the yes come too late
+/// (2026-10-19).
+pub const INVITE_TICKS: u64 = 5 * 60 * sim_core::limits::TICK_HZ as u64;
 /// The fewest ticks between two views that differ only in where members
 /// stand (half a second). A change of who, leader, state or invite goes at
 /// once.

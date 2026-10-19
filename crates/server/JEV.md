@@ -70,7 +70,8 @@ The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `build`, `go_home`, `stash`, `loot`, `cook`, `recycle`, `defend`, `raid`,
 `join_team`, `invite`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
 `supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
-`sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`.
+`sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`,
+`go:<place name>`.
 Only goals that can work now are offered — a gather goal needs a belt tool
 for the kind and room for what it pays, eat needs something worth eating, and
 drink needs known water-giving food or the sea plus the health to pay for it —
@@ -111,6 +112,11 @@ and a reply naming anything else is refused.
   holds, everything of it put in; or a lit one's tank topped up.
 - **read_stone / solve_lock / swipe_card** — the ancients' stones, their
   locks and the ziggurat's card doors (below).
+- **go:X** — walk to a named place and stop within 8 m: `go:THE GATE`
+  (not while marked hostile), or a work or lock by its name in `places`.
+  Offered only to an external or MCP mind (the one sent `places`), for
+  each place not already "here"; strangers in view do not take it away. A
+  trip that fails is not offered again for that place for two minutes.
 
 ## Teams and the team's base
 
@@ -288,7 +294,10 @@ port to guard, the agent dies with the bot, and the bot's stdout stays free.
 The reply must echo the id and name an offered goal within `--timeout-ms`;
 `reason` is optional and shown trimmed to 96 printable characters. Replies to
 an older id are skipped; lines over 8 KiB, bad JSON, unknown goals, silence
-and exit are failures.
+and exit are failures. The same id can come again before you answer: a newer
+look at the same decision, sent when the body's team changed meanwhile (an
+invite came, someone joined or left). Read the newest line with that id; the
+answer is judged by its options, and the deadline is the first line's.
 
 **Talking.** `heard` is the chat its client received since the last request,
 labelled the way a player's chat log labels it (`me` is its own line back,

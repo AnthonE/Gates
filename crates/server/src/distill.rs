@@ -173,10 +173,26 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
     }
 
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
-        let answer = self.inner.decide(summary);
+        self.decide_fresh(summary, &mut || None)
+    }
+
+    /// The row pairs the answer with the newest look it was given.
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
+        let mut newest = *summary;
+        let answer = self.inner.decide_fresh(summary, &mut || {
+            let newer = fresher();
+            if let Some(n) = newer {
+                newest = n;
+            }
+            newer
+        });
         if let (Ok(choice), Some(out)) = (&answer, self.out.as_mut()) {
             let line = row(
-                summary,
+                &newest,
                 choice,
                 self.inner.kind(),
                 self.rows,
