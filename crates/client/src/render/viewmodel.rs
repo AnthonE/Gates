@@ -2591,10 +2591,13 @@ pub fn animate(
     //
     // Melee only: a bow's hits are its arrows landing, a flight after the
     // loose, and taking one for a missed swing chopped the bow like an axe.
-    let landed_at_rest = bow.is_none()
-        && !shoots
-        && m.swing <= 0.0
-        && (feed.hits > 0 || !feed.gathered().is_empty());
+    //
+    // The sim's own swing, not `gathered()`: looting a bag or picking a stack
+    // up pays out as a gather too, and swung the arm on every E.
+    let own_swing = net
+        .as_deref()
+        .is_some_and(|n| feed.swings().contains(&n.session.core.player_id));
+    let landed_at_rest = bow.is_none() && !shoots && m.swing <= 0.0 && (feed.hits > 0 || own_swing);
     // A queued stroke only starts from rest, like the backstop.
     let queued = std::mem::take(&mut m.queued) && m.swing <= 0.0;
     if predicted || landed_at_rest || queued {

@@ -7212,6 +7212,20 @@ const _: () = {
 pub const CACTUS_R_M: f32 = 0.27;
 pub const CACTUS_TOP_M: f32 = 2.4;
 
+/// The desert's other cactus: a ribbed ball at knee height
+/// (`render/plants`' ball model). Painted species 1 of a cactus slot; as
+/// wide as a saguaro's trunk so the road clearance above holds for both.
+pub const BALL_CACTUS_SPECIES: u8 = 1;
+pub const BALL_CACTUS_TOP_M: f32 = 0.6;
+
+/// [`occupant_volume`] for this slot: a ball cactus is short.
+pub const fn slot_volume(slot: &Slot) -> (f32, f32) {
+    match slot.occupant {
+        Occupant::Cactus if slot.species == BALL_CACTUS_SPECIES => (CACTUS_R_M, BALL_CACTUS_TOP_M),
+        o => occupant_volume(o),
+    }
+}
+
 /// Share of the desert's shrubs that stand as a cactus, per mille. **(knob)**
 /// The rest is dry scrub. Rust's arid biome is thick with them.
 pub const CACTUS_PERMILLE: u16 = 380;
@@ -10271,7 +10285,7 @@ pub fn slot_blocks(
     capsule_r: f32,
     capsule_h: f32,
 ) -> bool {
-    let (r, top) = occupant_volume(slot.occupant);
+    let (r, top) = slot_volume(slot);
     if r <= 0.0 {
         return false;
     }
@@ -10356,7 +10370,7 @@ pub fn slot_blocks(
 /// walks off a crate's edge stays on it until it is clear of it rather than
 /// falling down its side half inside it (`kit::ground_local`'s defect).
 pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32, capsule_r: f32) -> f32 {
-    let (r, top) = occupant_volume(slot.occupant);
+    let (r, top) = slot_volume(slot);
     if r <= 0.0 {
         return crate::collide::NO_SURFACE;
     }

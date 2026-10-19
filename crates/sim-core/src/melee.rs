@@ -151,6 +151,14 @@ pub const fn swing_volume(o: Occupant) -> (f32, f32) {
     }
 }
 
+/// [`swing_volume`] for this slot: a ball cactus is short.
+pub const fn slot_swing_volume(slot: &terrain::Slot) -> (f32, f32) {
+    match slot.occupant {
+        Occupant::Cactus => terrain::slot_volume(slot),
+        o => swing_volume(o),
+    }
+}
+
 // The node cast reads the 3×3 ring around the EYE's cell and nothing wider,
 // so the ring has to contain every occupant a ray of the longest node reach
 // can enter. The nearest edge of the ring is at least one cell away from any
@@ -341,7 +349,7 @@ impl NodeHit {
     /// axis to the true radius. The direction is slot→entry, which is what
     /// `render/decal.rs::facing` re-derives at the other end.
     pub fn skin(&self, ray: &Ray) -> Option<(f32, f32, f32)> {
-        let (r, top) = terrain::occupant_volume(self.slot.occupant);
+        let (r, top) = terrain::slot_volume(&self.slot);
         if r <= 0.0 || top <= 0.0 {
             return None;
         }
@@ -499,7 +507,7 @@ pub fn occupant_cast(
             if !want(slot.occupant) {
                 continue;
             }
-            let (r, top) = swing_volume(slot.occupant);
+            let (r, top) = slot_swing_volume(&slot);
             if r <= 0.0 || top <= 0.0 {
                 continue;
             }

@@ -56,6 +56,12 @@ pub const STEP_UP: f32 = 0.6;
 /// rather than left to this comment, so moving `STEP_UP` or `LEVEL_H_M`
 /// without re-deriving this reddens rather than drifts.
 pub const JUMP_SPEED: f32 = 7.0;
+
+/// A walk into a round occupant that is at most this share of the move
+/// sideways (about 9°) is square on and stops, as against a wall; past it the
+/// body slides round at no less than [`ROUND_SLIDE_MIN`] of its walk.
+pub const ROUND_SLIDE_SQUARE: f32 = 0.15;
+pub const ROUND_SLIDE_MIN: f32 = 0.6;
 pub const WADE_SPEED_MULT: f32 = 0.5;
 /// Ground at or below this height counts as wading (alpha swim = slow
 /// wade, TERRAIN.md §3).
@@ -303,8 +309,45 @@ pub fn step(
     let mut inside_plane: Option<bool> = None;
     if len2 > 0.0 || slide.is_some() {
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
-        let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
-        for (cx, cz) in candidates {
+        // The full move, then each axis alone, then — only once all three
+        // fail against a round occupant — the move's part tangent to it:
+        // walked into head-on, a trunk or a cactus stops both axis slides,
+        // and the body stood pinned to it (2026-10-19, *"you kinda get
+        // stuck"* against a cactus pricking you once a second).
+        let mut round = false;
+        for i in 0..4 {
+            let (cx, cz) = match i {
+                0 => (x + dx, z + dz),
+                1 => (x + dx, z),
+                2 => (x, z + dz),
+                _ => {
+                    let Some((sx, sz)) = round
+                        .then(|| occ.round_blocker(seed, x + dx, z + dz, y))
+                        .flatten()
+                    else {
+                        break;
+                    };
+                    let (ox, oz) = (x - sx, z - sz);
+                    let d2 = ox * ox + oz * oz;
+                    let into = dx * ox + dz * oz;
+                    if d2 <= 0.0 || into >= 0.0 {
+                        break;
+                    }
+                    // The radial part removed. Square on is still a stop, as
+                    // a wall is; glancing off it keeps at least
+                    // `ROUND_SLIDE_MIN` of the walk, so the slide round does
+                    // not crawl.
+                    let (tx, tz) = (dx - ox * into / d2, dz - oz * into / d2);
+                    let (t2, m2) = (tx * tx + tz * tz, dx * dx + dz * dz);
+                    if t2 < m2 * ROUND_SLIDE_SQUARE * ROUND_SLIDE_SQUARE {
+                        break;
+                    }
+                    let k = (m2 * ROUND_SLIDE_MIN * ROUND_SLIDE_MIN / t2)
+                        .sqrt()
+                        .max(1.0);
+                    (x + tx * k, z + tz * k)
+                }
+            };
             // ⚠ **Tested where the body will actually stand: quantized.** The
             // body is stored in `POS_XZ_Q` steps, so an unquantized candidate
             // that clears a wall by less than half a step can be stored
@@ -330,6 +373,7 @@ pub fn step(
             // no verb that frees them. Walking out is the only escape a
             // capsule has, so being stuck must never be absorbing.
             if occ.blocks(seed, cx, cz, y) {
+                round |= i == 0;
                 if inside.is_none() {
                     inside = Some(occ.blocks(seed, x, z, y));
                 }

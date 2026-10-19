@@ -2,7 +2,7 @@
 //!
 //! **Nothing plays it since 2026-10-17**: Rust has no pain sound, so
 //! `render/audio.rs::hurt` reads [`request`] only as *a blow landed*, which
-//! bumps the score, and a headshot taken plays `Cue::Headshot` instead.
+//! bumps the score and plays `Cue::FleshHit` (or `Cue::Headshot`) instead.
 //!
 //! **The fall is the coverage, the event is the detail, and having those the
 //! wrong way round is the whole trap in this file.** Seven damage routes reach
