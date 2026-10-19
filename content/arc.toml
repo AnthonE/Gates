@@ -282,6 +282,22 @@ lines = [
     { when = "gift:given", text = "You were here first, so these are yours, the bat and the hatchet. Yours for as long as you are you, past the end of this world and the next. Any workbench will put them on. The one behind me does." },
 ]
 
+# The Abyss Rug's unlock (`content/skins.toml`, season `abyss`): sold here
+# for junk. The price leaves the pack, and the pattern goes to the wallet as
+# a token within a minute or two (`server/src/mints.rs`). The token is the
+# proof: sold on, the pattern goes with it.
+[[speaker.topic]]
+title = "THE ABYSS RUG"
+gift = "abyss"
+price = { item = "item.junk", count = 100 }
+lines = [
+    { when = "gift:guest", text = "The rug's pattern goes to a wallet, and I cannot send a thing to a name I cannot keep. Sign in and come back." },
+    { when = "gift:owned", text = "Your wallet holds the pattern. Twenty cloth and you can weave one anywhere." },
+    { when = "gift:short", text = "A hundred junk for the pattern, and you are short. Come back with it." },
+    { when = "gift:waiting", text = "Paid for, and still on its way to your wallet. A minute or two. Nothing more to pay." },
+    { when = "gift:given", text = "A hundred junk, counted. The pattern goes to your wallet within a minute or two. Hold it and twenty cloth weaves a rug anywhere. Sell it and the pattern goes with it." },
+]
+
 [[speaker.topic]]
 title = "LOOKS"
 lines = [

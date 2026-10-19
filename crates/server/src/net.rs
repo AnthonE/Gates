@@ -959,6 +959,11 @@ pub async fn spawn_shard(
             netsim: cfg.netsim,
             spectate: cfg.spectate,
             agent_seats: cfg.agent_seats,
+            minted: cfg
+                .world_file
+                .as_deref()
+                .or(cfg.save_file.as_deref())
+                .map(|w| crate::mints::minted_path(std::path::Path::new(w))),
         },
         bans,
         ctrl_tx,
@@ -1026,6 +1031,10 @@ struct ShardFacts {
     /// `shard.toml agent_seats`: the most declared agents seated at once.
     /// 0 — the default — caps nothing.
     agent_seats: u32,
+    /// `<world>.minted`, the minter's log of the tokens it sent
+    /// (`mints.rs`): a wallet named there is read again. `None` with no
+    /// world file.
+    minted: Option<std::path::PathBuf>,
 }
 
 /// Is there a seat for this joiner under `agent_seats`? People always pass;
@@ -1123,6 +1132,20 @@ const READ_MEMORY: usize = 2 * MAX_PLAYERS;
 /// accept loop and never on a blocking thread: the pool is shared with the
 /// ticket door's join read.
 const READ_PERMITS: usize = 32;
+
+/// How often the minter's log is looked at (`mints.rs`): a token sent is
+/// read into its buyer's skins within this, and a few seconds more.
+const MINTED_POLL: Duration = Duration::from_secs(5);
+/// When a minted wallet is read again, after its line is seen. The
+/// platform lists tokens off an index that can trail the chain, so one read
+/// is not enough; three reads per sale is what the metered route spends.
+const REREAD_AFTER: [Duration; 3] = [
+    Duration::ZERO,
+    Duration::from_secs(30),
+    Duration::from_secs(120),
+];
+/// Reads waiting to come due, oldest dropped past this.
+const REREADS_MAX: usize = 96;
 
 type SkinsAnswer = (usize, u32, Option<PlayerKey>, crate::skins::Owned);
 type FaceAnswer = (usize, u32, PlayerKey, crate::faces::Face);
@@ -1398,6 +1421,15 @@ async fn accept_loop(
     let (prices_done_tx, mut prices_done_rx) =
         tokio::sync::mpsc::channel::<crate::skins::Prices>(1);
     let mut prices_in_flight = false;
+    // The minter's log (`mints.rs`): looked at every `MINTED_POLL`, read
+    // when it grew, and each wallet it names read again now and twice more,
+    // because the platform's token index can trail the chain.
+    let mut minted_poll = tokio::time::interval(MINTED_POLL);
+    minted_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (minted_tx, mut minted_rx) = tokio::sync::mpsc::channel::<(u64, String)>(1);
+    let mut minted_in_flight = false;
+    let (mut minted_len, mut minted_seen) = (0u64, None::<usize>);
+    let mut rereads: Vec<(PlayerKey, Instant)> = Vec::with_capacity(REREADS_MAX);
     let mut parked: Vec<Parked> = Vec::with_capacity(PARK_MAX);
     let mut park_poll = tokio::time::interval(PARK_POLL);
     park_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1607,6 +1639,56 @@ async fn accept_loop(
                     if let Some(k) = keys[slot].key {
                         if skin_reads.ask(&k, false, Instant::now()) {
                             read_skins(slot, gen, Some(k), &facts, &read_gate, &owned_tx);
+                        }
+                    }
+                }
+            }
+            _ = minted_poll.tick(), if facts.minted.is_some() && !minted_in_flight => {
+                minted_in_flight = true;
+                let path = facts.minted.clone().unwrap_or_default();
+                let tx = minted_tx.clone();
+                let known = minted_len;
+                tokio::task::spawn_blocking(move || {
+                    let len = std::fs::metadata(&path).map_or(0, |m| m.len());
+                    let text = if len != known {
+                        std::fs::read_to_string(&path).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let _ = tx.blocking_send((len, text));
+                });
+                // Reads come due on the same beat.
+                let now = Instant::now();
+                rereads.retain(|(k, due)| {
+                    if *due > now {
+                        return true;
+                    }
+                    if let Some(s) = live_seat(k, &keys, &slots) {
+                        if skin_reads.ask(k, true, now) {
+                            read_skins(s, keys[s].generation, Some(*k), &facts, &read_gate, &owned_tx);
+                        }
+                    }
+                    false
+                });
+            }
+            Some((len, text)) = minted_rx.recv() => {
+                minted_in_flight = false;
+                if len != minted_len {
+                    minted_len = len;
+                    // The first look is the baseline: what was minted before
+                    // this boot was read at each join since.
+                    let (wallets, n) = crate::mints::minted_since(&text, minted_seen.unwrap_or(usize::MAX));
+                    minted_seen = Some(n);
+                    let now = Instant::now();
+                    for w in wallets {
+                        let Some(k) = PlayerKey::new(w.as_bytes()) else {
+                            continue;
+                        };
+                        for after in REREAD_AFTER {
+                            if rereads.len() == REREADS_MAX {
+                                rereads.remove(0);
+                            }
+                            rereads.push((k, now + after));
                         }
                     }
                 }
@@ -1992,6 +2074,7 @@ fn retry_side_files(core: &mut ShardCore, stats: &ShardStats, seen: &mut u64) {
         *seen = failed;
         core.teams.forget_written();
         core.gifts.mark_dirty();
+        core.mints.mark_dirty();
     }
 }
 
@@ -4143,6 +4226,7 @@ fn sim_thread(
         crate::achievements::Achievements::open(achievements, standings_base.as_deref());
     // The skins this shard gave away, beside the hall: the wipe keeps both.
     core.gifts = crate::gifts::Gifts::open(standings_base.as_deref());
+    core.mints = crate::mints::Mints::open(standings_base.as_deref());
     core.online = crate::online::Online::open(standings_base.as_deref());
     core.motd = motd.iter().filter_map(|l| crate::wipe::chat(l)).collect();
     core.wipe = wipe;
@@ -4559,6 +4643,12 @@ fn sim_thread(
                 let _ = file_tx.push(msg);
             }
         }
+        // A sale or a settled one (`mints.rs`): the queue the minter reads.
+        if core.mints.is_dirty() && !file_tx.is_full() {
+            if let Some(msg) = core.mints.take_write() {
+                let _ = file_tx.push(msg);
+            }
+        }
         // `/save` asked for the world now rather than at the cadence. Set
         // the deadline to this tick and let the cadence check above take
         // it on the next pass — the admin verb moves the deadline, it does
@@ -4679,6 +4769,11 @@ fn sim_thread(
     );
     if !file_tx.is_full() {
         if let Some(msg) = core.gifts.take_write() {
+            let _ = file_tx.push(msg);
+        }
+    }
+    if !file_tx.is_full() {
+        if let Some(msg) = core.mints.take_write() {
             let _ = file_tx.push(msg);
         }
     }

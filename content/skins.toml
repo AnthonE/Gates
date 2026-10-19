@@ -124,7 +124,7 @@ season = "community"
 # freely: sell it and the buyer crafts. `ops/airdrop.py` lists who a drop goes
 # to; scry-forge's `contracts/item_airdrop.py` prints the mints.
 
-# The Abyss Rug: for everyone who played the JUNK launch week and holds JUNK.
+# The Abyss Rug: THE OUTFITTER at THE GATE sells it for 100 Junk (`arc.toml`).
 [[skin]]
 id = "skin.abyss_rug"
 catalog = 10

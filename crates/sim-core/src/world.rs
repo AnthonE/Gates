@@ -974,7 +974,17 @@ pub const EV_SLOTS: u8 = 71;
 /// << 8 | multiplier. Own-fact.
 pub const EV_SLOTS_REFUSED: u8 = 72;
 
-pub const EV_MAX: u8 = EV_SLOTS_REFUSED;
+/// EV_PAID: a = player id, b = `PAID_*` (the price left the pack, or it
+/// was short, or no live body was there to pay, and nothing moved), c = the
+/// server's tag (`Command::Pay`). Server-only: the shard answers it with
+/// what was bought, or the seller's word for short.
+pub const EV_PAID: u8 = 73;
+/// `EV_PAID.b`.
+pub const PAID_SHORT: u32 = 0;
+pub const PAID_DONE: u32 = 1;
+pub const PAID_NO_BODY: u32 = 2;
+
+pub const EV_MAX: u8 = EV_PAID;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1823,6 +1833,19 @@ pub enum Command {
         id: u32,
         item: u16,
         count: u16,
+    },
+    /// Take `count` of `item` from a live body's pack, all or none, and say
+    /// which (`EV_PAID`, carrying `tag` back). The shard's price for what it
+    /// sells off the books, an unlock THE OUTFITTER records (`gifts.rs`).
+    ///
+    /// **Not reachable from the wire**, `AdminGive`'s posture: the server
+    /// queues it when a priced gift topic is asked. A command rather than a
+    /// write from outside because the WAL is the command stream.
+    Pay {
+        id: u32,
+        item: u16,
+        count: u16,
+        tag: u32,
     },
     /// The sky and the clock — the admin lane's `/weather` and `/time`
     /// (the reference's `weather.load` and `env.time`), `AdminTeleport`'s
@@ -5688,6 +5711,28 @@ impl World {
                         }
                     }
                 }
+            }
+            Command::Pay {
+                id,
+                item,
+                count,
+                tag,
+            } => {
+                // Always answered, so the server never waits on a body that
+                // died or left between the asking and the paying.
+                let outcome = match self.live_slot_of(id) {
+                    Some(slot) => {
+                        let inv = &mut self.players[slot].inv;
+                        if count > 0 && crate::craft::inv_count(inv, item) >= u32::from(count) {
+                            crate::craft::inv_take(inv, item, u32::from(count));
+                            PAID_DONE
+                        } else {
+                            PAID_SHORT
+                        }
+                    }
+                    None => PAID_NO_BODY,
+                };
+                self.events.push(EV_PAID, id, outcome, tag);
             }
             Command::AdminEnv { weather, time_pm } => {
                 let (seed, tick) = (self.seed, self.tick);

@@ -68,8 +68,8 @@ use sim_core::world::{
 };
 use sim_core::world::{
     EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_NODE_STAGE,
-    EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID, EV_WHEEL_REFUSED, EV_WHEEL_SPIN,
-    EV_WORK,
+    EV_PAID, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID, EV_WHEEL_REFUSED,
+    EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -367,6 +367,9 @@ pub struct ShardCore {
     pub standings: crate::standings::Standings,
     /// Skins this shard gave away and to whom (`gifts.rs`). Not sim state.
     pub gifts: crate::gifts::Gifts,
+    /// Unlocks this shard sold whose tokens are still on the way to the
+    /// buyer's wallet (`mints.rs`). Not sim state.
+    pub mints: crate::mints::Mints,
     /// Who is connected, for the platform's `/online.json` (`online.rs`).
     pub online: crate::online::Online,
     /// Every wallet's achievements (`achievements.rs`), tallied off the
@@ -701,6 +704,7 @@ impl ShardCore {
             standings: crate::standings::Standings::off(),
             achievements: crate::achievements::Achievements::off(),
             gifts: crate::gifts::Gifts::off(),
+            mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
             teams: crate::team::Teams::default(),
             standings_tell: [0; MAX_PLAYERS],
@@ -1629,6 +1633,20 @@ impl ShardCore {
     /// What the shard gave this wallet (`gifts.rs`) is added on top: the
     /// platform's answer is the tokens, and a gift is not one.
     pub fn skins_owned(&mut self, slot: usize, id: u32, owned: sim_core::skin::SkinSet) {
+        // A sale whose token the wallet now holds is done: the token is the
+        // proof from here (`mints.rs`).
+        if let Some(key) = self
+            .key_str(slot)
+            .filter(|k| crate::standings::is_wallet(k))
+        {
+            if self
+                .clients
+                .get(slot)
+                .is_some_and(|c| c.connected && c.id == id)
+            {
+                self.mints.settle(&key, owned, &self.world.skins);
+            }
+        }
         let gifted = self.gifted(slot);
         let Some(c) = self.clients.get_mut(slot) else {
             return;
@@ -1665,6 +1683,75 @@ impl ShardCore {
             c.skins_pending = Some(c.skins_platform.union(gifted));
         }
         Gift::Given
+    }
+
+    /// A sale THE OUTFITTER was paid for: owe `slot`'s wallet a token for
+    /// every row of `set` (`mints.rs`). Not `Given` if the wallet came to
+    /// hold it, or to be owed it, while the payment was out.
+    fn sell_unlock(&mut self, slot: usize, set: sim_core::skin::SkinSet) -> content::bake::Gift {
+        use content::bake::Gift;
+        let Some(key) = self
+            .key_str(slot)
+            .filter(|k| crate::standings::is_wallet(k))
+        else {
+            return Gift::Guest;
+        };
+        let gifted = self.gifts.of(&key, &self.world.skins);
+        if self.clients[slot]
+            .skins_platform
+            .union(gifted)
+            .has_all(&set)
+        {
+            return Gift::Owned;
+        }
+        if self.mints.waiting(&key, set, &self.world.skins) {
+            return Gift::Waiting;
+        }
+        let unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.mints.sell(&key, set, &self.world.skins, unix);
+        Gift::Given
+    }
+
+    /// A priced gift topic was asked: a guest, an owner or a buyer whose
+    /// token is still on the way is answered at once; anyone else's payment
+    /// is queued (one at a time), and `EV_PAID` sells and answers. `tag`
+    /// comes back on it to name the topic.
+    fn ask_priced(
+        &mut self,
+        slot: usize,
+        set: sim_core::skin::SkinSet,
+        (item, count): (u16, u16),
+        tag: u32,
+    ) -> Option<content::bake::Gift> {
+        use content::bake::Gift;
+        let Some(key) = self
+            .key_str(slot)
+            .filter(|k| crate::standings::is_wallet(k))
+        else {
+            return Some(Gift::Guest);
+        };
+        let gifted = self.gifts.of(&key, &self.world.skins);
+        let c = &self.clients[slot];
+        if c.skins_platform.union(gifted).has_all(&set) {
+            return Some(Gift::Owned);
+        }
+        if self.mints.waiting(&key, set, &self.world.skins) {
+            return Some(Gift::Waiting);
+        }
+        if !c.paying {
+            let id = c.id;
+            if self.queue(Command::Pay {
+                id,
+                item,
+                count,
+                tag,
+            }) {
+                self.clients[slot].paying = true;
+            }
+        }
+        None
     }
 
     /// The platform's item store said what each skin costs
@@ -3844,12 +3931,17 @@ impl ShardCore {
                     let composed: Option<(u8, String)> = match ev.b as u8 {
                         sim_core::lore::OP_TALK => {
                             let (k, t) = (target as usize, arg as usize);
-                            match self.arc_text.gift(k, t) {
-                                Some(set) => {
+                            match (self.arc_text.gift(k, t), self.arc_text.price(k, t)) {
+                                // Priced: the sim takes the price first, and
+                                // `EV_PAID` says the line.
+                                (Some(set), Some(price)) => self
+                                    .ask_priced(slot, set, price, ev.c)
+                                    .and_then(|g| self.arc_text.gift_line(k, t, g)),
+                                (Some(set), None) => {
                                     let g = self.give_skins(slot, set);
                                     self.arc_text.gift_line(k, t, g)
                                 }
-                                None => self.arc_text.line(k, t, &self.world.works),
+                                (None, _) => self.arc_text.line(k, t, &self.world.works),
                             }
                             .map(|l| (protocol::ARC_SPEAKER, l.to_string()))
                         }
@@ -3870,6 +3962,54 @@ impl ShardCore {
                     let bytes = &text.as_bytes()[..text.len().min(protocol::ARC_TEXT_BYTES)];
                     match protocol::encode_event_arc_text(
                         kind,
+                        target,
+                        arg,
+                        bytes,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                // A priced gift's payment came back (`Command::Pay`, whose
+                // tag is the topic's target << 8 | arg): paid, the sale is
+                // queued for its token (`mints.rs`); short, the seller says
+                // so. Paid for what the wallet came to own or was already
+                // owed meanwhile, the price goes back.
+                EV_PAID => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    self.clients[slot].paying = false;
+                    let (target, arg) = ((ev.c >> 8) as u8, ev.c as u8);
+                    let (k, t) = (target as usize, arg as usize);
+                    let (Some(set), Some((item, count))) =
+                        (self.arc_text.gift(k, t), self.arc_text.price(k, t))
+                    else {
+                        continue;
+                    };
+                    let g = match ev.b {
+                        PAID_DONE => {
+                            let g = self.sell_unlock(slot, set);
+                            if g != content::bake::Gift::Given {
+                                let id = ev.a;
+                                let _ = self.queue(Command::AdminGive { id, item, count });
+                            }
+                            g
+                        }
+                        PAID_SHORT => content::bake::Gift::Short,
+                        _ => continue,
+                    };
+                    let Some(text) = self.arc_text.gift_line(k, t, g) else {
+                        continue;
+                    };
+                    let bytes = &text.as_bytes()[..text.len().min(protocol::ARC_TEXT_BYTES)];
+                    match protocol::encode_event_arc_text(
+                        protocol::ARC_SPEAKER,
                         target,
                         arg,
                         bytes,
@@ -8461,11 +8601,13 @@ mod tests {
                     TopicText {
                         title: "LOOKS".into(),
                         gift: None,
+                        price: None,
                         lines: vec![(When::Always, "a look".into())],
                     },
                     TopicText {
                         title: "THE GIFT".into(),
                         gift: Some(founder),
+                        price: None,
                         lines: vec![
                             (When::Gift(Gift::Guest), "sign in".into()),
                             (When::Gift(Gift::Owned), "you have them".into()),
@@ -8525,6 +8667,139 @@ mod tests {
         core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(owned(&core, 256), founder.union(paid));
         assert_eq!(core.gifts.len(), 1);
+    }
+
+    /// THE OUTFITTER's priced gift (the Abyss Rug): a wallet short of the
+    /// price is told so and keeps its junk; one that has it pays once and is
+    /// owed a token (`mints.rs`), owning nothing until the platform shows
+    /// it; asking meanwhile costs nothing; the token settles the sale; a
+    /// guest pays nothing.
+    #[test]
+    fn the_outfitter_sells_an_unlock_for_junk() {
+        use content::bake::{ArcText, Gift, SpeakerText, TopicText, When};
+        use sim_core::gather::ItemStack;
+        use sim_core::skin::{SkinDef, SkinSet};
+        const JUNK: u16 = 2;
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        core.world.gather = sim_core::gather::GatherContent::probe_fixture();
+        core.world.lore_def = sim_core::lore::LoreContent::probe_fixture();
+        core.world.skins.defs[0] = SkinDef {
+            catalog: 10,
+            covers: 0,
+            unlock: true,
+        };
+        core.world.skins.count = 1;
+        let mut rug = SkinSet::EMPTY;
+        rug.insert(0);
+        let topic = |title: &str, gift, price, lines| TopicText {
+            title: title.into(),
+            gift,
+            price,
+            lines,
+        };
+        core.arc_text = ArcText {
+            speakers: vec![SpeakerText {
+                name: "THE OUTFITTER".into(),
+                topics: vec![
+                    topic("LOOKS", None, None, vec![(When::Always, "a look".into())]),
+                    topic(
+                        "THE RUG",
+                        Some(rug),
+                        Some((JUNK, 100)),
+                        vec![
+                            (When::Gift(Gift::Guest), "sign in".into()),
+                            (When::Gift(Gift::Owned), "you have it".into()),
+                            (When::Gift(Gift::Short), "you are short".into()),
+                            (When::Gift(Gift::Waiting), "on its way".into()),
+                            (When::Gift(Gift::Given), "it is yours".into()),
+                        ],
+                    ),
+                ],
+            }],
+            ..ArcText::default()
+        };
+        let key = PlayerKey::new(format!("0x{:040x}", 0xb2).as_bytes()).unwrap();
+        assert!(core.connect_as(0, 256, Some(key), None).is_some());
+        core.tag_join(0, 256, Some(&key));
+        assert!(core.connect_as(1, 257, None, None).is_some());
+        core.tag_join(1, 257, None);
+        core.tick_bare(&stats, |_, _, _| true);
+        let spot = core.world.lore_def.speakers[0].spot;
+        let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
+        for id in [256, 257] {
+            let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
+            core.world.players[w].body =
+                sim_core::movement::Body::at(SEED, &core.world.haven, x, z);
+        }
+        let carry = |core: &mut ShardCore, id: u32, count: u16| {
+            let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
+            core.world.players[w].inv = [ItemStack::default(); sim_core::limits::INV_SLOTS];
+            core.world.players[w].inv[0] = ItemStack {
+                item: JUNK,
+                count,
+                cond: 0,
+                skin: 0,
+            };
+        };
+        let junk = |core: &ShardCore, id: u32| {
+            let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
+            sim_core::craft::inv_count(&core.world.players[w].inv, JUNK)
+        };
+        let owned = |core: &ShardCore, id: u32| {
+            let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
+            core.world.players[w].skins
+        };
+        let ask = |core: &mut ShardCore, id: u32, slot: usize| -> String {
+            assert!(core.queue(Command::Arc {
+                id,
+                op: sim_core::lore::OP_TALK,
+                target: 0,
+                arg: 1,
+            }));
+            let mut said = String::new();
+            for _ in 0..4 {
+                core.tick_bare(&stats, |lane, to, bytes| {
+                    if lane == Lane::Event && to == slot {
+                        if let Ok(EventMsg::ArcText { text, len, .. }) = decode_event(bytes) {
+                            said = String::from_utf8_lossy(&text[..len as usize]).into();
+                        }
+                    }
+                    true
+                });
+            }
+            said
+        };
+        carry(&mut core, 256, 60);
+        assert_eq!(ask(&mut core, 256, 0), "you are short");
+        assert_eq!(junk(&core, 256), 60, "nothing taken");
+        assert!(owned(&core, 256).is_empty());
+        carry(&mut core, 256, 150);
+        assert_eq!(ask(&mut core, 256, 0), "it is yours");
+        assert_eq!(junk(&core, 256), 50, "the price, once");
+        assert!(
+            owned(&core, 256).is_empty(),
+            "the token is the proof, not the sale"
+        );
+        assert_eq!(core.mints.len(), 1);
+        assert!(core.gifts.is_empty());
+        assert_eq!(ask(&mut core, 256, 0), "on its way");
+        assert_eq!(junk(&core, 256), 50, "waiting pays nothing");
+        // The minter sent it; the platform's read shows the token.
+        core.skins_owned(0, 256, rug);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert_eq!(owned(&core, 256), rug);
+        assert!(core.mints.is_empty(), "settled");
+        assert_eq!(ask(&mut core, 256, 0), "you have it");
+        assert_eq!(junk(&core, 256), 50, "an owner pays nothing");
+        // Sold on: the next read lacks it, and so does the body.
+        core.skins_owned(0, 256, SkinSet::EMPTY);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(owned(&core, 256).is_empty());
+        carry(&mut core, 257, 150);
+        assert_eq!(ask(&mut core, 257, 1), "sign in");
+        assert_eq!(junk(&core, 257), 150, "a guest pays nothing");
+        assert!(owned(&core, 257).is_empty());
     }
 
     #[test]

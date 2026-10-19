@@ -141,6 +141,9 @@ run cp -f "$BIN" "$DEPLOY/shard.new"
 run mv -f "$DEPLOY/shard.new" "$DEPLOY/shard"   # atomic; a running shard keeps its inode
 run rsync -a --delete content/ "$DEPLOY/content/"
 run cp -f "$CFG" "$DEPLOY/$CFG"
+# The minter rides beside the shard, so it always matches the shipped sale
+# format (`ops/gates-mint.service`).
+run cp -f ops/mint_pending.py "$DEPLOY/mint_pending.py"
 
 echo
 echo "== 3. the unit =="
@@ -148,6 +151,25 @@ if ! sudo -n cmp -s "ops/$UNIT" "/etc/systemd/system/$UNIT" 2>/dev/null; then
   echo "  unit differs from the installed copy (or is not installed)"
   run sudo cp -f "ops/$UNIT" "/etc/systemd/system/$UNIT"
   run sudo systemctl daemon-reload
+else
+  echo "  unchanged"
+fi
+
+echo
+echo "== 3a. the minter's timer =="
+# THE OUTFITTER's sales become tokens (`ops/mint_pending.py`): installed and
+# enabled with the shard that writes them.
+for u in gates-mint.service gates-mint.timer; do
+  if ! sudo -n cmp -s "ops/$u" "/etc/systemd/system/$u" 2>/dev/null; then
+    run sudo cp -f "ops/$u" "/etc/systemd/system/$u"
+    MINT_CHANGED=1
+  fi
+done
+if [ "${MINT_CHANGED:-0}" = 1 ]; then
+  run sudo systemctl daemon-reload
+fi
+if ! systemctl is-enabled --quiet gates-mint.timer 2>/dev/null || [ "${MINT_CHANGED:-0}" = 1 ]; then
+  run sudo systemctl enable --now gates-mint.timer
 else
   echo "  unchanged"
 fi

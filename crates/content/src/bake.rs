@@ -2277,7 +2277,7 @@ impl Content {
                         sp.id
                     ));
                 }
-                let mut gifts = [false; 3];
+                let mut gifts = [false; 5];
                 for l in &t.lines {
                     if l.text.is_empty() || l.text.len() > ARC_TEXT_BYTES {
                         return Err(format!(
@@ -2305,12 +2305,39 @@ impl Content {
                 if let Some(season) = &t.gift {
                     self.gift_set(season)
                         .map_err(|e| format!("arc: {}: {e}", sp.id))?;
-                    if gifts != [true; 3] {
+                    if gifts[..3] != [true; 3] {
                         return Err(format!(
                             "arc: {}: `{}` needs a gift:guest, gift:owned and gift:given line",
                             sp.id, t.title
                         ));
                     }
+                }
+                let priced_lines = gifts[Gift::Short as usize] || gifts[Gift::Waiting as usize];
+                let all_priced = gifts[Gift::Short as usize] && gifts[Gift::Waiting as usize];
+                match (&t.price, priced_lines) {
+                    (Some(_), _) if t.gift.is_none() => {
+                        return Err(format!(
+                            "arc: {}: `{}`: only a gift topic has a price",
+                            sp.id, t.title
+                        ));
+                    }
+                    (Some(p), _) if all_priced => {
+                        self.topic_price(p)
+                            .map_err(|e| format!("arc: {}: `{}`: {e}", sp.id, t.title))?;
+                    }
+                    (Some(_), _) => {
+                        return Err(format!(
+                            "arc: {}: `{}` has a price, so it needs a gift:short and a gift:waiting line",
+                            sp.id, t.title
+                        ));
+                    }
+                    (None, true) => {
+                        return Err(format!(
+                            "arc: {}: `{}`: gift:short and gift:waiting lines go in a priced gift",
+                            sp.id, t.title
+                        ));
+                    }
+                    (None, false) => {}
                 }
             }
             lc.speakers[k] = sim_core::lore::SpeakerDef {
@@ -2376,6 +2403,19 @@ impl Content {
         Ok(set)
     }
 
+    /// A gift topic's price: the item's row and how many, at least one and
+    /// no more than one stack of it could hold twice over.
+    fn topic_price(&self, p: &crate::schema::Stack) -> Result<(u16, u16), String> {
+        let item = self
+            .item_index(&p.item)
+            .ok_or_else(|| format!("price: `{}` is not an item", p.item))?;
+        let count = u16::try_from(p.count)
+            .ok()
+            .filter(|&c| c > 0)
+            .ok_or_else(|| format!("price: {} of `{}` is not 1..=65535", p.count, p.item))?;
+        Ok((item, count))
+    }
+
     /// A speaker line's condition.
     fn when_of(&self, w: &str) -> Result<When, String> {
         let (kind, arg) = w
@@ -2404,7 +2444,13 @@ impl Content {
                 "guest" => Gift::Guest,
                 "owned" => Gift::Owned,
                 "given" => Gift::Given,
-                _ => return Err(format!("`{w}`: a gift line is guest, owned or given")),
+                "short" => Gift::Short,
+                "waiting" => Gift::Waiting,
+                _ => {
+                    return Err(format!(
+                        "`{w}`: a gift line is guest, owned, given, short or waiting"
+                    ))
+                }
             }),
             _ => return Err(format!("`{kind}` is not a condition")),
         })
@@ -2478,6 +2524,7 @@ impl Content {
                 topics.push(TopicText {
                     title: t.title.clone(),
                     gift: t.gift.as_deref().map(|g| self.gift_set(g)).transpose()?,
+                    price: t.price.as_ref().map(|p| self.topic_price(p)).transpose()?,
                     lines,
                 });
             }
@@ -2848,6 +2895,11 @@ pub enum Gift {
     Owned,
     /// Given just now.
     Given,
+    /// A priced gift the asker could not pay for: nothing was taken.
+    Short,
+    /// Paid for, and its token is still on the way to the wallet
+    /// (`server/src/mints.rs`): nothing was taken.
+    Waiting,
 }
 
 impl When {
@@ -2874,6 +2926,8 @@ pub struct TopicText {
     pub title: String,
     /// A gift topic's skins, over the baked catalog's rows.
     pub gift: Option<sim_core::skin::SkinSet>,
+    /// What it costs: the item's row and how many.
+    pub price: Option<(u16, u16)>,
     pub lines: Vec<(When, String)>,
 }
 
@@ -2909,6 +2963,11 @@ impl ArcText {
     /// The skins topic `t` of speaker `k` gives, if it is a gift topic.
     pub fn gift(&self, k: usize, t: usize) -> Option<sim_core::skin::SkinSet> {
         self.speakers.get(k)?.topics.get(t)?.gift
+    }
+
+    /// What gift topic `t` of speaker `k` costs, if anything.
+    pub fn price(&self, k: usize, t: usize) -> Option<(u16, u16)> {
+        self.speakers.get(k)?.topics.get(t)?.price
     }
 
     /// What speaker `k` says on gift topic `t` when asking came to `g`.
