@@ -134,6 +134,9 @@ fn packed_models() -> Vec<&'static str> {
     for (_, p) in client::render::props::ROADSIDE_GLB {
         set.insert(p);
     }
+    for p in client::render::props::CACTUS_GLB {
+        set.insert(p);
+    }
     // The monuments' generated parts, each a model in its own renderer.
     for p in [
         client::render::heli::HULL_GLB,

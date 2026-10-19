@@ -210,6 +210,8 @@ pub struct PropAssets {
     roadside_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 5],
     /// The ground pickups' models, row for row with [`PICKUP_GLB`].
     pickup_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 5],
+    /// The saguaro and the ball cactus, row for row with [`CACTUS_GLB`].
+    cactus_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 2],
     /// The ziggurat's green, blue and elite crates: the supply crate's shape
     /// in painted steel, so a tier reads at a glance.
     tier_crates: [Handle<StandardMaterial>; 3],
@@ -1584,7 +1586,19 @@ pub struct PropModels {
     /// The ground pickups' models, row for row with [`PICKUP_GLB`]. Empty on
     /// a headless build, which then draws the lumps and boxes.
     pickup: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// The cacti's models ([`CACTUS_GLB`]). Empty on a headless build, which
+    /// then draws `plants::cactus`.
+    cactus: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
 }
+
+/// The desert's two cacti, Meshy's (`assets/models/MANIFEST.md` §Cacti),
+/// standing on their base: the saguaro, then the ball cactus a slot of
+/// [`terrain::BALL_CACTUS_SPECIES`] is. They wear their own material, so
+/// they do not sway as the bush stems do.
+pub const CACTUS_GLB: [&str; 2] = [
+    "models/prop/cactus_saguaro.glb",
+    "models/prop/cactus_ball.glb",
+];
 
 /// The ziggurat's green, blue and elite crates, built by `ci/prop_kit.py`:
 /// painted steel lockers centred like the crate massing they replace. Kept out
@@ -1682,11 +1696,16 @@ impl PropModels {
             .iter()
             .map(|(_, path, _)| load_model(server, path))
             .collect();
+        let cactus = CACTUS_GLB
+            .iter()
+            .map(|path| load_model(server, path))
+            .collect();
         Self {
             pools,
             tier,
             roadside,
             pickup,
+            cactus,
         }
     }
 
@@ -1694,6 +1713,11 @@ impl PropModels {
     pub fn pickup(&self, o: Occupant) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
         let i = PICKUP_GLB.iter().position(|(r, _, _)| *r == o)?;
         self.pickup.get(i).cloned()
+    }
+
+    /// Cactus model `i` of [`CACTUS_GLB`], or `None` for the generated one.
+    pub fn cactus(&self, i: usize) -> Option<(Handle<Mesh>, Handle<StandardMaterial>)> {
+        self.cactus.get(i).cloned()
     }
 
     /// The roadside model for `o`, or `None` for the massing.
@@ -2185,6 +2209,7 @@ pub fn assets(
         tier_models: [0, 1, 2].map(|i| models.tier_crate(i)),
         roadside_models: ROADSIDE_GLB.map(|(o, _)| models.roadside(o)),
         pickup_models: PICKUP_GLB.map(|(o, _, _)| models.pickup(o)),
+        cactus_models: [0, 1].map(|i| models.cactus(i)),
         tier_crates: [
             Color::srgb(0.22, 0.55, 0.28),
             Color::srgb(0.20, 0.36, 0.78),
@@ -2981,6 +3006,13 @@ pub fn spawn_slot(
         // A plant's wood (twigs, the hemp stalk, the berries) is the primary
         // entity and its leaves ride beside it, below. Indexed by yaw exactly
         // as the conifer pool is, so two plants side by side differ.
+        Occupant::Cactus
+            if a.cactus_models[usize::from(slot.species == terrain::BALL_CACTUS_SPECIES)]
+                .is_some() =>
+        {
+            let i = usize::from(slot.species == terrain::BALL_CACTUS_SPECIES);
+            a.cactus_models[i].clone().unwrap_or_default()
+        }
         Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub | Occupant::Cactus => {
             variant = (slot.yaw as usize) % PLANT_POOL;
             match a.plant(slot.occupant, key, variant, tint, scenery) {

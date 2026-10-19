@@ -1641,7 +1641,7 @@ pub fn pick(
         return false;
     }
     // Reach: eye to the nearest point of the plant's (probed) swing volume.
-    let (r, top) = crate::melee::swing_volume(slot.occupant);
+    let (r, top) = crate::melee::slot_swing_volume(slot);
     let rr = r * slot.scale + crate::melee::MELEE_PROBE_M;
     let px = p.body.qx as f32 * POS_XZ_Q;
     let pz = p.body.qz as f32 * POS_XZ_Q;
