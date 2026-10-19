@@ -3691,7 +3691,7 @@ impl World {
                     {
                         continue;
                     }
-                    let (r, top) = terrain::occupant_volume(slot.occupant);
+                    let (r, top) = terrain::slot_volume(&slot);
                     let reach = crate::collide::CAPSULE_RADIUS_M + r * slot.scale + CACTUS_TOUCH_M;
                     let (ox, oz) = (slot.x - x, slot.z - z);
                     if ox * ox + oz * oz <= reach * reach

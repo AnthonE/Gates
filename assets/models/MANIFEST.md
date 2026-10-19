@@ -1427,3 +1427,17 @@ rejected mesh.
 > **three-quarter** (ref: `abyss-icon.png`) — "A single woven rug lying perfectly flat, viewed from directly above at a slight angle, on a plain white background. Rectangular, 170 by 110 centimetres, two centimetres thick, with short cream tassel fringe on the two short ends. Deep dark teal wool (#0e3b43) with a subtle tonal pattern of thin wavy lines like light rippling far underwater. Framed by a metallic gold Art Deco border: an outer gold band and an inner thin gold line, with stepped zigurrat corners and small gold chevron fans at the middle of each side. In the centre, the gold emblem from the reference image woven in gold thread on the teal: a triangle 'A' whose left half is four slanted stripes. Match the emblem exactly. Rich, plush, slightly worn at the edges. Exactly one rug. No people, no objects, no text, no letters, no words."
 >
 > **top-down** (refs: the three-quarter painting, `abyss-icon.png`) — "The exact rug from the first reference image, scanned flat on a large-format scanner: perfectly orthographic top-down view, no perspective, no tilt, edges straight and parallel to the frame, all four corners square. Landscape orientation: the rug's long sides run left to right along the top and bottom, and the cream wool tassel fringe hangs off the left and right short ends. Same design as the reference: plush deep teal wool (#0e3b43) with thin tonal darker wave lines like light rippling underwater, evenly coloured across the whole rug; a metallic gold Art Deco frame of one wide outer band and one thin inner line, stepped ziggurat corners, and small gold chevron fans centred on all four sides. In the exact centre, woven in gold thread and standing upright with its apex toward the top edge, the emblem from the second reference image reproduced precisely: a triangle A whose lower left is cut into four parallel slanted stripes. The rug fills most of the frame with a margin all round. Solid flat bright magenta (#ff00ff) background. Bright, even, shadowless lighting with true colours, no vignette, no dark corners. Exactly one rug. No text, no letters, no words."
+
+## Cacti — Meshy, 2026-10-19
+
+Replace `plants::cactus`'s generated saguaro (which swayed on the bush stems'
+wind). Same terms and pipeline as §Roadside: `meshy_gen.py` (nano-banana-pro →
+meshy-t2, single view) → `flatten_charts.py --luma-only --strength 0.8` →
+`import_meshy.py` (uniform, standing on its base) → `ktx_pack.py --size 1024`.
+96 credits for the two. A cactus slot of `terrain::BALL_CACTUS_SPECIES` is the
+ball; the rest are saguaros (`props::CACTUS_GLB`).
+
+| file | tris | size | image | mesh |
+|---|---|---|---|---|
+| `prop/cactus_saguaro.glb` | 2,559 | 1.41 × 3.60 × 0.49 (trunk ≈ `CACTUS_R_M`) | `01a1522a-31db-73e8-97e8-d30f66f0a68e` | `01a1522a-fbfe-72e0-b34d-dd672d3c2b67` |
+| `prop/cactus_ball.glb` | 1,212 | 0.62 × 0.60 × 0.62 (`BALL_CACTUS_TOP_M`) | `01a1522a-320a-7087-97ba-b7168bad2779` | `01a1522a-ae4a-7228-b011-275372bead61` |

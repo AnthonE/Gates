@@ -93,3 +93,68 @@ fn a_cactus_pricks_whoever_is_pressed_against_it() {
         }
     }
 }
+
+/// Walked into near head-on, a saguaro is slid round, not stood against:
+/// both axis slides fail on a round trunk, and the body used to stop dead
+/// there while it pricked them.
+#[test]
+fn walking_into_a_cactus_slides_round_it() {
+    use sim_core::input::InputFrame;
+    let (s, _) = *cacti(SEED)
+        .iter()
+        .find(|(s, _)| {
+            s.species != terrain::BALL_CACTUS_SPECIES
+                && [-3.0f32, -1.5, 1.5, 3.0].iter().all(|dx| {
+                    let d = terrain::height(SEED, s.x + dx, s.z) - s.y;
+                    d * d < 0.04
+                })
+        })
+        .expect("a saguaro on flat ground");
+    let mut w = Box::new(World::new(SEED));
+    w.gather = GatherContent::probe_fixture();
+    w.dev_spawn = Some((s.x - 2.5, s.z + 0.15));
+    w.tick(&[Command::Join { id: 1 }]);
+    let mut seq = 0u16;
+    let mut walk = |w: &mut World, yaw: u16, ticks: u32| {
+        for _ in 0..ticks {
+            seq = seq.wrapping_add(1);
+            let frame = InputFrame {
+                seq,
+                yaw,
+                move_z: 127,
+                ..Default::default()
+            };
+            w.tick(&[Command::Input {
+                id: 1,
+                frame,
+                favour: 0,
+            }]);
+        }
+    };
+    // Which quarter-turn is east: the yaw table is the sim's own.
+    let pos = |w: &World| {
+        let b = &w.players[0].body;
+        (
+            b.qx as f32 * sim_core::movement::POS_XZ_Q,
+            b.qz as f32 * sim_core::movement::POS_XZ_Q,
+        )
+    };
+    let mut east = None;
+    for q in 0..4u16 {
+        let a = pos(&w);
+        walk(&mut w, q << 14, 2);
+        let b = pos(&w);
+        walk(&mut w, (q << 14).wrapping_add(0x8000), 2);
+        if b.0 - a.0 > 0.1 && (b.1 - a.1) * (b.1 - a.1) < 0.0025 {
+            east = Some(q << 14);
+        }
+    }
+    let east = east.expect("one quarter-turn walks east");
+    walk(&mut w, east, 120);
+    let (x, _) = pos(&w);
+    assert!(
+        x > s.x + terrain::CACTUS_R_M * s.scale,
+        "stopped at x {x:.2} against the cactus at {:.2}",
+        s.x
+    );
+}

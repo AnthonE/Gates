@@ -120,7 +120,7 @@ pub fn slot_pm(h: &dyn Harvested, seed: u64, cx: u16, cz: u16, occupant: Occupan
 /// ground it sinks through.
 #[inline]
 pub fn sunk(slot: &Slot, pm: u16) -> Slot {
-    let (_, top) = terrain::occupant_volume(slot.occupant);
+    let (_, top) = terrain::slot_volume(slot);
     Slot {
         y: slot.y - top * slot.scale * ((1000 - pm.min(1000)) as f32 * 0.001),
         ..*slot
@@ -871,6 +871,46 @@ impl Occupants<'_> {
     /// than a wider one. A caller passing something fatter than a player
     /// would be outside what that const block proved, so the assert below
     /// says so rather than leaving it to the reader.
+    /// The centre of a round scatter occupant (a trunk, a cactus, a node, a
+    /// barrel) that stops a body at (`x`, `z`), or `None`. What
+    /// `movement::step` slides a body round when walking into one head-on
+    /// stops both of its axis slides: the boxed structures are walls, which
+    /// those slides already follow.
+    pub fn round_blocker(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> Option<(f32, f32)> {
+        let pcx = floor_i32(x / CELL_SIZE);
+        let pcz = floor_i32(z / CELL_SIZE);
+        let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
+        while dz <= terrain::OCCUPANT_PROBE_CELLS {
+            let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
+            while dx <= terrain::OCCUPANT_PROBE_CELLS {
+                let (cx, cz) = (pcx + dx, pcz + dz);
+                dx += 1;
+                let slot = self.cache.slot(seed, self.table, self.haven, cx, cz);
+                if matches!(
+                    slot.occupant,
+                    Occupant::None
+                        | Occupant::HavenShelter
+                        | Occupant::WaystationCanopy
+                        | Occupant::RoadSign
+                        | Occupant::CarWreck
+                ) || !terrain::slot_blocks(
+                    &slot,
+                    x,
+                    z,
+                    feet_y,
+                    CAPSULE_RADIUS_M,
+                    CAPSULE_HEIGHT_M,
+                ) || slot_pm(self.harvested, seed, cx as u16, cz as u16, slot.occupant) == 0
+                {
+                    continue;
+                }
+                return Some((slot.x, slot.z));
+            }
+            dz += 1;
+        }
+        None
+    }
+
     pub fn blocks_volume(
         &mut self,
         seed: u64,

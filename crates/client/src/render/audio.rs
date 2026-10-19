@@ -2177,9 +2177,10 @@ pub struct LastHp(pub u16);
 
 /// Being hurt, as a **blow** rather than as a health bar.
 ///
-/// **Silent, as Rust is** (operator, 2026-10-17: *"get rid of any sound we
-/// make when we take damage rust doesnt do that"*): no pain grunt. A blow
-/// that crossed your head is Rust's headshot crunch, and taking damage
+/// **No pain grunt, as Rust has none** (operator, 2026-10-17: *"get rid of any
+/// sound we make when we take damage rust doesnt do that"*): an announced
+/// blow is the flesh hit, one that crossed your head is Rust's headshot
+/// crunch, and taking damage
 /// still tenses the score. [`crate::sound::hurt::request`] is the decision that it did,
 /// the fall and the announced blows alike, for the reason that module gives.
 /// `Feed` is taken immutably, which is the shape `CLAUDE.md`'s two-drains
@@ -2204,6 +2205,14 @@ pub fn hurt(
         sound.play(Request::own(Cue::Headshot));
     }
     if crate::sound::hurt::request(fall, feed.hurt_damage, feed.hurts, core.hp_max).is_some() {
+        // A blow that landed is a wet hit on your own body, as Rust's is
+        // (operator, 2026-10-19: a cactus or a spike trap should sound like
+        // one): the flesh hit, not a grunt. Announced blows only, so hunger
+        // and thirst stay quiet, and not under the headshot's crunch.
+        if feed.hurts > 0 && !feed.hurt_head {
+            let g = crate::sound::hurt::weight(feed.hurt_damage, core.hp_max);
+            sound.play(Request::own(Cue::FleshHit).with_gain(g));
+        }
         // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
         // published order: a weapon in play < a bullet past your head <
         // taking damage). Two of these inside two sections is what puts the
