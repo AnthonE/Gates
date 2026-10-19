@@ -1639,19 +1639,6 @@ impl ShardCore {
         }
     }
 
-    /// The airdrop list changed (`gifts.rs`): owe every player here their
-    /// owned set again, so a drop lands on wallets already on the shard.
-    pub fn airdrop_reloaded(&mut self) {
-        for slot in 0..self.clients.len() {
-            let gifted = self.gifted(slot);
-            if let Some(c) = self.clients.get_mut(slot) {
-                if c.connected {
-                    c.skins_pending = Some(c.skins_platform.union(gifted));
-                }
-            }
-        }
-    }
-
     /// What the shard gave `slot`'s wallet. Empty for a guest.
     fn gifted(&self, slot: usize) -> sim_core::skin::SkinSet {
         self.key_str(slot)

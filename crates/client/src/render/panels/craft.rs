@@ -713,10 +713,11 @@ fn detail_body(
     if let Some(hint) = crate::ui::arc::locked_line(&core.arc, def.unlock) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
-    // An unlock's item says it is given, so nobody goes looking for a table.
+    // An unlock's item says where one comes from, so nobody goes looking for
+    // a table: it is a token, dropped or bought.
     if !core.may_make(def.output) {
         pane.spawn((
-            Text::new("Owners only. It is given, not learned."),
+            Text::new("Owners only. Get one in a drop or buy one."),
             font_bold(11.0),
             TextColor(TEXT_SHORT),
         ));

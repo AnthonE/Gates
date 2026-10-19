@@ -4510,14 +4510,6 @@ fn sim_thread(
             core.standings_recount();
             core.standings.rebuild();
             core.publish_online();
-            // An airdrop list written since (`ops/airdrop.py`) lands now.
-            if core.gifts.reload_airdrop() {
-                eprintln!(
-                    "shard: airdrop list read, {} wallets",
-                    core.gifts.airdrop_len()
-                );
-                core.airdrop_reloaded();
-            }
         }
         // Tick + publish. `Ops` is the tick's side channels (admin v0) —
         // the anomaly log, the kick ring and its answers, `/save`'s flag.

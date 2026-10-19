@@ -119,9 +119,10 @@ season = "community"
 # ── Unlocks ──────────────────────────────────────────────────────────────────
 # Rust's Frog Boots: given to every account that played its early access, and
 # owning them is what lets you craft them (one tarp). These rows have no look:
-# owning one is what lets a player craft the item it names. They are given,
-# not sold: the platform's item contract or the shard's `.airdrop` list
-# (`server/src/gifts.rs`), which `ops/airdrop.py` writes.
+# owning one is what lets a player craft the item it names. Owning is holding
+# the row's token on the platform's item contract, like any skin, so it trades
+# freely: sell it and the buyer crafts. `ops/airdrop.py` lists who a drop goes
+# to; scry-forge's `contracts/item_airdrop.py` prints the mints.
 
 # The Abyss Rug: for everyone who played the JUNK launch week and holds JUNK.
 [[skin]]
