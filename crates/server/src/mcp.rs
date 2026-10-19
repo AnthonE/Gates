@@ -150,10 +150,18 @@ impl DecisionSource for McpDoor {
     }
 
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
+        self.decide_fresh(summary, &mut || None)
+    }
+
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
         if self.presence.away(self.quiet) {
             return Err("the harness is away".into());
         }
-        self.door.decide(summary)
+        self.door.decide_fresh(summary, fresher)
     }
 
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
@@ -234,6 +242,10 @@ pub struct Server<W: Write> {
     replies: W,
     autopilot: Duration,
     pending: Option<Pending>,
+    /// The newest decision's id, when its first line came, and whether it
+    /// was answered: a newer look at it keeps that clock, and is dropped
+    /// once it was.
+    asked: Option<(u64, Instant, bool)>,
     /// The newest observation, answered or not: what `status` reads.
     last: Option<Value>,
     answered: u64,
@@ -249,6 +261,7 @@ impl<W: Write> Server<W> {
             replies,
             autopilot,
             pending: None,
+            asked: None,
             last: None,
             answered: 0,
             late: 0,
@@ -356,13 +369,23 @@ impl<W: Write> Server<W> {
                         .collect()
                 })
                 .unwrap_or_default();
+            // The same id again is a newer look at the same decision (its
+            // team changed while the harness thinks): what `look` shows and
+            // `act` is judged by from now on, on the first line's clock.
+            // One that crossed the harness's answer is done with.
+            let at = match self.asked {
+                Some((asked, _, true)) if asked == id => continue,
+                Some((asked, at, false)) if asked == id => at,
+                _ => Instant::now(),
+            };
             if self.pending.as_ref().is_some_and(|p| p.id != id) {
                 self.late += 1;
             }
+            self.asked = Some((id, at, false));
             self.last = Some(request.clone());
             self.pending = Some(Pending {
                 id,
-                at: Instant::now(),
+                at,
                 options,
                 request,
             });
@@ -488,6 +511,9 @@ impl<W: Write> Server<W> {
             return text("the body is gone (its connection ended)", true);
         }
         self.pending = None;
+        if let Some(asked) = self.asked.as_mut().filter(|a| a.0 == id) {
+            asked.2 = true;
+        }
         self.answered += 1;
         let filed = if !report {
             ""
@@ -818,6 +844,37 @@ mod tests {
         assert!(body(&late).contains("autopilot"));
         assert!(s.replies.is_empty());
         // And look says there is nothing rather than handing it out again.
+        let none = s.look(Duration::from_millis(20));
+        assert!(body(&none).starts_with("No decision waiting"));
+    }
+
+    /// The same decision again, a newer look sent when its team changed
+    /// while the harness thinks (an invite came): what `look` shows and
+    /// `act` is judged by, on the first line's clock. A copy that crosses
+    /// the answer is not handed out again.
+    #[test]
+    fn a_newer_look_at_the_decision_keeps_its_clock_and_is_answered_once() {
+        let (mut s, mut tx) = server(Duration::from_secs(30));
+        tx.push(observation(5)).unwrap();
+        let stale: Value = serde_json::from_str(body(&call(&mut s, 1, "look", json!({})))).unwrap();
+        assert_eq!(stale["team"], json!({}));
+        let at = s.pending.as_ref().unwrap().at;
+        let mut newer: Value = serde_json::from_str(observation(5).trim()).unwrap();
+        newer["options"] = json!(["explore", "join_team"]);
+        newer["team"] = json!({"invite_from": "Dummmy", "teammates": []});
+        let newer = newer.to_string() + "\n";
+        std::thread::sleep(Duration::from_millis(5));
+        tx.push(newer.clone()).unwrap();
+        let seen: Value = serde_json::from_str(body(&call(&mut s, 2, "look", json!({})))).unwrap();
+        assert_eq!(seen["decision_id"], 5);
+        assert_eq!(seen["team"]["invite_from"], "Dummmy");
+        assert_eq!(s.pending.as_ref().unwrap().at, at, "the same deadline");
+        assert_eq!(s.late, 0, "not a missed decision");
+        let status: Value = serde_json::from_str(body(&s.status())).unwrap();
+        assert_eq!(status["team"]["invite_from"], "Dummmy");
+        let done = call(&mut s, 3, "act", json!({"id": 5, "goal": "join_team"}));
+        assert_eq!(done["isError"], false, "{}", body(&done));
+        tx.push(newer).unwrap();
         let none = s.look(Duration::from_millis(20));
         assert!(body(&none).starts_with("No decision waiting"));
     }

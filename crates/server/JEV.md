@@ -288,7 +288,10 @@ port to guard, the agent dies with the bot, and the bot's stdout stays free.
 The reply must echo the id and name an offered goal within `--timeout-ms`;
 `reason` is optional and shown trimmed to 96 printable characters. Replies to
 an older id are skipped; lines over 8 KiB, bad JSON, unknown goals, silence
-and exit are failures.
+and exit are failures. The same id can come again before you answer: a newer
+look at the same decision, sent when the body's team changed meanwhile (an
+invite came, someone joined or left). Read the newest line with that id; the
+answer is judged by its options, and the deadline is the first line's.
 
 **Talking.** `heard` is the chat its client received since the last request,
 labelled the way a player's chat log labels it (`me` is its own line back,

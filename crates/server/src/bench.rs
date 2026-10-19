@@ -70,7 +70,15 @@ impl<S: DecisionSource> DecisionSource for Counted<S> {
     }
 
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String> {
-        let answer = self.inner.decide(summary);
+        self.decide_fresh(summary, &mut || None)
+    }
+
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
+        let answer = self.inner.decide_fresh(summary, fresher);
         if let Ok(choice) = &answer {
             self.tally.decisions.fetch_add(1, Ordering::Relaxed);
             if crate::autopilot::is_autopilot(choice.reason.as_str()) {
