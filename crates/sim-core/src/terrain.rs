@@ -9915,13 +9915,13 @@ pub const OCCUPANT_R_M: [f32; 29] = [
 /// meter so it reads as embedded rather than dropped — so their tops are 1.5
 /// and not 2.0.
 ///
-/// The tree is solid to 33 m, the broadleaf's drawn apex (the pine is drawn
-/// 42 m; the sim cannot tell the species apart, so the shorter one wins and
-/// nothing invisible blocks above a broadleaf). It was the 5.7 m pine trunk,
+/// The tree is solid to 24 m, the palm's drawn apex (the broadleaf is drawn
+/// 33 m and the pine 42 m; the sim cannot tell the species apart, so the
+/// shortest one wins and nothing invisible blocks above a palm). It was the 5.7 m pine trunk,
 /// and arrows and roof-standers went straight through the upper half.
 pub const OCCUPANT_TOP_M: [f32; 29] = [
     0.0,  // None
-    33.0, // Tree — the broadleaf's drawn height (×3 on 2026-10-13)
+    24.0, // Tree — the palm's drawn height (2026-10-19)
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
     // radius` — the same correction the radii above take, and for the same
     // reason: the blob never reaches its nominal radius in any axis.
@@ -10037,7 +10037,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         // The trunk at its base, measured off the drawn bark by
         // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
         // not the 0.26 a deleted three.js cylinder used to justify.
-        Occupant::Tree => (0.2398, 33.0),
+        Occupant::Tree => (0.2398, 24.0),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),
