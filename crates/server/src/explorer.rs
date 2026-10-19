@@ -6933,6 +6933,15 @@ impl Survivor {
 
 impl BotDriver for Survivor {
     fn welcome(&mut self, welcome: &Welcome) {
+        // A goal still in hand is the last session's (a shift that ended
+        // mid-walk home, a dropped link). Kept, its clock would count the
+        // time away: the log-off walk home a shift's end cut short failed
+        // as stuck at 1900 s the moment the next shift began (#363). It
+        // ends where that session left it.
+        if self.goal.is_some() {
+            let last = self.seen_tick.unwrap_or(welcome.tick);
+            self.end_goal(last, Outcome::Interrupted(Why::Session));
+        }
         let mut core = Box::new(ClientCore::new(
             welcome.seed,
             welcome.player_id,
@@ -9385,6 +9394,34 @@ mod tests {
         let kept = bot.tracks.get(2).expect("remembered");
         assert!(!kept.visible);
         assert!(bot.tracks.aim_pose(2).is_none(), "nobody aims at a memory");
+    }
+
+    /// #363: a walk home a shift's end cut short was still the goal when
+    /// the next shift began half an hour later, and its clock, counting the
+    /// time away, failed it as stuck at once ("go_home failed after 1900
+    /// s"). A new session ends what the last one left running, at the time
+    /// it really ran.
+    #[test]
+    fn a_goal_the_last_session_left_running_ends_with_that_session() {
+        let (mut bot, _, _) = fixture();
+        goal(&mut bot, Goal::GoHome, 100);
+        bot.seen_tick = Some(100 + 30 * TICK_HZ);
+        bot.welcome(&Welcome {
+            seed: SEED,
+            player_id: 1,
+            tick: 100 + 1900 * TICK_HZ,
+            dev: true,
+            blight_salt: 0,
+        });
+        assert_eq!(bot.goal(), None, "nothing carried over");
+        let last = bot.memory.last.expect("the walk's report");
+        assert_eq!(last.goal, Goal::GoHome);
+        assert_eq!(last.outcome, Outcome::Interrupted(Why::Session));
+        assert_eq!(last.secs, 30, "the time it ran, not the time away");
+        assert!(
+            !bot.home_held(100 + 1900 * TICK_HZ),
+            "a cut-short walk is not a failed one"
+        );
     }
 
     #[test]

@@ -501,6 +501,8 @@ pub enum Why {
     BoxFull,
     /// Marked hostile: the gate's guns would shoot it.
     Wanted,
+    /// Its session ended (a shift's end, a dropped link) while it ran.
+    Session,
 }
 
 impl Why {
@@ -532,6 +534,7 @@ impl Why {
             Why::Locked => "a lock it has no code for is in the way",
             Why::BoxFull => "the box is full",
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
+            Why::Session => "the session ended while it ran",
         }
     }
 }
