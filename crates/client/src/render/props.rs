@@ -2280,8 +2280,16 @@ pub fn assets(
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
                 base_color_texture: Some(hemp_map.clone()),
-                perceptual_roughness: 0.8,
+                perceptual_roughness: 0.92,
                 reflectance: fresnel::DIELECTRIC,
+                // The canopy's dulled sheen: a hemp leaf faces the sky, and at
+                // full specular it caught so much of it the green washed out
+                // to mint.
+                specular_tint: Color::linear_rgb(
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                    tree::CANOPY_SPECULAR_TINT,
+                ),
                 alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
                 cull_mode: None,
                 double_sided: true,

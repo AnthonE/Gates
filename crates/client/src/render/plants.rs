@@ -42,8 +42,8 @@ pub const TALL_SHRUB_H: f32 = 2.15;
 /// different plant from the shrubs around it before its berries do.
 pub const BERRY_BUSH_H: f32 = 1.0;
 
-/// Hemp's height at scale 1, metres: one stalk to about the chest.
-pub const HEMP_H: f32 = 1.3;
+/// Hemp's height at scale 1, metres: a leafy plant to about the shoulder.
+pub const HEMP_H: f32 = 1.45;
 
 /// Where a plant fades out, metres from the eye: dithered across the band,
 /// and gone before the prop ring's nearest edge (`NEAR_RADIUS` chunks of
@@ -114,7 +114,7 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::Shrub, Scenery::Shrub) if super::props::tall_bush(key) => 0.85,
         (Occupant::Shrub, Scenery::Shrub) => 0.8,
         (Occupant::BerryBush, _) => 0.55,
-        (Occupant::Hemp, _) => 0.4,
+        (Occupant::Hemp, _) => 0.6,
         _ => return None,
     };
     Some(reach * grow(o, scenery))
@@ -660,21 +660,24 @@ pub fn berries(variant: u32, red: bool) -> Mesh {
 }
 
 /// Hemp: a stalk with leaves in opposite pairs, each pair a quarter turn on
-/// from the last, broad and drooping at the bottom and small and raised at
-/// the top. `(stalk, leaves)` — the stalk is opaque, the leaves are cards
-/// wearing [`hemp_leaf_image`].
+/// from the last, and side branches off its lower two thirds that carry
+/// their own pairs, so the plant is a leafy cone and not a pole (operator,
+/// 2026-10-19: "doesnt look bushy enough"). Broad drooping leaves at the
+/// bottom, small raised ones at the top round a dense tip. `(stalk,
+/// leaves)` — the stalk is opaque, the leaves are cards wearing
+/// [`hemp_leaf_image`].
 pub fn hemp(variant: u32) -> (Mesh, Mesh) {
     let seed = seed_of(0x4e4d_9000, variant);
     let h = HEMP_H * (0.92 + 0.16 * hash01(seed, 1));
     // A gentle bow, so the stalk is not a rod.
     let bow = Vec3::new(hash01(seed, 2) - 0.5, 0.0, hash01(seed, 3) - 0.5) * 0.12;
     let at = |t: f32| Vec3::Y * (t * h) + bow * (t * PI).sin();
+    let r = |t: f32| 0.016 * (1.0 - t) + 0.004 * t;
 
     let mut stalk = Soup::default();
     const SEGS: usize = 6;
     for i in 0..SEGS {
         let (t0, t1) = (i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32);
-        let r = |t: f32| 0.014 * (1.0 - t) + 0.004 * t;
         let col = lerp3(STALK_ROOT, STALK_TIP, smooth01(t0 * 1.4));
         let a = if i == 0 {
             at(t0) - Vec3::Y * 0.05
@@ -691,66 +694,104 @@ pub fn hemp(variant: u32) -> (Mesh, Mesh) {
     // PBR, so a facet normal would light the top of every drooping leaf as
     // its underside. The bush's cards dodge it the same way, toward a dome.
     let dome = Vec3::new(0.0, -h, 0.0);
-    const NODES: u32 = 9;
+    // A pair of leaves at `p`, either side of `yaw`.
+    let pair =
+        |leaves: &mut Soup, p: Vec3, yaw: f32, droop: f32, len: f32, value: f32, salt: u32| {
+            for (i, side) in [0.0, PI].into_iter().enumerate() {
+                let a = yaw + side + (hash01(seed, 300 + salt * 2 + i as u32) - 0.5) * 0.3;
+                let out = Vec3::new(a.sin(), 0.0, a.cos());
+                let roll = (hash01(seed, 600 + salt * 2 + i as u32) - 0.5) * 0.6;
+                let len = len * (0.88 + 0.24 * hash01(seed, 900 + salt * 2 + i as u32));
+                hemp_leaf(leaves, p + out * 0.02, out, droop, roll, len, value, dome);
+            }
+        };
+
+    const NODES: u32 = 11;
     let yaw0 = hash01(seed, 4) * TAU;
+    let mut salt = 0u32;
     for k in 0..NODES {
         let f = k as f32 / (NODES - 1) as f32;
-        let t = 0.16 + 0.74 * f;
+        let t = 0.12 + 0.8 * f;
         let base = at(t);
-        let len = (0.4 - 0.22 * f) * (0.9 + 0.2 * hash01(seed, 10 + k));
+        let len = (0.5 - 0.3 * f) * (0.9 + 0.2 * hash01(seed, 10 + k));
         // Lower leaves droop, upper ones lift: a hemp plant is a cone of
         // leaves, widest at the bottom.
-        let droop = -0.55 + 0.75 * f + (hash01(seed, 20 + k) - 0.5) * 0.2;
+        let droop = -0.5 + 0.75 * f + (hash01(seed, 20 + k) - 0.5) * 0.2;
         let yaw = yaw0 + k as f32 * PI * 0.5 + (hash01(seed, 30 + k) - 0.5) * 0.4;
-        let value = 0.95 + 0.2 * f;
-        for side in [0.0, PI] {
-            let a = yaw + side;
-            let out = Vec3::new(a.sin(), 0.0, a.cos());
-            let roll = (hash01(seed, 40 + k + side as u32) - 0.5) * 0.5;
-            hemp_leaf(
-                &mut leaves,
-                base + out * 0.02,
-                out,
-                droop,
-                roll,
-                len,
-                value,
-                dome,
-            );
-            // A side shoot's smaller leaf a quarter turn round, on the lower
-            // two thirds: what makes a hemp plant a bush and not a pole.
-            if f < 0.7 {
-                let a = a + PI * 0.5 + (hash01(seed, 50 + k + side as u32) - 0.5) * 0.5;
+        let value = 0.82 + 0.25 * f;
+        pair(&mut leaves, base, yaw, droop, len, value, salt);
+        salt += 1;
+
+        // A side branch from each leaf axil on the lower two thirds, longest
+        // at the bottom, angled out and up, leafing along its length.
+        if f > 0.05 && f < 0.8 {
+            for (i, side) in [0.5 * PI, 1.5 * PI].into_iter().enumerate() {
+                let q = k * 2 + i as u32;
+                if hash01(seed, 140 + q) < 0.12 {
+                    continue;
+                }
+                let a = yaw + side + (hash01(seed, 160 + q) - 0.5) * 0.6;
                 let out = Vec3::new(a.sin(), 0.0, a.cos());
-                let at = base + out * 0.03 + Vec3::Y * 0.04;
-                hemp_leaf(
-                    &mut leaves,
-                    at,
-                    out,
-                    droop + 0.25,
-                    -roll,
-                    len * 0.62,
-                    value,
-                    dome,
+                let tilt = 0.75 + 0.25 * f + (hash01(seed, 180 + q) - 0.5) * 0.2;
+                let blen = h * (0.42 - 0.38 * f) * (0.85 + 0.3 * hash01(seed, 200 + q));
+                let dir = out * tilt.sin() + Vec3::Y * tilt.cos();
+                let along = |s: f32| base + dir * (s * blen) + Vec3::Y * (s * s * 0.25 * blen);
+                let br = r(t) * 0.55;
+                twig(&mut stalk, base, along(0.5), br, br * 0.7, STALK_TIP);
+                twig(
+                    &mut stalk,
+                    along(0.5),
+                    along(1.0),
+                    br * 0.7,
+                    br * 0.3,
+                    STALK_TIP,
                 );
+                for (j, s) in [0.3f32, 0.55, 0.8].into_iter().enumerate() {
+                    pair(
+                        &mut leaves,
+                        along(s),
+                        a + PI * 0.5 + j as f32 * PI * 0.5,
+                        droop + 0.15,
+                        len * (0.8 - 0.12 * j as f32),
+                        value,
+                        salt,
+                    );
+                    salt += 1;
+                }
+                // The branch's own tip: three small leaves turned up.
+                for m in 0..3u32 {
+                    let a = a + (m as f32 - 1.0) * 0.9;
+                    let out = Vec3::new(a.sin(), 0.0, a.cos());
+                    hemp_leaf(
+                        &mut leaves,
+                        along(1.0),
+                        out,
+                        0.5 + 0.3 * hash01(seed, 400 + q * 3 + m),
+                        0.0,
+                        len * 0.45,
+                        value + 0.05,
+                        dome,
+                    );
+                }
             }
         }
     }
-    // The top: a tuft of small leaves turned up round the tip.
+    // The top: a dense tuft of small leaves turned up round the tip.
     let tip = at(1.0);
-    for k in 0..5u32 {
-        let a = yaw0 + k as f32 * TAU / 5.0 + 0.3;
+    for k in 0..8u32 {
+        let a = yaw0 + k as f32 * TAU / 8.0 + 0.3;
         let out = Vec3::new(a.sin(), 0.0, a.cos());
-        let len = 0.13 * (0.85 + 0.3 * hash01(seed, 60 + k));
-        let lift = 0.75 + 0.4 * hash01(seed, 70 + k);
+        let len = (0.12 + 0.05 * (k % 2) as f32) * (0.85 + 0.3 * hash01(seed, 60 + k));
+        let lift = 0.7 + 0.45 * hash01(seed, 70 + k);
+        let drop = 0.04 + 0.06 * (k % 2) as f32;
         hemp_leaf(
             &mut leaves,
-            tip - Vec3::Y * 0.06,
+            tip - Vec3::Y * drop,
             out,
             lift,
             0.0,
             len,
-            1.05,
+            1.08,
             dome,
         );
     }
@@ -829,11 +870,12 @@ pub fn hemp_leaf_rgba(n: u32) -> Vec<u8> {
     let hub = Vec2::new(0.5, 0.9);
     let longest = 0.86;
     // sRGB: the blade, its lighter midrib, and its darker edge.
-    // A light, yellowish green: hemp is spotted across a meadow by its
-    // colour as much as its shape.
-    let blade = Vec3::new(104.0, 168.0, 60.0);
-    let rib = Vec3::new(160.0, 205.0, 110.0);
-    let rim = Vec3::new(72.0, 126.0, 44.0);
+    // A rich mid green: still lighter than the shrubs round it, so hemp is
+    // spotted across a meadow, but not the lime it was (operator,
+    // 2026-10-19: "an odd green color").
+    let blade = Vec3::new(56.0, 104.0, 26.0);
+    let rib = Vec3::new(100.0, 146.0, 56.0);
+    let rim = Vec3::new(38.0, 76.0, 18.0);
 
     // Half-width of a leaflet at fraction `t` of its length, as a share of
     // its length: lanceolate, widest a third of the way out, serrated.
@@ -843,7 +885,7 @@ pub fn hemp_leaf_rgba(n: u32) -> Vec<u8> {
         }
         let body = (t * PI).sin().powf(1.1) * (1.0 - 0.35 * t);
         let teeth = 1.0 - 0.28 * (t * 13.0).fract();
-        0.105 * body * teeth
+        0.13 * body * teeth
     };
     // Which leaflet (if any) covers the point `p`, and how far across it.
     let sample = |p: Vec2| -> Option<(f32, f32, usize)> {

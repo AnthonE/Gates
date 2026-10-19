@@ -282,7 +282,15 @@ fn stage(
         })
     };
     let bush_leaf = leaf(&mut materials, atlas, 0.88);
-    let hemp_leaf = leaf(&mut materials, images.add(hemp_leaf_image()), 0.8);
+    let hemp_leaf = materials.add(StandardMaterial {
+        base_color_texture: Some(images.add(hemp_leaf_image())),
+        alpha_mode: AlphaMode::Mask(0.5),
+        cull_mode: None,
+        double_sided: true,
+        perceptual_roughness: 0.92,
+        specular_tint: Color::linear_rgb(0.3, 0.3, 0.3),
+        ..default()
+    });
     let wood = materials.add(StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: 0.85,
