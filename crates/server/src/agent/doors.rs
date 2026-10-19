@@ -24,7 +24,8 @@ use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::bots::OpAddr;
 use sim_core::build::{
-    anchor, build_cell_of, BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, SHAPE_DOORWAY, SHAPE_FRAME,
+    anchor, build_cell_of, BUILD_CELL_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
+    SHAPE_DOORWAY, SHAPE_FRAME,
 };
 use sim_core::deploy::{
     ARCH_DOOR, ARCH_GARAGE_DOOR, REFUSE_D_AUTH_FULL, REFUSE_D_LOCKOUT, REFUSE_D_OWNER,
@@ -421,7 +422,13 @@ impl Doors {
                         step @ Step::Walk { .. } => {
                             Through::Go(step.walk().unwrap_or(Intent::IDLE))
                         }
-                        Step::Blocked if left > HOP_STRAIGHT_M => {
+                        // Far, or a wall or a shut door between: walking
+                        // straight would walk into it for the stage's whole
+                        // time (the side of a door across its own leaf, or
+                        // an airlock's inner door from outside the base).
+                        Step::Blocked
+                            if left > HOP_STRAIGHT_M || walled_between(core, [x, z], h.near) =>
+                        {
                             self.hop = None;
                             return Through::GaveUp(door);
                         }
@@ -530,27 +537,25 @@ pub fn nearest_door(
 pub fn walled_between(core: &ClientCore, a: [f32; 2], b: [f32; 2]) -> bool {
     let have = core.piece_defs_have;
     core.pieces.entries().iter().any(|r| {
-        if r.level != 0 || !matches!(r.loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) || u16::from(r.row) >= have
-        {
+        if r.level != 0 || u16::from(r.row) >= have {
             return false;
         }
-        // The edge: along z at x0 (XLO), or along x at z0 (ZLO).
+        // The piece's line on the ground: an edge along z at x0 (XLO) or
+        // along x at z0 (ZLO), or a diagonal across its cell (an airlock's
+        // long side).
         let (x0, z0) = (
             f32::from(r.cx) * BUILD_CELL_M,
             f32::from(r.cz) * BUILD_CELL_M,
         );
-        let (across, along, fixed, start) = if r.loc == LOC_EDGE_XLO {
-            ((a[0], b[0]), (a[1], b[1]), x0, z0)
-        } else {
-            ((a[1], b[1]), (a[0], b[0]), z0, x0)
+        let s = BUILD_CELL_M;
+        let (p, q) = match r.loc {
+            LOC_EDGE_XLO => ([x0, z0], [x0, z0 + s]),
+            LOC_EDGE_ZLO => ([x0, z0], [x0 + s, z0]),
+            LOC_DIAG_A => ([x0, z0], [x0 + s, z0 + s]),
+            LOC_DIAG_B => ([x0 + s, z0], [x0, z0 + s]),
+            _ => return false,
         };
-        let span = across.1 - across.0;
-        if span.abs() < 1e-4 {
-            return false;
-        }
-        let t = (fixed - across.0) / span;
-        let at = along.0 + t * (along.1 - along.0);
-        if !(0.0..=1.0).contains(&t) || at < start || at > start + BUILD_CELL_M {
+        if !crosses(a, b, p, q) {
             return false;
         }
         let shape = core.piece_defs.pieces[usize::from(r.row)].shape;
@@ -566,6 +571,24 @@ pub fn walled_between(core: &ClientCore, a: [f32; 2], b: [f32; 2]) -> bool {
             true
         }
     })
+}
+
+/// The segments `a`–`b` and `p`–`q` cross (touching counts).
+fn crosses(a: [f32; 2], b: [f32; 2], p: [f32; 2], q: [f32; 2]) -> bool {
+    let side = |o: [f32; 2], u: [f32; 2], v: [f32; 2]| {
+        (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+    };
+    let (d1, d2) = (side(p, q, a), side(p, q, b));
+    let (d3, d4) = (side(a, b, p), side(a, b, q));
+    if d1 * d2 > 0.0 || d3 * d4 > 0.0 {
+        return false;
+    }
+    // Collinear: they cross only where their spans overlap.
+    if d1 == 0.0 && d2 == 0.0 {
+        let span = |i: usize| a[i].min(b[i]) <= p[i].max(q[i]) && p[i].min(q[i]) <= a[i].max(b[i]);
+        return span(0) && span(1);
+    }
+    true
 }
 
 /// Walled in on a built floor: it stands on a foundation or floor, and a

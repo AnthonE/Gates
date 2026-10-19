@@ -236,6 +236,7 @@ mod tests {
             doors: u8::MAX,
             doors_locked: u8::MAX,
             key_locks: u8::MAX,
+            unreachable: true,
         };
         for i in 0..crate::mind::SUMMARY_STORED {
             s.stored[i] = (long(300 + i), u32::MAX);

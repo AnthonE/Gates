@@ -514,6 +514,8 @@ pub enum Why {
     /// What it reached for, `E` would not take from where it stood:
     /// something else nearer is on the aim line. Nothing was sent.
     Blocked,
+    /// Its session ended (a shift's end, a dropped link) while it ran.
+    Session,
 }
 
 impl Why {
@@ -547,6 +549,7 @@ impl Why {
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
             Why::NoInvite => "no invite was waiting any more",
             Why::Blocked => "something else is in the way of it, so it could not reach it",
+            Why::Session => "the session ended while it ran",
         }
     }
 }
@@ -1265,6 +1268,10 @@ pub struct HomeSense {
     pub doors: u8,
     pub doors_locked: u8,
     pub key_locks: u8,
+    /// A walk home (or a visit to the box) could not reach it from about
+    /// here a moment ago: neither is offered until the body has moved off
+    /// or a while has passed (`explorer::HOME_STUCK_NEAR_M`).
+    pub unreachable: bool,
 }
 
 impl HomeSense {
@@ -1272,7 +1279,7 @@ impl HomeSense {
         if self.state == HomeState::None {
             return json!({ "state": "none" });
         }
-        json!({
+        let mut v = json!({
             "state": self.state.word(),
             "distance": self.distance.word(),
             "metres": tens(self.metres),
@@ -1284,7 +1291,13 @@ impl HomeSense {
                 "locked": self.doors_locked,
                 "key_locks": self.key_locks,
             },
-        })
+        });
+        if self.unreachable {
+            v["no_way_from_here"] = json!(
+                "the last walk home could not reach it from near here: go_home and stash wait until you have moved away or a few minutes have passed"
+            );
+        }
+        v
     }
 }
 
@@ -1552,6 +1565,7 @@ impl Summary {
             doors: 0,
             doors_locked: 0,
             key_locks: 0,
+            unreachable: false,
         },
         bag_ready: false,
         night: false,
