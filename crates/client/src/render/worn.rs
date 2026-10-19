@@ -646,6 +646,7 @@ mod tests {
                 coin: protocol::COIN_NONE,
                 price: 0,
                 texture: [0; 8],
+                unlock: false,
             },
         )
         .unwrap();

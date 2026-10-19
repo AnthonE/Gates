@@ -5066,8 +5066,25 @@ impl ClientCore {
             .rows()
             .iter()
             .enumerate()
-            .filter(move |(_, r)| r.covers == item)
+            .filter(move |(_, r)| r.covers == item && !r.unlock)
             .map(|(i, r)| (i, *r, self.skins_owned.has(i)))
+    }
+
+    /// May this player craft `item`? Yes unless an unlock row covers it
+    /// (Rust's Frog Boots), and then only if they own one: the sim's own
+    /// rule (`sim_core::skin::SkinContent::may_make`) over the dripped
+    /// catalog, so a locked cell and the server's refusal agree.
+    pub fn may_make(&self, item: u16) -> bool {
+        let mut gated = false;
+        for (i, r) in self.skins.rows().iter().enumerate() {
+            if r.unlock && r.covers == item {
+                if self.skins_owned.has(i) {
+                    return true;
+                }
+                gated = true;
+            }
+        }
+        !gated
     }
 
     /// The dripped row for skin `catalog`, if this client has it. An item

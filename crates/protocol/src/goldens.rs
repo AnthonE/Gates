@@ -2651,6 +2651,8 @@ pub fn event_skins() -> SkinCatalog {
                 } else {
                     [0; 8]
                 },
+                // The third an unlock (v128), so its bit is in the golden.
+                unlock: i == 2,
             },
         )
         .expect("a legal row");

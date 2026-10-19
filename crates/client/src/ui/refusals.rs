@@ -43,7 +43,7 @@
 // nothing outside this client renders them.
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
-pub const CRAFT: [&str; 8] = [
+pub const CRAFT: [&str; 9] = [
     "no such recipe",
     "bad count",
     "needs a station",
@@ -62,6 +62,9 @@ pub const CRAFT: [&str; 8] = [
     // The world's gate (`ARC.md` F2): nothing the crafter can do fixes it
     // except the island lighting a work, so the sentence says where to look.
     "nobody on the island can make this yet — see the works on [O] ISLAND",
+    // An unlock's item (Rust's Frog Boots): it is given, never learned, so
+    // the sentence says that rather than sending anyone to a table.
+    "only its owners can make this — it was given, not learned",
 ];
 
 /// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the

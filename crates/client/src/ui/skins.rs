@@ -36,7 +36,8 @@ pub fn next_skin(cat: &SkinCatalog, owned: &SkinSet, item: u16, current: u16) ->
     let mut choices = [NO_SKIN; sim_core::limits::MAX_SKINS + 1];
     let mut n = 1; // the plain look is always a choice
     for (i, row) in cat.rows().iter().enumerate() {
-        if row.covers == item && owned.has(i) {
+        // An unlock is owned but never worn (`SkinRow::unlock`).
+        if row.covers == item && !row.unlock && owned.has(i) {
             choices[n] = row.catalog;
             n += 1;
         }
@@ -91,6 +92,7 @@ mod tests {
                     coin,
                     price,
                     texture: [0; 8],
+                    unlock: false,
                 },
             )
             .unwrap();

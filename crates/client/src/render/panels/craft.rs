@@ -353,7 +353,9 @@ fn recipe_cell(
     // The world's gate outranks both (`ARC.md` F2): nothing the player
     // learns or carries opens it, only the island lighting a work.
     let world_locked = !core.arc.holds(row.unlock);
-    let can = row.affordable > 0 && !row.locked && !world_locked;
+    // An unlock's item (Rust's Frog Boots): only its owners make it.
+    let unowned = !core.may_make(row.output);
+    let can = row.affordable > 0 && !row.locked && !world_locked && !unowned;
     let picked = ui.selected == Some(row.recipe);
     let rest = if can { CELL_FULL } else { CELL_BG };
     let name = item_label(&core.catalog, row.output);
@@ -361,6 +363,8 @@ fn recipe_cell(
     // the same in grey and a padlock, and this says it in words.
     let tip = if world_locked {
         format!("{name} · the island cannot make this yet")
+    } else if unowned {
+        format!("{name} · owners only")
     } else if row.locked {
         format!("{name} · not learned yet")
     } else if row.affordable == 0 {
@@ -422,7 +426,7 @@ fn recipe_cell(
             // actions from the player: one says farm, this says go and
             // learn it. The word it replaces had to be read; a padlock is
             // seen.
-            if row.locked || world_locked {
+            if row.locked || world_locked || unowned {
                 lock(c, icons, 18.0, (CELL_PX - 2.0 - 18.0) * 0.5);
             }
             if ui.favs.contains(&row.recipe) {
@@ -709,6 +713,14 @@ fn detail_body(
     if let Some(hint) = crate::ui::arc::locked_line(&core.arc, def.unlock) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
+    // An unlock's item says it is given, so nobody goes looking for a table.
+    if !core.may_make(def.output) {
+        pane.spawn((
+            Text::new("Owners only. It is given, not learned."),
+            font_bold(11.0),
+            TextColor(TEXT_SHORT),
+        ));
+    }
 
     // The look it is made in, between what it is and what it costs — where
     // the reference puts it.
@@ -783,7 +795,7 @@ fn detail_body(
         step_button(row, 1, "+");
         step_button(row, STEP_MAX, ">|");
 
-        let can = max >= count as u32 && !locked && here;
+        let can = max >= count as u32 && !locked && here && core.may_make(def.output);
         let rest = if can { CELL_FULL } else { CELL_BG };
         row.spawn((
             Button,
@@ -1316,20 +1328,22 @@ pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore
 }
 
 /// Does the station `recipe` needs stand where the player does — nothing, a
-/// furnace, or a bench of its rung (`ui::craft::station_here`)?
+/// furnace, or a bench of its rung (`ui::craft::station_here`)? And may this
+/// player make it at all (an unlock's item is its owners' alone)?
 pub fn makeable_here(core: &ClientCore, recipe: u16) -> bool {
     let pos = core.predict.position();
     core.recipes
         .recipes
         .get(recipe as usize)
         .is_some_and(|def| {
-            crate::ui::craft::station_here(
-                def,
-                core.deploys.entries(),
-                &core.deploy_defs,
-                pos[0],
-                pos[2],
-            )
+            core.may_make(def.output)
+                && crate::ui::craft::station_here(
+                    def,
+                    core.deploys.entries(),
+                    &core.deploy_defs,
+                    pos[0],
+                    pos[2],
+                )
         })
 }
 

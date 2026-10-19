@@ -166,10 +166,13 @@ pub const REFUSE_CR_SKIN: u32 = 6;
 /// `ARC.md` F2): a fact about the world, so it is said before anything the
 /// crafter could fix themselves.
 pub const REFUSE_CR_WORLD: u32 = 7;
+/// The output is an unlock's (`skin.rs`, Rust's Frog Boots) and this player
+/// does not own it. Nothing at a table or a bench fixes it: it is given.
+pub const REFUSE_CR_OWNED: u32 = 8;
 /// The highest craft refusal; both ends of the wire refuse anything past it.
 /// `CR`, not `C`: `survival.rs`'s consume refusals own `REFUSE_C_*`, and the
 /// domain gate scans the prefix crate-wide.
-pub const REFUSE_CR_MAX: u32 = REFUSE_CR_WORLD;
+pub const REFUSE_CR_MAX: u32 = REFUSE_CR_OWNED;
 
 /// One baked recipe row. `out_count == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -377,6 +380,12 @@ pub fn enqueue(
     }
     if def.blueprint && !crate::research::knows(p.known, recipe) {
         events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_BLUEPRINT, 0);
+        return;
+    }
+    // An unlock's item, beside the blueprint: what fixes it is being given
+    // the row, never a station.
+    if !sc.may_make(&p.skins, def.output) {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_CR_OWNED, 0);
         return;
     }
     // The skin beside the blueprint, and for its reason: not owning one is
@@ -678,6 +687,7 @@ mod tests {
         sc.defs[0] = crate::skin::SkinDef {
             catalog: 7,
             covers: 3,
+            unlock: false,
         };
         sc.count = 1;
         sc
@@ -715,6 +725,33 @@ mod tests {
         let made = p.inv.iter().find(|s| s.item == 3).expect("minted");
         assert_eq!(made.skin, 7, "the item wears the job's skin");
         assert_eq!(p.jobs[0].remaining, 0);
+    }
+
+    /// Rust's Frog Boots: an unlock row's item is crafted only by a player
+    /// who owns the row, and a refusal spends nothing.
+    #[test]
+    fn an_unlocks_item_is_made_only_by_its_owners() {
+        let (cc, gc) = fixture();
+        let mut sc = one_skin();
+        sc.defs[0].unlock = true;
+        let dc = DeployContent::EMPTY;
+        let nod = Deploys::new();
+        let mut p = player(&[(1, 2), (2, 1)]);
+
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 0, &mut ev);
+        assert_eq!(ev.entries()[0].code, EV_CRAFT_REFUSED);
+        assert_eq!(ev.entries()[0].b, REFUSE_CR_OWNED, "not given the row");
+        assert_eq!(p.jobs[0].remaining, 0, "nothing queued");
+        assert_eq!(inv_count(&p.inv, 1), 2, "nothing spent");
+
+        p.skins.insert(0);
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &sc, 0, &dc, &nod, 10, &mut p, 1, 1, 0, &mut ev);
+        assert_eq!(ev.len(), 0, "owned: queued");
+        step_nospill(&cc, &gc, p.craft_done_at, &mut p, &mut ev);
+        let made = p.inv.iter().find(|s| s.item == 3).expect("made");
+        assert_eq!(made.skin, 0, "an unlock is not worn");
     }
 
     /// Rust's repair bench: a skin goes on, or comes off, at a bench.

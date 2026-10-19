@@ -17,6 +17,9 @@
 #                                the play coin (2026-10-18); ORBS is the
 #                                governance coin now.
 #   season   which drop it belongs to
+#   unlock   true for an unlock rather than a look (Rust's Frog Boots): owning
+#            the row is what lets a player craft `covers`, and nobody else
+#            can. Never worn, so it may cover a deployable; no texture.
 #
 # Ownership is read off the platform (server/src/skins.rs); a shard with
 # `skins_all = true` in shard.toml lends every row to every player so the
@@ -112,3 +115,20 @@ covers = "item.armor_burlap_body"
 tint = [171, 159, 138]
 texture = "a3e59a08d11ce4f21077c189df6d489e813f1b44ec14f25fa1ba74e84c980b58"
 season = "community"
+
+# ── Unlocks ──────────────────────────────────────────────────────────────────
+# Rust's Frog Boots: given to every account that played its early access, and
+# owning them is what lets you craft them (one tarp). These rows have no look:
+# owning one is what lets a player craft the item it names. They are given,
+# not sold: the platform's item contract or the shard's `.airdrop` list
+# (`server/src/gifts.rs`), which `ops/airdrop.py` writes.
+
+# The Abyss Rug: for everyone who played the JUNK launch week and holds JUNK.
+[[skin]]
+id = "skin.abyss_rug"
+catalog = 10
+name = "Abyss Rug"
+covers = "item.abyss_rug"
+tint = [14, 59, 67]
+season = "abyss"
+unlock = true

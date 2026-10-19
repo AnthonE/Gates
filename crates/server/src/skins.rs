@@ -299,7 +299,11 @@ mod tests {
     fn catalog() -> SkinContent {
         let mut sc = SkinContent::EMPTY;
         for (i, catalog) in [1u16, 2, 900].into_iter().enumerate() {
-            sc.defs[i] = SkinDef { catalog, covers: 3 };
+            sc.defs[i] = SkinDef {
+                catalog,
+                covers: 3,
+                unlock: false,
+            };
         }
         sc.count = 3;
         sc
