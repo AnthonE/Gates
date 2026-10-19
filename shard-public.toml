@@ -164,10 +164,12 @@ status_addr = "127.0.0.1:8431"
 # `entitle::Config::off()` is the shipping default (`config.rs`), so with this
 # key absent every joiner is admitted and the sweep never runs.
 #
-# Correct today — gates has no ticket contract, so there is no licence to
-# enforce and `POST /api/ticket/gates/check` answers
-# `every_wallet_entitled: true` to anyone who asks. Uncommenting now would add
-# a network round trip per join to learn nothing.
+# The ticket exists: `EloGameTicket:GATES` (RH-Chain, 0x5453…e5e6, deployed
+# 2026-10-19, $10). Gates is free till December (operator, 2026-10-19): the
+# minter gives each person who joins a free copy (`ops/mint_pending.py`,
+# `mintFree`), and `gates-free-door.timer` closes that door on 1 Dec 2026.
+# The door here stays off until someone decides a copy is required to play;
+# arming it also needs `require_auth`, which ends guest play.
 #
 # ⚠ **THE DAY THE TICKET IS ARMED, THIS LINE IS THE WHOLE ENFORCEMENT.** The
 # depot gate is off by default and deliberately so — elo's `tickets.py` says
