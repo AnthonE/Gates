@@ -2,7 +2,8 @@
 //! ([`intent`]), the hands that turn it into input at a person's speed
 //! ([`hands`]), what its eyes and ears know of other bodies ([`tracks`]),
 //! what a player knows of the game's rules ([`wiki`]), the legs that find
-//! a way somewhere ([`route`]), the reflex that answers a fight
+//! a way somewhere ([`route`]) and the long way round what it cannot see
+//! past ([`far`]), the reflex that answers a fight
 //! ([`combat`]), where a shot must go to land ([`aim`]), somewhere to
 //! hide from one ([`cover`]), what goes on the belt for it ([`loadout`]),
 //! its bags and the walk back to what it dropped ([`home`]), where it
@@ -34,6 +35,7 @@ pub mod combat;
 pub mod cover;
 pub mod defend;
 pub mod doors;
+pub mod far;
 pub mod floors;
 pub mod gate;
 pub mod hands;
