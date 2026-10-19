@@ -7470,6 +7470,16 @@ pub fn observe(
                 if name.as_str() == crate::mind::SATCHEL_ITEM && !memory.raids {
                     continue;
                 }
+                // A tool already carried, and not worn out, is not made twice.
+                let tool = rank(def.output, &name) == 0;
+                if tool
+                    && core
+                        .inv
+                        .iter()
+                        .any(|st| st.count > 0 && st.item == def.output && st.cond > 0)
+                {
+                    continue;
+                }
                 let n = s.craftable_len as usize;
                 if rank(def.output, &name) == pass
                     && n < SUMMARY_CRAFTS
@@ -8849,6 +8859,44 @@ mod tests {
         let summary = bot.summary(&view, 1).unwrap();
         assert_eq!(summary.craftable()[0].as_str(), "Stone Hatchet");
         assert!(summary.offers(Goal::Craft(Name::new(b"Stone Hatchet").unwrap())));
+    }
+
+    /// Issue #387: a tool already in the pack is not offered again; a worn
+    /// out one is.
+    #[test]
+    fn a_tool_already_carried_is_not_offered_again() {
+        let (mut bot, view, _) = fixture();
+        let hatchet = Goal::Craft(Name::new(b"Stone Hatchet").unwrap());
+        let core = bot.core.as_mut().unwrap();
+        core.recipes.recipe_count = 3;
+        core.recipes_have = 3;
+        core.recipes.recipes[2] = sim_core::craft::RecipeDef {
+            output: 9,
+            out_count: 1,
+            ticks: 10,
+            station: STATION_NONE,
+            blueprint: false,
+            unlock: 0,
+            n_inputs: 1,
+            inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
+        };
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 30,
+            cond: 0,
+            skin: 0,
+        };
+        assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
+        let core = bot.core.as_mut().unwrap();
+        core.inv[8] = ItemStack {
+            item: 9,
+            count: 1,
+            cond: 5_000,
+            skin: 0,
+        };
+        assert!(!bot.summary(&view, 1).unwrap().offers(hatchet));
+        bot.core.as_mut().unwrap().inv[8].cond = 0;
+        assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
     }
 
     #[test]
