@@ -241,6 +241,11 @@ pub enum Goal {
     /// Walk up to its founder and hand over the wood, stone and ore the
     /// pack carries for the base (`agent::society`).
     HandOver,
+    /// Walk to the named public place (THE GATE, a work, a lock: the names
+    /// `places` gives them) and stop there. Offered only to a source that
+    /// is sent `places` (an external one); an agent asked for a plain trip
+    /// to THE GATE, having walked there by trades (2026-10-18).
+    Go(Name),
 }
 
 /// `craft:` plus the longest catalog name.
@@ -357,6 +362,7 @@ impl Goal {
             Goal::Patrol => "patrol",
             Goal::KeepShop => "keep_shop",
             Goal::HandOver => "hand_over",
+            Goal::Go(_) => "go",
         }
     }
 
@@ -369,7 +375,7 @@ impl Goal {
             len += n;
         };
         put(self.key().as_bytes());
-        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) = self {
+        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) | Goal::Go(name) = self {
             put(b":");
             put(name.as_bytes());
         }
@@ -403,6 +409,7 @@ impl Goal {
             "craft" => Some(Goal::Craft(name)),
             "buy" => Some(Goal::Buy(name)),
             "sell" => Some(Goal::Sell(name)),
+            "go" => Some(Goal::Go(name)),
             _ => None,
         }
     }
@@ -465,6 +472,7 @@ impl Goal {
             Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
             Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
             Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
+            Goal::Go(name) => format!("Walk to {} and stop there.", name.as_str()),
         }
     }
 }
@@ -1243,6 +1251,13 @@ pub struct HomeSense {
     pub attacked: bool,
     /// Something of it is damaged that a repair would mend.
     pub damaged: bool,
+    /// Doors hanging in its doorways; of those, how many are locked (a
+    /// lock on and armed), and how many of the locks are key locks rather
+    /// than code locks. An agent past the doors milestone could not tell
+    /// whether its base was shut to strangers (2026-10-18).
+    pub doors: u8,
+    pub doors_locked: u8,
+    pub key_locks: u8,
 }
 
 impl HomeSense {
@@ -1257,6 +1272,11 @@ impl HomeSense {
             "bearing": BEARINGS[self.bearing as usize % 8],
             "under_attack": self.attacked,
             "damaged": self.damaged,
+            "doors": {
+                "count": self.doors,
+                "locked": self.doors_locked,
+                "key_locks": self.key_locks,
+            },
         })
     }
 }
@@ -1315,8 +1335,14 @@ pub const RUNNER_BANK_AT: u32 = 100;
 /// The scripted policy catches up with a teammate farther than this.
 pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 
-/// The most goals one request can offer: the fixed set and every craft.
-pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS;
+/// Places a request can offer a trip to (`Goal::Go`): THE GATE, the works
+/// and the locks.
+pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits::MAX_MECHS;
+
+/// The most goals one request can offer: the fixed set, every craft and
+/// trade, and the trips.
+pub const MAX_OPTIONS: usize =
+    Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS + GO_PLACES;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no
@@ -1516,6 +1542,9 @@ impl Summary {
             metres: 0,
             attacked: false,
             damaged: false,
+            doors: 0,
+            doors_locked: 0,
+            key_locks: 0,
         },
         bag_ready: false,
         night: false,
