@@ -1,4 +1,5 @@
-# The minter (`ops/mint_pending.py`): sends the tokens THE OUTFITTER sold.
+# The minter (`ops/mint_pending.py`): sends the tokens THE OUTFITTER sold, and
+# a free copy of Gates (`EloGameTicket:GATES` `mintFree`) to each person who joins.
 # The shard writes each sale to `<world>.mints`; this mints it on morr over
 # ssh (the item contract's key stays there) and appends the transaction to
 # `<world>.minted`, which the shard watches to read the buyer's items again.
