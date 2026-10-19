@@ -141,6 +141,9 @@ pub const MEET_STOP_M: f32 = 6.0;
 /// is a few minutes' walk, and the watchdog catches a body that stands).
 pub const GO_STOP_M: f32 = 8.0;
 pub const GO_GOAL_SECS: u32 = 600;
+/// A walk anywhere (`Goal::Walk`) is done this near its point: close enough
+/// that a tree or a rock on the very spot does not fail it.
+pub const WALK_STOP_M: f32 = 4.0;
 /// Before a team says where its friend is, a friend who joined or was seen
 /// this recently counts as on the island. A shard keeps a tag after its
 /// player leaves, so an older one says nothing.
@@ -1006,6 +1009,10 @@ pub struct Survivor {
     work_failed: Option<u32>,
     /// The place a trip (`Goal::Go`) last came to nothing at, and when.
     go_failed: Option<(Name, u32)>,
+    /// Where the walk under way (`Goal::Walk`) is going, fixed when it
+    /// began (the goal's start tick and the point), so a turn on the way
+    /// does not move it.
+    walk_to: Option<(u32, [f32; 2])>,
     /// A stone read, a lock solved, a card door opened, the way out of a
     /// card room (`agent::lore`), and when a read, a solve or a swipe last
     /// came to nothing (in that order).
@@ -1200,6 +1207,7 @@ impl Survivor {
             trade_job: TradeJob::default(),
             work_job: WorkJob::default(),
             go_failed: None,
+            walk_to: None,
             trade_failed: None,
             work_failed: None,
             read_job: ReadJob::default(),
@@ -2409,7 +2417,8 @@ impl Survivor {
             | Goal::ReadStone
             | Goal::SolveLock
             | Goal::SwipeCard
-            | Goal::Go(_) => true,
+            | Goal::Go(_)
+            | Goal::Walk(_) => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -2622,6 +2631,11 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Go(place) => self.travel(core, body, place, tick),
+            Goal::Walk(_) if elapsed >= GO_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Goal::Walk(leg) => self.walk_leg(core, body, leg, active.started, tick),
             Goal::Patrol if elapsed >= society::PATROL_GOAL_SECS * TICK_HZ => {
                 self.end_goal(tick, Outcome::Done);
                 Intent::IDLE
@@ -2681,6 +2695,42 @@ impl Survivor {
             return Intent::IDLE;
         };
         match gate::walk(core, body, &mut self.route, to, GO_STOP_M, tick) {
+            Some(Ok(intent)) => {
+                self.stats.phase = Phase::Approaching;
+                intent
+            }
+            Some(Err(why)) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            None => {
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+        }
+    }
+
+    /// A walk anywhere (`Goal::Walk`): the point `leg` names from where the
+    /// body stood and faced when it began, kept inside the island's border,
+    /// walked to by the route (the long way round included, `agent::far`)
+    /// and done within [`WALK_STOP_M`] of it.
+    fn walk_leg(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        leg: crate::mind::Walk,
+        started: u32,
+        tick: u32,
+    ) -> Intent {
+        let to = match self.walk_to {
+            Some((at, to)) if at == started => to,
+            _ => {
+                let to = walk_target(body, leg);
+                self.walk_to = Some((started, to));
+                to
+            }
+        };
+        match gate::walk(core, body, &mut self.route, to, WALK_STOP_M, tick) {
             Some(Ok(intent)) => {
                 self.stats.phase = Phase::Approaching;
                 intent
@@ -8320,6 +8370,8 @@ pub fn observe(
                 s.offer(Goal::Go(name));
             }
         }
+        // And anywhere at all, by bearing and metres.
+        s.offer(Goal::Walk(crate::mind::Walk::ANY));
     }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));
@@ -8379,6 +8431,18 @@ fn swing_eye_m() -> f32 {
 
 /// Distance and relative bearing (index into `mind::BEARINGS`, clockwise
 /// from ahead) of a point from this body's facing.
+/// The point a walk leg names: `leg.metres` from the body toward
+/// `BEARINGS[leg.bearing]` of its facing (`relative`'s sectors, turned
+/// back into a direction), clamped inside the island's border.
+fn walk_target(body: &EntityState, leg: crate::mind::Walk) -> [f32; 2] {
+    let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    let (dx, dz) = yaw_dir(body.yaw.wrapping_add(u16::from(leg.bearing % 8) << 13));
+    let m = f32::from(leg.metres);
+    let edge = sim_core::movement::BORDER_MARGIN + WALK_STOP_M;
+    let far = sim_core::terrain::ISLAND_SIZE - edge;
+    [(x + dx * m).clamp(edge, far), (z + dz * m).clamp(edge, far)]
+}
+
 fn relative(body: &EntityState, x: f32, z: f32) -> (f32, u8) {
     let dx = x - body.qx as f32 * POS_XZ_Q;
     let dz = z - body.qz as f32 * POS_XZ_Q;
@@ -9431,6 +9495,81 @@ mod tests {
         goal(&mut bot, trip, 3);
         bot.end_goal(3, Outcome::Failed(Why::Stuck));
         assert!(!bot.summary(&view, 1).unwrap().offers(trip));
+    }
+
+    /// Walk anywhere (operator, 2026-10-19): one template on offer to a mind
+    /// told of places; any filled-in walk answers to it, a bad one does not;
+    /// the point is the bearing from where the body faced when it began,
+    /// and the walk is done beside it.
+    #[test]
+    fn an_external_mind_may_walk_anywhere_by_bearing_and_metres() {
+        use crate::mind::Walk;
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let any = Goal::Walk(Walk::ANY);
+        assert_eq!(any.label().as_str(), "walk:<bearing>:<metres>");
+        let leg = Goal::named("walk:right:40").unwrap();
+        assert_eq!(
+            leg,
+            Goal::Walk(Walk {
+                bearing: 2,
+                metres: 40
+            })
+        );
+        assert_eq!(leg.label().as_str(), "walk:right:40");
+        assert!(
+            !bot.summary(&view, 1).unwrap().offers(leg),
+            "only a mind told of places"
+        );
+        bot.memory.travels = true;
+        let s = bot.summary(&view, 1).unwrap();
+        assert!(s.offers(any) && s.offers(leg));
+        assert_eq!(Goal::parse("walk:right:40", s.options()), Some(leg));
+        for bad in [
+            "walk:up:40",
+            "walk:right:5",
+            "walk:right:900",
+            "walk:<bearing>:<metres>",
+        ] {
+            assert_eq!(Goal::parse(bad, s.options()), None, "{bad}");
+        }
+        // The point: 40 m to the body's right, whichever way it faces.
+        let body = view.entities[0].1;
+        let [tx, tz] = walk_target(
+            &body,
+            Walk {
+                bearing: 2,
+                metres: 40,
+            },
+        );
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let (rx, rz) = yaw_dir(body.yaw.wrapping_add(1 << 14));
+        assert!(((tx - x) - rx * 40.0).abs() < 0.01 && ((tz - z) - rz * 40.0).abs() < 0.01);
+        let [ex, ez] = walk_target(
+            &body,
+            Walk {
+                bearing: 0,
+                metres: 600,
+            },
+        );
+        assert!(
+            (0.0..=terrain::ISLAND_SIZE).contains(&ex)
+                && (0.0..=terrain::ISLAND_SIZE).contains(&ez)
+        );
+        goal(&mut bot, leg, 1);
+        bot.frame_at(&view, 1, 1, now);
+        assert_eq!(bot.goal(), Some(leg));
+        assert_eq!(bot.stats.phase, Phase::Approaching);
+        // Turned on the way, the point stays where it was; beside it, done.
+        let haven = *bot.haven.as_ref().unwrap();
+        let b = &mut view.entities[0].1;
+        b.yaw = b.yaw.wrapping_add(1 << 15);
+        b.qx = quant_xz(tx + 1.0);
+        b.qz = quant_xz(tz);
+        b.qy = quant_y(terrain::ground(SEED, &haven, tx + 1.0, tz));
+        bot.frame_at(&view, 1, 2, now);
+        let report = bot.memory.last.unwrap();
+        assert_eq!((report.goal, report.outcome), (leg, Outcome::Done));
     }
 
     #[test]

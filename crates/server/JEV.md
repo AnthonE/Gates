@@ -117,6 +117,14 @@ and a reply naming anything else is refused.
   Offered only to an external or MCP mind (the one sent `places`), for
   each place not already "here"; strangers in view do not take it away. A
   trip that fails is not offered again for that place for two minutes.
+- **walk:BEARING:METRES** — walk anywhere and stop within 4 m: a bearing
+  from where the body faces (`ahead`, `ahead-right`, `right`,
+  `behind-right`, `behind`, `behind-left`, `left`, `ahead-left`, the
+  observation's words) and 10–600 m, e.g. `walk:ahead-left:300`. Offered to
+  the same minds as `go:` as one template, `walk:<bearing>:<metres>`, which
+  the mind fills in. The point is fixed when the walk begins and kept
+  inside the island's border; the route finds the way (the long way round
+  a cliff included).
 
 ## Teams and the team's base
 

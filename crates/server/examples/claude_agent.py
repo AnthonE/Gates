@@ -117,6 +117,14 @@ view), the goals on offer, what you heard since last turn, and your own recent \
 turns; sometimes also a picture of your own first-person view. Pick exactly \
 one offered goal; your hands carry it out. Give a short reason.
 
+You can go anywhere. `go:<place>` walks to a named place; the option \
+`walk:<bearing>:<metres>` is filled in, not picked as written: a bearing \
+from where you face (ahead, ahead-right, right, behind-right, behind, \
+behind-left, left, ahead-left: the words your observation uses) and 10-600 \
+metres, e.g. `walk:ahead-left:300`. It walks there the best way it finds \
+and stops. Explore the island, go somewhere a person asked you to, go and \
+look at what you heard about.
+
 `in_view` is what you see now or saw in the last few minutes not far off, \
 with how far and which way: a gather or supply goal walks back to it. With \
 none of its kind in view, the goal only looks round for 20 s and may find \
@@ -358,6 +366,21 @@ def load_notes():
             return " ".join(f.read().split())[:NOTES_CHARS]
     except OSError:
         return ""
+
+
+WALK_ANY = "walk:<bearing>:<metres>"
+BEARINGS = ("ahead", "ahead-right", "right", "behind-right",
+            "behind", "behind-left", "left", "ahead-left")
+
+
+def walk_ok(goal, options):
+    """A filled-in walk (`walk:ahead-left:300`) answers the walk template
+    when it is on offer; the bot checks it again (`mind::Walk::parse`)."""
+    if WALK_ANY not in options or not goal.startswith("walk:"):
+        return False
+    parts = goal.split(":")
+    return (len(parts) == 3 and parts[1] in BEARINGS and parts[2].isdigit()
+            and 10 <= int(parts[2]) <= 600)
 
 
 def save_notes(notes):
@@ -641,7 +664,7 @@ def main():
             answer = ask(system, turn_content(request, recent, frame, notes, chat_log),
                          schema(can_share, voice))
             goal = answer["goal"]
-            if goal not in request["options"]:
+            if goal not in request["options"] and not walk_ok(goal, request["options"]):
                 raise RuntimeError(f"model chose {goal!r}, not on offer")
             reason = answer["reason"][:REASON_CHARS]
             say = clip_say(answer.get("say", ""))
