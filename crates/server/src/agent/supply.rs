@@ -868,13 +868,26 @@ impl HomeJob {
             {
                 Through::Passed(at) => {
                     let top = usize::from(self.passed_len).checked_sub(1);
-                    if top.is_some_and(|t| self.passed[t] == Some(at)) {
+                    let back = top.is_some_and(|t| self.passed[t] == Some(at));
+                    if back {
                         // Back out through it.
                         self.passed_len -= 1;
                         self.passed[usize::from(self.passed_len)] = None;
                     } else if usize::from(self.passed_len) < MAX_DOORS {
                         self.passed[usize::from(self.passed_len)] = Some(at);
                         self.passed_len += 1;
+                    }
+                    // Through a door, it is somewhere else: a door it could
+                    // not get to from the other side may be the way from
+                    // this one (the inner door of an airlock, given up from
+                    // outside the base, is the one in from inside the
+                    // airlock). The one it just came back out of is not
+                    // tried again straight away.
+                    if self.leg != Leg::Out {
+                        self.tried = [None; MAX_DOORS];
+                        if back {
+                            self.tried[0] = Some(at);
+                        }
                     }
                     Deliver::IDLE
                 }
@@ -953,13 +966,21 @@ impl HomeJob {
                     // No way there from here: a door is in the way, the
                     // nearest one near where it is going not tried yet.
                     Step::Blocked => {
-                        // Not a door it is inside of, but the innermost,
-                        // which is the way back out.
+                        // Not a door it is inside of; the innermost, which
+                        // is the way back out, only when no other will do.
+                        // Just through it, it is the nearest door there is,
+                        // and taking it again walks back out the way the
+                        // trip came in.
                         let mut skip = [None; 2 * MAX_DOORS];
-                        let inner = usize::from(self.passed_len.saturating_sub(1));
-                        skip[..inner].copy_from_slice(&self.passed[..inner]);
+                        skip[..MAX_DOORS].copy_from_slice(&self.passed);
                         skip[MAX_DOORS..].copy_from_slice(&self.tried);
-                        match nearest_door(core, goal, HOP_M, 0, &skip, x, z) {
+                        let mut door = nearest_door(core, goal, HOP_M, 0, &skip, x, z);
+                        if door.is_none() {
+                            let inner = usize::from(self.passed_len.saturating_sub(1));
+                            skip[inner] = None;
+                            door = nearest_door(core, goal, HOP_M, 0, &skip, x, z);
+                        }
+                        match door {
                             Some(door) => {
                                 self.doors.begin_toward(door, goal, tick);
                                 Deliver::IDLE
