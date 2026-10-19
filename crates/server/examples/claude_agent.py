@@ -117,6 +117,14 @@ view), the goals on offer, what you heard since last turn, and your own recent \
 turns; sometimes also a picture of your own first-person view. Pick exactly \
 one offered goal; your hands carry it out. Give a short reason.
 
+`in_view` is what you see now or saw in the last few minutes not far off, \
+with how far and which way: a gather or supply goal walks back to it. With \
+none of its kind in view, the goal only looks round for 20 s and may find \
+none. `forage` is for `berry_bushes`; trees are `gather_wood`, hemp is \
+`gather_hemp`. `pack` is what you carry. `base_next` is your own base's \
+next step and what it still lacks after your pack (`missing`; `raw` is the \
+same in raw materials): a shopping list, not what you have.
+
 You may also type one chat line in `say`, at most 48 characters, and `to` \
 picks who reads it: "global" is everyone on the island, "team" is your team \
 wherever they are, "local" is only players within 20 m. Answer a line on the \

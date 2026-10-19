@@ -501,6 +501,9 @@ pub enum Why {
     BoxFull,
     /// Marked hostile: the gate's guns would shoot it.
     Wanted,
+    /// What it reached for, `E` would not take from where it stood:
+    /// something else nearer is on the aim line. Nothing was sent.
+    Blocked,
 }
 
 impl Why {
@@ -532,6 +535,7 @@ impl Why {
             Why::Locked => "a lock it has no code for is in the way",
             Why::BoxFull => "the box is full",
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
+            Why::Blocked => "something else is in the way of it, so it could not reach it",
         }
     }
 }
@@ -2666,17 +2670,23 @@ fn society_work(s: &Summary) -> Option<(Goal, &'static str)> {
                 run.1 = held(name).saturating_mul(100) / aim;
             }
             // A run that just found none of its kind in sight goes last: the
-            // land round here is bare of it for now.
+            // land round here is bare of it for now. Ahead of the others, a
+            // run of a kind in view or remembered near: one of a kind it
+            // knows of none of is a search, and searching for the shortest
+            // kind every time (ore, which is rare) was all a farmer did,
+            // turn about with stone, failing both (#362).
             let bare = s
                 .last
                 .filter(|r| matches!(r.outcome, Outcome::Failed(Why::NotFound)))
                 .map(|r| r.goal);
-            for run in runs.iter_mut() {
-                if bare == Some(run.0) {
-                    run.1 = u32::MAX;
-                }
-            }
-            runs.sort_by_key(|r| r.1);
+            let known = |run: Goal| match run {
+                Goal::SupplyWood => s.trees.count > 0,
+                Goal::SupplyStone => s.stone_nodes.count > 0,
+                Goal::SupplyOre => s.ore_nodes.count > 0,
+                Goal::SupplyHemp => s.hemp.count > 0,
+                _ => false,
+            };
+            runs.sort_by_key(|r| (bare == Some(r.0), !known(r.0), r.1));
             if let Some((goal, _)) = runs.into_iter().find(|r| s.offers(r.0)) {
                 return Some((goal, "society: a supply run for the crew's boxes"));
             }
@@ -3736,6 +3746,22 @@ mod tests {
         });
         assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
         s.last = None;
+        // Ore is shortest of all, but none is in view or remembered while
+        // trees are: wood, not a search for ore, and the two runs it knows
+        // nothing of are not taken turn about while it does (#362).
+        s.offer(Goal::SupplyOre);
+        s.trees.add(20.0, 0);
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyWood);
+        s.ore_nodes.add(30.0, 2);
+        assert_eq!(pick(&mut scripted, &s), Goal::SupplyOre, "ore in view");
+        s.ore_nodes = Sighting::default();
+        s.trees = Sighting::default();
+        assert_eq!(
+            pick(&mut scripted, &s),
+            Goal::SupplyOre,
+            "nothing known: the shortest"
+        );
+        s.options_len -= 1;
         // Carrying plenty, with its founder near: into the founder's hands.
         s.offer(Goal::HandOver);
         assert_eq!(pick(&mut scripted, &s), Goal::HandOver);

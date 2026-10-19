@@ -46,6 +46,11 @@ pub const MAX_MOVES: u8 = 32;
 const MAX_TRIES: u8 = 3;
 /// A visit that failed is not offered again for this long.
 pub const STASH_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A visit that could not get `E` onto the box from inside is not offered
+/// again for this long: what takes the press there instead (a bag dropped
+/// at the stand spot, say) is still there a minute later, and the visit was
+/// failing every two minutes for as long as it lay.
+pub const STASH_BLOCKED_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// Stacks of each food and med kept on the body.
 pub const PROVISION_STACKS: u32 = 2;
 /// Distinct items the summary reports from the box: enough that a mind
@@ -702,10 +707,12 @@ impl StashJob {
             return match self.aim(core, seed, haven, hands, b, x, z, yaw, tick) {
                 Aim::Press(intent) => Chore::Open { key, intent },
                 Aim::Wait(intent) => Chore::Go(intent),
+                // No open went out: the shard never saw it, so this is not
+                // its refusal. `E` takes something else from here.
                 Aim::Missed => {
                     self.tries += 1;
                     if self.tries >= MAX_TRIES {
-                        Chore::Fail(Why::Refused)
+                        Chore::Fail(Why::Blocked)
                     } else {
                         Chore::Go(look)
                     }
