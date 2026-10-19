@@ -123,6 +123,9 @@ class Mind:
         """Send one message. A request's answer comes back with the caller's
         id; a notification's is None."""
         expect = msg.get("id") is not None
+        # One budget for the wait in line and the answer, so a call queued
+        # behind another body's long `look` doesn't take twice as long.
+        deadline = time.monotonic() + timeout
         if not self.lock.acquire(timeout=timeout):
             return _answer(msg.get("id"), error={"code": -32001, "message": "your agent is busy; try again"})
         try:
@@ -140,7 +143,6 @@ class Mind:
                 return _answer(msg.get("id"), error={"code": -32002, "message": "your agent left the island; call again"})
             if not expect:
                 return None
-            deadline = time.monotonic() + timeout
             while True:
                 left = deadline - time.monotonic()
                 if left <= 0:
@@ -424,8 +426,13 @@ def handler_for(bridge):
             self.send_header("Cache-Control", "no-store")
             for k, v in headers:
                 self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                # The harness (or nginx's 90 s) gave up before the answer:
+                # its next call gets the next one. Not worth a traceback.
+                self.close_connection = True
 
         def _refuse(self):
             self._send(405, {"error": "POST only"}, [("Allow", "POST")])

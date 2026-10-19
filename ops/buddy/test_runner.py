@@ -197,6 +197,12 @@ m = mind_bridge.Mind(silent)
 t0 = time.time()
 got = m.call({"jsonrpc": "2.0", "id": 1, "method": "ping"}, timeout=1.0)
 check("a silent body times out with an error", "error" in got and time.time() - t0 < 3)
+# A call queued behind another waits one budget in all, not two.
+m.lock.acquire()
+threading.Timer(0.6, m.lock.release).start()
+t0 = time.time()
+got = m.call({"jsonrpc": "2.0", "id": 2, "method": "ping"}, timeout=1.0)
+check("a queued call keeps one budget", "error" in got and time.time() - t0 < 1.5)
 silent.kill()
 for p in bodies:
     p.kill()

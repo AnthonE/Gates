@@ -1348,8 +1348,9 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
     let core = h.bot.core().unwrap();
     println!("minimum food {food}, water {water}; {}", h.explain());
     assert_eq!(h.bot.stats.deaths, 0, "{}", h.explain());
-    // 30 %: the healthy run bottoms out near 39 % water and 59 % food; a
-    // body that never learns which food carries water is near 21 % here.
+    // 30 %: a body that never learns which food carries water fell near
+    // 21 % here. At Rust's idle drain (#383) the healthy run bottoms out
+    // near 74 % water and 80 % food.
     assert!(
         u32::from(food) * 10 >= u32::from(core.max_food) * 3,
         "food fell to {food}"
@@ -1359,11 +1360,8 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
         "water fell to {water}"
     );
     assert!(h.bot.gathered_of("Wood") > 0 && h.bot.gathered_of("Stone") > 0);
-    assert!(
-        h.bot.stats.crafted >= 2 && h.bot.stats.eaten > 0,
-        "{}",
-        h.explain()
-    );
+    // Not `eaten`: at Rust's idle drain half an hour never makes it hungry.
+    assert!(h.bot.stats.crafted >= 2, "{}", h.explain());
     // With stone tools in hand the playbook forages the cloth for a
     // sleeping bag, crafts it and puts it down, unstaged; then it gathers
     // for a base and builds one, whose second milestone puts a bag inside.

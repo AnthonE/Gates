@@ -1643,6 +1643,15 @@ impl Summary {
         }
     }
 
+    /// Take a goal back off the list.
+    pub fn withdraw(&mut self, goal: Goal) {
+        let n = self.options_len as usize;
+        if let Some(i) = self.options[..n].iter().position(|&g| g == goal) {
+            self.options.copy_within(i + 1..n, i);
+            self.options_len -= 1;
+        }
+    }
+
     pub fn count_of(&self, name: &str) -> u32 {
         self.items()
             .iter()

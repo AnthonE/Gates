@@ -42,8 +42,10 @@ pub const RANGED: [&str; 11] = [
     "item.bow",
     "item.bolt_rifle",
 ];
-/// Health in a hurry, best first.
-pub const MEDS: [&str; 2] = ["item.medkit", "item.bandage"];
+/// Health in a hurry, best first: every item that heals whoever uses it.
+/// The syringe also revives a downed body (`Command::Treat`), which no
+/// agent does, so for them it is the smallest heal.
+pub const MEDS: [&str; 3] = ["item.medkit", "item.bandage", "item.syringe"];
 /// What fells a tree and what breaks rock, best first.
 pub const HATCHETS: [&str; 3] = ["item.hatchet_metal", "item.hatchet_stone", "item.bat"];
 pub const PICKS: [&str; 3] = ["item.pickaxe_metal", "item.pickaxe_stone", "item.bat"];
@@ -293,6 +295,7 @@ fn best_in(
 
 #[cfg(test)]
 mod tests {
+    use super::super::wiki::Class;
     use super::*;
 
     fn shipped() -> (Box<Rules>, Book, ClientCore) {
@@ -312,6 +315,27 @@ mod tests {
             count: 1,
             cond: core.catalog.cond_max(item as usize),
             skin: 0,
+        }
+    }
+
+    /// Every item that heals is on the meds ladder. The heal goal is offered
+    /// by this ladder, so a med left off it is never used; before the
+    /// syringe was on it, it was offered by class and a body carrying only
+    /// a syringe picked heal, failed and picked it again, 44 times a minute.
+    #[test]
+    fn every_med_that_heals_is_on_the_meds_ladder() {
+        let (rules, book, core) = shipped();
+        let mut kit = Loadout::new();
+        kit.learn(&rules, &book);
+        for w in 0..core.catalog.count {
+            let page = book.page(w);
+            if page.class == Class::Med && page.heal > 0 {
+                assert!(
+                    kit.rank(Role::Meds, w).is_some(),
+                    "{} heals but is not on MEDS",
+                    String::from_utf8_lossy(core.catalog.name(usize::from(w)))
+                );
+            }
         }
     }
 

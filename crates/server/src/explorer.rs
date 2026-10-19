@@ -166,6 +166,14 @@ pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// a passage that will not open) or failed as it began, this long before
 /// the next.
 pub const BUILD_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A goal that has failed the moment it began twice running is off the
+/// list this long after each such failure: the same summary would choose
+/// it again at once and it would fail the same way, a try a second, and
+/// the body would stand there doing it for an hour (a heal with no med it
+/// could take, a craft whose bench it could not reach: Flint, 2026-10-19).
+pub const FLOP_RETRY_TICKS: u32 = 15 * TICK_HZ;
+/// How many goals' runs of such failures are kept at once.
+const FLOPS: usize = 4;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
 /// A cook at a fire that has not finished in this long is stuck. A camp
@@ -902,6 +910,9 @@ pub struct Survivor {
     home_failed: Option<u32>,
     /// When a build goal last could not reach its work.
     build_failed: Option<u32>,
+    /// Goals that failed the moment they began: when last, and how many
+    /// times running.
+    flops: [Option<(Goal, u32, u8)>; FLOPS],
     /// A defence of home, and what defences came to.
     defend_job: DefendJob,
     pub defend_stats: DefendStats,
@@ -1097,6 +1108,7 @@ impl Survivor {
             shop_failed: None,
             home_failed: None,
             build_failed: None,
+            flops: [None; FLOPS],
             defend_job: DefendJob::default(),
             defend_stats: DefendStats::default(),
             defend_failed: None,
@@ -1333,8 +1345,21 @@ impl Survivor {
 
     /// `observe`, plus the goal this body is running now.
     fn summarize(&self, core: &ClientCore, view: &ClientView, player: u32) -> Summary {
-        let mut s = observe(core, view, player, &self.senses, &self.memory, &self.book);
+        let mut s = observe(
+            core,
+            view,
+            player,
+            &self.senses,
+            &self.memory,
+            &self.book,
+            &self.loadout,
+        );
         let tick = view.newest_applied.unwrap_or_default();
+        for &(goal, at, runs) in self.flops.iter().flatten() {
+            if runs >= 2 && tick.wrapping_sub(at) < FLOP_RETRY_TICKS {
+                s.withdraw(goal);
+            }
+        }
         s.current = self.goal.map(|a| Report {
             goal: a.goal,
             outcome: Outcome::Running,
@@ -2165,6 +2190,22 @@ impl Survivor {
                 || matches!(outcome, Outcome::Failed(_)) && report.secs == 0)
         {
             self.build_failed = Some(tick);
+        }
+        // Any other goal failing as it began, again, sits out a few seconds;
+        // once is often the moment changing under it (a pack just filled).
+        // Not flight or a fight: what they answer is still there.
+        let same = (0..FLOPS).find(|&i| self.flops[i].is_some_and(|(g, ..)| g == active.goal));
+        if matches!(outcome, Outcome::Failed(_))
+            && report.secs == 0
+            && !matches!(active.goal, Goal::Flee | Goal::Fight)
+        {
+            let runs = same.and_then(|i| self.flops[i]).map_or(0, |(.., n)| n);
+            let oldest = (0..FLOPS).min_by_key(|&i| self.flops[i].map_or(0, |(_, at, _)| at));
+            if let Some(i) = same.or(oldest) {
+                self.flops[i] = Some((active.goal, tick, runs.saturating_add(1)));
+            }
+        } else if let Some(i) = same {
+            self.flops[i] = None;
         }
         self.memory.trigger = match outcome {
             Outcome::Done | Outcome::Running => {
@@ -7365,6 +7406,7 @@ pub fn observe(
     senses: &Senses,
     memory: &Memory,
     book: &Book,
+    loadout: &Loadout,
 ) -> Summary {
     let mut s = Summary::EMPTY;
     s.tick = view.newest_applied.unwrap_or_default();
@@ -7733,10 +7775,9 @@ pub fn observe(
                     && page.ranged.round != sim_core::gather::NO_ITEM
                     && count_item(core, page.ranged.round) > 0))
     });
-    let meds = core.inv.iter().any(|st| {
-        let page = book.page(st.item);
-        st.count > 0 && page.class == Class::Med && page.heal > 0
-    });
+    // What `dose` can take, by the same ladder: a med it cannot pick would
+    // offer a heal that fails at once and is chosen again, every tick.
+    let meds = loadout.best(core, Role::Meds).is_some();
     let player = senses.threats[..usize::from(senses.threats_len)]
         .iter()
         .any(|t| t.arms != Arms::Teeth);
@@ -8806,6 +8847,34 @@ mod tests {
         core.jobs = [(1, 50), (1, 50), (1, 50), (1, 50)];
         core.jobs_count = CRAFT_QUEUE as u8;
         assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
+    }
+
+    /// A goal that fails as it begins twice running is off the list for a
+    /// few seconds, so the next choice is something else; one that failed
+    /// after trying a while is offered again at once.
+    #[test]
+    fn a_goal_that_fails_as_it_begins_sits_out_a_few_seconds() {
+        let (mut bot, mut view, _) = fixture();
+        let flop = |bot: &mut Survivor, at: u32| {
+            goal(bot, Goal::Explore, at);
+            bot.end_goal(at, Outcome::Failed(Why::Stuck));
+        };
+        let offered =
+            |bot: &Survivor, view: &ClientView| bot.summary(view, 1).unwrap().offers(Goal::Explore);
+        view.newest_applied = Some(100);
+        flop(&mut bot, 100);
+        assert!(offered(&bot, &view), "once may be the moment changing");
+        flop(&mut bot, 100);
+        assert!(!offered(&bot, &view), "twice running is a loop");
+        view.newest_applied = Some(100 + FLOP_RETRY_TICKS);
+        assert!(offered(&bot, &view));
+        flop(&mut bot, 100 + FLOP_RETRY_TICKS);
+        assert!(!offered(&bot, &view), "still the same loop");
+        // A run that tried for a while ends the loop.
+        let at = 100 + FLOP_RETRY_TICKS;
+        goal(&mut bot, Goal::Explore, at);
+        bot.end_goal(at + 5 * TICK_HZ, Outcome::Failed(Why::Stuck));
+        assert!(offered(&bot, &view));
     }
 
     #[test]
