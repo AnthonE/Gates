@@ -149,11 +149,14 @@ pub const SPECIES: [SpeciesDef; 3] = [
     // drooping crown of fronds at the top, the arid north's tree in the
     // reference game. Generated as an `Evergreen` so it wears the pine's bark
     // and needle sprigs — at frond scale a needle card reads as leaflets — in
-    // its own yellower greens. As tall as the broadleaf, so the sim's blocked
-    // ceiling (`OCCUPANT_TOP_M[Tree]`) is still every tree's drawn height.
+    // its own yellower greens. The shortest tree, so the sim's blocked
+    // ceiling (`OCCUPANT_TOP_M[Tree]`) is its drawn height.
     SpeciesDef {
         tree_type: TreeType::Evergreen,
-        height_m: 33.0,
+        // 24 m, from 33 (operator, 2026-10-19: "kinda tall and not thick
+        // enough"): the same crown on a shorter, barely tapering trunk. The
+        // shortest species, so it sets `OCCUPANT_TOP_M[Tree]`.
+        height_m: PALM_H,
         max_r_m: PALM_MAX_R,
         leaf_lo: PALM_LO,
         leaf_hi: PALM_HI,
@@ -165,6 +168,10 @@ pub const SPECIES: [SpeciesDef; 3] = [
 /// The palm's index in [`SPECIES`] — the sim's `terrain::PALM_SPECIES`.
 pub const PALM: usize = 2;
 const _: () = assert!(PALM == sim_core::terrain::PALM_SPECIES as usize);
+
+/// The palm's height, metres: the shortest tree, and the sim's blocked
+/// ceiling for every tree (`terrain::OCCUPANT_TOP_M`).
+pub const PALM_H: f32 = 24.0;
 
 /// The palm's radius ceiling, metres: its fronds' reach.
 pub const PALM_MAX_R: f32 = 8.4;
@@ -455,21 +462,20 @@ fn broadleaf_settings() -> TreeMeshSettings {
 /// The palm's parameters: one trunk, generated at full length so limbs and
 /// cards keep real sizes, and a single level of fronds from its top tenth.
 ///
-/// - `start` 0.88: the fronds leave the last eighth of the trunk, so the
-///   trunk below is bare — a palm's whole silhouette.
-/// - `angle` 108°: past horizontal, so the fronds arch out and droop. Droop
+/// - `start` 0.78: the fronds leave the top fifth of the trunk, layered
+///   into a full head rather than a flat disc, and the trunk below is bare — a palm's whole silhouette.
+/// - `angle` 104°: past horizontal, so the fronds arch out and droop. Droop
 ///   is the ANGLE's job, never the force's (see [`conifer_settings`]).
 /// - Long thin limbs (`radius_factor` 0.05) carry the leaflet cards; the
 ///   cards stand on most of each frond and leave its base bare.
-/// - `taper` 0.6 and a wide base: a palm trunk flares at the foot and is
-///   slim under the crown.
+/// - `taper` 0.25: a near column, so the trunk reads thick up to the crown.
 fn palm_settings() -> TreeMeshSettings {
     TreeMeshSettings {
         tree_type: TreeType::Evergreen,
         branch: BranchParams {
             levels: BranchRecursionLevel::One,
-            angle: [0.0, 108.0, 0.0, 0.0],
-            children: [20, 0, 0],
+            angle: [0.0, 104.0, 0.0, 0.0],
+            children: [34, 0, 0],
             force: BranchForce {
                 direction: Vec3::Y,
                 strength: 0.02,
@@ -478,15 +484,18 @@ fn palm_settings() -> TreeMeshSettings {
             gnarliness: [0.025, 0.12, 0.0, 0.0],
             // [1] is long because an `Evergreen` limb is cut to `1 - t` of
             // it where `t` is how far up the trunk it leaves: from the top
-            // 12 % that is 0–5.8 m, the long fronds lowest and the short new
-            // ones upright at the crown. Swept: 6.66 m of reach.
-            length: [33.0, 58.0, 0.0, 0.0],
+            // 22 % that is 0–6.6 m, the long fronds lowest and the short new
+            // ones upright at the crown.
+            length: [PALM_H, 30.0, 0.0, 0.0],
             trunk_base_radius: 0.24,
             radius_factor: [1.0, 0.05, 0.0, 0.0],
             sections: [12, 6, 0, 0],
             segments: [7, 3, 0, 0],
-            start: [0.0, 0.88, 0.0, 0.0],
-            taper: [0.6, 0.85, 0.0, 0.0],
+            start: [0.0, 0.78, 0.0, 0.0],
+            // A palm trunk is near a column: slim under the crown only a
+            // little, so the bole reads thick all the way up. The base is
+            // the sim's cylinder and cannot widen.
+            taper: [0.25, 0.85, 0.0, 0.0],
             twist: [0.0, 0.0, 0.0, 0.0],
         },
         leaves: LeafParams {
@@ -1165,7 +1174,29 @@ fn smooth01(x: f32) -> f32 {
 /// bit-identical, the same law the whorl builder's hashes carried.
 pub fn conifer(variant: usize) -> (Mesh, Mesh) {
     let species = species_of(variant);
-    grow(species, variant, &settings(species))
+    grow(species, variant, &seed_settings(species, variant))
+}
+
+/// [`settings`] with the per-seed edits that make a species' seeds more than
+/// reseeds: one pine and one broadleaf seed keep their limbs much lower on
+/// the trunk (operator, 2026-10-19: "trees could use more lower branches on
+/// some type"), so a stand mixes high-crowned trees with skirted ones.
+pub fn seed_settings(species: usize, variant: usize) -> TreeMeshSettings {
+    let mut s = settings(species);
+    let seed = variant % SEEDS_PER_SPECIES;
+    match (SPECIES[species].tree_type, species == PALM, seed) {
+        // Limbs stay over the spawn reach (`tests/tree.rs`): a drooping limb
+        // off 4 m still clears a fresh body's head. The limb count cannot
+        // rise with them (`CONIFER_MAX_TRIS`), so they spread a little.
+        (TreeType::Evergreen, false, 1) => s.branch.start[1] = 0.15,
+        (TreeType::Evergreen, false, 2) => s.branch.start[1] = 0.11,
+        (TreeType::Deciduous, _, 2) => {
+            s.branch.start[1] = 0.1;
+            s.branch.children[0] = 24;
+        }
+        _ => {}
+    }
+    s
 }
 
 /// [`conifer`] with the parameter block passed in: `species`' height, bark
