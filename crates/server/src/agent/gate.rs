@@ -153,8 +153,26 @@ pub fn approach(
     walk(core, body, route, to, stop, tick)
 }
 
+/// THE GATE as a travel goal names it (`Goal::Go`).
+pub const GATE_NAME: &str = "THE GATE";
+
+/// Where a public place stands, by the name its summary gives it (the
+/// travel goal, `Goal::Go`): THE GATE while the town is up, a work its
+/// client knows, or a lock it has found.
+pub fn place(core: &ClientCore, name: &str) -> Option<[f32; 2]> {
+    if name == GATE_NAME {
+        return gate(core);
+    }
+    if let Some((_, w)) = core.arc.known().find(|(_, w)| w.name() == name) {
+        return sim_core::spot::world(core.haven(), &w.def.spot).map(|(x, _, z)| [x, z]);
+    }
+    let (m, mech) = core.lore.known_mechs().find(|(_, m)| m.name() == name)?;
+    let middle = usize::from(mech.n_dials.saturating_sub(1) / 2);
+    crate::agent::lore::dial_at(core, m, middle).map(|p| [p[0], p[2]])
+}
+
 /// Walk to `to`, stopping within `stop`. `None` once there.
-fn walk(
+pub fn walk(
     core: &mut ClientCore,
     body: &EntityState,
     route: &mut Route,
