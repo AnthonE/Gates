@@ -1178,6 +1178,12 @@ pub struct Skin {
     #[serde(default)]
     pub price: Option<u32>,
     pub season: String,
+    /// An unlock rather than a look (Rust's Frog Boots): owning the row is
+    /// what lets a player craft `covers`, and nobody else can
+    /// (`sim_core::skin::SkinContent::may_make`). It is never worn, so it
+    /// may cover a deployable, and it carries no picture.
+    #[serde(default)]
+    pub unlock: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

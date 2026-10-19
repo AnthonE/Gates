@@ -1498,6 +1498,10 @@ pub struct SkinRow {
     /// name the platform serves it by and the check the client makes on
     /// what it downloads. All zero for a tint-only skin.
     pub texture: [u8; 8],
+    /// An unlock, not a look (v128, `sim_core::skin::SkinDef::unlock`):
+    /// owning the row is what lets a player craft `covers`. Never worn,
+    /// so never painted.
+    pub unlock: bool,
 }
 
 impl SkinRow {
@@ -1513,6 +1517,7 @@ impl SkinRow {
             && (self.covers as usize) < MAX_ITEM_DEFS
             && self.coin <= COIN_JUNK
             && ((self.coin == COIN_NONE) == (self.price == 0))
+            && !(self.unlock && self.painted())
     }
 }
 
@@ -1575,6 +1580,7 @@ impl SkinCatalog {
             coin: 0,
             price: 0,
             texture: [0; 8],
+            unlock: false,
         }; sim_core::limits::MAX_SKINS],
         count: 0,
     };
@@ -3981,6 +3987,7 @@ pub fn encode_event_skins(
                 w.write(b as u32, 8)?;
             }
         }
+        w.write(row.unlock as u32, 1)?;
         w.write(name.len() as u32, NAME_LEN_BITS)?;
         for &b in name {
             w.write(b as u32, 8)?;
@@ -6670,6 +6677,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                         return Err(WireError::Malformed);
                     }
                 }
+                let unlock = r.read(1)? == 1;
                 rows[i] = SkinRow {
                     catalog,
                     covers,
@@ -6677,6 +6685,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     coin,
                     price,
                     texture,
+                    unlock,
                 };
                 // A zero id, an item past the table, a fourth coin or a
                 // coin priced at nothing: rows no server can mean.
@@ -8158,6 +8167,7 @@ mod tests {
                 price: u32::MAX - i as u32,
                 // Every row painted: the worst case the batch is sized for.
                 texture: [0xA5, i as u8, 1, 2, 3, 4, 5, 0xFF],
+                unlock: false,
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -8204,8 +8214,10 @@ mod tests {
             coin: COIN_NONE,
             price: 0,
             texture: [0; 8],
+            unlock: false,
         };
         assert!(ok.coherent());
+        assert!(SkinRow { unlock: true, ..ok }.coherent(), "an unlock row");
         for bad in [
             SkinRow { catalog: 0, ..ok },
             SkinRow { price: 5, ..ok },
@@ -8220,6 +8232,12 @@ mod tests {
             },
             SkinRow {
                 covers: MAX_ITEM_DEFS as u16,
+                ..ok
+            },
+            // An unlock is never worn, so a picture on one names nothing.
+            SkinRow {
+                unlock: true,
+                texture: [1; 8],
                 ..ok
             },
         ] {
@@ -8240,6 +8258,7 @@ mod tests {
         }
         w.write(COIN_NONE as u32, COIN_BITS).unwrap();
         w.write(0, 1).unwrap(); // not painted
+        w.write(0, 1).unwrap(); // not an unlock
         w.write(1, NAME_LEN_BITS).unwrap();
         w.write(b'x' as u32, 8).unwrap();
         let len = w.finish();
@@ -10219,9 +10238,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_CR_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 8,
+            min_members: 9,
             bits: REFUSE_CR_BITS,
-            live_max: 7,
+            live_max: 8,
         },
         Domain {
             what: "deploy refusal",

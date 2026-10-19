@@ -8444,7 +8444,11 @@ mod tests {
         let mut core = Box::new(ShardCore::new(SEED));
         core.world.lore_def = sim_core::lore::LoreContent::probe_fixture();
         for (i, catalog) in [7u16, 8, 1].into_iter().enumerate() {
-            core.world.skins.defs[i] = SkinDef { catalog, covers: 0 };
+            core.world.skins.defs[i] = SkinDef {
+                catalog,
+                covers: 0,
+                unlock: false,
+            };
         }
         core.world.skins.count = 3;
         let mut founder = SkinSet::EMPTY;

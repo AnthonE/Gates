@@ -650,6 +650,7 @@ pub fn bake_skin_catalog(content: &content::Content) -> Result<Box<protocol::Ski
                 coin,
                 price,
                 texture: texture_prefix(s.texture.as_deref()),
+                unlock: s.unlock,
             },
         )
         .map_err(|_| {

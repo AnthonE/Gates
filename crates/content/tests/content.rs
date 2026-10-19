@@ -828,6 +828,21 @@ fn a_skin_fits_one_carried_item() {
 }
 
 #[test]
+fn an_unlock_may_cover_a_deployable_but_never_a_picture_or_an_uncrafted_item() {
+    // Rust's Frog Boots: the row gates a recipe, so a placed thing is fine.
+    let unlock = SKIN_ROW.replace("item.hatchet_stone", "item.box_small") + "unlock = true\n";
+    skins_with(&unlock).expect("an unlock may cover a deployable");
+    // It is never worn, so it has no picture.
+    let painted = format!("{unlock}texture = \"{}\"\n", "a".repeat(64));
+    let err = skins_with(&painted).expect_err("a painted unlock");
+    assert!(err.contains("no picture"), "got: {err}");
+    // And it gates making, so something has to make its item.
+    let uncrafted = SKIN_ROW.replace("item.hatchet_stone", "item.junk") + "unlock = true\n";
+    let err = skins_with(&uncrafted).expect_err("an unlock on an item nobody crafts");
+    assert!(err.contains("no recipe makes"), "got: {err}");
+}
+
+#[test]
 fn orphan_refs_refused() {
     refuses(
         "recipes.toml",
@@ -5040,7 +5055,14 @@ fn the_abyss_rug_is_a_baseline_comfort() {
         .iter()
         .find(|r| r.output == "item.abyss_rug")
         .expect("a rug recipe");
-    assert!(!r.blueprint, "the rug is known from the start");
+    assert!(!r.blueprint, "the rug is never researched: it is given");
+    // ...as an unlock (Rust's Frog Boots): only its owners can make it.
+    let row = c
+        .skins
+        .iter()
+        .find(|s| s.covers == "item.abyss_rug")
+        .expect("the rug's unlock row");
+    assert!(row.unlock, "the rug's row is an unlock, not a look");
     assert_eq!(r.inputs.len(), 1);
     assert_eq!(
         (r.inputs[0].item.as_str(), r.inputs[0].count),

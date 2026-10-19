@@ -325,6 +325,7 @@ fn a_dropped_skinned_stack_is_drawn_in_its_skin_once_the_catalog_knows_it() {
                     coin: protocol::COIN_NONE,
                     price: 0,
                     texture: [0; 8],
+                    unlock: false,
                 },
             )
             .unwrap();

@@ -17,6 +17,12 @@
 //!   a new connection starts with none until the server says otherwise.
 //! - **Appearance only.** A row names a catalog id and the item it fits.
 //!   There is nothing else in it to sell (`CONTENT.md` §6).
+//! - **Or an unlock** ([`SkinDef::unlock`], Rust's Frog Boots: given to every
+//!   account that played its early access, and owning them is what lets you
+//!   craft them). The row has no look; owning it is what lets a player
+//!   craft the item it names ([`SkinContent::may_make`]), and nobody else
+//!   can. A made one is an ordinary item: it can be looted, carried and
+//!   placed by anyone.
 
 use crate::craft::{REFUSE_CR_SKIN, REFUSE_CR_STATION, STATION_RADIUS_M, STATION_WORKBENCH1};
 use crate::deploy::{DeployContent, Deploys};
@@ -34,6 +40,9 @@ pub struct SkinDef {
     pub catalog: u16,
     /// The item row this skin fits.
     pub covers: u16,
+    /// An unlock, not a look: owning the row is what lets a player craft
+    /// `covers` ([`SkinContent::may_make`]), and it is never worn.
+    pub unlock: bool,
 }
 
 /// The baked catalog, in `content/skins.toml` order. Row indices are what
@@ -55,6 +64,7 @@ impl SkinContent {
         defs: [SkinDef {
             catalog: 0,
             covers: 0,
+            unlock: false,
         }; MAX_SKINS],
         count: 0,
     };
@@ -78,9 +88,28 @@ impl SkinContent {
     /// has to exist, fit that item, and be theirs.
     pub fn may_wear(&self, owned: &SkinSet, catalog: u16, item: u16) -> bool {
         match self.row_of(catalog) {
-            Some(row) => self.defs[row].covers == item && owned.has(row),
+            Some(row) => {
+                let d = self.defs[row];
+                !d.unlock && d.covers == item && owned.has(row)
+            }
             None => false,
         }
+    }
+
+    /// May a player owning `owned` craft `item`? Yes unless an unlock row
+    /// covers it, and then only if they own one of those rows. A scan over
+    /// at most `MAX_SKINS` rows, on the craft verb only.
+    pub fn may_make(&self, owned: &SkinSet, item: u16) -> bool {
+        let mut gated = false;
+        for (row, d) in self.rows().iter().enumerate() {
+            if d.unlock && d.covers == item {
+                if owned.has(row) {
+                    return true;
+                }
+                gated = true;
+            }
+        }
+        !gated
     }
 }
 
@@ -201,10 +230,12 @@ mod tests {
         sc.defs[0] = SkinDef {
             catalog: 7,
             covers: 3,
+            unlock: false,
         };
         sc.defs[1] = SkinDef {
             catalog: 900,
             covers: 4,
+            unlock: false,
         };
         sc.count = 2;
         sc
@@ -221,6 +252,26 @@ mod tests {
         assert!(!sc.may_wear(&owned, 900, 4), "row 1 is not owned");
         assert!(!sc.may_wear(&owned, 8, 3), "no such catalog id");
         assert!(!sc.may_wear(&owned, NO_SKIN, 3), "0 is not a skin");
+    }
+
+    #[test]
+    fn an_unlock_row_gates_making_its_item_and_is_never_worn() {
+        let mut sc = content();
+        sc.defs[2] = SkinDef {
+            catalog: 10,
+            covers: 5,
+            unlock: true,
+        };
+        sc.count = 3;
+        let mut owned = SkinSet::EMPTY;
+        assert!(sc.may_make(&owned, 3), "a look gates nothing");
+        assert!(
+            !sc.may_make(&owned, 5),
+            "an unlock row's item needs the row"
+        );
+        owned.insert(2);
+        assert!(sc.may_make(&owned, 5));
+        assert!(!sc.may_wear(&owned, 10, 5), "an unlock is not a look");
     }
 
     #[test]

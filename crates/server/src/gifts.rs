@@ -176,7 +176,11 @@ mod tests {
     fn content() -> SkinContent {
         let mut sc = SkinContent::EMPTY;
         for (i, catalog) in [1u16, 7, 8].into_iter().enumerate() {
-            sc.defs[i] = SkinDef { catalog, covers: 0 };
+            sc.defs[i] = SkinDef {
+                catalog,
+                covers: 0,
+                unlock: false,
+            };
         }
         sc.count = 3;
         sc
@@ -219,7 +223,11 @@ mod tests {
         // The catalog reordered: ids 7 and 8 are now rows 0 and 1.
         let mut moved = SkinContent::EMPTY;
         for (i, catalog) in [7u16, 8, 1].into_iter().enumerate() {
-            moved.defs[i] = SkinDef { catalog, covers: 0 };
+            moved.defs[i] = SkinDef {
+                catalog,
+                covers: 0,
+                unlock: false,
+            };
         }
         moved.count = 3;
         let set = again.of(CAROL, &moved);

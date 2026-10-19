@@ -45,7 +45,11 @@ fn skins() -> (SkinContent, SkinCatalog) {
             .into_iter()
             .enumerate()
     {
-        sc.defs[i] = SkinDef { catalog, covers };
+        sc.defs[i] = SkinDef {
+            catalog,
+            covers,
+            unlock: false,
+        };
         wire.set(
             i,
             b"Test Skin",
@@ -56,6 +60,7 @@ fn skins() -> (SkinContent, SkinCatalog) {
                 coin,
                 price,
                 texture: [0; 8],
+                unlock: false,
             },
         )
         .unwrap();

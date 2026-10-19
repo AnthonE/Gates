@@ -1844,6 +1844,7 @@ impl Content {
             sc.defs[i] = SkinDef {
                 catalog: s.catalog,
                 covers,
+                unlock: s.unlock,
             };
         }
         sc.count = self.skins.len() as u16;

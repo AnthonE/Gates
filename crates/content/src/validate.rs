@@ -2070,6 +2070,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     s.id
                 ));
             }
+            if s.unlock {
+                return Err(format!(
+                    "skin `{}`: an unlock is not worn, so it has no picture",
+                    s.id
+                ));
+            }
             if !crate::SKIN_CANVAS_ITEMS.contains(&s.covers.as_str()) {
                 return Err(format!(
                     "skin `{}`: `{}` cannot be painted (canvases: {})",
@@ -2078,6 +2084,17 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     crate::SKIN_CANVAS_ITEMS.join(", ")
                 ));
             }
+        }
+        // An unlock gates a recipe, so its item has to be one somebody can
+        // make; the look rules below are about wearing, which it never is.
+        if s.unlock {
+            if !c.recipes.iter().any(|r| r.output == s.covers) {
+                return Err(format!(
+                    "skin `{}` unlocks `{}`, which no recipe makes",
+                    s.id, s.covers
+                ));
+            }
+            continue;
         }
         // A skin is on ONE item: condition and stacking are per-stack, and
         // a skin on a stack of forty would have to decide whose look forty

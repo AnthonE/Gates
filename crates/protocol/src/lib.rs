@@ -1257,7 +1257,10 @@ pub use voice::{
 /// `pitch`), so a shot is aimed finer than `pitch`'s 0.7° steps; and a
 /// firearm's `EV_SHOT` names where the round went (its cone applied, the
 /// fine pitch in `b`'s top byte) and how far it flew (`c`, decimetres).
-pub const PROTO_VER: u16 = 127;
+/// v128 — unlocks (Rust's Frog Boots): a skin row carries an `unlock` bit
+/// (owning it is what lets a player craft its item, `SkinRow::unlock`), and
+/// a craft may be refused `REFUSE_CR_OWNED`.
+pub const PROTO_VER: u16 = 128;
 
 /// This game's slug in the elo catalog.
 ///
