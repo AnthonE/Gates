@@ -246,8 +246,19 @@ pub const DRINK_MIN_HP_PCT: u32 = 20;
 pub const MAX_ABANDONS: u32 = 3;
 /// Distances probed for open water on eight bearings, once a second.
 pub const WATER_PROBE_M: [f32; 4] = [8.0, 16.0, 24.0, 32.0];
-/// How long a resource seen in view is remembered once it leaves it.
-pub const RECALL_SECS: u32 = 60;
+/// How long a resource seen in view is remembered once it leaves it: long
+/// enough for a supply run's trip home and back, so the next run walks
+/// back to the rocks it was working rather than searching afresh.
+pub const RECALL_SECS: u32 = 300;
+/// A remembered resource this far off or nearer counts as known (the
+/// census, the gather goal's walk back to it); farther, it is forgotten.
+/// At the walk's 3 m/s this is about 80 s of walking.
+pub const RECALL_WALK_M: f32 = 240.0;
+/// The walk back to a remembered resource may take this long before the
+/// gather goal gives it up. The search's own [`SEARCH_GOAL_SECS`] does not
+/// cut it short: it is 60 m of walking, and a node remembered farther off
+/// than that was never reached (#362).
+pub const RECALL_WALK_SECS: u32 = 120;
 /// Sight-window cells examined per call: one per game tick elapsed since
 /// the last call, at most this many. A controller sampled once per slow
 /// rendered frame still sweeps at the game's pace, and a call's work stays
@@ -608,6 +619,9 @@ pub struct Memory {
     pub shared: bool,
     pub deliver: bool,
     pub deliver_held: bool,
+    /// A supply run found the team's boxes full a while ago: what another
+    /// would gather has nowhere to go.
+    pub box_full_held: bool,
     pub home_holds: [(u16, u32); crate::mind::SUMMARY_HOME_HOLDS],
     pub home_holds_len: u8,
     pub home_boxes: u8,
@@ -952,6 +966,9 @@ pub struct Survivor {
     pub delivered: u64,
     pub took: u64,
     deliver_failed: Option<u32>,
+    /// A supply run last found the team's boxes full, then: no run for a
+    /// while ([`supply::BOX_FULL_RETRY_TICKS`]).
+    box_full: Option<u32>,
     home_alarm: Option<u32>,
     team_code: Option<LockCode>,
     /// A trade at THE GATE and a feed at a work, and when one last came to
@@ -1147,6 +1164,7 @@ impl Survivor {
             delivered: 0,
             took: 0,
             deliver_failed: None,
+            box_full: None,
             home_alarm: None,
             team_code: None,
             trade_job: TradeJob::default(),
@@ -3927,6 +3945,10 @@ impl Survivor {
         if matches!(outcome, Outcome::Failed(_)) {
             self.deliver_failed = Some(tick);
         }
+        if outcome == Outcome::Failed(Why::BoxFull) && self.goal.is_some_and(|a| a.goal.supplies())
+        {
+            self.box_full = Some(tick);
+        }
         self.home_job = HomeJob::default();
         self.end_goal(tick, outcome);
     }
@@ -3974,18 +3996,21 @@ impl Survivor {
             }
         }
         let Some(target) = self.target else {
-            if tick.wrapping_sub(active.leg) >= SEARCH_GOAL_SECS * TICK_HZ {
-                self.gather_over(tick, Outcome::Failed(Why::NotFound));
-                return hold;
-            }
+            let searched = tick.wrapping_sub(active.leg);
             // Head back toward the nearest one remembered: facing it puts
             // it in the cone, where the scan acquires it like any other.
+            // The walk there has its own time: the search's is for looking
+            // round, and is gone before a node 100 m off is in sight.
             if let Some((seen, at)) = self.recall[kind as usize] {
                 let fresh = tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ
                     && !seen.gone(core)
                     && Some(seen.key()) != self.skipped;
                 let (yaw, _, distance) = aim(body, &seen.slot);
-                let step = if fresh && distance > REACH_M {
+                let step = if fresh
+                    && distance > REACH_M
+                    && distance <= RECALL_WALK_M
+                    && searched < RECALL_WALK_SECS * TICK_HZ
+                {
                     self.route
                         .to(core, body, [seen.slot.x, seen.slot.z], REACH_M, true, tick)
                 } else {
@@ -4012,6 +4037,10 @@ impl Survivor {
                 }
                 // Arrived and still not acquired, or gone: forget it.
                 self.recall[kind as usize] = None;
+            }
+            if searched >= SEARCH_GOAL_SECS * TICK_HZ {
+                self.gather_over(tick, Outcome::Failed(Why::NotFound));
+                return hold;
             }
             self.stats.phase = Phase::Exploring;
             return Intent {
@@ -5357,7 +5386,17 @@ impl Survivor {
                         self.bag_knocked = true;
                         self.bag_leg = BagLeg::In;
                     }
-                    // On the crew, or no way onto it: the floor says.
+                    // Not on the crew, and the code did not put it there
+                    // (or there is no lock to enter one at): the floor would
+                    // refuse the bag, the claim's, so it is not sent.
+                    None if self.shared.hearth().is_some()
+                        && !self.shared.crewed()
+                        && (self.bag_knocked || self.shared.hearth_unlocked(core)) =>
+                    {
+                        self.team_bag_failed = Some(tick);
+                        self.end_goal(tick, Outcome::Failed(Why::Locked));
+                    }
+                    // On the crew, or no way to know: the floor says.
                     None => self.bag_leg = BagLeg::Floor,
                 }
                 Some(Intent::IDLE)
@@ -5519,7 +5558,11 @@ impl Survivor {
                 return Intent::IDLE;
             }
             Chore::Fail(why) => {
-                self.home.stash_failed(tick);
+                if why == Why::Blocked {
+                    self.home.stash_blocked(tick);
+                } else {
+                    self.home.stash_failed(tick);
+                }
                 self.end_goal(tick, Outcome::Failed(why));
                 return Intent::IDLE;
             }
@@ -6461,6 +6504,9 @@ impl Survivor {
             self.memory.deliver_held = self
                 .deliver_failed
                 .is_some_and(|at| tick.wrapping_sub(at) < supply::DELIVER_RETRY_TICKS);
+            self.memory.box_full_held = self
+                .box_full
+                .is_some_and(|at| tick.wrapping_sub(at) < supply::BOX_FULL_RETRY_TICKS);
             self.memory.home_alarm = self
                 .home_alarm
                 .is_some_and(|at| tick.wrapping_sub(at) < home::HOME_ALARM_TICKS);
@@ -6472,6 +6518,7 @@ impl Survivor {
                 .is_some_and(|at| self.home.bag_near(at, supply::HOME_M));
             self.memory.team_bag = self.memory.shared
                 && !self.memory.bag_home
+                && self.shared.may_bag(core, self.team_code.is_some())
                 && self
                     .team_bag_failed
                     .is_none_or(|at| tick.wrapping_sub(at) >= TEAM_BAG_RETRY_TICKS);
@@ -6558,9 +6605,13 @@ impl Survivor {
                     .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
+            // What a loot run would set off for (`loot::TRIP_M`): one known
+            // farther off was offered, and the run ended at once on it.
             for spot in self.loot.live(core, tick).filter(|s| !s.roadside()) {
                 let (d, b) = relative(body, spot.slot.x, spot.slot.z);
-                known.add(d, b);
+                if d <= loot::TRIP_M {
+                    known.add(d, b);
+                }
             }
             self.senses.loot = known;
             self.senses.loot_place = self.loot.place(&haven, here, tick).map(|(_, [x, z])| {
@@ -6652,7 +6703,11 @@ impl Survivor {
                 if !target.gone(core) && in_view(body, &slot) && visible(core, &haven, body, target)
                 {
                     let (d, b) = relative(body, slot.x, slot.z);
-                    self.sweep.cells[kind as usize].add(d, b);
+                    // The census counts what a gather goal would go for:
+                    // not the node it gave up on a moment ago.
+                    if Some(target.key()) != self.skipped {
+                        self.sweep.cells[kind as usize].add(d, b);
+                    }
                     let nearer = self.recall[kind as usize].is_none_or(|(old, at)| {
                         tick.wrapping_sub(at) >= RECALL_SECS * TICK_HZ
                             || old.gone(core)
@@ -6700,15 +6755,20 @@ impl Survivor {
         }
         if self.scan == 0 {
             // In view now, or seen within the recall window and still
-            // standing: a player remembers the rock they just turned from.
+            // standing: a player remembers the rock they just turned from,
+            // and the gather goal walks back to it (`RECALL_WALK_M`).
             let mut cells = self.sweep.cells;
             for (kind, cell) in cells.iter_mut().enumerate() {
                 if cell.count > 0 {
                     continue;
                 }
                 if let Some((t, at)) = self.recall[kind] {
-                    if tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ && !t.gone(core) {
-                        let (d, b) = relative(body, t.slot.x, t.slot.z);
+                    let (d, b) = relative(body, t.slot.x, t.slot.z);
+                    if tick.wrapping_sub(at) < RECALL_SECS * TICK_HZ
+                        && !t.gone(core)
+                        && Some(t.key()) != self.skipped
+                        && d <= RECALL_WALK_M
+                    {
                         cell.add(d, b);
                     }
                 }
@@ -7146,6 +7206,7 @@ impl BotDriver for Survivor {
         self.home_alarm = None;
         self.leave = Leave::default();
         self.deliver_failed = None;
+        self.box_full = None;
         // A crewmate lives behind its founder's doors: the crew's code is
         // what its clan would have told it, never printed.
         self.team_code = self
@@ -8097,7 +8158,7 @@ pub fn observe(
             (Goal::GatherOre, Goal::SupplyOre),
             (Goal::GatherHemp, Goal::SupplyHemp),
         ] {
-            if s.offers(gather) {
+            if s.offers(gather) && !memory.box_full_held {
                 s.offer(run);
             }
         }
@@ -8634,6 +8695,84 @@ mod tests {
             assert!(wx * sx + wz * sz > 120.0, "({wx}, {wz})");
             assert_eq!(frame.buttons, 0);
         }
+    }
+
+    /// A node remembered farther off than the search's 20 s of walking
+    /// (60 m): the gather goal walks back to it, where it used to fail
+    /// "none in sight" with the node in its own census (#362).
+    #[test]
+    fn a_gather_walks_back_to_a_node_remembered_beyond_the_search() {
+        let (mut bot, mut view, _) = fixture();
+        let haven = *bot.haven.as_ref().unwrap();
+        let core = bot.core.as_mut().unwrap();
+        let mut slot_at = |cx: i32, cz: i32| {
+            let (seed, island) = core.island();
+            island.cache.slot(seed, island.table, island.haven, cx, cz)
+        };
+        // An ore node, and dry ground 100 m from it with no ore in sight.
+        let r = SIGHT_CELLS + 1;
+        let (target, (x, y, z)) = (40..216)
+            .flat_map(|cz| (40..216).map(move |cx| (cx, cz)))
+            .find_map(|(cx, cz)| {
+                let slot = slot_at(cx, cz);
+                if Kind::of(slot.occupant) != Some(Kind::Ore) {
+                    return None;
+                }
+                let spot = (0..16).find_map(|i| {
+                    let a = i as f32 * std::f32::consts::TAU / 16.0;
+                    let (x, z) = (slot.x + 100.0 * a.sin(), slot.z + 100.0 * a.cos());
+                    let y = terrain::ground(SEED, &haven, x, z);
+                    let (bx, bz) = (
+                        (x / CELL_SIZE).floor() as i32,
+                        (z / CELL_SIZE).floor() as i32,
+                    );
+                    let bare = (-r..=r).all(|dz| {
+                        (-r..=r).all(|dx| {
+                            Kind::of(slot_at(bx + dx, bz + dz).occupant) != Some(Kind::Ore)
+                        })
+                    });
+                    (y > 1.0 && bare).then_some((x, y, z))
+                })?;
+                let target = Target {
+                    cx: cx as u16,
+                    cz: cz as u16,
+                    slot,
+                };
+                Some((target, spot))
+            })
+            .expect("an ore node with bare ground 100 m off");
+        view.entities[0].1 = EntityState {
+            id: 1,
+            qx: quant_xz(x),
+            qy: quant_y(y),
+            qz: quant_xz(z),
+            grounded: true,
+            ..EntityState::default()
+        };
+        let t0 = 10;
+        view.newest_applied = Some(t0);
+        goal(&mut bot, Goal::GatherOre, t0);
+        bot.recall[Kind::Ore as usize] = Some((target, t0));
+        let now = Instant::now();
+        let until = t0 + (SEARCH_GOAL_SECS + 5) * TICK_HZ;
+        for (seq, tick) in (t0..until).step_by(SCAN_CELLS_MAX as usize).enumerate() {
+            view.newest_applied = Some(tick);
+            bot.frame_at(&view, 1, seq as u16 + 1, now);
+        }
+        assert!(
+            bot.goal.is_some_and(|a| a.goal == Goal::GatherOre),
+            "the walk back was cut short: {:?}",
+            bot.memory.last
+        );
+        assert!(
+            bot.history
+                .iter()
+                .all(|r| r.outcome != Outcome::Failed(Why::NotFound)),
+            "it gave up the search with the node remembered: {:?}",
+            bot.memory.last
+        );
+        assert_eq!(bot.stats.phase, Phase::Approaching);
+        assert!(bot.senses.ore_nodes.count > 0, "the census knows of it");
     }
 
     /// A harvest swing never lands on a body: one standing across the

@@ -62,6 +62,10 @@ pub const HOME_BOXES: usize = 6;
 pub const WANT_ROWS: usize = 4;
 /// A trip home that failed is not offered again for this long.
 pub const DELIVER_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A supply run that found the boxes full is not offered again for this
+/// long: the next would gather a pack's worth with nowhere to put it, and
+/// farmers made that trip every few minutes, the box full every time.
+pub const BOX_FULL_RETRY_TICKS: u32 = 10 * 60 * TICK_HZ;
 /// A trip that stays (home to sleep or to hold it, or to a station) stops
 /// this near what it walked to.
 pub const STAY_NEAR_M: f32 = 2.0;
@@ -172,6 +176,25 @@ impl TeamHome {
                 (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc) && d.has_lock
             })
         })
+    }
+
+    /// The cupboard stands in the mirror with no lock on it: nobody gets
+    /// onto its crew, code or not, so its floor refuses a bag from anyone
+    /// not on it already (`deploy::hearth_admits`, the claim).
+    pub fn hearth_unlocked(&self, core: &ClientCore) -> bool {
+        self.hearth.is_some_and(|at| {
+            core.deploys.entries().iter().any(|d| {
+                (d.cx, d.cz, d.level, d.loc) == (at.cx, at.cz, at.level, at.loc) && !d.has_lock
+            })
+        })
+    }
+
+    /// Could a bag go down on the team's floor: it is on the cupboard's
+    /// crew, or has the team's code for a cupboard that is not seen bare
+    /// of a lock. Otherwise the shard refuses the bag on the floor (a
+    /// claim it is not on), however often it is tried.
+    pub fn may_bag(&self, core: &ClientCore, code: bool) -> bool {
+        self.crewed || (code && !self.hearth_unlocked(core))
     }
 
     /// A lock's or a cupboard's answer: at the team's cupboard, whether it
