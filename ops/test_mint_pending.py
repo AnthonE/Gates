@@ -50,5 +50,29 @@ with tempfile.TemporaryDirectory() as d:
     check("and logged", Path(f"{world}.minted").read_text() == f"100 {A} 10 0x0\n")
     check("and not sent again", mp.main(["--world", str(world)]) == 0 and len(calls) == 1)
 
+# ── copies ───────────────────────────────────────────────────────────────
+import json  # noqa: E402
+G = "0x" + "0" * 40
+online = json.dumps({"at": 1, "online": [
+    {"wallet": A, "agent": False}, {"wallet": B, "agent": True},
+    {"wallet": G, "agent": False}, {"wallet": A, "agent": False}, {"name": "no wallet"}]})
+check("people, not agents or guests, each once", mp.copies_todo(online, "") == [A])
+check("a wallet looked at is not again", mp.copies_todo(online, f"{A} had -\n") == [])
+check("an unreadable online file is no one", mp.copies_todo("{not json", "") == [])
+logged, failed = mp.copy_results(f"ok {A} 0xfeed\nhad {B} -\nfail {G} shut\nok 0x{'c3'*20} 0x1\n", [A, B, G])
+check("given and already-held are logged", logged == [f"{A} ok 0xfeed", f"{B} had -"])
+check("a shut door is reported and retried", failed == [f"{G}: shut"])
+
+with tempfile.TemporaryDirectory() as d:
+    world = Path(d) / "island.world"
+    asked = []
+    mp.run_remote_copies = lambda host, ws, mode="send": (asked.append(list(ws)) or
+                                                          "".join(f"ok {w} 0xc0" + "\n" for w in ws))
+    Path(f"{world}.online.json").write_text(online)
+    check("a person online is given a copy", mp.main(["--world", str(world)]) == 0 and asked == [[A]])
+    check("and it is logged", Path(f"{world}.copies").read_text() == f"{A} ok 0xc0\n")
+    check("and never asked again", mp.main(["--world", str(world)]) == 0 and len(asked) == 1)
+    check("--no-copies leaves them", mp.main(["--world", str(world), "--no-copies"]) == 0 and len(asked) == 1)
+
 print("\nall minter checks pass" if not FAILS else f"\n{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

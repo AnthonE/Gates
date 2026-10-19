@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Send the tokens the shard sold: one `EloItem:GATES` mint per line of
-`<world>.mints` not yet in `<world>.minted`.
+"""Send the tokens the shard owes: one `EloItem:GATES` mint per line of
+`<world>.mints` not yet in `<world>.minted`, and a free copy of Gates
+(`EloGameTicket:GATES`) to every person who has played and holds none.
 
     python3 ops/mint_pending.py --world /home/master/gates-data/island.world
     python3 ops/mint_pending.py --world … --dry-run     # say what it would send
@@ -21,7 +22,16 @@ minted once however often this runs: one the chain already holds
 is simulated (`cast call`) before it is sent, so a sale the contract would
 refuse costs no gas and is retried on the next run.
 
-Run by `ops/gates-mint.timer` every 30 s. No sale, no ssh.
+**Copies.** Every wallet in `<world>.online.json` that is not an agent gets
+a copy of the game: `mintFree(wallet)` on the ticket contract, whose free
+door gives each wallet one, and which anyone may call, so the house pays
+the gas and the key is still only on morr. A wallet that already holds a
+copy (bought, or given) is noted and costs nothing. Each wallet is looked at
+once and written to `<world>.copies` (`wallet ok|had|used tx`); the online
+file is rewritten every minute, so a copy lands a minute or two after the
+first join.
+
+Run by `ops/gates-mint.timer` every 30 s. Nothing to do, no ssh.
 """
 from __future__ import annotations
 
@@ -82,6 +92,54 @@ done
 '''
 
 
+# The copies' morr side: mode, then wallets. Prints `ok|had|used|fail wallet
+# tx-or-reason` per wallet. `used` is the free door spent for that wallet
+# (a copy was given, then sold or sent on); `fail shut` is the door closed.
+REMOTE_COPY = r'''
+set -u
+MODE=$1; shift
+export PATH="$PATH:$HOME/.foundry/bin"
+set -a; . /data/apps/secrets/keys.env; set +a
+T=$(python3 -c 'import json; print(json.load(open("/data/apps/scry-forge/contracts/deployments.json"))["chains"]["4663"]["contracts"]["EloGameTicket:GATES"]["address"])' 2>/dev/null)
+FROM=$(cast wallet address --private-key "$ELO_DEPLOY_KEY" 2>/dev/null)
+RPC=""
+for r in $(echo "${ELO_RH_RPC_POOL:-}" | tr ',; ' '\n\n\n'); do
+  if [ "$(cast chain-id --rpc-url "$r" 2>/dev/null)" = "4663" ]; then RPC=$r; break; fi
+done
+if [ -z "$T" ] || [ -z "$FROM" ] || [ -z "$RPC" ]; then
+  for w in "$@"; do echo "fail $w no-chain"; done
+  exit 0
+fi
+for wallet in "$@"; do
+  had=$(cast call "$T" "entitled(address)(bool)" "$wallet" --rpc-url "$RPC" 2>/dev/null)
+  if [ "$had" = "true" ]; then echo "had $wallet -"; continue; fi
+  if [ "$had" != "false" ]; then echo "fail $wallet unread"; continue; fi
+  sim=$(cast call --from "$FROM" "$T" "mintFree(address)" "$wallet" --rpc-url "$RPC" 2>&1)
+  if [ $? -ne 0 ]; then
+    case "$sim" in
+      *"free mint shut or used"*)
+        if [ "$(cast call "$T" "freePerWallet()(uint256)" --rpc-url "$RPC" 2>/dev/null)" = "0" ]; then
+          echo "fail $wallet shut"
+        else
+          echo "used $wallet -"
+        fi ;;
+      *) echo "fail $wallet refused" ;;
+    esac
+    continue
+  fi
+  if [ "$MODE" != send ]; then echo "ok $wallet simulated"; continue; fi
+  out=$(cast send "$T" "mintFree(address)" "$wallet" --rpc-url "$RPC" --private-key "$ELO_DEPLOY_KEY" --json 2>/dev/null)
+  tx=$(printf '%s' "$out" | python3 -c 'import json,sys
+try:
+    r = json.load(sys.stdin)
+    print(r["transactionHash"] if str(r.get("status")) in ("1", "0x1") else "")
+except Exception:
+    print("")' 2>/dev/null)
+  if [ -n "$tx" ]; then echo "ok $wallet $tx"; else echo "fail $wallet send"; fi
+done
+'''
+
+
 def sales(text: str) -> list[tuple[str, str, int]]:
     """`ref wallet catalog` lines, checked; anything else is skipped."""
     out = []
@@ -125,6 +183,49 @@ def results(stdout: str, asked: list[tuple[str, str, int]]) -> tuple[list[str], 
     return sent, failed
 
 
+def copies_todo(online: str, copies: str) -> list[str]:
+    """People online (not agents) with no line in the copies log, in the
+    online file's order. A file that does not parse is no one."""
+    import json
+    try:
+        rows = json.loads(online or "{}").get("online") or []
+    except (ValueError, AttributeError):
+        return []
+    done = {line.split()[0] for line in copies.splitlines() if line.split()}
+    out = []
+    for r in rows:
+        w = r.get("wallet") if isinstance(r, dict) else None
+        if isinstance(w, str) and WALLET.match(w) and not r.get("agent") \
+                and w != "0x" + "0" * 40 and w not in done and w not in out:
+            out.append(w)
+    return out
+
+
+def copy_results(stdout: str, asked: list[str]) -> tuple[list[str], list[str]]:
+    """Lines for the copies log (`ok`, `had`, `used`), and the failures."""
+    logged, failed = [], []
+    for line in stdout.splitlines():
+        f = line.split()
+        if len(f) != 3 or f[1] not in asked:
+            continue
+        if f[0] in ("ok", "had", "used"):
+            logged.append(f"{f[1]} {f[0]} {f[2]}")
+        else:
+            failed.append(f"{f[1]}: {f[2]}")
+    return logged, failed
+
+
+def run_remote_copies(host: str, wallets: list[str], mode: str = "send") -> str:
+    p = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "bash", "-s", "--", mode, *wallets],
+        input=REMOTE_COPY,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    return p.stdout
+
+
 def run_remote(host: str, batch: list[tuple[str, str, int]], mode: str = "send") -> str:
     args = [mode] + [str(x) for s in batch for x in s]
     p = subprocess.run(
@@ -144,10 +245,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="list what would be sent")
     ap.add_argument("--check", action="store_true",
                     help="simulate every pending mint on morr and send nothing")
+    ap.add_argument("--no-copies", action="store_true", help="send the sales only")
     a = ap.parse_args(argv)
 
     mints_p = Path(f"{a.world}.mints")
     minted_p = Path(f"{a.world}.minted")
+    online_p = Path(f"{a.world}.online.json")
+    copies_p = Path(f"{a.world}.copies")
     lock = open(f"{a.world}.minted.lock", "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -155,27 +259,44 @@ def main(argv: list[str] | None = None) -> int:
         return 0  # the last run is still sending
     read = lambda p: p.read_text() if p.exists() else ""
     todo = pending(read(mints_p), read(minted_p))[:BATCH]
-    if not todo:
-        return 0
+    people = [] if a.no_copies else copies_todo(read(online_p), read(copies_p))[:BATCH]
     if a.dry_run:
         for ref, wallet, cat in todo:
             print(f"would mint catalog {cat} to {wallet} (sale {ref})")
+        for wallet in people:
+            print(f"would give {wallet} a copy, unless it holds one")
         return 0
     if a.check:
-        print(run_remote(a.host, todo, "check"), end="")
+        if todo:
+            print(run_remote(a.host, todo, "check"), end="")
+        if people:
+            print(run_remote_copies(a.host, people, "check"), end="")
         return 0
-    sent, failed = results(run_remote(a.host, todo), todo)
-    if sent:
-        with open(minted_p, "a") as f:
-            f.write("".join(line + "\n" for line in sent))
-    for line in sent:
-        print(f"mint: sent {line}")
-    for line in failed:
-        print(f"mint: not sent {line}, retried next run", file=sys.stderr)
-    if len(sent) + len(failed) < len(todo):
-        print(f"mint: {len(todo) - len(sent) - len(failed)} sales had no answer from {a.host}",
-              file=sys.stderr)
-    return 1 if failed else 0
+    failures = 0
+    if todo:
+        sent, failed = results(run_remote(a.host, todo), todo)
+        if sent:
+            with open(minted_p, "a") as f:
+                f.write("".join(line + "\n" for line in sent))
+        for line in sent:
+            print(f"mint: sent {line}")
+        for line in failed:
+            print(f"mint: not sent {line}, retried next run", file=sys.stderr)
+        if len(sent) + len(failed) < len(todo):
+            print(f"mint: {len(todo) - len(sent) - len(failed)} sales had no answer from {a.host}",
+                  file=sys.stderr)
+        failures += len(failed)
+    if people:
+        logged, failed = copy_results(run_remote_copies(a.host, people), people)
+        if logged:
+            with open(copies_p, "a") as f:
+                f.write("".join(line + "\n" for line in logged))
+        for line in logged:
+            print(f"copy: {line}")
+        for line in failed:
+            print(f"copy: not given {line}, retried next run", file=sys.stderr)
+        failures += len(failed)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
