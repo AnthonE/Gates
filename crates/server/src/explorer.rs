@@ -1020,6 +1020,10 @@ pub struct Survivor {
     patrol_failed: Option<u32>,
     /// The team's invite and size when last looked at, to wake on a change.
     team_seen: (u32, u8),
+    /// What the request out was told it had heard, and the hits it had
+    /// taken: a newer look at it keeps them beside what came since.
+    asked_heard: Heard,
+    asked_hits: u16,
     say_at: u32,
     /// The server's per-kind pace, kept on this side the way an honest
     /// client keeps it: an early action waits in the outbox rather than in
@@ -1171,6 +1175,8 @@ impl Survivor {
             hand_failed: None,
             patrol_failed: None,
             team_seen: (0, 0),
+            asked_heard: Heard::EMPTY,
+            asked_hits: 0,
             say_at: 0,
             pace: Pace::default(),
             rules: None,
@@ -1761,6 +1767,11 @@ impl Survivor {
             let intent = self.log_off(core, &body, tick);
             return self.overlay(intent, tick);
         }
+        // Its team changed while a decision is out (an invite came): the
+        // mind's asker reads it on that decision, not the next.
+        if self.memory.team_wake && self.mind.refreshes() {
+            self.refresh(core, view, player);
+        }
         let intent = match self.goal {
             None => {
                 // Look before choosing: the first sweep of the sight window
@@ -1999,6 +2010,8 @@ impl Survivor {
         if summary.options_len == 0 || !self.mind.ask(now, &summary) {
             return false;
         }
+        self.asked_heard = summary.heard;
+        self.asked_hits = summary.hits;
         self.memory.hits = 0;
         self.memory.chat.clear();
         self.memory.chat_wake = false;
@@ -2007,6 +2020,33 @@ impl Survivor {
             a.asked = tick;
         }
         true
+    }
+
+    /// A newer look at the decision out, for a mind that shows it to its
+    /// asker (`Mind::refresh`): its team changed while the mind thinks. An
+    /// agent that takes a minute over a decision reads the invite on the
+    /// one it is reading, not on the next, by when the inviter may have
+    /// given up. What it had heard and the hits it had taken stay on it
+    /// beside what came since, and are not told again on the next. One that
+    /// does not go is tried again next frame.
+    fn refresh(&mut self, core: &ClientCore, view: &ClientView, player: u32) {
+        self.memory.trigger = Trigger::Team;
+        let mut s = self.summarize(core, view, player);
+        let mut heard = self.asked_heard;
+        for &line in s.heard.lines() {
+            heard.push(line);
+        }
+        s.heard = heard;
+        s.hits = s.hits.saturating_add(self.asked_hits);
+        if s.options_len == 0 || !self.mind.refresh(&s) {
+            return;
+        }
+        self.asked_heard = s.heard;
+        self.asked_hits = s.hits;
+        self.memory.hits = 0;
+        self.memory.chat.clear();
+        self.memory.chat_wake = false;
+        self.memory.team_wake = false;
     }
 
     /// An answer's line, kept for [`BotDriver::say`]. An external source
@@ -2399,8 +2439,14 @@ impl Survivor {
                 let team = *core.team();
                 if team.count > 0 {
                     self.end_goal(tick, Outcome::Done);
-                } else if team.invite == 0 || elapsed >= JOIN_GOAL_SECS * TICK_HZ {
-                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                } else if team.invite == 0 && active.fled {
+                    // The yes went, and the invite is gone with no team:
+                    // the shard said no (its line says why).
+                    self.end_goal(tick, Outcome::Failed(Why::Refused));
+                } else if team.invite == 0 {
+                    self.end_goal(tick, Outcome::Failed(Why::NoInvite));
+                } else if elapsed >= JOIN_GOAL_SECS * TICK_HZ {
+                    self.end_goal(tick, Outcome::Failed(Why::NoAnswer));
                 } else if !active.fled
                     && self.queue(|b| {
                         protocol::encode_action_team(protocol::TEAM_OP_ACCEPT, team.invite, b)
@@ -6028,6 +6074,21 @@ impl Survivor {
                 self.tracks.spare(id);
             }
         }
+        // Whoever is asking it onto their team, face to face, is not a
+        // threat for asking: spared while the invite waits. Not a truce:
+        // seen swinging or shooting lately, they are sized up like anyone.
+        if team.count == 0 && team.invite != 0 {
+            let recall = THREAT_RECALL_SECS * TICK_HZ;
+            let peaceful = self.tracks.get(team.invite).is_none_or(|t| {
+                [t.last_swing, t.last_shot]
+                    .into_iter()
+                    .flatten()
+                    .all(|when| tick.wrapping_sub(when) >= recall)
+            });
+            if peaceful {
+                self.tracks.spare(team.invite);
+            }
+        }
         let mut guard: Option<(f32, u32)> = None;
         let recall = GUARD_RECALL_SECS * TICK_HZ;
         for m in team.members() {
@@ -9403,5 +9464,150 @@ mod tests {
         for banned in ["seed", "20260731", "qx", "player_id"] {
             assert!(!text.contains(banned), "{banned} in {text}");
         }
+    }
+
+    /// An external mind that holds its answer for a newer look at the
+    /// decision and says yes to the invite on it. The decision it was
+    /// asked first has no invite on it and offers a flight from the
+    /// stranger; the newer look must offer the yes and no flight.
+    struct YesOnTheNewerLook;
+
+    impl crate::mind::DecisionSource for YesOnTheNewerLook {
+        fn kind(&self) -> SourceKind {
+            SourceKind::External
+        }
+
+        fn decide(&mut self, _: &Summary) -> Result<Choice, String> {
+            Err("no newer look came".into())
+        }
+
+        fn decide_fresh(
+            &mut self,
+            first: &Summary,
+            fresher: &mut dyn FnMut() -> Option<Summary>,
+        ) -> Result<Choice, String> {
+            if first.offers(Goal::JoinTeam) || !first.offers(Goal::Flee) {
+                return Err("the first look was not the stale one".into());
+            }
+            let until = Instant::now() + std::time::Duration::from_secs(10);
+            while Instant::now() < until {
+                if let Some(newer) = fresher() {
+                    if !newer.offers(Goal::JoinTeam) || newer.offers(Goal::Flee) {
+                        return Err("the newer look did not show the invite".into());
+                    }
+                    return Ok(Choice {
+                        goal: Goal::JoinTeam,
+                        confidence: 1.0,
+                        reason: crate::mind::Reason::EMPTY,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        say: crate::mind::Say::Quiet,
+                        code: None,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err("no newer look came".into())
+        }
+    }
+
+    /// 2026-10-19 (Moss): a harness sat over a minute on each decision; a
+    /// person beside it invited it meanwhile. It read the decision asked
+    /// before the invite (no join_team, flight and fight from the inviter),
+    /// and the yes it gave a decision later came after the invite lapsed.
+    /// Now the invite sends a newer look at the decision out, under the
+    /// same request: the inviter is no threat on it, the yes is on offer,
+    /// and the yes goes to the shard. An inviter seen swinging is sized up
+    /// again like anyone.
+    #[test]
+    fn an_invite_while_the_mind_thinks_is_on_the_decision_it_is_reading() {
+        let (mut bot, view, _) = fixture();
+        let me = *view.get(1).unwrap();
+        let haven = *bot.haven.as_ref().unwrap();
+        let (mx, mz) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
+        let eye = eye_point(&me);
+        let core = bot.core.as_mut().unwrap();
+        // A person in the open a few metres ahead, as the inviter stood.
+        let mut pick = None;
+        'search: for k in 0..32u16 {
+            let yaw = k << 11;
+            let (fx, fz) = yaw_dir(yaw);
+            for step in 2..6 {
+                let (x, z) = (mx + fx * step as f32, mz + fz * step as f32);
+                let b = stander(0, &haven, x, z);
+                let to = [x, b.qy as f32 * POS_Y_Q + 1.4, z];
+                if tracks::clear_line(core, &haven, eye, to, tracks::PLAYER_SIGHT_M) == Sight::Clear
+                {
+                    pick = Some((yaw, x, z));
+                    break 'search;
+                }
+            }
+        }
+        let (yaw, x, z) = pick.expect("an open spot ahead");
+        let mut me = me;
+        me.yaw = yaw;
+        let bodies = [me, stander(2, &haven, x, z)];
+        let mut view = ClientView::new();
+        goal(&mut bot, Goal::Wait, 1);
+        let now = Instant::now();
+        let mut tick = 2u32;
+        let mut frame = |bot: &mut Survivor, view: &mut ClientView| {
+            keyframe(view, tick, &bodies);
+            bot.frame_at(view, 1, tick as u16, now);
+            tick += 1;
+        };
+        for _ in 0..60 {
+            if bot.tracks.get(2).is_some() {
+                break;
+            }
+            frame(&mut bot, &mut view);
+        }
+        frame(&mut bot, &mut view);
+        assert_eq!(bot.senses.players.count, 1, "the person is seen");
+        // The decision goes out with the person a stranger, and its mind
+        // takes its time over it.
+        bot.mind = Mind::new(YesOnTheNewerLook, MindConfig::default()).unwrap();
+        let first = bot.summary(&view, 1).unwrap();
+        assert!(first.offers(Goal::Flee) && !first.offers(Goal::JoinTeam));
+        assert!(bot.mind.ask(Instant::now(), &first));
+        // The person invites it.
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let invite = protocol::TeamView {
+            invite: 2,
+            ..protocol::TeamView::NONE
+        };
+        let n = protocol::event::encode_event_team(&invite, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        for _ in 0..2000 {
+            frame(&mut bot, &mut view);
+            if bot.goal() == Some(Goal::JoinTeam) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            bot.goal(),
+            Some(Goal::JoinTeam),
+            "the yes on the newer look was taken: {:?}",
+            bot.mind.stats
+        );
+        let (out, len) = bot.outbox.expect("the yes is on its way");
+        assert!(matches!(
+            protocol::decode_action(&out[..len]),
+            Ok(protocol::ActionMsg::Team {
+                op: protocol::TEAM_OP_ACCEPT,
+                target: 2
+            })
+        ));
+        assert_eq!(bot.senses.players.count, 0, "the inviter is no threat");
+        // A swing from the inviter: sized up like anyone again.
+        let n = protocol::event::encode_event_swing(2, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        frame(&mut bot, &mut view);
+        frame(&mut bot, &mut view);
+        assert_eq!(
+            bot.senses.players.count, 1,
+            "an inviter who swings is watched"
+        );
     }
 }

@@ -501,6 +501,8 @@ pub enum Why {
     BoxFull,
     /// Marked hostile: the gate's guns would shoot it.
     Wanted,
+    /// The invite it was to say yes to was gone: lapsed, or taken back.
+    NoInvite,
 }
 
 impl Why {
@@ -532,6 +534,7 @@ impl Why {
             Why::Locked => "a lock it has no code for is in the way",
             Why::BoxFull => "the box is full",
             Why::Wanted => "it attacked a player lately, and the gate's guns would shoot it",
+            Why::NoInvite => "no invite was waiting any more",
         }
     }
 }
@@ -1939,6 +1942,20 @@ impl SourceKind {
 pub trait DecisionSource: Send + 'static {
     fn kind(&self) -> SourceKind;
     fn decide(&mut self, summary: &Summary) -> Result<Choice, String>;
+    /// [`Self::decide`], told while it waits of a newer look at the same
+    /// decision: `fresher()` hands one when the body's team changed since
+    /// it asked (`Mind::refresh`). A source that shows its asker the
+    /// decision (an external agent, an MCP harness) shows the newer one
+    /// under the same id and deadline and judges the answer by its
+    /// options; the rest ignore it.
+    fn decide_fresh(
+        &mut self,
+        summary: &Summary,
+        fresher: &mut dyn FnMut() -> Option<Summary>,
+    ) -> Result<Choice, String> {
+        let _ = fresher;
+        self.decide(summary)
+    }
     /// A bug report the last answer carried (`bugs.rs`), for the body to
     /// file. Only an external or MCP mind writes them.
     fn take_note(&mut self) -> Option<crate::bugs::Note> {
@@ -2185,6 +2202,8 @@ impl Mode {
 
 type Ask = (u32, Summary);
 type Reply = (u32, Option<Choice>);
+/// A newer look at request `.0` (`Mind::refresh`).
+type Fresh = (u32, Summary);
 
 /// One request outstanding, a bounded answer, strict acceptance, explicit
 /// failure, and no substitute decisions: a failed or refused request leaves
@@ -2197,6 +2216,9 @@ pub struct Mind {
     replies: Option<rtrb::Consumer<Reply>>,
     /// Bug reports from the worker's source, for the body to file.
     notes: Option<rtrb::Consumer<crate::bugs::Note>>,
+    /// Newer looks at the request out, for a source that shows its asker
+    /// the decision (an external agent or MCP harness).
+    fresh: Option<rtrb::Producer<Fresh>>,
     worker: Option<std::thread::JoinHandle<()>>,
     cfg: MindConfig,
     next_allowed: Instant,
@@ -2223,6 +2245,10 @@ impl Mind {
         let (mut outbox, replies) = rtrb::RingBuffer::<Reply>::new(1);
         // Full: the body has not filed the last one yet; this one is dropped.
         let (mut notes_out, notes) = rtrb::RingBuffer::<crate::bugs::Note>::new(2);
+        // Only a source that shows its asker the decision takes a newer
+        // look at it; for the rest the body never builds one.
+        let (fresh, mut fresh_in) = rtrb::RingBuffer::<Fresh>::new(1);
+        let fresh = (kind == SourceKind::External).then_some(fresh);
         let mut source = source;
         let worker = std::thread::Builder::new()
             .name("jev-decisions".into())
@@ -2236,7 +2262,16 @@ impl Mind {
                     }
                 };
                 let start = Instant::now();
-                let answer = source.decide(&summary);
+                // A newer look at this request; one at an older is dropped.
+                let mut fresher = || {
+                    while let Ok((of, newer)) = fresh_in.pop() {
+                        if of == id {
+                            return Some(newer);
+                        }
+                    }
+                    None
+                };
+                let answer = source.decide_fresh(&summary, &mut fresher);
                 // How the goal before ended, when that is why it was asked:
                 // a goal that keeps ending at once is otherwise a line that
                 // only repeats.
@@ -2281,6 +2316,7 @@ impl Mind {
             .map_err(|e| format!("decision worker: {e}"))?;
         let mut mind = Self::with(kind, None, Some(asks), Some(replies), Some(worker), cfg);
         mind.notes = Some(notes);
+        mind.fresh = fresh;
         Ok(mind)
     }
 
@@ -2316,6 +2352,7 @@ impl Mind {
             asks,
             replies,
             notes: None,
+            fresh: None,
             worker,
             cfg,
             next_allowed: now,
@@ -2456,6 +2493,22 @@ impl Mind {
         self.stats.requests += 1;
         self.next_allowed = now + self.cfg.interval;
         true
+    }
+
+    /// Whether a newer look at the request out would reach its source: one
+    /// is out, and the source shows its asker the decision.
+    pub fn refreshes(&self) -> bool {
+        self.pending.is_some() && self.fresh.is_some()
+    }
+
+    /// Hand the source a newer look at the request out, for the asker to
+    /// read under the same id and deadline (`DecisionSource::decide_fresh`).
+    /// Not a request: no floor, guard or count. True when it went.
+    pub fn refresh(&mut self, summary: &Summary) -> bool {
+        let (Some((id, _)), Some(tx)) = (self.pending, self.fresh.as_mut()) else {
+            return false;
+        };
+        tx.push((id, *summary)).is_ok()
     }
 
     /// Forget an outstanding request whose answer can no longer be used
