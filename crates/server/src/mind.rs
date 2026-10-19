@@ -246,6 +246,42 @@ pub enum Goal {
     /// is sent `places` (an external one); an agent asked for a plain trip
     /// to THE GATE, having walked there by trades (2026-10-18).
     Go(Name),
+    /// Walk anywhere: so many metres toward a bearing from where the body
+    /// faces, and stop (`walk:ahead-left:300`). The observation carries no
+    /// coordinates, so a mind steers the way it reads the world, by bearing
+    /// and a leg at a time (operator, 2026-10-19: "so he can go anywhere").
+    /// Offered to the same sources as `Go`, as one template, [`Walk::ANY`],
+    /// that every walk answers to.
+    Walk(Walk),
+}
+
+/// One leg of a walk: a bearing (`BEARINGS`' index, clockwise from ahead)
+/// and how far.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Walk {
+    pub bearing: u8,
+    pub metres: u16,
+}
+
+impl Walk {
+    /// The offer: any walk. Its label is the form a mind fills in.
+    pub const ANY: Self = Self {
+        bearing: u8::MAX,
+        metres: 0,
+    };
+    pub const MIN_M: u16 = 10;
+    pub const MAX_M: u16 = 600;
+
+    /// `<bearing>:<metres>`, the bearing one of `BEARINGS` and the metres
+    /// within [`Self::MIN_M`]..=[`Self::MAX_M`].
+    pub fn parse(s: &str) -> Option<Self> {
+        let (b, m) = s.split_once(':')?;
+        let bearing = BEARINGS.iter().position(|w| *w == b)? as u8;
+        let metres: u16 = m.parse().ok()?;
+        (Self::MIN_M..=Self::MAX_M)
+            .contains(&metres)
+            .then_some(Self { bearing, metres })
+    }
 }
 
 /// `craft:` plus the longest catalog name.
@@ -363,6 +399,7 @@ impl Goal {
             Goal::KeepShop => "keep_shop",
             Goal::HandOver => "hand_over",
             Goal::Go(_) => "go",
+            Goal::Walk(_) => "walk",
         }
     }
 
@@ -378,6 +415,17 @@ impl Goal {
         if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) | Goal::Go(name) = self {
             put(b":");
             put(name.as_bytes());
+        }
+        if let Goal::Walk(w) = self {
+            match BEARINGS.get(usize::from(w.bearing)) {
+                Some(b) if w != Walk::ANY => {
+                    put(b":");
+                    put(b.as_bytes());
+                    put(b":");
+                    put(w.metres.to_string().as_bytes());
+                }
+                _ => put(b":<bearing>:<metres>"),
+            }
         }
         Label {
             bytes,
@@ -404,6 +452,9 @@ impl Goal {
             return Some(g);
         }
         let (key, name) = label.split_once(':')?;
+        if key == "walk" {
+            return Walk::parse(name).map(Goal::Walk);
+        }
         let name = Name::new(name.as_bytes())?;
         match key {
             "craft" => Some(Goal::Craft(name)),
@@ -416,6 +467,11 @@ impl Goal {
 
     /// Strict: a label must name one of the goals actually offered.
     pub fn parse(label: &str, offered: &[Goal]) -> Option<Goal> {
+        if let Some(leg) = label.strip_prefix("walk:") {
+            return Walk::parse(leg)
+                .filter(|_| offered.contains(&Goal::Walk(Walk::ANY)))
+                .map(Goal::Walk);
+        }
         offered
             .iter()
             .copied()
@@ -473,6 +529,18 @@ impl Goal {
             Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
             Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
             Goal::Go(name) => format!("Walk to {} and stop there.", name.as_str()),
+            Goal::Walk(w) if w == Walk::ANY => format!(
+                "Walk anywhere and stop: fill in a bearing from where you face ({}) and \
+                 {}-{} metres, e.g. walk:ahead-left:300.",
+                BEARINGS.join(", "),
+                Walk::MIN_M,
+                Walk::MAX_M
+            ),
+            Goal::Walk(w) => format!(
+                "Walk {} m {} and stop.",
+                w.metres,
+                BEARINGS.get(usize::from(w.bearing)).unwrap_or(&"ahead")
+            ),
         }
     }
 }
@@ -1360,9 +1428,9 @@ pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits::MAX_MECHS;
 
 /// The most goals one request can offer: the fixed set, every craft and
-/// trade, and the trips.
+/// trade, the trips, and the one walk anywhere (`Walk::ANY`).
 pub const MAX_OPTIONS: usize =
-    Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS + GO_PLACES;
+    Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS + GO_PLACES + 1;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no
@@ -1680,8 +1748,11 @@ impl Summary {
         &self.threats[..self.threats_len as usize]
     }
 
+    /// A walk is offered when any walk is ([`Walk::ANY`]).
     pub fn offers(&self, goal: Goal) -> bool {
         self.options().contains(&goal)
+            || matches!(goal, Goal::Walk(w) if w != Walk::ANY)
+                && self.options().contains(&Goal::Walk(Walk::ANY))
     }
 
     /// Offer a goal once. Silently full past `MAX_OPTIONS`, which the
