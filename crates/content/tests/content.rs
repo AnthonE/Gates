@@ -2316,7 +2316,7 @@ fn a_clock_that_would_not_tick_is_refused() {
     );
     refuses(
         "balance.toml",
-        "water_minutes_to_empty = 40",
+        "water_minutes_to_empty = 120",
         "water_minutes_to_empty = 0",
         "must be ≥ 1",
     );
@@ -2329,8 +2329,8 @@ fn a_clock_that_would_not_tick_is_refused() {
     // Thirst before hunger is the shape, not a tuning choice.
     refuses(
         "balance.toml",
-        "water_minutes_to_empty = 40",
-        "water_minutes_to_empty = 90",
+        "water_minutes_to_empty = 120",
+        "water_minutes_to_empty = 200",
         "must empty before food",
     );
     // A clock that kills a full-hp body faster than it takes to notice.
