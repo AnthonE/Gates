@@ -233,6 +233,7 @@ mod tests {
             metres: u16::MAX,
             attacked: true,
             damaged: true,
+            unreachable: true,
         };
         for i in 0..crate::mind::SUMMARY_STORED {
             s.stored[i] = (long(300 + i), u32::MAX);

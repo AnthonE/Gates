@@ -63,7 +63,7 @@ use client_core::core::{
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
-use sim_core::craft::STATION_FURNACE;
+use sim_core::craft::{STATION_FURNACE, STATION_NONE};
 use sim_core::deploy::{box_key, cell_center, ACCESS_OP_ENTER, BAG_CAP};
 use sim_core::footprint::Pose;
 use sim_core::gather::{cell_key, REACH_M};
@@ -162,6 +162,22 @@ pub const GO_HOME_GOAL_SECS: u32 = 120;
 /// After a walk home came to nothing (its own lock would not take the
 /// code, say), this long before the next.
 pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A walk home (or a visit to the box) that could not reach home is not
+/// offered again while the body stays within this of where it failed, for
+/// up to [`HOME_STUCK_TICKS`]: from the same spot it fails the same way,
+/// in a second, every time it is offered (a report, 2026-10-19).
+pub const HOME_STUCK_NEAR_M: f32 = 16.0;
+pub const HOME_STUCK_TICKS: u32 = 5 * 60 * TICK_HZ;
+/// After a walk to its stations came to nothing, this long before a craft
+/// that needs one is offered again: from where it stands it fails the same
+/// way at once, and the policy offered it again a second later, for half
+/// an hour (Flint, 2026-10-19: 2,135 of them).
+pub const STATION_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// A craft's walk to its stations that has not got there in this long is
+/// stuck.
+pub const CRAFT_WALK_SECS: u32 = 180;
+/// On the stand spot: this near it.
+const STAND_ON_M: f32 = 0.5;
 /// After a build goal could not reach its work (a spot nothing routes to,
 /// a passage that will not open) or failed as it began, this long before
 /// the next.
@@ -525,8 +541,12 @@ pub struct Memory {
     pub put_away: bool,
     /// A visit to the box failed a moment ago (`Home::stash_held`).
     pub stash_held: bool,
-    /// A walk home failed a moment ago (`GO_HOME_RETRY_TICKS`).
+    /// A walk home failed a moment ago (`GO_HOME_RETRY_TICKS`), or could
+    /// not reach home from about here (`HOME_STUCK_NEAR_M`).
     pub home_held: bool,
+    /// A walk to its stations came to nothing a moment ago
+    /// (`STATION_RETRY_TICKS`): no craft that needs one is offered.
+    pub station_held: bool,
     /// What the box held when it was last open.
     pub stored: [(u16, u32); stash::STORED_ROWS],
     pub stored_len: u8,
@@ -900,6 +920,13 @@ pub struct Survivor {
     shop_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
+    /// When and where a walk home or a visit to the box last could not
+    /// reach home (`HOME_STUCK_NEAR_M`).
+    home_stuck: Option<(u32, [f32; 2])>,
+    /// When a walk to its stations last came to nothing.
+    station_failed: Option<u32>,
+    /// Where the body stood this frame.
+    here: [f32; 2],
     /// When a build goal last could not reach its work.
     build_failed: Option<u32>,
     /// A defence of home, and what defences came to.
@@ -1096,6 +1123,9 @@ impl Survivor {
             research_left: None,
             shop_failed: None,
             home_failed: None,
+            home_stuck: None,
+            station_failed: None,
+            here: [0.0; 2],
             build_failed: None,
             defend_job: DefendJob::default(),
             defend_stats: DefendStats::default(),
@@ -1685,6 +1715,7 @@ impl Survivor {
         self.perceive(core, &body, tick);
         let x = body.qx as f32 * POS_XZ_Q;
         let z = body.qz as f32 * POS_XZ_Q;
+        self.here = [x, z];
         self.frontier.visit(Frontier::cell_of(x, z));
         let (ranged, rounds, loaded) = self.shooter(core);
         let kit = Kit {
@@ -2156,6 +2187,11 @@ impl Survivor {
         }
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
             self.home_failed = Some(tick);
+        }
+        if matches!(active.goal, Goal::GoHome | Goal::Stash)
+            && outcome == Outcome::Failed(Why::Stuck)
+        {
+            self.home_stuck = Some((tick, self.here));
         }
         // A build that failed the moment it began would fail the same way
         // the next second; one that ran out of materials partway goes for
@@ -4152,7 +4188,11 @@ impl Survivor {
     }
 
     /// Home to its stations: in through the doors to the stand spot, which
-    /// its workbench and furnace are both in reach of.
+    /// its workbench and furnace are both in reach of. A walk that comes to
+    /// nothing holds every craft that needs a station a while
+    /// (`STATION_RETRY_TICKS`); one that has not got there in
+    /// `CRAFT_WALK_SECS`, or got to the stand spot and is still out of the
+    /// station's reach, has come to nothing.
     fn walk_to_station(
         &mut self,
         core: &mut ClientCore,
@@ -4161,6 +4201,12 @@ impl Survivor {
         tick: u32,
     ) -> Intent {
         self.stats.phase = Phase::GoingHome;
+        if self
+            .goal
+            .is_some_and(|a| tick.wrapping_sub(a.started) >= CRAFT_WALK_SECS * TICK_HZ)
+        {
+            return self.station_over(tick, Why::Stuck);
+        }
         // None of its own: the team's, in through the team's doors.
         if self.builder.stations(core).spot(station).is_none() {
             if let Some(spot) = self.shared.stations().spot(station) {
@@ -4168,15 +4214,16 @@ impl Survivor {
                     self.home_job = HomeJob::new(Trip::Point(spot));
                 }
                 let (intent, over) = self.home_step(core, body, tick);
-                if let Some(Outcome::Failed(why)) = over {
-                    self.end_goal(tick, Outcome::Failed(why));
-                }
-                return intent;
+                return match over {
+                    Some(Outcome::Failed(why)) => self.station_over(tick, why),
+                    // There, and still out of the station's reach.
+                    Some(_) => self.station_over(tick, Why::Stuck),
+                    None => intent,
+                };
             }
         }
         let (Some(haven), Some(stand)) = (self.haven, self.builder.stand()) else {
-            self.end_goal(tick, Outcome::Failed(Why::NoRecipe));
-            return Intent::IDLE;
+            return self.station_over(tick, Why::NoRecipe);
         };
         let (seed, _) = core.island();
         if self.builder.walled(core) && self.builder.region(body) != Region::Room {
@@ -4192,22 +4239,29 @@ impl Survivor {
             );
             match act {
                 Act::Done => {}
-                Act::Fail(why) => {
-                    self.end_goal(tick, Outcome::Failed(why));
-                    return Intent::IDLE;
-                }
+                Act::Fail(why) => return self.station_over(tick, why),
                 act => return self.act(act, tick),
             }
         }
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         match self.route.to(core, body, stand, 1.0, false, tick) {
             step @ Step::Walk { .. } => step.walk().unwrap_or(Intent::IDLE),
-            Step::Blocked => {
-                self.end_goal(tick, Outcome::Failed(Why::Stuck));
-                Intent::IDLE
+            Step::Blocked => self.station_over(tick, Why::Stuck),
+            // On the stand spot and still out of the station's reach: the
+            // station is not where the stand spot reaches, and walking at
+            // the spot would go on for ever.
+            Step::Arrived if (stand[0] - x).hypot(stand[1] - z) <= STAND_ON_M => {
+                self.station_over(tick, Why::Stuck)
             }
             Step::Arrived | Step::Wait => Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)),
         }
+    }
+
+    /// The walk to its stations came to nothing.
+    fn station_over(&mut self, tick: u32, why: Why) -> Intent {
+        self.station_failed = Some(tick);
+        self.end_goal(tick, Outcome::Failed(why));
+        Intent::IDLE
     }
 
     /// A loot run (`agent::loot`): the nearest barrel or crate it knows of,
@@ -5439,6 +5493,20 @@ impl Survivor {
             .is_some_and(|at| tick.wrapping_sub(at) < GO_HOME_RETRY_TICKS)
     }
 
+    /// Did a walk home, or a visit to the box, fail to reach home from
+    /// about here a moment ago?
+    fn home_unreachable(&self, tick: u32) -> bool {
+        self.home_stuck.is_some_and(|(at, [x, z])| {
+            let near = (x - self.here[0]).hypot(z - self.here[1]) <= HOME_STUCK_NEAR_M;
+            tick.wrapping_sub(at)
+                < if near {
+                    HOME_STUCK_TICKS
+                } else {
+                    GO_HOME_RETRY_TICKS
+                }
+        })
+    }
+
     fn oven_failed(&mut self, tick: u32) {
         match self.oven_job.work() {
             Work::Cook => self.cook_failed = Some(tick),
@@ -6159,8 +6227,12 @@ impl Survivor {
             self.memory.base.ready = false;
         }
         self.home.set_base(self.builder.stand());
-        self.memory.stash_held = self.home.stash_held(tick);
-        self.memory.home_held = self.home_held(tick);
+        let unreachable = self.home_unreachable(tick);
+        self.memory.stash_held = self.home.stash_held(tick) || unreachable;
+        self.memory.home_held = self.home_held(tick) || unreachable;
+        self.memory.station_held = self
+            .station_failed
+            .is_some_and(|at| tick.wrapping_sub(at) < STATION_RETRY_TICKS);
         self.memory.home = match self.builder.stand() {
             None => HomeSense::default(),
             Some([hx, hz]) => {
@@ -6179,6 +6251,7 @@ impl Survivor {
                     metres: d.clamp(0.0, f32::from(u16::MAX)) as u16,
                     attacked: self.home.alarmed(tick, home::HOME_ALARM_TICKS),
                     damaged: self.memory.damaged,
+                    unreachable,
                 }
             }
         };
@@ -7466,6 +7539,7 @@ pub fn observe(
                     || usize::from(core.jobs_count) >= CRAFT_QUEUE
                     || queued(core, r as u16)
                     || !memory.stations.usable(def.station)
+                    || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
                     || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
@@ -8158,7 +8232,6 @@ mod tests {
     use super::*;
     use crate::mind::{MindConfig, Scripted};
     use protocol::{InvSlot, ItemRow};
-    use sim_core::craft::STATION_NONE;
     use sim_core::gather::ItemStack;
     use sim_core::movement::{quant_xz, quant_y};
 
@@ -9422,6 +9495,72 @@ mod tests {
             !bot.home_held(100 + 1900 * TICK_HZ),
             "a cut-short walk is not a failed one"
         );
+    }
+
+    /// A walk home that could not reach home is not offered again from
+    /// about the same spot (a report, 2026-10-19: offered, failed in 0 s,
+    /// offered again a minute later, the body starving), and the summary
+    /// says why; a walk to the stations that came to nothing holds the
+    /// crafts that need one (Flint, the same day: 2,135 in half an hour).
+    #[test]
+    fn a_walk_that_could_not_get_there_is_not_offered_again_from_the_same_spot() {
+        let (mut bot, view, _) = fixture();
+        bot.here = [100.0, 100.0];
+        bot.home_stuck = Some((1000, [100.0, 100.0]));
+        assert!(
+            bot.home_unreachable(1000 + GO_HOME_RETRY_TICKS + 1),
+            "held on the spot"
+        );
+        assert!(
+            !bot.home_unreachable(1000 + HOME_STUCK_TICKS),
+            "not for ever"
+        );
+        bot.here = [100.0 + HOME_STUCK_NEAR_M + 1.0, 100.0];
+        assert!(
+            !bot.home_unreachable(1000 + GO_HOME_RETRY_TICKS + 1),
+            "moved off"
+        );
+        assert!(
+            bot.home_unreachable(1000 + GO_HOME_RETRY_TICKS - 1),
+            "the minute anywhere"
+        );
+        bot.memory.home = HomeSense {
+            state: HomeState::Built,
+            unreachable: true,
+            ..HomeSense::default()
+        };
+        let v = bot.summary(&view, 1).unwrap().to_json();
+        assert!(v["home"]["no_way_from_here"].is_string(), "{}", v["home"]);
+
+        // A hatchet made at the bench, from wood in the pack.
+        let core = bot.core.as_mut().unwrap();
+        core.recipes.recipe_count = 3;
+        core.recipes_have = 3;
+        core.recipes.recipes[2] = sim_core::craft::RecipeDef {
+            output: 9,
+            out_count: 1,
+            ticks: 10,
+            station: sim_core::craft::STATION_WORKBENCH1,
+            blueprint: false,
+            unlock: 0,
+            n_inputs: 1,
+            inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
+        };
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 30,
+            cond: 0,
+            skin: 0,
+        };
+        bot.memory.stations = Stations {
+            bench: Some([0.0, 0.0]),
+            tier: 1,
+            ..Stations::NONE
+        };
+        let hatchet = Goal::Craft(Name::new(b"Stone Hatchet").unwrap());
+        assert!(bot.summary(&view, 1).unwrap().offers(hatchet));
+        bot.memory.station_held = true;
+        assert!(!bot.summary(&view, 1).unwrap().offers(hatchet));
     }
 
     #[test]

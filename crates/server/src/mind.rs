@@ -1246,6 +1246,10 @@ pub struct HomeSense {
     pub attacked: bool,
     /// Something of it is damaged that a repair would mend.
     pub damaged: bool,
+    /// A walk home (or a visit to the box) could not reach it from about
+    /// here a moment ago: neither is offered until the body has moved off
+    /// or a while has passed (`explorer::HOME_STUCK_NEAR_M`).
+    pub unreachable: bool,
 }
 
 impl HomeSense {
@@ -1253,14 +1257,20 @@ impl HomeSense {
         if self.state == HomeState::None {
             return json!({ "state": "none" });
         }
-        json!({
+        let mut v = json!({
             "state": self.state.word(),
             "distance": self.distance.word(),
             "metres": tens(self.metres),
             "bearing": BEARINGS[self.bearing as usize % 8],
             "under_attack": self.attacked,
             "damaged": self.damaged,
-        })
+        });
+        if self.unreachable {
+            v["no_way_from_here"] = json!(
+                "the last walk home could not reach it from near here: go_home and stash wait until you have moved away or a few minutes have passed"
+            );
+        }
+        v
     }
 }
 
@@ -1519,6 +1529,7 @@ impl Summary {
             metres: 0,
             attacked: false,
             damaged: false,
+            unreachable: false,
         },
         bag_ready: false,
         night: false,
