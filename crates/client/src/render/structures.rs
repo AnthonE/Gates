@@ -408,10 +408,16 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
         0.92,
         0.0,
     ), // bag
-    // 1 · hearth. Was a perfect 0.9 cube, which is the tell of a number nobody
-    // chose — a fireplace is wide, shallow and chest-high, and the depth is
-    // what makes it read as a hearth rather than a crate.
-    ([1.2, 1.0, 0.6], Color::srgb(0.549, 0.231, 0.180), 0.80, 0.0), // hearth
+    // 1 · hearth, our tool cupboard. Grown 1.8x on 2026-10-20 (operator:
+    // "too small, look how big Rust's toolchest is"): Rust's stands about as
+    // tall as the player, and a waist-high 1.0 m cupboard read as a nightstand.
+    // One factor, so the two-door cupboard keeps its proportions.
+    (
+        [1.54, 1.8, 0.92],
+        Color::srgb(0.549, 0.231, 0.180),
+        0.80,
+        0.0,
+    ), // hearth
     // 2 · storage box. A chest is wider than deep; the old square 1.0 x 1.0
     // footprint is why it read as a cube. the reference `storageandtoolchest`
     // shows the same shape language — clearly wide, clearly shallow.
@@ -3798,7 +3804,7 @@ pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
         }
         // The chest's front under its lid; the cupboard's front, high.
         ARCH_BOX => ([(Vec3::new(0.0, 0.36, 0.35), Vec3::Z), none], 1),
-        ARCH_HEARTH => ([(Vec3::new(0.0, 0.70, 0.255), Vec3::Z), none], 1),
+        ARCH_HEARTH => ([(Vec3::new(0.0, 1.26, 0.459), Vec3::Z), none], 1),
         _ => ([none; 2], 0),
     }
 }

@@ -739,11 +739,21 @@ pub const STARTER: &[BaseOp] = &[
 pub const STARTER_FOOTPRINT: [(i8, i8); 3] = [(0, 0), (1, 0), (1, 1)];
 
 /// Where the owner stands while it builds, in metres from the plot cell's
-/// low corner: in the core, between the cupboard and the north wall, where
+/// low corner: in the core, in front of the cupboard by the north wall, where
 /// every address of [`STARTER`] is inside `build::BUILD_REACH_M` (planar
 /// reach, so every storey is) and which both doors stand between and the
 /// outside.
-pub const STARTER_STAND_M: (f32, f32) = (1.8, 0.75);
+pub const STARTER_STAND_M: (f32, f32) = (2.45, 0.75);
+
+/// How the cupboard stands in the core: at its centre, turned a quarter to
+/// face the room (+X). Rust's cupboard is 1.54 x 0.92 m and as tall as you;
+/// turned, it leaves the core's open east side a metre wide for the stand
+/// spot and the walk round it, where facing +Z it left 0.73 m, under a body.
+pub const HEARTH_POSE: crate::footprint::Pose = crate::footprint::Pose {
+    ox: 0,
+    oz: 0,
+    yaw: 64,
+};
 
 /// Where the owner stands to set the front door's lock: inside the airlock
 /// triangle, in line with the inner doorway it came in by.
@@ -906,7 +916,10 @@ pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> C
                 cz,
                 level,
                 loc,
-                pose: crate::footprint::Pose::CENTRE,
+                pose: match kit {
+                    Kit::Hearth => HEARTH_POSE,
+                    _ => crate::footprint::Pose::CENTRE,
+                },
             }
         }
         Code(..) => Command::Access {

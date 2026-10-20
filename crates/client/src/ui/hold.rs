@@ -578,7 +578,7 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
         0.81,
         0.125,
     ),
-    HeldModelDef::deploy("hearth", "models/deploy/hearth.glb", 1.000, 0.80, 0.20),
+    HeldModelDef::deploy("hearth", "models/deploy/hearth.glb", 1.800, 0.80, 0.111),
     // Built in Blender by `ci/prop_kit.py` (`ci/prop_recipes.py`): authored
     // standing with the grip on the +Y axis, so no `stand_grip.py` pass. The
     // metal tools and the spear carry the stone rows' poses; everything small
