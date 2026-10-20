@@ -707,7 +707,7 @@ pub fn deploy_track(
     let core = &net.session.core;
     let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
     let Some(row) =
-        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held)
     else {
         // Not holding a deployable — the same silence `deploy_key` keeps.
         hide_deploy(&mut commands, ghost);
@@ -988,7 +988,7 @@ pub fn deploy_key(
     let core = &net.session.core;
     let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
     let Some(row) =
-        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held)
     else {
         return; // not holding a deployable; nothing to say about it
     };

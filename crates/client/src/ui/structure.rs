@@ -25,6 +25,7 @@ use sim_core::build::{
     anchor, shape_has_facing, soft_side, BuildContent, PieceRec, BUILD_REACH_M, MAT_METAL,
 };
 use sim_core::deploy::{DeployContent, DeployRec};
+use sim_core::gather::ItemStack;
 
 /// Which store an address names — `encode_action_repair`'s leading argument
 /// and `encode_action_throw`'s.
@@ -335,19 +336,23 @@ fn deploy_target(rec: &DeployRec, deploy_defs: &DeployContent, deploy_have: u16)
     }
 }
 
-/// Which deployable row a held item places, if any.
+/// Which deployable row a held stack places, if any.
 ///
 /// **This is what makes a box placeable at all.** `DeployDef::item` is the
 /// crafted item placement consumes one unit of, so "the thing in my hand" is
 /// a row lookup rather than a menu — which is how the reference does it, and
-/// it needs no new wheel. `None` means the held item is not a deployable, or
-/// the def table has not dripped far enough to say.
-pub fn row_for_item(defs: &DeployContent, have: u16, item: u16) -> Option<u8> {
-    if item == 0 {
+/// it needs no new wheel. `None` means the hand is empty, the held item is
+/// not a deployable, or the def table has not dripped far enough to say.
+///
+/// Empty is `count == 0`, never `item == 0`: item ids are alphabetical, so
+/// 0 is a real item (the Abyss Rug), and reading it as an empty hand left
+/// the rug unplaceable.
+pub fn row_for_item(defs: &DeployContent, have: u16, stack: ItemStack) -> Option<u8> {
+    if stack.count == 0 {
         return None;
     }
     (0..have.min(defs.def_count))
-        .find(|&i| defs.defs[i as usize].item == item)
+        .find(|&i| defs.defs[i as usize].item == stack.item)
         .map(|i| i as u8)
 }
 
@@ -733,14 +738,26 @@ mod tests {
             item: 42,
             ..DeployDef::INERT
         };
-        c.def_count = 2;
-        assert_eq!(row_for_item(&c, 2, 42), Some(1));
-        assert_eq!(row_for_item(&c, 2, 41), Some(0));
-        assert_eq!(row_for_item(&c, 2, 99), None);
-        // Item 0 is "empty slot", never a deployable.
-        assert_eq!(row_for_item(&c, 2, 0), None);
+        c.defs[2] = DeployDef {
+            arch: sim_core::deploy::ARCH_RUG,
+            item: 0,
+            ..DeployDef::INERT
+        };
+        c.def_count = 3;
+        let one = |item| ItemStack {
+            item,
+            count: 1,
+            ..ItemStack::default()
+        };
+        assert_eq!(row_for_item(&c, 3, one(42)), Some(1));
+        assert_eq!(row_for_item(&c, 3, one(41)), Some(0));
+        assert_eq!(row_for_item(&c, 3, one(99)), None);
+        // Item 0 is a real item (the rug sorts first); an empty slot is the
+        // one with nothing in it.
+        assert_eq!(row_for_item(&c, 3, one(0)), Some(2));
+        assert_eq!(row_for_item(&c, 3, ItemStack::default()), None);
         // A row past what has dripped is not searched — its `item` is
         // INERT's and would match the wrong hand.
-        assert_eq!(row_for_item(&c, 1, 42), None);
+        assert_eq!(row_for_item(&c, 1, one(42)), None);
     }
 }
