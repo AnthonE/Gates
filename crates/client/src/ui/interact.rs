@@ -2083,7 +2083,7 @@ fn nearest_animal(ray: &Ray, shadows: &Shadows<'_>) -> Option<melee::MobHit> {
             qz: e.qz,
             ..Body::default()
         };
-        let Some(t) = melee::animal_entry(o, u, r_cm, h_cm, &body) else {
+        let Some(t) = melee::animal_entry(o, u, r_cm, h_cm, &body, e.yaw) else {
             continue;
         };
         if best.is_none_or(|b| t < b.t) {

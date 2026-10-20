@@ -119,14 +119,14 @@ pub const LEG_BOB: f32 = 0.5;
 
 /// How fast a drawn animal turns to its heading, 1/s. The sim turns an
 /// animal on a tick; easing the drawn heading takes the snap out of it, and
-/// nothing tests an animal's facing (its hit volume is a cylinder).
+/// nothing tests an animal's facing.
 pub const MOB_TURN_EASE: f32 = 10.0;
 
 /// The speed at which the swing reaches full amplitude, m/s — the animal's
-/// own flight gait (`flee_pct` 70 of the player's 5.5 m/s sprint, the
+/// own flight gait (`flee_pct` 100 of the player's 5.5 m/s sprint, the
 /// `mobs.toml` arithmetic `tests/content.rs` gates). Slower is a shallower
 /// swing, linearly, so a grazing shuffle does not goose-step.
-pub const PIG_LEG_FULL_MPS: f32 = 3.85;
+pub const PIG_LEG_FULL_MPS: f32 = 5.5;
 
 /// Nose-to-tail length and shoulder height the massing above claims. The
 /// gate reads these off the mesh rather than trusting them.
@@ -183,11 +183,11 @@ pub const WOLF_LEG_ANCHORS: [([f32; 3], f32); 4] = [
     ([0.14, 0.40, -0.40], 0.0),
 ];
 
-/// The wolf's flight gait: `flee_pct` 85 of the player's 5.5 m/s sprint.
-/// Higher than the pig's 3.85, so at the same ground speed a wolf's legs
+/// The wolf's flight gait: `flee_pct` 120 of the player's 5.5 m/s sprint.
+/// Higher than the pig's 5.5, so at the same ground speed a wolf's legs
 /// swing *shallower* — which is right, because it is the animal for whom
 /// that speed is closer to a lope than a bolt.
-pub const WOLF_LEG_FULL_MPS: f32 = 4.675;
+pub const WOLF_LEG_FULL_MPS: f32 = 6.6;
 
 /// What the wolf massing claims, read off the mesh by the gate.
 pub const WOLF_LEN_M: f32 = 1.6;

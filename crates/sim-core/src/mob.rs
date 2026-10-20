@@ -339,6 +339,11 @@ pub struct MobDef {
     /// sprint button rides with it, so the speed ceiling is `SPRINT_SPEED`
     /// rather than `WALK_SPEED`.
     pub flee_gait: u8,
+    /// The roused run as written (`mobs.toml` `flee_pct`): a percentage of
+    /// `SPRINT_SPEED`. Past 100 the body steps that much faster than the
+    /// sprint `flee_gait` tops out at ([`run_scale`]); a wolf outruns you,
+    /// as in the reference. 0 and up to 100 change nothing.
+    pub run_pct: u16,
     /// How long one rousing lasts, in ticks — the fright's span and the
     /// charge's commitment, one number.
     pub flee_ticks: u16,
@@ -482,6 +487,7 @@ impl MobDef {
         hp: 0,
         gait: 0,
         flee_gait: 0,
+        run_pct: 0,
         flee_ticks: 0,
         attack: 0,
         attack_range_cm: 0,
@@ -701,6 +707,7 @@ impl MobContent {
             hp: 80,
             gait: 63,
             flee_gait: 127,
+            run_pct: 0,
             flee_ticks: 90,
             attack: 15,
             attack_range_cm: 200,
@@ -754,6 +761,7 @@ impl MobContent {
             hp: 100,
             gait: 69,
             flee_gait: 107,
+            run_pct: 0,
             flee_ticks: 180,
             attack: 20,
             attack_range_cm: 200,
@@ -1318,7 +1326,8 @@ pub fn step(
             continue;
         }
         let frame = drive(mob, &def);
-        movement::step(seed, haven, cols, ground.occ, &mut mob.body, &frame);
+        let scale = run_scale(&def, &frame);
+        movement::step_scaled(seed, haven, cols, ground.occ, &mut mob.body, &frame, scale);
     }
 }
 
@@ -1393,6 +1402,16 @@ fn drive(mob: &mut Mob, def: &MobDef) -> InputFrame {
             0
         },
         ..InputFrame::default()
+    }
+}
+
+/// How much faster than a player's sprint this frame runs: `run_pct` / 100
+/// while sprinting at full gait, else exactly 1.
+fn run_scale(def: &MobDef, frame: &InputFrame) -> f32 {
+    if def.run_pct > 100 && frame.buttons & BTN_SPRINT != 0 && frame.move_z == 127 {
+        f32::from(def.run_pct) * 0.01
+    } else {
+        1.0
     }
 }
 

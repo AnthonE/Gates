@@ -614,10 +614,10 @@ pub fn occupant_cast(
     best
 }
 
-/// The nearest living animal the ray enters. An animal is the cylinder its
-/// content row declares (`MobDef::body_r_cm` / `body_h_cm`), standing on
-/// its feet — so a level swing from eye height passes clean over a pig, and
-/// you look down at what you are hunting.
+/// The nearest living animal the ray enters. An animal is a box on its feet
+/// turned to its heading ([`animal_entry`]), sized off its content row
+/// (`MobDef::body_r_cm` / `body_h_cm`) — so a level swing from eye height
+/// passes clean over a pig, and you look down at what you are hunting.
 pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
     let o = (ray.o.0 / MM_PER_M, ray.o.1 / MM_PER_M, ray.o.2 / MM_PER_M);
     let u = (ray.s.0 / MM_PER_M, ray.s.1 / MM_PER_M, ray.s.2 / MM_PER_M);
@@ -627,7 +627,7 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
             continue;
         }
         let def = mc.def(m.kind);
-        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &m.body) else {
+        let Some(t_in) = animal_entry(o, u, def.body_r_cm, def.body_h_cm, &m.body, m.yaw) else {
             continue;
         };
         if best.is_none_or(|b| t_in < b.t) {
@@ -637,25 +637,62 @@ pub fn mob_cast(mc: &MobContent, mobs: &Mobs, ray: &Ray) -> Option<MobHit> {
     best
 }
 
-/// Where a ray `o + u·t` (metres) enters an animal standing at `body` whose
-/// content row sizes it `r_cm` × `h_cm` — [`mob_cast`]'s per-animal solve,
-/// lifted out (§0ray 2) so the client's swing prompt measures a snapshot's
-/// animal with the sim's own arithmetic. `None` for a miss, and for a zero
-/// volume (the heli's and the sentries' `MobDef::INERT`).
+/// An animal's hit box is this many of its content radius long, nose to
+/// tail: 1.43 m for a pig drawn 1.5 m, 1.56 m for a wolf drawn 1.6 m.
+pub const ANIMAL_LEN_PER_R: f32 = 2.6;
+/// And this share of that length wide: the client's plan massing
+/// (`client/tests/mob_volume.rs` `PLAN_ASPECT`).
+pub const ANIMAL_WIDTH_PER_LEN: f32 = 0.45;
+
+/// Where a ray `o + u·t` (metres) enters an animal standing at `body`,
+/// heading `yaw` (the wire's scale), whose content row sizes it `r_cm` ×
+/// `h_cm` — [`mob_cast`]'s per-animal solve, lifted out (§0ray 2) so the
+/// client's swing prompt measures a snapshot's animal with the sim's own
+/// arithmetic. `None` for a miss, and for a zero volume (the heli's and the
+/// sentries' `MobDef::INERT`).
+///
+/// A box along its heading, not a round column: the column was as wide as
+/// the animal was long, so nose-on a pig took hits a body-width either side
+/// of it (operator, 2026-10-19: "are hit boxes big and generic?").
 pub fn animal_entry(
     o: (f32, f32, f32),
     u: (f32, f32, f32),
     r_cm: u16,
     h_cm: u16,
     body: &Body,
+    yaw: u16,
 ) -> Option<f32> {
     let (r, h) = (f32::from(r_cm) * 0.01, f32::from(h_cm) * 0.01);
     if r <= 0.0 || h <= 0.0 {
         return None;
     }
+    let half_len = r * ANIMAL_LEN_PER_R * 0.5;
+    let half_w = half_len * ANIMAL_WIDTH_PER_LEN;
     let base = body.qy as f32 * POS_Y_Q;
-    let centre = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-    cylinder_span(o, u, centre, r, base, base + h).map(|(t_in, _)| t_in)
+    let (fx, fz) = crate::yaw_dir(yaw);
+    let (wx, wz) = (
+        o.0 - body.qx as f32 * POS_XZ_Q,
+        o.2 - body.qz as f32 * POS_XZ_Q,
+    );
+    // The ray in the animal's own frame: along its heading, and across it.
+    let along = (wx * fx + wz * fz, u.0 * fx + u.2 * fz);
+    let across = (wx * fz - wz * fx, u.0 * fz - u.2 * fx);
+    let up = (o.1 - base - h * 0.5, u.1);
+    let mut t_in = 0.0f32;
+    let mut t_out = 1.0f32;
+    for ((p, d), half) in [(along, half_len), (across, half_w), (up, h * 0.5)] {
+        if d == 0.0 {
+            if p < -half || p > half {
+                return None;
+            }
+            continue;
+        }
+        let a = (-half - p) / d;
+        let b = (half - p) / d;
+        t_in = t_in.max(a.min(b));
+        t_out = t_out.min(a.max(b));
+    }
+    (t_in <= t_out).then_some(t_in)
 }
 
 /// An animal's carcass the ray entered: the bag index in the store.
