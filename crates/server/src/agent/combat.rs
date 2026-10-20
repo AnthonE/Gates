@@ -1536,7 +1536,11 @@ impl Combat {
         // Where my body is by the time this frame's input runs: my blow
         // and my shot leave from there, not from my last snapshot.
         let here = self.strides.ahead_of(me);
-        let intent = match self.arm_for(kit, d) {
+        // An animal running from me is shot, never chased with the club: a
+        // pig runs as fast as I do (and a wolf faster), so a chase on foot
+        // never closes and ends as an unreachable foe.
+        let running = t.species != Species::Player && opening(&t, me, d);
+        let intent = match self.arm_for(kit, d, running) {
             Arm::Melee => {
                 self.draw = None;
                 self.melee(core, body, here, route, &t, &odds, kit, tick)
@@ -1568,11 +1572,12 @@ impl Combat {
     /// one further out, and between the two whichever is out already; a
     /// dry gun is swapped for the club rather than reloaded in someone's
     /// face.
-    fn arm_for(&mut self, kit: &Kit, d: f32) -> Arm {
+    fn arm_for(&mut self, kit: &Kit, d: f32, running: bool) -> Arm {
         self.arm = match (kit.melee.is_some(), kit.ranged.is_some()) {
             (_, false) => Arm::Melee,
             (false, true) => Arm::Ranged,
             (true, true) if kit.loaded == Some(0) && d < KITE_M => Arm::Melee,
+            (true, true) if running => Arm::Ranged,
             (true, true) if d <= MELEE_IN_M => Arm::Melee,
             (true, true) if d >= RANGED_OUT_M => Arm::Ranged,
             (true, true) => self.arm,
@@ -2550,6 +2555,13 @@ fn nearing(t: &Track, me: [f32; 3], my_vel: [f32; 3], d: f32) -> bool {
 }
 
 /// This body is coming at me at `mps` or faster.
+/// Running from me: its speed away from me at least [`CLOSING_MPS`].
+fn opening(t: &Track, me: [f32; 3], d: f32) -> bool {
+    let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
+    let away = -(t.vel[0] * dx + t.vel[2] * dz);
+    away > 0.0 && away >= CLOSING_MPS * d
+}
+
 fn closing_at(t: &Track, me: [f32; 3], d: f32, mps: f32) -> bool {
     let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
     // Standing still on top of me is not coming at me.
