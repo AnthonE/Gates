@@ -1219,7 +1219,7 @@ impl Deploys {
     /// was last built. Called from exactly one place — the top of
     /// [`upkeep_sweep`], the fixed point in the tick the determinism
     /// argument in `claim.rs` names — and from the gates.
-    pub(crate) fn refresh_claims(&mut self, pieces: &Pieces, bc: &BuildContent) {
+    pub(crate) fn refresh_claims(&mut self, pieces: &Pieces) {
         if self
             .claim
             .fresh_for(pieces.footprint_gen(), self.hearth_gen)
@@ -1229,7 +1229,6 @@ impl Deploys {
         let hg = self.hearth_gen;
         self.claim.rebuild(
             pieces,
-            bc,
             &self.hearths[..self.hearth_count],
             pieces.footprint_gen(),
             hg,
@@ -3994,9 +3993,7 @@ pub fn grieve(
     for g in 0..parked {
         let rec = deploys.grief[g];
         let walk = crate::claim::component_near(pieces, rec.cx, rec.cz);
-        let ours = |p: &crate::build::PieceRec| {
-            bc.pieces[p.row as usize].material != crate::build::MAT_TWIG && walk.holds(p.cx, p.cz)
-        };
+        let ours = |p: &crate::build::PieceRec| walk.holds(p.cx, p.cz);
         // The building's bill at its own size — the sweep's arithmetic.
         let graded = pieces.entries().iter().filter(|p| ours(p)).count() as u32;
         let t = crate::upkeep::tax(dc, graded);
@@ -4160,7 +4157,7 @@ pub fn upkeep_sweep(
     // the determinism argument; what matters here is the order: no
     // coverage question is ever asked of a cache the tick's commands have
     // not been folded into.
-    deploys.refresh_claims(pieces, bc);
+    deploys.refresh_claims(pieces);
     let h_now = (tick / UPKEEP_PERIOD_TICKS) as u16;
 
     // --- pieces ---------------------------------------------------------
@@ -4207,18 +4204,12 @@ pub fn upkeep_sweep(
             // ground would never rot — which is the old rule's one
             // property worth keeping: no hearth, no protection.
             //
-            // **And twig is never paid for, at any hearth** (twig v0,
-            // `reference/BUILDING.md` §7b.4). A scaffold is a draft: it
-            // costs no upkeep, so a base under construction does not
-            // quietly drain the stock that keeps the finished half
-            // standing, and no stock can protect it either — `all_paid`
-            // false here skips the charge entirely and sends it straight
-            // to the decay step, where the ladder's 100 %/period is
-            // waiting. That is the whole difference between a draft you
-            // re-lay for 50 wood and a cheap permanent base nobody
-            // upgrades.
+            // Twig pays rent like every grade, as in Rust: a stocked
+            // cupboard keeps it standing. It used to be excluded (a
+            // scaffold as a draft), and twig stairs inside a stocked base
+            // were gone within the hour (playtest 2026-10-19). Unpaid twig
+            // still takes the ladder's 100 %/period.
             let all_paid = cover_n > 0
-                && def.material != crate::build::MAT_TWIG
                 && pay_hour(
                     dc,
                     deploys,
@@ -5334,16 +5325,12 @@ mod tests {
         assert!(codes.contains(&crate::world::EV_DEPLOY_REMOVED));
     }
 
-    /// **A scaffold pays no rent and gets no shelter** (twig v0,
-    /// `reference/BUILDING.md` §7b.4). The half of twig that makes it a
-    /// draft rather than a cheap permanent base: the sweep never charges
-    /// a twig piece upkeep, so no stock can ever protect one, and at
-    /// 100 %/period it is gone in a single hour under a hearth stocked to
-    /// the ceiling. Its graded neighbour on the same claim survives the
-    /// same sweep, which is what makes this about the rung and not about
-    /// the coverage.
+    /// **Twig pays rent and keeps its shelter**, as in Rust: a stocked
+    /// hearth charges a twig piece like any grade and the piece stands.
+    /// (Until 2026-10-20 twig was never charged and rotted in an hour
+    /// under a full hearth; twig stairs in a stocked base vanished.)
     #[test]
-    fn twig_rots_under_a_full_hearth_and_costs_it_nothing() {
+    fn twig_stands_under_a_full_hearth_and_pays_for_it() {
         let dc = hourly();
         let bc = BuildContent::probe_fixture();
         let mut pieces = Pieces::new();
@@ -5398,23 +5385,21 @@ mod tests {
 
         sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
 
-        assert!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).is_none(),
-            "the twig wall survived a period — a scaffold is not a base"
-        );
+        let twig = pieces
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .expect("the twig wall stands");
+        assert_eq!(twig.hp, bc.pieces[twig.row as usize].hp, "and lost nothing");
         assert_eq!(
             pieces.find(CX, CZ, 0, LOC_PLANE).unwrap().hp,
             bc.pieces[GRADED_FOUNDATION].hp,
-            "and the graded piece on the same claim was paid for as ever"
+            "the graded piece on the same claim was paid for as ever"
         );
-        // The one that says twig was never CHARGED, rather than charged
-        // and then rotted anyway: exactly the graded foundation's row came
-        // out of stock, and the twig wall's cost item is the same item 0,
-        // so a charge for it would show here.
+        // Charged, not merely spared: more came out of stock than the
+        // foundation's rent alone.
         let spent = STOCK_MAX - deploys.hearths()[0].stock[0];
-        assert_eq!(
-            spent, bc.pieces[GRADED_FOUNDATION].costs[0].1 as u32,
-            "the hearth paid for the foundation and nothing else"
+        assert!(
+            spent > bc.pieces[GRADED_FOUNDATION].costs[0].1 as u32,
+            "the twig wall paid its rent too ({spent})"
         );
     }
 
