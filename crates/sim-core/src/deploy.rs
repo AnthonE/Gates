@@ -207,29 +207,29 @@ pub const ARCH_RUG: u8 = 22;
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
 pub const DEPLOY_VOL: [[f32; 3]; 23] = [
-    [0.0, 0.0, 0.0],   // 0 bag — walk-over
-    [1.2, 1.0, 0.6],   // 1 hearth
-    [1.2, 0.65, 0.7],  // 2 box
-    [0.0, 0.0, 0.0],   // 3 fire — walk-over
-    [1.3, 0.95, 0.85], // 4 furnace
-    [1.6, 0.9, 0.7],   // 5 workbench
-    [0.0, 0.0, 0.0],   // 6 door — the shut bit's business
-    [0.0, 0.0, 0.0],   // 7 lock — never a record
-    [1.3, 1.15, 0.9],  // 8 recycler
-    [1.5, 0.8, 0.8],   // 9 research table
-    [1.6, 1.0, 0.8],   // 10 workbench 2 — taller and deeper than 5
-    [1.8, 1.1, 0.8],   // 11 workbench 3 — the widest bench
-    [0.0, 0.0, 0.0],   // window bars — edge insert
-    [0.0, 0.0, 0.0],   // garage door — edge insert
-    [0.0, 0.0, 0.0],   // glass — edge insert
-    [0.0, 0.0, 0.0],   // shutters — edge insert, not a solid nibble
-    [1.8, 1.4, 0.6],   // 16 barricade — a log wall
-    [1.6, 0.5, 0.8],   // 17 planter — a raised bed
-    [0.7, 0.6, 0.7],   // 18 turret — the base; the gun stands on it
-    [0.9, 1.9, 0.8],   // 19 vending machine
-    [1.8, 1.4, 0.6],   // 20 barbed barricade — the barricade's wall
-    [0.0, 0.0, 0.0],   // 21 floor spikes — walk-over, and that is the trap
-    [0.0, 0.0, 0.0],   // 22 rug — a floor covering, walked on
+    [0.0, 0.0, 0.0],     // 0 bag — walk-over
+    [1.2, 1.0, 0.6],     // 1 hearth
+    [1.2, 0.65, 0.7],    // 2 box
+    [0.0, 0.0, 0.0],     // 3 fire — walk-over
+    [1.56, 1.14, 1.02],  // 4 furnace
+    [1.92, 1.08, 0.84],  // 5 workbench
+    [0.0, 0.0, 0.0],     // 6 door — the shut bit's business
+    [0.0, 0.0, 0.0],     // 7 lock — never a record
+    [1.69, 1.495, 1.17], // 8 recycler
+    [1.8, 0.96, 0.96],   // 9 research table
+    [1.92, 1.2, 0.96],   // 10 workbench 2 — taller and deeper than 5
+    [2.07, 1.265, 0.92], // 11 workbench 3 — the widest bench
+    [0.0, 0.0, 0.0],     // window bars — edge insert
+    [0.0, 0.0, 0.0],     // garage door — edge insert
+    [0.0, 0.0, 0.0],     // glass — edge insert
+    [0.0, 0.0, 0.0],     // shutters — edge insert, not a solid nibble
+    [1.8, 1.4, 0.6],     // 16 barricade — a log wall
+    [1.6, 0.5, 0.8],     // 17 planter — a raised bed
+    [0.7, 0.6, 0.7],     // 18 turret — the base; the gun stands on it
+    [0.9, 1.9, 0.8],     // 19 vending machine
+    [1.8, 1.4, 0.6],     // 20 barbed barricade — the barricade's wall
+    [0.0, 0.0, 0.0],     // 21 floor spikes — walk-over, and that is the trap
+    [0.0, 0.0, 0.0],     // 22 rug — a floor covering, walked on
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for

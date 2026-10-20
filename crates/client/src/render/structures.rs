@@ -431,14 +431,24 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
     // where a stone smelting forge is squat, wide and shallow. Now 1.37
     // width:height, against the 1.44 a generated mesh reached unprompted.
     (
-        [1.3, 0.95, 0.85],
+        [1.56, 1.14, 1.02],
         Color::srgb(0.310, 0.290, 0.271),
         0.70,
         0.0,
     ), // furnace
     // 5 · workbench. Length and height were already right (0.9 is bench
     // height); 0.9 deep was not — a bench you can reach across is ~0.7.
-    ([1.6, 0.9, 0.7], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0), // workbench
+    // Grown 1.2x on 2026-10-20 (operator, after a 3-hour playtest:
+    // "workbenches and recyclers need to be bigger"): a 1.6 m bench read as
+    // a side table beside a player. The furnace, the research table and the
+    // other stations grew with it, each by one factor so its model keeps its
+    // proportions, and `sim_core::deploy::DEPLOY_VOL` with them.
+    (
+        [1.92, 1.08, 0.84],
+        Color::srgb(0.631, 0.475, 0.247),
+        0.85,
+        0.0,
+    ), // workbench
     // 6 · door. The leaf fills the doorway the sim blocks, 1.2 m between the
     // posts and floor to lintel, as Rust's does. It drew 0.9 wide until
     // 2026-10-17, a hand's width of daylight down each side of every door.
@@ -460,7 +470,7 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
     // base and a silhouette is how you tell them apart at a glance —
     // `ART.md`'s read, applied to a greybox.
     (
-        [1.3, 1.15, 0.9],
+        [1.69, 1.495, 1.17],
         Color::srgb(0.325, 0.353, 0.376),
         0.55,
         0.6,
@@ -469,7 +479,7 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
     // workbench is wide and low: they stand side by side in a base and the
     // silhouette is how you tell them apart across a room.
     (
-        [1.5, 0.8, 0.8],
+        [1.8, 0.96, 0.96],
         Color::srgb(0.478, 0.427, 0.353),
         0.72,
         0.15,
@@ -480,13 +490,13 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
     // benches stand in one base and which is which has to read across a
     // room, greybox or not.
     (
-        [1.6, 1.0, 0.8],
+        [1.92, 1.2, 0.96],
         Color::srgb(0.502, 0.443, 0.337),
         0.72,
         0.25,
     ), // workbench 2 — wood frame, metal fittings
     (
-        [1.8, 1.1, 0.8],
+        [2.07, 1.265, 0.92],
         Color::srgb(0.361, 0.384, 0.404),
         0.55,
         0.55,

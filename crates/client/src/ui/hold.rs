@@ -565,16 +565,18 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     // Scales are small on purpose and were judged off a capture: the first
     // cut at 0.26 put a 29 cm crate at 43 cm from the eye and it ate a
     // quarter of the frame — a held deployable is a token of the thing, and
-    // the placement ghost at the reticle is the actual size claim.
+    // the placement ghost at the reticle is the actual size claim. The
+    // stations' models grew 1.15-1.3x on 2026-10-20 and their scales here
+    // shrank by the same factor, so the token in the hand did not.
     HeldModelDef::deploy("small_box", "models/deploy/box.glb", 0.610, 0.83, 0.16),
     HeldModelDef::deploy("large_box", "models/deploy/box.glb", 0.610, 0.81, 0.22),
     HeldModelDef::deploy("sleeping_bag", "models/deploy/bag.glb", 0.308, 0.80, 0.12),
     HeldModelDef::deploy(
         "workbench",
         "models/deploy/workbench.glb",
-        0.822,
+        0.987,
         0.81,
-        0.15,
+        0.125,
     ),
     HeldModelDef::deploy("hearth", "models/deploy/hearth.glb", 1.000, 0.80, 0.20),
     // Built in Blender by `ci/prop_kit.py` (`ci/prop_recipes.py`): authored
@@ -644,28 +646,28 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
         0.30,
         1.00,
     ),
-    HeldModelDef::deploy("furnace", "models/deploy/furnace.glb", 0.950, 0.80, 0.16),
-    HeldModelDef::deploy("recycler", "models/deploy/recycler.glb", 1.037, 0.80, 0.15),
+    HeldModelDef::deploy("furnace", "models/deploy/furnace.glb", 1.140, 0.80, 0.133),
+    HeldModelDef::deploy("recycler", "models/deploy/recycler.glb", 1.349, 0.80, 0.115),
     HeldModelDef::deploy(
         "research_table",
         "models/deploy/research_table.glb",
-        0.800,
+        0.960,
         0.81,
-        0.15,
+        0.125,
     ),
     HeldModelDef::deploy(
         "workbench_2",
         "models/deploy/workbench2.glb",
-        0.999,
+        1.200,
         0.81,
-        0.14,
+        0.117,
     ),
     HeldModelDef::deploy(
         "workbench_3",
         "models/deploy/workbench3.glb",
-        1.099,
+        1.265,
         0.81,
-        0.13,
+        0.113,
     ),
     HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.186, 0.50, 0.08),
     HeldModelDef::deploy(
