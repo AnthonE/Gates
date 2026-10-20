@@ -2742,7 +2742,7 @@ fn test_upgrade_material_domain_is_enforced() {
 /// encoding and this fixture means what it says.
 #[test]
 fn test_chat_text_domain_is_enforced() {
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     // Encoder side.
     for bad in [
         &b""[..],
@@ -2770,18 +2770,18 @@ fn test_chat_text_domain_is_enforced() {
         let mut w = protocol::bits::BitWriter::new(out);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
         w.write(channel, 2).unwrap();
-        w.write(claim_len, 6).unwrap();
+        w.write(claim_len, 7).unwrap();
         for &b in raw {
             w.write(b as u32, 8).unwrap();
         }
         w.finish()
     };
-    let mut wide = [0u8; 96];
+    let mut wide = [0u8; 160];
     for (raw, claim) in [
         (&b" untrimmed"[..], 10u32), // non-canonical
         (&b"nul\0byte"[..], 8),      // control char
         (&[0xc3, 0x28][..], 2),      // invalid UTF-8
-        (&[b'a'; 63][..], 63),       // length past CHAT_MAX_BYTES
+        (&[b'a'; 127][..], 127),     // length past CHAT_MAX_BYTES
         (&b""[..], 0),               // empty
     ] {
         let n = forge(0, raw, claim, &mut wide);
@@ -2802,7 +2802,7 @@ fn test_chat_text_domain_is_enforced() {
     w.write(23, 5).unwrap();
     w.write(from, 32).unwrap();
     w.write(2, 2).unwrap(); // the fixture's team channel
-    w.write(text.len() as u32, 6).unwrap();
+    w.write(text.len() as u32, 7).unwrap();
     w.write(0x07, 8).unwrap(); // a bell where the first letter was
     for &b in &text.as_bytes()[1..] {
         w.write(b as u32, 8).unwrap();

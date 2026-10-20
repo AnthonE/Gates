@@ -450,7 +450,7 @@ fn parse_bans(text: &str) -> Result<Vec<PlayerKey>, String> {
 /// from the asker: species, slot, state, how the last think went (`.` done,
 /// `!` failed), the
 /// remembered target's player id (or `-`), hp, range and how long it stays
-/// roused. Packed tight because a chat line is 48 bytes and the `[server] `
+/// roused. Packed tight because a chat line is short and the `[server] `
 /// mark takes nine; the order is what a person debugging a chase reads first.
 pub fn brain_line(
     slot: usize,

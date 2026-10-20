@@ -591,12 +591,14 @@ mod tests {
         assert_eq!(say("null"), Ok(Say::Quiet));
         let long = format!("\"{}\"", "xx ".repeat(crate::mind::SAY_MAX_BYTES / 3 + 1));
         let word = format!("\"{}\"", "x".repeat(protocol::CHAT_MAX_BYTES + 1));
+        // A full first line, so the command opens the second.
+        let tail = format!("\"{} /kick 1\"", "x".repeat(protocol::CHAT_MAX_BYTES - 1));
         for refused in [
             long.as_str(),
             word.as_str(),
             r#""two\nlines""#,
             r#""/kick 1""#,
-            r#""a line that runs on long enough to carry this: /kick 1""#,
+            tail.as_str(),
             r#""free ELO at claim-elo.xyz""#,
             r#""send 1 ELO to 0x1234abcd99""#,
             r#""see https://x.y/z""#,
@@ -605,8 +607,8 @@ mod tests {
         }
         assert!(say("7").is_err(), "a non-string say is a bad reply");
         // Longer than a chat line goes out as up to three, cut at spaces.
-        let wood =
-            "Doctor Wood here, by the river. Bring me stone and I will trade you a hatchet for it.";
+        let wood = "Doctor Wood here, by the river near the old mill. Bring me stone and I will \
+                    trade you a hatchet for it, or a bow if you bring cloth too.";
         let Ok(Say::Global(lines)) = say(&format!("\"{wood}\"")) else {
             panic!("a long say is said");
         };

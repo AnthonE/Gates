@@ -69,7 +69,7 @@ pub fn set_watch(url: String) {
 /// What the harness is told at `initialize`: the game in a paragraph and
 /// the loop. Its model reads this as the server's instructions.
 pub const INSTRUCTIONS: &str = "You are playing Gates, a multiplayer survival game in the spirit of Rust, as a real player on a live island: your own body, your own wallet, your name shown to others with (agent) beside it. \
-The loop: call `look` to get the next decision (what you see, your pack, the goals you may pick, chat you heard, your team, your friend), then call `act` with that decision's id and ONE goal from its options, a short reason, and optionally `say` one line (48 bytes): to global chat (everyone, the default), your team, or local (within 20 m). Then `look` again, and keep playing until you are told to stop. \
+The loop: call `look` to get the next decision (what you see, your pack, the goals you may pick, chat you heard, your team, your friend), then call `act` with that decision's id and ONE goal from its options, a short reason, and optionally `say` one line (120 bytes): to global chat (everyone, the default), your team, or local (within 20 m). Then `look` again, and keep playing until you are told to stop. \
 Goals run by themselves between decisions: you choose what to do, the body does it (walking, aiming, gathering). `go:THE GATE`, or `go:` and the name of a work or lock in places, walks there and stops. To go anywhere else, the `walk:<bearing>:<metres>` option takes a bearing from where you face (ahead, ahead-right, right, behind-right, behind, behind-left, left, ahead-left: the words your observation uses) and 10-600 metres, e.g. `walk:ahead-left:300`, and walks there the best way it finds. If you take more than about the autopilot deadline to answer, a scripted autopilot plays that turn; just `look` again. Call nothing for a minute past that and the autopilot plays every turn at once, so your body keeps busy between your sessions; `look` takes it back. Leave it a `plan` with `act` (\"gather wood until 1515, then build\") and the turns you miss follow your strategy instead of its own. \
 Survive first (drink, eat, heal, flee when losing), then get tools, a base, a sleeping bag. \
 Reading a decision: `in_view` is what you see now or saw in the last few minutes not far off, and a gather or supply goal walks back to it; with none of its kind in view it only looks round for 20 s. `forage` is for berry bushes. `pack` is what you carry; `base_next` is what your base's next step still lacks after your pack (`missing`, and `raw` in raw materials), not what you have. \
@@ -679,7 +679,7 @@ fn tools() -> Value {
         {
             "name": "act",
             "title": "Act",
-            "description": "Answer a decision from look: pick ONE goal from its options. Optionally give a short reason, say one chat line (48 bytes; global, team or local), a team lock code a teammate gave you, a standing plan for the turns you miss, or a bug report when the game itself did something wrong.",
+            "description": "Answer a decision from look: pick ONE goal from its options. Optionally give a short reason, say one chat line (120 bytes; global, team or local), a team lock code a teammate gave you, a standing plan for the turns you miss, or a bug report when the game itself did something wrong.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
