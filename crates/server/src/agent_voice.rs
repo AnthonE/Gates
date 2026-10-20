@@ -684,8 +684,12 @@ mod tests {
 
     #[test]
     fn a_transcript_splits_into_chat_sized_pieces() {
-        let text =
-            "doc follow me to the big rock by the river and bring the bat we are raiding tonight";
+        let text = "doc follow me to the big rock by the river and bring the bat we are raiding \
+                    tonight, and tell hazel to bring the stone she owes us from the gate";
+        assert!(
+            text.len() > protocol::CHAT_MAX_BYTES,
+            "longer than one line"
+        );
         let p = pieces(text);
         assert!(p.len() >= 2);
         assert!(!p[0].1 && p[1..].iter().all(|(_, more)| *more));

@@ -400,7 +400,7 @@ pub fn draw(
         color.0 = ink(target);
     }
     if let Ok(mut text) = line.single_mut() {
-        text.0 = format!("{}|", chat.composer.body());
+        text.0 = format!("{}|", chat.composer.shown());
     }
     if let Ok(mut text) = hint.single_mut() {
         // The cap is drawn because a cap the player cannot see is a cap

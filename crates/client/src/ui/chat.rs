@@ -12,9 +12,9 @@
 //!
 //! ## The cap is bytes, not characters
 //!
-//! `CHAT_MAX_BYTES` is 48 UTF-8 *bytes* and `sanitize` refuses anything over
+//! `CHAT_MAX_BYTES` is 120 UTF-8 *bytes* and `sanitize` refuses anything over
 //! it outright — it does not truncate. A composer that counted characters
-//! would let a player type 48 emoji, refuse to encode, and report nothing;
+//! would let a player type 120 emoji, refuse to encode, and report nothing;
 //! one that truncated bytes could split a codepoint and produce a line that
 //! is not UTF-8, which `sanitize` also refuses. So [`Composer::push`] admits
 //! a character only when the whole of it fits, which is the only rule that
@@ -34,6 +34,10 @@ pub const TEAM_PREFIX: &str = "/t ";
 /// How many lines the scrollback holds. Bounded like every other client
 /// store (wall 4); the oldest is evicted.
 pub const LOG_CAP: usize = 24;
+
+/// Characters of the line being typed that the composer bar draws (its
+/// tail): about what fits the bar beside the channel and the hint.
+pub const SHOWN_CHARS: usize = 40;
 
 /// How long a line stays up with the composer shut, then how long it takes
 /// to fade. Rust's chat: a line is there while it is news, and opening chat
@@ -118,6 +122,18 @@ impl Composer {
             .strip_prefix(GLOBAL_PREFIX)
             .or_else(|| self.text.strip_prefix(TEAM_PREFIX))
             .unwrap_or(&self.text)
+    }
+
+    /// The tail of [`Composer::body`] that fits the one-line bar: a line
+    /// can hold more than the bar shows, and the end is where the typing is.
+    pub fn shown(&self) -> String {
+        let body = self.body();
+        let n = body.chars().count();
+        if n <= SHOWN_CHARS {
+            return body.to_string();
+        }
+        let tail: String = body.chars().skip(n - (SHOWN_CHARS - 1)).collect();
+        format!("…{tail}")
     }
 
     /// How many bytes are left. Drawn beside the composer, because a cap the

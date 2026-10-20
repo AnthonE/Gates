@@ -26,11 +26,12 @@
 use crate::bits::{BitReader, BitWriter, WireError};
 use crate::{expect_zero_padding, KIND_BITS, KIND_CHAT};
 
-/// Longest chat line on the wire, in UTF-8 bytes. Bounded by the server's
-/// own C→S frame acceptance (`MAX_STREAM_MSG_BYTES`): 48 text bytes
-/// plus the 8-bit header encode to 50 B, which leaves the length prefix
-/// and a margin. Proposed default, DECISIONS.md §open ("chat v0").
-pub const CHAT_MAX_BYTES: usize = 48;
+/// Longest chat line on the wire, in UTF-8 bytes. 48 until v129, which cut
+/// players and agents off mid-sentence (operator, 2026-10-20: "we should
+/// allow more text in the chat"). Bounded by the server's own C→S frame
+/// acceptance (`MAX_STREAM_MSG_BYTES`, 128): 120 text bytes plus the
+/// 13-bit header encode to 122 B. The assert below holds it.
+pub const CHAT_MAX_BYTES: usize = 120;
 
 /// The shard's chat token bucket (`server/net.rs`): `CHAT_BURST` lines
 /// back to back, then one more every `CHAT_REFILL_MS`. Here rather than in
@@ -39,9 +40,16 @@ pub const CHAT_MAX_BYTES: usize = 48;
 pub const CHAT_BURST: u32 = 3;
 pub const CHAT_REFILL_MS: u64 = 2_000;
 
-/// Length field width: 6 bits hold 0..63, covering `CHAT_MAX_BYTES`.
+/// Length field width: 7 bits hold 0..127, covering `CHAT_MAX_BYTES`.
 /// A forged length past the cap is refused at decode.
-const CHAT_LEN_BITS: u32 = 6;
+const CHAT_LEN_BITS: u32 = 7;
+
+const _: () = assert!(CHAT_MAX_BYTES < 1 << CHAT_LEN_BITS);
+// A full line's C→S frame fits what the shard reads off the stream.
+const _: () = assert!(
+    (KIND_BITS + CHANNEL_BITS + CHAT_LEN_BITS) as usize + 8 * CHAT_MAX_BYTES
+        <= 8 * crate::MAX_STREAM_MSG_BYTES
+);
 
 /// One sanitized chat line: fixed bytes, no allocation, `Copy` so it
 /// crosses rings by value like every other wire record.
@@ -290,7 +298,7 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 160];
         for channel in [Channel::Local, Channel::Global, Channel::Team] {
             let n = encode_chat(b"raid at the north wall", channel, &mut buf).expect("encode");
             let msg = decode_chat(&buf[..n]).expect("decode");
@@ -301,7 +309,7 @@ mod tests {
 
     #[test]
     fn encode_refuses_what_sanitize_refuses() {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 160];
         assert_eq!(
             encode_chat(b"  ", Channel::Local, &mut buf),
             Err(WireError::Range)
@@ -320,7 +328,7 @@ mod tests {
     fn decode_refuses_a_non_canonical_line() {
         // Hand-built frame carrying an untrimmed line — the encoder can't
         // produce this, so only a forging peer can.
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 160];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
         w.write(0, CHANNEL_BITS).unwrap();
@@ -335,7 +343,7 @@ mod tests {
 
     #[test]
     fn decode_refuses_a_forged_control_char() {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 160];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
         w.write(1, CHANNEL_BITS).unwrap();
@@ -350,12 +358,12 @@ mod tests {
 
     #[test]
     fn decode_refuses_a_forged_length() {
-        let mut buf = [0u8; 96];
+        let mut buf = [0u8; 160];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
         w.write(0, CHANNEL_BITS).unwrap();
-        w.write(63, CHAT_LEN_BITS).unwrap(); // past CHAT_MAX_BYTES
-        for _ in 0..63 {
+        w.write(127, CHAT_LEN_BITS).unwrap(); // past CHAT_MAX_BYTES
+        for _ in 0..127 {
             w.write(b'a' as u32, 8).unwrap();
         }
         let n = w.finish();
@@ -372,7 +380,7 @@ mod tests {
 
     #[test]
     fn decode_refuses_the_unused_channel() {
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 160];
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_CHAT, KIND_BITS).unwrap();
         w.write(3, CHANNEL_BITS).unwrap();

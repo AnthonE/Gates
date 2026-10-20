@@ -1260,7 +1260,9 @@ pub use voice::{
 /// v128 — unlocks (Rust's Frog Boots): a skin row carries an `unlock` bit
 /// (owning it is what lets a player craft its item, `SkinRow::unlock`), and
 /// a craft may be refused `REFUSE_CR_OWNED`.
-pub const PROTO_VER: u16 = 128;
+/// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
+/// length 7 bits.
+pub const PROTO_VER: u16 = 129;
 
 /// This game's slug in the elo catalog.
 ///
