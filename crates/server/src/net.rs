@@ -4187,7 +4187,7 @@ fn sim_thread(
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.world.mob = mobs;
-    core.world.nets = Box::new(nets);
+    *core.world.nets = nets;
     core.world.heli_def = heli;
     core.world.sentry_def = sentry;
     core.world.turret_def = turret;

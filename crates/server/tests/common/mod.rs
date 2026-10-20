@@ -172,7 +172,7 @@ pub fn shard_with(
     core.world.cards = t.cards;
     if wildlife {
         core.world.mob = t.mobs;
-        core.world.nets = Box::new(t.nets);
+        *core.world.nets = t.nets;
     }
     core.catalog = t.catalog;
     core.world.dev_spawn = Some(at);

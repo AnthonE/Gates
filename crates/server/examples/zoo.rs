@@ -35,7 +35,6 @@
 //! Every bout is a function of its seed and the genome, so a run replays
 //! whatever `--threads` is.
 
-#[allow(dead_code, unused_imports)]
 #[path = "../tests/common/mod.rs"]
 mod common;
 #[allow(dead_code, unused_imports)]
@@ -183,7 +182,7 @@ fn play(b: &Bout, genome: Option<&Genome>) -> Outcome {
     if let Some(g) = genome {
         nets.install(MOB_WOLF, *g, 0);
     }
-    a.shard.world.nets = Box::new(nets);
+    *a.shard.world.nets = nets;
     // The roster enrols on the first armed tick; then it is cleared, and
     // nothing hatches until the pack is placed by hand.
     a.step();
@@ -398,13 +397,10 @@ fn bench(g: &Genome, n: usize, threads: usize) {
             .map(|(o, _)| *o)
             .collect()
     };
-    for gear in 0..GEARS.len() {
+    for (gear, weapon) in GEAR_NAMES.iter().enumerate() {
         for (name, set) in [("table", table), ("bred", bred)] {
             let o = pick(set, &|b| b.gear == gear);
-            println!(
-                "{}",
-                line(&format!("  vs {} ({name})", GEAR_NAMES[gear]), &o)
-            );
+            println!("{}", line(&format!("  vs {weapon} ({name})"), &o));
         }
     }
     for (label, f) in [

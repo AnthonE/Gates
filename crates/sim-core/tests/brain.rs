@@ -747,7 +747,7 @@ fn a_wolf_with_nothing_to_hunt_lies_down_at_night() {
 
 /// A hand-set wolf brain that always makes one choice: every weight zero
 /// but that output's bias, from wipe day's tier up.
-fn always(action: u8) -> Box<sim_core::brain::Nets> {
+fn always(action: u8) -> sim_core::brain::Nets {
     use sim_core::brain::{wolf_shape, Nets, WOLF_NET_HIDDEN, WOLF_NET_IN};
     use sim_core::genome::{Net, MAX_WEIGHTS};
     let mut net = Net {
@@ -758,7 +758,7 @@ fn always(action: u8) -> Box<sim_core::brain::Nets> {
     net.w[first + action as usize * (WOLF_NET_HIDDEN + 1)] = 1.0;
     let mut nets = Nets::default();
     assert!(nets.install_weights(MOB_WOLF, net, 0));
-    Box::new(nets)
+    nets
 }
 
 /// **A bred brain chooses the fight.** A wolf whose net always chooses to
@@ -771,7 +771,7 @@ fn a_bred_wolf_that_always_circles_circles() {
     for netted in [true, false] {
         let mut w = world_with(&[(a, 6.0, 0.0)]);
         if netted {
-            w.nets = always(NET_CIRCLE_A);
+            *w.nets = always(NET_CIRCLE_A);
         }
         let full = w.players[0].hp;
         let (mut circled, mut bit) = (false, false);
@@ -802,7 +802,7 @@ fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
     use sim_core::brain::NET_CHARGE;
     let pack = free_pack();
     let mut w = world_with(&[(pack[0], 5.0, 0.0)]);
-    w.nets = always(NET_CHARGE);
+    *w.nets = always(NET_CHARGE);
     w.players[0].inv[0] = ItemStack {
         item: 0,
         count: 1,
@@ -818,7 +818,7 @@ fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
         (pack[1], -3.0, 0.0),
         (pack[2], 0.0, 3.0),
     ]);
-    w.nets = always(NET_CHARGE);
+    *w.nets = always(NET_CHARGE);
     let mut most = 0;
     hold(&mut w, 0, 8 * MOB_THINK_TICKS as u32, |w| {
         let biting = pack
@@ -842,7 +842,7 @@ fn a_bred_wolf_that_never_closes_gives_up() {
     use sim_core::brain::{NET_CIRCLE_B, NET_STALE_TICKS};
     let [a, _, _] = free_pack();
     let mut w = world_with(&[(a, 6.0, 0.0)]);
-    w.nets = always(NET_CIRCLE_B);
+    *w.nets = always(NET_CIRCLE_B);
     let mut gave_up_at = None;
     hold(&mut w, 0, NET_STALE_TICKS as u32 + 120, |w| {
         let m = &w.mobs.m[a];
@@ -872,7 +872,7 @@ fn a_net_below_its_tier_changes_nothing() {
                 let net = n.species(MOB_WOLF).unwrap().net.clone();
                 assert!(n.install_weights(MOB_WOLF, net, tier));
             }
-            w.nets = n;
+            *w.nets = n;
         }
         hold(&mut w, 0, 300, |_| {});
         w.state_hash()
