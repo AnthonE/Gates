@@ -2372,6 +2372,12 @@ impl ClientCore {
     }
 
     pub fn new(seed: u64, player_id: u32, server_tick: u32) -> Self {
+        Self::with_haven(seed, player_id, server_tick, terrain::haven(seed))
+    }
+
+    /// [`ClientCore::new`] with the seed's haven already solved
+    /// (`World::with_haven` has why). `haven` must be `terrain::haven(seed)`.
+    pub fn with_haven(seed: u64, player_id: u32, server_tick: u32, haven: terrain::Haven) -> Self {
         Self {
             player_id,
             spectating: false,
@@ -2401,7 +2407,7 @@ impl ClientCore {
             worn: [ItemStack::default(); WEAR_SLOTS],
             harvested: HarvestedSet::new(),
             scatter_table: ScatterTable::alpha_default(),
-            haven: terrain::haven(seed),
+            haven,
             slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
             item_descs: Box::new(protocol::ItemDescs::EMPTY),

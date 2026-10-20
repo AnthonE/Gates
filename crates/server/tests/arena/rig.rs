@@ -17,7 +17,7 @@
 //! delay queues outside the counted frame, so lag compensation sees the
 //! same acks it would over a wire.
 
-use super::common::{clearing, content, scene, shard_with, stack, SEED};
+use super::common::{clearing, content, haven, scene, shard_with, stack, SEED};
 use protocol::{decode_action, decode_input, encode_input, ActionMsg, InputDatagram};
 use server::agent::combat::{Mode, Temperament};
 use server::agent::hands::Preset;
@@ -264,6 +264,7 @@ impl Arena {
     ) -> Self {
         let content = content();
         let mut bot = Survivor::with(mind, opts);
+        bot.know_haven(SEED, haven());
         use server::botclient::BotDriver;
         bot.welcome(&protocol::Welcome {
             seed: SEED,
@@ -305,7 +306,7 @@ impl Arena {
             wide: 0.0,
             walker: None,
             pin: None,
-            haven: sim_core::terrain::haven(SEED),
+            haven: haven(),
             latency: Latency::NONE,
             uplink: VecDeque::new(),
             actions: VecDeque::new(),
@@ -326,6 +327,7 @@ impl Arena {
                 ..SurvivorOpts::default()
             },
         );
+        bot.know_haven(SEED, haven());
         bot.welcome(&protocol::Welcome {
             seed: SEED,
             player_id: self.foe,

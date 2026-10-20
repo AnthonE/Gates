@@ -744,3 +744,148 @@ fn a_wolf_with_nothing_to_hunt_lies_down_at_night() {
     });
     assert!(slept, "the wolf never lay down");
 }
+
+/// A hand-set wolf brain that always makes one choice: every weight zero
+/// but that output's bias, from wipe day's tier up.
+fn always(action: u8) -> Box<sim_core::brain::Nets> {
+    use sim_core::brain::{wolf_shape, Nets, WOLF_NET_HIDDEN, WOLF_NET_IN};
+    use sim_core::genome::{Net, MAX_WEIGHTS};
+    let mut net = Net {
+        shape: wolf_shape(),
+        w: [0.0; MAX_WEIGHTS],
+    };
+    let first = (WOLF_NET_IN + 1) * WOLF_NET_HIDDEN;
+    net.w[first + action as usize * (WOLF_NET_HIDDEN + 1)] = 1.0;
+    let mut nets = Nets::default();
+    assert!(nets.install_weights(MOB_WOLF, net, 0));
+    Box::new(nets)
+}
+
+/// **A bred brain chooses the fight.** A wolf whose net always chooses to
+/// circle closes on the player and then circles them, the way it chose,
+/// and never bites; the same wolf on its rule table bites.
+#[test]
+fn a_bred_wolf_that_always_circles_circles() {
+    use sim_core::brain::NET_CIRCLE_A;
+    let [a, _, _] = free_pack();
+    for netted in [true, false] {
+        let mut w = world_with(&[(a, 6.0, 0.0)]);
+        if netted {
+            w.nets = always(NET_CIRCLE_A);
+        }
+        let full = w.players[0].hp;
+        let (mut circled, mut bit) = (false, false);
+        hold(&mut w, 0, 300, |w| {
+            circled |= w.mobs.m[a].state == AiState::Orbit;
+            bit |= w.mobs.m[a].state == AiState::Attack;
+        });
+        if netted {
+            assert!(circled, "a wolf told to circle never circled");
+            assert!(!bit, "a wolf told to circle bit");
+            assert_eq!(w.players[0].hp, full, "a circling wolf drew blood");
+            assert_eq!(
+                w.mobs.m[a].pick,
+                NET_CIRCLE_A + 1,
+                "the choice was not latched"
+            );
+        } else {
+            assert!(bit, "the rule-table wolf never bit");
+        }
+    }
+}
+
+/// **The hard rules come first.** A bred wolf that always chooses to bite
+/// still keeps off a lit torch, and three of them still take turns behind
+/// the row's `pack_biters`.
+#[test]
+fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
+    use sim_core::brain::NET_BITE;
+    let pack = free_pack();
+    let mut w = world_with(&[(pack[0], 5.0, 0.0)]);
+    w.nets = always(NET_BITE);
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 400,
+        skin: 0,
+    };
+    let full = w.players[0].hp;
+    hold(&mut w, BTN_LIGHT, 300, |_| {});
+    assert_eq!(w.players[0].hp, full, "a bred wolf bit through a lit torch");
+
+    let mut w = world_with(&[
+        (pack[0], 3.0, 0.0),
+        (pack[1], -3.0, 0.0),
+        (pack[2], 0.0, 3.0),
+    ]);
+    w.nets = always(NET_BITE);
+    let mut most = 0;
+    hold(&mut w, 0, 8 * MOB_THINK_TICKS as u32, |w| {
+        let biting = pack
+            .iter()
+            .filter(|&&s| w.mobs.m[s].state == AiState::Attack && w.mobs.m[s].target == 0)
+            .count();
+        most = most.max(biting);
+    });
+    assert!(most >= 1, "bred wolves told to bite never bit");
+    assert!(
+        most <= w.mob.def(MOB_WOLF).pack_biters as usize,
+        "{most} bred wolves were biting one player at once"
+    );
+}
+
+/// **The engagement budget.** A bred wolf that only ever circles draws no
+/// blood, and once `NET_STALE_TICKS` pass without a bite it gives the hunt
+/// up and goes home like a wolf that failed its routes.
+#[test]
+fn a_bred_wolf_that_never_closes_gives_up() {
+    use sim_core::brain::{NET_CIRCLE_B, NET_STALE_TICKS};
+    let [a, _, _] = free_pack();
+    let mut w = world_with(&[(a, 6.0, 0.0)]);
+    w.nets = always(NET_CIRCLE_B);
+    let mut gave_up_at = None;
+    hold(&mut w, 0, NET_STALE_TICKS as u32 + 120, |w| {
+        let m = &w.mobs.m[a];
+        if gave_up_at.is_none() && m.state == AiState::NavigateHome && m.calm_until > w.tick {
+            gave_up_at = Some(w.tick);
+        }
+    });
+    let at = gave_up_at.expect("a wolf that never bit never gave up");
+    assert!(
+        at >= NET_STALE_TICKS,
+        "it gave up at tick {at}, before its budget ran out"
+    );
+}
+
+/// **A net below its tier drives nothing.** A brain installed from the heavy
+/// tier leaves a wipe-day wolf on its rule table to the bit; installed from
+/// wipe day's tier, the same hunt goes otherwise.
+#[test]
+fn a_net_below_its_tier_changes_nothing() {
+    use sim_core::brain::NET_CIRCLE_A;
+    let [a, _, _] = free_pack();
+    let run = |nets: Option<(u8, bool)>| -> u64 {
+        let mut w = world_with(&[(a, 6.0, 0.0)]);
+        if let Some((tier, _)) = nets {
+            let mut n = always(NET_CIRCLE_A);
+            if tier > 0 {
+                let net = n.species(MOB_WOLF).unwrap().net.clone();
+                assert!(n.install_weights(MOB_WOLF, net, tier));
+            }
+            w.nets = n;
+        }
+        hold(&mut w, 0, 300, |_| {});
+        w.state_hash()
+    };
+    let table = run(None);
+    assert_eq!(
+        run(Some((2, false))),
+        table,
+        "a net above the island's tier moved the hunt"
+    );
+    assert_ne!(
+        run(Some((0, true))),
+        table,
+        "a net at the island's tier drove nothing"
+    );
+}

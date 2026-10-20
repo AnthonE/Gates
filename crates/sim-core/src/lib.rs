@@ -29,6 +29,7 @@ pub mod fire;
 pub mod fmath;
 pub mod footprint;
 pub mod gather;
+pub mod genome;
 pub mod grounditem;
 pub mod heli;
 pub mod input;

@@ -652,11 +652,17 @@ struct TagRow {
 
 impl ShardCore {
     pub fn new(seed: u64) -> Self {
+        Self::with_haven(seed, sim_core::terrain::haven(seed))
+    }
+
+    /// [`ShardCore::new`] with the seed's haven already solved
+    /// (`World::with_haven` has why).
+    pub fn with_haven(seed: u64, haven: sim_core::terrain::Haven) -> Self {
         // Every connection slot: players, then spectator seats.
         let mut clients = Vec::with_capacity(MAX_CONNS);
         clients.resize_with(MAX_CONNS, ClientNetState::new);
         Self {
-            world: World::new(seed),
+            world: World::with_haven(seed, haven),
             clients: clients.into_boxed_slice(),
             queued: vec![Command::Leave { id: 0 }; MAX_COMMANDS_PER_TICK].into_boxed_slice(),
             queued_len: 0,

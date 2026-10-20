@@ -515,6 +515,9 @@ pub struct SimTables {
     pub spawn_kit: sim_core::inventory::SpawnKit,
     pub loot: sim_core::loot::LootContent,
     pub mobs: sim_core::mob::MobContent,
+    /// Bred brains for the roster (`mobs.toml` `genome`); empty leaves every
+    /// animal on its rule table.
+    pub nets: sim_core::brain::Nets,
     /// The attack helicopter (`heli.rs`). Armed by the boot alone: test
     /// shards assign their tables field by field and leave it inert.
     pub heli: sim_core::heli::HeliDef,
@@ -572,6 +575,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         spawn_kit: content.bake_spawn_kit()?,
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
+        nets: content.bake_nets()?,
         heli: content.bake_heli()?,
         sentry: content.bake_sentry()?,
         turret: content.bake_turret()?,
@@ -4151,6 +4155,7 @@ fn sim_thread(
         spawn_kit,
         loot,
         mobs,
+        nets,
         heli,
         sentry,
         turret,
@@ -4182,6 +4187,7 @@ fn sim_thread(
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.world.mob = mobs;
+    core.world.nets = Box::new(nets);
     core.world.heli_def = heli;
     core.world.sentry_def = sentry;
     core.world.turret_def = turret;

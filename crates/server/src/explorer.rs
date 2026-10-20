@@ -885,6 +885,9 @@ pub struct Survivor {
     pub gathered: [u32; MAX_ITEM_DEFS],
     core: Option<Box<ClientCore>>,
     haven: Option<Haven>,
+    /// A haven already solved for a seed ([`Survivor::know_haven`]): the
+    /// next welcome on that seed takes it instead of solving its own.
+    known_haven: Option<(u64, Haven)>,
     senses: Senses,
     memory: Memory,
     sweep: Sweep,
@@ -1128,6 +1131,12 @@ impl Survivor {
         Self::with(mind, SurvivorOpts::default())
     }
 
+    /// Hand over `terrain::haven(seed)` already solved, for a process that
+    /// seats many agents on one seed (`World::with_haven` has why).
+    pub fn know_haven(&mut self, seed: u64, haven: Haven) {
+        self.known_haven = Some((seed, haven));
+    }
+
     pub fn with(mind: Mind, opts: SurvivorOpts) -> Self {
         Self {
             mind,
@@ -1136,6 +1145,7 @@ impl Survivor {
             gathered: [0; MAX_ITEM_DEFS],
             core: None,
             haven: None,
+            known_haven: None,
             senses: Senses::default(),
             memory: Memory::default(),
             sweep: Sweep::default(),
@@ -7305,11 +7315,12 @@ impl BotDriver for Survivor {
             let last = self.seen_tick.unwrap_or(welcome.tick);
             self.end_goal(last, Outcome::Interrupted(Why::Session));
         }
-        let mut core = Box::new(ClientCore::new(
-            welcome.seed,
-            welcome.player_id,
-            welcome.tick,
-        ));
+        let mut core = Box::new(match self.known_haven {
+            Some((seed, haven)) if seed == welcome.seed => {
+                ClientCore::with_haven(welcome.seed, welcome.player_id, welcome.tick, haven)
+            }
+            _ => ClientCore::new(welcome.seed, welcome.player_id, welcome.tick),
+        });
         self.haven = Some(*core.island().1.haven);
         self.core = Some(core);
         self.tracks.reset(welcome.seed, welcome.player_id);

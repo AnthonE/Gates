@@ -2384,6 +2384,10 @@ pub struct World {
     /// hatches, so a content set with no `mobs.toml` rows is a shard
     /// without wildlife rather than a shard with invisible wildlife.
     pub mob: mob::MobContent,
+    /// Bred brains for the roster (`brain::Nets`, `genome.rs`): content
+    /// like `mob`, installed at boot, empty by default so every animal
+    /// thinks by its rule table. Boxed: a net is a few kilobytes.
+    pub nets: Box<crate::brain::Nets>,
     /// The attack helicopter's baked numbers (`heli.rs`). Construction
     /// input like `mob`; inert by default, so it never arrives in a world
     /// nobody armed — the shard's boot arms it (`server::net`).
@@ -2575,7 +2579,14 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64) -> Self {
-        let haven = terrain::haven(seed);
+        Self::with_haven(seed, terrain::haven(seed))
+    }
+
+    /// [`World::new`] with the seed's haven already solved: `terrain::haven`
+    /// is a pure function of the seed that costs most of a second, and a
+    /// process building many worlds of one seed (a breeding run, the arena's
+    /// bouts) solves it once. `haven` must be `terrain::haven(seed)`.
+    pub fn with_haven(seed: u64, haven: terrain::Haven) -> Self {
         let blight = crate::blight::Plan::new(seed, 0, &haven);
         Self {
             seed,
@@ -2583,6 +2594,7 @@ impl World {
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
             mob: mob::MobContent::EMPTY,
+            nets: Box::default(),
             heli_def: crate::heli::HeliDef::INERT,
             heli: crate::heli::Heli::default(),
             sentry_def: crate::sentry::SentryDef::INERT,
@@ -7856,6 +7868,8 @@ impl World {
             &mut self.nav,
             &mut bites,
             &mut howls,
+            &self.nets,
+            tier,
         );
         for &slot in howls.entries() {
             self.events.push(EV_HOWL, mob::mob_id(slot as usize), 0, 0);
@@ -8806,7 +8820,13 @@ impl World {
             // Turned (`blight::turns`): zero for an animal in clean ground,
             // so a roster that never turns hashes as it always did.
             b[45] = m.turned as u8;
+            // A bred brain's latched choice (`brain::Nets`): zero for every
+            // animal no net drives, so a world without one hashes as it did.
+            b[46] = m.pick;
             h.update(&b);
+            if m.bit_at != 0 {
+                h.update(&m.bit_at.to_le_bytes());
+            }
             let mut poi = [0u8; 24];
             poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());
             poi[4..8].copy_from_slice(&m.poi_qz.to_le_bytes());
