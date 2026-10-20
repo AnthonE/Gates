@@ -423,6 +423,25 @@ struct Seat {
 const NO_SEAT: u8 = u8::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
+/// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
+/// `ShardStats::phase_hist` files them. The index is the histogram row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The shard loop's own work before the tick: joins, inputs, voice,
+    /// saves (`net.rs`).
+    Net = 0,
+    /// Inputs and actions into commands, before the sim runs.
+    Prep = 1,
+    /// `World::tick`.
+    Sim = 2,
+    /// Standings, teams and every client's interest set.
+    Interest = 3,
+    /// Event routing and the per-client drips.
+    Events = 4,
+    /// Every client's snapshot.
+    Encode = 5,
+}
+
 /// The side channels an admin verb needs and the sim's own state
 /// cannot provide — passed into [`ShardCore::tick`] rather than held,
 /// because every one of them belongs to a thread that is not this one.
@@ -2426,16 +2445,16 @@ impl ShardCore {
     /// world is not listening. It costs no allocation, which is why the
     /// suites that drive thousands of ticks use it.
     pub fn tick_bare(&mut self, stats: &ShardStats, send: impl FnMut(Lane, usize, &[u8]) -> bool) {
-        self.tick_bare_marked(stats, send, || {});
+        self.tick_bare_marked(stats, send, |_| {});
     }
 
-    /// [`Self::tick_bare`] with [`Self::tick_marked`]'s phase mark — the
-    /// profiler's (`bin/profile.rs`) way to time the snapshot phase apart.
+    /// [`Self::tick_bare`] with [`Self::tick_marked`]'s phase marks — the
+    /// profiler's (`bin/profile.rs`) way to time the phases apart.
     pub fn tick_bare_marked(
         &mut self,
         stats: &ShardStats,
         send: impl FnMut(Lane, usize, &[u8]) -> bool,
-        mark: impl FnOnce(),
+        mark: impl FnMut(Phase),
     ) {
         let mut log = crate::anomaly::Sink::off();
         let mut save_now = false;
@@ -2454,19 +2473,20 @@ impl ShardCore {
         ops: &mut Ops<'_>,
         send: impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
-        self.tick_marked(stats, ops, send, || {});
+        self.tick_marked(stats, ops, send, |_| {});
     }
 
-    /// [`Self::tick`], calling `mark` once just before the snapshot phase.
-    /// The shard passes a no-op (inlined away); the profiler stamps a clock
-    /// there, which is the only way to split encode from the rest now that
-    /// every tick is a snapshot tick (`SNAPSHOT_INTERVAL_TICKS` = 1).
+    /// [`Self::tick`], calling `mark` as each [`Phase`] starts: the shard
+    /// stamps a clock there for its per-phase histograms (`stats.rs`), the
+    /// profiler for its split. Whatever ran before the first mark is the
+    /// command build ([`Phase::Prep`]'s time); the last phase ends when this
+    /// returns.
     pub fn tick_marked(
         &mut self,
         stats: &ShardStats,
         ops: &mut Ops<'_>,
         mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
-        mark: impl FnOnce(),
+        mut mark: impl FnMut(Phase),
     ) {
         // Owned skin sets the platform answered since the last tick, queued
         // behind whatever else this window holds — so a join queued in the
@@ -2919,7 +2939,9 @@ impl ShardCore {
                 n += 1;
             }
         }
+        mark(Phase::Sim);
         self.world.tick(&self.cmd_buf[..n]);
+        mark(Phase::Interest);
         self.note_standings();
         self.note_achievements(n);
         // The boards, rebuilt at most every five seconds; whatever moved
@@ -2956,6 +2978,7 @@ impl ShardCore {
                 self.update_interest(MAX_PLAYERS + i, stats);
             }
         }
+        mark(Phase::Events);
         self.fan_out(&live, stats, ops, &mut send);
 
         self.note_worn();
@@ -2975,7 +2998,7 @@ impl ShardCore {
             }
         }
 
-        mark();
+        mark(Phase::Encode);
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             for slot in 0..MAX_PLAYERS {
                 if !self.clients[slot].connected {

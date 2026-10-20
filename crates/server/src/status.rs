@@ -20,7 +20,10 @@
 //!  "aim_stale_hist":[0,0,0,0,0,0,0,0],
 //!  "favour_granted":0,"favour_sum":0,
 //!  "favour_clamped":0,"favour_disagree":0,"next_wipe":0,
-//!  "wipe":1,"act":1,"works_lit":0,"works_total":6,"restart_at":0}
+//!  "wipe":1,"act":1,"works_lit":0,"works_total":6,"restart_at":0,
+//!  "phase_p50_us":[64,16,128,64,128,256,1024],
+//!  "phase_p99_us":[256,32,512,128,512,1024,2048],
+//!  "phase_max_us":[900,40,1800,300,700,1900,4100]}
 //! ```
 //!
 //! (one line on the wire; wrapped here to fit)
@@ -88,6 +91,11 @@
 //! - `wipe`, `act`, `works_lit`, `works_total` — the server's progression
 //!   (`ARC.md`): which wipe is running, the act, and how many works are lit
 //!   of how many exist. What the island banner tells a player, for a list.
+//!
+//! - `phase_p50_us`, `phase_p99_us`, `phase_max_us` — where a tick's time
+//!   goes, since boot: seven columns, net · prep · sim · interest · events ·
+//!   encode · whole tick (`stats::PHASE_ROWS`). The percentiles are log2
+//!   bucket edges, so read them as "under this", within 2×.
 //!
 //! - `restart_at` — unix seconds of a pending `/restart`, 0 for none
 //!   (`wipe::Restart`). The key being there at all is how
@@ -405,6 +413,21 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         hist.push_str(&ShardStats::get(b).to_string());
     }
     hist.push(']');
+    // Per-phase tick time (`stats::PHASE_ROWS`), three rows of seven.
+    let row = |f: &dyn Fn(usize) -> u64| {
+        let mut r = String::from("[");
+        for i in 0..crate::stats::PHASE_ROWS {
+            if i > 0 {
+                r.push(',');
+            }
+            r.push_str(&f(i).to_string());
+        }
+        r.push(']');
+        r
+    };
+    let p50 = row(&|i| stats.phase_pct_us(i, 50));
+    let p99 = row(&|i| stats.phase_pct_us(i, 99));
+    let pmax = row(&|i| ShardStats::get(&stats.phase_max_us[i]));
     let body = format!(
         "{{\"players\":{},\"agents\":{},\"spectators\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
          \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
@@ -416,7 +439,8 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
          \"aim_stale_hist\":{},\
          \"favour_granted\":{},\"favour_sum\":{},\
          \"favour_clamped\":{},\"favour_disagree\":{},\"next_wipe\":{},\
-         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{},\"restart_at\":{}}}",
+         \"wipe\":{},\"act\":{},\"works_lit\":{},\"works_total\":{},\"restart_at\":{},\
+         \"phase_p50_us\":{},\"phase_p99_us\":{},\"phase_max_us\":{}}}",
         ShardStats::get(&stats.players),
         ShardStats::get(&stats.agents),
         ShardStats::get(&stats.spectators),
@@ -447,6 +471,9 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         ShardStats::get(&stats.works_lit),
         ShardStats::get(&stats.works_total),
         ShardStats::get(&stats.restart_at),
+        p50,
+        p99,
+        pmax,
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
