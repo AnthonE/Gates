@@ -355,8 +355,8 @@ fn deployables_ride_the_wire() {
     assert_eq!(c0.stock_count, 2);
     // 50 − 5 foundation cost = 45 of item 0 fed; all 50 of item 1. The
     // third column is the bill (upkeep v2): the one foundation is twig,
-    // which pays no rent, so nothing is charged in either row.
-    assert_eq!(c0.stock[0], (0, 45, 0));
+    // which pays rent like any grade, in its one cost item.
+    assert_eq!(c0.stock[0], (0, 45, 1));
     assert_eq!(c0.stock[1], (1, 50, 0));
     assert_eq!(
         sim_core::craft::inv_count(&core.world.players[w0].inv, 0),
