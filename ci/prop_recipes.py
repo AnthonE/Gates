@@ -18,7 +18,7 @@ def recipe(name, out, kind="deploy", size=None, tex=1024):
 
 # ── deployables ─────────────────────────────────────────────────────────────
 
-@recipe("furnace", "models/deploy/furnace.glb", size=(1.3, 0.95, 0.85))
+@recipe("furnace", "models/deploy/furnace.glb", size=(1.56, 1.14, 1.02))
 def furnace(k):
     # Plinth, a stacked-stone body and a narrower hood, all stone.
     k.box((1.06, 0.80, 0.08), (0, 0, 0.04), "stone", bevel=0.02, segs=2)
@@ -51,7 +51,7 @@ def furnace(k):
         k.ball(0.035, (0.56 + (i % 3) * 0.05, -0.15 + i * 0.05, 0.28), "char", n=6)
 
 
-@recipe("recycler", "models/deploy/recycler.glb", size=(1.3, 1.15, 0.9))
+@recipe("recycler", "models/deploy/recycler.glb", size=(1.69, 1.495, 1.17))
 def recycler(k):
     # Squat painted machine on a steel skid; the hopper is the silhouette.
     for x in (-0.5, 0.5):
@@ -93,7 +93,7 @@ def recycler(k):
             k.cyl(0.012, 0.01, (x, -0.352, z), "steel", axis="Y", n=6, bevel=0.0)
 
 
-@recipe("research_table", "models/deploy/research_table.glb", size=(1.5, 0.8, 0.8))
+@recipe("research_table", "models/deploy/research_table.glb", size=(1.8, 0.96, 0.96))
 def research_table(k):
     top = 0.66
     k.box((1.46, 0.72, 0.05), (0, 0, top - 0.025), "darkwood", bevel=0.008)
@@ -127,7 +127,7 @@ def research_table(k):
             surf="green", n=14, rot=(25, 0, -40))
 
 
-@recipe("workbench2", "models/deploy/workbench2.glb", size=(1.6, 1.0, 0.8))
+@recipe("workbench2", "models/deploy/workbench2.glb", size=(1.92, 1.2, 0.96))
 def workbench2(k):
     # The wood bench grown a tool board: wood frame, metal fittings.
     top = 0.80
@@ -160,7 +160,7 @@ def workbench2(k):
               rot=(0, 0, 3 - i * 4), bevel=0.003)
 
 
-@recipe("workbench3", "models/deploy/workbench3.glb", size=(1.8, 1.1, 0.8))
+@recipe("workbench3", "models/deploy/workbench3.glb", size=(2.07, 1.265, 0.92))
 def workbench3(k):
     # The machine bench: a steel table with a drill press and a grinder.
     top = 0.84

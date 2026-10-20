@@ -54,39 +54,41 @@ impl Pose {
 /// free-placed: the door and the window inserts live in their edge, and a
 /// lock is never a record.
 pub const DEPLOY_FOOT: [[f32; 2]; 23] = [
-    [1.9, 0.8],  // 0 bag — a bedroll a body is longer than
-    [1.2, 0.6],  // 1 hearth
-    [1.2, 0.7],  // 2 box
-    [0.7, 0.7],  // 3 fire
-    [1.3, 0.85], // 4 furnace
-    [1.6, 0.7],  // 5 workbench
-    [0.0, 0.0],  // 6 door — an edge insert
-    [0.0, 0.0],  // 7 lock — never a record
-    [1.3, 0.9],  // 8 recycler
-    [1.5, 0.8],  // 9 research table
-    [1.6, 0.8],  // 10 workbench 2
-    [1.8, 0.8],  // 11 workbench 3
-    [0.0, 0.0],  // 12 window bars — edge insert
-    [0.0, 0.0],  // 13 garage door — edge insert
-    [0.0, 0.0],  // 14 glass — edge insert
-    [0.0, 0.0],  // 15 shutters — edge insert
-    [1.8, 0.6],  // 16 barricade
-    [1.6, 0.8],  // 17 planter
-    [0.7, 0.7],  // 18 turret
-    [0.9, 0.8],  // 19 vending machine
-    [1.8, 0.6],  // 20 barbed barricade
-    [1.4, 1.4],  // 21 floor spikes — a square board of stakes
-    [1.7, 1.1],  // 22 rug — as big as `FOOT_REACH_M` lets a rectangle be
+    [1.9, 0.8],   // 0 bag — a bedroll a body is longer than
+    [1.2, 0.6],   // 1 hearth
+    [1.2, 0.7],   // 2 box
+    [0.7, 0.7],   // 3 fire
+    [1.56, 1.02], // 4 furnace
+    [1.92, 0.84], // 5 workbench
+    [0.0, 0.0],   // 6 door — an edge insert
+    [0.0, 0.0],   // 7 lock — never a record
+    [1.69, 1.17], // 8 recycler
+    [1.8, 0.96],  // 9 research table
+    [1.92, 0.96], // 10 workbench 2
+    [2.07, 0.92], // 11 workbench 3
+    [0.0, 0.0],   // 12 window bars — edge insert
+    [0.0, 0.0],   // 13 garage door — edge insert
+    [0.0, 0.0],   // 14 glass — edge insert
+    [0.0, 0.0],   // 15 shutters — edge insert
+    [1.8, 0.6],   // 16 barricade
+    [1.6, 0.8],   // 17 planter
+    [0.7, 0.7],   // 18 turret
+    [0.9, 0.8],   // 19 vending machine
+    [1.8, 0.6],   // 20 barbed barricade
+    [1.4, 1.4],   // 21 floor spikes — a square board of stakes
+    [1.7, 1.1],   // 22 rug — as big as `FOOT_REACH_M` lets a rectangle be
 ];
 
 /// The farthest any footprint corner stands from its centre, metres: how far
 /// a scan has to look to find every rectangle that could touch a point.
-pub const FOOT_REACH_M: f32 = 1.05;
+/// 1.15 since the stations grew to Rust's size (2026-10-20): workbench 3's
+/// 2.07 m bench is the corner that sets it.
+pub const FOOT_REACH_M: f32 = 1.15;
 
 /// The same bound over the rows that block (`deploy::solid_vol`) — the
 /// reach the collision walks look across. Asserted below, and kept under
 /// the cell so a capsule never has to look further than one neighbour.
-pub const SOLID_REACH_M: f32 = 1.0;
+pub const SOLID_REACH_M: f32 = 1.15;
 
 const _: () = {
     let mut i = 0;
