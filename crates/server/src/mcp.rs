@@ -516,11 +516,11 @@ impl<W: Write> Server<W> {
             );
         }
         if let Some(say) = args["say"].as_str() {
-            if say.len() > protocol::CHAT_MAX_BYTES || say.trim_start().starts_with('/') {
+            if say.len() > crate::mind::SAY_MAX_BYTES || say.trim_start().starts_with('/') {
                 return text(
                     &format!(
-                        "`say` is one chat line of at most {} bytes, not a /command",
-                        protocol::CHAT_MAX_BYTES
+                        "`say` is chat of at most {} bytes, not a /command",
+                        crate::mind::SAY_MAX_BYTES
                     ),
                     true,
                 );
@@ -686,7 +686,7 @@ fn tools() -> Value {
                     "id": {"type": "integer", "description": "decision_id from look"},
                     "goal": {"type": "string", "description": "one of the decision's options, exactly as written"},
                     "reason": {"type": "string", "description": "why, in a few words"},
-                    "say": {"type": "string", "maxLength": protocol::CHAT_MAX_BYTES, "description": "one line of chat"},
+                    "say": {"type": "string", "maxLength": crate::mind::SAY_MAX_BYTES, "description": "chat; past one line (48 bytes) it goes out as up to three"},
                     "to": {"type": "string", "enum": ["global", "team", "local"], "description": "where say goes: global is everyone on the island (the default), team is private to your team, local is whoever is within 20 m"},
                     "code": {"type": "string", "pattern": "^[0-9]{1,4}$", "description": "a lock code a teammate gave you"},
                     "plan": {
@@ -814,7 +814,7 @@ mod tests {
         // and nothing written.
         for bad in [
             json!({"id": 7, "goal": "teleport"}),
-            json!({"id": 7, "goal": "explore", "say": "x".repeat(protocol::CHAT_MAX_BYTES + 1)}),
+            json!({"id": 7, "goal": "explore", "say": "x".repeat(crate::mind::SAY_MAX_BYTES + 1)}),
             json!({"id": 7, "goal": "explore", "say": "/kick 2"}),
             json!({"id": 7, "goal": "explore", "say": "free ELO at claim.xyz"}),
             json!({"id": 7, "goal": "explore", "to": "shout"}),

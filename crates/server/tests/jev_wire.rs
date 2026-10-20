@@ -196,7 +196,11 @@ impl DecisionSource for Crafty {
             say: if std::mem::replace(&mut self.spoke, true) {
                 server::mind::Say::Quiet
             } else {
-                server::mind::Say::Line(protocol::ChatText::sanitize(b"hello island").unwrap())
+                server::mind::Say::Line(
+                    protocol::ChatText::sanitize(b"hello island")
+                        .unwrap()
+                        .into(),
+                )
             },
             code: None,
         })

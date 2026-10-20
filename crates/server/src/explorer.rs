@@ -1060,10 +1060,10 @@ pub struct Survivor {
     last_hurt: Option<(u32, u16)>,
     heading: Option<u16>,
     outbox: Option<([u8; MAX_STREAM_MSG_BYTES], usize)>,
-    /// A line to say (`BotDriver::say`), and the first tick it may go: the
-    /// shard's chat refill, kept on this side so a line is never sent into
-    /// the limiter to be dropped there.
-    say_line: Option<protocol::ChatText>,
+    /// The lines to say (`BotDriver::say`), one per chat refill, kept on
+    /// this side so a line is never sent into the limiter to be dropped
+    /// there.
+    say_line: Option<crate::mind::Lines>,
     /// Where the line above goes (`Say`): a team line with no team to hear
     /// it goes to whoever is near.
     say_to: protocol::Channel,
@@ -7472,8 +7472,11 @@ impl BotDriver for Survivor {
         // it, or to its team when it has one. What its voice could not say
         // goes to the bodies near it, who would have heard it.
         let (line, channel) = match self.say_line.take() {
-            Some(line) => (
-                line,
+            Some(lines) => (
+                {
+                    self.say_line = lines.rest();
+                    lines.first
+                },
                 match self.say_to {
                     protocol::Channel::Team if !self.has_mates => protocol::Channel::Local,
                     to => to,

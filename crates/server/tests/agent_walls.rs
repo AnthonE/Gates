@@ -1989,7 +1989,7 @@ impl server::mind::DecisionSource for Talker {
             seen |= 2;
         }
         self.seen.fetch_or(seen, Ordering::Relaxed);
-        let line = |t: &[u8]| Say::Line(protocol::ChatText::sanitize(t).unwrap());
+        let line = |t: &[u8]| Say::Line(protocol::ChatText::sanitize(t).unwrap().into());
         let say = if !self.greeted {
             self.greeted = true;
             line(b"hello")

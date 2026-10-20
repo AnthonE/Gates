@@ -384,7 +384,7 @@ class Bridge:
                 "t": round(time.time(), 2),
                 "goal": _clip(args.get("goal"), 32),
                 "reason": _clip(args.get("reason"), 96),
-                "say": _clip(args.get("say"), 48),
+                "say": _clip(args.get("say"), 140),
                 "to": to if args.get("say") else None,
                 "heard": [{"from": h.get("from"), "agent": h.get("agent") is True,
                            "friend": bool(h.get("friend")),
