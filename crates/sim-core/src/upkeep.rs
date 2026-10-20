@@ -28,8 +28,8 @@
 //! hours sum to the exact daily rent rather than to 24 round-ups.
 
 use crate::build::{
-    BuildContent, Pieces, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, MAT_TWIG,
-    SHAPE_DOORWAY, SHAPE_FRAME, SHAPE_WALL, SHAPE_WINDOW,
+    BuildContent, Pieces, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, SHAPE_DOORWAY,
+    SHAPE_FRAME, SHAPE_WALL, SHAPE_WINDOW,
 };
 use crate::collide::{ColIndex, ColMasks};
 use crate::deploy::{cell_center, pays_rent, DeployContent, Deploys, PERIODS_PER_DAY, WORLD_OWNER};
@@ -115,8 +115,7 @@ pub fn hearth_tax(dc: &DeployContent, deploys: &Deploys, hi: usize) -> Tax {
     tax(dc, deploys.claim_graded(hi)).plus_pct(group_pct(crew))
 }
 
-/// The rent on a base holding `graded` pieces that pay upkeep (twig does
-/// not, `deploy::upkeep_sweep`), read off `dc`'s ladder. See [`tax_parts`].
+/// The rent on a base holding `graded` pieces, read off `dc`'s ladder. See [`tax_parts`].
 pub fn tax(dc: &DeployContent, graded: u32) -> Tax {
     tax_parts(
         dc.upkeep_pct_per_day,
@@ -349,7 +348,7 @@ pub fn scale(dc: &DeployContent, inside: bool) -> u32 {
 ///
 /// Read off the cached claim volume the sweep reads, so a readout and the
 /// rent cannot disagree about which pieces are this hearth's; like the
-/// sweep, it prices twig at nothing. Where two hearths cover one piece the
+/// sweep, it prices twig like any grade. Where two hearths cover one piece the
 /// sweep charges whichever can pay and this counts it against both — an
 /// over-statement in the direction that makes a player feed early, never
 /// late.
@@ -376,9 +375,6 @@ pub fn bill(
     let mut cost = [0u64; HEARTH_STOCK_ROWS];
     for rec in pieces.entries() {
         let def = bc.pieces[rec.row as usize];
-        if def.material == MAT_TWIG {
-            continue;
-        }
         let (x, z) = cell_center(rec.cx, rec.cz);
         if !deploys.hearth_covers(hi, x, z) {
             continue;
@@ -681,10 +677,8 @@ mod tests {
             for cx in 100..100 + n {
                 pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 5, &bc);
             }
-            // A twig piece in the base changes nothing: no rent, no count.
-            pieces.insert_for_test(99, 100, 0, LOC_PLANE, 0, &bc);
             deploys.push_hearth_for_test(100, 100, 0, 7);
-            deploys.refresh_claims(&pieces, &bc);
+            deploys.refresh_claims(&pieces);
             assert_eq!(deploys.claim_graded(0), n as u32);
             bill(&dc, &bc, &pieces, &deploys, 0)[0]
         };

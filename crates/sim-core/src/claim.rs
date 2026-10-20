@@ -50,7 +50,7 @@
 //! visited set are one fixed array), no `HashMap`, and floats only in the
 //! wall-1 set.
 
-use crate::build::{build_cell_of, BuildContent, Pieces, BUILD_CELL_M, MAT_TWIG};
+use crate::build::{build_cell_of, Pieces, BUILD_CELL_M};
 use crate::deploy::{Deploys, HearthRec};
 use crate::limits::{CLAIM_INDEX_SLOTS, MAX_BUILD_COORD, MAX_HEARTHS, MAX_PIECES, PRIV_BFS_CELLS};
 
@@ -439,7 +439,6 @@ impl ClaimCache {
     pub(crate) fn rebuild(
         &mut self,
         pieces: &Pieces,
-        bc: &BuildContent,
         hearths: &[HearthRec],
         pieces_gen: u64,
         hearth_gen: u64,
@@ -562,9 +561,6 @@ impl ClaimCache {
         // the walks just filled, so the whole tally is `MAX_PIECES` O(1)
         // probes on top of the walks it rides.
         for rec in pieces.entries() {
-            if bc.pieces[rec.row as usize].material == MAT_TWIG {
-                continue;
-            }
             if let Some(v) = self.volume_at(rec.cx, rec.cz) {
                 self.vol_graded[v as usize] += 1;
             }
@@ -828,7 +824,7 @@ mod tests {
             pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, &bc);
         }
         deploys.push_hearth_for_test(100, 100, 0, OWNER);
-        deploys.refresh_claims(&pieces, &bc);
+        deploys.refresh_claims(&pieces);
         for cx in 90..=130u16 {
             for cz in 92..=108u16 {
                 let (x, z) = centre(cx, cz);
@@ -855,7 +851,7 @@ mod tests {
         }
         deploys.push_hearth_for_test(100, 100, 0, OWNER);
         deploys.push_hearth_for_test(119, 100, 0, OWNER);
-        deploys.refresh_claims(&pieces, &bc);
+        deploys.refresh_claims(&pieces);
         let near = centre(100, 100);
         let far = centre(119, 100);
         assert!(deploys.hearth_covers(0, far.0, far.1));
@@ -869,7 +865,7 @@ mod tests {
             let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
             pieces.remove_at(i, shape);
         }
-        deploys.refresh_claims(&pieces, &bc);
+        deploys.refresh_claims(&pieces);
         assert!(
             deploys.hearth_covers(0, near.0, near.1) && !deploys.hearth_covers(0, far.0, far.1),
             "hearth 0 keeps its island and loses the other"
@@ -907,7 +903,7 @@ mod tests {
         };
         deploys.stand_hearth_for_test(109, 100, west, OWNER);
         deploys.stand_hearth_for_test(112, 100, west, OWNER);
-        deploys.refresh_claims(&pieces, &bc);
+        deploys.refresh_claims(&pieces);
         // A quarter cell east of cell 110's centre: 1.25 cells from 109's
         // centre and 1.75 from 112's, but 1.65 from 109's hearth and 1.35
         // from 112's.
