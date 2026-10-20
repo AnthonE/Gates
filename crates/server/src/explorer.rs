@@ -1132,7 +1132,8 @@ impl Survivor {
     }
 
     /// Hand over `terrain::haven(seed)` already solved, for a process that
-    /// seats many agents on one seed (`World::with_haven` has why).
+    /// seats many agents on one seed: the solve costs most of a second, and
+    /// it is a pure function of the seed.
     pub fn know_haven(&mut self, seed: u64, haven: Haven) {
         self.known_haven = Some((seed, haven));
     }
