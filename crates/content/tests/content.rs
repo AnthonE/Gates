@@ -3520,21 +3520,21 @@ fn the_shipped_pig_bakes() {
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
     assert_eq!(pig.hp, 150);
-    // 50% and 70% of the −127..=127 axis, floored.
+    // 50% and 100% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
-    assert_eq!(pig.flee_gait, 88);
+    assert_eq!(pig.flee_gait, 127);
     // **The catchability relation, and it is gameplay rather than balance.**
-    // The flight rides the sprint button, so `flee_gait/127` of
-    // `SPRINT_SPEED` is the pig's top speed and the player's is
-    // `SPRINT_SPEED` flat. A species at or above 127 can never be caught on
-    // foot however long the chase runs, which is what shipped for an hour
-    // on 2026-08-08 with every gate green — the defect was found by booting
-    // the game and looking. This is the assertion that would have caught it.
+    // The flight rides the sprint button, so the pig's top speed is
+    // `run_pct` of `SPRINT_SPEED`. Since 2026-10-20 it MATCHES the player's
+    // (operator: "pigs need to match my running speed"): a fleeing pig is
+    // not caught on foot, it is stalked, shot or limped (`mobs.toml`). What
+    // it may never do is outrun the player, or a hurt pig is simply gone.
+    assert_eq!(pig.run_pct, 100);
+    let wolf = mc.def(sim_core::mob::MOB_WOLF);
     assert!(
-        pig.flee_gait < 127,
-        "a pig fleeing at {} of 127 runs at or above the player's sprint — \
-         it can never be melee'd, and no gate but this one notices",
-        pig.flee_gait
+        wolf.run_pct > 100,
+        "a wolf at {}% of the sprint can be outrun, and the reference's cannot",
+        wolf.run_pct
     );
     // Seconds → ticks at the sim's own rate, so this asserts the
     // conversion and not the number: 3 s and 300 s at 30 Hz.

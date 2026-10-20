@@ -58,19 +58,21 @@ fn the_hit_cylinder_is_the_animal_the_client_draws() {
              {h_m:.2} m — a level swing decides on this number, so they cannot \
              differ (content/mobs.toml `body_h_cm`, render/mobs.rs)"
         );
-        // Radius: covers the drawn width, stays inside the drawn length.
+        // The box along its heading (`melee::animal_entry`): nearly the drawn
+        // length and never past it, and the drawn width give or take 15%.
+        let len = r * sim_core::melee::ANIMAL_LEN_PER_R;
+        let wide = len * sim_core::melee::ANIMAL_WIDTH_PER_LEN;
         let width = len_m * PLAN_ASPECT;
         assert!(
-            r >= width * 0.5,
-            "{name}: a {r:.2} m radius does not cover a {width:.2} m body — \
-             a swing at its flank would pass through it"
+            len <= len_m && len >= len_m * 0.85,
+            "{name}: a {len:.2} m hit box on a {len_m:.2} m body — past it, a \
+             swing at the air ahead lands; well short, one at the snout misses"
         );
         assert!(
-            r <= len_m * 0.5,
-            "{name}: a {r:.2} m radius reaches past the {len_m:.2} m body — \
-             a swing at the air beside it would land"
+            (wide - width).abs() <= width * 0.15,
+            "{name}: a {wide:.2} m wide hit box on a {width:.2} m wide body"
         );
-        println!("{name}: drawn {len_m:.2} x {h_m:.2} m, hit cylinder r {r:.2} h {h:.2}");
+        println!("{name}: drawn {len_m:.2} x {width:.2} x {h_m:.2} m, hit box {len:.2} x {wide:.2} x {h:.2}");
     }
 }
 

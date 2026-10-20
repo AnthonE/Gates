@@ -2683,6 +2683,7 @@ impl Content {
                 hp: small(m.hp, "hp")?,
                 gait: axis(m.walk_pct),
                 flee_gait: axis(m.flee_pct),
+                run_pct: small(m.flee_pct, "flee_pct")?,
                 flee_ticks: small(
                     m.flee_seconds
                         .checked_mul(TICK_HZ)

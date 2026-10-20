@@ -30,9 +30,11 @@
 # the Nov–Dec 2024 wolf rework devblogs ("Armed and Animated", "Polish and
 # Progress") put the boar, the wolf and the stag at 150 hp each, the wolf's
 # bite at 30, the boar's courage at 75%, packs at one to four wolves and
-# stag herds at one to five. Speeds stay ours: theirs out-run a player (a
-# wolf 9 m/s, a stag 8.3 against a 5.5 sprint) and ours cannot exceed the
-# sprint the capsule is capped at — the per-row reasoning still holds.
+# stag herds at one to five. Theirs out-run a player (a wolf 9 m/s, a stag
+# 8.3 against a 5.5 sprint). Since 2026-10-20 a run past 100 is allowed
+# (`MobDef::run_pct`, up to 150): the body steps that much faster than a
+# sprint (operator: "i can outrun the wolfs. pigs need to match my running
+# speed").
 
 [[mob]]
 id = "mob.pig"
@@ -48,21 +50,14 @@ hp = 150
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
 walk_pct = 50
 
-# **70% of SPRINT_SPEED = 3.85 m/s, and 100 was WRONG — found by booting the
-# game and looking, which is the only visual gate this repo has.** At 100 a
-# spooked pig runs at exactly the player's top speed, so a sprinting player
-# never closes the gap; and because the fright re-arms whenever a player is
-# inside `spook_m`, the pig re-triggers before it ever settles. The observed
-# behaviour was a pig that lived permanently 50–80 m west of the spawn and
-# could not be reached, which makes it un-meleeable **forever** — a naked
-# spawn could never take fat or cloth off one, and the reference game's boar
-# is killable with a rock. Every automated gate was green through all of it,
-# because "is this animal reachable" is not arithmetic.
-#
-# At 70 a sprinting player gains 1.65 m/s, so a 12 m head start closes in
-# about seven seconds of open ground — losable on rough terrain or through
-# trees, winnable on a meadow, which is the chase this wants to be.
-flee_pct = 70
+# **100% of SPRINT_SPEED = 5.5 m/s: the player's own top speed** (operator,
+# 2026-10-20: "pigs need to match my running speed"). It was 70 because a
+# pig at 100 that fled on sight could never be caught. Since 2026-08-11 a
+# whole pig CHARGES (`brave_pct` below), so the speed is mostly the speed it
+# comes at you. A pig hurt under 75% still runs, and a sprint no longer closes
+# on it: crouch up on it from behind (half the spook radius, and its blind
+# cone), finish it at range, or wound it under 10% so it limps (`LIMP_PCT`).
+flee_pct = 100
 flee_seconds = 3
 
 # **The bite.** Their boar bites 12 every 1.5 s and runs once hurt past a
@@ -211,16 +206,12 @@ hp = 150
 # amble, so a wolf crossing a meadow reads as going somewhere.
 walk_pct = 55
 
-# **85% of SPRINT_SPEED = 4.67 m/s, and the ceiling here is the pig's own
-# defect running backwards.** At 100 a fleeing pig matched the player's
-# sprint and could never be CAUGHT; at 100 a hunting wolf matches it and can
-# never be ESCAPED, which is the same arithmetic and the worse half of it —
-# an animal you cannot outrun on open ground is not a chase, it is a
-# countdown. At 85 a sprinting player gains 0.83 m/s, so 30 m of notice is
-# ~36 s of pursuit before the leash of `flee_seconds` runs out: losable on
-# flat ground you saw coming, not losable if it caught you wading, climbing
-# or mid-swing at a tree. That is the trade this wants to sell.
-flee_pct = 85
+# **120% of SPRINT_SPEED = 6.6 m/s: a wolf outruns you**, as theirs does at
+# 9 m/s (operator, 2026-10-20: "i can outrun the wolfs"). It was 85, which a
+# sprinting player beat by 0.83 m/s. Now a wolf that has noticed you closes
+# 1.1 m/s on open ground: running buys time to reach a door, a rock or water,
+# and the chase ends at the edge of its range (`roam_m`), or in a fight.
+flee_pct = 120
 
 # Six seconds of commitment past the last moment you were inside the notice
 # radius — twice the pig's, because breaking off after three would let a

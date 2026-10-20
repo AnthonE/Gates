@@ -198,6 +198,21 @@ pub fn step(
     body: &mut Body,
     frame: &InputFrame,
 ) {
+    step_scaled(seed, haven, cols, occ, body, frame, 1.0);
+}
+
+/// [`step`] with the top speed times `scale`: an animal that outruns a
+/// sprinting player (`MobDef::run_pct`). A player always steps at 1, and
+/// `x * 1.0` is `x` bit for bit, so prediction is untouched.
+pub fn step_scaled(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    body: &mut Body,
+    frame: &InputFrame,
+    scale: f32,
+) {
     let x = body.qx as f32 * POS_XZ_Q;
     let y = body.qy as f32 * POS_Y_Q;
     let z = body.qz as f32 * POS_XZ_Q;
@@ -255,6 +270,7 @@ pub fn step(
     if ground_here <= WADE_GROUND_MAX {
         speed *= WADE_SPEED_MULT;
     }
+    speed *= scale;
 
     // Horizontal, axis-resolved: full move, then x-only, then z-only.
     // Walls veto a candidate outright; a built surface accepts on the

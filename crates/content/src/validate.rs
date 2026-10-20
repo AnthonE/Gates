@@ -1791,9 +1791,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if m.name.trim().is_empty() {
             return Err(format!("mob `{}`: empty name", m.id));
         }
-        if m.walk_pct == 0 || m.walk_pct > 100 || m.flee_pct == 0 || m.flee_pct > 100 {
+        if m.walk_pct == 0 || m.walk_pct > 100 || m.flee_pct == 0 || m.flee_pct > 150 {
             return Err(format!(
-                "mob `{}`: speeds are 1–100 percent of the player's own",
+                "mob `{}`: the walk is 1–100 percent of the player's walk, the run \
+                 1–150 of the player's sprint",
                 m.id
             ));
         }

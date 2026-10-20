@@ -553,8 +553,8 @@ fn the_wolf_stands_on_its_own_legs() {
 ///
 /// `Gait::new(slot)` reads `mob::kind_of`, the same pure function the sim
 /// built the roster with and the renderer picks the mesh with — so a wolf's
-/// legs reach full swing at its own 4.675 m/s flight gait and a pig's at
-/// 3.85. Without this the faster animal goose-steps: at a wolf's real
+/// legs reach full swing at its own 6.6 m/s flight gait and a pig's at
+/// 5.5. Without this the faster animal goose-steps: at a wolf's real
 /// running speed the pig's constant is long past clamped.
 #[test]
 fn each_species_swings_to_its_own_flight_gait() {
