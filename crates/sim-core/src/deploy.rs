@@ -1409,6 +1409,30 @@ impl Deploys {
         &mut self.hearths[..self.hearth_count]
     }
 
+    /// Put `to` on every hearth crew and lock list that `from` is on, and
+    /// returns how many of each. **Operator recovery only**, run offline
+    /// on a copy of a world file (`examples/base_of.rs`): a player who
+    /// played a session as a guest by mistake gets that base back under
+    /// their wallet's body. Every live path still goes through `crew_op`.
+    pub fn grant_like(&mut self, from: u32, to: u32) -> (usize, usize) {
+        let mut hearths = 0;
+        for h in self.hearths[..self.hearth_count].iter_mut() {
+            if h.crew.contains(from) && !h.crew.contains(to) {
+                h.crew.add(to);
+                hearths += 1;
+            }
+        }
+        let mut locks = 0;
+        let n = self.locks.len;
+        for l in self.locks.entries[..n].iter_mut() {
+            if l.auth.contains(from) && !l.auth.contains(to) {
+                l.auth.add(to);
+                locks += 1;
+            }
+        }
+        (hearths, locks)
+    }
+
     /// The live box records. Read by `state_hash` (contents are sim
     /// state) and by the gates.
     pub fn boxes(&self) -> &[BoxRec] {
