@@ -531,6 +531,8 @@ fn main() {
             if again[1] > again[0] {
                 parent = pool[best].unwrap();
                 note = format!("kept ({:.3} > {:.3} on confirm)", again[1], again[0]);
+                // A checkpoint: a stopped run goes on from here with `--from`.
+                eprintln!("checkpoint gen {gen}: {}", text(&parent));
             } else {
                 note = format!("refused ({:.3} <= {:.3} on confirm)", again[1], again[0]);
             }
