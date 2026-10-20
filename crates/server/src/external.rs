@@ -33,7 +33,7 @@
 //! has the schema.
 
 use crate::agent::lock::LockCode;
-use crate::mind::{Choice, DecisionSource, Goal, Reason, Say, SourceKind, Summary};
+use crate::mind::{Choice, DecisionSource, Goal, Lines, Reason, Say, SourceKind, Summary};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -293,7 +293,7 @@ impl External {
     /// `"global"` for everyone (also when missing or null, as a person's chat
     /// box), `"team"` for the team, `"local"` for whoever is near.
     fn say(value: &Value, to: &Value) -> Result<Say, String> {
-        let to: fn(protocol::ChatText) -> Say = match to {
+        let to: fn(Lines) -> Say = match to {
             Value::Null => Say::Global,
             Value::String(t) if t == "global" => Say::Global,
             Value::String(t) if t == "local" => Say::Line,
@@ -304,8 +304,8 @@ impl External {
             Value::Null => Ok(Say::Quiet),
             Value::String(text) if text.trim().is_empty() => Ok(Say::Quiet),
             Value::String(text) if peddles(text) => Ok(Say::Refused),
-            Value::String(text) => Ok(match protocol::ChatText::sanitize(text.as_bytes()) {
-                Some(line) if !protocol::admin::is_command(&line) => to(line),
+            Value::String(text) => Ok(match Lines::split(text.trim()) {
+                Some(lines) if !lines.iter().any(|l| protocol::admin::is_command(&l)) => to(lines),
                 _ => Say::Refused,
             }),
             _ => Err("external agent say must be a string".into()),
@@ -586,14 +586,17 @@ mod tests {
             External::reply(&line, 3, &s).map(|c| c.unwrap().say)
         };
         let hello = protocol::ChatText::sanitize(b"hello there").unwrap();
-        assert_eq!(say(r#""  hello there ""#), Ok(Say::Global(hello)));
+        assert_eq!(say(r#""  hello there ""#), Ok(Say::Global(hello.into())));
         assert_eq!(say(r#""""#), Ok(Say::Quiet));
         assert_eq!(say("null"), Ok(Say::Quiet));
-        let long = format!("\"{}\"", "x".repeat(protocol::CHAT_MAX_BYTES + 1));
+        let long = format!("\"{}\"", "xx ".repeat(crate::mind::SAY_MAX_BYTES / 3 + 1));
+        let word = format!("\"{}\"", "x".repeat(protocol::CHAT_MAX_BYTES + 1));
         for refused in [
             long.as_str(),
+            word.as_str(),
             r#""two\nlines""#,
             r#""/kick 1""#,
+            r#""a line that runs on long enough to carry this: /kick 1""#,
             r#""free ELO at claim-elo.xyz""#,
             r#""send 1 ELO to 0x1234abcd99""#,
             r#""see https://x.y/z""#,
@@ -601,15 +604,31 @@ mod tests {
             assert_eq!(say(refused), Ok(Say::Refused), "{refused}");
         }
         assert!(say("7").is_err(), "a non-string say is a bad reply");
+        // Longer than a chat line goes out as up to three, cut at spaces.
+        let wood =
+            "Doctor Wood here, by the river. Bring me stone and I will trade you a hatchet for it.";
+        let Ok(Say::Global(lines)) = say(&format!("\"{wood}\"")) else {
+            panic!("a long say is said");
+        };
+        let said: Vec<String> = lines
+            .iter()
+            .map(|l| String::from_utf8_lossy(l.as_bytes()).into_owned())
+            .collect();
+        assert!(said.len() == 2 && said.iter().all(|l| l.len() <= protocol::CHAT_MAX_BYTES));
+        assert_eq!(said.join(" "), wood);
         let to = |to: &str| {
             let line = format!(r#"{{"id":3,"goal":"explore","say":"on my way","to":{to}}}"#);
             External::reply(&line, 3, &s).map(|c| c.unwrap().say)
         };
         let omw = protocol::ChatText::sanitize(b"on my way").unwrap();
-        assert_eq!(to(r#""team""#), Ok(Say::Team(omw)));
-        assert_eq!(to(r#""local""#), Ok(Say::Line(omw)));
-        assert_eq!(to(r#""global""#), Ok(Say::Global(omw)));
-        assert_eq!(to("null"), Ok(Say::Global(omw)), "a chat box's default");
+        assert_eq!(to(r#""team""#), Ok(Say::Team(omw.into())));
+        assert_eq!(to(r#""local""#), Ok(Say::Line(omw.into())));
+        assert_eq!(to(r#""global""#), Ok(Say::Global(omw.into())));
+        assert_eq!(
+            to("null"),
+            Ok(Say::Global(omw.into())),
+            "a chat box's default"
+        );
         assert!(to(r#""shout""#).is_err());
         let code = |code: &str| {
             let line = format!(r#"{{"id":3,"goal":"explore","code":{code}}}"#);

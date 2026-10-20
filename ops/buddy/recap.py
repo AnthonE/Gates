@@ -159,7 +159,7 @@ def segments(rows):
         if r.get("say") and r.get("to") != "team":  # team chat is private; recaps are not
             said = s.setdefault("said", [])
             if len(said) < 4:
-                said.append({"t": round(r["t"]), "line": str(r["say"])[:48]})
+                said.append({"t": round(r["t"]), "line": str(r["say"])[:144]})
         hp = obs.get("health")
         hp = hp[0] if isinstance(hp, list) and hp else hp  # [now, max]
         if isinstance(hp, (int, float)):
