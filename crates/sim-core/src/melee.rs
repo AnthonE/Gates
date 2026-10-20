@@ -147,14 +147,17 @@ pub const fn swing_volume(o: Occupant) -> (f32, f32) {
         Occupant::Hemp => (HEMP_PICK_R_M, HEMP_PICK_TOP_M),
         // A ground pickup: a knee-high pile you bend to.
         o if o.is_pickup() => (PICKUP_PICK_R_M, PICKUP_PICK_TOP_M),
+        // The saguaro's trunk: its arms are solid, but a swing aims at the
+        // column (`terrain::cactus_column`).
+        Occupant::Cactus => (terrain::CACTUS_R_M, terrain::CACTUS_TOP_M),
         other => terrain::occupant_volume(other),
     }
 }
 
-/// [`swing_volume`] for this slot: a ball cactus is short.
+/// [`swing_volume`] for this slot: a ball cactus is its own.
 pub const fn slot_swing_volume(slot: &terrain::Slot) -> (f32, f32) {
     match slot.occupant {
-        Occupant::Cactus => terrain::slot_volume(slot),
+        Occupant::Cactus => terrain::cactus_column(slot),
         o => swing_volume(o),
     }
 }
@@ -349,7 +352,10 @@ impl NodeHit {
     /// axis to the true radius. The direction is slot→entry, which is what
     /// `render/decal.rs::facing` re-derives at the other end.
     pub fn skin(&self, ray: &Ray) -> Option<(f32, f32, f32)> {
-        let (r, top) = terrain::slot_volume(&self.slot);
+        let (r, top) = match self.slot.occupant {
+            Occupant::Cactus => terrain::cactus_column(&self.slot),
+            _ => terrain::slot_volume(&self.slot),
+        };
         if r <= 0.0 || top <= 0.0 {
             return None;
         }

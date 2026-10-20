@@ -54,7 +54,7 @@ const JUMP_PERIOD: u16 = 128;
 /// bot looking at the sky or its own feet two frames in three hit nothing
 /// it wandered past, and `test_replay`'s barrel-smash coverage went to
 /// zero. The band is where a person looks while walking — down enough to
-/// take a barrel (0.96 m) or a stone node (1.13 m) at a stride's distance
+/// take a barrel (1.2 m) or a stone node (1.13 m) at a stride's distance
 /// from a 1.6 m eye, up enough to still launch an arrow with some lift.
 /// Bounded, so every value is wire-legal by construction.
 pub const PITCH_LOW: u32 = 80;

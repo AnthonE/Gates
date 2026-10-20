@@ -3732,13 +3732,16 @@ impl World {
                     {
                         continue;
                     }
-                    let (r, top) = terrain::slot_volume(&slot);
-                    let reach = crate::collide::CAPSULE_RADIUS_M + r * slot.scale + CACTUS_TOUCH_M;
-                    let (ox, oz) = (slot.x - x, slot.z - z);
-                    if ox * ox + oz * oz <= reach * reach
-                        && y < slot.y + top * slot.scale
-                        && y + h > slot.y
-                    {
+                    // The volume that stops the body, arms and all, a hand
+                    // wider.
+                    if terrain::slot_blocks(
+                        &slot,
+                        x,
+                        z,
+                        y,
+                        crate::collide::CAPSULE_RADIUS_M + CACTUS_TOUCH_M,
+                        h,
+                    ) {
                         prick = Some((slot.x, slot.z));
                     }
                 }

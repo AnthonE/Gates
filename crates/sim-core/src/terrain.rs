@@ -7205,24 +7205,46 @@ const _: () = {
     }
 };
 
-/// A saguaro's trunk at scale 1, metres: the widest column the client draws
-/// (`render/plants::cactus`, 0.2–0.27 m), rounded outward; its arms are
-/// outside it, as a tree's limbs are. And its top: the shortest saguaro's,
-/// so nothing invisible blocks above a short one.
+/// A saguaro's trunk at scale 1, metres: the drawn model's
+/// (`props::CACTUS_GLB`), 0.25–0.28 m off its axis. And its top: the
+/// model's crown.
 pub const CACTUS_R_M: f32 = 0.27;
-pub const CACTUS_TOP_M: f32 = 2.4;
+pub const CACTUS_TOP_M: f32 = 3.6;
 
-/// The desert's other cactus: a ribbed ball at knee height
-/// (`render/plants`' ball model). Painted species 1 of a cactus slot; as
-/// wide as a saguaro's trunk so the road clearance above holds for both.
+/// The saguaro's two arms beside its trunk, on `SHELTER_BOXES`' terms, in
+/// the model's own frame (`props::CACTUS_GLB`, arms along local X): solid,
+/// so a body is stopped by the arm it sees and not only by the trunk. Both
+/// start above a crouch, so a crouched body passes under them.
+pub const SAGUARO_ARM_BOXES: [[f32; 6]; 2] = [
+    [-0.49, 1.85, 0.0, 0.44, 1.3, 0.34], // left arm, from 1.2 m
+    [0.45, 2.35, 0.0, 0.52, 1.3, 0.34],  // right arm, from 1.7 m
+];
+/// Bounding radius of the saguaro, arms and all: the broad phase.
+pub const SAGUARO_R_M: f32 = 0.7301;
+
+/// The desert's other cactus: a ribbed ball (`props::CACTUS_GLB`'s second
+/// model) about hip high. Painted species 1 of a cactus slot.
 pub const BALL_CACTUS_SPECIES: u8 = 1;
-pub const BALL_CACTUS_TOP_M: f32 = 0.6;
+pub const BALL_CACTUS_R_M: f32 = 0.5044;
+pub const BALL_CACTUS_TOP_M: f32 = 0.96;
 
-/// [`occupant_volume`] for this slot: a ball cactus is short.
+/// [`occupant_volume`] for this slot: a ball cactus is its own.
 pub const fn slot_volume(slot: &Slot) -> (f32, f32) {
     match slot.occupant {
-        Occupant::Cactus if slot.species == BALL_CACTUS_SPECIES => (CACTUS_R_M, BALL_CACTUS_TOP_M),
+        Occupant::Cactus if slot.species == BALL_CACTUS_SPECIES => {
+            (BALL_CACTUS_R_M, BALL_CACTUS_TOP_M)
+        }
         o => occupant_volume(o),
+    }
+}
+
+/// A cactus slot's round column: the saguaro's trunk without its arms, or
+/// the ball. What a swing aims at and a mark lands on.
+pub const fn cactus_column(slot: &Slot) -> (f32, f32) {
+    if slot.species == BALL_CACTUS_SPECIES {
+        (BALL_CACTUS_R_M, BALL_CACTUS_TOP_M)
+    } else {
+        (CACTUS_R_M, CACTUS_TOP_M)
     }
 }
 
@@ -9845,9 +9867,10 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// deleted browser client's geometry, a guess carried forward — and 0.9 m
 /// across by 0.95 tall is near-spherical where a 55-gallon drum is half again
 /// taller than it is wide. It was the measured object, 0.585 m across by
-/// 0.88 tall, and that read small beside a Rust-sized player; it is Rust's
-/// drum now, grown 12/11 on 2026-10-17: **0.638 m across by 0.96 tall**, so
-/// 0.638/2 here, 0.96 in `OCCUPANT_TOP_M`, and the client's
+/// 0.88 tall, and that read small beside a Rust-sized player; it grew 12/11
+/// on 2026-10-17 and still read small, so a quarter more on 2026-10-20:
+/// **0.798 m across by 1.2 tall**, so 0.798/2 here, 1.2 in
+/// `OCCUPANT_TOP_M`, and the client's
 /// `archetype_lift` set to the half-height so the drum's base is the slot's
 /// ground. Two independent sources agree on the pair — the reference set's
 /// `barrelroad`, and Meshy's `auto_size` vision estimate, which returned it
@@ -9892,7 +9915,7 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
     1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
-    0.3191,             // BarrelSlot — the drum is 0.638 m across, so 0.638/2
+    0.3989,             // BarrelSlot — the drum is 0.798 m across, so 0.798/2
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
@@ -9904,7 +9927,7 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.6801,        // GreenCrate — the crate's box
     0.6801,        // BlueCrate
     0.6801,        // EliteCrate
-    0.3191,        // OilBarrel — the barrel's drum
+    0.3989,        // OilBarrel — the barrel's drum
     ROAD_SIGN_R_M, // RoadSign — broad phase; ROAD_SIGN_BOXES is the volume
     0.5831,        // FoodCrate — BoxGeometry(1.0, 0.4, 0.6) half-diagonal
     CAR_WRECK_R_M, // CarWreck — broad phase; CAR_WRECK_BOXES is the volume
@@ -9916,7 +9939,7 @@ pub const OCCUPANT_R_M: [f32; 29] = [
     0.0,           // MetalPile
     0.0,           // SulfurPile
     0.0,           // MushroomPatch
-    CACTUS_R_M,    // Cactus — the saguaro's trunk
+    SAGUARO_R_M,   // Cactus — broad phase; the trunk and SAGUARO_ARM_BOXES are the volume
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -9944,7 +9967,7 @@ pub const OCCUPANT_TOP_M: [f32; 29] = [
     1.1269,         // SulfurNode
     0.0,            // Bush
     1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
-    0.96,           // BarrelSlot — lift 0.48 + half-height 0.48
+    1.2,            // BarrelSlot — lift 0.6 + half-height 0.6
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
@@ -9956,7 +9979,7 @@ pub const OCCUPANT_TOP_M: [f32; 29] = [
     0.8,              // GreenCrate
     0.8,              // BlueCrate
     0.8,              // EliteCrate
-    0.96,             // OilBarrel
+    1.2,              // OilBarrel
     ROAD_SIGN_PEAK_M, // RoadSign — the plate's top
     0.4,              // FoodCrate — lift 0.2 + half-height 0.2
     CAR_WRECK_PEAK_M, // CarWreck — the roof
@@ -10057,13 +10080,13 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::BerryBush => (0.0, 0.0),
         Occupant::Rock => (1.1145, 1.5403),
-        Occupant::BarrelSlot => (0.3191, 0.96),
+        Occupant::BarrelSlot => (0.3989, 1.2),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
         Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
-        Occupant::OilBarrel => (0.3191, 0.96),
+        Occupant::OilBarrel => (0.3989, 1.2),
         Occupant::RoadSign => (ROAD_SIGN_R_M, ROAD_SIGN_PEAK_M),
         Occupant::FoodCrate => (0.5831, 0.4),
         Occupant::CarWreck => (CAR_WRECK_R_M, CAR_WRECK_PEAK_M),
@@ -10074,7 +10097,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         | Occupant::MetalPile
         | Occupant::SulfurPile
         | Occupant::MushroomPatch => (0.0, 0.0),
-        Occupant::Cactus => (CACTUS_R_M, CACTUS_TOP_M),
+        Occupant::Cactus => (SAGUARO_R_M, CACTUS_TOP_M),
     }
 }
 
@@ -10203,6 +10226,10 @@ const _: () = {
     // The car is parked along the road, so its half-width (with the yaw
     // jitter) is what has to clear the carriageway, not its length.
     assert!(CAR_WRECK_BOXES[0][3] * 0.5 < JUNK_CAR_CLEAR_M);
+    // The saguaro's broad phase holds its arms, trunk and ball too.
+    assert!(boxes_corner_fits(&SAGUARO_ARM_BOXES, SAGUARO_R_M));
+    assert!(boxes_peak(&SAGUARO_ARM_BOXES) <= CACTUS_TOP_M);
+    assert!(CACTUS_R_M <= SAGUARO_R_M && BALL_CACTUS_R_M <= SAGUARO_R_M);
 
     // The two tiers are different SHAPES, not one shape at two sizes, and
     // that is the whole point of the second table (`NOW.md` §4b). Scaling
@@ -10350,6 +10377,21 @@ pub fn slot_blocks(
             capsule_r,
             capsule_h,
         ),
+        // The saguaro's trunk, then its arms (`SAGUARO_ARM_BOXES`).
+        Occupant::Cactus if slot.species != BALL_CACTUS_SPECIES => {
+            let trunk = CACTUS_R_M * slot.scale + capsule_r;
+            dx * dx + dz * dz < trunk * trunk
+                || boxes_block(
+                    slot,
+                    &SAGUARO_ARM_BOXES,
+                    usize::MAX,
+                    dx,
+                    dz,
+                    feet_y,
+                    capsule_r,
+                    capsule_h,
+                )
+        }
         _ => true,
     }
 }
@@ -10370,7 +10412,11 @@ pub fn slot_blocks(
 /// walks off a crate's edge stays on it until it is clear of it rather than
 /// falling down its side half inside it (`kit::ground_local`'s defect).
 pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32, capsule_r: f32) -> f32 {
-    let (r, top) = slot_volume(slot);
+    let (r, top) = match slot.occupant {
+        // Stood on at its crown, not across its arms' broad phase.
+        Occupant::Cactus => cactus_column(slot),
+        _ => slot_volume(slot),
+    };
     if r <= 0.0 {
         return crate::collide::NO_SURFACE;
     }

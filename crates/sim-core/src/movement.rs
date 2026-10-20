@@ -361,7 +361,11 @@ pub fn step_scaled(
                     let k = (m2 * ROUND_SLIDE_MIN * ROUND_SLIDE_MIN / t2)
                         .sqrt()
                         .max(1.0);
-                    (x + tx * k, z + tz * k)
+                    // Plus a quantum outward: quantizing the step below can
+                    // round it 2 cm back in, inside a wide volume, and the
+                    // body stuck halfway round a ball cactus (2026-10-20).
+                    let out = POS_XZ_Q / d2.sqrt();
+                    (x + tx * k + ox * out, z + tz * k + oz * out)
                 }
             };
             // ⚠ **Tested where the body will actually stand: quantized.** The
