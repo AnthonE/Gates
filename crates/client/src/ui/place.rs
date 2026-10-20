@@ -17,20 +17,16 @@
 //!
 //! ## What the verdict is, and what it is not
 //!
-//! [`verdict`] is a **local guess that saves a round trip**, never an
-//! authority. It answers the four refusals a client can see for itself —
-//! the spot is taken, out of reach, cannot afford it, the ground will not
-//! hold a foundation — and says nothing about support, hearth claims or
-//! world capacity, which are the server's alone. A ghost that draws green
-//! and then refuses is a ghost that was honest about what it knew; a ghost
-//! that draws red on something the sim would have taken is the failure to
-//! avoid, so every check here is one the sim runs the same way.
+//! [`verdict`] is the sim's own `build::check_place` asked of this client's
+//! mirror, so the ghost's colour is the server's answer: every rule, in the
+//! server's order, except a hearth's claim (crew lists never ride the wire)
+//! and a full world, which stay the server's alone.
 
 use sim_core::build::{
-    anchor, band_of_ground, build_cell_of, column_floor_y, foundation_terrain_ok, plate_for,
-    terrain_band, BuildContent, PieceRec, BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A,
-    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
-    LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, SHAPE_DOORWAY,
+    anchor, band_of_ground, build_cell_of, column_floor_y, plate_for, terrain_band, BuildContent,
+    PieceRec, BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO,
+    LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
+    LOC_TRI_XLO_ZLO, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, REFUSE_B_SPOT, SHAPE_DOORWAY,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_TRI_FLOOR,
     SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
@@ -43,8 +39,6 @@ use sim_core::deploy::{
 use sim_core::footprint::Pose;
 use sim_core::gather::ItemStack;
 use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
-
-use super::build::affordable;
 
 /// The ghost's word for ground the world keeps for itself — THE GATE, the
 /// depot, a landmark, the ziggurat (`terrain::build_reserved`). The sim
@@ -859,73 +853,71 @@ pub struct Site<'a> {
     pub inv: &'a [ItemStack; INV_SLOTS],
 }
 
-/// The four refusals a client can see for itself. See the module header for
-/// what this deliberately does not answer.
+/// Whether the sim would take this placement: `build::check_place`, the
+/// server's own rules in the server's own order, asked of this client's
+/// mirror. The hearth claim is the one rule the mirror cannot hold (crew lists
+/// never ride the wire), so it answers no and the server keeps that word.
 pub fn verdict(
     t: Target,
     row: u16,
-    shape: u8,
+    _shape: u8,
     site: &Site<'_>,
     freehand: bool,
     want: i8,
 ) -> Verdict {
-    // Spot taken. `deploy.rs` and `build.rs` both key on the full address, so
-    // this is the same comparison the sim's `find` makes.
-    if site.taken.iter().any(|r| {
-        r.cx == t.cx
-            && r.cz == t.cz
-            && r.level == t.level
-            && (r.loc == t.loc
-                || (sim_core::build::is_stair_loc(r.loc) && sim_core::build::is_stair_loc(t.loc)))
-    }) {
-        return Verdict::No("spot taken");
+    match check(t, row, site, freehand, want) {
+        Ok(_) => Verdict::Ok,
+        Err(no) => no,
     }
+}
 
-    // Reach, measured to the ANCHOR — the sim's own corner, via the sim's own
-    // function. See the header.
-    let (ax, az) = anchor(t.cx, t.cz, t.loc);
-    if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
-        return Verdict::No(RESERVED_LINE);
-    }
-    let (dx, dz) = (ax - site.at.0, az - site.at.1);
-    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
-        return Verdict::No("out of reach");
-    }
-
-    // Ground, for a foundation only — every other shape stands on structure
-    // and the sim asks a different question of it.
-    if matches!(
-        shape,
-        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
-    ) && !foundation_terrain_ok(site.seed, site.haven, ax, az)
-    {
-        return Verdict::No("bad ground");
-    }
-
-    // The plate (build plate v1), by the sim's own rule against the client's
-    // own mirror — after ground and before cost, which is `build::place`'s
-    // own order, so the sentence the ghost shows is the one the server would
-    // have said and not a later one.
-    //
-    // **Mirrored rather than left Unknown**, unlike the claim: the two plate
-    // refusals are computed from the piece index and the terrain, and the
-    // client holds both. Leaving them out would put a green ghost on the
-    // commonest refusal a hillside can produce.
-    if let Err(why) = plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand, want) {
+/// [`verdict`], keeping what an accepted placement would be: the plate it
+/// stands at and the side its soft face shows — what a piece drawn before the
+/// server answers needs (`ClientCore::predict_place`).
+pub fn check(
+    t: Target,
+    row: u16,
+    site: &Site<'_>,
+    freehand: bool,
+    want: i8,
+) -> Result<sim_core::build::Placement, Verdict> {
+    sim_core::build::check_place(
+        site.seed,
+        site.haven,
+        site.content,
+        site.cols,
+        site.at,
+        site.inv,
+        row,
+        t.cx,
+        t.cz,
+        t.level,
+        t.loc,
+        freehand,
+        want,
+        |_, _| false,
+    )
+    .map_err(|why| match why {
+        // The sim answers reserved ground with the occupied spot's code;
+        // over an empty plaza "spot taken" reads as a bug.
+        REFUSE_B_SPOT
+            if {
+                let (ax, az) = anchor(t.cx, t.cz, t.loc);
+                sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5)
+            } =>
+        {
+            Verdict::No(RESERVED_LINE)
+        }
         // Indexed rather than formatted: `Verdict::No` carries a
-        // `&'static str`, and the table row IS that string — the same one
-        // the server's refusal would arrive with (`DeployVerdict`'s
-        // discipline, one table over). `plate_for` returns only these two
-        // codes, so an out-of-range index here is a loud bug and not a
-        // case to clamp away.
-        return Verdict::No(super::refusals::BUILD[why as usize]);
-    }
-
-    if !affordable(site.content, row, site.inv) {
-        return Verdict::No("missing materials");
-    }
-
-    Verdict::Ok
+        // `&'static str`, and the table row IS the sentence the server's
+        // refusal would arrive with.
+        why => Verdict::No(
+            super::refusals::BUILD
+                .get(why as usize)
+                .copied()
+                .unwrap_or("refused"),
+        ),
+    })
 }
 
 /// The plate a placement at `t` would take, or 0 where the rule refuses —
@@ -1532,7 +1524,7 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::build::{PieceDef, PieceRec, BUILD_CELL_M, MAT_WOOD};
+    use sim_core::build::{foundation_terrain_ok, PieceDef, PieceRec, BUILD_CELL_M, MAT_TWIG};
     use sim_core::deploy::{cell_center, ARCH_BOX};
 
     fn empty_inv() -> [ItemStack; INV_SLOTS] {
@@ -1545,7 +1537,7 @@ mod tests {
         let mut c = BuildContent::EMPTY;
         c.pieces[0] = PieceDef {
             shape,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 0,
             costs: [(0, 0); sim_core::limits::MAX_PIECE_COSTS],
@@ -1784,15 +1776,16 @@ mod tests {
             plate: 0,
         }];
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
-        // Nothing built anywhere: `plate_for` answers 0 and refuses nothing,
-        // so these two tests keep asking exactly what they asked before.
-        let empty_cols = sim_core::collide::ColIndex::new();
+        // The mirror's index holds what `taken` holds: the verdict is the
+        // sim's own check, and the sim reads occupancy off the index.
+        let mut cols = sim_core::collide::ColIndex::new();
+        cols.add(3, 3, 0, LOC_EDGE_XLO, SHAPE_WALL, 0);
         let site = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az),
             taken: &taken,
-            cols: &empty_cols,
+            cols: &cols,
             content: &content,
             inv: &inv,
         };
@@ -1807,7 +1800,6 @@ mod tests {
         let haven = sim_core::terrain::haven(1);
         let content = free_table(sim_core::build::SHAPE_STAIRS);
         let inv = empty_inv();
-        let cols = sim_core::collide::ColIndex::new();
         for placed in sim_core::build::STAIR_LOCS {
             let taken = [PieceRec {
                 cx: 3,
@@ -1815,6 +1807,8 @@ mod tests {
                 loc: placed,
                 ..PieceRec::default()
             }];
+            let mut cols = sim_core::collide::ColIndex::new();
+            cols.add(3, 3, 0, placed, sim_core::build::SHAPE_STAIRS, 0);
             let site = Site {
                 seed: 1,
                 haven: &haven,
@@ -1856,13 +1850,16 @@ mod tests {
             loc: LOC_EDGE_XLO,
         };
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
-        let empty_cols = sim_core::collide::ColIndex::new();
+        // A foundation under it: a wall stands on something, and the
+        // verdict is the sim's whole check, support included.
+        let mut cols = sim_core::collide::ColIndex::new();
+        cols.add(10, 10, 0, LOC_PLANE, SHAPE_FOUNDATION, 0);
         let site_near = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M + 0.2),
             taken: &[],
-            cols: &empty_cols,
+            cols: &cols,
             content: &content,
             inv: &inv,
         };
@@ -1872,7 +1869,7 @@ mod tests {
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M - 0.2),
             taken: &[],
-            cols: &empty_cols,
+            cols: &cols,
             content: &content,
             inv: &inv,
         };

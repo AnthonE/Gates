@@ -851,6 +851,9 @@ pub struct StructRing {
     pending_loot: bool,
     kit: Option<Kit>,
     gen: u64,
+    /// `ClientCore::pending_pieces_gen` as last drawn: a click or an expiry
+    /// changes what is drawn without any news from the wire.
+    pending_pieces_gen: u32,
 }
 
 impl StructRing {
@@ -2667,9 +2670,14 @@ pub const STRUCT_APPLIED2: u32 =
 /// the kit unbuilt and the mirrors already seeded by the join drip, and a
 /// condition that only watched the news would leave the base a player logged
 /// out inside undrawn until someone hit it.
-pub fn structures_changed(ring: Res<StructRing>, feed: Res<super::feed::Feed>) -> bool {
+pub fn structures_changed(
+    ring: Res<StructRing>,
+    feed: Res<super::feed::Feed>,
+    net: NonSend<Net>,
+) -> bool {
     ring.kit.is_none()
         || ring.pending_loot
+        || ring.pending_pieces_gen != net.session.core.pending_pieces_gen()
         || feed.applied & client_core::core::APPLIED_CATALOG != 0
         || feed.applied & STRUCT_APPLIED != 0
         || feed.applied2 & STRUCT_APPLIED2 != 0
@@ -2714,11 +2722,26 @@ pub fn stream(
     // foundation. Skip it — the frame after the defs arrive draws it right,
     // and a wrong wall is worse than a late one.
     let have = core.piece_defs_have.min(core.piece_defs.piece_count);
-    for rec in core.pieces.entries() {
+    ring.pending_pieces_gen = core.pending_pieces_gen();
+    // The placements this client sent and the server has not answered ride
+    // behind the mirror's own records, under the same keys: the broadcast's
+    // record takes over the entity a pending one drew, so a confirmed piece
+    // is never redrawn and a refused one is swept like a removal.
+    let pending = core.pending_pieces().iter().map(|r| (r, true));
+    for (rec, ahead) in core
+        .pieces
+        .entries()
+        .iter()
+        .map(|r| (r, false))
+        .chain(pending)
+    {
         if (rec.row as u16) >= have {
             continue;
         }
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
+        if ahead && ring.pieces.get(&key).is_some_and(|l| l.seen == gen) {
+            continue;
+        }
         let def = core.piece_defs.pieces[rec.row as usize];
         // Which corner posts this piece draws is a fact about its NEIGHBOURS
         // (gap v1), so it is re-read here every pass rather than latched at

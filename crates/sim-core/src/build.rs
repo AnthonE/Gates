@@ -1143,13 +1143,13 @@ impl Default for Pieces {
 }
 
 /// Whether (cx, cz, level) holds a plane piece (foundation/floor/roof).
-fn plane_at(pieces: &Pieces, cx: u16, cz: u16, level: u8) -> bool {
-    pieces.find(cx, cz, level, LOC_PLANE).is_some()
+fn plane_at(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8) -> bool {
+    occupied_at(cols, cx, cz, level, LOC_PLANE)
 }
 
 /// An edge's top must coincide with the socket it carries. Low cover bears none.
-fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-    let m = pieces.cols().get(cx, cz);
+fn edge_bears(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    let m = cols.get(cx, cz);
     let (half, low) = m.partial_edges(loc);
     if let Some(below) = level_step(level, -1) {
         if half & (1 << below) != 0 {
@@ -1157,7 +1157,7 @@ fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
         }
     }
     level_step(level, -2).is_some_and(|below| {
-        (half | low) & (1 << below) == 0 && pieces.find(cx, cz, below, loc).is_some()
+        (half | low) & (1 << below) == 0 && occupied_at(cols, cx, cz, below, loc)
     })
 }
 
@@ -1166,8 +1166,15 @@ fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
 /// edge? `canonical` distinguishes the edge's own cell from its low
 /// neighbour, because each side has its own pair of touching halves
 /// (triangles v0; the `LOC_TRI_*` doc draws the map).
-fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: bool) -> bool {
-    let m = pieces.cols().get(bx, bz);
+fn bears_edge(
+    cols: &crate::collide::ColIndex,
+    bx: u16,
+    bz: u16,
+    level: u8,
+    loc: u8,
+    canonical: bool,
+) -> bool {
+    let m = cols.get(bx, bz);
     if m.riser_shape(level) == SHAPE_FOUNDATION_STEPS {
         let high = match (loc, canonical) {
             (LOC_EDGE_XLO, true) => m.stairs_xlo,
@@ -1179,7 +1186,7 @@ fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: 
             return true;
         }
     }
-    if plane_at(pieces, bx, bz, level) {
+    if plane_at(cols, bx, bz, level) {
         return true;
     }
     let (t1, t2) = match (loc, canonical) {
@@ -1188,7 +1195,7 @@ fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: 
         (LOC_EDGE_ZLO, true) => (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZLO),
         _ => (LOC_TRI_XLO_ZHI, LOC_TRI_XHI_ZHI),
     };
-    pieces.find(bx, bz, level, t1).is_some() || pieces.find(bx, bz, level, t2).is_some()
+    occupied_at(cols, bx, bz, level, t1) || occupied_at(cols, bx, bz, level, t2)
 }
 
 /// A triangle's two side-edge addresses and its hypotenuse loc — the
@@ -1426,21 +1433,27 @@ fn body_conflicts(loc: u8, out: &mut [u8; 5]) -> usize {
 /// Does anything stand in the cell body where `loc`'s occupant would
 /// overlap it? The `place` refusal triangles v0 added — a spot check
 /// like "the address is taken", not a support rule.
-pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+pub(crate) fn cell_body_conflict(
+    cols: &crate::collide::ColIndex,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> bool {
     if is_stair_loc(loc) {
         return STAIR_LOCS
             .iter()
-            .any(|&other| occupied_at(pieces, cx, cz, level, other));
+            .any(|&other| occupied_at(cols, cx, cz, level, other));
     }
     let mut c = [0u8; 5];
     let n = body_conflicts(loc, &mut c);
     c.iter()
         .take(n)
-        .any(|&other| occupied_at(pieces, cx, cz, level, other))
+        .any(|&other| occupied_at(cols, cx, cz, level, other))
 }
 
 fn vertical_edge_conflict(
-    pieces: &Pieces,
+    cols: &crate::collide::ColIndex,
     shape: u8,
     cx: u16,
     cz: u16,
@@ -1452,9 +1465,9 @@ fn vertical_edge_conflict(
     }
     let bottom = level_y(level);
     let top = bottom + wall_height(shape);
-    let m = pieces.cols().get(cx, cz);
+    let m = cols.get(cx, cz);
     for other in 0..MAX_BUILD_SOCKETS as u8 {
-        if other != level && occupied_at(pieces, cx, cz, other, loc) {
+        if other != level && occupied_at(cols, cx, cz, other, loc) {
             let y = level_y(other);
             if bottom < y + m.edge_height(loc, other) && y < top {
                 return true;
@@ -1467,7 +1480,14 @@ fn vertical_edge_conflict(
 /// Support rule v0 for a piece of `shape` at the address. Foundations
 /// carry no support requirement (terrain is their check), and the
 /// triangle foundation is a foundation.
-fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+fn supported(
+    cols: &crate::collide::ColIndex,
+    shape: u8,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS => true,
         SHAPE_FLOOR | SHAPE_ROOF | SHAPE_FLOOR_FRAME => {
@@ -1475,10 +1495,10 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             // wall below deliberately does NOT bear a full plane — its
             // span crosses the middle, not a side.
             level >= 1
-                && (edge_bears(pieces, cx, cz, level, LOC_EDGE_XLO)
-                    || edge_bears(pieces, cx + 1, cz, level, LOC_EDGE_XLO)
-                    || edge_bears(pieces, cx, cz, level, LOC_EDGE_ZLO)
-                    || edge_bears(pieces, cx, cz + 1, level, LOC_EDGE_ZLO))
+                && (edge_bears(cols, cx, cz, level, LOC_EDGE_XLO)
+                    || edge_bears(cols, cx + 1, cz, level, LOC_EDGE_XLO)
+                    || edge_bears(cols, cx, cz, level, LOC_EDGE_ZLO)
+                    || edge_bears(cols, cx, cz + 1, level, LOC_EDGE_ZLO))
         }
         SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF | SHAPE_TRI_FLOOR_FRAME => {
             // One of its two sides, or the diagonal wall under its own
@@ -1487,13 +1507,13 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                 return false;
             }
             let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
-            edge_bears(pieces, e1x, e1z, level, e1l)
-                || edge_bears(pieces, e2x, e2z, level, e2l)
-                || edge_bears(pieces, cx, cz, level, hyp)
+            edge_bears(cols, e1x, e1z, level, e1l)
+                || edge_bears(cols, e2x, e2z, level, e2l)
+                || edge_bears(cols, cx, cz, level, hyp)
         }
         // A frame bears its perimeter, not a flight across its empty centre.
         shape if crate::circulation::is_riser(shape) => {
-            let m = pieces.cols().get(cx, cz);
+            let m = cols.get(cx, cz);
             let tri = match loc {
                 LOC_RISER_XHI => LOC_TRI_XLO_ZHI,
                 LOC_RISER_ZLO => LOC_TRI_XHI_ZHI,
@@ -1503,12 +1523,12 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             let stacked = matches!(shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
                 && level_step(level, -1).is_some_and(|below| {
                     m.riser_shape(below) == shape
-                        && occupied_at(pieces, cx, cz, below, opposite_riser(loc))
+                        && occupied_at(cols, cx, cz, below, opposite_riser(loc))
                 });
             stacked
                 || m.planes & (1 << level) != 0
                 || (shape == SHAPE_STAIRS_TRI_SPIRAL
-                    && pieces.find(cx, cz, level, tri).is_some()
+                    && occupied_at(cols, cx, cz, level, tri)
                     && !m.tri_is_frame(level, tri))
         }
         // The diagonal wall: a triangle of its own pair, whose hypotenuse
@@ -1517,25 +1537,24 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
         // the reference never allows either (its walls take sockets).
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
             let (t1, t2) = diag_pair(loc);
-            let body_at = |lvl: u8| {
-                pieces.find(cx, cz, lvl, t1).is_some() || pieces.find(cx, cz, lvl, t2).is_some()
-            };
+            let body_at =
+                |lvl: u8| occupied_at(cols, cx, cz, lvl, t1) || occupied_at(cols, cx, cz, lvl, t2);
             if level == 0 {
                 body_at(0)
             } else {
-                edge_bears(pieces, cx, cz, level, loc) || body_at(level)
+                edge_bears(cols, cx, cz, level, loc) || body_at(level)
             }
         }
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW
         | SHAPE_FRAME => {
             let ((ax, az), other) = edge_neighbors(cx, cz, loc);
             if level == 0 {
-                bears_edge(pieces, ax, az, 0, loc, true)
-                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, 0, loc, false))
+                bears_edge(cols, ax, az, 0, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(cols, bx, bz, 0, loc, false))
             } else {
-                edge_bears(pieces, cx, cz, level, loc)
-                    || bears_edge(pieces, ax, az, level, loc, true)
-                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, level, loc, false))
+                edge_bears(cols, cx, cz, level, loc)
+                    || bears_edge(cols, ax, az, level, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(cols, bx, bz, level, loc, false))
             }
         }
         _ => false,
@@ -1702,15 +1721,15 @@ fn dependents_at(cx: u16, cz: u16, level: u8, loc: u8, up: u8, out: &mut [Addr])
 }
 
 /// Whether any piece stands at the address — the O(1) column-index probe
-/// (collide.rs), so a cascade only pays a store scan for a candidate that
-/// actually exists. The index is kept in lockstep by `Pieces` itself and
-/// `col_index_churn_matches_a_naive_shadow` gates that; here it is a
-/// filter in front of `find_index`, never the answer.
-fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+/// (collide.rs). The index is kept in lockstep by `Pieces` itself and
+/// `col_index_churn_matches_a_naive_shadow` gates that, so this is the same
+/// answer `Pieces::find` gives without the store scan — and the one the
+/// client's mirror can give too, which is why every placement rule reads it.
+fn occupied_at(cols: &crate::collide::ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     if level >= MAX_BUILD_SOCKETS as u8 {
         return false;
     }
-    let m = pieces.cols().get(cx, cz);
+    let m = cols.get(cx, cz);
     let field = match loc {
         LOC_PLANE => m.planes | m.floor_frames,
         LOC_RISER => m.stairs,
@@ -1741,7 +1760,7 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
 pub(crate) fn stands(pieces: &Pieces, bc: &BuildContent, i: usize) -> bool {
     let r = pieces.entries()[i];
     let shape = bc.pieces[r.row as usize].shape;
-    supported(pieces, shape, r.cx, r.cz, r.level, r.loc)
+    supported(pieces.cols(), shape, r.cx, r.cz, r.level, r.loc)
 }
 
 /// A piece at `from` has just been removed: re-evaluate what rested on it
@@ -1791,7 +1810,7 @@ pub(crate) fn collapse_from(
         head += 1;
         let n = dependents(cx, cz, level, loc, &mut kids);
         for &(kx, kz, kl, kloc) in kids.iter().take(n) {
-            if !occupied_at(pieces, kx, kz, kl, kloc) {
+            if !occupied_at(pieces.cols(), kx, kz, kl, kloc) {
                 continue;
             }
             let Some(i) = pieces.find_index(kx, kz, kl, kloc) else {
@@ -1862,20 +1881,34 @@ pub(crate) fn support_sweep(
     }
 }
 
-/// Apply one place request (`Command::Place`). Refusals are events, not
-/// errors — the placer hears why. The cost is paid whole at placement;
-/// the piece is announced by EV_PIECE_PLACED for the wire to broadcast.
-/// `deploys` carries the hearth list for the privilege check; `tick`
-/// stamps the piece's upkeep clock (deploy.rs).
+/// Where an accepted placement stands: the column plate it takes and the
+/// side its soft face shows. Everything about a new piece that is not in
+/// the request itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub plate: i8,
+    pub facing: u8,
+}
+
+/// Every rule [`place`] applies, in its order, as a pure function of the
+/// column index — so the client's ghost asks the sim's own question of its
+/// own mirror, and a green ghost is a placement the server takes.
+///
+/// Two things stay outside. The hearth claim needs crew lists the wire never
+/// carries, so `foreign` answers it: the sim asks `claim::foreign_claim`, the
+/// ghost says no and lets the server have the last word. A full store is
+/// the server's alone (`REFUSE_B_FULL`, at insert).
+///
+/// `at` is the placer's feet, world XZ: reach is measured from it and the
+/// soft side faces it.
 #[allow(clippy::too_many_arguments)]
-pub fn place(
+pub fn check_place(
     seed: u64,
     haven: &terrain::Haven,
     bc: &BuildContent,
-    deploys: &Deploys,
-    pieces: &mut Pieces,
-    p: &mut Player,
-    tick: u64,
+    cols: &crate::collide::ColIndex,
+    at: (f32, f32),
+    inv: &[crate::gather::ItemStack; crate::limits::INV_SLOTS],
     row: u16,
     cx: u16,
     cz: u16,
@@ -1883,16 +1916,14 @@ pub fn place(
     loc: u8,
     freehand: bool,
     want: i8,
-    events: &mut EventQueue,
-) {
+    foreign: impl FnOnce(f32, f32) -> bool,
+) -> Result<Placement, u32> {
     if row >= bc.piece_count {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
-        return;
+        return Err(REFUSE_B_PIECE);
     }
     let def = &bc.pieces[row as usize];
     if def.hp == 0 {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
-        return;
+        return Err(REFUSE_B_PIECE);
     }
     // Everything enters the world as twig, and a finished grade is only
     // ever reached by `upgrade` (twig v0, `reference/BUILDING.md` §7b.4).
@@ -1901,8 +1932,7 @@ pub fn place(
     // forged row is how a placement would otherwise skip the skeleton it
     // is supposed to cost.
     if def.material != MAT_TWIG {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
-        return;
+        return Err(REFUSE_B_TIER);
     }
     let level_ok = (level as usize) < MAX_BUILD_SOCKETS
         && (!shape_has_facing(def.shape)
@@ -1924,40 +1954,35 @@ pub fn place(
         || (cz as usize) >= MAX_BUILD_COORD
         || !level_ok
         || !loc_fits_shape(def.shape, loc)
-        || pieces.find(cx, cz, level, loc).is_some()
+        || occupied_at(cols, cx, cz, level, loc)
         // The cell-body overlap set (triangles v0): a full plane over a
         // half, two crossed halves, a diagonal through either — the same
         // "spot taken" refusal the address check gives, because to a
         // player they are one fact.
-        || cell_body_conflict(pieces, cx, cz, level, loc)
-        || vertical_edge_conflict(pieces, def.shape, cx, cz, level, loc)
+        || cell_body_conflict(cols, cx, cz, level, loc)
+        || vertical_edge_conflict(cols, def.shape, cx, cz, level, loc)
         || (crate::circulation::is_riser(def.shape) && def.shape != SHAPE_FOUNDATION_STEPS
             && level_y(level) + crate::circulation::rise(def.shape) > crate::limits::MAX_BUILD_LEVELS as f32 * LEVEL_H_M)
-        || (def.shape == SHAPE_FOUNDATION_STEPS && (pieces.cols().get(cx,cz).planes
-            | pieces.cols().get(cx,cz).tri_xlo_zlo | pieces.cols().get(cx,cz).tri_xhi_zlo
-            | pieces.cols().get(cx,cz).tri_xlo_zhi | pieces.cols().get(cx,cz).tri_xhi_zhi) & (1 << level) != 0)
+        || (def.shape == SHAPE_FOUNDATION_STEPS && (cols.get(cx,cz).planes
+            | cols.get(cx,cz).tri_xlo_zlo | cols.get(cx,cz).tri_xhi_zlo
+            | cols.get(cx,cz).tri_xlo_zhi | cols.get(cx,cz).tri_xhi_zhi) & (1 << level) != 0)
         || (matches!(loc, LOC_PLANE | LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI)
-            && pieces.cols().get(cx,cz).riser_shape(level) == SHAPE_FOUNDATION_STEPS)
+            && cols.get(cx,cz).riser_shape(level) == SHAPE_FOUNDATION_STEPS)
     {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
-        return;
+        return Err(REFUSE_B_SPOT);
     }
     let (ax, az) = anchor(cx, cz, loc);
     // A landmark's ground is its own, like the depot's (`landmark.rs`).
     if crate::terrain::build_reserved(haven, ax, az, BUILD_CELL_M * 1.5) {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
-        return;
+        return Err(REFUSE_B_SPOT);
     }
-    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
-    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let (px, pz) = at;
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
-        return;
+        return Err(REFUSE_B_REACH);
     }
-    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
-        return;
+    if foreign(ax, az) {
+        return Err(REFUSE_B_CLAIM);
     }
     if matches!(
         def.shape,
@@ -1967,8 +1992,7 @@ pub fn place(
         // The anchor is the shape's own: the cell centre for a square,
         // the half's centroid for a triangle — the ground actually under
         // the piece.
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
-        return;
+        return Err(REFUSE_B_TERRAIN);
     }
     // The column's floor, decided BEFORE support and cost so a refusal about
     // height is told as one (build plate v1). A piece in a built column takes
@@ -1976,29 +2000,17 @@ pub fn place(
     // touches, or takes its own ground — unless `freehand` declined the latch,
     // which only the client can tell us (freehand placement v0) — and where
     // nothing else decides, the band it asked for (foundation height v0).
-    let plate = match plate_for(pieces.cols(), seed, haven, cx, cz, freehand, want) {
-        Ok(p) => p,
-        Err(why) => {
-            events.push(EV_BUILD_REFUSED, p.id, why, 0);
-            return;
-        }
-    };
-    if !supported(pieces, def.shape, cx, cz, level, loc) {
-        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
-        return;
+    let plate = plate_for(cols, seed, haven, cx, cz, freehand, want)?;
+    if !supported(cols, def.shape, cx, cz, level, loc) {
+        return Err(REFUSE_B_SUPPORT);
     }
     for &(item, units) in def.costs.iter().take(def.n_costs as usize) {
-        if inv_count(&p.inv, item) < units as u32 {
-            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_COST, 0);
-            return;
+        if inv_count(inv, item) < units as u32 {
+            return Err(REFUSE_B_COST);
         }
     }
-    let rec = PieceRec {
-        cx,
-        cz,
-        level,
-        loc,
-        row: row as u8,
+    Ok(Placement {
+        plate,
         // Soft toward the builder (hard/soft v0). Planes and risers have
         // no sides and carry 0, so two replays cannot disagree about a
         // bit that means nothing.
@@ -2007,6 +2019,66 @@ pub fn place(
         } else {
             0
         },
+    })
+}
+
+/// Apply one place request (`Command::Place`). Refusals are events, not
+/// errors — the placer hears why. The cost is paid whole at placement;
+/// the piece is announced by EV_PIECE_PLACED for the wire to broadcast.
+/// `deploys` carries the hearth list for the privilege check; `tick`
+/// stamps the piece's upkeep clock (deploy.rs). The rules are
+/// [`check_place`]'s; this is the paying and the inserting.
+#[allow(clippy::too_many_arguments)]
+pub fn place(
+    seed: u64,
+    haven: &terrain::Haven,
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &mut Player,
+    tick: u64,
+    row: u16,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    freehand: bool,
+    want: i8,
+    events: &mut EventQueue,
+) {
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let checked = check_place(
+        seed,
+        haven,
+        bc,
+        pieces.cols(),
+        (px, pz),
+        &p.inv,
+        row,
+        cx,
+        cz,
+        level,
+        loc,
+        freehand,
+        want,
+        |ax, az| crate::claim::foreign_claim(pieces, deploys, ax, az, p.id),
+    );
+    let Placement { plate, facing } = match checked {
+        Ok(at) => at,
+        Err(why) => {
+            events.push(EV_BUILD_REFUSED, p.id, why, 0);
+            return;
+        }
+    };
+    let def = &bc.pieces[row as usize];
+    let rec = PieceRec {
+        cx,
+        cz,
+        level,
+        loc,
+        row: row as u8,
+        facing,
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
@@ -2191,7 +2263,7 @@ pub fn rotate(
             let n = dependents_at(cx, cz, level, loc, level, &mut deps);
             if deps[..n]
                 .iter()
-                .any(|&(x, z, l, a)| occupied_at(pieces, x, z, l, a))
+                .any(|&(x, z, l, a)| occupied_at(pieces.cols(), x, z, l, a))
             {
                 events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
                 return;
@@ -2199,7 +2271,7 @@ pub fn rotate(
         }
         if matches!(def.shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
             && level_step(level, 1)
-                .is_some_and(|up| occupied_at(pieces, cx, cz, up, opposite_riser(loc)))
+                .is_some_and(|up| occupied_at(pieces.cols(), cx, cz, up, opposite_riser(loc)))
         {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
             return;
@@ -2208,7 +2280,7 @@ pub fn rotate(
         // direction consumes the same cell body, even if not the next loc.
         if STAIR_LOCS
             .iter()
-            .any(|&other| other != loc && occupied_at(pieces, cx, cz, level, other))
+            .any(|&other| other != loc && occupied_at(pieces.cols(), cx, cz, level, other))
         {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
             return;
@@ -2219,7 +2291,7 @@ pub fn rotate(
             LOC_RISER_ZLO => LOC_RISER_XLO,
             _ => LOC_RISER,
         };
-        if !supported(pieces, def.shape, cx, cz, level, next) {
+        if !supported(pieces.cols(), def.shape, cx, cz, level, next) {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
             return;
         }
@@ -5164,8 +5236,8 @@ mod tests {
         if !loc_fits_shape(shape, loc)
             || level >= MAX_BUILD_LEVELS as u8
             || pieces.find(cx, cz, level, loc).is_some()
-            || cell_body_conflict(pieces, cx, cz, level, loc)
-            || !supported(pieces, shape, cx, cz, level, loc)
+            || cell_body_conflict(pieces.cols(), cx, cz, level, loc)
+            || !supported(pieces.cols(), shape, cx, cz, level, loc)
         {
             return false;
         }
@@ -5423,6 +5495,47 @@ mod tests {
                     "the returned count disagrees with the store it left"
                 );
             }
+        }
+    }
+
+    /// The placement rules read occupancy off the column index, not the
+    /// store, so the client's mirror can ask them too (`check_place`). That
+    /// is only the same rule while the index answers exactly what `find`
+    /// does: on a grown base and on what is left after every third piece
+    /// goes, every address around it must agree.
+    #[test]
+    fn occupancy_from_the_index_is_the_store() {
+        let agree = |pieces: &Pieces, stage: &str| {
+            for cx in CX - 9..CX + 10 {
+                for cz in CZ - 9..CZ + 10 {
+                    for level in 0..MAX_BUILD_SOCKETS as u8 {
+                        for loc in 0..=LOC_RISER_XLO {
+                            assert_eq!(
+                                occupied_at(pieces.cols(), cx, cz, level, loc),
+                                pieces.find(cx, cz, level, loc).is_some(),
+                                "{stage}: ({cx}, {cz}, {level}, {loc})"
+                            );
+                        }
+                    }
+                }
+            }
+        };
+        let grow: [fn(&mut Pieces); 2] = [
+            |p| grow_from_one_foundation(p, CX, CZ, 50),
+            grow_stacks_and_a_landing,
+        ];
+        for build in grow {
+            let mut pieces = Pieces::new();
+            build(&mut pieces);
+            agree(&pieces, "grown");
+            // `try_put` files the shape as the row.
+            let mut i = 0;
+            while i < pieces.len() {
+                let shape = pieces.entries()[i].row;
+                pieces.remove_at(i, shape);
+                i += 2;
+            }
+            agree(&pieces, "thinned");
         }
     }
 
