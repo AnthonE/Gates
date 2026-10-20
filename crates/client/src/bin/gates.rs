@@ -134,7 +134,10 @@ fn main() -> AppExit {
                 None => Session::connect(&endpoint, &server, address, client::elo::sign_siwe).await,
             };
             joined.unwrap_or_else(|e| {
-                eprintln!("gates: {e}");
+                match client::elo::take_refusal() {
+                    Some(launcher) => eprintln!("gates: {e} ({launcher})"),
+                    None => eprintln!("gates: {e}"),
+                }
                 std::process::exit(1);
             })
         })

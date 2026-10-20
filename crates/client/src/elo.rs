@@ -536,14 +536,43 @@ mod tests {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::Signature> {
     let mut elo = Elo::discover(None, env!("CARGO_PKG_VERSION"));
-    let proof = elo
-        .prove_at(domain, nonce, i64::try_from(issued_at).ok())
-        .ok()?;
+    let proof = match elo.prove_at(domain, nonce, i64::try_from(issued_at).ok()) {
+        Ok(proof) => proof,
+        Err(why) => {
+            refused(why.to_string());
+            return None;
+        }
+    };
     // The echoed `message` is deliberately ignored. The SDK says it is for
     // logging and that a verifier must recompute — and here the verifier is
     // the shard, which does exactly that. Reading it would be trusting the
     // thing we are checking.
-    parse_signature(&proof.signature)
+    let sig = parse_signature(&proof.signature);
+    if sig.is_none() {
+        refused("the launcher returned a malformed signature".into());
+    }
+    sig
+}
+
+/// Why the last [`sign_siwe`] came back empty, in the launcher's words
+/// ("the account is locked", "the browser did not answer in 180 s"). The
+/// handshake's signer hook only says yes or no, so the menu reads the
+/// reason here once a sign-in has failed.
+#[cfg(not(target_arch = "wasm32"))]
+static REFUSAL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn refused(why: String) {
+    eprintln!("gates: the launcher did not sign in: {why}");
+    if let Ok(mut r) = REFUSAL.lock() {
+        *r = Some(why);
+    }
+}
+
+/// Take the reason the last sign-in was refused, if there is one.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn take_refusal() -> Option<String> {
+    REFUSAL.lock().ok()?.take()
 }
 
 /// The browser's signer: the visitor's own wallet, asked once, for one

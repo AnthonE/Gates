@@ -1153,22 +1153,88 @@ impl Default for Heard {
     }
 }
 
-/// What a decision source has its body say out loud: one local chat line,
-/// sent with the human chat box's own encoder. An external source says
-/// what it likes; the scripted policy only answers its team's orders with
-/// fixed lines (`agent::orders`); Jev is a classifier and stays quiet.
+/// The most an agent says in one answer: up to [`Lines::MAX`] chat lines,
+/// cut at words. A chat line alone (48 bytes) cut agents off mid-sentence.
+pub const SAY_MAX_BYTES: usize = Lines::MAX * protocol::CHAT_MAX_BYTES;
+
+/// One thing said, as the chat lines it goes out in, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lines {
+    pub first: protocol::ChatText,
+    pub more: [Option<protocol::ChatText>; Lines::MAX - 1],
+}
+
+impl Lines {
+    pub const MAX: usize = 3;
+
+    /// `text` cut at spaces into chat lines the chat rule takes; `None`
+    /// when it is blank, over [`SAY_MAX_BYTES`], holds a word longer than
+    /// a line, needs more than [`Lines::MAX`] lines, or a line is refused.
+    pub fn split(text: &str) -> Option<Self> {
+        if text.len() > SAY_MAX_BYTES {
+            return None;
+        }
+        let mut out = [None; Lines::MAX];
+        let mut n = 0;
+        let mut cur = String::new();
+        for word in text.split(' ').filter(|w| !w.is_empty()) {
+            if !cur.is_empty() && cur.len() + 1 + word.len() > protocol::CHAT_MAX_BYTES {
+                *out.get_mut(n)? = Some(protocol::ChatText::sanitize(cur.as_bytes())?);
+                n += 1;
+                cur.clear();
+            }
+            if !cur.is_empty() {
+                cur.push(' ');
+            }
+            cur.push_str(word);
+        }
+        if !cur.is_empty() {
+            *out.get_mut(n)? = Some(protocol::ChatText::sanitize(cur.as_bytes())?);
+        }
+        Some(Self {
+            first: out[0]?,
+            more: [out[1], out[2]],
+        })
+    }
+
+    /// What is left once the first line is said.
+    pub fn rest(&self) -> Option<Self> {
+        Some(Self {
+            first: self.more[0]?,
+            more: [self.more[1], None],
+        })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = protocol::ChatText> + '_ {
+        std::iter::once(self.first).chain(self.more.iter().flatten().copied())
+    }
+}
+
+impl From<protocol::ChatText> for Lines {
+    fn from(first: protocol::ChatText) -> Self {
+        Self {
+            first,
+            more: [None; Lines::MAX - 1],
+        }
+    }
+}
+
+/// What a decision source has its body say out loud, sent with the human
+/// chat box's own encoder. An external source says what it likes; the
+/// scripted policy only answers its team's orders with fixed lines
+/// (`agent::orders`); Jev is a classifier and stays quiet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Say {
     #[default]
     Quiet,
-    /// A line for whoever is near (the 20 m radius).
-    Line(protocol::ChatText),
-    /// A line for this body's team (wire v108), wherever they are. Said
-    /// locally when it has no team.
-    Team(protocol::ChatText),
-    /// A line for everyone on the island, as a person's chat box sends one
-    /// unless told otherwise.
-    Global(protocol::ChatText),
+    /// For whoever is near (the 20 m radius).
+    Line(Lines),
+    /// For this body's team (wire v108), wherever they are. Said locally
+    /// when it has no team.
+    Team(Lines),
+    /// For everyone on the island, as a person's chat box sends one unless
+    /// told otherwise.
+    Global(Lines),
     /// Asked for a line the chat rule refuses (too long, a control
     /// character, a `/command`): counted, never repaired.
     Refused,
@@ -2956,7 +3022,7 @@ impl Scripted {
     /// The next answer: on team chat, or out loud with no team.
     fn reply(&mut self, text: &str) {
         if let Some(line) = protocol::ChatText::sanitize(text.as_bytes()) {
-            self.say = Say::Team(line);
+            self.say = Say::Team(line.into());
         }
     }
 
@@ -3770,7 +3836,7 @@ mod tests {
 
     fn said(choice: &Choice) -> Option<String> {
         match choice.say {
-            Say::Team(line) => Some(String::from_utf8_lossy(line.as_bytes()).into_owned()),
+            Say::Team(lines) => Some(String::from_utf8_lossy(lines.first.as_bytes()).into_owned()),
             _ => None,
         }
     }

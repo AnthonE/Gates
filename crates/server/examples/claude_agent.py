@@ -68,9 +68,11 @@ MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
 # Kept under jev-bot's --timeout-ms: a slow answer fails here, at once,
 # rather than arriving after the bot has moved on to the next request.
 TIMEOUT_S = float(os.environ.get("CLAUDE_TIMEOUT_S", "15"))
-# The chat rule's cap (protocol CHAT_MAX_BYTES). The bot refuses a longer
-# line rather than cutting it, so it is cut here, at a word.
+# The chat rule's cap (protocol CHAT_MAX_BYTES), and how many such lines
+# one `say` may fill (mind::Lines::MAX). The bot refuses more rather than
+# cutting it, so it is cut here, at a word.
 SAY_BYTES = 120
+SAY_LINES = 3
 # What jev-bot speaks at most (agent_voice.rs MAX_SPEECH_CHARS).
 SPEAK_CHARS = 240
 REASON_CHARS = 96
@@ -133,7 +135,7 @@ none. `forage` is for `berry_bushes`; trees are `gather_wood`, hemp is \
 next step and what it still lacks after your pack (`missing`; `raw` is the \
 same in raw materials): a shopping list, not what you have.
 
-You may also type one chat line in `say`, at most 120 characters, and `to` \
+You may also type chat in `say`, at most about 200 characters, and `to` \
 picks who reads it: "global" is everyone on the island, "team" is your team \
 wherever they are, "local" is only players within 20 m. Answer a line on the \
 channel it came on (`heard` says which); otherwise global is the usual one. \
@@ -264,7 +266,7 @@ VOICE_RULE = """
 You have a voice and ears. `speak` is what you say out loud in your own \
 voice: it carries about 100 m (clear to about 40), and it is how you talk to the \
 people near you. Up to about 25 words, natural and in character; leave it \
-empty to stay quiet. `say` is still typed chat (120 characters): someone \
+empty to stay quiet. `say` is still typed chat (about 200 characters): someone \
 who typed to you may be far away and cannot hear your voice, so answer a \
 typed line in `say` on its channel; otherwise leave it empty when you \
 speak. `speaking: true` means you are still saying your last line out \
@@ -325,13 +327,20 @@ def schema(share, voice=False):
 
 
 def clip_say(text):
-    """One printable line the chat rule takes: no slash command, cut at a word."""
+    """Printable text that fits SAY_LINES chat lines cut at spaces, as the
+    bot cuts it: no slash command, and what does not fit is dropped."""
     text = re.sub(r"\s+", " ", "".join(c if c.isprintable() else " " for c in text)).strip()
     text = text.lstrip("/").strip()
-    if len(text.encode()) <= SAY_BYTES:
-        return text
-    cut = text.encode()[:SAY_BYTES].decode(errors="ignore")
-    return (cut.rsplit(" ", 1)[0] if " " in cut else cut).strip()
+    lines, cur = [], ""
+    for word in text.split(" "):
+        word = word.encode()[:SAY_BYTES].decode(errors="ignore")
+        if cur and len(cur.encode()) + 1 + len(word.encode()) > SAY_BYTES:
+            lines.append(cur)
+            cur = ""
+        cur = f"{cur} {word}" if cur else word
+    lines.append(cur)
+    # A line after the first that opens with "/" would be a command.
+    return " ".join(l for i, l in enumerate(lines[:SAY_LINES]) if i == 0 or not l.startswith("/"))
 
 
 def fetch_frame():
