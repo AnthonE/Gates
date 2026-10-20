@@ -71,7 +71,8 @@ placement = "any"
 matter = "wood"
 hp = 100
 
-# A rug: walked over like the spikes, on the ground or a floor. Comfort is per
+# A rug: walked over like the spikes, on the ground or a floor, and anything
+# but another rug stands on it (`deploy::layers`). Comfort is per
 # mille within `comfort_radius_cm`: 15 % with no fire, on top of a fire's, and
 # the best rug in reach counts, so two rugs are one (`World::furnish_comfort`).
 [[deployable]]
