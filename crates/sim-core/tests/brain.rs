@@ -835,7 +835,7 @@ fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
 }
 
 /// **The engagement budget.** A bred wolf that only ever circles draws no
-/// blood, and once `NET_STALE_TICKS` pass without a bite it gives the hunt
+/// blood, and once `NET_STALE_TICKS` pass without pressing in it gives the hunt
 /// up and goes home like a wolf that failed its routes.
 #[test]
 fn a_bred_wolf_that_never_closes_gives_up() {
@@ -888,4 +888,22 @@ fn a_net_below_its_tier_changes_nothing() {
         table,
         "a net at the island's tier drove nothing"
     );
+}
+
+/// **A charge is never stale.** A bred wolf that always charges keeps at a
+/// player well past `NET_STALE_TICKS`, as the rule-table wolf does.
+#[test]
+fn a_bred_wolf_that_keeps_charging_never_goes_stale() {
+    use sim_core::brain::{NET_CHARGE, NET_STALE_TICKS};
+    let [a, _, _] = free_pack();
+    let mut w = world_with(&[(a, 6.0, 0.0)]);
+    *w.nets = always(NET_CHARGE);
+    w.players[0].hp_max = u16::MAX;
+    w.players[0].hp = u16::MAX;
+    let mut gave_up = false;
+    hold(&mut w, 0, 2 * NET_STALE_TICKS as u32, |w| {
+        gave_up |= w.mobs.m[a].calm_until > w.tick;
+    });
+    assert!(!gave_up, "a charging bred wolf gave its hunt up");
+    assert_ne!(w.mobs.m[a].target, NO_TARGET, "it lost its target");
 }

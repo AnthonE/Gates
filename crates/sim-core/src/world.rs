@@ -8824,8 +8824,8 @@ impl World {
             // animal no net drives, so a world without one hashes as it did.
             b[46] = m.pick;
             h.update(&b);
-            if m.bit_at != 0 {
-                h.update(&m.bit_at.to_le_bytes());
+            if m.pressed_at != 0 {
+                h.update(&m.pressed_at.to_le_bytes());
             }
             let mut poi = [0u8; 24];
             poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());

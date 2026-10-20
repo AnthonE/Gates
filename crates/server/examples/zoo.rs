@@ -17,6 +17,13 @@
 //! dead, or 90 s pass. The island plays at the medium fel tier, the one a
 //! bred brain first drives in (`mobs.toml` `genome_tier`).
 //!
+//! The start: a random net hardly ever charges, and a wolf that never
+//! charges never bites, so `--screen` base seeds are first scored without a
+//! bout — the share of a fixed set of made-up fight snapshots each one
+//! answers with a charge — and the best `--bases` of those play the first
+//! batch for the starting parent. That is still the encoding: a base seed
+//! the screen liked, nothing hand-set.
+//!
 //! Selection: the parent and λ children (each the parent plus one fresh
 //! mutation) play the same batch of bouts; the best child is tried again
 //! against the parent on a confirm batch it has never seen, and replaces it
@@ -45,8 +52,8 @@ use server::agent::combat::Temperament;
 use server::agent::hands::Preset;
 use server::explorer::SurvivorOpts;
 use server::mind::{Mind, MindConfig};
-use sim_core::brain::{Nets, NO_TARGET, WOLF_NET_PREFIX};
-use sim_core::genome::{Genome, TEXT_MAX};
+use sim_core::brain::{wolf_shape, Nets, NET_CHARGE, NO_TARGET, WOLF_NET_IN, WOLF_NET_PREFIX};
+use sim_core::genome::{Genome, Net, TEXT_MAX};
 use sim_core::limits::{HOTBAR_SLOTS, MAX_MOBS, TICK_HZ};
 use sim_core::mob::{guard_site_of, kind_of, pack_of, MOB_WOLF};
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -142,6 +149,52 @@ impl Outcome {
         }
         f
     }
+}
+
+/// Made-up fight snapshots for the base screen, in [`wolf_features`]'
+/// ranges: a distance, reach when close, bearings, the target's buttons and
+/// swing clock a fifth of the time each, health, the pack, the state.
+///
+/// [`wolf_features`]: sim_core::brain::wolf_features
+fn probes(n: usize) -> Vec<[f32; WOLF_NET_IN]> {
+    (0..n as u64)
+        .map(|i| {
+            let r = |k: u64| mix64(0x5c2e_e000 ^ i << 8 ^ k);
+            let u = |k: u64| (r(k) % 10_000) as f32 / 10_000.0;
+            let bit = |k: u64| if r(k) % 5 == 0 { 1.0 } else { 0.0 };
+            let mut x = [0.0f32; WOLF_NET_IN];
+            x[0] = u(0) * 4.0;
+            x[1] = if x[0] < 0.25 { 1.0 } else { 0.0 };
+            x[2] = u(2) * 2.0 - 1.0;
+            x[3] = u(3) * 2.0 - 1.0;
+            x[4] = u(4) * 2.0 - 1.0;
+            x[5] = (u(5) * 2.0 - 1.0) * x[3];
+            for (k, xk) in x.iter_mut().enumerate().take(12).skip(6) {
+                *xk = bit(k as u64);
+            }
+            x[12] = u(12);
+            x[13] = u(13);
+            x[14] = (r(14) % 3) as f32 / 3.0;
+            x[15] = (r(15) % 3) as f32 / 2.0;
+            x[16] = bit(16);
+            x[17] = bit(17);
+            x[18] = (r(18) % 3) as f32 / 3.0;
+            x[19] = bit(19);
+            x[20] = (r(20) % 2) as f32 / 3.0;
+            x[21 + (r(21) % 3) as usize] = 1.0;
+            x
+        })
+        .collect()
+}
+
+/// The share of `probes` a genome answers with a charge.
+fn charge_share(g: &Genome, probes: &[[f32; WOLF_NET_IN]]) -> f32 {
+    let net = Net::build(wolf_shape(), g);
+    let charges = probes
+        .iter()
+        .filter(|x| net.choose(&x[..]) == NET_CHARGE)
+        .count();
+    charges as f32 / probes.len().max(1) as f32
 }
 
 /// The first free pack with at least three slots: not a guard, the same
@@ -240,7 +293,7 @@ fn play(b: &Bout, genome: Option<&Genome>) -> Outcome {
         m.tries = 0;
         m.awake = false;
         m.pick = 0;
-        m.bit_at = 0;
+        m.pressed_at = 0;
         m.path.clear();
     }
 
@@ -429,6 +482,7 @@ struct Args {
     batch: usize,
     confirm: usize,
     bases: usize,
+    screen: usize,
     held_out: usize,
     seed: u64,
     threads: usize,
@@ -443,6 +497,7 @@ fn args() -> Args {
         batch: 24,
         confirm: 48,
         bases: 32,
+        screen: 4096,
         held_out: 48,
         seed: 1,
         threads: std::thread::available_parallelism().map_or(4, |n| n.get()),
@@ -467,6 +522,7 @@ fn args() -> Args {
             "--batch" => a.batch = num(),
             "--confirm" => a.confirm = num(),
             "--bases" => a.bases = num(),
+            "--screen" => a.screen = num(),
             "--held-out" => a.held_out = num(),
             "--seed" => a.seed = num() as u64,
             "--threads" => a.threads = num().max(1),
@@ -489,9 +545,27 @@ fn main() {
     let mut parent = match a.from {
         Some(g) => g,
         None => {
-            // The best of `bases` unmutated nets on the first batch.
-            let bases: Vec<Option<Genome>> = (0..a.bases as u64)
-                .map(|k| Some(Genome::new(draw(k) as u32)))
+            // The `bases` of `screen` unmutated nets that charge most, then
+            // the best of those on the first batch.
+            let probes = probes(256);
+            let mut screened: Vec<(f32, Genome)> = (0..a.screen.max(a.bases) as u64)
+                .map(|k| {
+                    let g = Genome::new(draw(k) as u32);
+                    (charge_share(&g, &probes), g)
+                })
+                .collect();
+            screened.sort_by(|x, y| y.0.total_cmp(&x.0));
+            println!(
+                "screen: {} bases, the best {} charge {:.0}%-{:.0}% of the probes",
+                screened.len(),
+                a.bases,
+                screened[a.bases.min(screened.len()) - 1].0 * 100.0,
+                screened[0].0 * 100.0
+            );
+            let bases: Vec<Option<Genome>> = screened
+                .iter()
+                .take(a.bases)
+                .map(|(_, g)| Some(*g))
                 .collect();
             let fit = score(&bases, &batch(TRAIN_SEEDS, a.batch, 0), a.threads);
             let best = (0..fit.len())

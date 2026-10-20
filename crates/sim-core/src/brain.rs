@@ -154,8 +154,9 @@ pub enum Cond {
     /// The choice in force — the one the current state was entered on
     /// (`Mob::pick`). Never holds for an animal no net drives.
     Chose(u8),
-    /// A bred brain's hunt has gone `NET_STALE_TICKS` without a bite: the
-    /// engagement budget, so a net that only ever circles still goes home.
+    /// A bred brain has spent `NET_STALE_TICKS` of a hunt circling or backing
+    /// off without once pressing in: the engagement budget, so a net that
+    /// only ever circles still goes home.
     Stale,
 }
 
@@ -466,8 +467,8 @@ pub static GUARD: Design = Design {
 /// the other, or back off — where the rule table always charged. The hard
 /// rules still come first and the net cannot reach past them: it breaks off
 /// hurt, drops a target that is gone, gives up on a rock after
-/// `MobDef::give_up_tries` failed routes or `NET_STALE_TICKS` without a
-/// bite, circles a lit torch, and waits its turn behind
+/// `MobDef::give_up_tries` failed routes or `NET_STALE_TICKS` without
+/// pressing in, circles a lit torch, and waits its turn behind
 /// `MobDef::pack_biters`. A changed choice holds `NET_HOLD_TICKS` before the
 /// next (`enter`), so a net cannot learn a frame-perfect bite and step out.
 pub static WOLF_NET: Design = Design {
@@ -733,8 +734,11 @@ pub const NO_PICK: u8 = u8::MAX;
 /// A chosen fight state holds at least this long before the net is asked
 /// again: one second, a little over a player's swing.
 pub const NET_HOLD_TICKS: u64 = 30;
-/// A bred hunt that has gone this long without a bite is given up — the
-/// engagement budget, half a minute.
+/// A bred hunt that has spent this long circling and backing off without
+/// once pressing in (Chase or Attack) is given up — the engagement budget,
+/// half a minute. A charge the target keeps dodging is never stale: the
+/// rule-table wolf does not give that up either, and a budget that counted
+/// it sent bred wolves home from every fight with a player who parries.
 pub const NET_STALE_TICKS: u64 = 900;
 
 /// The wolf net's text prefix: shape 24-16-4 reading [`wolf_features`].
@@ -922,16 +926,16 @@ pub fn think(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mu
     heal(ctx, def, mob);
 
     // A bred brain is asked once a think, after the senses, and only with
-    // someone to fight; its hunt clock starts with the hunt.
+    // someone to fight; its hunt clock runs while it is not pressing in.
     let design = design_for(slot, def, ctx.net.is_some());
     ctx.netted = design.net;
     ctx.pick = NO_PICK;
     if design.net {
         if !has_target(ctx, mob) {
-            mob.bit_at = 0;
+            mob.pressed_at = 0;
         } else {
-            if mob.bit_at == 0 {
-                mob.bit_at = tick.max(1);
+            if mob.pressed_at == 0 || matches!(mob.state, Chase | Attack) {
+                mob.pressed_at = tick.max(1);
             }
             if let Some(net) = ctx.net {
                 ctx.pick = net.choose(&wolf_features(ctx, slot, def, mob));
@@ -997,7 +1001,9 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         Pick(a) => ctx.pick == a,
         Chose(a) => ctx.netted && mob.pick == a + 1,
         Stale => {
-            ctx.netted && mob.bit_at != 0 && tick.saturating_sub(mob.bit_at) >= NET_STALE_TICKS
+            ctx.netted
+                && mob.pressed_at != 0
+                && tick.saturating_sub(mob.pressed_at) >= NET_STALE_TICKS
         }
     }
 }
@@ -1635,9 +1641,6 @@ fn attack(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mut B
             // the top tier's row then).
             fel: if mob.turned { def.fel_bite } else { 0 },
         });
-        if ctx.netted {
-            mob.bit_at = ctx.tick.max(1);
-        }
     }
     RUNNING
 }

@@ -913,10 +913,11 @@ pub struct Mob {
     /// runs. Zero for an animal no net drives, which is every animal unless
     /// content installs one (`brain::Nets`).
     pub pick: u8,
-    /// Under a bred brain, the tick its current hunt began or it last bit,
-    /// whichever is later; zero with no target. The engagement budget
-    /// (`brain::NET_STALE_TICKS`) runs off it. Always zero without a net.
-    pub bit_at: u64,
+    /// Under a bred brain, the tick its current hunt began or it last
+    /// pressed in (chasing or biting), whichever is later; zero with no
+    /// target. The engagement budget (`brain::NET_STALE_TICKS`) runs off
+    /// it. Always zero without a net.
+    pub pressed_at: u64,
 }
 
 /// The roster: fixed slots, one species each ([`kind_of`]), of which the
@@ -1485,7 +1486,7 @@ fn hatch(
     mob.howled_at = 0;
     mob.ambushed = false;
     mob.pick = 0;
-    mob.bit_at = 0;
+    mob.pressed_at = 0;
     mob.path.clear();
 }
 
