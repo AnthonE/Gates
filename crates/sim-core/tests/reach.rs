@@ -409,3 +409,43 @@ fn an_arrow_sunk_into_a_ledge_top_is_reached_from_the_ledge() {
         Target::stuck_in(h, 0, sunk, dir)
     ));
 }
+
+/// A door is worked from either side of its doorway, shut leaf and all, but
+/// not from the room above it, and not from behind another wall (the
+/// 2026-10-19 playtest opened doors "from like above").
+#[test]
+fn a_door_is_reached_from_its_own_storey_and_not_through_a_floor() {
+    use sim_core::build::{LOC_EDGE_ZLO as EDGE, SHAPE_DOORWAY};
+    use sim_core::deploy::DeployRec;
+    let (_, z_lo, x) = cell();
+    let rec = DeployRec {
+        cx: CX,
+        cz: CZ,
+        level: 0,
+        loc: EDGE,
+        ..DeployRec::default()
+    };
+    let mut cols = Box::new(ColIndex::new());
+    cols.add(CX, CZ, 0, EDGE, SHAPE_DOORWAY, 0);
+    cols.set_door(CX, CZ, 0, EDGE, true);
+    // A floor over the room, and a wall a cell further out on the outside.
+    cols.add(CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR, 0);
+    cols.add(CX, CZ - 1, 0, EDGE, SHAPE_WALL, 0);
+    let hv = hv(SEED);
+    let base = Target::door(SEED, hv, &cols, &rec, (x, z_lo)).base_y;
+    let from = |z: f32, feet: f32| {
+        let eye = (x + 0.4, feet + 1.6, z);
+        let t = Target::door(SEED, hv, &cols, &rec, (eye.0, eye.2));
+        reach::clear_from(SEED, hv, &cols, 0, eye, feet, t)
+    };
+    assert!(from(z_lo - 1.5, base), "outside, in front of the shut door");
+    assert!(from(z_lo + 1.5, base), "inside, behind it");
+    assert!(
+        !from(z_lo + 1.5, base + build::level_y(1)),
+        "from the room above, through its floor"
+    );
+    assert!(
+        !from(z_lo - build::BUILD_CELL_M - 0.5, base),
+        "from behind another wall"
+    );
+}

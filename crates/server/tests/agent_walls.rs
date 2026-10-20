@@ -2424,6 +2424,9 @@ fn a_teammate_fills_the_team_chest(locked: bool, supply: bool) {
     // The teammate locks its door, if it is to be locked, and goes; the
     // agent is outside, the door shut, wood in its pack.
     if locked {
+        // A lock is worked within a hand's reach of its door.
+        let by_the_door = place(bxf + 1.5, bzf + 1.0);
+        h.stage_puppet(move |p| p.body = by_the_door);
         let lock = sim_core::gather::ItemStack {
             count: 1,
             ..common::stack(&content, "item.lock_code")

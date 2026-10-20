@@ -182,7 +182,14 @@ pub fn resolve(
     let reach = |rec: &sim_core::deploy::DeployRec, arch: u8| match world.as_deref() {
         Some(w) => {
             let cols = core.pieces.cols();
-            let at = sim_core::reach::Target::standing(w.seed, &w.haven, cols, rec, arch);
+            let at = sim_core::reach::Target::deploy(
+                w.seed,
+                &w.haven,
+                cols,
+                rec,
+                arch,
+                (eye[0], eye[2]),
+            );
             let eye = (eye[0], eye[1], eye[2]);
             sim_core::reach::clear_from(w.seed, &w.haven, cols, core.card_doors, eye, y, at)
         }

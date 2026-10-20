@@ -3031,6 +3031,24 @@ impl World {
         (crate::reach::eye(p), crate::reach::feet_y(p))
     }
 
+    /// Whether the player in `slot` sees the door (or locked box) at `addr`
+    /// on their own storey (`reach::clear_door`). The planar reach is the
+    /// verb's own.
+    fn door_seen(&self, slot: usize, addr: (u16, u16, u8, u8)) -> bool {
+        let (eye, feet) = self.hand(slot);
+        crate::reach::clear_door(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            self.card_door_bits,
+            &self.deploy,
+            &self.deploys,
+            addr,
+            eye,
+            feet,
+        )
+    }
+
     /// Whether the player in `slot` reaches entry `i` of the box store — a
     /// box, an oven, a research table: the planar `BUILD_REACH_M`, then the
     /// same storey and nothing built in the way (`reach.rs`). The move verb
@@ -6047,7 +6065,25 @@ impl World {
                             &mut self.events,
                             reach,
                         ));
-                    if !lit {
+                    // A door in plain sight and on this storey, the box
+                    // store's rule (`reach.rs`): not through a floor, not
+                    // from the room above.
+                    let seen = lit
+                        || crate::reach::clear_door(
+                            seed,
+                            haven,
+                            cols,
+                            doors,
+                            content,
+                            &self.deploys,
+                            (cx, cz, level, loc),
+                            eye,
+                            feet,
+                        );
+                    if !seen {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                    } else if !lit {
                         let owner = deploy::use_door(
                             &self.deploy,
                             &mut self.pieces,
@@ -6173,6 +6209,11 @@ impl World {
                         if let Some(owner) = owner {
                             self.log_trust(seat, id, owner, TRUST_AUTH);
                         }
+                    } else if !self.door_seen(slot, (cx, cz, level, loc)) {
+                        // The use verb's sight rule: a lock is worked where
+                        // its door is, never through a floor.
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
                     } else {
                         let mut spill = [ItemStack::default(); INV_SLOTS];
                         let owner = deploy::lock_op(

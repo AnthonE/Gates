@@ -26,9 +26,10 @@
 //!
 //! ## Reach is not a client knob
 //!
-//! [`REACH_M`] is `sim_core::build::BUILD_REACH_M` by import, because the sim
-//! gates a door use, a hearth feed, a box open (`deploy.rs`) and a bag loot
-//! (`backpack.rs`, which aliases it `LOOT_REACH_M`) on exactly that number.
+//! [`REACH_M`] is `sim_core::deploy::STATION_REACH_M` by import, because
+//! the sim gates a box, a furnace or a bench open (`deploy.rs`) on exactly
+//! that number; a door and a bag are `backpack::LOOT_REACH_M`, measured to
+//! the thing itself (a hearth feed allows more).
 //! Picking a target outside it costs a round trip and a refusal — the
 //! quantize-both-sides law (`CLAUDE.md`) applied to reach.
 
@@ -42,7 +43,7 @@ use sim_core::deploy::{
 use sim_core::footprint::Rect;
 use sim_core::movement::POS_XZ_Q;
 
-pub use sim_core::build::BUILD_REACH_M as REACH_M;
+pub use sim_core::deploy::STATION_REACH_M as REACH_M;
 
 /// How far off the aim line a thing may sit and still count as aimed at.
 ///
@@ -1149,19 +1150,31 @@ pub fn resolve(
             }
         }
         // Reach is measured to where the thing stands — its own centre for
-        // a deployable placed freely, the cell centre for a door (its pose
-        // is the centre) — which is the metric `deploy.rs`'s
-        // `box_in_reach` and the door's own gate use.
+        // a deployable placed freely, the doorway's middle for a door —
+        // which is the metric `deploy.rs`'s `box_in_reach` and the door's
+        // own gate use.
         let (x, z) = rec.xz();
         // A door is aimed at where it hangs, its edge's middle: two doors
         // share a cell (an airlock's front and inner door), and scored at
         // the centre they tie exactly, so the second could never be picked.
+        // The shard measures a door's reach to the same point
+        // (`DeployRec::hand_xz`), and refuses one on another storey or
+        // behind a floor, so neither is offered.
         let (x, z) = if verb == Verb::Door {
-            let (dx, dz) = (x - aim.x, z - aim.z);
-            if dx * dx + dz * dz > aim.reach * aim.reach {
+            if aim
+                .sight
+                .as_ref()
+                .and_then(|s| s.reach)
+                .is_some_and(|r| !r(rec, arch))
+            {
                 continue;
             }
-            sim_core::build::anchor(rec.cx, rec.cz, rec.loc)
+            let (hx, hz) = rec.hand_xz();
+            let r = aim.reach.min(LOOT_REACH_M);
+            if (hx - aim.x) * (hx - aim.x) + (hz - aim.z) * (hz - aim.z) > r * r {
+                continue;
+            }
+            (hx, hz)
         } else {
             (x, z)
         };

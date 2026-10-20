@@ -657,13 +657,15 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Wall, 1, 1, 0, D),
     // Doors: metal on the front if there is one, else wood; wood on the
     // inner one (refused wherever a door already hangs). The front door is
-    // first because it is the one a single door goes on. Then a lock on each
-    // there is a lock for.
+    // first because it is the one a single door goes on. Its lock is set
+    // from inside the airlock, reached through the inner doorway before
+    // that door hangs; then the inner door and its lock from the room
+    // ([`stand_m`]: a lock is worked within a hand's reach of its door).
     Deploy(Kit::MetalDoor, 1, 1, 0, X),
     Deploy(Kit::Door, 1, 1, 0, X),
-    Deploy(Kit::Door, 1, 1, 0, Z),
     Deploy(Kit::Lock, 1, 1, 0, X),
     Code(1, 1, 0, X),
+    Deploy(Kit::Door, 1, 1, 0, Z),
     Deploy(Kit::Lock, 1, 1, 0, Z),
     Code(1, 1, 0, Z),
     // Up, and the roof on, in twig.
@@ -743,6 +745,29 @@ pub const STARTER_FOOTPRINT: [(i8, i8); 3] = [(0, 0), (1, 0), (1, 1)];
 /// outside.
 pub const STARTER_STAND_M: (f32, f32) = (1.8, 0.75);
 
+/// Where the owner stands to set the front door's lock: inside the airlock
+/// triangle, in line with the inner doorway it came in by.
+pub const AIRLOCK_STAND_M: (f32, f32) = (4.4, 3.7);
+
+/// Where it stands to hang the inner door and set its lock: in the room,
+/// in line with that doorway.
+pub const INNER_STAND_M: (f32, f32) = (4.5, 2.2);
+
+/// Where the owner stands for `op`, in metres from the plot cell's low
+/// corner: [`STARTER_STAND_M`] for everything but the two doors' locks,
+/// which are worked from beside their doors. A door is reached at
+/// `backpack::LOOT_REACH_M`, in sight and on its storey (`reach.rs`), and
+/// neither door is, from the core.
+pub fn stand_m(op: BaseOp) -> (f32, f32) {
+    match op {
+        Deploy(Kit::Lock, 1, 1, 0, X) | Code(1, 1, 0, X) => AIRLOCK_STAND_M,
+        Deploy(Kit::Door, 1, 1, 0, Z) | Deploy(Kit::Lock, 1, 1, 0, Z) | Code(1, 1, 0, Z) => {
+            INNER_STAND_M
+        }
+        _ => STARTER_STAND_M,
+    }
+}
+
 /// An owner's place in its blueprint.
 #[derive(Clone, Copy, Debug)]
 pub struct BasePlan {
@@ -769,6 +794,16 @@ impl BasePlan {
     pub fn cell(&self, dx: i8, dz: i8) -> (u16, u16) {
         let at = |c: u16, d: i8| (c as i32 + d as i32).clamp(0, u16::MAX as i32) as u16;
         (at(self.cx, dx), at(self.cz, dz))
+    }
+
+    /// Where the owner stands for the next op of `blueprint`, world metres
+    /// ([`stand_m`]).
+    pub fn stand(&self, blueprint: &[BaseOp]) -> (f32, f32) {
+        let (sx, sz) = stand_m(blueprint[self.next as usize % blueprint.len()]);
+        (
+            self.cx as f32 * crate::build::BUILD_CELL_M + sx,
+            self.cz as f32 * crate::build::BUILD_CELL_M + sz,
+        )
     }
 }
 

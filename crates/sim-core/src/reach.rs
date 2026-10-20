@@ -109,6 +109,15 @@ pub fn sight(
 /// How far above its feet a body lying or standing is aimed at, metres.
 pub const BODY_MID_M: f32 = 0.9;
 
+/// How far above its floor a door is aimed at, metres: the handle's height.
+pub const DOOR_MID_M: f32 = 1.0;
+
+/// How far out of its wall's plane a door is aimed at, on the side the eye
+/// stands, metres: clear of half the wall slab
+/// (`collide::WALL_THICKNESS_M`) and the walk's own radius, so neither the
+/// shut leaf nor the doorway's rim is read as in the way.
+pub const DOOR_SIDE_M: f32 = 0.3;
+
 /// How far a stuck arrow is aimed off the point it went in, back along its
 /// flight, metres — clear of the surface it is stuck in, which the walk's
 /// last sample would otherwise read as in the way.
@@ -225,6 +234,54 @@ impl Target {
         }
     }
 
+    /// A door, a garage door or a shutter hanging in a doorway (an edge
+    /// address), reached from an eye at `eye_xz`: aimed at the leaf's middle,
+    /// [`DOOR_SIDE_M`] out on the eye's side of the wall. A shut leaf and
+    /// its own frame are then never in the way, and a walk that has to go
+    /// through a floor, a roof or another wall still is. The storey rule
+    /// applies: a door is not worked from the room above (the 2026-10-19
+    /// playtest opened one "from like above").
+    pub fn door(
+        seed: u64,
+        haven: &Haven,
+        cols: &ColIndex,
+        rec: &crate::deploy::DeployRec,
+        eye_xz: (f32, f32),
+    ) -> Self {
+        let (ax, az) = crate::build::anchor(rec.cx, rec.cz, rec.loc);
+        let side = |d: f32| if d < 0.0 { -DOOR_SIDE_M } else { DOOR_SIDE_M };
+        let (x, z) = if rec.loc == crate::build::LOC_EDGE_XLO {
+            (ax + side(eye_xz.0 - ax), az)
+        } else {
+            (ax, az + side(eye_xz.1 - az))
+        };
+        Self {
+            x,
+            z,
+            base_y: crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
+                + crate::build::level_y(rec.level),
+            mid: DOOR_MID_M,
+            storey: true,
+        }
+    }
+
+    /// Any deployable a hand works: [`Self::door`] for one hanging in a
+    /// doorway, [`Self::standing`] for everything else.
+    pub fn deploy(
+        seed: u64,
+        haven: &Haven,
+        cols: &ColIndex,
+        rec: &crate::deploy::DeployRec,
+        arch: u8,
+        eye_xz: (f32, f32),
+    ) -> Self {
+        if crate::deploy::is_edge_loc(rec.loc) {
+            Self::door(seed, haven, cols, rec, eye_xz)
+        } else {
+            Self::standing(seed, haven, cols, rec, arch)
+        }
+    }
+
     /// A world container (`worldcont.rs`) at the quantized stand position
     /// its record carries, `(qx, qy, qz)` — `qy` the floor it stands on —
     /// aimed at the middle of its body. The storey rule applies: it stands
@@ -303,6 +360,31 @@ pub fn clear_box(
         return false;
     };
     let t = Target::standing(seed, haven, cols, rec, def.arch);
+    clear_from(seed, haven, cols, doors, eye, feet_y, t)
+}
+
+/// [`clear_from`] for the door (or locked box) at an address, as the use
+/// and lock verbs find it. True when nothing stands there: the verb's own
+/// refusal names that, not this test.
+#[allow(clippy::too_many_arguments)]
+pub fn clear_door(
+    seed: u64,
+    haven: &Haven,
+    cols: &ColIndex,
+    doors: u32,
+    content: &DeployContent,
+    deploys: &Deploys,
+    addr: (u16, u16, u8, u8),
+    eye: (f32, f32, f32),
+    feet_y: f32,
+) -> bool {
+    let Some(rec) = deploys.find(addr.0, addr.1, addr.2, addr.3) else {
+        return true;
+    };
+    let Some(def) = content.defs.get(rec.row as usize) else {
+        return true;
+    };
+    let t = Target::deploy(seed, haven, cols, rec, def.arch, (eye.0, eye.2));
     clear_from(seed, haven, cols, doors, eye, feet_y, t)
 }
 
