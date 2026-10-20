@@ -1024,6 +1024,19 @@ pub fn sight_hit(s: &Sight<'_>, rect: &Rect, bottom: f32, top: f32) -> Option<f3
     Some(t0)
 }
 
+/// The doorway a door hangs in, on the ground: its cell's low-x or low-z
+/// edge, a wall's thickness deep.
+fn doorway_rect(rec: &DeployRec) -> Rect {
+    let c = sim_core::build::BUILD_CELL_M;
+    let t = sim_core::collide::WALL_THICKNESS_M * 0.5;
+    let (x0, z0) = (rec.cx as f32 * c, rec.cz as f32 * c);
+    if rec.loc == sim_core::build::LOC_EDGE_XLO {
+        Rect::aligned(x0 - t, z0, x0 + t, z0 + c)
+    } else {
+        Rect::aligned(x0, z0 - t, x0 + c, z0 + t)
+    }
+}
+
 /// Best-so-far, as scalars rather than a candidate struct, so the sweep
 /// allocates nothing.
 struct Best {
@@ -1181,7 +1194,18 @@ pub fn resolve(
         // Anything placed freely is picked by looking at it, when there is
         // an eye to look with: the box the ray meets, not the nearest box.
         let mut seen = false;
-        if verb != Verb::Door {
+        // A door too, when there is an eye: the crosshair on its doorway,
+        // as in Rust. Picked by standing near it, a door behind you or
+        // beside you swung on `E` (operator, 2026-10-20).
+        if verb == Verb::Door {
+            if let Some(s) = aim.sight.as_ref() {
+                let (bottom, top) = (s.span)(rec, arch);
+                if sight_hit(s, &doorway_rect(rec), bottom, top).is_none() {
+                    continue;
+                }
+                seen = true;
+            }
+        } else {
             if let Some(s) = aim.sight.as_ref() {
                 let Some(rect) = rec.rect(arch) else {
                     continue;
@@ -1369,6 +1393,32 @@ mod tests {
         let p = resolve(Aim::new(cx, cz + 2.0, 0.0, 1.0), &recs, &defs, have, &[]);
         assert_eq!(p.verb, Verb::Door);
         assert!(!p.aimed, "it is behind us, so it is nearby and not aimed");
+    }
+
+    /// With an eye, a door is opened by looking at its doorway: one beside
+    /// or behind you is not offered (operator, 2026-10-20).
+    #[test]
+    fn a_door_with_an_eye_is_picked_only_when_looked_at() {
+        let (defs, have) = defs_with(&[ARCH_DOOR]);
+        let mut door = rec(1, 1, 0);
+        door.loc = sim_core::build::LOC_EDGE_ZLO;
+        let span = |_: &DeployRec, _: u8| (0.0, 2.2);
+        // Stood 1.5 m inside the cell, the doorway's middle ahead to the north.
+        let (cx, _) = centre(1, 1);
+        let z = BUILD_CELL_M + 1.5;
+        let look = |dz: f32| {
+            let mut aim = Aim::new(cx, z, 0.0, dz);
+            aim.sight = Some(Sight {
+                eye: [cx, 1.6, z],
+                dir: [0.0, 0.0, dz],
+                span: &span,
+                reach: None,
+                lying: None,
+            });
+            resolve(aim, &[door], &defs, have, &[])
+        };
+        assert_eq!(look(-1.0).verb, Verb::Door, "facing the doorway");
+        assert_eq!(look(1.0).verb, Verb::None, "the doorway is behind us");
     }
 
     /// The `t > 0` guard: a hearth underfoot must not trump a box you are
