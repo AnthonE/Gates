@@ -148,9 +148,12 @@ pub enum Cond {
     Ambushed,
     /// A pack-mate inside the call range was struck within the last think.
     MateStruck,
-    /// The bred brain chose this action this think (`NET_PRESS`…). Never
+    /// The bred brain chose this action this think (`NET_CHARGE`…). Never
     /// holds for an animal no net drives.
     Pick(u8),
+    /// The choice in force — the one the current state was entered on
+    /// (`Mob::pick`). Never holds for an animal no net drives.
+    Chose(u8),
     /// A bred brain's hunt has gone `NET_STALE_TICKS` without a bite: the
     /// engagement budget, so a net that only ever circles still goes home.
     Stale,
@@ -456,17 +459,17 @@ pub static GUARD: Design = Design {
 };
 
 /// The wolf with a bred brain choosing its fights (`genome.rs`,
-/// [`Nets`]). Everything around a fight is the [`WOLF`]'s, row for row:
-/// how it rests, roams, sleeps, goes to look and walks home, and how it
-/// first goes for someone it notices. Inside a fight (Chase, Attack, Orbit,
-/// and a retreat) the hard rules still come first and the net cannot reach
-/// past them — it breaks off hurt, drops a target that is gone, gives up on
-/// a rock after `MobDef::give_up_tries` failed routes or `NET_STALE_TICKS`
-/// without a bite, circles a lit torch, and waits its turn behind
-/// `MobDef::pack_biters`. What is left is the choice the rule table made by
-/// fixed order: press in, bite, circle one way or the other, or back off.
-/// Each choice holds `NET_HOLD_TICKS` before the next (`enter`), so a net
-/// cannot learn a frame-perfect bite and step out.
+/// [`Nets`]). Everything around a fight is the [`WOLF`]'s, row for row: how
+/// it rests, roams, sleeps, goes to look and walks home. From the moment it
+/// notices someone the net chooses among four things — charge (run in and
+/// bite the moment it can, the rule table's whole fight), circle one way or
+/// the other, or back off — where the rule table always charged. The hard
+/// rules still come first and the net cannot reach past them: it breaks off
+/// hurt, drops a target that is gone, gives up on a rock after
+/// `MobDef::give_up_tries` failed routes or `NET_STALE_TICKS` without a
+/// bite, circles a lit torch, and waits its turn behind
+/// `MobDef::pack_biters`. A changed choice holds `NET_HOLD_TICKS` before the
+/// next (`enter`), so a net cannot learn a frame-perfect bite and step out.
 pub static WOLF_NET: Design = Design {
     rules: [
         // Idle
@@ -474,6 +477,9 @@ pub static WOLF_NET: Design = Design {
             go(&[Target, Afraid], Flee),
             go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
             go(&[Noise], MoveTowards),
@@ -486,6 +492,9 @@ pub static WOLF_NET: Design = Design {
             go(&[Target, Afraid], Flee),
             go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
             go(&[Noise], MoveTowards),
@@ -493,7 +502,7 @@ pub static WOLF_NET: Design = Design {
             go(&[Failed], Idle),
             go(&[Timer], Idle),
         ],
-        // Chase
+        // Chase: a charge bites the moment it can, as the rule table's does.
         &[
             go(&[Afraid], Flee),
             go(&[NoTarget], Idle),
@@ -501,10 +510,8 @@ pub static WOLF_NET: Design = Design {
             give_up(&[Stale], NavigateHome),
             go(&[Fire], Orbit),
             go(&[InReach, Crowded], Orbit),
+            go(&[InReach, Chose(NET_CHARGE)], Attack),
             go(&[Failed], Orbit),
-            go(&[Timer, Pick(NET_BITE), InReach], Attack),
-            go(&[Timer, Pick(NET_BITE)], Chase),
-            go(&[Timer, Pick(NET_PRESS)], Chase),
             go(&[Timer, Pick(NET_CIRCLE_A)], Orbit),
             go(&[Timer, Pick(NET_CIRCLE_B)], Orbit),
             go(&[Timer, Pick(NET_BACK_OFF)], Flee),
@@ -516,8 +523,6 @@ pub static WOLF_NET: Design = Design {
             give_up(&[Stale], NavigateHome),
             go(&[Fire], Orbit),
             go(&[OutOfReach], Chase),
-            go(&[Timer, Pick(NET_BITE)], Attack),
-            go(&[Timer, Pick(NET_PRESS)], Chase),
             go(&[Timer, Pick(NET_CIRCLE_A)], Orbit),
             go(&[Timer, Pick(NET_CIRCLE_B)], Orbit),
             go(&[Timer, Pick(NET_BACK_OFF)], Flee),
@@ -527,9 +532,8 @@ pub static WOLF_NET: Design = Design {
         &[
             go(&[NoTarget], Idle),
             give_up(&[Stale], NavigateHome),
-            go(&[Timer, Brave, Pick(NET_BITE), InReach], Attack),
-            go(&[Timer, Brave, Pick(NET_BITE)], Chase),
-            go(&[Timer, Brave, Pick(NET_PRESS)], Chase),
+            go(&[Timer, Brave, Pick(NET_CHARGE), InReach], Attack),
+            go(&[Timer, Brave, Pick(NET_CHARGE)], Chase),
             go(&[Timer, Brave, Pick(NET_CIRCLE_A)], Orbit),
             go(&[Timer, Brave, Pick(NET_CIRCLE_B)], Orbit),
             go(&[Timer, Brave, Pick(NET_BACK_OFF)], Flee),
@@ -539,14 +543,18 @@ pub static WOLF_NET: Design = Design {
             go(&[Target, Afraid], Flee),
             go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
             go(&[Timer], Idle),
         ],
         // Orbit: a torch or a full set of biters keeps it circling, the
-        // same way round, rather than choosing a bite the next think's hard
-        // rule would turn straight back.
+        // same way round, rather than choosing a charge the next think's
+        // hard rule would turn straight back. A turn the other way is a
+        // fresh circle.
         &[
             go(&[Afraid], Flee),
             go(&[NoTarget], Idle),
@@ -554,14 +562,13 @@ pub static WOLF_NET: Design = Design {
             give_up(&[Stale], NavigateHome),
             go(&[Timer, Fire], Orbit),
             go(&[Timer, Crowded], Orbit),
-            go(&[Timer, Pick(NET_BITE), InReach], Attack),
-            go(&[Timer, Pick(NET_BITE)], Chase),
-            go(&[Timer, Pick(NET_PRESS)], Chase),
-            go(&[Timer, Pick(NET_CIRCLE_A)], Orbit),
-            go(&[Timer, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Timer, Pick(NET_CHARGE), InReach], Attack),
+            go(&[Timer, Pick(NET_CHARGE)], Chase),
+            go(&[Timer, Pick(NET_CIRCLE_A), Chose(NET_CIRCLE_B)], Orbit),
+            go(&[Timer, Pick(NET_CIRCLE_B), Chose(NET_CIRCLE_A)], Orbit),
             go(&[Timer, Pick(NET_BACK_OFF)], Flee),
         ],
-        // Patrol
+        // Patrol: only a guard patrols, and a guard keeps its table.
         &[
             go(&[Target, Afraid], Flee),
             go(&[Target, Ambushed], Flee),
@@ -574,6 +581,9 @@ pub static WOLF_NET: Design = Design {
             go(&[Target, Afraid], Flee),
             go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
             go(&[Target], Chase),
             go(&[Noise], MoveTowards),
             go(&[Timer], Idle),
@@ -583,6 +593,9 @@ pub static WOLF_NET: Design = Design {
             go(&[Target, Afraid], Flee),
             go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_A)], Orbit),
+            go(&[Target, Pick(NET_CIRCLE_B)], Orbit),
+            go(&[Target, Pick(NET_BACK_OFF)], Flee),
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
@@ -705,16 +718,15 @@ const CH_IDLE: u32 = 114;
 const CH_ROAM: u32 = 115;
 const CH_CHANCE: u32 = 117;
 
-/// The bred wolf's actions: what [`WOLF_NET`] turns each output into.
-pub const NET_PRESS: u8 = 0;
-/// Bite if in reach, else close in to.
-pub const NET_BITE: u8 = 1;
+/// The bred wolf's actions: what [`WOLF_NET`] turns each output into. A
+/// charge runs in and bites the moment it can — the rule table's fight.
+pub const NET_CHARGE: u8 = 0;
 /// Circle the target one way round, or the other.
-pub const NET_CIRCLE_A: u8 = 2;
-pub const NET_CIRCLE_B: u8 = 3;
+pub const NET_CIRCLE_A: u8 = 1;
+pub const NET_CIRCLE_B: u8 = 2;
 /// Back off for `RETREAT_TICKS`, then choose again.
-pub const NET_BACK_OFF: u8 = 4;
-pub const NET_ACTIONS: usize = 5;
+pub const NET_BACK_OFF: u8 = 3;
+pub const NET_ACTIONS: usize = 4;
 /// No choice made this think: no net, or nobody to fight.
 pub const NO_PICK: u8 = u8::MAX;
 
@@ -725,7 +737,7 @@ pub const NET_HOLD_TICKS: u64 = 30;
 /// engagement budget, half a minute.
 pub const NET_STALE_TICKS: u64 = 900;
 
-/// The wolf net's text prefix: shape 24-16-5 reading [`wolf_features`].
+/// The wolf net's text prefix: shape 24-16-4 reading [`wolf_features`].
 /// Any change to the shape, the feature list or the actions is a new
 /// prefix, so an old genome is refused rather than read as a different
 /// animal.
@@ -983,6 +995,7 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         Drowsy => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64,
         Napping => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < def.sleep_pct as u64 / 3,
         Pick(a) => ctx.pick == a,
+        Chose(a) => ctx.netted && mob.pick == a + 1,
         Stale => {
             ctx.netted && mob.bit_at != 0 && tick.saturating_sub(mob.bit_at) >= NET_STALE_TICKS
         }

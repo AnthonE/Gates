@@ -27,7 +27,7 @@
 //!
 //! ```text
 //! cargo run --release -p server --example zoo                      # breed from scratch
-//! cargo run --release -p server --example zoo -- --gens 80 --kids 15 --batch 12
+//! cargo run --release -p server --example zoo -- --gens 100 --kids 15 --batch 24
 //! cargo run --release -p server --example zoo -- --from gw1:...    # keep breeding a genome
 //! cargo run --release -p server --example zoo -- --bench gw1:...   # the held-out table only
 //! ```
@@ -442,10 +442,10 @@ struct Args {
 
 fn args() -> Args {
     let mut a = Args {
-        gens: 60,
+        gens: 100,
         kids: 15,
-        batch: 12,
-        confirm: 24,
+        batch: 24,
+        confirm: 48,
         bases: 32,
         held_out: 48,
         seed: 1,

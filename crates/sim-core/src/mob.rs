@@ -908,10 +908,10 @@ pub struct Mob {
     /// Tick this slot may hatch on. Zero on a fresh world, so every homed
     /// slot hatches on tick 1 under armed content.
     pub respawn_at: u64,
-    /// A bred brain's last choice, one past its action index
-    /// (`brain::NET_PRESS`…): which way a circle it chose runs. Zero for an
-    /// animal no net drives, which is every animal unless content installs
-    /// one (`brain::Nets`).
+    /// A bred brain's choice in force, one past its action index
+    /// (`brain::NET_CHARGE`…): whether a chase bites, which way a circle
+    /// runs. Zero for an animal no net drives, which is every animal unless
+    /// content installs one (`brain::Nets`).
     pub pick: u8,
     /// Under a bred brain, the tick its current hunt began or it last bit,
     /// whichever is later; zero with no target. The engagement budget

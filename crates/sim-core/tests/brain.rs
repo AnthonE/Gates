@@ -794,15 +794,15 @@ fn a_bred_wolf_that_always_circles_circles() {
     }
 }
 
-/// **The hard rules come first.** A bred wolf that always chooses to bite
+/// **The hard rules come first.** A bred wolf that always chooses to charge
 /// still keeps off a lit torch, and three of them still take turns behind
 /// the row's `pack_biters`.
 #[test]
 fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
-    use sim_core::brain::NET_BITE;
+    use sim_core::brain::NET_CHARGE;
     let pack = free_pack();
     let mut w = world_with(&[(pack[0], 5.0, 0.0)]);
-    w.nets = always(NET_BITE);
+    w.nets = always(NET_CHARGE);
     w.players[0].inv[0] = ItemStack {
         item: 0,
         count: 1,
@@ -818,7 +818,7 @@ fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
         (pack[1], -3.0, 0.0),
         (pack[2], 0.0, 3.0),
     ]);
-    w.nets = always(NET_BITE);
+    w.nets = always(NET_CHARGE);
     let mut most = 0;
     hold(&mut w, 0, 8 * MOB_THINK_TICKS as u32, |w| {
         let biting = pack
@@ -827,7 +827,7 @@ fn a_bred_wolf_still_keeps_off_a_torch_and_waits_its_turn() {
             .count();
         most = most.max(biting);
     });
-    assert!(most >= 1, "bred wolves told to bite never bit");
+    assert!(most >= 1, "bred wolves told to charge never bit");
     assert!(
         most <= w.mob.def(MOB_WOLF).pack_biters as usize,
         "{most} bred wolves were biting one player at once"
