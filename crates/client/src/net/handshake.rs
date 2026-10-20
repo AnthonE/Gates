@@ -537,9 +537,27 @@ pub fn auth_for(
     buf: &mut [u8],
 ) -> Result<usize, JoinError> {
     // `None`: the desktop signs the host it dialled, always.
-    let signature = proof_wanted(frame, server, None, address)?
-        .and_then(|p| sign(&p.domain, &p.nonce_hex(), p.issued_at));
+    let signature = match proof_wanted(frame, server, None, address)? {
+        None => None,
+        // A player who claimed an address and could not prove it is told so,
+        // and joins nobody. Falling back to a guest put a wallet player on the
+        // island as a stranger with nothing said (2026-10-19, a browser
+        // pairing whose tab had closed).
+        Some(p) => Some(sign(&p.domain, &p.nonce_hex(), p.issued_at).ok_or_else(|| {
+            JoinError::Failed(format!(
+                "could not sign in as {}; approve the sign-in in your launcher or \
+                 browser and try again",
+                short(address)
+            ))
+        })?),
+    };
     auth_frame(address, signature, buf)
+}
+
+/// `0x1234…abcd`, as a person reads a wallet back.
+fn short(address: protocol::Address) -> String {
+    let hex: String = address.0.iter().map(|b| format!("{b:02x}")).collect();
+    format!("0x{}…{}", &hex[..4], &hex[hex.len() - 4..])
 }
 
 /// Step 3 — the shard's answer: a welcome, or the reason it said no.
@@ -614,8 +632,7 @@ mod tests {
                 None
             },
             &mut buf,
-        )
-        .expect("encodes");
+        );
         let (domain, nonce, issued) = seen.expect("sign was asked");
         assert_eq!(
             domain, "game.elopros.com",
@@ -818,18 +835,18 @@ mod tests {
         }
     }
 
-    /// A declined prompt or an absent launcher answers `None`, and `None`
-    /// means **connect as a guest** rather than fail the connection
-    /// (`Session::connect`'s contract). A page has no local launcher at all,
-    /// so this is the web build's ordinary path, not its error path.
+    /// A player who claimed an address and whose signer answered `None`
+    /// is told, and joins nobody: never a silent guest in a wallet player's
+    /// place. (A guest address never asks, below.)
     #[test]
-    fn a_refused_signature_connects_as_a_guest_rather_than_failing() {
+    fn a_refused_signature_fails_rather_than_joining_as_a_guest() {
         let frame = challenge_frame([1u8; protocol::NONCE_BYTES], 9);
         let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-        let n =
-            auth_for(&frame, "h:1", someone(), |_, _, _| None, &mut buf).expect("still encodes");
-        let auth = protocol::decode_auth(&buf[..n]).expect("round trips");
-        assert!(auth.address.is_guest(), "no signature means guest");
+        let got = auth_for(&frame, "h:1", someone(), |_, _, _| None, &mut buf);
+        assert!(
+            matches!(&got, Err(JoinError::Failed(why)) if why.contains("could not sign in as 0x")),
+            "{got:?}"
+        );
     }
 
     /// A guest never reaches the launcher at all — asking would be a consent

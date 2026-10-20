@@ -1512,7 +1512,14 @@ pub fn begin_connect(
 
 /// A one-line "connecting to …" screen. Deliberately not the menu greyed
 /// out: the menu is despawned, so there is nothing to click twice.
-pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>) {
+pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>, who: Res<Who>) {
+    // A wallet player may have to approve the sign-in somewhere else: in the
+    // launcher, or in the browser tab it paired with.
+    let hint = if who.0.address().is_some() {
+        "Signing in: approve it in your launcher or your paired browser tab. Esc goes back"
+    } else {
+        "Esc goes back"
+    };
     commands.spawn((Camera2d, MenuRoot));
     commands.spawn((
         MenuRoot,
@@ -1532,7 +1539,7 @@ pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>
             ),
             // Says the way out, because there has to be one: a shard that is
             // not running never refuses a QUIC connect, it just goes quiet.
-            ui::label("Esc goes back", 12.0, ui::FAINT),
+            ui::label(hint, 12.0, ui::FAINT),
         ],
     ));
 }
@@ -1559,8 +1566,11 @@ pub fn poll_connect(
     connecting.waited_s += time.delta_secs();
     let gave_up = if keyboard.just_pressed(KeyCode::Escape) {
         Some("cancelled".to_string())
-    } else if connecting.waited_s >= CONNECT_TIMEOUT_S {
-        Some(format!("no answer after {CONNECT_TIMEOUT_S:.0}s"))
+    } else if connecting.waited_s >= connect_timeout(connecting.address) {
+        Some(format!(
+            "no answer after {:.0}s",
+            connect_timeout(connecting.address)
+        ))
     } else {
         None
     };
@@ -1614,9 +1624,27 @@ pub fn poll_connect(
             next.set(Screen::Loading);
         }
         Err(why) => {
-            menu.status = format!("{}: {why}", connecting.addr);
+            menu.status = match crate::elo::take_refusal() {
+                Some(launcher) => format!("{}: {why} ({launcher})", connecting.addr),
+                None => format!("{}: {why}", connecting.addr),
+            };
             next.set(Screen::Menu);
         }
+    }
+}
+
+/// The same, for a player signing in: the shard holds the challenge open
+/// `SIGN_WAIT_SECS` for a person to approve it (a paired browser wallet is a
+/// tab and a MetaMask click away), so giving up at 20 s abandoned sign-ins
+/// the shard would have taken, and the retry found the launcher's first ask
+/// still open and joined as a guest (2026-10-19).
+pub const SIGN_IN_TIMEOUT_S: f32 = protocol::SIGN_WAIT_SECS as f32 + 5.0;
+
+fn connect_timeout(address: protocol::Address) -> f32 {
+    if address.is_guest() {
+        CONNECT_TIMEOUT_S
+    } else {
+        SIGN_IN_TIMEOUT_S
     }
 }
 
