@@ -54,10 +54,14 @@ use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
 use crate::movement::POS_XZ_Q;
 use crate::world::{EventQueue, Player, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
 
-/// Reach for opening a bag: the same arm every other world interaction
-/// uses (`build::BUILD_REACH_M`, which a hearth feed, a door and a lock
-/// already share). Not a new knob — deliberately the same one.
-pub use crate::build::BUILD_REACH_M as LOOT_REACH_M;
+/// A hand's reach, metres, planar from the feet: opening a bag, a box or a
+/// world crate, working a door or its lock, picking up a loose stack. The
+/// reference's use reach is about 3 m. It was `build::BUILD_REACH_M` (5 m)
+/// until 2026-10-20, and a door was measured to its cell's centre on top of
+/// that: the operator opened doors and looted bags from well across a room.
+/// Placing and repairing keep the longer arm, and a station measured to
+/// its middle has `deploy::STATION_REACH_M`.
+pub const LOOT_REACH_M: f32 = 3.0;
 
 /// Why a bag left the world — the `b` field of `EV_BAG_REMOVED`.
 pub const BAG_GONE_DESPAWN: u32 = 0;

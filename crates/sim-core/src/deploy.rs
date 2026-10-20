@@ -562,6 +562,13 @@ pub const REFUSE_D_MAX: u32 = REFUSE_D_NOT_EMPTY;
 /// is [`Deploys::foreign_claim`], the circle kept as the crew tests'
 /// probe.
 pub const HEARTH_RADIUS_M: f32 = 24.0;
+/// A hand's reach to a station in the box store — a box, a furnace, a
+/// bench, a research table — planar from the feet to its middle. The
+/// reference's ~3 m use reach is to the thing's surface, and a big
+/// station's middle is a metre past that; a door, a bag or a loose stack
+/// is reached to itself, at `backpack::LOOT_REACH_M`. It was the 5 m build
+/// arm until 2026-10-20.
+pub const STATION_REACH_M: f32 = 4.0;
 /// Upkeep/decay cadence: one period per real hour at the 30 Hz tick.
 /// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const UPKEEP_PERIOD_TICKS: u64 = 108_000;
@@ -1606,12 +1613,8 @@ impl Deploys {
         self.boxes.entries[i].items[s] = stack;
     }
 
-    /// Planar distance from a box to a player, against the same
-    /// `BUILD_REACH_M` a door uses — and planar for the same reason: a
-    /// door on the storey above is reachable today too, and inventing a
-    /// vertical rule for boxes alone would make two verbs disagree about
-    /// what "in reach" means. Level is part of the *address*, not of the
-    /// reach test.
+    /// Planar distance from a box to a player, against [`STATION_REACH_M`].
+    /// The storey and the line are `reach.rs`'s, asked after this.
     pub fn box_in_reach(&self, i: usize, p: &Player) -> bool {
         if i >= self.boxes.len {
             return false;
@@ -1619,7 +1622,7 @@ impl Deploys {
         let (bx, bz) = self.boxes.entries[i].xz();
         let (px, pz) = player_xz(p);
         let (dx, dz) = (bx - px, bz - pz);
-        dx * dx + dz * dz <= crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M
+        dx * dx + dz * dz <= STATION_REACH_M * STATION_REACH_M
     }
 
     /// How many spills this tick's removals left. Read once per tick by
@@ -2135,6 +2138,18 @@ impl DeployRec {
     #[inline]
     pub fn xz(&self) -> (f32, f32) {
         crate::footprint::centre(self.cx, self.cz, self.pose)
+    }
+
+    /// Where a hand reaches it: a door, a garage door or a shutter (an edge
+    /// address) at its doorway's middle, where it hangs (`build::anchor`);
+    /// anything else where it stands ([`Self::xz`]).
+    #[inline]
+    pub fn hand_xz(&self) -> (f32, f32) {
+        if is_edge_loc(self.loc) {
+            crate::build::anchor(self.cx, self.cz, self.loc)
+        } else {
+            self.xz()
+        }
     }
 
     /// Its rectangle on the ground, if `arch` is a free-placed archetype.
@@ -3130,12 +3145,19 @@ fn door_in_reach(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_DOOR, 0);
         return None;
     };
-    // A door's pose is the centre, so this is the cell centre door reach
-    // was always measured to; a locked box is measured to where it stands.
-    let (ax, az) = deploys.entries[i].xz();
+    // A door is measured to where it hangs, not to its cell's centre 1.5 m
+    // behind it; a locked box to where it stands. The storey and the line
+    // are `reach.rs`'s, asked by `World`, which holds the collision index.
+    let rec = &deploys.entries[i];
+    let (ax, az) = rec.hand_xz();
+    let reach = if is_edge_loc(rec.loc) {
+        crate::backpack::LOOT_REACH_M
+    } else {
+        STATION_REACH_M
+    };
     let (px, pz) = player_xz(p);
     let (dx, dz) = (ax - px, az - pz);
-    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+    if dx * dx + dz * dz > reach * reach {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
         return None;
     }

@@ -1500,7 +1500,14 @@ pub(crate) fn e_picks_by(
     slack: f32,
 ) -> bool {
     let (fx, fz) = sim_core::yaw_dir(yaw);
-    let reach2 = BUILD_REACH_M * BUILD_REACH_M;
+    // The client's `E` reach (`interact::REACH_M`): a station's, and a
+    // door's shorter one to where it hangs.
+    let reach2 = sim_core::deploy::STATION_REACH_M * sim_core::deploy::STATION_REACH_M;
+    let own_reach2 = if sim_core::deploy::is_edge_loc(door.loc) {
+        sim_core::backpack::LOOT_REACH_M * sim_core::backpack::LOOT_REACH_M
+    } else {
+        reach2
+    };
     // (aimed, squared distance) of a point from here: `give` metres
     // narrower (the target) or wider (a rival) than the aim really is.
     let score = |px: f32, pz: f32, give: f32| {
@@ -1519,7 +1526,7 @@ pub(crate) fn e_picks_by(
     }
     let (ax, az) = anchor(door.cx, door.cz, door.loc);
     let (aimed, mine) = score(ax, az, -slack);
-    if !aimed || mine > reach2 {
+    if !aimed || mine > own_reach2 {
         return false;
     }
     let rank = |row: u8| deploy_def(core, row).map_or(u8::MAX, |def| e_rank(def.arch));

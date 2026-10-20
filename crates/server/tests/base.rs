@@ -148,6 +148,13 @@ fn build(f: &mut Fixture, cx: u16, cz: u16) -> BasePlan {
     // Two passes: the second is what a raid would get, refused wherever the
     // first already built. One command a tick, the wire's own rate.
     for _ in 0..2 * STARTER.len() {
+        // Onto the op's spot (beside a door for its lock), as the profile
+        // walks it there.
+        let (x, z) = plan.stand(STARTER);
+        let qy = f.w.players[slot].body.qy;
+        let mut body = Body::at(SEED, &f.w.haven, x, z);
+        body.qy = body.qy.max(qy);
+        f.w.players[slot].body = body;
         let cmd = base_step(&mut plan, f.rows, STARTER);
         f.w.tick(&[cmd]);
     }

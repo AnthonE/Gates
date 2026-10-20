@@ -29,7 +29,7 @@ use protocol::{
 };
 use sim_core::bots::{
     base_step, bot_frame, raid_step, BasePlan, RaidPlan, RaidRows, RAID_CYCLE, STARTER,
-    STARTER_FOOTPRINT, STARTER_STAND_M,
+    STARTER_FOOTPRINT,
 };
 use sim_core::build::BUILD_CELL_M;
 use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
@@ -537,6 +537,10 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
 /// stands, metres. Loose enough that the half-metre the snapshot lags behind
 /// a walking body does not set it pacing back and forth.
 const BASE_STAND_M: f32 = 0.5;
+
+/// How near its spot for the next op an owner must be to take it, metres:
+/// the stand radius and the snapshot's lag behind a walking body.
+const BASE_ON_SPOT_M: f32 = 1.0;
 
 /// The longest a base owner waits to be standing in its core with nobody
 /// else on the plot before it builds anyway (five seconds of ticks). A walk
@@ -1139,6 +1143,7 @@ async fn run_bot_inner(
     // anything (`BASE_HOLD_TICKS`); `settled` once it is, or once it gave up.
     let mut base_hold: u32 = 0;
     let mut base_settled = false;
+    let mut stand_wait: u32 = 0;
     // An owner looking for a plot that has stopped making way (a tree, a
     // rock, somebody's wall) turns a quarter and walks on, the way a person
     // steps round a trunk: where it last marked its position, and the turn.
@@ -1238,10 +1243,10 @@ async fn run_bot_inner(
                         // the doors shut it is behind both of them. No
                         // swinging at its own walls.
                         (true, Some(bp), Some(body)) => {
-                            let dx = bp.cx as f32 * BUILD_CELL_M + STARTER_STAND_M.0
-                                - body.qx as f32 * POS_XZ_Q;
-                            let dz = bp.cz as f32 * BUILD_CELL_M + STARTER_STAND_M.1
-                                - body.qz as f32 * POS_XZ_Q;
+                            // Beside a door for its lock (`bots::stand_m`).
+                            let (sx, sz) = bp.stand(STARTER);
+                            let dx = sx - body.qx as f32 * POS_XZ_Q;
+                            let dz = sz - body.qz as f32 * POS_XZ_Q;
                             f.buttons &= !(BTN_SPRINT | BTN_PRIMARY);
                             f.move_x = 0;
                             f.move_z = 0;
@@ -1543,11 +1548,26 @@ async fn run_bot_inner(
                                 base_hold += 1;
                                 base_settled = alone_inside || base_hold >= BASE_HOLD_TICKS;
                             }
-                            base_plan.as_mut().filter(|_| base_settled).map(|bp| {
-                                held.take().unwrap_or_else(|| {
-                                    report.raid_steps += 1;
-                                    base_step(bp, brows, STARTER)
-                                })
+                            base_plan.as_mut().filter(|_| base_settled).and_then(|bp| {
+                                if let Some(cmd) = held.take() {
+                                    return Some(cmd);
+                                }
+                                // Each op from its own spot (a door's lock
+                                // from beside the door): wait to be on it,
+                                // bounded like the settle above.
+                                let (sx, sz) = bp.stand(STARTER);
+                                let off = view.get(report.player_id).is_some_and(|b| {
+                                    let dx = sx - b.qx as f32 * POS_XZ_Q;
+                                    let dz = sz - b.qz as f32 * POS_XZ_Q;
+                                    dx * dx + dz * dz > BASE_ON_SPOT_M * BASE_ON_SPOT_M
+                                });
+                                if off && stand_wait < BASE_HOLD_TICKS {
+                                    stand_wait += 1;
+                                    return None;
+                                }
+                                stand_wait = 0;
+                                report.raid_steps += 1;
+                                Some(base_step(bp, brows, STARTER))
                             })
                         }
                         // ---- the raid profile: raiders, and flat owners ---
