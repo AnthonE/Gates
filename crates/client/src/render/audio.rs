@@ -2254,15 +2254,25 @@ pub fn voices(
     time: Res<Time>,
     feed: Res<super::feed::Feed>,
     mut sound: ResMut<Sound>,
+    mut seen: Local<HerdSeen>,
 ) {
     let dt = time.delta_secs();
     let switch = crate::sound::voice::switch_m();
+    seen.now.clear();
     for (animal, t, gait) in herd.iter() {
         let Some(slot) = sim_core::mob::slot_of_id(animal.0) else {
             continue;
         };
         let p = t.translation;
         let at = [p.x, p.y + super::mobs::voice_h_of(slot), p.z];
+        seen.now.push((animal.0, Vec3::from_array(at)));
+        // A blow landed on it (`EV_HIT` is the striker's fact, so this is
+        // your own): its pain, from it.
+        if feed.hit_victims().contains(&animal.0) {
+            sound.voices.called(slot);
+            sound.play(Request::at(crate::sound::voice::hurt_of(slot), at));
+            continue;
+        }
         // A pack call the sim raised (wire v76): the howl goes up now, from
         // this animal, and its own clock restarts so the ambient cadence
         // does not answer it a second later. `Feed` is read, never drained
@@ -2303,6 +2313,65 @@ pub fn voices(
             continue;
         };
         sound.play(Request::at(cue, at));
+    }
+    for (id, at) in seen.deaths(eye.pos) {
+        if let Some(slot) = sim_core::mob::slot_of_id(id) {
+            let cue = crate::sound::voice::death_of(slot);
+            sound.play(Request::at(cue, at.to_array()));
+        }
+    }
+}
+
+/// An animal gone from the herd this near has died: `mobs::stream` drops it
+/// for that or for leaving the interest set, and the interest set ends far
+/// past this. Metres.
+pub const DEATH_HEARD_M: f32 = 60.0;
+
+/// The herd as [`voices`] last saw it, for the death cry. An animal must be
+/// missing two frames running (a model swap respawns one across a frame),
+/// and a frame that loses more than two at once is a teleport or a resync,
+/// not a slaughter.
+#[derive(Default)]
+pub struct HerdSeen {
+    now: Vec<(u32, Vec3)>,
+    last: Vec<(u32, Vec3)>,
+    missing: Vec<(u32, Vec3, u8)>,
+    died: Vec<(u32, Vec3)>,
+}
+
+impl HerdSeen {
+    /// This frame's deaths in earshot of `ear`, after `now` was filled.
+    fn deaths(&mut self, ear: Vec3) -> std::vec::Drain<'_, (u32, Vec3)> {
+        let HerdSeen {
+            now,
+            last,
+            missing,
+            died,
+        } = self;
+        died.clear();
+        for &(id, at) in last.iter() {
+            if !now.iter().any(|&(n, _)| n == id) {
+                missing.push((id, at, 0));
+            }
+        }
+        missing.retain_mut(|(id, at, frames)| {
+            if now.iter().any(|&(n, _)| n == *id) {
+                return false;
+            }
+            *frames += 1;
+            if *frames < 2 {
+                return true;
+            }
+            if at.distance(ear) < DEATH_HEARD_M {
+                died.push((*id, *at));
+            }
+            false
+        });
+        if died.len() > 2 {
+            died.clear();
+        }
+        std::mem::swap(now, last);
+        died.drain(..)
     }
 }
 
@@ -3021,3 +3090,37 @@ pub fn rear_lp(listener: [f32; 3], at: [f32; 3], right: [f32; 2], out_rate: u32)
 
 /// The frame budget must not exceed the pool it draws from.
 const _: () = assert!(crate::sound::STARTS_PER_FRAME <= VOICE_CAP);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(seen: &mut HerdSeen, herd: &[(u32, f32)]) -> Vec<u32> {
+        seen.now.clear();
+        seen.now
+            .extend(herd.iter().map(|&(id, x)| (id, Vec3::new(x, 0.0, 0.0))));
+        seen.deaths(Vec3::ZERO).map(|(id, _)| id).collect()
+    }
+
+    #[test]
+    fn an_animal_gone_near_has_died_and_one_gone_far_has_left() {
+        let mut seen = HerdSeen::default();
+        assert!(frame(&mut seen, &[(1, 10.0), (2, 150.0), (3, 20.0)]).is_empty());
+        // Gone one frame is not yet a death: a model swap respawns one.
+        assert!(frame(&mut seen, &[]).is_empty());
+        // 3 is back, so it never died; 1 is still gone and near, 2 far.
+        assert_eq!(frame(&mut seen, &[(3, 20.0)]), vec![1]);
+        assert!(
+            frame(&mut seen, &[(3, 20.0)]).is_empty(),
+            "a death is cried once"
+        );
+    }
+
+    #[test]
+    fn a_herd_lost_at_once_is_a_teleport_not_a_slaughter() {
+        let mut seen = HerdSeen::default();
+        frame(&mut seen, &[(1, 5.0), (2, 6.0), (3, 7.0)]);
+        frame(&mut seen, &[]);
+        assert!(frame(&mut seen, &[]).is_empty());
+    }
+}

@@ -536,11 +536,21 @@ pub enum Cue {
     /// at what was mended, whoever mended it. Appended, the enum's
     /// append-order rule.
     Repair,
+    /// An animal's pain when a blow lands on it, by species
+    /// (`sound::voice::hurt_of`): a wolf's yelp, a boar's squeal, a stag's
+    /// bleat. Appended, the enum's append-order rule, like the five after it.
+    WolfHurt,
+    BoarHurt,
+    StagHurt,
+    /// …and its last cry, where it fell (`sound::voice::death_of`).
+    WolfDeath,
+    BoarDeath,
+    StagDeath,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 140;
+pub const CUE_COUNT: usize = 146;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -689,6 +699,12 @@ impl Cue {
         Cue::GarageOpen,
         Cue::GarageClose,
         Cue::Repair,
+        Cue::WolfHurt,
+        Cue::BoarHurt,
+        Cue::StagHurt,
+        Cue::WolfDeath,
+        Cue::BoarDeath,
+        Cue::StagDeath,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -843,7 +859,13 @@ impl Cue {
             | Cue::DoorMetalClose
             | Cue::GarageOpen
             | Cue::GarageClose
-            | Cue::Repair => 0.07,
+            | Cue::Repair
+            | Cue::WolfHurt
+            | Cue::BoarHurt
+            | Cue::StagHurt
+            | Cue::WolfDeath
+            | Cue::BoarDeath
+            | Cue::StagDeath => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -1329,6 +1351,14 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 30.0, 0.65, 200, 4, true),   // garage door close
     // The hammer: a blow's reach and register, at the mended piece.
     row(GAME, 32.0, 0.65, 100, 4, true),   // repair
+    // The animals hurt and dying: the snort's bus and a growl's urgency, a
+    // little further than a blow carries; a death further still.
+    row(GAME, 44.0, 0.62, 150, 5, true),   // wolf hurt
+    row(GAME, 44.0, 0.62, 150, 5, true),   // boar hurt
+    row(GAME, 44.0, 0.62, 150, 5, true),   // stag hurt
+    row(GAME, 56.0, 0.70, 300, 5, true),   // wolf death
+    row(GAME, 56.0, 0.70, 300, 5, true),   // boar death
+    row(GAME, 56.0, 0.70, 300, 5, true),   // stag death
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).
