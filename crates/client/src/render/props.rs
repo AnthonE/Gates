@@ -1815,8 +1815,9 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         // invisible collision skirt is a player passing through geometry — so
         // `OCCUPANT_R_M`/`OCCUPANT_TOP_M` moved in the same commit and the
         // replay golden moved with them.
-        // Grown 12/11 to Rust's drum on 2026-10-17 (`terrain::OCCUPANT_R_M`).
-        Occupant::BarrelSlot => Cylinder::new(0.3191, 0.96).mesh().resolution(10).build(),
+        // Grown 12/11 on 2026-10-17 and a quarter more on 2026-10-20
+        // (`terrain::OCCUPANT_R_M`).
+        Occupant::BarrelSlot => Cylinder::new(0.3989, 1.2).mesh().resolution(10).build(),
         Occupant::CrateSlot | Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])
         }
@@ -1826,7 +1827,7 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
             boxes_mesh(&authored(&terrain::WAYSTATION_CANOPY_BOXES, &CANOPY_HEX))
         }
         // The barrel's drum, painted red where it is drawn.
-        Occupant::OilBarrel => Cylinder::new(0.3191, 0.96).mesh().resolution(10).build(),
+        Occupant::OilBarrel => Cylinder::new(0.3989, 1.2).mesh().resolution(10).build(),
         Occupant::RoadSign => boxes_mesh_with(
             &authored(&terrain::ROAD_SIGN_BOXES, &ROAD_SIGN_HEX),
             linear,
@@ -1882,13 +1883,13 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 0.5,
         Occupant::Rock => 0.55,
         // The half-height, so the drum's base is the slot's ground and its
-        // top is its own 0.96 m.
-        Occupant::BarrelSlot => 0.48,
+        // top is its own 1.2 m.
+        Occupant::BarrelSlot => 0.6,
         Occupant::CrateSlot | Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
             0.4
         }
         Occupant::CacheSlot => 0.275,
-        Occupant::OilBarrel => 0.48,
+        Occupant::OilBarrel => 0.6,
         Occupant::FoodCrate => 0.2,
         Occupant::TireStack => terrain::TIRE_STACK_TOP_M * 0.5,
         // The box tables put ground at y = 0, like the authored structures.
