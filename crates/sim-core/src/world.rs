@@ -8664,9 +8664,11 @@ impl World {
         // a plant grows by day under open sky — the shelter question a body
         // asks of the rain, asked at its soil — and the same rain fills the
         // planters' tanks.
-        let night = is_night(tick);
-        let wx = crate::weather::now(self.seed, tick, &self.env);
+        // Night by the day clock everyone sees, not the raw tick: an
+        // admin `/time` moves `Env::day_offset`, and the sun with it.
         let day_tick = crate::weather::day_tick(tick, &self.env);
+        let night = is_night(day_tick);
+        let wx = crate::weather::now(self.seed, tick, &self.env);
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
         let feet_of = |b: &crate::deploy::BoxRec, arch: u8| {
             deploy::box_base_y(seed, haven, pieces.cols(), b, arch)

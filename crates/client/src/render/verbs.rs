@@ -251,6 +251,7 @@ pub fn resolve(
                 core.deploys.entries(),
                 &core.deploy_defs,
                 core.deploy_defs_have,
+                |d| span(d, sim_core::deploy::ARCH_PLANTER).0,
             )
         });
         // The shard's hand test, as the deploy pick asks it: a crop behind

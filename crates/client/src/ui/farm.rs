@@ -93,6 +93,17 @@ pub const SPOT_PICK_M: f32 = 0.35;
 /// A plant this close to a spot's centre (xz) is the one in it, metres:
 /// wider than a position quantum, narrower than the spots' pitch.
 pub const SPOT_TAKEN_M: f32 = 0.05;
+/// And this close to that planter's soil (y), metres: wider than a height
+/// quantum, far under the half storey between two planters stacked in one
+/// column, whose spots share their xz.
+pub const SPOT_SOIL_M: f32 = 0.1;
+
+/// Whether a plant at height `py` stands in the soil of a planter whose
+/// floor is `floor_y`. A floor the client cannot place yet (no island,
+/// non-finite) rules nothing out.
+fn on_soil(py: f32, floor_y: f32) -> bool {
+    !floor_y.is_finite() || (py - floor_y - soil_rise()).abs() <= SPOT_SOIL_M
+}
 
 /// The planter's soil height over its floor, metres.
 pub fn soil_rise() -> f32 {
@@ -119,8 +130,10 @@ pub fn plant_target(
     let (hx, hz) = (eye.0 + dir.0 * t, eye.2 + dir.2 * t);
     let taken = |sx: f32, sz: f32| {
         plants.iter().any(|p| {
-            let (px, _, pz) = p.pos();
-            p.in_bed() && (px - sx).powi(2) + (pz - sz).powi(2) <= SPOT_TAKEN_M * SPOT_TAKEN_M
+            let (px, py, pz) = p.pos();
+            p.in_bed()
+                && on_soil(py, floor_y)
+                && (px - sx).powi(2) + (pz - sz).powi(2) <= SPOT_TAKEN_M * SPOT_TAKEN_M
         })
     };
     let mut best: Option<(u8, f32, f32, f32)> = None;
@@ -140,23 +153,30 @@ pub fn plant_target(
 }
 
 /// The planter bed plant `p` stands in, off the deploy mirror: the planter
-/// one of whose spot centres is where the plant is (the wire record names
-/// its spot, not its host). `have` is `ClientCore::deploy_defs_have`.
+/// one of whose spot centres is where the plant is, at its soil's height
+/// (the wire record names its spot, not its host, and planters stacked a
+/// storey apart share their spots' xz). `have` is
+/// `ClientCore::deploy_defs_have`; `floor_y` a planter's floor (its feet,
+/// `deploy::body_base_y`).
 pub fn planter_of<'a>(
     p: &WirePlant,
     deploys: &'a [DeployRec],
     defs: &DeployContent,
     have: u16,
+    floor_y: impl Fn(&DeployRec) -> f32,
 ) -> Option<&'a DeployRec> {
     if !p.in_bed() {
         return None;
     }
-    let (px, _, pz) = p.pos();
+    let (px, py, pz) = p.pos();
     deploys.iter().find(|d| {
-        (d.row as u16) < have && defs.defs[d.row as usize].arch == ARCH_PLANTER && {
-            let (sx, sz) = spot_xz(d.cx, d.cz, d.pose, p.spot);
-            (px - sx).powi(2) + (pz - sz).powi(2) <= SPOT_TAKEN_M * SPOT_TAKEN_M
-        }
+        (d.row as u16) < have
+            && defs.defs[d.row as usize].arch == ARCH_PLANTER
+            && {
+                let (sx, sz) = spot_xz(d.cx, d.cz, d.pose, p.spot);
+                (px - sx).powi(2) + (pz - sz).powi(2) <= SPOT_TAKEN_M * SPOT_TAKEN_M
+            }
+            && on_soil(py, floor_y(d))
     })
 }
 
@@ -264,18 +284,54 @@ mod tests {
             ..planter(0)
         };
         let (sx, sz) = spot_xz(b.cx, b.cz, b.pose, 3);
-        let p = plant_at(3, sx, 10.0, sz);
+        let p = plant_at(3, sx, 10.0 + soil_rise(), sz);
         let deploys = [a, b];
-        assert_eq!(planter_of(&p, &deploys, &defs, 1).map(|d| d.cx), Some(101));
+        let floor = |_: &DeployRec| 10.0;
+        assert_eq!(
+            planter_of(&p, &deploys, &defs, 1, floor).map(|d| d.cx),
+            Some(101)
+        );
         assert!(
-            planter_of(&p, &deploys, &defs, 0).is_none(),
+            planter_of(&p, &deploys, &defs, 0, floor).is_none(),
             "an undripped row"
         );
         let ground = WirePlant {
             spot: sim_core::farm::SPOT_GROUND,
             ..p
         };
-        assert!(planter_of(&ground, &deploys, &defs, 1).is_none());
+        assert!(planter_of(&ground, &deploys, &defs, 1, floor).is_none());
+    }
+
+    /// Two planters stacked a storey apart share their spots' xz: a plant
+    /// is the one whose soil it stands in, and a plant downstairs does not
+    /// take the spot over it.
+    #[test]
+    fn stacked_planters_are_told_apart_by_their_soil() {
+        let mut defs = DeployContent::EMPTY;
+        defs.defs[0].arch = ARCH_PLANTER;
+        defs.def_count = 1;
+        let (low, high) = (10.0, 10.0 + sim_core::build::LEVEL_H_M);
+        let down = planter(0);
+        let up = DeployRec {
+            level: 1,
+            ..planter(0)
+        };
+        let floor = |d: &DeployRec| if d.level == 0 { low } else { high };
+        let deploys = [down, up];
+        let (sx, sz) = spot_xz(up.cx, up.cz, up.pose, 2);
+        for (y, want) in [(low, 0u8), (high, 1)] {
+            let p = plant_at(2, sx, y + soil_rise(), sz);
+            let got = planter_of(&p, &deploys, &defs, 1, floor).map(|d| d.level);
+            assert_eq!(got, Some(want), "the plant at {y}");
+        }
+        // A plant in the lower bed leaves the upper bed's spot free.
+        let below = plant_at(2, sx, low + soil_rise(), sz);
+        let (eye, dir) = ray_to(sx, sz, high);
+        let got = plant_target(&up, high, eye, dir, &[below]).map(|t| t.1);
+        assert_eq!(got, Some(2));
+        let above = plant_at(2, sx, high + soil_rise(), sz);
+        let got = plant_target(&up, high, eye, dir, &[above]).map(|t| t.1);
+        assert_ne!(got, Some(2));
     }
 
     /// The open ground under the crosshair: in reach it is offered at the

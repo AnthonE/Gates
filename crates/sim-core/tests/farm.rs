@@ -468,6 +468,53 @@ fn night_and_a_roof_hold_a_plant_and_it_drinks_nothing() {
     );
 }
 
+/// **The farm keeps the clock everyone sees**: an admin `/time`
+/// (`Command::AdminEnv`, which moves `Env::day_offset`) to night holds a
+/// plant though the raw tick says day, and one to noon grows it though the
+/// raw tick says night.
+#[test]
+fn the_admin_clock_sets_the_farms_day() {
+    let day_tick = |w: &World| sim_core::weather::day_tick(w.tick, &w.env);
+    let set_time = |w: &mut World, time_pm: u16| {
+        w.tick(&[Command::AdminEnv {
+            weather: sim_core::weather::KEEP_WEATHER,
+            time_pm,
+        }]);
+    };
+
+    // Raw day, visible night.
+    let (mut w, cx, cz) = farm_world();
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    plant(&mut w, host, 0);
+    idle(&mut w, 30);
+    set_time(&mut w, 950);
+    let (grown, water) = (w.farm.entries()[0].grown, tank(&w, host));
+    idle(&mut w, 90);
+    assert!(!is_night(w.tick) && is_night(day_tick(&w)));
+    assert_eq!(w.farm.entries()[0].grown, grown, "it grew by the night sky");
+    assert_eq!(tank(&w, host), water, "it drank by the night sky");
+
+    // Raw night, visible noon.
+    let (mut w, cx, cz) = farm_world();
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    plant(&mut w, host, 0);
+    idle(&mut w, 30);
+    let day = sim_core::limits::DAY_TICKS;
+    let dusk = (sim_core::limits::DAY_PORTION as f64 * day as f64) as u64;
+    let phase = (w.tick + sim_core::limits::DAY_PHASE_TICKS) % day;
+    w.tick += (dusk + day - phase) % day + 1;
+    set_time(&mut w, 437);
+    let grown = w.farm.entries()[0].grown;
+    idle(&mut w, 90);
+    assert!(is_night(w.tick) && !is_night(day_tick(&w)));
+    assert!(
+        w.farm.entries()[0].grown > grown,
+        "it held under the noon sun"
+    );
+}
+
 /// **A dry planter holds its plants**, and a full skin in its water slot
 /// is poured only once a plant thirsts.
 #[test]
