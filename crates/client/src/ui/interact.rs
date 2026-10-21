@@ -551,6 +551,8 @@ impl Pick {
             Verb::TechTree => "[E] TECH TREE".to_string(),
             Verb::Pick => match self.occupant {
                 o if o == Occupant::Hemp as u8 => "[E] PICK HEMP",
+                o if o == Occupant::WildCorn as u8 => "[E] PICK WILD CORN",
+                o if o == Occupant::WildPumpkin as u8 => "[E] PICK PUMPKIN",
                 o if o == Occupant::StonePile as u8 => "[E] PICK UP STONE",
                 o if o == Occupant::WoodPile as u8 => "[E] PICK UP WOOD",
                 o if o == Occupant::MetalPile as u8 => "[E] PICK UP METAL ORE",

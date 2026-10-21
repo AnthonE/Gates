@@ -2382,6 +2382,15 @@ fn a_clock_with_no_answer_is_refused() {
          output = \"item.mushrooms\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
          [gatherable.yield_per_hit]\nhand = 3\n",
         "\n[gatherable.secondary]\noutput = \"item.cactus_flesh\"\nper_hit = 1\n",
+        // And the wild crops by the lakes, which feed as well.
+        "\n[[gatherable]]\nid = \"gather.wild_corn\"\narchetype = \"wild_corn\"\n\
+         output = \"item.corn\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 2\n\n\
+         [gatherable.secondary]\noutput = \"item.corn_seed\"\nper_hit = 1\n",
+        "\n[[gatherable]]\nid = \"gather.wild_pumpkin\"\narchetype = \"wild_pumpkin\"\n\
+         output = \"item.pumpkin\"\nhits = 1\nweak_spot_bonus_pct = 0\n\n\
+         [gatherable.yield_per_hit]\nhand = 1\n\n\
+         [gatherable.secondary]\noutput = \"item.pumpkin_seed\"\nper_hit = 1\n",
     ] {
         assert!(
             g.1.contains(row),
@@ -2432,6 +2441,11 @@ fn a_clock_with_no_answer_is_refused() {
             *text = text.replace(
                 "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 20",
                 "id = \"item.cactus_flesh\"\nhealth = 3\nfood = 5\nwater = 0",
+            );
+            // And the pumpkin, which grows wild by the lakes.
+            *text = text.replace(
+                "id = \"item.pumpkin\"\nhealth = 0\nfood = 80\nwater = 30",
+                "id = \"item.pumpkin\"\nhealth = 0\nfood = 80\nwater = 0",
             );
         }
     }
@@ -3971,22 +3985,17 @@ fn every_consumable_the_content_ships_is_reachable() {
          is made of them"
     );
 
-    // Corn grows in no node: the roadside food box is its one source (the
-    // planter's seed is cut from corn), so taking the box strands exactly it
-    // — and the potato and the pumpkin, whose first potato and first seed
-    // come out of the same box.
+    // Corn and pumpkin grow wild by the lakes (`gather.wild_corn`,
+    // `gather.wild_pumpkin`), so only the potato has the roadside food box
+    // as its one source: taking the box strands exactly it.
     let mut srcs = sources();
     strip_food_box(&mut srcs);
     let mutant =
         build(&srcs).expect("still valid — the bush and the patch keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
-        vec![
-            "item.corn".to_string(),
-            "item.potato".to_string(),
-            "item.pumpkin".to_string()
-        ],
-        "deleting the food box must strand exactly the box's crops"
+        vec!["item.potato".to_string()],
+        "deleting the food box must strand exactly the box's own crop"
     );
 
     // World containers v0 (2026-08-14) made the crate and the cache

@@ -115,6 +115,8 @@ pub fn leaf_reach(o: Occupant, key: u32, scenery: Scenery) -> Option<f32> {
         (Occupant::Shrub, Scenery::Shrub) => 0.8,
         (Occupant::BerryBush, _) => 0.55,
         (Occupant::Hemp, _) => 0.6,
+        (Occupant::WildCorn, _) => 0.4,
+        (Occupant::WildPumpkin, _) => 0.5,
         _ => return None,
     };
     Some(reach * grow(o, scenery))

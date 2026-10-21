@@ -94,6 +94,8 @@ fn node_slot(a: NodeArchetype) -> usize {
         NodeArchetype::SulfurPile => sim_core::terrain::Occupant::SulfurPile,
         NodeArchetype::MushroomPatch => sim_core::terrain::Occupant::MushroomPatch,
         NodeArchetype::Cactus => sim_core::terrain::Occupant::Cactus,
+        NodeArchetype::WildCorn => sim_core::terrain::Occupant::WildCorn,
+        NodeArchetype::WildPumpkin => sim_core::terrain::Occupant::WildPumpkin,
     };
     sim_core::gather::node_index(o).expect("every archetype is a gather node")
 }

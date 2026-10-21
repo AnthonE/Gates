@@ -157,6 +157,10 @@ pub enum NodeArchetype {
     Stump,
     /// The desert's cactus (`terrain::Occupant::Cactus`), swung at.
     Cactus,
+    /// Wild corn by a lake (`terrain::Occupant::WildCorn`), picked by hand.
+    WildCorn,
+    /// A wild pumpkin by a lake (`terrain::Occupant::WildPumpkin`), picked by hand.
+    WildPumpkin,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its

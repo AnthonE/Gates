@@ -32,7 +32,7 @@ use sim_core::terrain::{
 /// Every occupant the sim can place. Written out rather than derived so §C can
 /// prove the list is complete — a new variant that nobody adds here is caught
 /// by the count assert, not by nothing.
-const ALL: [Occupant; 28] = [
+const ALL: [Occupant; 30] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -61,6 +61,8 @@ const ALL: [Occupant; 28] = [
     Occupant::SulfurPile,
     Occupant::MushroomPatch,
     Occupant::Cactus,
+    Occupant::WildCorn,
+    Occupant::WildPumpkin,
 ];
 
 /// `boxes_mesh` emits six faces a box, two triangles each, three unshared
@@ -229,9 +231,11 @@ fn excused(o: Occupant) -> Option<&'static str> {
         ),
         // `OCCUPANT_R_M`'s plant rows are 0.0 on purpose — you walk through a
         // bush, and a plant is a pool of leaves and wood (`plants.rs`).
-        Occupant::BerryBush | Occupant::Hemp | Occupant::Shrub => {
-            Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0")
-        }
+        Occupant::BerryBush
+        | Occupant::Hemp
+        | Occupant::Shrub
+        | Occupant::WildCorn
+        | Occupant::WildPumpkin => Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0"),
         // A generated pool like the tree's, and its arms are passable as a
         // tree's limbs are. Its trunk is drawn off the row itself
         // (`plants::cactus` reads `CACTUS_R_M` and `_TOP_M`), so the widest

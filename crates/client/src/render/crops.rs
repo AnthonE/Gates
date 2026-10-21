@@ -78,7 +78,7 @@ fn card_leaves(look: u8) -> bool {
 
 /// Where a vine's pumpkins lie, in the plant's frame: out from the root
 /// along the ground, each turned its own way.
-const PUMPKIN_AT: [(f32, f32, f32); 2] = [(0.2, 0.05, 0.4), (-0.14, -0.17, 2.1)];
+pub(super) const PUMPKIN_AT: [(f32, f32, f32); 2] = [(0.2, 0.05, 0.4), (-0.14, -0.17, 2.1)];
 
 /// Build the kit and register the swaying materials with the foliage
 /// shader (`props.rs`'s pattern).

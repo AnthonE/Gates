@@ -109,7 +109,7 @@ pub const NO_CELL: u32 = u32::MAX;
 /// pays nothing into the swinger's hands. It comes apart into a container
 /// (`Swing::Smashed` → `loot.rs`), which is the difference between a tree
 /// and a barrel: a tree is a resource and a barrel is a reward.
-pub const GATHERABLE_KINDS: usize = 13;
+pub const GATHERABLE_KINDS: usize = 15;
 
 /// The felled tree's stump (`NOW.md` §0stump): the last gatherable row, and
 /// the one no `Occupant` names. It is the tree slot's second life — a
@@ -122,6 +122,12 @@ pub const STUMP_NODE: usize = 11;
 /// stump because the stump's row was there first and a row is a save's
 /// address for nothing, but a test's for plenty.
 pub const CACTUS_NODE: usize = 12;
+
+/// Wild corn by a lake (`Occupant::WildCorn`), picked by hand for corn and
+/// a seed; and the wild pumpkin beside it. Appended, as the cactus was.
+pub const WILD_CORN_NODE: usize = 13;
+/// See [`WILD_CORN_NODE`].
+pub const WILD_PUMPKIN_NODE: usize = 14;
 
 /// A harvested tree's `SlotLife::hits` once its stump is spent: nothing left
 /// to swing at until the sapling. Not a count any budget reaches.
@@ -224,7 +230,11 @@ pub const PLANT_GROW_TICKS: u64 = 5_400;
 pub const fn grow_span(occ: u8) -> Option<u64> {
     if occ == Occupant::Tree as u8 {
         Some(TREE_GROW_TICKS)
-    } else if occ == Occupant::BerryBush as u8 || occ == Occupant::Hemp as u8 {
+    } else if occ == Occupant::BerryBush as u8
+        || occ == Occupant::Hemp as u8
+        || occ == Occupant::WildCorn as u8
+        || occ == Occupant::WildPumpkin as u8
+    {
         Some(PLANT_GROW_TICKS)
     } else {
         None
@@ -583,6 +593,8 @@ impl GatherContent {
             (4, 1, 3, 0, 0, NO_ITEM, 0, 0),  // MushroomPatch
             (0, 3, 0, 0, 0, 1, 5, 4),        // Stump: the tree's tool, a smaller pool
             (5, 2, 0, 0, 0, 0, 6, 3),        // Cactus: hemp's item off a tool
+            (4, 1, 2, 0, 0, NO_ITEM, 0, 0),  // WildCorn: a hand pickup
+            (4, 1, 1, 0, 0, NO_ITEM, 0, 0),  // WildPumpkin
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
@@ -632,6 +644,8 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
         Occupant::SulfurPile => Some(9),
         Occupant::MushroomPatch => Some(10),
         Occupant::Cactus => Some(CACTUS_NODE),
+        Occupant::WildCorn => Some(WILD_CORN_NODE),
+        Occupant::WildPumpkin => Some(WILD_PUMPKIN_NODE),
         Occupant::None
         | Occupant::Rock
         | Occupant::BarrelSlot
@@ -651,11 +665,15 @@ pub const fn node_index(o: Occupant) -> Option<usize> {
     }
 }
 
-/// Whether `E` picks this occupant by hand ([`pick`]): the berry bush and
-/// hemp. A shrub is scenery and has nothing to pick.
+/// Whether `E` picks this occupant by hand ([`pick`]): the berry bush, hemp,
+/// the wild crops by the lakes and the ground pickups. A shrub is scenery
+/// and has nothing to pick.
 #[inline]
 pub const fn pickable(o: Occupant) -> bool {
-    matches!(o, Occupant::BerryBush | Occupant::Hemp) || o.is_pickup()
+    matches!(
+        o,
+        Occupant::BerryBush | Occupant::Hemp | Occupant::WildCorn | Occupant::WildPumpkin
+    ) || o.is_pickup()
 }
 
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
@@ -696,6 +714,8 @@ fn occupant_of(target: usize) -> u32 {
                 9 => Occupant::SulfurPile,
                 10 => Occupant::MushroomPatch,
                 CACTUS_NODE => Occupant::Cactus,
+                WILD_CORN_NODE => Occupant::WildCorn,
+                WILD_PUMPKIN_NODE => Occupant::WildPumpkin,
                 // STUMP_NODE: what stood here was a tree.
                 _ => Occupant::Tree,
             }) as u32

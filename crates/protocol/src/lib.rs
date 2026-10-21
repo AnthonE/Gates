@@ -1279,7 +1279,11 @@ pub use voice::{
 /// A record with no baseline to be a delta of (a zero-state snapshot, an
 /// overflow datagram) no longer spends the is_delta bit, which keeps the
 /// zero-state cap of 64 moving bodies inside `DATAGRAM_BUDGET_BYTES`.
-pub const PROTO_VER: u16 = 131;
+/// v132 — wild corn/pumpkin occupants: both ends must scatter the same.
+/// `terrain::Occupant::WildCorn` (29) and `WildPumpkin` (30) grow out of a
+/// shrub by a lake, and the client draws its scatter itself, so a client
+/// that does not plant them stands a shrub where the server picks a crop.
+pub const PROTO_VER: u16 = 132;
 
 /// This game's slug in the elo catalog.
 ///
