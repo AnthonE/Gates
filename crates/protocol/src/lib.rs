@@ -4832,9 +4832,9 @@ impl SnapshotMore {
     }
 }
 
-/// Decode a snapshot overflow datagram. Total like [`decode_snapshot`]; a
-/// delta record is malformed here, since there is no baseline to read it
-/// against.
+/// Decode a snapshot overflow datagram. Total like [`decode_snapshot`];
+/// every record is absolute and spends no `is_delta` bit (v132), since
+/// there is no baseline to read a delta against.
 pub fn decode_snapshot_more(buf: &[u8]) -> Result<SnapshotMore, WireError> {
     let mut r = BitReader::new(buf);
     if r.read(KIND_BITS)? != KIND_SNAPSHOT_MORE {
@@ -4952,9 +4952,7 @@ fn decode_entity(
             held_skin: read_held_skin(r)?,
         });
     }
-    if baseline_age == 0 {
-        return Err(WireError::Malformed);
-    }
+    // A delta is read only against a baseline (`is_delta` above).
     let b = baseline
         .iter()
         .find(|b| b.id == id)
@@ -5107,11 +5105,12 @@ mod tests {
         ));
     }
 
-    /// A snapshot overflow datagram (v121) at its worst — 64 moving bodies,
-    /// every record absolute — still fits one datagram, round-trips, and the
-    /// decoder refuses what it can never mean: part 0, a delta record, and
-    /// the snapshot's own kind. (Since v132 a record here spends no
-    /// is_delta bit, which is what paid for the held field's eighth.)
+    /// A snapshot overflow datagram (v121) of 64 moving bodies, every
+    /// record absolute and no skin in hand, still fits one datagram,
+    /// round-trips, and the decoder refuses what it can never mean: part 0
+    /// and the snapshot's own kind. (Since v132 a record here spends no
+    /// is_delta bit, so it cannot be a delta at all; that bit is what paid
+    /// for the held field's eighth.)
     #[test]
     fn a_full_overflow_datagram_fits_and_round_trips() {
         let mut buf = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
@@ -5148,7 +5147,7 @@ mod tests {
             SnapshotEncoder::begin_more(&mut buf, 1, 4).is_err(),
             "two bits"
         );
-        // A delta record has no baseline to stand on here.
+        // A snapshot, whose records may be deltas, is not an overflow.
         let header = SnapshotHeader {
             tick: 9,
             baseline_age: 1,

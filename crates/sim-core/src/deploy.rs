@@ -553,7 +553,9 @@ pub const REFUSE_D_NOT_EMPTY: u32 = 19;
 pub const REFUSE_D_PLANT_ITEM: u32 = 20;
 /// The bed spot is past the planter's six, or already holds a plant.
 pub const REFUSE_D_PLANT_SPOT: u32 = 21;
-/// Nothing grows here (the ground, until ground planting lands).
+/// Nothing grows here: open ground the seed cannot take — the sea's edge,
+/// a road, an authored site, a slope, a biome that is not soft, a roof or
+/// something built over it (`farm::ground_ok`).
 pub const REFUSE_D_PLANT_SOIL: u32 = 22;
 /// The island's plant store is full (`limits::MAX_PLANTS`).
 pub const REFUSE_D_PLANTS_FULL: u32 = 23;

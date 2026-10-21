@@ -212,6 +212,11 @@ fn a_planted_seed_reaches_a_near_client_and_a_joiner() {
         clients[2].1.plants.find(id).is_some(),
         "the joiner mirrors it"
     );
+    // Its walk is counted as the plant walk's, not the deployables'.
+    assert!(
+        ShardStats::get(&stats.plant_walk_completes) >= 3,
+        "three clients walked the farm to its end"
+    );
 
     // 3 · the planter is broken: self-heal uproots its plant within a farm
     //   period, and the removal is told to every client.

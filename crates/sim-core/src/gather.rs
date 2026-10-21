@@ -218,8 +218,8 @@ pub const SAPLING_PM: u16 = 150;
 /// predictor and the server agree about a sapling's trunk exactly.
 pub const GROW_STAGES: u64 = 16;
 
-/// A picked plant grows back the same way, quicker: a berry bush or a hemp
-/// plant comes back as a sprout where it was picked and is grown three
+/// A picked plant grows back the same way, quicker: a berry bush, a hemp
+/// plant or a wild crop comes back as a sprout where it was picked and is grown three
 /// minutes later — and only then can be picked again, so a berry bush comes
 /// back bare and fruits when it is grown.
 pub const PLANT_GROW_TICKS: u64 = 5_400;
@@ -677,9 +677,10 @@ pub const fn pickable(o: Occupant) -> bool {
 }
 
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
-/// `None` for Rock, empty cells and every plant — the things a swing passes
-/// through. A berry bush or hemp is picked by hand with `E` ([`pick`],
-/// `Command::Pick`), never swung at (operator, 2026-10-02).
+/// `None` for Rock, empty cells and every [`pickable`] — the things a swing
+/// passes through. A berry bush, hemp, wild corn or pumpkin and a ground
+/// pickup are picked by hand with `E` ([`pick`], `Command::Pick`), never
+/// swung at (operator, 2026-10-02).
 #[inline]
 pub(crate) fn target_index(o: Occupant) -> Option<usize> {
     match node_index(o) {
@@ -1682,8 +1683,8 @@ pub fn land(
 /// whatever it offers is inside what this accepts.
 pub const PICK_REACH_M: f32 = crate::backpack::LOOT_REACH_M;
 
-/// Pick the berry bush or hemp at `(cx, cz)` by hand — `Command::Pick`, the
-/// `E` verb.
+/// Pick the [`pickable`] at `(cx, cz)` by hand — a berry bush, hemp, wild
+/// corn or pumpkin, a ground pickup — `Command::Pick`, the `E` verb.
 ///
 /// `slot` is what the world's scatter memo says stands in that cell; the
 /// cell itself came off the wire and is only a **claim**. Anything that is

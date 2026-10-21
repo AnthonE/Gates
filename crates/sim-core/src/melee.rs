@@ -484,8 +484,9 @@ pub fn openable(o: Occupant) -> bool {
 }
 
 /// The plant a hand reaching along `ray` would pick (`E`, `gather::pick`):
-/// the nearest occupant the ray enters, if that is a grown berry bush or
-/// hemp — a trunk, a node or a crate in front of it is in the way, and a
+/// the nearest occupant the ray enters, if that is a grown
+/// [`gather::pickable`] (a berry bush, hemp, wild corn or pumpkin, a ground
+/// pickup) — a trunk, a node or a crate in front of it is in the way, and a
 /// sprout still growing back has nothing on it yet. The client's `[E] PICK`
 /// prompt and the server's agent both ask this, so they agree on which plant.
 pub fn pick_cast(seed: u64, occ: &mut Occupants, ray: &Ray) -> Option<OccupantHit> {

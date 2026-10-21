@@ -4108,10 +4108,12 @@ pub fn is_container(arch: u8) -> bool {
     matches!(arch, ARCH_BOX | ARCH_BAG)
 }
 
-/// Which archetypes convert what is inside them — the ovens and the
-/// recycler. `sim_core::oven::OvenState::arch_converts` is the sim's
-/// answer and this is the client's read of the same fact; both are the
-/// archetype table, so neither invents anything.
+/// Which archetypes convert what is inside them — the ovens, the recycler,
+/// and the farm's two tanks (a planter waters its bed, a water catcher
+/// fills a skin).
+/// `sim_core::oven::OvenState::arch_converts` is the sim's answer and this
+/// is the client's read of the same fact; both are the archetype table, so
+/// neither invents anything.
 pub fn is_converter(arch: u8) -> bool {
     matches!(
         arch,

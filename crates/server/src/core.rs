@@ -5319,7 +5319,7 @@ impl ShardCore {
                                         at,
                                     )
                                 {
-                                    ShardStats::bump(&stats.deploy_events_skipped);
+                                    ShardStats::bump(&stats.plant_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -7607,7 +7607,10 @@ impl ShardCore {
             let done = |c: &mut ClientNetState| {
                 c.plant_sync_reset = false;
                 c.plant_sync_cursor = rest;
-                ShardStats::add(&stats.deploy_sync_skipped, (scanned - n) as u64);
+                ShardStats::add(&stats.plant_sync_skipped, (scanned - n) as u64);
+                if rest == 0 {
+                    ShardStats::bump(&stats.plant_walk_completes);
+                }
             };
             if n > 0 || c.plant_sync_reset {
                 match protocol::encode_event_plant_sync(
