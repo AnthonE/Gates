@@ -207,12 +207,14 @@ def metal_hatchet(k):
              (0.0, 0.47)], surf="wood", n=10)
     k.cyl(0.0195, 0.13, (0, 0, 0.095), "leather", n=10, bevel=0.0)
     # Forged head: an eye round the haft, a cheek flaring to a bearded edge.
-    head = [(-0.05, 0.455), (0.03, 0.455), (0.09, 0.43), (0.135, 0.395), (0.16, 0.40),
-            (0.17, 0.47), (0.165, 0.548), (0.12, 0.535), (0.03, 0.525), (-0.05, 0.525)]
+    # The edge is to −X, the stone hatchet's side: the two share one carry
+    # (`hold::HAFTED_YAW`), and to +X the blade faced back at the player.
+    head = [(0.05, 0.455), (-0.03, 0.455), (-0.09, 0.43), (-0.135, 0.395), (-0.16, 0.40),
+            (-0.17, 0.47), (-0.165, 0.548), (-0.12, 0.535), (-0.03, 0.525), (0.05, 0.525)]
     k.slab(head, 0.024, (0, 0, 0), "dark", bevel=0.004)
-    k.slab([(0.15, 0.402), (0.162, 0.40), (0.172, 0.47), (0.167, 0.546), (0.155, 0.543), (0.158, 0.47)],
+    k.slab([(-0.15, 0.402), (-0.162, 0.40), (-0.172, 0.47), (-0.167, 0.546), (-0.155, 0.543), (-0.158, 0.47)],
            0.012, (0, 0, 0), "steel", bevel=0.001)
-    k.box((0.03, 0.032, 0.075), (-0.035, 0, 0.49), "dark", bevel=0.006)
+    k.box((0.03, 0.032, 0.075), (0.035, 0, 0.49), "dark", bevel=0.006)
 
 
 @recipe("metal_pickaxe", "models/held/metal_pickaxe.glb", kind="held")
@@ -225,7 +227,9 @@ def metal_pickaxe(k):
     k.tube([(0.03, 0, 0.61), (0.12, 0, 0.615), (0.20, 0, 0.59), (0.27, 0, 0.545)], 0.02, "dark", n=8, r_end=0.003)
     adze = [(-0.03, 0.585), (-0.03, 0.635), (-0.15, 0.62), (-0.25, 0.575), (-0.255, 0.555), (-0.15, 0.585)]
     k.slab(adze, 0.04, (0, 0, 0), "dark", bevel=0.004)
-    k.slab([(-0.245, 0.556), (-0.262, 0.554), (-0.256, 0.578), (-0.24, 0.578)], 0.044, (0, 0, 0), "steel", bevel=0.0)
+    # The ground edge, half the adze thick like the hatchet's: at 0.044 it
+    # sleeved the 0.04 adze and read as a cap on the end.
+    k.slab([(-0.245, 0.556), (-0.262, 0.554), (-0.256, 0.578), (-0.24, 0.578)], 0.02, (0, 0, 0), "steel", bevel=0.0)
 
 
 @recipe("metal_spear", "models/held/metal_spear.glb", kind="held")
