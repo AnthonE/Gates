@@ -672,8 +672,8 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.186, 0.50, 0.08),
     HeldModelDef::deploy(
         "metal_door",
-        "models/deploy/door_locked.glb",
-        2.186,
+        "models/deploy/door_metal.glb",
+        2.200,
         0.50,
         0.08,
     ),
@@ -713,8 +713,8 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     HeldModelDef::kit("electric_fuse", 0.160, 0.50, 1.00),
     HeldModelDef::kit("medical_syringe", 0.279, 0.45, 1.00),
     HeldModelDef::kit("pistol_round", 0.078, 0.50, 1.00),
-    HeldModelDef::kit("key_lock", 0.136, 0.35, 1.00),
-    HeldModelDef::kit("code_lock", 0.170, 0.40, 1.00),
+    HeldModelDef::upright("key_lock", "models/held/key_lock.glb", 0.160, 0.35, 1.00),
+    HeldModelDef::upright("code_lock", "models/held/code_lock.glb", 0.180, 0.40, 1.00),
     HeldModelDef::upright("waterskin", "models/held/waterskin.glb", 0.310, 0.45, 0.90),
     HeldModelDef::upright(
         "full_waterskin",
