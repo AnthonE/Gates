@@ -94,6 +94,7 @@ pub mod hearth;
 pub mod hold;
 pub mod hub;
 pub mod icons;
+pub mod info;
 pub mod interact;
 pub mod keypad;
 pub mod load;

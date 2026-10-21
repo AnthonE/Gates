@@ -5850,12 +5850,14 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
     // The call sits in `build_screen`'s row, ungated: the body, then the
     // pack (Rust's order since the pages split, 2026-09-25), then the
     // container *if* one is open. Matched on the pack call's head: its own
-    // arguments (the belt slot in hand) are not this test's.
+    // arguments (the belt slot in hand) are not this test's. The window is
+    // wide enough for the middle column's head, where the item card sits
+    // over the pack.
     let row = code
         .split("wear_panel(row, core, icons, portrait);")
         .nth(1)
         .expect("`build_screen` must draw the body");
-    let head = &row[..row.len().min(200)];
+    let head = &row[..row.len().min(800)];
     assert!(
         head.contains("own_grid(row, core, icons"),
         "the body is not drawn beside the pack: {head}"

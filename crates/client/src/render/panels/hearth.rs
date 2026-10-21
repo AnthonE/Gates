@@ -13,7 +13,7 @@ use client_core::core::ClientCore;
 
 use super::{
     font, font_bold, Hover, Panel, Tip, Ui, CELL_BG, CELL_FULL, CELL_GAP_PX, CELL_HOVER, LINE,
-    PANEL_BG, SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
+    SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::hearth::{self as words, Row};
@@ -69,11 +69,9 @@ pub fn column(
             width: Val::Px(COL_W_PX + 22.0),
             padding: UiRect::all(Val::Px(10.0)),
             row_gap: Val::Px(8.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(LINE),
+        BackgroundColor(super::REGION_BG),
     ))
     .with_children(|col| {
         col.spawn((Text::new("LOOT"), font_bold(15.0), TextColor(TEXT)));

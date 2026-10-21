@@ -23,7 +23,7 @@ pub fn build_team(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     let me = core.player_id;
     let [x, _, z] = core.predict.render_position();
     let rows = words::rows(team, me, [x, z], |id| crate::ui::names::of(core, id));
-    kit::screen(commands, TEAM_W, |p| {
+    kit::page(commands, ui, TEAM_W, |p| {
         let count = format!("{}/{}", team.count, protocol::TEAM_MAX);
         kit::header(
             p,
