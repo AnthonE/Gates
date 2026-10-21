@@ -202,7 +202,8 @@ const EXTRAS: [(&str, i8, i8, u8, Milestone); 3] = [
 /// its cell's centre but the bag: the airlock is a triangle foundation (the
 /// NW half, `bots::BASE` at (1, 1)) with a diagonal wall on its hypotenuse
 /// through the centre, so the bag lies inside the half, along the wall,
-/// clear of it and of both doorways.
+/// clear of it and of both doorways. The cupboard is turned to face the
+/// room, as the scripted owner stands it (`bots::HEARTH_POSE`).
 pub fn kit_pose(name: &str) -> sim_core::footprint::Pose {
     if name == BAG_ITEM {
         sim_core::footprint::Pose {
@@ -210,6 +211,8 @@ pub fn kit_pose(name: &str) -> sim_core::footprint::Pose {
             oz: -32,
             yaw: 32,
         }
+    } else if name == HEARTH_ITEM {
+        sim_core::bots::HEARTH_POSE
     } else {
         sim_core::footprint::Pose::CENTRE
     }
@@ -1056,7 +1059,7 @@ pub enum Region {
 /// the airlock and out of the front door. Each point keeps a body's
 /// capsule clear of the walls, the posts, the cupboard and the box.
 ///
-/// The stand spot sits 0.45 m from the cupboard's side, a capsule and a
+/// The stand spot sits 0.49 m from the cupboard's front, a capsule and a
 /// hair; it is walked to straight from the wall side, never past the
 /// cupboard's corner.
 const CHAIN: [[f32; 2]; 9] = [

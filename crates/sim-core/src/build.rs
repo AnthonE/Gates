@@ -6074,7 +6074,7 @@ mod tests {
             LOC_PLANE,
             crate::footprint::Pose {
                 ox: 0,
-                oz: 60,
+                oz: 80,
                 yaw: 0,
             },
             &mut ev,
