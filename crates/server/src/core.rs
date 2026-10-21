@@ -1258,13 +1258,23 @@ impl ShardCore {
     /// A structure took a hit at build cell `(cx, cz)`: tell the crew of
     /// every base whose claim covers it, once a base per quiet window, and
     /// look up at most two hits a tick.
-    fn note_raid(&mut self, cx: u16, cz: u16) {
+    fn note_raid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
         if !self.companion.on() || self.raid_checks >= 2 {
             return;
         }
+        // A piece the grid cannot name — or a door in its doorway, which
+        // shares its spelled id — is where the piece stands; one a killing
+        // blow already took was alerted on by the blows before it.
+        let (x, z) = if sim_core::build::spelled_id(cx, cz, level, loc).is_some() {
+            match self.world.pieces.find(cx, cz, level, loc) {
+                Some(r) => self.world.pieces.anchor_of(r),
+                None => return,
+            }
+        } else {
+            sim_core::deploy::cell_center(cx, cz)
+        };
         self.raid_checks += 1;
         let tick = self.world.tick;
-        let (x, z) = sim_core::deploy::cell_center(cx, cz);
         for hi in 0..self.world.deploys.hearths().len() {
             let h = self.world.deploys.hearths()[hi];
             if !self.world.deploys.hearth_covers(hi, x, z) {
@@ -5140,12 +5150,14 @@ impl ShardCore {
                     // player can reach it.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
-                    let owner = self
-                        .world
-                        .deploys
-                        .find(cx, cz, level, loc)
-                        .map_or(0, |d| d.owner);
-                    let at = interest::cell_cm(cx, cz);
+                    // Where the door is: a door in a doorway the grid
+                    // cannot name is addressed by the doorway's spelled id,
+                    // no place at all (`interest::deploy_cell`).
+                    let rec = self.world.deploys.find(cx, cz, level, loc).copied();
+                    let owner = rec.map_or(0, |d| d.owner);
+                    let (acx, acz) =
+                        rec.map_or((cx, cz), |d| interest::deploy_cell(&d, &self.world.pieces));
+                    let at = interest::cell_cm(acx, acz);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     let has_lock = ev.b & 4 != 0;
                     // Which kind of lock, off the store at encode (v120):
@@ -5228,7 +5240,13 @@ impl ShardCore {
                     // on. `NOW.md` §0fan.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
-                    let at = interest::cell_cm(cx, cz);
+                    // `EV_DOOR`'s reading of where the door is.
+                    let (acx, acz) = self
+                        .world
+                        .deploys
+                        .find(cx, cz, level, loc)
+                        .map_or((cx, cz), |d| interest::deploy_cell(d, &self.world.pieces));
+                    let at = interest::cell_cm(acx, acz);
                     match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -5612,7 +5630,12 @@ impl ShardCore {
                     ShardStats::bump(&stats.struct_hits);
                     // The crew hears of it on the companion, killing blow
                     // included.
-                    self.note_raid((ev.a >> 16) as u16, ev.a as u16);
+                    self.note_raid(
+                        (ev.a >> 16) as u16,
+                        ev.a as u16,
+                        (ev.b >> 16) as u8,
+                        (ev.b >> 8) as u8,
+                    );
                     // A structure still standing after a raid swing: the
                     // address, what it took, what is left. Broadcast like
                     // a placement — the wall is a world fact, and anyone

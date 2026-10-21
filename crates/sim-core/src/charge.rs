@@ -526,7 +526,7 @@ pub fn tick_fuses(
         if let Some(item) = dud(seed, cc, &c) {
             // Out, not blown: it falls from where it was stuck.
             let (x, z) = epicentre(pieces, deploys, &c);
-            let y = floor_y(seed, haven, pieces, &c) + 0.8;
+            let y = floor_y(seed, haven, pieces, deploys, &c) + 0.8;
             duds.push(item, x, y, z);
             charges.remove_at(i);
             continue;
@@ -596,10 +596,26 @@ fn posed_gone(pieces: &Pieces, c: &ChargeRec) -> bool {
 }
 
 /// The floor under a charge's storey: its column's, or its posed piece's
-/// building's, or its posed doorway's.
-fn floor_y(seed: u64, haven: &crate::terrain::Haven, pieces: &Pieces, c: &ChargeRec) -> f32 {
+/// building's, or its posed doorway's — and on a body deployable, the floor
+/// it stands on (`deploy::built_floor`, a slab the grid cannot name too).
+fn floor_y(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    pieces: &Pieces,
+    deploys: &Deploys,
+    c: &ChargeRec,
+) -> f32 {
     if let Some(at) = posed_door(pieces, c) {
         return at.floor_y;
+    }
+    if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
+        let on = deploys.find(c.cx, c.cz, c.level, c.loc).and_then(|r| {
+            let (x, z) = r.xz();
+            crate::deploy::built_floor(seed, haven, pieces.cols(), r.cx, r.cz, r.level, x, z)
+        });
+        if let Some(y) = on {
+            return y;
+        }
     }
     match posed(pieces, c).and_then(|r| pieces.frame(r.bld).map(|f| (f.band, r.level))) {
         Some((band, level)) => crate::build::band_y(band) + crate::build::level_y(level),
@@ -634,7 +650,7 @@ fn detonate(
     events: &mut EventQueue,
 ) {
     let (ax, az) = epicentre(pieces, deploys, c);
-    let ay = floor_y(seed, haven, pieces, c);
+    let ay = floor_y(seed, haven, pieces, deploys, c);
     let cell = |v: f32| {
         crate::build::build_cell_of(v).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1) as u16
     };

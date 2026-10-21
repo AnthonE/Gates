@@ -4263,7 +4263,10 @@ impl World {
         // that shot and the bench must stay whole. Nothing but a door ever
         // hangs on an edge, so an edge tie only ever finds a door — the
         // breach point the whole raid ladder is priced around.
-        let on_edge = c.hit.loc == build::LOC_EDGE_XLO || c.hit.loc == build::LOC_EDGE_ZLO;
+        // A doorway the grid cannot name is struck at its spelled id, which
+        // its door shares (freeform W4); no other piece's spelled id holds
+        // a deployable.
+        let on_edge = deploy::is_edge_loc(c.hit.loc);
         let deploy = c.deploy
             || (on_edge
                 && self
@@ -8451,16 +8454,19 @@ impl World {
         self.prick_deploys();
         {
             // A slot a base now stands over does not grow back through it.
-            let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
+            let (table, haven, pieces) = (&self.scatter, &self.haven, &self.pieces);
             let built_over = |cx: u16, cz: u16| {
                 let slot = crate::terrain::scatter(seed, table, haven, cx as i32, cz as i32);
                 let (bx, bz) = (
                     crate::build::build_cell_of(slot.x),
                     crate::build::build_cell_of(slot.z),
                 );
+                // The grid's pieces, and the ones it cannot name standing
+                // over the cell (a triangle, a turned base).
                 (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bx)
                     && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
-                    && cols.get(bx as u16, bz as u16).has_piece()
+                    && (pieces.cols().get(bx as u16, bz as u16).has_piece()
+                        || pieces.posed_in(bx as u16, bz as u16))
             };
             let wild_until = |cx: u16, cz: u16| crate::gather::wild_grown_at(seed, cx, cz);
             self.slot_lives

@@ -998,6 +998,82 @@ impl Hulls {
         best
     }
 
+    /// The first wall the grid cannot name (freeform) a step `a` → `b`
+    /// crosses — its line, between its ends and its floor and head — as
+    /// (how far along the step, the row). The build aim's posed half of
+    /// meeting a wall.
+    pub fn posed_edge_crossed(&self, a: [f32; 3], b: [f32; 3]) -> Option<(f32, Hull)> {
+        let mut best: Option<(f32, Hull)> = None;
+        let (x0, z0) = (a[0].min(b[0]), a[2].min(b[2]));
+        let (x1, z1) = (a[0].max(b[0]), a[2].max(b[2]));
+        self.near(x0, z0, x1, z1, |h| {
+            if h.hit.loc != crate::build::LOC_NONE || h.kind != HULL_EDGE {
+                return false;
+            }
+            let (t0, d0) = h.local(a[0], a[2]);
+            let (t1, d1) = h.local(b[0], b[2]);
+            if (d0 < 0.0) == (d1 < 0.0) || d0 == d1 {
+                return false;
+            }
+            let s = d0 / (d0 - d1);
+            let t = t0 + (t1 - t0) * s;
+            let y = a[1] + (b[1] - a[1]) * s;
+            if !(0.0..=SIDE_M).contains(&t) || y < h.floor_y || y > h.floor_y + h.height() {
+                return false;
+            }
+            if best.is_none_or(|(bs, _)| s < bs) {
+                best = Some((s, *h));
+            }
+            false
+        });
+        best
+    }
+
+    /// The upper storey of a slab the grid cannot name a step `a` → `b`
+    /// crosses the plane of just past its footprint — within `band` of it,
+    /// over no slab of that storey — as (its socket, how far along the
+    /// step): the build aim's posed half of continuing a floor out past its
+    /// edge.
+    pub fn posed_socket_crossed(&self, a: [f32; 3], b: [f32; 3], band: f32) -> Option<(u8, f32)> {
+        if a[1] == b[1] {
+            return None;
+        }
+        let mut best: Option<(u8, f32)> = None;
+        let (x0, z0) = (a[0].min(b[0]) - band, a[2].min(b[2]) - band);
+        let (x1, z1) = (a[0].max(b[0]) + band, a[2].max(b[2]) + band);
+        self.near(x0, z0, x1, z1, |h| {
+            if h.hit.loc != crate::build::LOC_NONE
+                || h.level == 0
+                || !matches!(h.kind, HULL_PLANE | HULL_TRI)
+            {
+                return false;
+            }
+            let s = (h.floor_y - a[1]) / (b[1] - a[1]);
+            if !(0.0..=1.0).contains(&s) || best.is_some_and(|(_, bs)| bs <= s) {
+                return false;
+            }
+            let (x, z) = (a[0] + (b[0] - a[0]) * s, a[2] + (b[2] - a[2]) * s);
+            let (lx, lz) = h.local(x, z);
+            if h.holds(lx, lz) || h.foot_dist2(lx, lz) > band * band {
+                return false;
+            }
+            best = Some((h.level, s));
+            false
+        });
+        // Over a slab of that storey already, it is that slab's floor.
+        let (level, s) = best?;
+        let (x, z) = (a[0] + (b[0] - a[0]) * s, a[2] + (b[2] - a[2]) * s);
+        let mut covered = false;
+        self.near(x, z, x, z, |h| {
+            if h.hit.loc == crate::build::LOC_NONE && h.level == level && h.is_body() {
+                let (lx, lz) = h.local(x, z);
+                covered |= h.holds(lx, lz);
+            }
+            covered
+        });
+        (!covered).then_some((level, s))
+    }
+
     /// The socket of a slab the grid cannot name whose top at (`x`, `z`)
     /// is `y`: the storey an aim that met that surface is on, read off the
     /// slab rather than off the column under it, which a building turned

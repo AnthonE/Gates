@@ -1087,3 +1087,20 @@ fn a_grid_name_is_one_pieces() {
     assert_eq!(site.grid, Some((cx, cz, LOC_EDGE_XLO)));
     assert_eq!(put(&mut w, &mut p, HALF_WALL, &site), Err(REFUSE_B_SPOT));
 }
+
+/// An edge between two grid bases joins the one with a body beside it,
+/// though the other base's wall is filed in the edge's own column.
+#[test]
+fn a_wall_ignores_a_neighbours_wall_in_its_column() {
+    let (mut w, mut p, at) = fixture();
+    let (cx, cz) = (build_cell_of(at.0) as u16, build_cell_of(at.1) as u16);
+    let b = grid_put(&mut w, &mut p, FOUNDATION, cx, cz - 1, LOC_PLANE, false, 0).unwrap();
+    let a = grid_put(&mut w, &mut p, FOUNDATION, cx - 1, cz, LOC_PLANE, false, 0).unwrap();
+    assert_ne!(a.addr.bld, b.addr.bld);
+    let north = grid_put(&mut w, &mut p, WALL, cx, cz, LOC_EDGE_ZLO, false, 0)
+        .expect("B's north wall, filed in column (cx, cz)");
+    assert_eq!(north.addr.bld, b.addr.bld);
+    let east = grid_put(&mut w, &mut p, WALL, cx, cz, LOC_EDGE_XLO, false, 0)
+        .expect("A's east wall, in the same column");
+    assert_eq!(east.addr.bld, a.addr.bld);
+}

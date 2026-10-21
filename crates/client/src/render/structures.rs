@@ -3013,6 +3013,22 @@ pub fn stream(
         if (rec.row as u16) >= dhave {
             continue;
         }
+        // A door in a doorway the grid cannot name hangs in that doorway or
+        // is not drawn: its address spells the doorway's id, no place, and
+        // one that streamed in before its doorway waits for it (unseen, so
+        // the sweep below takes any earlier draw).
+        if rec.loc == sim_core::build::LOC_NONE
+            && sim_core::deploy::posed_insert(
+                core.pieces.cols(),
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+            )
+            .is_none()
+        {
+            continue;
+        }
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
         // The column's plate, from the piece mirror the predictor already
         // keeps — a deployable's own record does not carry one

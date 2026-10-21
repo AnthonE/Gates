@@ -2669,6 +2669,14 @@ pub fn grid_site(
                 return false;
             }
             let (dx, dz) = (r.cx as i32 - cx as i32, r.cz as i32 - cz as i32);
+            // An edge is carried by a body beside it, or by the same edge
+            // stacked under it: another edge filed in a column (a wall on a
+            // neighbour base's side) says nothing about who stands beside
+            // this one.
+            let is_edge = |l: u8| l == LOC_EDGE_XLO || l == LOC_EDGE_ZLO;
+            if is_edge(loc) && is_edge(r.loc) && !((dx, dz) == (0, 0) && r.loc == loc) {
+                return false;
+            }
             if (dx, dz) == (0, 0) {
                 own = Some(own.map_or(r.bld, |b| b.min(r.bld)));
             } else if dx.abs() + dz.abs() == 1 {

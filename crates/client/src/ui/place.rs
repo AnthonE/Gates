@@ -275,7 +275,24 @@ pub fn aim_from_look_step(
                 beside,
             };
         }
-        if let Some((level, s)) = socket_crossed(seed, haven, cols, prev, p) {
+        // The walls the grid cannot name (freeform): a triangle's sides,
+        // a turned base's.
+        if let Some((_, h)) = cols.hulls().posed_edge_crossed(prev, p) {
+            let met = match h.shape {
+                SHAPE_HALF_WALL => Met::HalfWall(h.level),
+                SHAPE_LOW_WALL => Met::LowWall(h.level),
+                _ => Met::Wall(h.level),
+            };
+            return Aim {
+                at: clamp_to_reach(planar_feet, (prev[0], prev[2])),
+                met,
+                standing,
+                beside: None,
+            };
+        }
+        let socket = socket_crossed(seed, haven, cols, prev, p)
+            .or_else(|| cols.hulls().posed_socket_crossed(prev, p, SOCKET_BAND_M));
+        if let Some((level, s)) = socket {
             let x = prev[0] + (p[0] - prev[0]) * s;
             let z = prev[2] + (p[2] - prev[2]) * s;
             return Aim {
@@ -2512,5 +2529,78 @@ mod tests {
             matches!(got, Some(LatticeAim::At { bld: 0, .. })),
             "the grid cell took it: {got:?}"
         );
+    }
+
+    /// The look ray meets a building turned off the grid as it meets a grid
+    /// base: a wall's face is `Met::Wall` of its storey, and the air just
+    /// past a turned upper floor's edge is that floor's socket — what a roof
+    /// aimed at the walls, or a floor run out past its edge, takes its storey
+    /// from.
+    #[test]
+    fn the_aim_meets_a_turned_bases_walls_and_floor_edges() {
+        use sim_core::build::{band_y, BuildContent, Pieces, LOC_NONE};
+        use sim_core::sock::Sock;
+        let seed = 20260731u64;
+        let haven = sim_core::terrain::haven(seed);
+        let bc = BuildContent::probe_fixture();
+        let (gx, gz) = (2047.5f32, 2047.5f32);
+        let band = sim_core::build::band_of_ground(sim_core::terrain::ground(seed, &haven, gx, gz));
+        let frame =
+            sim_core::frame::Frame::new(((gx * 100.0) as i32, (gz * 100.0) as i32), band, 7_000);
+        let sq = Sock::square_from(sim_core::lattice::LPt::ZERO, 0);
+        let (sides, _) = sq.sides();
+        let mut store = Pieces::new();
+        // Probe fixture rows: 0 the foundation, 1 the wall, 2 the floor.
+        for (id, row, level, sock) in [(1, 0, 0, sq), (2, 1, 0, sides[0]), (3, 2, 1, sq)] {
+            let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+            assert!(store.mirror_put(
+                PieceRec {
+                    id,
+                    sock,
+                    row,
+                    level,
+                    cx,
+                    cz,
+                    loc: LOC_NONE,
+                    hp: 1,
+                    ..PieceRec::default()
+                },
+                frame,
+                |r| Some(bc.pieces[r as usize].shape),
+            ));
+        }
+        let cols = store.cols();
+        let floor = band_y(band);
+        let (cx, cz) = frame.to_world(sq.at);
+        let out = |side: Sock| {
+            let (mx, mz) = frame.to_world(side.at);
+            let d = ((mx - cx) * (mx - cx) + (mz - cz) * (mz - cz)).sqrt();
+            ((mx, mz), ((mx - cx) / d, (mz - cz) / d))
+        };
+
+        // Outside the wall, looking level at it.
+        let ((mx, mz), (ox, oz)) = out(sides[0]);
+        let eye = [mx + ox * 2.5, floor + 1.6, mz + oz * 2.5];
+        let feet = [eye[0], floor, eye[2]];
+        let aim = aim_from_look(seed, &haven, cols, eye, [-ox, 0.0, -oz], feet);
+        assert_eq!(aim.met, Met::Wall(0), "the turned wall's face");
+
+        // Outside the open side, looking down at the air just past the
+        // upper floor's edge.
+        let ((mx, mz), (ox, oz)) = out(sides[2]);
+        let top = floor + sim_core::build::level_y(1);
+        let eye = [mx + ox * 2.0, top + 1.6, mz + oz * 2.0];
+        let at = [mx + ox * 0.5, top, mz + oz * 0.5];
+        let d = [at[0] - eye[0], at[1] - eye[1], at[2] - eye[2]];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let aim = aim_from_look(
+            seed,
+            &haven,
+            cols,
+            eye,
+            [d[0] / n, d[1] / n, d[2] / n],
+            [eye[0], top, eye[2]],
+        );
+        assert_eq!(aim.met, Met::Socket(1), "past the turned floor's edge");
     }
 }

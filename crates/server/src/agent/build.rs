@@ -1526,14 +1526,14 @@ pub(crate) fn e_picks_by(
         let r = (E_AIM_RADIUS_M + give).max(0.0);
         (t > -give && ox * ox + oz * oz <= r * r, dx * dx + dz * dz)
     };
-    let in_reach = |cx: u16, cz: u16| {
-        let (cx, cz) = sim_core::deploy::cell_center(cx, cz);
+    let in_reach = |cx: u16, cz: u16, level: u8, loc: u8| {
+        let (cx, cz) = e_points(core, cx, cz, level, loc).0;
         (cx - x) * (cx - x) + (cz - z) * (cz - z) <= reach2
     };
-    if !in_reach(door.cx, door.cz) {
+    if !in_reach(door.cx, door.cz, door.level, door.loc) {
         return false;
     }
-    let (ax, az) = anchor(door.cx, door.cz, door.loc);
+    let (ax, az) = e_points(core, door.cx, door.cz, door.level, door.loc).1;
     let (aimed, mine) = score(ax, az, -slack);
     if !aimed || mine > own_reach2 {
         return false;
@@ -1542,11 +1542,11 @@ pub(crate) fn e_picks_by(
     let own = deploy_rec(core, door).map_or(u8::MAX, |d| rank(d.row));
     let deploys = core.deploys.entries().iter().filter(|d| {
         (d.cx, d.cz, d.level, d.loc) != (door.cx, door.cz, door.level, door.loc)
-            && in_reach(d.cx, d.cz)
+            && in_reach(d.cx, d.cz, d.level, d.loc)
     });
     let rivals = deploys
         .map(|d| {
-            let (x, z) = anchor(d.cx, d.cz, d.loc);
+            let (x, z) = e_points(core, d.cx, d.cz, d.level, d.loc).1;
             (x, z, rank(d.row))
         })
         .chain(
@@ -1682,7 +1682,26 @@ pub(crate) fn door_open(core: &ClientCore, at: OpAddr) -> Option<bool> {
 
 /// Where the eyes go to work an address: the piece's middle, a door's
 /// handle height, a plane's top.
+/// Where `E` measures a deployable at this address from — (its reach, its
+/// aim): a door in a doorway the grid cannot name at that doorway's middle,
+/// both (its address spells the doorway's id, freeform W4); anything else
+/// at its cell's middle and `anchor`, as the human client's pick has it.
+fn e_points(core: &ClientCore, cx: u16, cz: u16, level: u8, loc: u8) -> ((f32, f32), (f32, f32)) {
+    if loc == sim_core::build::LOC_NONE {
+        let m = sim_core::deploy::edge_mid(core.pieces.cols(), cx, cz, level, loc);
+        return (m, m);
+    }
+    (sim_core::deploy::cell_center(cx, cz), anchor(cx, cz, loc))
+}
+
 pub(crate) fn look_point(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> [f32; 3] {
+    // A door in a doorway the grid cannot name: its handle, over that
+    // doorway's own floor.
+    if let Some(p) =
+        sim_core::deploy::posed_insert(core.pieces.cols(), at.cx, at.cz, at.level, at.loc)
+    {
+        return [p.x, p.floor_y + 1.1, p.z];
+    }
     let (x, z) = anchor(at.cx, at.cz, at.loc);
     let floor = match core.pieces.cols().plate(at.cx, at.cz) {
         Some(plate) => column_floor_y(seed, haven, at.cx, at.cz, plate),

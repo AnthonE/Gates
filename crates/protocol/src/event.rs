@@ -3848,7 +3848,9 @@ fn door_addr_ok(cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     (cx as usize) < MAX_BUILD_COORD
         && (cz as usize) < MAX_BUILD_COORD
         && (level as usize) < MAX_BUILD_SOCKETS
-        && loc <= LOC_EDGE_ZLO
+        // A grid doorway's edge, or a doorway the grid cannot name, whose
+        // address spells its id (freeform W4).
+        && (loc <= LOC_EDGE_ZLO || loc == LOC_NONE)
 }
 
 /// Somebody knocked on the door at the address (broadcast, lock v1).
@@ -9833,6 +9835,56 @@ mod tests {
             (top >> (8 - KIND_BITS)) as u8,
         ];
         assert_eq!(decode_event(&raw[..2]), Err(WireError::Malformed));
+    }
+
+    /// A door hung in a doorway the grid cannot name rides the door lane
+    /// under its doorway's spelled id (freeform W4): its swing, a knock on
+    /// it and a grant on its lock all round-trip.
+    #[test]
+    fn a_posed_door_rides_the_door_lane() {
+        let (cx, cz, level, loc) = sim_core::build::spell_id(70_001);
+        assert_eq!(loc, LOC_NONE);
+        let mut buf = [0u8; 64];
+        let len =
+            encode_event_door(cx, cz, level, loc, true, false, true, false, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::Door {
+                cx,
+                cz,
+                level,
+                loc,
+                open: true,
+                locked: false,
+                has_lock: true,
+                keyed: false,
+            }
+        );
+        let len = encode_event_knock(cx, cz, level, loc, 9, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::Knock {
+                cx,
+                cz,
+                level,
+                loc,
+                by: 9
+            }
+        );
+        let len =
+            encode_event_auth(cx, cz, level, loc, sim_core::lock::GRANT_FULL, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::Auth {
+                cx,
+                cz,
+                level,
+                loc,
+                grant: sim_core::lock::GRANT_FULL
+            }
+        );
+        // Any other loc past the edges is still no door's.
+        assert!(encode_event_door(cx, cz, level, 4, true, false, false, false, &mut buf).is_err());
     }
 }
 
