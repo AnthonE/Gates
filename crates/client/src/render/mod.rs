@@ -1923,6 +1923,8 @@ impl Plugin for GatesRenderPlugin {
             Update,
             crops::note_plants.after(feed::drain).run_if(world_running),
         )
+        // The crops' generated models, taken up as they finish loading.
+        .add_systems(Update, crops::ready_models.before(crops::stream_crops))
         .add_systems(
             Update,
             crops::stream_crops

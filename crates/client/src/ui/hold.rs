@@ -797,13 +797,13 @@ pub const HELD_MODELS: [HeldModelDef; 128] = [
     HeldModelDef::kit_borne("tech_trash", 0.042, 0.30, 0.80),
     HeldModelDef::kit_borne("corn_seed", 0.030, 0.30, 1.00),
     HeldModelDef::kit_borne("hemp_seed", 0.022, 0.30, 1.00),
-    // Farming v2's second wave: three seed heaps, and the potato and the
-    // pumpkin as kit props until their own models ship.
+    // Farming v2's second wave: three seed heaps from the kit, and the
+    // potato and the pumpkin (Meshy; the pumpkin is the vine's fruit too).
     HeldModelDef::kit_borne("potato_seed", 0.031, 0.30, 1.00),
     HeldModelDef::kit_borne("pumpkin_seed", 0.029, 0.30, 1.00),
     HeldModelDef::kit_borne("berry_seed", 0.0155, 0.30, 1.00),
-    HeldModelDef::kit_borne("potato", 0.069, 0.30, 1.00),
-    HeldModelDef::kit_borne("pumpkin", 0.293, 0.30, 0.80),
+    HeldModelDef::borne("potato", "models/held/potato.glb", 0.063, 0.30, 1.00),
+    HeldModelDef::borne("pumpkin", "models/held/pumpkin.glb", 0.301, 0.30, 0.80),
     HeldModelDef::borne("wood", "models/held/wood.glb", 0.267, 0.15, 0.50).yawed(-0.9),
     HeldModelDef::borne("cloth", "models/held/cloth.glb", 0.144, 0.15, 0.60),
     HeldModelDef::borne("tarp", "models/held/tarp.glb", 0.152, 0.15, 0.55),
@@ -821,9 +821,9 @@ pub const HELD_MODELS: [HeldModelDef; 128] = [
     HeldModelDef::kit_borne("bone_helmet", 0.303, 0.12, 0.50),
     HeldModelDef::kit_borne("roadsign_vest", 0.450, 0.12, 0.50).yawed(GARMENT_YAW),
     // The deployables: a blueprint in your own hand (`render::sheet`), a
-    // token of the thing in another's and on the ground. The barricade has
-    // the world's model; the fire pit's world model is lit and glows, so the
-    // kit's cold one stands in.
+    // token of the thing in another's and on the ground. The barricade, the
+    // planter and the catcher have the world's model; the fire pit's world
+    // model is lit and glows, so the kit's cold one stands in.
     HeldModelDef::deploy(
         "wooden_barricade",
         "models/deploy/barricade.glb",
@@ -831,14 +831,26 @@ pub const HELD_MODELS: [HeldModelDef; 128] = [
         0.80,
         0.12,
     ),
-    HeldModelDef::kit_deploy("planter_box", 0.249, 0.80, 0.40),
+    HeldModelDef::deploy(
+        "planter_box",
+        "models/deploy/planter_box.glb",
+        0.500,
+        0.80,
+        0.10,
+    ),
     HeldModelDef::kit_deploy("auto_turret", 0.270, 0.80, 0.45),
     HeldModelDef::kit_deploy("camp_fire", 0.193, 0.80, 0.30),
     HeldModelDef::kit_deploy("metal_window_bars", 1.200, 0.50, 0.12),
     HeldModelDef::kit_deploy("garage_door", 1.000, 0.50, 0.12),
     HeldModelDef::kit_deploy("glass_window", 0.960, 0.50, 0.12),
     HeldModelDef::kit_deploy("wood_shutters", 1.200, 0.50, 0.12),
-    HeldModelDef::kit_deploy("water_catcher", 0.300, 0.80, 0.40),
+    HeldModelDef::deploy(
+        "water_catcher",
+        "models/deploy/water_catcher.glb",
+        1.028,
+        0.80,
+        0.12,
+    ),
     HeldModelDef::deploy(
         "barbed_wooden_barricade",
         "models/deploy/barbed_barricade.glb",

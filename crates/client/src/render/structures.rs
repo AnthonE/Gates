@@ -2305,23 +2305,25 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     // 6 door — a metal one wears [`METAL_DOOR_ASSET`]'s material, baked
     // onto the same unwrap.
     Some("models/deploy/door.glb"),
-    None,                                       // 7 lock — never drawn
-    Some("models/deploy/recycler.glb"),         // 8 recycler
-    Some("models/deploy/research_table.glb"),   // 9 research table
-    Some("models/deploy/workbench2.glb"),       // 10 workbench 2
-    Some("models/deploy/workbench3.glb"),       // 11 workbench 3
-    None,                                       // 12 window bars — shared insert geometry
-    None,                                       // 13 garage door — shared insert geometry
-    None,                                       // 14 glass — shared insert geometry
-    None,                                       // 15 shutters — shared insert geometry
-    Some("models/deploy/barricade.glb"),        // 16 barricade
-    None,                                       // 17 planter — the cuboid until a model
-    Some(TURRET_BASE_GLB),                      // 18 turret base; the gun is `sentry.rs`'s
-    Some("models/deploy/vending.glb"),          // 19 vending machine
+    None,                                     // 7 lock — never drawn
+    Some("models/deploy/recycler.glb"),       // 8 recycler
+    Some("models/deploy/research_table.glb"), // 9 research table
+    Some("models/deploy/workbench2.glb"),     // 10 workbench 2
+    Some("models/deploy/workbench3.glb"),     // 11 workbench 3
+    None,                                     // 12 window bars — shared insert geometry
+    None,                                     // 13 garage door — shared insert geometry
+    None,                                     // 14 glass — shared insert geometry
+    None,                                     // 15 shutters — shared insert geometry
+    Some("models/deploy/barricade.glb"),      // 16 barricade
+    // 17 planter: Meshy, fitted per axis to the row so the bed is the box
+    // the sim blocks and plants in; its soil is at the sim's 0.44 m.
+    Some("models/deploy/planter_box.glb"),
+    Some(TURRET_BASE_GLB), // 18 turret base; the gun is `sentry.rs`'s
+    Some("models/deploy/vending.glb"), // 19 vending machine
     Some("models/deploy/barbed_barricade.glb"), // 20 barbed barricade
-    Some("models/deploy/floor_spikes.glb"),     // 21 floor spikes
-    Some("models/deploy/abyss_rug.glb"),        // 22 rug
-    None,                                       // 23 water catcher — the cuboid until a model
+    Some("models/deploy/floor_spikes.glb"), // 21 floor spikes
+    Some("models/deploy/abyss_rug.glb"), // 22 rug
+    Some("models/deploy/water_catcher.glb"), // 23 water catcher
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too

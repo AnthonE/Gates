@@ -155,6 +155,14 @@ fn packed_models() -> Vec<&'static str> {
             set.insert(*p);
         }
     }
+    // The crops' generated plants and the fruit they bear (`render::crops`).
+    for p in client::render::crops::CROP_GLB
+        .iter()
+        .chain(client::render::crops::FRUIT_GLB.iter())
+        .flatten()
+    {
+        set.insert(*p);
+    }
     // The skins with models of their own (#292), which replace a held row's.
     for m in SKIN_MODELS.iter() {
         set.insert(m.path);
