@@ -400,3 +400,35 @@ yield = "item.cloth"
 count = 10
 seconds = 600
 clones = 2
+
+# The second wave. A potato is a low bush that grows a little faster than
+# corn and pays more of something plainer; a pumpkin is the slow one, two
+# big meals off a sprawling vine; a berry bush is the quick one, a handful
+# of water-rich berries. Each one's seed comes back when its crop is eaten
+# (`consumables.toml` `leaves`), the berry's only now and then.
+[[crop]]
+id = "potato"
+look = "potato"
+seed = "item.potato_seed"
+yield = "item.potato"
+count = 5
+seconds = 750
+clones = 2
+
+[[crop]]
+id = "pumpkin"
+look = "pumpkin"
+seed = "item.pumpkin_seed"
+yield = "item.pumpkin"
+count = 2
+seconds = 1200
+clones = 2
+
+[[crop]]
+id = "berry"
+look = "berries"
+seed = "item.berry_seed"
+yield = "item.berries"
+count = 6
+seconds = 600
+clones = 2

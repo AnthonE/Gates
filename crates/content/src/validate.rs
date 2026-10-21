@@ -1024,6 +1024,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if con.food > u16::MAX as u32 || con.water > u16::MAX as u32 {
             return Err(format!("consumable `{}`: food/water overflows u16", con.id));
         }
+        // Seeds from eating: the leftover is a real item, its chance a per
+        // mille, and a chance with nothing to leave is a typo.
+        match &con.leaves {
+            Some(l) => {
+                item_exists(l, "consumable leaves")?;
+                if con.leaves_pm == 0 || con.leaves_pm > 1000 {
+                    return Err(format!(
+                        "consumable `{}`: leaves_pm {} outside 1..=1000",
+                        con.id, con.leaves_pm
+                    ));
+                }
+            }
+            None if con.leaves_pm != 0 => {
+                return Err(format!(
+                    "consumable `{}`: leaves_pm {} with nothing to leave",
+                    con.id, con.leaves_pm
+                ));
+            }
+            None => {}
+        }
     }
 
     // Wet and cold (weather v0). Everything is per mille of a meter, so

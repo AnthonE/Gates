@@ -2,9 +2,10 @@
 //! client of (`ClientCore::plants`), at its soil point, turned by a hash of
 //! its id and scaled by its stage, with the children its stage shows — a
 //! patch of turned soil for a seed, a sprout for a seedling, the crop's own
-//! mesh from sapling on, its fruit while fruiting and ripe, and the wilt
-//! once it is dying — over a mound of heaped soil when it grows in the
-//! open ground.
+//! mesh from sapling on, its fruit while fruiting and ripe (corn's ears, the
+//! pumpkins on the vine; a bush's berries only once ripe, and a potato's
+//! haulm yellowing instead), and the wilt once it is dying — over a mound of
+//! heaped soil when it grows in the open ground.
 //!
 //! **Bevy draws, it does not decide.** Every fact here is the wire record;
 //! nothing is predicted. The reconcile runs only on frames the plant set
@@ -31,13 +32,17 @@ pub const BED_SCALE: f32 = 0.8;
 /// `Startup`.
 #[derive(Resource)]
 pub struct CropKit {
-    /// Per look: the grown plant's wood (stalk) and leaves. Potato, pumpkin
-    /// and berries wear hemp's mesh, tinted, until their own land.
+    /// Per look: the grown plant's wood (stalk, vine or twigs) and leaves.
     stalk: [Handle<Mesh>; LOOK_COUNT as usize],
     leaves: [Handle<Mesh>; LOOK_COUNT as usize],
     /// Per look, healthy and dry.
     leaf_mat: [[Handle<StandardMaterial>; 2]; LOOK_COUNT as usize],
-    stalk_mat: Handle<StandardMaterial>,
+    /// Per look, the wood's material: a crop's stalk bends on hemp's sway, a
+    /// berry bush's twigs on the bush's, so each stays inside its leaves.
+    wood_mat: [Handle<StandardMaterial>; LOOK_COUNT as usize],
+    /// A ripe potato's haulm, yellowing as the tubers set (a potato shows no
+    /// fruit: what it pays is under the soil).
+    potato_ripe: Handle<StandardMaterial>,
     sprout: Handle<Mesh>,
     sprout_mat: Handle<StandardMaterial>,
     disc: Handle<Mesh>,
@@ -45,12 +50,20 @@ pub struct CropKit {
     /// A ground plant's heaped soil, under it at every stage.
     mound: Handle<Mesh>,
     mound_mat: Handle<StandardMaterial>,
+    /// Corn's ears.
     fruit: Handle<Mesh>,
     fruit_mat: Handle<StandardMaterial>,
-    /// A dying plant's brown: one for the solid parts and corn's straps,
-    /// one wearing hemp's leaf card (a card's shape is its alpha).
+    /// Pumpkins on the vine, two variants.
+    pumpkin: [Handle<Mesh>; 2],
+    pumpkin_mat: Handle<StandardMaterial>,
+    /// A ripe berry bush's berries.
+    berries: Handle<Mesh>,
+    berry_mat: Handle<StandardMaterial>,
+    /// A dying plant's brown: one for the solid parts and corn's straps, and
+    /// per look one wearing that look's leaf card (a card's shape is its
+    /// alpha).
     wilt_solid: Handle<StandardMaterial>,
-    wilt_card: Handle<StandardMaterial>,
+    wilt_card: [Handle<StandardMaterial>; LOOK_COUNT as usize],
     /// The planting ghost's sprout (`render::farm_ghost`), and its red for
     /// ground the sim would refuse.
     pub ghost: Handle<StandardMaterial>,
@@ -63,6 +76,10 @@ fn card_leaves(look: u8) -> bool {
     look != LOOK_CORN
 }
 
+/// Where a vine's pumpkins lie, in the plant's frame: out from the root
+/// along the ground, each turned its own way.
+const PUMPKIN_AT: [(f32, f32, f32); 2] = [(0.2, 0.05, 0.4), (-0.14, -0.17, 2.1)];
+
 /// Build the kit and register the swaying materials with the foliage
 /// shader (`props.rs`'s pattern).
 pub fn build_kit(
@@ -70,48 +87,58 @@ pub fn build_kit(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    server: Option<Res<AssetServer>>,
     foliage: Option<ResMut<super::foliage::Foliages>>,
 ) {
-    let (corn_stalk, corn_leaves) = plants::corn_stalk(0);
-    let (hemp_stalk, hemp_leaves) = plants::hemp(1);
-    let (corn_stalk, corn_leaves) = (meshes.add(corn_stalk), meshes.add(corn_leaves));
-    let (hemp_stalk, hemp_leaves) = (meshes.add(hemp_stalk), meshes.add(hemp_leaves));
-    let look_mesh = |look: u8, corn: &Handle<Mesh>, hemp: &Handle<Mesh>| {
-        if look == LOOK_CORN {
-            corn.clone()
-        } else {
-            hemp.clone()
-        }
-    };
-    let stalk = std::array::from_fn(|k| look_mesh(k as u8, &corn_stalk, &hemp_stalk));
-    let leaves = std::array::from_fn(|k| look_mesh(k as u8, &corn_leaves, &hemp_leaves));
-    let hemp_map = images.add(plants::hemp_leaf_image());
+    // In look order: the arrays below index by look.
+    const _: () = assert!(
+        LOOK_CORN == 0
+            && LOOK_HEMP == 1
+            && LOOK_POTATO == 2
+            && LOOK_PUMPKIN == 3
+            && LOOK_BERRY == 4
+    );
+    let looks: [(Mesh, Mesh); LOOK_COUNT as usize] = [
+        plants::corn_stalk(0),
+        plants::hemp(1),
+        plants::leafy_mound(2),
+        plants::pumpkin_vine(3),
+        (plants::berry_wood(4), plants::berry_leaves(4)),
+    ];
+    let looks = looks.map(|(s, l)| (meshes.add(s), meshes.add(l)));
+    let stalk = std::array::from_fn(|k| looks[k].0.clone());
+    let leaves = std::array::from_fn(|k| looks[k].1.clone());
+    // Each look's card: hemp's, the potato's and the pumpkin's drawn here,
+    // the berry bush's the wild bush's photographed atlas (an unresolved
+    // handle where nothing loads, as `props::assets` takes it).
+    let bush_card = server
+        .map(|s| s.load_with_settings(super::props::BUSH_CARD_ATLAS, super::textures::atlas(true)))
+        .unwrap_or_default();
+    let maps: [Option<Handle<Image>>; LOOK_COUNT as usize] = [
+        None,
+        Some(images.add(plants::hemp_leaf_image())),
+        Some(images.add(plants::potato_leaf_image())),
+        Some(images.add(plants::pumpkin_leaf_image())),
+        Some(bush_card),
+    ];
     let sheen = Color::linear_rgb(
         super::tree::CANOPY_SPECULAR_TINT,
         super::tree::CANOPY_SPECULAR_TINT,
         super::tree::CANOPY_SPECULAR_TINT,
     );
-    // A look's leaf tint over the vertex colour or the card: corn and hemp
-    // as drawn, the three hemp stand-ins pulled toward their own green.
-    let tint = |look: u8, dry: bool| -> Color {
-        let (r, g, b) = match look {
-            LOOK_POTATO => (0.8, 1.0, 0.7),
-            LOOK_PUMPKIN => (1.15, 1.1, 0.55),
-            LOOK_BERRY => (0.7, 0.9, 1.1),
-            LOOK_CORN | LOOK_HEMP => (1.0, 1.0, 1.0),
-            _ => (1.0, 1.0, 1.0),
-        };
+    // A thirsty plant's leaves pale toward straw.
+    let tint = |dry: bool| -> Color {
         if dry {
-            Color::linear_rgb(r * 1.25, g * 1.0, b * 0.45)
+            Color::linear_rgb(1.25, 1.0, 0.45)
         } else {
-            Color::linear_rgb(r, g, b)
+            Color::WHITE
         }
     };
-    let mut leaf = |look: u8, dry: bool| {
-        let card = card_leaves(look);
+    let mut leaf = |look: usize, base: Color| {
+        let card = card_leaves(look as u8);
         materials.add(StandardMaterial {
-            base_color: tint(look, dry),
-            base_color_texture: card.then(|| hemp_map.clone()),
+            base_color: base,
+            base_color_texture: maps[look].clone(),
             perceptual_roughness: 0.9,
             reflectance: fresnel::DIELECTRIC,
             specular_tint: sheen,
@@ -126,7 +153,10 @@ pub fn build_kit(
         })
     };
     let leaf_mat: [[Handle<StandardMaterial>; 2]; LOOK_COUNT as usize] =
-        std::array::from_fn(|k| [leaf(k as u8, false), leaf(k as u8, true)]);
+        std::array::from_fn(|k| [leaf(k, tint(false)), leaf(k, tint(true))]);
+    let potato_ripe = leaf(LOOK_POTATO as usize, Color::linear_rgb(1.55, 1.2, 0.3));
+    let wilt_card: [Handle<StandardMaterial>; LOOK_COUNT as usize] =
+        std::array::from_fn(|k| leaf(k, Color::linear_rgb(0.5, 0.3, 0.12)));
     let solid = |materials: &mut Assets<StandardMaterial>, c: Color, rough: f32| {
         materials.add(StandardMaterial {
             base_color: c,
@@ -138,21 +168,22 @@ pub fn build_kit(
         })
     };
     let stalk_mat = solid(&mut materials, Color::WHITE, 0.8);
+    let bush_wood = solid(&mut materials, Color::WHITE, 0.85);
+    let wood_mat: [Handle<StandardMaterial>; LOOK_COUNT as usize] = std::array::from_fn(|k| {
+        if k as u8 == LOOK_BERRY {
+            bush_wood.clone()
+        } else {
+            stalk_mat.clone()
+        }
+    });
     let sprout_mat = solid(&mut materials, Color::WHITE, 0.85);
     let disc_mat = solid(&mut materials, Color::linear_rgb(0.035, 0.024, 0.014), 0.95);
     let mound_mat = solid(&mut materials, Color::linear_rgb(0.05, 0.032, 0.018), 0.97);
     let fruit_mat = solid(&mut materials, Color::linear_rgb(0.62, 0.42, 0.04), 0.55);
+    // A pumpkin's skin is in its vertex colours; it has a waxy sheen.
+    let pumpkin_mat = solid(&mut materials, Color::WHITE, 0.5);
+    let berry_mat = solid(&mut materials, Color::WHITE, 0.32);
     let wilt_solid = solid(&mut materials, Color::linear_rgb(0.16, 0.10, 0.045), 0.95);
-    let wilt_card = materials.add(StandardMaterial {
-        base_color: Color::linear_rgb(0.5, 0.3, 0.12),
-        base_color_texture: Some(hemp_map.clone()),
-        perceptual_roughness: 0.95,
-        reflectance: fresnel::DIELECTRIC,
-        alpha_mode: AlphaMode::Mask(super::props::BUSH_CARD_ALPHA_CUT),
-        cull_mode: None,
-        double_sided: true,
-        ..default()
-    });
     let ghost = materials.add(StandardMaterial {
         base_color: Color::srgba(0.55, 0.95, 0.5, 0.45),
         alpha_mode: AlphaMode::Blend,
@@ -172,18 +203,22 @@ pub fn build_kit(
     if let Some(mut f) = foliage {
         use super::foliage::Kind;
         for (look, mats) in leaf_mat.iter().enumerate() {
-            let kind = if card_leaves(look as u8) {
-                Kind::HempLeaf
-            } else {
+            let kind = match look as u8 {
                 // Corn's straps are solid: they bend with the stalk and are
                 // never cut edge-on.
-                Kind::HempStem
+                LOOK_CORN => Kind::HempStem,
+                // The berry bush is the wild bush, on the bush's bend.
+                LOOK_BERRY => Kind::BushLeaf,
+                _ => Kind::HempLeaf,
             };
             for m in mats {
                 f.register(m, kind);
             }
         }
+        f.register(&potato_ripe, Kind::HempLeaf);
         f.register(&stalk_mat, Kind::HempStem);
+        f.register(&bush_wood, Kind::Stem);
+        f.register(&berry_mat, Kind::Stem);
         f.register(&sprout_mat, Kind::HempStem);
     }
     let sprout = meshes.add(plants::sprout(0));
@@ -191,7 +226,8 @@ pub fn build_kit(
         stalk,
         leaves,
         leaf_mat,
-        stalk_mat,
+        wood_mat,
+        potato_ripe,
         sprout: sprout.clone(),
         sprout_mat,
         disc: meshes.add(plants::soil_disc()),
@@ -200,6 +236,13 @@ pub fn build_kit(
         mound_mat,
         fruit: meshes.add(Capsule3d::new(0.035, 0.11)),
         fruit_mat,
+        pumpkin: [
+            meshes.add(plants::pumpkin(0)),
+            meshes.add(plants::pumpkin(1)),
+        ],
+        pumpkin_mat,
+        berries: meshes.add(plants::berries(4, true)),
+        berry_mat,
         wilt_solid,
         wilt_card,
         ghost,
@@ -356,17 +399,19 @@ fn spawn_crop(commands: &mut Commands, kit: &CropKit, p: &WirePlant) -> Entity {
             let dying = p.stage == STAGE_DYING;
             let leaf = if dying {
                 if card_leaves(p.look) {
-                    kit.wilt_card.clone()
+                    kit.wilt_card[look].clone()
                 } else {
                     kit.wilt_solid.clone()
                 }
+            } else if p.look == LOOK_POTATO && p.stage == STAGE_RIPE {
+                kit.potato_ripe.clone()
             } else {
                 kit.leaf_mat[look][usize::from(p.dry)].clone()
             };
             let wood = if dying {
                 kit.wilt_solid.clone()
             } else {
-                kit.stalk_mat.clone()
+                kit.wood_mat[look].clone()
             };
             let fruiting = matches!(p.stage, STAGE_FRUITING | STAGE_RIPE);
             e.with_children(|c| {
@@ -395,6 +440,27 @@ fn spawn_crop(commands: &mut Commands, kit: &CropKit, p: &WirePlant) -> Entity {
                                 )),
                         ));
                     }
+                }
+                if fruiting && p.look == LOOK_PUMPKIN {
+                    // Two pumpkins on the ground among the leaves: green
+                    // fruit at six tenths their size, then grown.
+                    let k = if p.stage == STAGE_RIPE { 1.0 } else { 0.6 };
+                    for (i, &(x, z, yaw)) in PUMPKIN_AT.iter().enumerate() {
+                        c.spawn((
+                            Mesh3d(kit.pumpkin[i].clone()),
+                            MeshMaterial3d(kit.pumpkin_mat.clone()),
+                            Transform::from_xyz(x, 0.0, z)
+                                .with_rotation(Quat::from_rotation_y(yaw))
+                                .with_scale(Vec3::splat(k)),
+                        ));
+                    }
+                }
+                if p.stage == STAGE_RIPE && p.look == LOOK_BERRY {
+                    c.spawn((
+                        Mesh3d(kit.berries.clone()),
+                        MeshMaterial3d(kit.berry_mat.clone()),
+                        Transform::IDENTITY,
+                    ));
                 }
             });
         }

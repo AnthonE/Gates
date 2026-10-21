@@ -127,6 +127,12 @@ const TARP: Mat = m(0x5e6a3a, 0.9, 0.0, Tex::Weave);
 const LEAF: Mat = m(0x5f9a3a, 0.55, 0.0, Tex::Plain);
 const KERNEL: Mat = m(0xeec44a, 0.45, 0.0, Tex::Plain);
 const HEMP: Mat = m(0x8c7a4c, 0.6, 0.0, Tex::Speckle);
+const POTATO_EYE: Mat = m(0x8a6a44, 0.85, 0.0, Tex::Speckle);
+const PUMPKIN_PIP: Mat = m(0xe8dcb0, 0.6, 0.0, Tex::Plain);
+const BERRY_PIP: Mat = m(0x6a2a24, 0.5, 0.0, Tex::Plain);
+const POTATO_SKIN: Mat = m(0xb48c5a, 0.85, 0.0, Tex::Speckle);
+const PUMPKIN_SKIN: Mat = m(0xd8741e, 0.5, 0.0, Tex::Plain);
+const PUMPKIN_STEM: Mat = m(0x6a6232, 0.85, 0.0, Tex::Grain);
 const THREAD_RED: Mat = m(0xb03a32, 0.9, 0.0, Tex::Weave);
 const THREAD_BLUE: Mat = m(0x3a5ea8, 0.9, 0.0, Tex::Weave);
 // An LED and an ember are bright paint and nothing more: a carried emissive
@@ -769,6 +775,11 @@ pub const NAMES: &[&str] = &[
     "medical_syringe",
     "corn_seed",
     "hemp_seed",
+    "potato_seed",
+    "pumpkin_seed",
+    "berry_seed",
+    "potato",
+    "pumpkin",
     "burlap_tunic",
     "burlap_hood",
     "hide_poncho",
@@ -815,6 +826,11 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "medical_syringe" => syringe(),
         "corn_seed" => seeds(KERNEL, 0.012, 21),
         "hemp_seed" => seeds(HEMP, 0.009, 22),
+        "potato_seed" => seeds(POTATO_EYE, 0.012, 23),
+        "pumpkin_seed" => seeds(PUMPKIN_PIP, 0.011, 24),
+        "berry_seed" => seeds(BERRY_PIP, 0.006, 25),
+        "potato" => potato(),
+        "pumpkin" => pumpkin(),
         "burlap_tunic" => stood(shirt(BURLAP)),
         "burlap_hood" => hood(),
         "hide_poncho" => stood(poncho()),
@@ -1504,6 +1520,45 @@ fn seeds(mat: Mat, r: f32, seed: u32) -> Vec<Part> {
             )
         })
         .collect()
+}
+
+/// A raw potato: a lumpy oval 11 cm long, with a few sunken eyes.
+fn potato() -> Vec<Part> {
+    let mut out = vec![p(
+        blob_n(31, 0.22, 3),
+        POTATO_SKIN,
+        xfs([0.0, 0.035, 0.0], [0.0, 20.0, 0.0], [0.055, 0.035, 0.04]),
+    )];
+    for i in 0..4u32 {
+        let a = i as f32 * 1.7 + jit(i, 32) * 0.4;
+        let y = 0.035 + 0.02 * jit(i, 33);
+        out.push(p(
+            sphere(0.005),
+            POTATO_EYE,
+            xf([0.05 * a.cos(), y, 0.036 * a.sin()], [0.0; 3]),
+        ));
+    }
+    out
+}
+
+/// A pumpkin: the vine's ribbed fruit (`render::plants::pumpkin`), painted
+/// here, with a dry stem out of its top.
+fn pumpkin() -> Vec<Part> {
+    let shell = super::plants::pumpkin_shell(0);
+    // The shell's first vertex is its top pole, down in the stem's dimple.
+    let pole = shell
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .and_then(|a| a.as_float3())
+        .and_then(|ps| ps.first())
+        .map_or(super::plants::PUMPKIN_H, |p| p[1]);
+    vec![
+        p(shell, PUMPKIN_SKIN, Transform::IDENTITY),
+        p(
+            frustum(0.009, 0.015, 0.07),
+            PUMPKIN_STEM,
+            xf([0.004, pole + 0.03, 0.0], [0.0, 0.0, -14.0]),
+        ),
+    ]
 }
 
 /// A tunic laid flat, facing the camera.

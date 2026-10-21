@@ -264,6 +264,14 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.fel as u32);
         h.u(u32::from(con.belt_recovery));
         h.u(u32::from(con.revive));
+        match &con.leaves {
+            None => h.u(0),
+            Some(l) => {
+                h.u(1);
+                h.s(l);
+            }
+        }
+        h.u(con.leaves_pm);
     }
 
     h.s("deployables");

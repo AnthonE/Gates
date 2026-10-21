@@ -654,6 +654,12 @@ pub struct Consumable {
     /// the corruption out. ±1000.
     #[serde(default)]
     pub fel: i32,
+    /// What eating one leaves in the eater's hand (Rust's seeds-from-eating:
+    /// a cob leaves a corn seed), `leaves_pm` per mille of the time.
+    #[serde(default)]
+    pub leaves: Option<String>,
+    #[serde(default)]
+    pub leaves_pm: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

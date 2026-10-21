@@ -87,7 +87,7 @@ pub const TICKS_PER_MIN: u32 = TICK_HZ * 60;
 /// all-zero row means the item is not food: the whole table starts that
 /// way, so eating a stack of wood is the same non-event as swinging it at
 /// a person with no melee row.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConsumableDef {
     /// Hit points delivered over `seconds` — not instantly (module note).
     pub health: u16,
@@ -103,9 +103,31 @@ pub struct ConsumableDef {
     /// immediately: negative draws the corruption out (the Charcoal Tonic,
     /// Rust's anti-rad pills).
     pub fel: i16,
+    /// What eating one leaves in the eater's hand (`NO_ITEM` for nothing),
+    /// `leaves_pm` per mille of the time: a cob leaves a corn seed, a
+    /// handful of berries now and then a berry seed (`World`'s consume arm).
+    pub leaves: u16,
+    pub leaves_pm: u16,
+}
+
+impl Default for ConsumableDef {
+    fn default() -> Self {
+        Self::NONE
+    }
 }
 
 impl ConsumableDef {
+    /// The row of an item that is not food.
+    pub const NONE: Self = Self {
+        health: 0,
+        food: 0,
+        water: 0,
+        seconds: 0,
+        fel: 0,
+        leaves: NO_ITEM,
+        leaves_pm: 0,
+    };
+
     /// Does this row do anything at all? The bake refuses a row that does
     /// not, so this is the sim's read of "is the held item food".
     #[inline]
@@ -165,13 +187,7 @@ pub struct SurvivalContent {
 
 impl SurvivalContent {
     pub const EMPTY: Self = Self {
-        consumable: [ConsumableDef {
-            health: 0,
-            food: 0,
-            water: 0,
-            seconds: 0,
-            fel: 0,
-        }; MAX_ITEM_DEFS],
+        consumable: [ConsumableDef::NONE; MAX_ITEM_DEFS],
         belt_recovery: [false; MAX_ITEM_DEFS],
         revive: [false; MAX_ITEM_DEFS],
         max_food: 0,
@@ -219,6 +235,7 @@ impl SurvivalContent {
             water: 30,
             seconds: 2,
             fel: 0,
+            ..ConsumableDef::NONE
         };
         c
     }
@@ -864,6 +881,7 @@ mod tests {
             water: 0,
             seconds: 1,
             fel: -400,
+            ..ConsumableDef::NONE
         };
         let drink = |sc: &SurvivalContent, fel: u16| {
             let mut p = player(sc);
@@ -898,6 +916,7 @@ mod tests {
             water: u16::MAX,
             seconds: 0,
             fel: 0,
+            ..ConsumableDef::NONE
         };
         let mut p = player(&sc);
         p.food = sc.max_food - 1;

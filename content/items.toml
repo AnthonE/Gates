@@ -927,6 +927,62 @@ class = "resources"
 description = "Hold it and plant one in a planter box."
 cond_carries = "genes"
 
+# Farming v2's second wave (`cooking.toml`'s potato, pumpkin and berry
+# crops). A potato and a pumpkin are food that leaves its seed when eaten
+# (`consumables.toml` `leaves`); berries leave one now and then.
+[[item]]
+id = "item.potato"
+name = "Potato"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Dug from a planter. Filling, and an eye in it for the next crop."
+
+[[item]]
+id = "item.potato_seed"
+name = "Potato Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "A cut eye. Plant one in a planter box or soft ground."
+cond_carries = "genes"
+
+[[item]]
+id = "item.pumpkin"
+name = "Pumpkin"
+stack = 5
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Slow to grow and heavy to carry. A meal and a drink in one."
+
+[[item]]
+id = "item.pumpkin_seed"
+name = "Pumpkin Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "Scraped from a pumpkin. Plant one where it has room to sprawl."
+cond_carries = "genes"
+
+[[item]]
+id = "item.berry_seed"
+name = "Berry Seed"
+stack = 50
+tier = 0
+rarity = "common"
+slot = "none"
+class = "resources"
+description = "Spat out of a handful of berries. It grows the bush back."
+cond_carries = "genes"
+
 [[item]]
 id = "item.planter"
 name = "Planter Box"

@@ -1464,12 +1464,27 @@ impl Content {
                         con.id, con.fel
                     )
                 })?;
+            let leaves = match &con.leaves {
+                Some(l) => self
+                    .item_index(l)
+                    .ok_or_else(|| format!("bake: consumable `{}` leaves no item `{l}`", con.id))?,
+                None => sim_core::gather::NO_ITEM,
+            };
+            if con.leaves_pm > 1000 || (leaves == sim_core::gather::NO_ITEM) != (con.leaves_pm == 0)
+            {
+                return Err(format!(
+                    "bake: consumable `{}` leaves_pm {} does not match its leaves",
+                    con.id, con.leaves_pm
+                ));
+            }
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
                 water: u16f(con.water, "water")?,
                 seconds,
                 fel,
+                leaves,
+                leaves_pm: con.leaves_pm as u16,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;

@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 168] = [
+pub const STEMS: [&str; 173] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -221,6 +221,12 @@ pub const STEMS: [&str; 168] = [
     "vending_machine",
     // Farming v2's water catcher (`ci/icons/water_catcher.py`, ours).
     "water_catcher",
+    // Farming v2's second wave (`ci/icons/crops.py`, ours).
+    "potato",
+    "potato_seed",
+    "pumpkin",
+    "pumpkin_seed",
+    "berry_seed",
     // The food loop's states. `burnt_meat` is the one PNG in
     // `assets/icons/` that is not game-icons.net — the archive has none, so
     // it is ours. The other two were briefly ours as well and are archive

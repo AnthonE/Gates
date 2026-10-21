@@ -3380,6 +3380,41 @@ impl World {
         .map(|_| ())
     }
 
+    /// Seeds from eating (Rust's): what eating `item` leaves in the eater's
+    /// hand, its row's `leaves_pm` of the time, rolled on the eater and the
+    /// tick. Into the pack, and what will not fit in a bag at the feet.
+    fn leave_seed(&mut self, slot: usize, item: u16) {
+        let Some(def) = self.survival.row(item) else {
+            return;
+        };
+        if def.leaves == NO_ITEM || def.leaves_pm == 0 {
+            return;
+        }
+        let pid = self.players[slot].id;
+        let roll = crate::rng::splitmix64(
+            crate::rng::cell_hash(self.seed, pid as i32, 0, crate::farm::CH_LEAVES) ^ self.tick,
+        ) % 1000;
+        if roll >= u64::from(def.leaves_pm) {
+            return;
+        }
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let added = crate::gather::inv_add_spilling(
+            &mut self.players[slot].inv,
+            &mut spill,
+            def.leaves,
+            1,
+            self.gather.stack_max_of(def.leaves),
+            0,
+        );
+        self.events.push(
+            EV_GATHER,
+            pid,
+            ((def.leaves as u32) << 16) | added as u32,
+            (1 - added) as u32,
+        );
+        self.drain_spill(slot, &mut spill);
+    }
+
     /// `Command::Tend`'s body.
     fn tend(&mut self, slot: usize, plant: u32, act: u8) -> Result<(), u32> {
         let Some(i) = self.farm.index_of_id(plant) else {
@@ -6764,7 +6799,12 @@ impl World {
             }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    survival::consume(
+                    let eaten = self.players[slot]
+                        .inv
+                        .get(inv as usize)
+                        .filter(|s| s.count > 0)
+                        .map_or(NO_ITEM, |s| s.item);
+                    if survival::consume(
                         &self.survival,
                         inv as usize,
                         &mut self.players[slot],
@@ -6774,7 +6814,9 @@ impl World {
                             self.works.unlocks,
                             crate::works::KNOB_HEAL_PCT,
                         ),
-                    );
+                    ) {
+                        self.leave_seed(slot, eaten);
+                    }
                 }
             }
             Command::Drop {

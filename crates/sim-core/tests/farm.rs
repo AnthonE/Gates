@@ -2259,3 +2259,198 @@ fn a_save_round_trips_a_catchers_barrel() {
     assert_eq!(tank(&back, c), 4321);
     assert_eq!(back.state_hash(), w.state_hash());
 }
+
+// ---------------------------------------------------- seeds from eating
+
+const BERRIES: u16 = 30;
+const BERRY_SEED: u16 = 31;
+const POTATO_SEED: u16 = 32;
+const POTATO: u16 = 33;
+/// Where the food sits in the pack.
+const FOOD_SLOT: usize = 8;
+
+/// The farm world with an appetite: a cob leaves its seed every time,
+/// berries a quarter of the time. The meters drain without hurting, so a
+/// long run of meals needs no care, and a spill has a bag to land in.
+fn eat_world() -> Box<World> {
+    use sim_core::survival::{ConsumableDef, SurvivalContent};
+    let (mut w, _, _) = farm_world();
+    w.survival = SurvivalContent::probe_fixture();
+    w.survival.starve_hp_per_min = 0;
+    w.survival.dehydrate_hp_per_min = 0;
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    for (item, cap) in [
+        (BERRIES, 20),
+        (BERRY_SEED, 50),
+        (POTATO_SEED, 50),
+        (POTATO, 20),
+    ] {
+        w.gather.stack_max[item as usize] = cap;
+    }
+    w.gather.item_count = w.gather.item_count.max(POTATO + 1);
+    w.survival.consumable[CORN as usize] = ConsumableDef {
+        food: 40,
+        water: 20,
+        seconds: 3,
+        leaves: SEED_ITEM,
+        leaves_pm: 1000,
+        ..ConsumableDef::NONE
+    };
+    w.survival.consumable[BERRIES as usize] = ConsumableDef {
+        food: 10,
+        water: 20,
+        seconds: 2,
+        leaves: BERRY_SEED,
+        leaves_pm: 250,
+        ..ConsumableDef::NONE
+    };
+    w
+}
+
+/// Eat one of a pair of `item` on an empty stomach.
+fn eat(w: &mut World, item: u16) {
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    w.players[0].inv[FOOD_SLOT] = ItemStack {
+        item,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Consume {
+        id: PLAYER,
+        slot: FOOD_SLOT as u8,
+    }]);
+}
+
+fn held(w: &World, item: u16) -> u32 {
+    w.players[0]
+        .inv
+        .iter()
+        .filter(|s| s.count > 0 && s.item == item)
+        .map(|s| s.count as u32)
+        .sum()
+}
+
+fn seed_paid(w: &World, seed: u16) -> Option<(u32, u32)> {
+    w.events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_GATHER && e.a == PLAYER && e.b >> 16 == seed as u32)
+        .map(|e| (e.b & 0xffff, e.c))
+}
+
+/// **Eating a cob leaves its seed** (Rust's seeds-from-eating): one blank
+/// corn seed into the pack, announced as a gather.
+#[test]
+fn eating_corn_leaves_one_corn_seed() {
+    let mut w = eat_world();
+    let seeds = held(&w, SEED_ITEM);
+    eat(&mut w, CORN);
+    assert_eq!(held(&w, CORN), 1, "one cob was eaten");
+    assert_eq!(held(&w, SEED_ITEM), seeds + 1);
+    assert_eq!(seed_paid(&w, SEED_ITEM), Some((1, 0)), "into the pack");
+    assert!(
+        w.players[0]
+            .inv
+            .iter()
+            .any(|s| s.item == SEED_ITEM && s.count == 1 && s.cond == 0),
+        "the seed is a blank seed, beside the full stack"
+    );
+}
+
+/// **A full pack drops the seed in a bag at the feet**, said as a short.
+#[test]
+fn a_seed_from_eating_spills_into_a_bag_from_a_full_pack() {
+    let mut w = eat_world();
+    for (k, s) in w.players[0].inv.iter_mut().enumerate() {
+        if k != SEED_SLOT {
+            *s = ItemStack {
+                item: HEMP_YIELD,
+                count: 50,
+                cond: 0,
+                skin: 0,
+            };
+        }
+    }
+    eat(&mut w, CORN);
+    assert_eq!(held(&w, CORN), 1, "one cob was eaten");
+    assert_eq!(seed_paid(&w, SEED_ITEM), Some((0, 1)), "spilled, said");
+    assert_eq!(w.backpacks.len(), 1, "a bag at the feet");
+    let bag: u32 = w.backpacks.entries()[0]
+        .items
+        .iter()
+        .filter(|s| s.item == SEED_ITEM)
+        .map(|s| s.count as u32)
+        .sum();
+    assert_eq!(bag, 1);
+}
+
+/// **Berries leave a seed about a quarter of the time**: a deterministic
+/// roll on the eater and the tick, so the count over 400 meals is exact.
+#[test]
+fn berries_leave_a_seed_about_a_quarter_of_the_time() {
+    let mut w = eat_world();
+    let mut paid = 0;
+    for _ in 0..400 {
+        eat(&mut w, BERRIES);
+        if let Some((n, _)) = seed_paid(&w, BERRY_SEED) {
+            paid += n;
+        }
+    }
+    assert_eq!(held(&w, BERRY_SEED), paid);
+    assert!((70..=130).contains(&paid), "{paid} seeds off 400 meals");
+    assert_eq!(paid, BERRY_SEEDS_OFF_400, "the roll moved");
+}
+
+/// What [`berries_leave_a_seed_about_a_quarter_of_the_time`] counts.
+const BERRY_SEEDS_OFF_400: u32 = 103;
+
+/// **A potato seed grows and picks five potatoes** at full health: the
+/// crop's own count, with nothing in the sim that knows it is a potato.
+#[test]
+fn a_potato_seed_grows_and_picks_five_potatoes() {
+    let (mut w, cx, cz) = farm_world();
+    quick(&mut w);
+    w.cook.farm.crops[2] = sim_core::farm::CropDef {
+        look: sim_core::farm::LOOK_POTATO,
+        seed: POTATO_SEED,
+        yield_item: POTATO,
+        count: 5,
+        ..w.cook.farm.crops[0]
+    };
+    w.cook.farm.crop_count = 3;
+    for (item, cap) in [(POTATO_SEED, 50), (POTATO, 20)] {
+        w.gather.stack_max[item as usize] = cap;
+    }
+    w.gather.item_count = w.gather.item_count.max(POTATO + 1);
+    w.gather.cond_cap[POTATO_SEED as usize] = sim_core::farm::GENOME_VALUES as u16;
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    w.players[0].inv[CLONE_SLOT] = ItemStack {
+        item: POTATO_SEED,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    let id = w.farm.next_id();
+    w.tick(&[Command::Plant {
+        id: PLAYER,
+        slot: CLONE_SLOT as u8,
+        host,
+        spot: 4,
+        qx: 0,
+        qz: 0,
+    }]);
+    assert_eq!(refused(&w), None, "the potato did not plant");
+    assert_eq!(plant_of(&w, id).crop, 2);
+    grow_to(&mut w, id, STAGE_RIPE, 2_000);
+    w.tick(&[Command::Tend {
+        id: PLAYER,
+        plant: id,
+        act: TEND_PICK,
+    }]);
+    assert_eq!(refused(&w), None);
+    assert_eq!(held(&w, POTATO), 5);
+    assert_eq!(gone(&w), Some((id, GONE_PICKED as u32, PLAYER)));
+}

@@ -3872,6 +3872,14 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
                 grew |= have.insert(k.yield_item.as_str());
             }
         }
+        // Eating a crop leaves its seed (`leaves`).
+        for con in &c.consumables {
+            if let Some(l) = &con.leaves {
+                if have.contains(con.id.as_str()) {
+                    grew |= have.insert(l.as_str());
+                }
+            }
+        }
         for r in &c.recipes {
             let station_ok = match r.station {
                 content::schema::Station::None => true,
@@ -3964,15 +3972,21 @@ fn every_consumable_the_content_ships_is_reachable() {
     );
 
     // Corn grows in no node: the roadside food box is its one source (the
-    // planter's seed is cut from corn), so taking the box strands exactly it.
+    // planter's seed is cut from corn), so taking the box strands exactly it
+    // — and the potato and the pumpkin, whose first potato and first seed
+    // come out of the same box.
     let mut srcs = sources();
     strip_food_box(&mut srcs);
     let mutant =
         build(&srcs).expect("still valid — the bush and the patch keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
-        vec!["item.corn".to_string()],
-        "deleting the food box must strand exactly the corn"
+        vec![
+            "item.corn".to_string(),
+            "item.potato".to_string(),
+            "item.pumpkin".to_string()
+        ],
+        "deleting the food box must strand exactly the box's crops"
     );
 
     // World containers v0 (2026-08-14) made the crate and the cache
@@ -3980,7 +3994,11 @@ fn every_consumable_the_content_ships_is_reachable() {
     // in one of their tables is reachable — the pre-widening walk (barrel
     // rows alone) called exactly this fixture stranded, which is the
     // regression this pins.
-    let corn_row = "    { item = \"item.corn\", weight = 50, count_min = 2, count_max = 4 },\n";
+    // The box's crops move together: corn, and the potato and the pumpkin
+    // seed that are the first potato and the first pumpkin.
+    let corn_row = "    { item = \"item.corn\", weight = 50, count_min = 2, count_max = 4 },\n    \
+                    { item = \"item.potato\", weight = 10, count_min = 1, count_max = 3 },\n    \
+                    { item = \"item.pumpkin_seed\", weight = 5, count_min = 1, count_max = 2 },\n";
     for table in ["loot.crate", "loot.cache"] {
         let mut srcs = sources();
         strip_food_box(&mut srcs);
@@ -5183,19 +5201,95 @@ fn a_farm_whose_stages_do_not_make_a_whole_grow_is_refused() {
     );
 }
 
+/// Seeds from eating: a cob, a potato and a pumpkin always leave their seed,
+/// berries a quarter of the time, and a row that leaves nothing real, or
+/// leaves it past certain, is refused.
+#[test]
+fn eating_a_crop_leaves_its_seed() {
+    let c = build(&sources()).expect("shipped content");
+    let sc = c.bake_survival().expect("survival bakes");
+    for (food, seed, pm) in [
+        ("item.corn", "item.corn_seed", 1000),
+        ("item.potato", "item.potato_seed", 1000),
+        ("item.pumpkin", "item.pumpkin_seed", 1000),
+        ("item.berries", "item.berry_seed", 250),
+    ] {
+        let row = sc.consumable[c.item_index(food).unwrap() as usize];
+        assert_eq!(
+            (row.leaves, row.leaves_pm),
+            (c.item_index(seed).unwrap(), pm),
+            "{food}"
+        );
+    }
+    let meat = sc.consumable[c.item_index("item.cooked_meat").unwrap() as usize];
+    assert_eq!(
+        (meat.leaves, meat.leaves_pm),
+        (sim_core::gather::NO_ITEM, 0)
+    );
+    refuses(
+        "consumables.toml",
+        "leaves = \"item.berry_seed\"",
+        "leaves = \"item.berry_pit\"",
+        "is not an item",
+    );
+    refuses(
+        "consumables.toml",
+        "leaves_pm = 250",
+        "leaves_pm = 1250",
+        "outside 1..=1000",
+    );
+}
+
 /// The shipped farm reaches the sim at its stated numbers: seconds and
 /// plant-seconds × 30, the stage shares made cumulative.
 #[test]
 fn the_shipped_farm_bakes_to_its_numbers() {
     let c = build(&sources()).expect("shipped content");
     let fc = c.bake_cooking().expect("bake").farm;
-    assert_eq!(fc.crop_count, 2);
+    assert_eq!(fc.crop_count, 5);
     let corn = fc.crops[0];
     assert_eq!(corn.look, sim_core::farm::LOOK_CORN);
     assert_eq!(corn.seed, c.item_index("item.corn_seed").unwrap());
     assert_eq!(corn.yield_item, c.item_index("item.corn").unwrap());
     assert_eq!((corn.count, corn.grow_ticks, corn.clones), (4, 900 * 30, 2));
     assert_eq!(fc.crops[1].look, sim_core::farm::LOOK_HEMP);
+    // The second wave: potato, pumpkin and the berry bush.
+    for (k, look, seed, yield_item, count, secs) in [
+        (
+            2,
+            sim_core::farm::LOOK_POTATO,
+            "item.potato_seed",
+            "item.potato",
+            5,
+            750,
+        ),
+        (
+            3,
+            sim_core::farm::LOOK_PUMPKIN,
+            "item.pumpkin_seed",
+            "item.pumpkin",
+            2,
+            1200,
+        ),
+        (
+            4,
+            sim_core::farm::LOOK_BERRY,
+            "item.berry_seed",
+            "item.berries",
+            6,
+            600,
+        ),
+    ] {
+        let crop = fc.crops[k];
+        assert_eq!(crop.look, look, "{seed}");
+        assert_eq!(crop.seed, c.item_index(seed).unwrap());
+        assert_eq!(crop.yield_item, c.item_index(yield_item).unwrap());
+        assert_eq!(
+            (crop.count, crop.grow_ticks, crop.clones),
+            (count, secs * 30, 2)
+        );
+        assert_eq!(fc.crop_of_item(crop.seed), Some(k as u8));
+    }
     assert_eq!(fc.stage_end_pct, [5, 20, 40, 45, 70, 100]);
     assert_eq!(
         (fc.skin_wu, fc.planter_cap_wu, fc.rain_wu_s),
