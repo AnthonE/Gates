@@ -66,8 +66,13 @@ pub const CMD_FRAME_CAP: usize = 32;
 /// slow fact and putting your head under water is an instant one.
 pub const BED_FADE_PER_S: f32 = 0.5;
 
+/// The same for a bed that is one source in place (the recycler's motor,
+/// the furnace's roar), whose level is your distance to it: fast enough to
+/// keep up with a sprint across its reach, slow enough not to click.
+pub const SOURCE_FADE_PER_S: f32 = 3.0;
+
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 8] = [
+pub const BEDS: [Cue; 9] = [
     Cue::BedWind,
     Cue::BedSurf,
     Cue::BedUnder,
@@ -76,6 +81,7 @@ pub const BEDS: [Cue; 8] = [
     Cue::BedTown,
     Cue::BedNight,
     Cue::BedRotorFar,
+    Cue::BedFurnace,
 ];
 
 /// How far a running recycler's motor is heard, metres: full at the machine,
@@ -84,6 +90,19 @@ pub const RECYCLER_HUM_R_M: f32 = 16.0;
 
 // One held engine slot per bed (`engine::HELD_BEDS`); music follows them.
 const _: () = assert!(BEDS.len() == HELD_BEDS);
+
+/// How far a lit furnace's roar is heard, metres: full at the box, gone at
+/// this. A campfire's crackle carries a little further (`FIRE_REACH_M`): it
+/// is open to the air. **(knob)**
+pub const FURNACE_ROAR_R_M: f32 = 12.0;
+
+/// How far to one side the furnace's roar may pan, as a fraction of a
+/// one-shot's hard pan: a furnace at your elbow is still heard in both ears.
+pub const FURNACE_PAN: f32 = 0.6;
+
+/// The furnace's held slot: its index in [`BEDS`].
+const FURNACE_SLOT: u8 = 8;
+const _: () = assert!(matches!(BEDS[FURNACE_SLOT as usize], Cue::BedFurnace));
 
 /// How far the heli's rotor carries, metres: `heli::HELI_AOI_SCALE` × the
 /// AOI's enter radius. The server sends the heli island-wide (it is on the
@@ -165,16 +184,7 @@ pub fn rotor_levels(dist: f32) -> (f32, f32) {
 /// the hull closes or recedes ([`doppler`]).
 pub fn rotor_place(d: [f32; 3], right: [f32; 2], receding_mps: f32, out_rate: u32) -> [Cmd; 2] {
     let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    let p = if n < 1e-3 {
-        0.0
-    } else {
-        ((d[0] * right[0] + d[2] * right[1]) / n).clamp(-1.0, 1.0) * ROTOR_PAN
-    };
-    let theta = (p + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
-    let (ear_l, ear_r) = (
-        std::f32::consts::SQRT_2 * theta.cos(),
-        std::f32::consts::SQRT_2 * theta.sin(),
-    );
+    let (ear_l, ear_r) = bed_ears(d, right, ROTOR_PAN);
     let rate = doppler(receding_mps);
     [
         Cmd::Place {
@@ -192,6 +202,38 @@ pub fn rotor_place(d: [f32; 3], right: [f32; 2], receding_mps: f32, out_rate: u3
             rate,
         },
     ]
+}
+
+/// A bed's two ear weights for a source `d` metres off the ears whose right
+/// is `right`, panned at most `pan` of a one-shot's hard pan: [`engine::pan`]'s
+/// equal-power law scaled by √2, so dead ahead is the `(1, 1)` a bed starts
+/// at, with the side taken over the full 3-D distance.
+fn bed_ears(d: [f32; 3], right: [f32; 2], pan: f32) -> (f32, f32) {
+    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let p = if n < 1e-3 {
+        0.0
+    } else {
+        ((d[0] * right[0] + d[2] * right[1]) / n).clamp(-1.0, 1.0) * pan
+    };
+    let theta = (p + 1.0) * 0.5 * std::f32::consts::FRAC_PI_2;
+    (
+        std::f32::consts::SQRT_2 * theta.cos(),
+        std::f32::consts::SQRT_2 * theta.sin(),
+    )
+}
+
+/// Where the furnace's roar is heard from, for the nearest lit furnace `d`
+/// metres off the ears: [`bed_ears`] at [`FURNACE_PAN`], unfiltered — its
+/// reach is short enough that the level law is all the distance it needs.
+pub fn furnace_place(d: [f32; 3], right: [f32; 2]) -> Cmd {
+    let (ear_l, ear_r) = bed_ears(d, right, FURNACE_PAN);
+    Cmd::Place {
+        slot: FURNACE_SLOT,
+        ear_l,
+        ear_r,
+        lp: 0,
+        rate: 1.0,
+    }
 }
 
 /// What of the generated bank has reached the engine, and how long each cue
@@ -460,6 +502,8 @@ pub struct Sound {
     /// the rotor's Doppler; `None` with no hull drawn.
     rotor_dist: Option<f32>,
     rotor_receding: f32,
+    /// The furnace roar's place, as last sent ([`furnace_place`]).
+    furnace_sent: Option<Cmd>,
     /// The snapshot crossfade, and this frame's resolved mixer state.
     snapshots: Snapshots,
     snap: SnapshotDef,
@@ -497,6 +541,7 @@ pub fn film_hears(cue: Cue) -> bool {
                 | Cue::BedRotorFar
                 | Cue::BedTown
                 | Cue::BedNight
+                | Cue::BedFurnace
                 | Cue::Thunder
         )
 }
@@ -677,6 +722,7 @@ pub fn setup(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>) {
     }
     sound.bed_sent = [0.0; BEDS.len()];
     sound.rotor_sent = [None; 2];
+    sound.furnace_sent = None;
 }
 
 /// Reset what the world owned: stop the beds, cut every one-shot, and reset
@@ -846,7 +892,7 @@ fn brush_gain(depth: f32) -> f32 {
 
 /// How deep in a plant's leaves a body standing at `pos` is: 0 at their edge,
 /// 1 at the stem, `None` in the open. Off the scatter, cold, like
-/// [`picked_plant`] (a stride is a rare event), over the 3×3 cells round
+/// [`scatter_occupant`] (a stride is a rare event), over the 3×3 cells round
 /// `pos`, since a plant near a cell's edge reaches into its neighbour.
 /// `size` is a plant's drawn size by cell key: 0 picked, 1 grown.
 pub fn in_leaves(w: &super::WorldId, pos: [f32; 3], size: impl Fn(u32) -> f32) -> Option<f32> {
@@ -936,17 +982,27 @@ pub struct Air {
 /// How far a lit fire is heard crackling, metres (the cue's own radius).
 pub const FIRE_REACH_M: f32 = 14.0;
 
-/// Lit fires crackle: the nearest lit fire or furnace in reach, a short
-/// recorded crackle every half second to a second. The fire's light is lit
-/// exactly when the sim says the fire is (`structures::fire_lights`), so the
-/// light is the authority here too. THE GATE's braziers (`town_fx`) are
-/// always lit, and crackle the same way.
+/// Lit fires crackle: the nearest lit campfire in reach, a short recorded
+/// crackle every half second to a second. The fire's light is lit exactly
+/// when the sim says the fire is (`structures::fire_lights`), so the light is
+/// the authority here too. THE GATE's braziers (`town_fx`) are always lit,
+/// and crackle the same way. A furnace does not crackle: its fire is shut in
+/// an iron box, and it roars instead (`Cue::BedFurnace`, [`bed`]).
+///
+/// A fire switched on or off is heard at it: a furnace's flame catching
+/// behind its door or cut off, a campfire's in the open
+/// (`Feed::oven_flips`, which a join's restatement never rings).
 #[allow(clippy::type_complexity)]
 pub fn fires(
     time: Res<Time>,
     eye: Res<Eye>,
+    feed: Res<super::feed::Feed>,
     lights: Query<
-        (&PointLight, &GlobalTransform),
+        (
+            &PointLight,
+            &GlobalTransform,
+            Option<&super::structures::FireLight>,
+        ),
         Or<(
             With<super::structures::FireLight>,
             With<super::town_fx::Brazier>,
@@ -955,14 +1011,29 @@ pub fn fires(
     mut sound: ResMut<Sound>,
     mut next: Local<(f32, u32)>,
 ) {
+    for &(cx, cz, level, loc, lit) in feed.oven_flips() {
+        let Some((fire, at)) = lights.iter().find_map(|(_, g, f)| {
+            f.filter(|f| (f.cx, f.cz, f.level, f.loc) == (cx, cz, level, loc))
+                .map(|f| (f, g.translation()))
+        }) else {
+            continue;
+        };
+        let cue = match (fire.furnace, lit) {
+            (true, true) => Cue::FurnaceLight,
+            (true, false) => Cue::FurnaceOut,
+            (false, true) => Cue::Kindle,
+            (false, false) => Cue::Snuff,
+        };
+        sound.play(Request::at(cue, at.to_array()));
+    }
     next.0 -= time.delta_secs();
     if next.0 > 0.0 {
         return;
     }
     let nearest = lights
         .iter()
-        .filter(|(l, _)| l.intensity > 0.0)
-        .map(|(_, g)| g.translation())
+        .filter(|(l, _, f)| l.intensity > 0.0 && !f.is_some_and(|f| f.furnace))
+        .map(|(_, g, _)| g.translation())
         .filter(|p| p.distance(eye.pos) < FIRE_REACH_M)
         .min_by(|a, b| a.distance(eye.pos).total_cmp(&b.distance(eye.pos)));
     // xorshift, for the gap: a fire that crackles on a metronome is a loop.
@@ -1510,9 +1581,13 @@ pub fn shots(
         {
             // The attack helicopter has no drawn `Body`: its gun is heard
             // where the interpolator has it, as its own gun at any range —
-            // the far layer's echo would smear a burst the same way.
+            // the far layer's echo would smear a burst the same way. A
+            // sentry's gun is a rifle on a mount: the rifle's crack, where
+            // the revolver's ring smeared its burst.
             if super::heli::is_heli(shooter) {
                 cue = heli_shot_cue(eye.pos.distance(Vec3::new(rs.x, rs.y + 1.6, rs.z)));
+            } else if protocol::shot_is_instant(speed_mmpt) {
+                cue = Cue::ShotRifle;
             }
             [rs.x, rs.y + 1.6, rs.z]
         } else {
@@ -1617,10 +1692,20 @@ pub fn feed(
     // which is the server answering the open, not the key.
     let open = (net.session.core.cont_kind, net.session.core.cont_handle);
     if open != *cont && open.0 != sim_core::inventory::CONT_SELF {
+        let core = &net.session.core;
+        let furnace = crate::ui::oven::converter_open(
+            open.0,
+            open.1,
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.deploy_defs_have,
+        ) == Some(sim_core::deploy::ARCH_FURNACE);
         let cue = if open.0 == sim_core::inventory::CONT_BAG
             || open.0 == sim_core::inventory::CONT_BODY
         {
             Cue::Equip
+        } else if furnace {
+            Cue::FurnaceOpen
         } else {
             Cue::ContainerOpen
         };
@@ -1739,16 +1824,24 @@ pub fn feed(
             }
         }
     }
-    // Every refusal kind, one sound. A player does not need to hear the
-    // difference between a refused craft and a refused placement — the toast
-    // already says which — they need to hear that the button did nothing.
+    // Every refusal kind, one sound, but one: a trigger pulled on an empty
+    // magazine is the gun's dry click, because the hand is on a weapon and
+    // not on a menu. A player does not need to hear the difference between
+    // a refused craft and a refused placement — the toast already says
+    // which — they need to hear that the button did nothing.
     //
     // Deliberately not a count: this line said "three" while `Refused` held
     // four, and then five when the consume verbs joined (2026-08-15). The
     // predicate below is variant-agnostic, so a new refusal kind gets this
     // cue for free the moment `feed.rs` pushes it — which is the property
     // worth writing down, and a number here only ever goes stale against it.
-    if feed.refusals().next().is_some() {
+    let dry = |&(kind, code, _): &(super::feed::Refused, u8, u16)| {
+        kind == super::feed::Refused::Reload && u32::from(code) == sim_core::ranged::REFUSE_RL_EMPTY
+    };
+    if feed.refusals().any(|r| dry(&r)) {
+        sound.play(Request::own(Cue::DryFire));
+    }
+    if feed.refusals().any(|r| !dry(&r)) {
         sound.play(Request::own(Cue::Refused));
     }
     // A spill borrows that cue rather than minting one, on the same
@@ -1812,11 +1905,12 @@ pub fn fell(
         // inferred: the trunk speaks for the tree, a `Vanish` node speaks for
         // itself, and the canopy and the stump are silent because they are
         // parts of something that already made a sound.
-        let plant = if matches!(f.part, super::props::FellPart::Vanish) {
-            picked_plant(world.as_deref(), f.key)
+        let occupant = if matches!(f.part, super::props::FellPart::Vanish) {
+            scatter_occupant(world.as_deref(), f.key)
         } else {
             None
         };
+        let plant = occupant.filter(|&o| sim_core::gather::pickable(o));
         let cue = match f.part {
             super::props::FellPart::Trunk => Cue::TreeFall,
             super::props::FellPart::Vanish if plant.is_some() => {
@@ -1834,7 +1928,17 @@ pub fn fell(
                 sound.play(Request::at(Cue::BushPick, [at.x, at.y, at.z]));
                 continue;
             }
-            super::props::FellPart::Vanish => Cue::ImpactStone,
+            // An ore node's own break is `ore::shatter`'s crash; a barrel is
+            // metal, not a pick on rock.
+            super::props::FellPart::Vanish => match occupant {
+                Some(
+                    sim_core::terrain::Occupant::StoneNode
+                    | sim_core::terrain::Occupant::MetalNode
+                    | sim_core::terrain::Occupant::SulfurNode,
+                ) => continue,
+                Some(sim_core::terrain::Occupant::BarrelSlot) => Cue::ImpactMetal,
+                _ => Cue::ImpactStone,
+            },
             // …and `Far` with them: the hull is the trunk at a distance, so
             // a chop that felled both would play `TreeFall` twice on one
             // frame at one position — the exact defect this match was
@@ -1849,14 +1953,14 @@ pub fn fell(
     }
 }
 
-/// The plant a hand picks standing at cell key `key` (a berry bush or hemp),
-/// or `None` — the scatter's answer, cold (`terrain::scatter`), which is fine
-/// on the one frame a slot goes away.
-fn picked_plant(world: Option<&super::WorldId>, key: u32) -> Option<sim_core::terrain::Occupant> {
+/// What stands at cell key `key`, the scatter's answer, cold.
+fn scatter_occupant(
+    world: Option<&super::WorldId>,
+    key: u32,
+) -> Option<sim_core::terrain::Occupant> {
     let w = world?;
     let (cx, cz) = ((key >> 16) as i32, (key & 0xFFFF) as i32);
-    let o = sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant;
-    sim_core::gather::pickable(o).then_some(o)
+    Some(sim_core::terrain::scatter(w.seed, &w.table, &w.haven, cx, cz).occupant)
 }
 
 /// Something new in your hand (`Cue::Equip`): the hotbar moved to a slot
@@ -2237,8 +2341,8 @@ pub fn hurt(
 /// `sound::birds` for why a layer is not a bed turned down.
 // The mix state to write, where the ears are, which island this is, the
 // cover query, the clock, the player's sliders, the tick, the day pin, the
-// weather, the engine the levels leave through, the heli, and the recyclers
-// with the sim's word on which are running.
+// weather, the engine the levels leave through, the heli, the recyclers
+// with the sim's word on which are running, and the furnaces.
 #[allow(clippy::too_many_arguments)]
 pub fn bed(
     mut sound: ResMut<Sound>,
@@ -2254,6 +2358,7 @@ pub fn bed(
     helis: Query<&GlobalTransform, With<super::heli::HeliBody>>,
     net: NonSend<Net>,
     recyclers: Query<(&GlobalTransform, &super::structures::RecyclerHum)>,
+    fires: Query<(&GlobalTransform, &super::structures::FireLight)>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
     // inside the radius is "in the woods"; none is "on the beach".
@@ -2373,6 +2478,23 @@ pub fn bed(
         let near = (1.0 - d / RECYCLER_HUM_R_M).clamp(0.0, 1.0);
         near * near
     };
+    // The furnace's roar at the nearest LIT furnace, by distance, and from
+    // its side (placed below). Silent when none burns near.
+    let furnace = {
+        let ovens = net.session.core.ovens();
+        fires
+            .iter()
+            .filter(|(_, f)| f.furnace && ovens.is_lit(f.cx, f.cz, f.level, f.loc))
+            .map(|(g, _)| g.translation())
+            .min_by(|a, b| {
+                a.distance_squared(eye.pos)
+                    .total_cmp(&b.distance_squared(eye.pos))
+            })
+    };
+    sound.bed_target[FURNACE_SLOT as usize] = furnace.map_or(0.0, |p| {
+        let near = (1.0 - p.distance(eye.pos) / FURNACE_ROAR_R_M).clamp(0.0, 1.0);
+        near * near
+    });
     // The night's crickets, the birds' other half: up as the light goes,
     // quiet in the rain, duller under a roof.
     sound.bed_target[6] = weather.night
@@ -2386,8 +2508,15 @@ pub fn bed(
         sound.play(Request::own(Cue::Thunder).with_gain(gain));
     }
 
-    let d = BED_FADE_PER_S * time.delta_secs();
     for i in 0..BEDS.len() {
+        // A machine's bed is a source you walk up to, so its level keeps up
+        // with your feet; the world's beds drift.
+        let rate = if i == 5 || i == FURNACE_SLOT as usize {
+            SOURCE_FADE_PER_S
+        } else {
+            BED_FADE_PER_S
+        };
+        let d = rate * time.delta_secs();
         let (g, t) = (sound.bed_gain[i], sound.bed_target[i]);
         sound.bed_gain[i] = if g < t {
             (g + d).min(t)
@@ -2415,6 +2544,18 @@ pub fn bed(
                 slot: i as u8,
                 gain: level,
             });
+        }
+    }
+
+    // The roar from the furnace's side. With none lit in earshot, its level
+    // is fading to nothing and its last place holds.
+    if let Some(p) = furnace.filter(|p| p.distance(eye.pos) < FURNACE_ROAR_R_M) {
+        let d = p - eye.pos;
+        let right = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
+        let place = furnace_place([d.x, d.y, d.z], [right.0, right.1]);
+        if sound.furnace_sent != Some(place) {
+            sound.furnace_sent = Some(place);
+            engine.push(place);
         }
     }
 

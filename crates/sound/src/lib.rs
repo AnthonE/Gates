@@ -477,11 +477,30 @@ pub enum Cue {
     ShotBolt,
     /// and a rocket leaving its tube: the launch's whoosh and thump.
     ShotRocket,
+    /// A lit furnace, as a bed: its fire shut in an iron box, a low roar
+    /// with the wood ticking in it. `render/audio.rs` turns it up and pans it
+    /// toward the nearest lit furnace; a campfire keeps its crackle. Appended,
+    /// the enum's append-order rule, like the five after it.
+    BedFurnace,
+    /// A furnace lit, at the furnace: the flame catching inside with a
+    /// whoomp, and the iron door swung to.
+    FurnaceLight,
+    /// A furnace switched off or burned dry: the roar cut short, and the door.
+    FurnaceOut,
+    /// A furnace opened under your hands: the iron door's latch and swing.
+    FurnaceOpen,
+    /// A campfire lit, at the fire: the flame catching.
+    Kindle,
+    /// A campfire switched off or burned dry: its roar cut short.
+    Snuff,
+    /// A trigger pulled on an empty magazine: the gun's dry click, in your
+    /// hands. Appended, the enum's append-order rule.
+    DryFire,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 115;
+pub const CUE_COUNT: usize = 122;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -605,6 +624,13 @@ impl Cue {
         Cue::ShotShotgun,
         Cue::ShotBolt,
         Cue::ShotRocket,
+        Cue::BedFurnace,
+        Cue::FurnaceLight,
+        Cue::FurnaceOut,
+        Cue::FurnaceOpen,
+        Cue::Kindle,
+        Cue::Snuff,
+        Cue::DryFire,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -633,6 +659,7 @@ impl Cue {
                 | Cue::BedTown
                 | Cue::BedNight
                 | Cue::BedRotorFar
+                | Cue::BedFurnace
         )
     }
 
@@ -740,7 +767,12 @@ impl Cue {
             | Cue::RemoteBowDraw
             | Cue::OreCrumble
             | Cue::OreBreak
-            | Cue::Tung => 0.07,
+            | Cue::Tung
+            | Cue::FurnaceLight
+            | Cue::FurnaceOut
+            | Cue::FurnaceOpen
+            | Cue::Kindle
+            | Cue::Snuff => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -762,6 +794,8 @@ impl Cue {
             Cue::Geiger => 0.05,
             // Heard once a fight at most; a nudge so two are never one take.
             Cue::Headshot => 0.04,
+            // A mechanism with a fixed spring: a nudge, like the shots.
+            Cue::DryFire => 0.03,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -824,7 +858,8 @@ impl Cue {
             | Cue::BedRotor
             | Cue::BedTown
             | Cue::BedNight
-            | Cue::BedRotorFar => 0.0,
+            | Cue::BedRotorFar
+            | Cue::BedFurnace => 0.0,
         }
     }
 }
@@ -1186,6 +1221,18 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 100.0, 0.95,  60, 6, true),  // shotgun
     row(GAME, 100.0, 0.95,  60, 6, true),  // bolt
     row(GAME,  80.0, 0.90, 150, 6, true),  // rocket launch
+    // The furnace: its roar is scenery like the recycler's motor, its level
+    // and side `render/audio.rs`'s; lighting, putting out and opening one
+    // are hands at it, a door's reach. The campfire's two the same, quieter.
+    row(AMB,   0.0, 0.40,   0, 0, false),  // furnace roar
+    row(GAME, 24.0, 0.70, 200, 3, true),   // furnace lit
+    row(GAME, 24.0, 0.60, 200, 3, true),   // furnace out
+    row(GAME,  0.0, 0.55, 200, 3, false),  // furnace opened
+    row(GAME, 20.0, 0.60, 200, 3, true),   // campfire lit
+    row(GAME, 20.0, 0.50, 200, 3, true),   // campfire out
+    // Your own gun, empty: the reload's register, and a cooldown under the
+    // fastest cadence so a held trigger clicks once a round it would fire.
+    row(GAME,  0.0, 0.55,  80, 4, false),  // dry fire
 ];
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
@@ -1428,7 +1475,8 @@ pub struct SnapshotDef {
     pub rain: f32,
     /// The heli's rotor: the game bus's level, because it is a threat.
     pub rotor: f32,
-    /// THE GATE's yard: scenery, gone below water like the wind.
+    /// The machines' beds, the recycler's motor and the furnace's roar:
+    /// scenery, gone below water like the wind.
     pub town: f32,
     /// The night's crickets: scenery, gone below water like the wind.
     pub night: f32,
@@ -1558,7 +1606,7 @@ impl SnapshotDef {
             Cue::BedUnder => self.under,
             Cue::BedRain => self.rain,
             Cue::BedRotor | Cue::BedRotorFar => self.rotor,
-            Cue::BedTown => self.town,
+            Cue::BedTown | Cue::BedFurnace => self.town,
             Cue::BedNight => self.night,
             _ => 0.0,
         }

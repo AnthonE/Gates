@@ -611,6 +611,14 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
             render_take(Cue::ShotGun, take)
         }
         Cue::ShotRocket => render_take(Cue::ShotBow, take),
+        // The furnace and the campfire are recordings; their fallbacks are
+        // the dark bed, a whoosh for a flame catching, the torch's fizzle
+        // for one going out, and a creak for the door.
+        Cue::BedFurnace => render_take(Cue::BedUnder, take),
+        Cue::FurnaceLight | Cue::Kindle => whoosh(&mut r, 0.7),
+        Cue::FurnaceOut | Cue::Snuff => render_take(Cue::TorchOut, take),
+        Cue::FurnaceOpen => creak(&mut r),
+        Cue::DryFire => render_take(Cue::UiClick, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

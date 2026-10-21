@@ -3749,6 +3749,7 @@ pub fn spawn_deploy(
                 cz: rec.cz,
                 level: rec.level,
                 loc: rec.loc,
+                furnace: arch == ARCH_FURNACE,
             },
             PointLight {
                 color: FIRE_COLOR,
@@ -3964,6 +3965,9 @@ pub struct FireLight {
     pub level: u8,
     /// The fire's body slot — two fires can share a cell (free placement).
     pub loc: u8,
+    /// A furnace rather than an open fire: it roars in its box where a
+    /// campfire crackles (`audio::fires`, `audio::bed`).
+    pub furnace: bool,
 }
 
 /// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries

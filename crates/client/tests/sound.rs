@@ -1782,6 +1782,41 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
     );
 }
 
+/// A fire switched on by a hand rings, and so does any fire going out; the
+/// deploy walk restating a lit furnace (`by` 0) does not — a joiner walking
+/// into a base must not hear every furnace in it struck at once.
+#[test]
+fn a_fire_lit_by_a_hand_rings_and_a_restatement_does_not() {
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_oven, MAX_EVENT_MSG_BYTES};
+
+    let mut core = ClientCore::new(1, 7, 0);
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let mut oven = |core: &mut ClientCore, lit: bool, by: u32| {
+        let len = encode_event_oven(30, 31, 0, 2, lit, by, &mut buf).expect("encode");
+        core.on_stream(&buf[..len]).expect("decode");
+    };
+
+    oven(&mut core, true, 0);
+    assert!(core.ovens().is_lit(30, 31, 0, 2));
+    assert_eq!(core.pop_oven_flip(), None, "a restated fire rang");
+    oven(&mut core, true, 9);
+    assert_eq!(core.pop_oven_flip(), None, "a fire already lit rang again");
+    oven(&mut core, false, 0);
+    assert_eq!(
+        core.pop_oven_flip(),
+        Some((30, 31, 0, 2, false)),
+        "a burn-out was silent"
+    );
+    oven(&mut core, true, 9);
+    assert_eq!(
+        core.pop_oven_flip(),
+        Some((30, 31, 0, 2, true)),
+        "a lit fire was silent"
+    );
+    assert_eq!(core.pop_oven_flip(), None);
+}
+
 /// The collapse's supply line: a piece coming down rings with the row and
 /// plate it stood at (the mirror no longer holds either), and a resync that
 /// clears the mirror rings nothing — a rejoin throws no dust.

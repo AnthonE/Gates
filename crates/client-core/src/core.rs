@@ -1171,8 +1171,9 @@ impl LitOvens {
 
     /// Absolute, never a toggle — the event carries the state and this
     /// stores exactly what it carried, so two announcements crossing can
-    /// never leave a client inverted (`EV_OVEN`'s own argument).
-    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) {
+    /// never leave a client inverted (`EV_OVEN`'s own argument). Says
+    /// whether the set moved.
+    fn set(&mut self, cx: u16, cz: u16, level: u8, loc: u8, lit: bool) -> bool {
         let at = self.addrs[..self.len]
             .iter()
             .position(|a| *a == (cx, cz, level, loc));
@@ -1181,13 +1182,16 @@ impl LitOvens {
                 if self.len < MAX_BOXES {
                     self.addrs[self.len] = (cx, cz, level, loc);
                     self.len += 1;
+                    return true;
                 }
+                false
             }
             (false, Some(i)) => {
                 self.len -= 1;
                 self.addrs[i] = self.addrs[self.len];
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -2270,6 +2274,11 @@ pub struct ClientCore {
     auths: [(u16, u16, u8, u8, u8); REFUSAL_RING],
     auth_head: usize,
     auth_len: usize,
+    /// Fires and furnaces that went on or off (`EV_OVEN`): address + lit.
+    /// Drop-oldest; a sound, not the state (`LitOvens` holds that).
+    oven_flips: [(u16, u16, u8, u8, bool); REFUSAL_RING],
+    oven_flip_head: usize,
+    oven_flip_len: usize,
     /// Placements that HAPPENED (`PiecePlaced`/`DeployPlaced` broadcasts):
     /// address + which store (`true` = deployable). **Never fed by a sync
     /// walk**, and that asymmetry is the ring's whole reason to exist: the
@@ -2591,6 +2600,9 @@ impl ClientCore {
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
             auth_head: 0,
             auth_len: 0,
+            oven_flips: [(0, 0, 0, 0, false); REFUSAL_RING],
+            oven_flip_head: 0,
+            oven_flip_len: 0,
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
@@ -3845,13 +3857,25 @@ impl ClientCore {
                 level,
                 loc,
                 lit,
-                by: _,
+                by,
             } => {
-                // Absolute state, like the door's. The actor is on the
-                // wire and deliberately unread here: what a toast should
-                // say about someone else's fire is a UI question, and the
-                // core's job is the fact.
-                self.ovens.set(cx, cz, level, loc, lit);
+                // Absolute state, like the door's. What a toast should say
+                // about someone else's fire is a UI question, and the core's
+                // job is the fact.
+                //
+                // The flip ring hears a fire lit by a hand (`by` is the
+                // presser) or going out, for any reason. A lit restatement
+                // (the deploy walk's, `by` 0) is not a flip: a joiner walking
+                // into a base must not hear every furnace in it struck.
+                if self.ovens.set(cx, cz, level, loc, lit) && (by != 0 || !lit) {
+                    if self.oven_flip_len == REFUSAL_RING {
+                        self.oven_flip_head = (self.oven_flip_head + 1) % REFUSAL_RING;
+                        self.oven_flip_len -= 1;
+                    }
+                    self.oven_flips[(self.oven_flip_head + self.oven_flip_len) % REFUSAL_RING] =
+                        (cx, cz, level, loc, lit);
+                    self.oven_flip_len += 1;
+                }
                 flags |= APPLIED_DEPLOYS;
             }
             EventMsg::Planter {
@@ -4679,6 +4703,18 @@ impl ClientCore {
         self.howl_head = (self.howl_head + 1) % HOWL_RING;
         self.howl_len -= 1;
         Some(m)
+    }
+
+    /// Oldest buffered fire switched on or off: its address and whether it
+    /// is lit now.
+    pub fn pop_oven_flip(&mut self) -> Option<(u16, u16, u8, u8, bool)> {
+        if self.oven_flip_len == 0 {
+            return None;
+        }
+        let f = self.oven_flips[self.oven_flip_head];
+        self.oven_flip_head = (self.oven_flip_head + 1) % REFUSAL_RING;
+        self.oven_flip_len -= 1;
+        Some(f)
     }
 
     /// Oldest buffered grant: the lock's address and what it now allows
