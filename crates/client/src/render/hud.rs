@@ -1420,12 +1420,9 @@ pub fn exposure(
                 },
             ),
             // The hp the wound still owes is the chip's number.
-            ExposureChip::Bleeding if core.bleed > 0 => (
-                true,
-                bleed_line(),
-                format!("{} HP", core.bleed),
-                BLEED_CHIP,
-            ),
+            ExposureChip::Bleeding if core.bleed > 0 => {
+                (true, bleed_line(), format!("{} HP", core.bleed), BLEED_CHIP)
+            }
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {

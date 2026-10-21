@@ -1280,7 +1280,7 @@ pub struct ItemRow {
     /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
     /// downed body injects rather than starting the hand revive.
     pub revive: bool,
-    /// Ticks it takes in the hands before it lands (v130,
+    /// Ticks it takes in the hands before it lands (v135,
     /// `survival::ConsumableDef::use_ticks`, Rust's `MedicalTool`): a
     /// bandage is held, a click wraps it on, and the client draws the wrap
     /// for this long. 0 is eaten at once, off the belt key.
@@ -1757,7 +1757,7 @@ pub enum EventMsg {
         /// (wire v113, `exposure::corrode`).
         fel_pct: u8,
         fel_hurting: bool,
-        /// The open wound, hp it still owes (wire v130, `Player::bleed`).
+        /// The open wound, hp it still owes (wire v135, `Player::bleed`).
         bleed: u8,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
@@ -3006,7 +3006,7 @@ pub fn encode_event_catalog(
         w.write_bit(row.holster)?;
         // The revive (v99).
         w.write_bit(row.revive)?;
-        // The use in the hands (v130): ticks in a byte, the draw's posture.
+        // The use in the hands (v135): ticks in a byte, the draw's posture.
         w.write(row.use_ticks as u32, 8)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
@@ -10666,7 +10666,7 @@ mod wire_domains {
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
             // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123. 13 =
-            // DEATH_BY_BLEED at v130.
+            // DEATH_BY_BLEED at v135.
             live_max: 13,
         },
         Domain {

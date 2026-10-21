@@ -1,5 +1,5 @@
 //! A use that takes its time in the hands, on this side: Rust's
-//! `MedicalTool`, the bandage's wrap (`ItemRow::use_ticks`, wire v130).
+//! `MedicalTool`, the bandage's wrap (`ItemRow::use_ticks`, wire v135).
 //!
 //! The sim lands it on its tick and cancels it when the hand that began it
 //! is put away (`sim_core::survival::tick_use`). This is the clock the
