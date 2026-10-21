@@ -379,9 +379,7 @@ def death_bag(k):
 
 def _door(k, leaf, strap):
     # Thin along X, wide along Y, 2.2 tall: five boards, two ledges and a
-    # brace behind, strap hinges and a ring pull in front. The metal door
-    # is this geometry under other surfaces, so the two share one unwrap
-    # and `build_kit` can swap materials on one mesh. Authored 0.9 x 2.08
+    # brace behind, strap hinges and a ring pull in front. Authored 0.9 x 2.08
     # and stretched to the 1.2 x 2.19 doorway leaf (`W`, `H`): the shipped
     # GLBs were stretched the same way on 2026-10-17.
     W, H = 1.199 / 0.8996, 2.1858 / 2.0865
@@ -427,11 +425,6 @@ def barricade(k):
 @recipe("door", "models/deploy/door.glb", size=(0.12, 2.2, 1.2))
 def door(k):
     _door(k, "planks", "iron")
-
-
-@recipe("door_locked", "models/deploy/door_locked.glb", size=(0.12, 2.2, 1.2))
-def door_locked(k):
-    _door(k, "sheet", "dark")
 
 
 # ── animals ─────────────────────────────────────────────────────────────────
