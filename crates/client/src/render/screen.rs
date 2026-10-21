@@ -118,6 +118,8 @@ pub struct Browse {
     /// The row whose details are open, by id. A click opens them; a second
     /// click, or JOIN, joins.
     pub selected: Option<String>,
+    /// What is typed into FRIENDS' add box: a wallet or a name.
+    pub friend_add: crate::friends::AddBox,
 }
 
 /// The nav column, in the reference's own order.
@@ -135,6 +137,8 @@ pub struct Browse {
 pub enum Nav {
     #[default]
     Play,
+    /// Your Elo Pros friends, where they are playing, and their asks.
+    Friends,
     /// A launcher-backed section: NEWS, ITEM STORE, WORKSHOP.
     Hub(Section),
     Settings,

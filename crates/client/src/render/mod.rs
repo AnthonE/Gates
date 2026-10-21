@@ -102,6 +102,8 @@ pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
 pub mod faces;
+/// Elo Pros friends: read when looked at, marked on nametags and chat.
+pub mod friends;
 /// Painted skins (wire v110): fetched by hash, drawn on their canvas.
 pub mod paint;
 pub mod team;
@@ -706,6 +708,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<beasts::Beasts>()
             .init_resource::<screen::Browse>()
             .init_resource::<screen::Who>()
+            .init_resource::<friends::Friends>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<bow::FpBow>()
@@ -1058,7 +1061,7 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnExit(Screen::Paused), ui::despawn_all::<pause::PauseRoot>)
         .add_systems(
             Update,
-            (pause::click, pause::keys, pause::act)
+            (pause::click, pause::keys, pause::act, pause::friends_block)
                 .chain()
                 .run_if(in_state(Screen::Paused)),
         )
@@ -2199,6 +2202,7 @@ impl Plugin for GatesRenderPlugin {
             chat::register(app);
             voice::register(app);
             faces::register(app);
+            friends::register(app);
             paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------
@@ -2359,7 +2363,13 @@ fn add_desktop_front_end(app: &mut App) {
     // is still drawing behind it.
     app.add_systems(
         OnEnter(Screen::Menu),
-        (world_teardown, menu::begin_fetch, menu::setup).chain(),
+        (
+            world_teardown,
+            menu::begin_fetch,
+            friends::on_menu,
+            menu::setup,
+        )
+            .chain(),
     )
     .add_systems(OnExit(Screen::Menu), ui::despawn_all::<menu::MenuRoot>)
     .add_systems(
