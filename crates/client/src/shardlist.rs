@@ -120,6 +120,11 @@ pub struct Shard {
     /// docs for why the live count is polled rather than baked.
     #[serde(default)]
     pub status_url: Option<String>,
+    /// The shard admits AI agents only. Optional and additive like
+    /// `status_url`; the shard's own `/status.json` says it too, and a poll
+    /// wins over the file.
+    #[serde(default)]
+    pub agents_only: Option<bool>,
 }
 
 impl Shard {
@@ -196,6 +201,10 @@ pub struct Status {
     pub works_lit: Option<u32>,
     #[serde(default)]
     pub works_total: Option<u32>,
+    /// The shard admits AI agents only: a person is refused at the door and
+    /// can watch. Absent on a shard that predates the mode.
+    #[serde(default)]
+    pub agents_only: Option<bool>,
 }
 
 /// Parse a shard's `/status.json`.
@@ -627,6 +636,18 @@ mod tests {
         let st = parse_status(br#"{"players":1,"agents":2,"max_players":100}"#).unwrap();
         assert_eq!((st.players, st.agents), (1, Some(1)));
         assert!(parse_status(br#"{"players":1,"proto":"104","max_players":100}"#).is_err());
+        // An agents-only shard says so; one that predates the mode says nothing.
+        let st = parse_status(br#"{"players":2,"max_players":100,"agents_only":true}"#).unwrap();
+        assert_eq!(st.agents_only, Some(true));
+        assert_eq!(
+            parse_status(br#"{"players":2,"max_players":100}"#)
+                .unwrap()
+                .agents_only,
+            None
+        );
+        let rows = parse(br#"{"servers":[{"id":"a","name":"A","addr":"h:1","agents_only":true}]}"#)
+            .unwrap();
+        assert_eq!(rows[0].agents_only, Some(true));
     }
 
     #[test]

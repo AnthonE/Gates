@@ -322,6 +322,12 @@ pub struct ShardConfig {
     /// person's however many agents dial. People are never counted against
     /// it. Zero is the shipping default and caps nothing.
     pub agent_seats: u32,
+    /// **An agent-only world** (`agents_only`): the shard seats declared
+    /// agents (`HELLO_AGENT`) and spectators, and refuses a person at the
+    /// hello with `REFUSE_AGENTS`. Off by default. Anyone may host one
+    /// (`shard-agents.toml`); we never run one. Refused together with a
+    /// `population`, because an inhabitant handshakes as a person.
+    pub agents_only: bool,
     /// Which congestion controller quinn runs (`cc = "cubic" | "bbr"`).
     ///
     /// **CUBIC is the default and stays the default.** `NETCODE.md` §2.1
@@ -457,6 +463,7 @@ impl ShardConfig {
             ban_file: None,
             population: 0,
             agent_seats: 0,
+            agents_only: false,
             spectate: Spectate::OFF,
             team_max: protocol::TEAM_MAX as u8,
         }
@@ -641,6 +648,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut ban_file: Option<String> = None;
     let mut population: Option<usize> = None;
     let mut agent_seats: u32 = 0;
+    let mut agents_only: Option<bool> = None;
     let mut team_max: Option<u8> = None;
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
@@ -1252,6 +1260,18 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     )
                 })?;
             }
+            // Admission policy, so refused rather than coerced, as
+            // `require_auth` is.
+            "agents_only" => match value {
+                "true" => agents_only = Some(true),
+                "false" => agents_only = Some(false),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: agents_only must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
             // Refused rather than defaulted on an unknown value: an
             // operator who typed `cc = "bbr2"` wanted something other than
             // CUBIC, and silently giving them CUBIC is the A/B reporting a
@@ -1434,6 +1454,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    // The same storm through the other door: an inhabitant says no
+    // `HELLO_AGENT`, so an agent-only shard refuses every one of them.
+    if population.unwrap_or(0) > 0 && agents_only.unwrap_or(false) {
+        return Err(
+            "shard.toml: population needs agents_only = false — an inhabitant joins \
+             as a person, so an agent-only shard refuses every one of them and the \
+             population re-dials its own closed door. Seat agents with jev-bot instead"
+                .into(),
+        );
+    }
     if prizes.places.iter().any(|p| !p.is_empty()) && prizes.ticker.is_empty() {
         return Err("shard.toml: prize places without prize_ticker — paid in what?".into());
     }
@@ -1513,6 +1543,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         agent_seats,
+        agents_only: agents_only.unwrap_or(false),
         spectate,
         team_max: team_max.unwrap_or(protocol::TEAM_MAX as u8),
     })
@@ -2039,6 +2070,37 @@ mod auth_cfg_tests {
             let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
             assert!(err.contains("agent_seats"), "{err}");
         }
+    }
+
+    #[test]
+    fn agents_only_defaults_off_reads_both_ways_and_refuses_a_population() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert!(!parse_shard_toml(base).unwrap().agents_only);
+        assert!(!ShardConfig::ephemeral(1).agents_only);
+        let on = parse_shard_toml(&format!("{base}agents_only = true\nspectate = true\n")).unwrap();
+        assert!(on.agents_only && on.spectate.open());
+        assert!(
+            !parse_shard_toml(&format!("{base}agents_only = false\n"))
+                .unwrap()
+                .agents_only
+        );
+        for bad in ["yes", "1", "True", ""] {
+            let err = parse_shard_toml(&format!("{base}agents_only = {bad}\n")).unwrap_err();
+            assert!(err.contains("agents_only"), "{err}");
+        }
+        let err =
+            parse_shard_toml(&format!("{base}agents_only = true\npopulation = 4\n")).unwrap_err();
+        assert!(
+            err.contains("agents_only") && err.contains("population"),
+            "{err}"
+        );
+        // A population alone still boots: the refusal is the pair.
+        assert_eq!(
+            parse_shard_toml(&format!("{base}population = 4\n"))
+                .unwrap()
+                .population,
+            4
+        );
     }
 
     #[test]

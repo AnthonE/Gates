@@ -82,10 +82,11 @@ const say = (text, cls, el = status) => {
 };
 /* Where a link to the game points, whichever host this copy is served from. */
 const GAME_URL = "https://elopros.com/games/gates/play/";
-/* `protocol::REFUSE_VERSION` and `REFUSE_AUTH`: the refusal codes the page
-   itself reads. */
+/* `protocol::REFUSE_VERSION`, `REFUSE_AUTH` and `REFUSE_AGENTS`: the refusal
+   codes the page itself reads. */
 const REFUSE_VERSION = 0;
 const REFUSE_AUTH = 2;
+const REFUSE_AGENTS = 10;
 
 /* A same-origin JSON read with a deadline. Never throws: null is "could not
    look", which every caller draws as a sentence rather than as an empty list. */
@@ -147,6 +148,8 @@ function show(name) {
     opened.add(name);
     if (onFirstShow[name]) onFirstShow[name]();
   }
+  /* the friends list is read each time its pane opens, never on a timer */
+  if (name === "friends") frRead();
   try {
     history.replaceState(null, "", name === "play"
       ? location.pathname + location.search
@@ -200,6 +203,8 @@ async function loadServers() {
         proto: was ? was.proto : null,
         nextWipe: was ? was.nextWipe : 0,
         live: was ? was.live : false,
+        /* a shard for AI agents only: watched, not played (`server::status`) */
+        agentsOnly: s.agents_only === true || (was ? !!was.agentsOnly : false),
         statusUrl: /^https:\/\/[^\s/]+\/\S*$/.test(String(s.status_url || "")) ? s.status_url : null,
       };
     });
@@ -239,6 +244,7 @@ async function pollStatus(row, ms = 8000) {
     if (Number.isInteger(s.max_players)) row.max = s.max_players;
     row.proto = Number.isInteger(s.proto) ? s.proto : null;
     row.nextWipe = Number.isInteger(s.next_wipe) ? s.next_wipe : 0;
+    if (typeof s.agents_only === "boolean") row.agentsOnly = s.agents_only;
     row.live = true;
     renderServers();
     return true;
@@ -344,7 +350,23 @@ function rowEl(r, onGo, kind) {
     pop.append(live);
   }
   pop.append([population(r, kind), wipeIn(r)].filter(Boolean).join(" · "));
-  mid.append(nm, sub, pop);
+  /* who of your friends is on it, and whether a person may play it at all */
+  const chips = document.createElement("span");
+  chips.className = "chips";
+  const n = frOn(r);
+  if (n > 0) {
+    const c = document.createElement("span");
+    c.className = "chip fr";
+    c.textContent = n === 1 ? "1 friend" : `${n} friends`;
+    chips.append(c);
+  }
+  if (r.agentsOnly) {
+    const c = document.createElement("span");
+    c.className = "chip bots";
+    c.textContent = "AI agents only — watch";
+    chips.append(c);
+  }
+  mid.append(nm, sub, pop, chips);
   const skew = skewOf(r);
   if (skew) {
     const s = document.createElement("span");
@@ -781,6 +803,7 @@ function setAddress(a) {
   paintAccount();
   if (address) { readWho(address); readBalance(address); }
   if (opened.has("store")) fillOwned();
+  frRead();
 }
 
 /* The name and face the platform shows for this wallet — the same read and
@@ -1499,6 +1522,13 @@ function paintGo() {
     }
     $("go-label").textContent = "Reload";
   }
+  /* A shard for AI agents only refuses a person at the door: PLAY says so,
+     and SPECTATE (which reads the same rows) still works. */
+  if (!busy && current() && current().agentsOnly) {
+    $("go").disabled = true;
+    $("go").classList.remove("wait");
+    $("go-sub").textContent = "AI agents only here — watch it from Spectate";
+  }
   $("send").hidden = !touchOnly || EMBED;
   /* The other way in, under PLAY. The public shard takes guests again
      (`shard-public.toml`, 2026-10-07): a guest plays a fresh character and
@@ -1566,6 +1596,9 @@ async function join(kind, audio, identity) {
       /* Already reloaded for this wire and still behind: the shard moved
          before the browser build was published. Another reload is the loop. */
       say("Gates just updated. The browser version follows soon. Try again in a few minutes.", "bad", line);
+    } else if (code === REFUSE_AGENTS) {
+      /* The shard admits AI agents only; a person may still watch it. */
+      say("This server is for AI agents only — watch it from Spectate, or pick another server.", "bad", line);
     } else if (code === REFUSE_AUTH && walletAsked) {
       /* The wallet signed and the shard recovered somebody else. The shared
          sentence says "connect a wallet", which this player just did. */
@@ -1648,6 +1681,10 @@ async function play({ guest = false } = {}) {
   if (busy || !canTransport) return;
   if (dl.failed) { location.reload(); return; }
   if (staleFor(current())) { freshReload(current()); return; }
+  if (current() && current().agentsOnly) {
+    say("This server is for AI agents only — watch it from Spectate, or pick another server.", "bad");
+    return;
+  }
   const audio = startAudio();   /* synchronously inside the press */
   startMusic();
   let identity = guest ? null : address;
@@ -1874,6 +1911,368 @@ async function fillOwned() {
   }
   line.textContent = n ? `You own ${n} skin${n === 1 ? "" : "s"} for Gates.` : "You don’t own any Gates skins yet.";
 }
+
+/* ── friends ───────────────────────────────────────────────────────────────
+   The Elo Pros friends list (`meter/friends.py`, `docs/client/FRIENDS.md` in
+   AnthonE/scry-forge), the same list the profile page draws and the desktop
+   client's FRIENDS tab reads (`client::friends`). One read,
+   GET /api/friends/{wallet}, when this pane opens and when the wallet
+   changes — never on a timer. Every change is prepare → sign → act, and the
+   act answers with the fresh list, which is drawn rather than read again. A
+   friend on a Gates server is a JOIN: that row picked, then PLAY (or
+   SPECTATE, on a shard for AI agents only). Your own AI buddies are listed
+   beside your friends, without an ask. */
+const FR_ARG = { ask: "to", accept: "from", decline: "from", cancel: "to", remove: "wallet" };
+const WALLET_RE = /^0x[0-9a-fA-F]{40}$/;
+let frView = null;      /* the last list read, or null */
+let frFor = null;       /* whose list `frView` is */
+let frBusy = false;     /* one change at a time: a second would sign twice */
+let frPick = null;      /* { w, text }: who the add box found, waiting for Confirm */
+const frSay = (t, cls) => say(t, cls, $("fr-status"));
+
+/* A same-origin JSON POST with a deadline. Never throws: status 0 is "could
+   not reach". */
+async function postJSON(path, body, ms = 20000) {
+  if (!onOrigin) return { status: 0, data: null };
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(path, { method: "POST", signal: ac.signal,
+      headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) });
+    let data = null;
+    try { data = await r.json(); } catch (err) { data = null; }
+    return { status: r.status, data: data && typeof data === "object" ? data : null };
+  } catch (err) {
+    return { status: 0, data: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* Friends and buddies, buddies after and never twice. */
+function frEveryone(v) {
+  const friends = v && Array.isArray(v.friends) ? v.friends : [];
+  const buddies = v && Array.isArray(v.buddies) ? v.buddies : [];
+  const seen = new Set(friends.map((f) => String(f.wallet).toLowerCase()));
+  return friends.concat(buddies.filter((b) => !seen.has(String(b.wallet).toLowerCase())));
+}
+/* Where a friend is playing Gates, or null. */
+const frGates = (f) => f && f.online && f.playing && f.playing.game === "gates" ? f.playing : null;
+/* How many friends are on a server row (`client::friends::on_shard`). */
+function frOn(r) {
+  if (!frView || !r || r.direct) return 0;
+  return frEveryone(frView).filter((f) => { const p = frGates(f); return p && p.server === r.id; }).length;
+}
+
+async function frRead() {
+  const me = address;
+  if (!me) { frView = null; frFor = null; paintFriends(); return; }
+  if (frFor && frFor.toLowerCase() !== me.toLowerCase()) frView = null;
+  if (!onOrigin) { paintFriends(); return; }
+  if (!frView) frSay("Reading your friends…");
+  const v = await getJSON("/api/friends/" + encodeURIComponent(me.toLowerCase()));
+  if (me !== address) return;
+  if (v) { frView = v; frFor = me; frSay(""); }
+  else frSay("Couldn’t load your friends. Try again.", "bad");
+  paintFriends();
+}
+
+/* /who answered with a status, kept: a JSON 404 is "not sworn", a dead read
+   is "could not look" (`store.js` whoRead). */
+async function whoRead(handle) {
+  if (!onOrigin) return { status: 0, data: null };
+  try {
+    const r = await fetch("/api/who?handle=" + encodeURIComponent(handle), { headers: { Accept: "application/json" } });
+    let j = null;
+    try { j = await r.json(); } catch (err) { j = null; }
+    return { status: r.status, data: j && typeof j === "object" ? j : null };
+  } catch (err) {
+    return { status: 0, data: null };
+  }
+}
+/* Several vows under one name are one person when every candidate carries
+   the subject's wallet (`store.js` frOneWallet). */
+function frOneWallet(d) {
+  const s = String((d && d.subject && d.subject.wallet) || "").toLowerCase();
+  const c = d && d.ambiguous && Array.isArray(d.ambiguous.candidates) ? d.ambiguous.candidates : [];
+  return WALLET_RE.test(s) && c.length
+    && c.every((x) => x && String(x.wallet || "").toLowerCase() === s) ? s : "";
+}
+/* The add box: a wallet as it is, a name through /who (`store.js` frResolve,
+   and `client::friends::resolve_who` on the desktop). */
+async function frResolve(text) {
+  const t = String(text || "").trim();
+  if (!t) return [null, "Type a wallet or a name."];
+  if (WALLET_RE.test(t)) return [t.toLowerCase(), null];
+  const r = await whoRead(t);
+  if (r.status === 200 && r.data && r.data.found) {
+    const one = r.data.ambiguous ? frOneWallet(r.data) : "";
+    if (r.data.ambiguous && !one) return [null, "More than one goes by “" + t + "”. Paste their wallet instead."];
+    const w = one || String(r.data.found.wallet || "");
+    return WALLET_RE.test(w) ? [w.toLowerCase(), null] : [null, "“" + t + "” has no wallet to add."];
+  }
+  if (r.status === 404 || r.status === 422) return [null, "Couldn’t find “" + t + "”. Paste their wallet instead."];
+  return [null, "Couldn’t look that up. Try again."];
+}
+
+/* prepare → sign → act. The text the wallet is shown is the platform's; it
+   is checked to be a friends change by this wallet before it is signed. */
+async function frAct(op, w) {
+  const me = address;
+  if (!me) throw new Error("Sign in first.");
+  const args = {};
+  args[FR_ARG[op]] = w;
+  const p = await postJSON("/api/friends/prepare", { wallet: me.toLowerCase(), op: op, args: args });
+  if (p.status !== 200 || !p.data || typeof p.data.sign_this !== "string") {
+    throw new Error((p.data && p.data.error) || "Couldn’t do that. Try again.");
+  }
+  const head = "elo play\naction: friends\nwallet: " + me.toLowerCase() + "\n";
+  const offered = p.data.args || {};
+  if (p.data.op !== op || !p.data.sign_this.startsWith(head)
+    || String(offered[FR_ARG[op]] || "").toLowerCase() !== w.toLowerCase()) {
+    throw new Error("Elo Pros offered a different change. Nothing was signed.");
+  }
+  const signature = await wallet.sign(p.data.sign_this, me);
+  const r = await postJSON("/api/friends/act",
+    { wallet: me.toLowerCase(), op: op, args: offered, at: p.data.at, signature: signature });
+  if (r.status === 401) throw new Error("Your wallet’s signature didn’t check out. Try again.");
+  if (r.status !== 200 || !r.data || !r.data.view) {
+    throw new Error((r.data && r.data.error) || "Couldn’t do that. Try again.");
+  }
+  if (me !== address) return null;
+  frView = r.data.view;
+  frFor = me;
+  return frView;
+}
+
+async function frRun(op, w, done) {
+  if (frBusy) return false;
+  frBusy = true;
+  frSay("Check your wallet…");
+  try {
+    const v = await frAct(op, w);
+    paintFriends();
+    frSay(typeof done === "function" ? done(v) : done || "", "good");
+    return true;
+  } catch (err) {
+    frSay(err && err.message ? err.message : String(err), "bad");
+    return false;
+  } finally {
+    frBusy = false;
+  }
+}
+
+/* JOIN: the friend's server row, picked, then PLAY — or SPECTATE that friend
+   on a shard for AI agents only. A server the list does not carry is added
+   from the platform's join link, the way a typed address is. */
+function frJoin(f) {
+  const p = frGates(f);
+  if (!p) return;
+  let row = rows.find((r) => r.id === p.server && !r.direct);
+  if (!row) {
+    const m = /^elo:\/\/join\/gates\/([^/?#]+)$/i.exec(String(p.join || ""));
+    let addr = "";
+    try { addr = m ? decodeURIComponent(m[1]) : ""; } catch (err) { addr = ""; }
+    if (!addrOk(addr)) { frSay("That server isn’t on the list.", "bad"); return; }
+    row = rows.find((r) => r.addr === addr);
+    if (!row) {
+      row = { id: "friend", name: p.server_name ? String(p.server_name) : "Your friend’s server", addr: addr, direct: true };
+      rows = rows.filter((r) => r.id !== "friend");
+      rows.unshift(row);
+    }
+  }
+  pick(row.id);
+  if (row.agentsOnly) {
+    $("watch-who").value = String(f.wallet || "");
+    show("watch");
+    watch();
+  } else {
+    show("play");
+    goPlay();
+  }
+}
+
+function frButton(label, cls, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "btn" + (cls ? " " + cls : "");
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function frFace(f) {
+  const el = document.createElement("span");
+  el.className = "face";
+  el.setAttribute("aria-hidden", "true");
+  el.textContent = (String(f.name || "").trim().charAt(0) || String(f.wallet || "").slice(2, 3) || "·").toUpperCase();
+  const pic = typeof f.pic === "string" && f.pic.startsWith("/api/face/") ? f.pic : "";
+  if (pic) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = SITE + pic;
+    img.addEventListener("error", () => img.remove());
+    el.append(img);
+  }
+  return el;
+}
+
+function frRowEl(f, line, live, acts) {
+  const row = document.createElement("div");
+  row.className = "fr-row";
+  const lines = document.createElement("div");
+  lines.className = "lines";
+  const nm = document.createElement("div");
+  nm.className = "name";
+  nm.textContent = f.name || short(f.wallet);
+  nm.title = String(f.wallet || "");
+  if (f.buddy || f.agent) {
+    const m = document.createElement("span");
+    m.className = "mark";
+    m.textContent = f.buddy ? "your agent" : "agent";
+    nm.append(m);
+  }
+  const sub = document.createElement("div");
+  sub.className = "sub" + (live ? " on" : "");
+  sub.textContent = line;
+  lines.append(nm, sub);
+  const box = document.createElement("div");
+  box.className = "acts";
+  box.append(...acts);
+  row.append(frFace(f), lines, box);
+  return row;
+}
+
+const frAgo = (t) => {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - t));
+  return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)}m ago`
+    : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`;
+};
+/* `client::friends::presence_line`, in a page. */
+function frPresence(f) {
+  const p = f.online && f.playing;
+  if (p) {
+    const title = p.title || p.game || "a game";
+    const where = p.server_name || p.server;
+    return where ? `Playing ${title} · ${where}` : `Playing ${title}`;
+  }
+  if (f.online) return "online";
+  return Number.isInteger(f.last_online) ? `last seen ${frAgo(f.last_online)}` : "offline";
+}
+
+function frSection(title) {
+  const h = document.createElement("div");
+  h.className = "group fr-sub";
+  h.textContent = title;
+  return h;
+}
+
+function paintFriends() {
+  const list = $("fr-list");
+  const empty = $("fr-empty");
+  const v = frView;
+  const asks = v && Array.isArray(v.asks_in) ? v.asks_in.length : 0;
+  $("nav-friends").textContent = asks ? `Friends (${asks})` : "Friends";
+  $("fr-adder").hidden = !address || !onOrigin;
+  $("fr-refresh").hidden = !address || !onOrigin;
+  const blank = (text) => {
+    list.replaceChildren();
+    $("fr-count").textContent = "";
+    empty.textContent = text;
+    empty.hidden = false;
+  };
+  if (!address) blank("Sign in to see your friends.");
+  else if (!onOrigin) blank("Your friends live on Elo Pros — open your profile there.");
+  else if (!v) blank("");
+  else {
+    const all = frEveryone(v);
+    const online = all.filter((f) => f.online).length;
+    $("fr-count").textContent = `${all.length} · ${online} online`;
+    const out = [];
+    if (v.presence && v.presence.reachable === false) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "Elo Pros can’t see who’s playing right now.";
+      out.push(p);
+    }
+    for (const f of all) {
+      const acts = [];
+      const p = frGates(f);
+      if (p) {
+        const row = rows.find((r) => r.id === p.server && !r.direct);
+        acts.push(frButton(row && row.agentsOnly ? "Watch" : "Join", "blue", () => frJoin(f)));
+      }
+      /* a buddy is yours, not a friendship: it is not removed here */
+      if (!f.buddy) {
+        const b = frButton("Remove", "", async () => {
+          if (!b.dataset.sure) { b.dataset.sure = "1"; b.textContent = "Remove?"; return; }
+          b.disabled = true;
+          if (!(await frRun("remove", f.wallet, "Removed."))) {
+            b.disabled = false;
+            delete b.dataset.sure;
+            b.textContent = "Remove";
+          }
+        });
+        acts.push(b);
+      }
+      out.push(frRowEl(f, frPresence(f), !!p, acts));
+    }
+    if (!all.length) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "No friends yet. Add one with their wallet or their name.";
+      out.push(p);
+    }
+    for (const [title, list2, incoming] of [["Asking to be your friend", v.asks_in, true], ["You asked", v.asks_out, false]]) {
+      if (!Array.isArray(list2) || !list2.length) continue;
+      out.push(frSection(title));
+      for (const a of list2) {
+        const acts = incoming
+          ? [frButton("Accept", "blue", () => frRun("accept", a.wallet, "You’re friends now.")),
+             frButton("Decline", "", () => frRun("decline", a.wallet, "Declined."))]
+          : [frButton("Cancel", "", () => frRun("cancel", a.wallet, "Ask withdrawn."))];
+        out.push(frRowEl(a, Number.isInteger(a.at) ? `asked ${frAgo(a.at)}` : "asked", false, acts));
+      }
+    }
+    list.replaceChildren(...out);
+    empty.hidden = true;
+  }
+  /* the server rows' "n friends" chips read the same list */
+  renderServers();
+}
+
+$("fr-refresh").addEventListener("click", () => frRead());
+$("fr-in").addEventListener("input", () => {
+  if (frPick && $("fr-in").value.trim() !== frPick.text) { frPick = null; $("fr-pick").replaceChildren(); $("fr-ask").textContent = "Ask"; frSay(""); }
+});
+/* Ask: the first press finds who the box names and shows them; the second
+   signs the ask — the profile page's two steps. */
+$("fr-add").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (frBusy || !address) return;
+  const input = $("fr-in");
+  const text = input.value.trim();
+  if (frPick && frPick.text === text) {
+    const w = frPick.w;
+    const ok = await frRun("ask", w, (nv) => (frEveryone(nv).some((f) => String(f.wallet).toLowerCase() === w)
+      ? "You’re friends now." : "Asked. They’ll see it on their profile."));
+    if (ok) { frPick = null; input.value = ""; $("fr-pick").replaceChildren(); $("fr-ask").textContent = "Ask"; }
+    return;
+  }
+  frPick = null;
+  $("fr-pick").replaceChildren();
+  frSay("Looking…");
+  const [w, err] = await frResolve(text);
+  if (!w) { frSay(err, "bad"); return; }
+  if (w === address.toLowerCase()) { frSay("That’s you.", "bad"); return; }
+  const face = (await getJSON("/api/face/" + encodeURIComponent(w))) || {};
+  if (input.value.trim() !== text) { frSay(""); return; }
+  frPick = { w: w, text: text };
+  const who = { wallet: w, name: face.name || null, pic: face.picture || null, agent: face.kind === "agent" };
+  $("fr-pick").replaceChildren(frFace(who), document.createTextNode((who.name || short(w)) + (who.name ? "  ·  " + short(w) : "")));
+  $("fr-ask").textContent = "Confirm";
+  frSay("Is that them? Confirm to sign the ask.");
+});
 
 /* ── start ─────────────────────────────────────────────────────────────── */
 /* Wallets already in the page answer this at once; later ones announce

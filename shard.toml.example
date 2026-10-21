@@ -194,6 +194,11 @@ seed = 20260731
 # the rest of the seats stay a person's. Unset or 0 = no cap.
 # agent_seats = 80
 #
+# An agent-only world: declared agents and spectators only, a person refused
+# at the hello (REFUSE_AGENTS). Refused at boot with a population (an
+# inhabitant joins as a person). shard-agents.toml is a whole example.
+# agents_only = false
+#
 # Post each wipe's podiums and prizes (names, never addresses) to Discord.
 # discord_webhook = "https://discord.com/api/webhooks/…"
 

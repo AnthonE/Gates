@@ -10,16 +10,18 @@
 //! and no others.
 //!
 //! **What is deliberately not copied, and why.** The reference's rail reads
-//! Official / Community / Modded / Friends / Favourited / History. Four of
+//! Official / Community / Modded / Friends / Favourited / History. Three of
 //! those are facts about a shard ecosystem we do not have: nothing in the
-//! document says who runs a shard, nothing marks one modded, and there is no
-//! friend graph. `render/settings.rs` already set the policy for this — *a
+//! document says who runs a shard or marks one modded, and nothing keeps a
+//! history. `render/settings.rs` already set the policy for this — *a
 //! category with nothing behind it says so in a sentence rather than drawing
-//! greyed rows that imply a feature exists* — so the rail here is the two
-//! categories that are real. The same goes for the reference's WIPE SCHEDULE
-//! filter group and its coloured region tags: real columns of their document,
-//! absent from ours, and a chip that always reads the same word is a
-//! decoration pretending to be data. (A row does say when its own shard
+//! greyed rows that imply a feature exists* — so the rail here is the three
+//! categories that are real. **Friends is real**: the Elo Pros friends list
+//! (`crate::friends`) names the shard row each friend is playing on, so the
+//! rail can keep the rows they are on. The same goes for the reference's WIPE
+//! SCHEDULE filter group and its coloured region tags: real columns of their
+//! document, absent from ours, and a chip that always reads the same word is
+//! a decoration pretending to be data. (A row does say when its own shard
 //! wipes, because the shard's `/status.json` says so — that one is data.)
 //!
 //! **Pure, and not feature-gated**, for the reason [`crate::ui`]'s header
@@ -55,6 +57,9 @@ pub struct Live {
     pub act: Option<u8>,
     pub works_lit: Option<u32>,
     pub works_total: Option<u32>,
+    /// The shard admits AI agents only (`/status.json`'s `agents_only`, or
+    /// the shard list's row): a person can watch it and not play on it.
+    pub agents_only: Option<bool>,
 }
 
 impl Live {
@@ -116,6 +121,9 @@ pub struct Listing {
     /// there, one keystroke away, and [`empty_reason`] is what says so.
     pub direct: bool,
 }
+
+/// What a row says about a shard that admits AI agents only.
+pub const AGENTS_ONLY: &str = "AI agents only — watch";
 
 /// The domain official shards are dialled under.
 pub const OFFICIAL_DOMAIN: &str = "elopros.com";
@@ -184,7 +192,10 @@ impl Listing {
             proto: None,
             next_wipe: None,
             agents: None,
-            live: Live::default(),
+            live: Live {
+                agents_only: s.agents_only,
+                ..Live::default()
+            },
             direct: false,
         }
     }
@@ -221,6 +232,7 @@ impl Listing {
         l.act = s.act.filter(|&a| a > 0).or(l.act);
         l.works_lit = s.works_lit.or(l.works_lit);
         l.works_total = s.works_total.or(l.works_total);
+        l.agents_only = s.agents_only.or(l.agents_only);
         before != seen(self)
     }
 
@@ -229,6 +241,9 @@ impl Listing {
     /// drawn as a zero.
     pub fn details(&self, now_unix: u64) -> Vec<(&'static str, String)> {
         let mut out = vec![("ADDRESS", self.addr.clone())];
+        if self.agents_only() {
+            out.push(("WHO PLAYS", AGENTS_ONLY.to_string()));
+        }
         if let Some(m) = &self.map {
             out.push(("MAP", m.clone()));
         }
@@ -277,6 +292,12 @@ impl Listing {
             },
         ));
         out
+    }
+
+    /// The shard is for AI agents: a person joining is refused, and watching
+    /// it is what is left.
+    pub fn agents_only(&self) -> bool {
+        self.live.agents_only == Some(true)
     }
 
     /// Run by us: see [`is_official_addr`].
@@ -355,9 +376,15 @@ impl Listing {
     /// shard's status said: who is on it and when it wipes.
     pub fn sub_line(&self, now_unix: u64) -> String {
         let mut line = self.addr.clone();
-        for part in [self.map.clone(), self.crowd(), self.wipe_in(now_unix)]
-            .into_iter()
-            .flatten()
+        let agents = self.agents_only().then(|| AGENTS_ONLY.to_string());
+        for part in [
+            agents,
+            self.map.clone(),
+            self.crowd(),
+            self.wipe_in(now_unix),
+        ]
+        .into_iter()
+        .flatten()
         {
             line.push_str("   ");
             line.push_str(&part);
@@ -392,21 +419,24 @@ impl Listing {
     }
 }
 
-/// The rail's categories — the two we can actually back.
+/// The rail's categories — the three we can actually back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Cat {
     #[default]
     All,
     Favourites,
+    /// The shards an Elo Pros friend is playing on (`crate::friends`).
+    Friends,
 }
 
 impl Cat {
-    pub const ALL: [Cat; 2] = [Cat::All, Cat::Favourites];
+    pub const ALL: [Cat; 3] = [Cat::All, Cat::Favourites, Cat::Friends];
 
     pub fn label(self) -> &'static str {
         match self {
             Cat::All => "All Shards",
             Cat::Favourites => "Favourited",
+            Cat::Friends => "Friends",
         }
     }
 
@@ -417,6 +447,7 @@ impl Cat {
         match self {
             Cat::All => "every shard the list names",
             Cat::Favourites => "the ones you starred",
+            Cat::Friends => "shards your friends are on",
         }
     }
 }
@@ -527,9 +558,27 @@ impl Favourites {
 /// reported post-filter counts would show `0` beside the category you would
 /// have to click to see anything, which is the opposite of what a count on a
 /// tab is for.
-pub fn counts(rows: &[Listing], favs: &Favourites) -> [usize; 2] {
+///
+/// `friend_ids` is `friends::shard_ids`: the row ids a friend is playing on.
+pub fn counts(rows: &[Listing], favs: &Favourites, friend_ids: &[String]) -> [usize; 3] {
     let starred = rows.iter().filter(|r| favs.has(&r.id)).count();
-    [rows.len(), starred]
+    let friends = rows.iter().filter(|r| friend_here(r, friend_ids)).count();
+    [rows.len(), starred, friends]
+}
+
+/// Is a friend on this row? Never the Direct row: it is not a published
+/// shard, so no friend's presence can name it.
+fn friend_here(r: &Listing, friend_ids: &[String]) -> bool {
+    !r.direct && friend_ids.contains(&r.id)
+}
+
+/// `2 friends here`, for a row's second line; `None` for nobody.
+pub fn friends_here(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some("1 friend here".into()),
+        n => Some(format!("{n} friends here")),
+    }
 }
 
 /// Which rows survive the filter, in the order they are drawn.
@@ -544,7 +593,12 @@ pub fn counts(rows: &[Listing], favs: &Favourites) -> [usize; 2] {
 ///
 /// The Direct row is pinned to the top ahead of all of it and is exempt from
 /// every filter — see [`Listing::direct`].
-pub fn visible(rows: &[Listing], filter: &Filter, favs: &Favourites) -> Vec<usize> {
+pub fn visible(
+    rows: &[Listing],
+    filter: &Filter,
+    favs: &Favourites,
+    friend_ids: &[String],
+) -> Vec<usize> {
     let needle = filter.query.to_lowercase();
     let mut out: Vec<usize> = rows
         .iter()
@@ -557,6 +611,9 @@ pub fn visible(rows: &[Listing], filter: &Filter, favs: &Favourites) -> Vec<usiz
                 return true;
             }
             if filter.cat == Cat::Favourites && !favs.has(&r.id) {
+                return false;
+            }
+            if filter.cat == Cat::Friends && !friend_here(r, friend_ids) {
                 return false;
             }
             if filter.hide_empty && r.empty() {
@@ -615,6 +672,9 @@ pub fn empty_reason(filter: &Filter, total: usize, shown: usize) -> Option<Strin
     Some(match (&filter.cat, filter.query.is_empty()) {
         (Cat::Favourites, true) => "no shard on this list is starred yet - \
                                     click a star to keep one here"
+            .to_string(),
+        (Cat::Friends, true) => "none of your friends is on a shard on this list right now - \
+                                 FRIENDS shows where they are"
             .to_string(),
         (_, false) => format!("nothing matches \"{}\" - Esc clears it", filter.query),
         _ => "the filters leave nothing - CLEAR FILTERS puts them back".to_string(),

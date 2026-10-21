@@ -138,17 +138,17 @@ const EXEMPT: &[(&str, &str)] = &[
 const KNOWN: &[(&str, u32, &str)] = &[
     ("src/render/boot.rs", 114, "the launcher handshake's thread"),
     ("src/render/hub.rs", 41, "the title manifest fetch thread"),
-    ("src/render/menu.rs", 245, "the shard-list fetch thread"),
+    ("src/render/menu.rs", 258, "the shard-list fetch thread"),
     // `menu` is compiled out of the browser build (`render/mod.rs`); the
     // chip's own platform read, like the shard list beside it.
     (
         "src/render/menu.rs",
-        495,
+        510,
         "your name and picture for the identity chip",
     ),
     (
         "src/render/menu.rs",
-        366,
+        379,
         // ⚠ This read "the connect future's runtime thread" until 2026-09-11
         // and named the wrong function: the connect future does not spawn a
         // thread at all, it goes on the tokio runtime `Rt` holds. This is

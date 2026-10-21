@@ -15,6 +15,10 @@
 //!   way it hides a body. Drawn just above the crosshair — it is aim-only, so
 //!   the crosshair is where the eye already is.
 //!
+//! An Elo Pros friend's (or your buddy's) name is drawn in the friend colour
+//! behind a star (`render::friends`): the face has no star glyph, so it is the
+//! server list's baked one.
+//!
 //! **Bevy draws, it does not decide**: which player, and whether they can be
 //! seen, are `ui::interact::resolve_nametag` and `ui::names::clear_line`.
 
@@ -276,11 +280,17 @@ struct Nametag;
 struct NametagPic;
 #[derive(Component)]
 struct NametagName;
+#[derive(Component)]
+struct NametagStar;
 
-/// What the nametag shows now, so it is only rewritten when that changes.
+/// The name's colour, a stranger's.
+const TAG_INK: Color = Color::srgba(0.96, 0.94, 0.88, 0.95);
+
+/// What the nametag shows now, so it is only rewritten when that changes:
+/// who, their label, whether the picture has landed, and whether a friend.
 #[derive(Resource, Default)]
 struct Shown {
-    who: Option<(u32, String, bool)>,
+    who: Option<(u32, String, bool, bool)>,
 }
 
 fn setup(mut commands: Commands) {
@@ -313,10 +323,21 @@ fn setup(mut commands: Commands) {
                 Pickable::IGNORE,
             ));
             row.spawn((
+                NametagStar,
+                Node {
+                    width: Val::Px(TAG_FONT_PX),
+                    height: Val::Px(TAG_FONT_PX),
+                    ..default()
+                },
+                ImageNode::new(super::ui::STAR_ON).with_color(super::ui::FRIEND),
+                Visibility::Hidden,
+                Pickable::IGNORE,
+            ));
+            row.spawn((
                 NametagName,
                 Text::new(""),
                 super::ui::font_bold(TAG_FONT_PX),
-                TextColor(Color::srgba(0.96, 0.94, 0.88, 0.95)),
+                TextColor(TAG_INK),
                 super::ui::TEXT_SHADOW,
                 Pickable::IGNORE,
             ));
@@ -324,7 +345,7 @@ fn setup(mut commands: Commands) {
 }
 
 /// Who the crosshair is on, and their name over it.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn nametag(
     mut net: NonSendMut<Net>,
     look: Res<Look>,
@@ -332,7 +353,9 @@ fn nametag(
     mut shown: ResMut<Shown>,
     mut root: Query<&mut Visibility, (With<Nametag>, Without<NametagPic>)>,
     mut pic: Query<(&mut ImageNode, &mut Visibility), (With<NametagPic>, Without<Nametag>)>,
-    mut text: Query<&mut Text, With<NametagName>>,
+    mut star: Query<&mut Visibility, (With<NametagStar>, Without<Nametag>, Without<NametagPic>)>,
+    mut text: Query<(&mut Text, &mut TextColor), With<NametagName>>,
+    friends: Option<Res<super::friends::Friends>>,
 ) {
     let core = &mut net.session.core;
     let who = if core.dead {
@@ -358,7 +381,10 @@ fn nametag(
     let handle = who.and_then(|(_, t)| t.and_then(|t| pics.want(t.address, t.pic)));
     let next = who.map(|(id, t)| {
         let label = names::label(t.as_ref(), core.is_agent(id), id);
-        (id, label, handle.is_some())
+        let friend = t
+            .zip(friends.as_deref())
+            .is_some_and(|(t, f)| f.set.has(&t.address));
+        (id, label, handle.is_some(), friend)
     });
     if next == shown.who {
         return;
@@ -371,8 +397,17 @@ fn nametag(
             Visibility::Hidden
         };
     }
-    for mut t in &mut text {
+    let friend = next.as_ref().is_some_and(|n| n.3);
+    for (mut t, mut ink) in &mut text {
         t.0 = next.as_ref().map(|n| n.1.clone()).unwrap_or_default();
+        ink.0 = if friend { super::ui::FRIEND } else { TAG_INK };
+    }
+    for mut v in &mut star {
+        *v = if friend {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
     }
     for (mut img, mut v) in &mut pic {
         match &handle {
