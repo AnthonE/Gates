@@ -7483,3 +7483,57 @@ mod surge {
         assert!(!w.step(&arc(C, true), true));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Run conditions and the main thread.
+//
+// Bevy 0.18 evaluates a run condition on whichever thread the executor is on,
+// and a condition that takes `NonSend` aborts the client the first time it is
+// evaluated off the main one. `structures::structures_changed` took
+// `Option<NonSend<Net>>` and every desktop join panicked as the world started
+// building (2026-10-21) — invisible to clippy, to every headless test (no
+// session, so the `Option` was always `None`) and to the loot suites that
+// drive the same condition. A grep, because the defect is a signature.
+
+/// No named run condition in the render path takes a non-send resource.
+#[test]
+fn no_run_condition_takes_a_non_send_resource() {
+    let files = render_sources();
+    let all: String = files.iter().map(|(_, t)| t.as_str()).collect();
+    let mut names: Vec<&str> = Vec::new();
+    for (_, text) in &files {
+        for (i, _) in text.match_indices(".run_if(") {
+            let rest = &text[i + ".run_if(".len()..];
+            let path: &str = rest
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                .next()
+                .unwrap_or("");
+            // Only a bare name: `in_state(..)`, `a.or(b)` and closures are
+            // Bevy's own or inline, and inline ones are read in review.
+            if path.is_empty() || !rest[path.len()..].starts_with(')') {
+                continue;
+            }
+            let name = path.rsplit("::").next().unwrap_or(path);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    assert!(
+        names.contains(&"structures_changed") && names.len() >= 3,
+        "the scan found too few conditions to mean anything: {names:?}"
+    );
+    for name in &names {
+        let needle = format!("fn {name}(");
+        for (at, _) in all.match_indices(&needle) {
+            let sig = &all[at..];
+            let sig = &sig[..sig.find('{').unwrap_or(sig.len())];
+            assert!(
+                !sig.contains("NonSend"),
+                "run condition `{name}` takes a non-send resource, and Bevy runs \
+                 conditions off the main thread: copy what it needs into a `Send` \
+                 resource (`feed::drain` does this for `Feed`) and read that\n{sig}"
+            );
+        }
+    }
+}

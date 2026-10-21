@@ -185,6 +185,9 @@ pub mod beasts;
 /// The attack helicopter's drawing (`sim-core/src/heli.rs`): the roster's
 /// last slot, taken from `mobs` and drawn as a gunship.
 pub mod heli;
+/// The front end's INVENTORY and ITEM STORE grids, off the platform's skins.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod locker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod menu;
 pub mod mobs;
@@ -844,6 +847,8 @@ impl Plugin for GatesRenderPlugin {
         app.init_resource::<menu::Picked>()
             .init_resource::<hub::HubState>()
             .init_resource::<menu::MyFace>()
+            .init_resource::<locker::Locker>()
+            .init_resource::<ui::ScrollMemo>()
             .init_resource::<faces::Pics>();
         // The direct address is also what the loading and pause screens name,
         // and on a capture start nothing has been "picked" — so the field
@@ -2382,11 +2387,17 @@ fn add_desktop_front_end(app: &mut App) {
             // documents a menu waits on, both raise a dirty flag, and
             // `menu::rebuild` at the end of this chain is the one redraw.
             hub::poll,
+            // The store and this wallet's skins, for INVENTORY and ITEM
+            // STORE: the same documents the browser page reads.
+            locker::poll,
             // The count half, after the list half: `poll_fetch` is what
             // creates the rows a poll addresses by index, and both raise
             // the one `dirty` flag `rebuild` below acts on.
             menu::begin_status_poll,
             menu::poll_status,
+            ui::wheel,
+            menu::nav_hover,
+            menu::drift,
             menu::click,
             menu::keys,
             menu::take_pick,

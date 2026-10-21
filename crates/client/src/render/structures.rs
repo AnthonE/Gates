@@ -2676,17 +2676,19 @@ pub const STRUCT_APPLIED2: u32 =
 /// the kit unbuilt and the mirrors already seeded by the join drip, and a
 /// condition that only watched the news would leave the base a player logged
 /// out inside undrawn until someone hit it.
-pub fn structures_changed(
-    ring: Res<StructRing>,
-    feed: Res<super::feed::Feed>,
-    net: Option<NonSend<Net>>,
-) -> bool {
-    // Optional: the loot suites drive their own reconcile off this
-    // condition with no session in the world, and a missing non-send
-    // resource panics a run condition outright.
+///
+/// ⚠ **Plain resources only.** It took `Option<NonSend<Net>>` for the
+/// pending-placement counter, and Bevy 0.18 evaluates a run condition on
+/// whichever thread the executor is on, not the main one its `NonSend`
+/// needs: every desktop join panicked ("Attempted to access or drop
+/// non-send resource ... from thread") as the world started building.
+/// `feed::drain` copies the counter into [`super::feed::Feed`] instead, the way it does
+/// the server clock. A placement the ghost predicts after the drain is
+/// drawn on the next frame rather than this one.
+pub fn structures_changed(ring: Res<StructRing>, feed: Res<super::feed::Feed>) -> bool {
     ring.kit.is_none()
         || ring.pending_loot
-        || net.is_some_and(|n| ring.pending_pieces_gen != n.session.core.pending_pieces_gen())
+        || ring.pending_pieces_gen != feed.pending_pieces_gen
         || feed.applied & client_core::core::APPLIED_CATALOG != 0
         || feed.applied & STRUCT_APPLIED != 0
         || feed.applied2 & STRUCT_APPLIED2 != 0

@@ -139,6 +139,8 @@ const opened = new Set();
 const onFirstShow = {
   news: fillNews,
   store: fillStore,
+  /* the same two reads: the inventory names what it holds off the store */
+  inventory: () => { if (!opened.has("store")) fillStore(); },
 };
 function show(name) {
   if (!panes.some((p) => p.dataset.pane === name)) name = "play";
@@ -802,7 +804,7 @@ function setAddress(a) {
   balance = null;
   paintAccount();
   if (address) { readWho(address); readBalance(address); }
-  if (opened.has("store")) fillOwned();
+  if (opened.has("store") || opened.has("inventory")) fillOwned();
   frRead();
 }
 
@@ -1761,7 +1763,8 @@ document.addEventListener("keydown", (ev) => {
    them: the listing's `record[]` (`/api/store/catalog`, the committed
    catalog with the desk's edits over it, falling back to the static file),
    the house posts (`/posts/posts.json`), and the item store's card
-   (`/api/items/store/gates`). Off the origin each pane says where it lives. */
+   (`/api/items/store/gates`), with the wallet's own read beside it for the
+   inventory. Off the origin each pane says where it lives. */
 let catalogRead = null;
 function gatesListing() {
   if (!catalogRead) {
@@ -1841,29 +1844,58 @@ async function fillNews() {
   none.textContent = onOrigin ? "Couldn’t load the news. Try again in a moment." : "The news lives on Elo Pros — open All news.";
 }
 
-let storeCard = null;
+/* The store and the inventory are one catalog read two ways, as on the
+   desktop (`client::ui::locker`): the item store's card lists every look,
+   the wallet read says which of them this player holds. */
+let storeSkins = null;      /* [] once read; null until then or on a failed read */
+let owned = new Map();      /* catalog id → how many this wallet holds */
+let ownedState = "away";    /* away | reading | read | failed | elsewhere */
+let shelf = "all";
+let storeWhy = "";          /* what the grid says while there is no catalog */
+const STORE_PAGE = () => siteHref("/game.html?slug=gates#items");
+
 async function fillStore() {
-  const box = $("skins");
-  const none = $("skins-empty");
-  storeCard = await getJSON("/api/items/store/gates");
-  const skins = storeCard && Array.isArray(storeCard.skins) ? storeCard.skins : [];
-  box.replaceChildren(...skins.map(skinCard));
-  none.hidden = skins.length > 0;
-  none.textContent = onOrigin ? "Couldn’t load the item store. Try again in a moment." : "The item store lives on Elo Pros — open it from the panel.";
+  storeSkins = null;
+  storeWhy = "Loading the item store…";
+  renderStore();
+  renderInventory();
+  const card = await getJSON("/api/items/store/gates");
+  storeSkins = card && Array.isArray(card.skins) ? card.skins.filter((s) => s && s.catalog_id != null) : null;
+  storeWhy = onOrigin ? "Couldn’t load the item store. Try again in a moment." : "The item store lives on Elo Pros — open it from the button above.";
+  renderStore();
   fillOwned();
 }
 
-function skinCard(s) {
-  const el = document.createElement("div");
-  el.className = "card skin";
-  el.dataset.catalog = String(s.catalog_id);
-  const tint = /^#[0-9a-f]{6}$/i.test(String(s.tint)) ? s.tint : "#888888";
-  /* The item's own icon under the skin's tint, multiplied — which is what the
-     tint IS in the game (`content/skins.toml`: an sRGB multiply over the
-     item's colours). The icon file is the item's name, snake-cased. */
+const shelfRows = (which) => (storeSkins || []).filter((s) =>
+  which === "sale" ? Boolean(s.on_sale && s.price_text)
+  : which === "owned" ? owned.has(String(s.catalog_id))
+  : true);
+
+function renderStore() {
+  const box = $("skins");
+  const none = $("skins-empty");
+  for (const t of document.querySelectorAll(".tab[data-shelf]")) {
+    t.setAttribute("aria-selected", String(t.dataset.shelf === shelf));
+    t.querySelector(".n").textContent = storeSkins ? String(shelfRows(t.dataset.shelf).length) : "";
+  }
+  const rows = shelfRows(shelf);
+  box.replaceChildren(...rows.map(skinCard));
+  none.hidden = rows.length > 0;
+  none.textContent = !storeSkins ? storeWhy
+    : shelf === "sale" ? "Nothing is on sale right now. The looks in All skins go on sale as they’re priced."
+    : shelf === "owned" ? (address ? "You don’t own any Gates skins yet." : "Sign in and the skins your wallet owns are marked here.")
+    : "Nothing is in the item store yet.";
+}
+for (const t of document.querySelectorAll(".tab[data-shelf]")) {
+  t.addEventListener("click", () => { shelf = t.dataset.shelf; renderStore(); });
+}
+
+/* The item's own icon under the skin's tint, multiplied — which is what the
+   tint IS in the game (`content/skins.toml`: an sRGB multiply over the
+   item's colours). The icon file is the item's name, snake-cased. */
+function skinArt(s, art) {
+  const tint = /^#[0-9a-f]{6}$/i.test(String(s.tint)) ? s.tint : "#ffffff";
   const icon = "assets/icons/" + String(s.covers || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") + ".png";
-  const art = document.createElement("div");
-  art.className = "art";
   art.style.setProperty("--tint", tint);
   const img = document.createElement("img");
   img.alt = "";
@@ -1872,45 +1904,130 @@ function skinCard(s) {
   layer.className = "tint";
   layer.style.setProperty("--icon", `url("${icon}")`);
   img.addEventListener("error", () => { img.remove(); layer.remove(); });
-  const sw = document.createElement("span");
-  sw.className = "sw";
-  art.append(img, layer, sw);
+  art.append(img, layer);
+}
+
+const CART = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h2l1.6 8h7.4l1.5-5.5H4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="6.5" cy="13" r="1.2" fill="currentColor"/><circle cx="11.5" cy="13" r="1.2" fill="currentColor"/></svg>';
+
+function skinCard(s) {
+  const el = document.createElement("a");
+  el.className = "card skin";
+  el.href = STORE_PAGE();
+  el.target = "_blank";
+  el.rel = "noopener";
+  el.dataset.catalog = String(s.catalog_id);
+  const art = document.createElement("div");
+  art.className = "art";
+  skinArt(s, art);
+  const n = owned.get(String(s.catalog_id)) || 0;
+  if (n) {
+    const tag = document.createElement("span");
+    tag.className = "owned";
+    tag.textContent = n > 1 ? `OWNED x${n}` : "OWNED";
+    art.append(tag);
+  }
   const txt = document.createElement("div");
   txt.className = "txt";
   const h = document.createElement("h3");
   h.textContent = String(s.name || "Skin");
-  const p = document.createElement("p");
-  p.textContent = s.covers ? `for the ${s.covers}` : "";
-  const price = document.createElement("div");
-  price.className = "price" + (s.on_sale ? "" : " soon");
-  price.textContent = s.on_sale && s.price_text ? String(s.price_text) : "Coming soon";
-  txt.append(h, p, price);
+  const fits = document.createElement("span");
+  fits.className = "fits";
+  fits.textContent = String(s.covers || "");
+  const price = document.createElement("span");
+  const onSale = Boolean(s.on_sale && s.price_text);
+  price.className = "price" + (onSale ? "" : " soon");
+  if (onSale) price.innerHTML = CART;
+  price.append(onSale ? String(s.price_text) : "Coming soon");
+  txt.append(h, fits, price);
   el.append(art, txt);
   return el;
 }
 
 async function fillOwned() {
-  const line = $("store-owned");
-  for (const b of document.querySelectorAll(".skin .owned")) b.remove();
-  if (!address) { line.textContent = "Sign in to see which skins you own."; return; }
-  if (!onOrigin) { line.textContent = "Open the item store to see yours."; return; }
-  line.textContent = "Reading your wallet…";
+  owned = new Map();
+  ownedState = !address ? "away" : !onOrigin ? "elsewhere" : "reading";
+  paintOwned();
+  if (ownedState !== "reading") return;
   const addr = address;
-  const r = await getJSON("/api/items/of/" + encodeURIComponent(addr) + "?limit=200", 20000);
+  const r = await getJSON("/api/items/of/" + encodeURIComponent(addr) + "?limit=200&title=gates", 20000);
   if (addr !== address) return;
-  if (!r || r.reachable === false) { line.textContent = "Couldn’t read your wallet just now."; return; }
-  const mine = new Set((Array.isArray(r.items) ? r.items : []).map((i) => String(i && i.catalog_id)));
-  let n = 0;
-  for (const el of document.querySelectorAll(".skin")) {
-    if (!mine.has(el.dataset.catalog)) continue;
-    n += 1;
-    const tag = document.createElement("span");
-    tag.className = "owned";
-    tag.textContent = "OWNED";
-    el.querySelector(".art").append(tag);
+  if (!r || r.reachable === false) { ownedState = "failed"; paintOwned(); return; }
+  /* Counted into a map of its own and swapped in whole: two reads can be
+     out at once (the pane opening and the wallet arriving), and both
+     counting into the shared one doubled every skin. */
+  const got = new Map();
+  for (const i of (Array.isArray(r.items) ? r.items : [])) {
+    if (!i || i.catalog_id == null) continue;
+    const k = String(i.catalog_id);
+    got.set(k, (got.get(k) || 0) + 1);
   }
-  line.textContent = n ? `You own ${n} skin${n === 1 ? "" : "s"} for Gates.` : "You don’t own any Gates skins yet.";
+  owned = got;
+  ownedState = "read";
+  paintOwned();
 }
+
+function paintOwned() {
+  const held = [...owned.values()].reduce((a, b) => a + b, 0);
+  $("store-owned").textContent =
+    ownedState === "away" ? "Sign in to see which skins you own."
+    : ownedState === "elsewhere" ? "Open the item store to see yours."
+    : ownedState === "reading" ? "Reading your wallet…"
+    : ownedState === "failed" ? "Couldn’t read your wallet just now."
+    : held ? `You own ${held} skin${held === 1 ? "" : "s"} for Gates.` : "You don’t own any Gates skins yet.";
+  renderStore();
+  renderInventory();
+}
+
+function renderInventory() {
+  const known = new Map((storeSkins || []).map((s) => [String(s.catalog_id), s]));
+  const held = [...owned.values()].reduce((a, b) => a + b, 0);
+  $("inv-skins").textContent = String(held);
+  $("inv-items").textContent = String(new Set([...owned.keys()].map((k) => known.get(k)).filter(Boolean).map((s) => s.covers)).size);
+  $("inv-store").textContent = String((storeSkins || []).length);
+  $("inv-line").textContent =
+    ownedState === "away" ? "Not signed in: sign in with your wallet, top right."
+    : ownedState === "elsewhere" ? "Your skins are on Elo Pros."
+    : ownedState === "reading" ? "Reading your wallet…"
+    : ownedState === "failed" ? "Couldn’t read your wallet just now."
+    : `Wallet ${address}`;
+  const box = $("inv-tiles");
+  const none = $("inv-empty");
+  const tiles = ownedState === "read" ? [...owned.entries()].map(([k, n]) => invTile(k, n, known.get(k))) : [];
+  box.replaceChildren(...tiles);
+  none.hidden = tiles.length > 0;
+  none.textContent =
+    ownedState === "away" ? "Sign in with your wallet and the skins it owns show up here."
+    : ownedState === "elsewhere" ? "Your inventory lives on Elo Pros."
+    : ownedState === "reading" ? "Reading your wallet…"
+    : ownedState === "failed" ? "Couldn’t read your wallet. Refresh inventory tries again."
+    : "You don’t own any Gates skins yet. They’re in the Item store.";
+}
+
+function invTile(catalog, n, s) {
+  const el = document.createElement("div");
+  el.className = "tile";
+  const art = document.createElement("div");
+  art.className = "art";
+  if (s) skinArt(s, art);
+  else {
+    const id = document.createElement("span");
+    id.className = "id";
+    id.textContent = "#" + catalog;
+    art.append(id);
+  }
+  if (n > 1) {
+    const x = document.createElement("span");
+    x.className = "x";
+    x.textContent = "x" + n;
+    art.append(x);
+  }
+  const nm = document.createElement("span");
+  nm.className = "nm";
+  nm.textContent = s ? String(s.name || "Skin") : "Skin #" + catalog;
+  el.append(art, nm);
+  return el;
+}
+$("inv-refresh").addEventListener("click", () => fillStore());
 
 /* ── friends ───────────────────────────────────────────────────────────────
    The Elo Pros friends list (`meter/friends.py`, `docs/client/FRIENDS.md` in

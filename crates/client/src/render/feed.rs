@@ -358,6 +358,13 @@ pub struct Feed {
     /// first snapshot, which reads as the boot phase — mid-morning — and
     /// is exactly what a loading world should look like.
     pub server_tick_est: f64,
+    /// `ClientCore::pending_pieces_gen`, copied each drain for the same
+    /// reason: `structures::structures_changed` is a RUN CONDITION, and a
+    /// condition that took the non-send `Net` was run on a worker thread and
+    /// aborted the client on every join (2026-10-21). Zero with no session,
+    /// which is what the structure ring starts at, so no session never
+    /// reads as a change.
+    pub pending_pieces_gen: u32,
     /// The world's sky/clock record (`client_core` `env`, weather v0),
     /// copied beside the tick for the same reason: every reader of the hour
     /// or the weather takes it as a `Res<Feed>`.
@@ -606,6 +613,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
+    feed.pending_pieces_gen = core.pending_pieces_gen();
     feed.env = core.env;
 
     while let Some(h) = core.pop_hit() {
