@@ -546,11 +546,17 @@ pub enum Cue {
     WolfDeath,
     BoarDeath,
     StagDeath,
+    /// A piece upgraded to stone: a block seating, at the piece. Until this
+    /// it played [`Cue::ImpactStone`], a pick on rock. Appended, the enum's
+    /// append-order rule, like the one after it.
+    PlaceStone,
+    /// A piece upgraded to sheet metal: two blows as a sheet goes on.
+    PlaceMetal,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 146;
+pub const CUE_COUNT: usize = 148;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -705,6 +711,8 @@ impl Cue {
         Cue::WolfDeath,
         Cue::BoarDeath,
         Cue::StagDeath,
+        Cue::PlaceStone,
+        Cue::PlaceMetal,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -865,7 +873,9 @@ impl Cue {
             | Cue::StagHurt
             | Cue::WolfDeath
             | Cue::BoarDeath
-            | Cue::StagDeath => 0.07,
+            | Cue::StagDeath
+            | Cue::PlaceStone
+            | Cue::PlaceMetal => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -1359,6 +1369,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 56.0, 0.70, 300, 5, true),   // wolf death
     row(GAME, 56.0, 0.70, 300, 5, true),   // boar death
     row(GAME, 56.0, 0.70, 300, 5, true),   // stag death
+    // The upgrades: the place row's reach and rank, the block and the sheet
+    // a little louder than a plank.
+    row(GAME, 32.0, 0.65,  30, 4, true),   // upgraded to stone
+    row(GAME, 32.0, 0.65,  30, 4, true),   // upgraded to metal
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).

@@ -637,6 +637,8 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::WolfHurt | Cue::WolfDeath => render_take(Cue::Growl, take),
         Cue::BoarHurt | Cue::BoarDeath => render_take(Cue::Snort, take),
         Cue::StagHurt | Cue::StagDeath => render_take(Cue::Bellow, take),
+        Cue::PlaceStone => render_take(Cue::ImpactStone, take),
+        Cue::PlaceMetal => render_take(Cue::ImpactMetal, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

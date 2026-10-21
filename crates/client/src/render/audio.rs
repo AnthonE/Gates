@@ -2215,8 +2215,8 @@ pub fn place(
             })
             .flatten();
         let cue = match material {
-            Some(sim_core::build::MAT_STONE) => Cue::ImpactStone,
-            Some(sim_core::build::MAT_METAL) => Cue::ImpactMetal,
+            Some(sim_core::build::MAT_STONE) => Cue::PlaceStone,
+            Some(sim_core::build::MAT_METAL) => Cue::PlaceMetal,
             _ => Cue::Place,
         };
         sound.play(Request::at(cue, [p.x, p.y, p.z]));

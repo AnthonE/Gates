@@ -17,15 +17,18 @@ file that fails to decode, and `crates/client/tests/sound.rs`
 
 ## `kenney/` — Kenney
 
-### *Impact Sounds* 1.0, verbatim
+### *Impact Sounds* 1.0
 
 <https://kenney.nl/assets/impact-sounds> (2019-12-19). Sounds by Kenney
-(www.kenney.nl). Five takes each, `_000`–`_004`.
+(www.kenney.nl). Five takes each, `_000`–`_004`. Re-encoded mono at peak
+0.85 (2026-10-21), as were `ore_glint`, `ui_hover`, `item_move` and
+`map_pin` below: the originals decode past full scale (to 1.27; `item_move`
+to 1.66) and the bank's 16-bit decode (`client::sound_bank`) clipped every
+transient. Otherwise as shipped.
 
 | Files | Cue | Heard as |
 |---|---|---|
 | `impactMining` | `ImpactStone` | a blow on stone or ground |
-| `impactMetal_heavy` | `ImpactMetal` | a blow on metal |
 | `impactPlank_medium` | `Place` | a piece going down |
 | `impactSoft_medium` | `BulletSoil` | a round into soil, sand or grass |
 | `impactGeneric_light` | `BulletStone` | a round on stone |
@@ -169,6 +172,8 @@ recordings the take is the two layered.
 | `door_metal_open_0`–`2`, `door_metal_close_0`–`2` | `DoorMetalOpen`, `DoorMetalClose` | USC Gold Tape 31, *G31-09 Light Metal Door* (<https://archive.org/details/GOLD_TAPE_31_Doors>, CC0): open, the latch and the leaf to its stop at 6.90, 13.02, 19.15 s, 1.25 s each; close, the slam at 4.47, 10.60, 16.72 s, 0.70 s each; from 10 ms before, HP 80 Hz, faded over the last 0.25 s (cut 2026-10-21) |
 | `garage_open_0`, `garage_close_0` | `GarageOpen`, `GarageClose` | USC Red Library, *R18-37 Sliding Metal Door Closes* (<https://archive.org/details/Red_Library_Doors>, CC0): the roll alone 0.10–1.95 s for open, the roll and the landing 0.10–2.70 s for close; HP 80 Hz, faded over the last 0.25 s (cut 2026-10-21) |
 | `repair_0`–`3` | `Repair` | USC Red Library, *R12-47 Hit or Hammer Wood* (<https://archive.org/details/Red_Library_Foley_Props_1>, CC0): the blows at 1.84, 4.055, 6.355, 8.93 s, 0.45 s each from 4 ms before, HP 60 Hz, faded over the last 0.15 s (cut 2026-10-21) |
+| `impact_metal_0`–`4`, `place_metal_0`–`2` | `ImpactMetal`, `PlaceMetal` | USC Sunset Editorial, *Metal barrel being hit with wooden hammer* (<https://archive.org/details/SSE_Library_METAL>, CC0): blows at 0.15, 4.14, 6.83, 9.54, 23.78 s, 0.45 s each from 4 ms before, HP 60 Hz, faded over the last 40%; the upgrade lays two a beat apart (0.24 s), the second at 0.7: 1.42 + 2.69, 5.45 + 8.21, 12.19 + 13.47 s (cut 2026-10-21). Replaces Kenney's `impactMetal_heavy`, which decoded past full scale and clipped |
+| `place_stone_0`–`3` | `PlaceStone` | USC Sunset Editorial, *Heavy stone falling onto stone* (<https://archive.org/details/SSE_Library_ROCKS>, CC0): the four falls at 0.21, 2.64, 4.54, 6.66 s, 0.65 s each, HP 50 Hz, faded over the last 40% (cut 2026-10-21) |
 | `wolf_hurt_0`–`3`, `wolf_death_0`–`1` | `WolfHurt`, `WolfDeath` | USC Red Library, *R01-13 Dog Whimpering* (<https://archive.org/details/Red_Library_Animals_Dogs>, CC0): hurt, single yelps at 1.04, 5.58, 10.11, 3.21 s (to 0.12 s past each), HP 120 Hz; death, a run of four whimpers 1.03–2.85 / 5.57–7.40 s, each weaker than the last (to −9 dB), faded over 0.35 s (cut 2026-10-21) |
 | `boar_hurt_0`–`2`, `boar_death_0`–`1` | `BoarHurt`, `BoarDeath` | USC Red Library, *R01-56 Pig Snorts and Squeals* and *R01-69 Long Pig Squeals* (<https://archive.org/details/Red_Library_Animals_Farm>, CC0): hurt, squeals 0.95–1.50 / 3.09–3.65 s and 1.22–1.70 s; death, the long squeal 2.25–3.95 s (R01-69) and 0.95–2.30 s (R01-56), faded over 0.40 s; HP 120 Hz |
 | `stag_hurt_0`–`2`, `stag_death_0`–`1` | `StagHurt`, `StagDeath` | USC Red Library, *R01-36 Goats Bleating* (same collection, CC0), slowed to a deer's register (a deer's distress call is a bleat): hurt, a bleat's first 0.56 s at 2.20, 11.20, 17.87 s, at 0.78×; death, whole bleats 22.59–23.85 / 8.64–9.84 s at 0.72×, faded over 0.40 s; HP 120 Hz |

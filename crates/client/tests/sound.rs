@@ -1059,6 +1059,46 @@ fn every_take_in_the_bank_is_a_sound() {
     );
 }
 
+/// No recording decodes past full scale. The bank decodes to 16 bits and
+/// normalizes after, so a file whose Vorbis overshoots 1.0 arrives with its
+/// transients flattened: Kenney's impact packs shipped that way, every one
+/// clipped, and the bank's own checks only ever saw the normalized result.
+#[test]
+fn no_recording_clips_on_decode() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("assets/sound") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "ogg") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/sound"),
+        &mut files,
+    );
+    assert!(files.len() > 100, "found {} recordings", files.len());
+    for f in files {
+        let bytes = std::fs::read(&f).expect("read");
+        let mut r =
+            lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(bytes)).expect("an ogg");
+        let mut run = 0;
+        while let Some(pkt) = r.read_dec_packet_itl().expect("decode") {
+            for v in pkt {
+                run = if v >= i16::MAX - 1 || v <= i16::MIN + 1 {
+                    run + 1
+                } else {
+                    0
+                };
+                assert!(run < 3, "{} clips on decode", f.display());
+            }
+        }
+    }
+}
+
 /// A cue with takes never plays the same one twice running, and plays all
 /// of them.
 #[test]
