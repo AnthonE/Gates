@@ -83,6 +83,38 @@ pub const ARC_TEXT_BYTES: usize = 280;
 pub const ARC_SPEAKER: u8 = 0;
 pub const ARC_INSCRIPTION: u8 = 1;
 pub const ARC_MECH: u8 = 2;
+/// What asking a gift topic came to (`SUB_ARC_TEXT`, wire v130): none for
+/// a plain answer, else one of `content::bake::Gift`'s outcomes.
+pub const ARC_GIFT_NONE: u8 = 0;
+pub const ARC_GIFT_GUEST: u8 = 1;
+pub const ARC_GIFT_OWNED: u8 = 2;
+pub const ARC_GIFT_GIVEN: u8 = 3;
+pub const ARC_GIFT_SHORT: u8 = 4;
+pub const ARC_GIFT_WAITING: u8 = 5;
+
+/// A gift topic (`content/arc.toml` `gift`, wire v130): the skins asking
+/// it hands over, by catalog id, and what it costs, `count` 0 being free.
+/// A plain topic is the default, `gift: false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TopicOffer {
+    pub gift: bool,
+    pub n: u8,
+    pub catalogs: [u16; sim_core::lore::MAX_GIFT_ROWS],
+    /// The price's item row and count.
+    pub item: u16,
+    pub count: u16,
+}
+
+impl TopicOffer {
+    pub fn catalogs(&self) -> &[u16] {
+        &self.catalogs[..(self.n as usize).min(sim_core::lore::MAX_GIFT_ROWS)]
+    }
+
+    /// Asking takes a price from the pack.
+    pub fn priced(&self) -> bool {
+        self.gift && self.count > 0
+    }
+}
 /// Longest unlock name on the wire.
 pub const UNLOCK_NAME_BYTES: usize = 16;
 
@@ -2145,8 +2177,8 @@ pub enum EventMsg {
     /// Your arc verb was refused (`sim_core::works::REFUSE_A_*`).
     ArcRefused { code: u8, op: u8, target: u8 },
     /// Arc object `index` of `total` of `kind` (`ARC_SPEAKER`…, wire v96):
-    /// where it stands, its name, a speaker's topic titles, a mechanism's
-    /// dials and notches.
+    /// where it stands, its name, a speaker's topic titles and which of
+    /// them are gifts (v130), a mechanism's dials and notches.
     ArcPlace {
         kind: u8,
         index: u8,
@@ -2157,14 +2189,17 @@ pub enum EventMsg {
         n_topics: u8,
         topics: [[u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
         topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+        offers: [TopicOffer; sim_core::lore::MAX_TOPICS],
         dials: u8,
         values: u8,
     },
-    /// What speaker `index` said on `topic`, or inscription `index`'s text.
+    /// What speaker `index` said on `topic`, or inscription `index`'s text,
+    /// and what asking a gift topic came to (`ARC_GIFT_*`, v130).
     ArcText {
         kind: u8,
         index: u8,
         topic: u8,
+        gift: u8,
         text: [u8; ARC_TEXT_BYTES],
         len: u16,
     },
@@ -4339,7 +4374,9 @@ pub fn encode_event_arc_refused(
 }
 
 /// Arc object `index` of `total` of `kind`: where it stands and what it is
-/// called; `topics` for a speaker, `(dials, values)` for a mechanism.
+/// called; `topics` for a speaker, with `offers` saying which are gifts (a
+/// topic past the end of `offers` is plain), `(dials, values)` for a
+/// mechanism.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_event_arc_place(
     kind: u8,
@@ -4348,6 +4385,7 @@ pub fn encode_event_arc_place(
     spot: &sim_core::spot::Spot,
     name: &[u8],
     topics: &[&[u8]],
+    offers: &[TopicOffer],
     dials: u8,
     values: u8,
     buf: &mut [u8],
@@ -4359,6 +4397,10 @@ pub fn encode_event_arc_place(
         || name.len() > ARC_NAME_BYTES
         || topics.len() > sim_core::lore::MAX_TOPICS
         || topics.iter().any(|t| t.len() > ARC_NAME_BYTES)
+        || offers.len() > topics.len()
+        || offers.iter().any(|o| {
+            o.n as usize > sim_core::lore::MAX_GIFT_ROWS || (!o.gift && *o != TopicOffer::default())
+        })
         || dials as usize > sim_core::limits::MAX_DIALS
         || values > sim_core::mech::MAX_VALUES
     {
@@ -4380,10 +4422,22 @@ pub fn encode_event_arc_place(
     match kind {
         ARC_SPEAKER => {
             w.write(topics.len() as u32, 3)?;
-            for t in topics {
+            for (i, t) in topics.iter().enumerate() {
                 w.write(t.len() as u32, 5)?;
                 for &b in *t {
                     w.write(b as u32, 8)?;
+                }
+                let o = offers.get(i).copied().unwrap_or_default();
+                w.write(o.gift as u32, 1)?;
+                if o.gift {
+                    w.write(o.n as u32, 3)?;
+                    for &c in o.catalogs() {
+                        w.write(c as u32, 16)?;
+                    }
+                    w.write(o.count as u32, 16)?;
+                    if o.count > 0 {
+                        w.write(o.item as u32, 16)?;
+                    }
                 }
             }
         }
@@ -4396,21 +4450,29 @@ pub fn encode_event_arc_place(
     Ok(w.finish())
 }
 
-/// What a speaker said, or what a stone holds — to the one who asked.
+/// What a speaker said, or what a stone holds — to the one who asked; and
+/// what asking a gift topic came to (`ARC_GIFT_*`).
 pub fn encode_event_arc_text(
     kind: u8,
     index: u8,
     topic: u8,
+    gift: u8,
     text: &[u8],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if kind > ARC_MECH || index >= 32 || topic >= 8 || text.len() > ARC_TEXT_BYTES {
+    if kind > ARC_MECH
+        || index >= 32
+        || topic >= 8
+        || gift > ARC_GIFT_WAITING
+        || text.len() > ARC_TEXT_BYTES
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_ARC_TEXT)?;
     w.write(kind as u32, 2)?;
     w.write(index as u32, 5)?;
     w.write(topic as u32, 3)?;
+    w.write(gift as u32, 3)?;
     w.write(text.len() as u32, 9)?;
     for &b in text {
         w.write(b as u32, 8)?;
@@ -6964,6 +7026,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut topics = [[0u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS];
             let mut topic_lens = [0u8; sim_core::lore::MAX_TOPICS];
+            let mut offers = [TopicOffer::default(); sim_core::lore::MAX_TOPICS];
             let (mut n_topics, mut dials, mut values) = (0u8, 0u8, 0u8);
             match kind {
                 ARC_SPEAKER => {
@@ -6971,9 +7034,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     if n_topics as usize > sim_core::lore::MAX_TOPICS {
                         return Err(WireError::Malformed);
                     }
-                    for (t, len) in topics
+                    for ((t, len), o) in topics
                         .iter_mut()
                         .zip(topic_lens.iter_mut())
+                        .zip(offers.iter_mut())
                         .take(n_topics as usize)
                     {
                         let l = r.read(5)? as usize;
@@ -6984,6 +7048,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                             *b = r.read(8)? as u8;
                         }
                         *len = l as u8;
+                        if r.read(1)? == 1 {
+                            o.gift = true;
+                            o.n = r.read(3)? as u8;
+                            if o.n as usize > sim_core::lore::MAX_GIFT_ROWS {
+                                return Err(WireError::Malformed);
+                            }
+                            for c in o.catalogs.iter_mut().take(o.n as usize) {
+                                *c = r.read(16)? as u16;
+                            }
+                            o.count = r.read(16)? as u16;
+                            if o.count > 0 {
+                                o.item = r.read(16)? as u16;
+                            }
+                        }
                     }
                 }
                 ARC_MECH => {
@@ -7007,6 +7085,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 n_topics,
                 topics,
                 topic_lens,
+                offers,
                 dials,
                 values,
             }
@@ -7015,8 +7094,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let kind = r.read(2)? as u8;
             let index = r.read(5)? as u8;
             let topic = r.read(3)? as u8;
+            let gift = r.read(3)? as u8;
             let len = r.read(9)? as usize;
-            if kind > ARC_MECH || len > ARC_TEXT_BYTES {
+            if kind > ARC_MECH || gift > ARC_GIFT_WAITING || len > ARC_TEXT_BYTES {
                 return Err(WireError::Malformed);
             }
             let mut text = [0u8; ARC_TEXT_BYTES];
@@ -7027,6 +7107,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 kind,
                 index,
                 topic,
+                gift,
                 text,
                 len: len as u16,
             }
@@ -8148,6 +8229,74 @@ mod tests {
             Err(WireError::Malformed),
             "a class past the ledger was installed from the wire"
         );
+    }
+
+    /// The widest speaker — every name full and every topic a priced gift
+    /// of the most rows — fits one message, and a plain topic stays plain.
+    #[test]
+    fn a_speaker_of_priced_gifts_fits_one_message() {
+        use sim_core::lore::{MAX_GIFT_ROWS, MAX_TOPICS};
+        let name = [b'N'; ARC_NAME_BYTES];
+        let title = [b'T'; ARC_NAME_BYTES];
+        let topics = [&title[..]; MAX_TOPICS];
+        let mut offers = [TopicOffer {
+            gift: true,
+            n: MAX_GIFT_ROWS as u8,
+            catalogs: [u16::MAX; MAX_GIFT_ROWS],
+            item: u16::MAX,
+            count: u16::MAX,
+        }; MAX_TOPICS];
+        offers[0] = TopicOffer::default();
+        let spot = sim_core::spot::Spot {
+            site: sim_core::spot::SITE_MAX,
+            nth: u8::MAX,
+            x_cm: i16::MIN,
+            y_cm: i16::MAX,
+            z_cm: -1,
+        };
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_arc_place(
+            ARC_SPEAKER,
+            31,
+            32,
+            &spot,
+            &name,
+            &topics,
+            &offers,
+            0,
+            0,
+            &mut buf,
+        )
+        .unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ArcPlace {
+                n_topics,
+                offers: o,
+                ..
+            } => {
+                assert_eq!(n_topics as usize, MAX_TOPICS);
+                assert_eq!(o, offers);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // A plain topic carrying a price is not a thing the wire can say.
+        let bad = [TopicOffer {
+            count: 5,
+            ..TopicOffer::default()
+        }];
+        assert!(encode_event_arc_place(
+            ARC_SPEAKER,
+            0,
+            1,
+            &spot,
+            &name,
+            &topics[..1],
+            &bad,
+            0,
+            0,
+            &mut buf
+        )
+        .is_err());
     }
 
     /// The skin drip's worst case — every row priced (the widest coin
@@ -9997,6 +10146,10 @@ mod wire_domains {
         Module {
             file: "brain.rs",
             src: include_str!("../../sim-core/src/brain.rs"),
+        },
+        Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
         },
         Module {
             file: "nav.rs",

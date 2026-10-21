@@ -583,6 +583,8 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     // standing with the grip on the +Y axis, so no `stand_grip.py` pass. The
     // metal tools and the spear carry the stone rows' poses; everything small
     // is palmed upright. The deployables are the world's own models again.
+    // The metal hatchet's edge is to −X like the stone one's: built to +X, it
+    // was carried with the blade facing back at the player.
     HeldModelDef::hafted(
         "metal_hatchet",
         "models/held/metal_hatchet.glb",
@@ -672,8 +674,8 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     HeldModelDef::deploy("wooden_door", "models/deploy/door.glb", 2.186, 0.50, 0.08),
     HeldModelDef::deploy(
         "metal_door",
-        "models/deploy/door_locked.glb",
-        2.186,
+        "models/deploy/door_metal.glb",
+        2.200,
         0.50,
         0.08,
     ),
@@ -713,8 +715,8 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     HeldModelDef::kit("electric_fuse", 0.160, 0.50, 1.00),
     HeldModelDef::kit("medical_syringe", 0.279, 0.45, 1.00),
     HeldModelDef::kit("pistol_round", 0.078, 0.50, 1.00),
-    HeldModelDef::kit("key_lock", 0.136, 0.35, 1.00),
-    HeldModelDef::kit("code_lock", 0.170, 0.40, 1.00),
+    HeldModelDef::upright("key_lock", "models/held/key_lock.glb", 0.160, 0.35, 1.00),
+    HeldModelDef::upright("code_lock", "models/held/code_lock.glb", 0.180, 0.40, 1.00),
     HeldModelDef::upright("waterskin", "models/held/waterskin.glb", 0.310, 0.45, 0.90),
     HeldModelDef::upright(
         "full_waterskin",

@@ -147,13 +147,14 @@ fn main() {
     let len = protocol::encode_action_arc(op, target, arg, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[142], &buf[..len]);
     // Speakers, stones and locks (v96).
-    let (kind, index, total, spot, name, topics) = goldens::event_arc_place();
-    let len =
-        protocol::encode_event_arc_place(kind, index, total, &spot, name, &topics, 0, 0, &mut buf)
-            .unwrap();
+    let (kind, index, total, spot, name, topics, offers) = goldens::event_arc_place();
+    let len = protocol::encode_event_arc_place(
+        kind, index, total, &spot, name, &topics, &offers, 0, 0, &mut buf,
+    )
+    .unwrap();
     write_fixture(goldens::FIXTURES[143], &buf[..len]);
-    let (kind, index, topic, text) = goldens::event_arc_text();
-    let len = protocol::encode_event_arc_text(kind, index, topic, text, &mut buf).unwrap();
+    let (kind, index, topic, gift, text) = goldens::event_arc_text();
+    let len = protocol::encode_event_arc_text(kind, index, topic, gift, text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[144], &buf[..len]);
     let (mech, dials, resting) = goldens::event_arc_dials();
     let len = protocol::encode_event_arc_dials(mech, &dials, resting, &mut buf).unwrap();
