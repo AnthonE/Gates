@@ -8227,6 +8227,10 @@ impl World {
         // (`mob::hurt_slot`) — at most one per player from `hitscan` and one
         // per arrow from `step`, reused between the two like `kills`.
         let mut mob_hits = [ranged::MobShot::default(); MAX_ARROWS];
+        // The dials' drums an arrow can turn (`mech::shot`), and the ones it
+        // did, turned after the pass.
+        let drums = crate::mech::Drums::stand(&self.mech_def, seed, &self.haven);
+        let mut drum_hits = [crate::mech::DrumShot::default(); MAX_ARROWS];
         // A firearm resolves here rather than in the loop above, for the
         // arrow's two reasons — final positions, and no dependence on the
         // shooter's slot index — and it goes **first** because it is the
@@ -8242,6 +8246,9 @@ impl World {
             mc: &self.mob,
             hits: &mut mob_hits,
             n: 0,
+            drums: &drums,
+            struck: &mut drum_hits,
+            nd: 0,
         };
         let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
@@ -8292,6 +8299,9 @@ impl World {
             mc: &self.mob,
             hits: &mut mob_hits,
             n: 0,
+            drums: &drums,
+            struck: &mut drum_hits,
+            nd: 0,
         };
         let (n_kills, n_chips) = ranged::step_hunting(
             seed,
@@ -8314,8 +8324,21 @@ impl World {
             &mut chips,
             &mut quarry,
         );
-        let n_mob = quarry.n;
+        let (n_mob, n_drum) = (quarry.n, quarry.nd);
         self.land_mob_shots(&mob_hits[..n_mob]);
+        for s in drum_hits.iter().take(n_drum) {
+            let archer = self.live_slot_of(s.by);
+            crate::mech::shot(
+                &self.mech_def,
+                &mut self.arc,
+                seed,
+                self.tick,
+                &self.gather,
+                *s,
+                archer.map(|j| &mut self.players[j]),
+                &mut self.events,
+            );
+        }
         for c in chips.iter().take(n_chips) {
             self.chip(c, &mut removals);
         }
