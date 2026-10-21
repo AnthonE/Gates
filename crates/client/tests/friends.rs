@@ -385,3 +385,74 @@ fn the_add_box_holds_a_wallet_and_no_more() {
     b.clear();
     assert!(b.is_empty() && !b.backspace());
 }
+
+/// The profile card offers the one friends button that fits where the
+/// wallet stands, and none on your own card, your agent's, or signed out.
+#[test]
+fn the_profile_card_offers_the_button_that_fits() {
+    use client::profile::{acts, rel, Rel};
+    let me = Address::from_hex(b"0x00000000000000000000000000000000000000aa").unwrap();
+    let them = Address::from_hex(b"0x00000000000000000000000000000000000000bb").unwrap();
+    let w = "0x00000000000000000000000000000000000000bb".to_string();
+    let row = || friends::Friend {
+        wallet: w.clone(),
+        ..Default::default()
+    };
+    let ask = || friends::Ask {
+        wallet: w.clone(),
+        ..Default::default()
+    };
+    let mut v = friends::View::default();
+    assert_eq!(rel(None, Some(&v), &them), Rel::SignedOut);
+    assert_eq!(rel(Some(me), None, &them), Rel::Unknown);
+    assert_eq!(rel(Some(me), Some(&v), &me), Rel::Me);
+    assert_eq!(rel(Some(me), Some(&v), &them), Rel::Stranger);
+    v.asks_out.push(ask());
+    assert_eq!(rel(Some(me), Some(&v), &them), Rel::AskedThem);
+    v.asks_in.push(ask());
+    assert_eq!(
+        rel(Some(me), Some(&v), &them),
+        Rel::AskedYou,
+        "their ask wins"
+    );
+    v.buddies.push(row());
+    assert_eq!(rel(Some(me), Some(&v), &them), Rel::Buddy);
+    v.friends.push(row());
+    assert_eq!(rel(Some(me), Some(&v), &them), Rel::Friend);
+
+    let ops = |r| acts(r).iter().map(|(_, op)| *op).collect::<Vec<_>>();
+    assert_eq!(ops(Rel::Stranger), [Op::Ask]);
+    assert_eq!(ops(Rel::AskedYou), [Op::Accept, Op::Decline]);
+    assert_eq!(ops(Rel::AskedThem), [Op::Cancel]);
+    assert_eq!(ops(Rel::Friend), [Op::Remove]);
+    for r in [Rel::SignedOut, Rel::Me, Rel::Buddy, Rel::Unknown] {
+        assert!(acts(r).is_empty(), "{r:?}");
+    }
+}
+
+/// Hours on the card count Gates only, and a profile page link names the
+/// wallet the way the platform's page reads it.
+#[test]
+fn the_profile_card_counts_gates_hours() {
+    use client::profile::{hours_line, page_url, parse_face, parse_playtime};
+    let p = parse_playtime(
+        br#"{"online":false,"last_online":100,"games":[
+            {"game":"gates","seconds":1123200},{"game":"farm","seconds":90000}]}"#,
+    )
+    .unwrap();
+    assert_eq!(hours_line(&p).as_deref(), Some("312 h in Gates"));
+    let p = parse_playtime(br#"{"games":[{"game":"gates","seconds":30}]}"#).unwrap();
+    assert_eq!(hours_line(&p).as_deref(), Some("1 min in Gates"));
+    assert_eq!(hours_line(&parse_playtime(b"{}").unwrap()), None);
+    let f = parse_face(br#"{"name":"  Doctor Wood ","pic":"0a1b2c3d","kind":"agent"}"#).unwrap();
+    assert_eq!(f.name.as_deref(), Some("Doctor Wood"));
+    assert_eq!(f.pic_rev(), Some(0x0a1b_2c3d));
+    assert!(f.agent());
+    assert_eq!(
+        page_url(
+            "https://elopros.com/",
+            "0xABCDEF0000000000000000000000000000000000"
+        ),
+        "https://elopros.com/profile.html?who=0xabcdef0000000000000000000000000000000000"
+    );
+}

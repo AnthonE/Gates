@@ -93,7 +93,7 @@ pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
     encode_event_work, encode_event_work_def, encode_event_work_state, ARC_INSCRIPTION, ARC_MECH,
-    ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
+    ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, NO_BOOST, UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
@@ -1262,7 +1262,10 @@ pub use voice::{
 /// a craft may be refused `REFUSE_CR_OWNED`.
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
-pub const PROTO_VER: u16 = 129;
+/// v130 — names you can click: a standings row carries its wallet (a bit,
+/// then 20 bytes when set), and a work's definition what its ceiling does
+/// while it burns (a bit, then the knob in 3 bits and its per cent in 11).
+pub const PROTO_VER: u16 = 130;
 
 /// This game's slug in the elo catalog.
 ///

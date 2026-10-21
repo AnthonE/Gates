@@ -54,6 +54,7 @@ pub mod hearth;
 pub mod inv;
 pub mod kit;
 pub mod lore;
+pub mod profile;
 pub mod ring;
 pub mod shop;
 pub mod team;
@@ -107,6 +108,9 @@ pub enum Panel {
     BigWheel,
     /// One of THE GATE's slot machines (`E` at one, `casino.rs`).
     Slots,
+    /// A player's profile card (`profile.rs`): a click on a name in the
+    /// standings or the chat. Escape goes back to where the click was.
+    Profile,
 }
 
 impl Panel {
@@ -135,7 +139,8 @@ impl Panel {
             | Panel::Team
             | Panel::Shop
             | Panel::BigWheel
-            | Panel::Slots => Page::Other,
+            | Panel::Slots
+            | Panel::Profile => Page::Other,
         }
     }
 
@@ -230,6 +235,13 @@ pub struct Ui {
     pub read: u8,
     /// The island page's tab: 0 the works, 1 the journal.
     pub island_tab: u8,
+    /// The panel Escape goes back to from a profile card: the island, when
+    /// the card was opened from its standings.
+    pub profile_back: Panel,
+    /// The card was opened from the chat composer, which had already let the
+    /// pointer go: take it back when the last panel shuts, as closing chat
+    /// does (`profile::relock`).
+    pub profile_relock: bool,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -336,6 +348,9 @@ pub(crate) struct Seen {
     pub shop_gen: u32,
     /// `ClientCore::casino_gen` at the last redraw.
     pub casino_gen: u32,
+    /// The profile card's and the friends list's generations at the last
+    /// redraw: a read landing, or a friends op answering.
+    pub profile_gen: (u64, u64),
     /// The latched hearth stock ack — address, live rows, rows — so the
     /// hearth's column redraws when a feed, a take or the decay moves it.
     pub stock: StockSeen,
@@ -371,6 +386,8 @@ impl Default for Ui {
             talk: 0,
             read: 0,
             island_tab: 0,
+            profile_back: Panel::None,
+            profile_relock: false,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -871,7 +888,17 @@ pub fn register(app: &mut App) {
                 tech::clicks,
                 tech::scroll,
                 (vendor::clicks, shop::clicks, shop::follow, casino::clicks).chain(),
-                (arc::clicks, team::clicks),
+                (
+                    arc::clicks,
+                    team::clicks,
+                    (
+                        profile::opens,
+                        profile::chat_opens,
+                        profile::clicks,
+                        profile::relock,
+                    )
+                        .chain(),
+                ),
                 arc::tabs,
                 lore::clicks,
                 wheel::track,
@@ -1160,6 +1187,10 @@ pub fn keys(
         // a second one shuts the page.
         if ui.search_focus {
             ui.search_focus = false;
+        } else if ui.panel == Panel::Profile {
+            ui.panel = ui.profile_back;
+            ui.profile_back = Panel::None;
+            ui.status.clear();
         } else {
             ui.panel = Panel::None;
             ui.drag = None;
@@ -1217,6 +1248,7 @@ pub fn keys(
             | Panel::Shop
             | Panel::BigWheel
             | Panel::Slots
+            | Panel::Profile
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1394,10 +1426,15 @@ pub fn rebuild(
     near: Res<super::verbs::Near>,
     portrait: Option<Res<super::portrait::Portrait>>,
     hearth: Option<Res<super::verbs::HearthView>>,
+    (card, friends): (
+        Option<Res<super::profile::Profile>>,
+        Option<Res<super::friends::Friends>>,
+    ),
 ) {
     let core = &net.session.core;
 
     detect_changes(&mut ui, core, near.0);
+    profile::watch(&mut ui, card.as_deref(), friends.as_deref());
     if hearth.as_ref().is_some_and(|h| h.is_changed()) && ui.panel != Panel::None {
         ui.dirty = true;
     }
@@ -1451,8 +1488,21 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             vendor::build_screen(&mut commands, &ui, core, icons)
         }
-        Panel::Work => arc::build_work(&mut commands, &ui, core),
-        Panel::Island => arc::build_island(&mut commands, &ui, core),
+        Panel::Work => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            arc::build_work(&mut commands, &ui, core, icons)
+        }
+        Panel::Profile => profile::build(
+            &mut commands,
+            &ui,
+            core,
+            card.as_deref(),
+            friends.as_deref(),
+        ),
+        Panel::Island => {
+            arc::build_island(&mut commands, &ui, core, friends.as_deref().map(|f| &f.set))
+        }
         Panel::Talk => lore::build_talk(&mut commands, &ui, core),
         Panel::Read => lore::build_read(&mut commands, &ui, core),
         Panel::Team => team::build_team(&mut commands, &ui, core),

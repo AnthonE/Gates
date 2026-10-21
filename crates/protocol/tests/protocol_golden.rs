@@ -2359,12 +2359,19 @@ fn golden_event(fixture: &[u8], name: &str) {
                     floor_len,
                     ceiling_name,
                     ceiling_len,
+                    boost_knob,
+                    boost_pct,
                 } => {
                     assert_eq!((total, index), (2, 1), "{name:?}: index");
                     assert_eq!(def, wc.defs[1], "work def: decode mismatch");
                     assert_eq!(&n[..name_len as usize], name);
                     assert_eq!(&floor_name[..floor_len as usize], floor);
                     assert_eq!(&ceiling_name[..ceiling_len as usize], ceiling);
+                    assert_eq!(
+                        (boost_knob, boost_pct),
+                        (sim_core::works::KNOB_SMELT_PCT, 200),
+                        "work def: its ceiling's boost"
+                    );
                 }
                 other => panic!("work def: decoded {other:?}"),
             }

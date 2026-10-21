@@ -106,6 +106,8 @@ pub mod faces;
 pub mod friends;
 /// Painted skins (wire v110): fetched by hash, drawn on their canvas.
 pub mod paint;
+/// A player's profile card, read when a name is clicked.
+pub mod profile;
 pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
@@ -2208,6 +2210,7 @@ impl Plugin for GatesRenderPlugin {
             voice::register(app);
             faces::register(app);
             friends::register(app);
+            profile::register(app);
             paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------
