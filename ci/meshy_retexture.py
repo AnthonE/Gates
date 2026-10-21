@@ -29,9 +29,15 @@ with the prompt, task id and credits for `assets/models/MANIFEST.md`. Then:
 
 The key is `$MESHY_API_KEY` (any value where a proxy injects it).
 
+`--regraft <base.glb> <skin.glb>…` carries a base model's later fix into
+skins grafted from it (the metal hatchet turned 180°, 2026-10-21): their
+triangles and UVs must still be the base's, and only positions and normals
+are copied, so the paint lands where it did.
+
 Usage:
   ci/meshy_retexture.py <base.glb> <slug> --style "..." --out DIR
                         [--glow S [--veins HUE]] [--resume TASK_ID]
+  ci/meshy_retexture.py --regraft <base.glb> <skin.glb>...
 """
 import argparse
 import base64
@@ -167,7 +173,38 @@ def png(img):
     return b.getvalue()
 
 
+def regraft(base_path, skin_path):
+    """Copy `base_path`'s positions and normals into `skin_path`, in place."""
+    gb, bb = read_glb(base_path)
+    gs, bs = read_glb(skin_path)
+    bs = bytearray(bs)
+    pb, ps = gb["meshes"][0]["primitives"][0], gs["meshes"][0]["primitives"][0]
+    for k in ("TEXCOORD_0", "indices"):
+        ib = pb["indices"] if k == "indices" else pb["attributes"][k]
+        iskin = ps["indices"] if k == "indices" else ps["attributes"][k]
+        if not np.array_equal(accessor(gb, bb, ib), accessor(gs, bs, iskin)):
+            sys.exit(f"{skin_path}: its {k} is not {base_path}'s — retexture it instead")
+    for k in ("POSITION", "NORMAL"):
+        src = accessor(gb, bb, pb["attributes"][k]).astype("<f4")
+        a = gs["accessors"][ps["attributes"][k]]
+        bv = gs["bufferViews"][a["bufferView"]]
+        if bv.get("byteStride", 12) != 12 or a.get("componentType") != 5126 or a["count"] != len(src):
+            sys.exit(f"{skin_path}: {k} is not a packed float3 of {len(src)}")
+        st = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
+        bs[st:st + src.nbytes] = src.tobytes()
+        if "min" in a:
+            a["min"], a["max"] = src.min(0).tolist(), src.max(0).tolist()
+    open(skin_path, "wb").write(glb_bytes(gs, bs))
+    print(f"  {skin_path}: positions and normals from {base_path}")
+
+
 def main():
+    if sys.argv[1:2] == ["--regraft"]:
+        if len(sys.argv) < 4:
+            sys.exit(__doc__)
+        for skin in sys.argv[3:]:
+            regraft(sys.argv[2], skin)
+        return
     ap = argparse.ArgumentParser()
     ap.add_argument("base")
     ap.add_argument("slug")
