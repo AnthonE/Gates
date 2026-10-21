@@ -124,3 +124,67 @@ fn surfacing_gives_the_breath_back() {
     assert!(!mouth_under(feet(&w)), "let go, the body comes up");
     assert_eq!(w.players[0].under, 0, "and breathes again");
 }
+
+/// A standable point on the sea's shore with no lake inside the drink's
+/// reach, so a dip there is salt.
+fn seashore() -> (f32, f32) {
+    let r = sim_core::survival::DRINK_REACH_M;
+    let mut x = 8.0f32;
+    while x < ISLAND_SIZE {
+        let mut z = 8.0f32;
+        while z < ISLAND_SIZE {
+            let h = terrain::height(SEED, x, z);
+            if (SEA_LEVEL + 0.2..terrain::BEACH_MAX_H).contains(&h) {
+                let taps = [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)]
+                    .map(|(dx, dz)| terrain::height_open(SEED, x + dx, z + dz));
+                let wet = |t: &(f32, f32)| t.0 < SEA_LEVEL;
+                if taps.iter().any(wet) && taps.iter().filter(|t| wet(t)).all(|t| t.1 >= 0.5) {
+                    return (x, z);
+                }
+            }
+            z += 4.0;
+        }
+        x += 4.0;
+    }
+    panic!("seed {SEED} has no sea shore");
+}
+
+#[test]
+fn a_vessel_fills_with_the_sea_and_pours_out_on_a_fire() {
+    use sim_core::survival::Vessel;
+    let (empty, fresh, salt) = (3u16, 4u16, 5u16);
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.survival.vessels[0] = Vessel { empty, fresh, salt };
+    w.survival.vessel_count = 1;
+    w.tick(&[Command::Join { id: 1 }]);
+    let (x, z) = seashore();
+    w.players[0].body = Body::at(w.seed, &w.haven, x, z);
+    w.players[0].inv[0] = sim_core::gather::ItemStack {
+        item: empty,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Drink { id: 1 }]);
+    assert_eq!(
+        w.players[0].inv[0].item, salt,
+        "dipped in the sea, it holds salt"
+    );
+
+    // A fire at the feet, inside the splash of a pour.
+    let b = w.players[0].body;
+    w.fires.light(sim_core::fire::FireRec {
+        qx: b.qx,
+        qy: b.qy,
+        qz: b.qz,
+        until: w.tick + 600,
+        owner: 0,
+        item: 0,
+        range_cm: 0,
+    });
+    hold(&mut w, sim_core::input::BTN_AIM, 1);
+    assert!(w.fires.is_empty(), "the pour put the fire out");
+    assert_eq!(w.players[0].inv[0].item, empty, "and left the vessel empty");
+}

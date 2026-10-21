@@ -1271,7 +1271,10 @@ pub use voice::{
 /// v131 — the water pass: bodies swim and float (`movement::swimming`), so
 /// both ends must step the same water; the death cause admits 13
 /// (`DEATH_BY_DROWN`); and `SUB_EXPOSURE` carries the breath left and
-/// whether the water is costing hp, after the Verdigris' pair.
+/// whether the water is costing hp, after the Verdigris' pair. And
+/// `MAX_ITEM_DEFS` 255: the catalog's total rides 8 bits
+/// (`CATALOG_TOTAL_BITS`), and an item past `HELD_NONE` is sent as an
+/// empty hand (`held_code`).
 pub const PROTO_VER: u16 = 131;
 
 /// This game's slug in the elo catalog.
@@ -1378,13 +1381,27 @@ pub const VEL_BIAS: i32 = 8192;
 
 /// Width of the held-item field on an entity record (v56).
 ///
-/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` is 64,
-/// so the ids alone fill a six-bit field exactly and "empty hand" needs a
-/// value the ids cannot take. Derived-adjacent rather than typed — the
-/// gate `held_bits_hold_every_item_the_sim_can_define` fails if
-/// `MAX_ITEM_DEFS` ever grows past what this width can carry alongside
-/// [`HELD_NONE`], which is the shape a `KIND_BITS` widening took at v27.
+/// Seven bits because six do not fit the sentinel: the ids below it were
+/// every item until the water pass (v131) took the table past 127.
+///
+/// **Not widened then, and the snapshot is why**: the worst-case snapshot
+/// (`goldens::snapshot_cap`, 64 absolute records) is 1,099 bytes of the
+/// 1,100 a datagram may carry, and an eighth bit is eight bytes more. So an
+/// item past [`HELD_NONE`] is drawn in another body's hand as an empty one
+/// ([`held_code`]). Items are indexed by sorted id, so what falls past it is
+/// the end of the alphabet: today the three workbenches, which nobody holds
+/// for long.
 pub const HELD_BITS: u32 = 7;
+
+/// The held field's code for `held`: the item, or [`HELD_NONE`] for an empty
+/// hand and for an item past what the field can name (see [`HELD_BITS`]).
+#[inline]
+pub fn held_code(held: Option<u16>) -> u16 {
+    match held {
+        Some(v) if v < HELD_NONE => v,
+        _ => HELD_NONE,
+    }
+}
 
 /// The wire's "empty hand" — the all-ones code point in [`HELD_BITS`],
 /// deliberately the far end of the field from id 0 so a truncated or
@@ -4588,8 +4605,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     /// `check_ranges` has already refused an id this field cannot hold,
     /// so the `unwrap_or` below is the sentinel and never a truncation.
     fn write_hand(&mut self, e: &EntityState) -> Result<(), WireError> {
-        self.w
-            .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
+        self.w.write(held_code(e.held) as u32, HELD_BITS)?;
         self.w.write_bit(e.lit)?;
         self.w.write_bit(e.held_skin != 0)?;
         if e.held_skin != 0 {
@@ -4876,10 +4892,10 @@ fn read_held_skin(r: &mut BitReader) -> Result<u16, WireError> {
 
 /// The held-item field, with the band the sim cannot mean refused.
 ///
-/// `MAX_ITEM_DEFS..HELD_NONE` is 63 unreachable code points and a decoder
-/// that accepted them would hand the renderer an id no catalog row
-/// answers — a silent empty hand at best, and at worst a lookup that
-/// depends on which crate's bounds check runs first.
+/// Every code below `HELD_NONE` is an id the sim can mean since
+/// `MAX_ITEM_DEFS` passed it (v131); the check stays for the day the table
+/// is cut back under the field again, when `MAX_ITEM_DEFS..HELD_NONE` would
+/// be ids no catalog row answers.
 fn read_held(r: &mut BitReader) -> Result<Option<u16>, WireError> {
     let v = r.read(HELD_BITS)? as u16;
     if v == HELD_NONE {
@@ -5124,15 +5140,20 @@ mod tests {
     /// into another item.
     #[test]
     fn held_bits_hold_every_item_the_sim_can_define() {
-        assert!(
-            MAX_ITEM_DEFS <= HELD_NONE as usize,
-            "MAX_ITEM_DEFS is {MAX_ITEM_DEFS}, which does not fit \
-             {HELD_BITS} bits beside the {HELD_NONE} sentinel"
+        // The field names every id below the sentinel and saturates past
+        // it (`held_code`): an item past the field is an empty hand, never
+        // another item truncated into the field.
+        assert_eq!(held_code(Some(HELD_NONE - 1)), HELD_NONE - 1);
+        assert_eq!(held_code(Some(HELD_NONE)), HELD_NONE);
+        assert_eq!(
+            held_code(Some((MAX_ITEM_DEFS - 1) as u16)),
+            if MAX_ITEM_DEFS - 1 < HELD_NONE as usize {
+                (MAX_ITEM_DEFS - 1) as u16
+            } else {
+                HELD_NONE
+            }
         );
-        // And the sentinel is genuinely out of the sim's reach, not just
-        // at its edge: an id equal to `HELD_NONE` would decode as an
-        // empty hand.
-        assert!(HELD_NONE as usize >= MAX_ITEM_DEFS);
+        assert_eq!(held_code(None), HELD_NONE);
     }
 
     /// **An unfilled record is empty-handed**, which is the whole reason
@@ -5286,17 +5307,16 @@ mod tests {
             };
             read_held(&mut BitReader::new(&buf[..n]))
         };
-        // Every unreachable code point.
-        for v in MAX_ITEM_DEFS as u16..HELD_NONE {
+        // Every unreachable code point — none since the table outgrew the
+        // field (v131), when every code under the sentinel is an id.
+        let top = (MAX_ITEM_DEFS as u16).min(HELD_NONE);
+        for v in top..HELD_NONE {
             assert_eq!(read(v), Err(WireError::Range), "id {v} was accepted");
         }
         // Both ends of the legal range are taken, so the bound is exact
         // and not conservative in either direction.
         assert_eq!(read(0), Ok(Some(0)));
-        assert_eq!(
-            read(MAX_ITEM_DEFS as u16 - 1),
-            Ok(Some(MAX_ITEM_DEFS as u16 - 1))
-        );
+        assert_eq!(read(top - 1), Ok(Some(top - 1)));
         // And the sentinel is an empty hand rather than an id.
         assert_eq!(read(HELD_NONE), Ok(None));
     }

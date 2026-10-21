@@ -1,7 +1,9 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 125 kB — fixed-capacity by design (wall 4), and
-# (124 kB until an unlock flag put a byte on every skin row;
+# `World` is 144 kB — fixed-capacity by design (wall 4), and
+# (125 kB until the water pass doubled `MAX_ITEM_DEFS` to 255 and every
+# per-item table with it;
+# 124 kB until an unlock flag put a byte on every skin row;
 # 114 kB until guns v1 put sixteen magazines and a gun's cone on each
 # player and a rocket's landing ring on the arrows;
 # 113 kB until a rug's comfort put a furnish row per item on the exposure

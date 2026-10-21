@@ -362,10 +362,11 @@ const _: () = assert!(
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
 /// Item definitions the sim preallocates for (the alpha set is ~48 rows,
-/// CONTENT.md §2). The content bake refuses a set past this. 127 is the
-/// most the wire's 7-bit held field can name beside its empty-hand code
-/// (`protocol::HELD_NONE`); past it, that field widens.
-pub const MAX_ITEM_DEFS: usize = 127;
+/// CONTENT.md §2). The content bake refuses a set past this. 255 since the
+/// water pass (v131), whose vessels were the 128th item; the wire's 7-bit
+/// held field still names only the first 127 and draws the rest as an
+/// empty hand (`protocol::HELD_BITS` says why it was not widened).
+pub const MAX_ITEM_DEFS: usize = 255;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///

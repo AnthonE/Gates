@@ -586,7 +586,13 @@ pub fn consume(
         return false;
     }
     let Some(def) = sc.row(stack.item) else {
-        events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_NOT_FOOD, 0);
+        // A vessel of sea water is not drunk: it is boiled first.
+        let why = if sc.vessel_full(stack.item).is_some_and(|(_, salt)| salt) {
+            REFUSE_C_SALT
+        } else {
+            REFUSE_C_NOT_FOOD
+        };
+        events.push(EV_CONSUME_REFUSED, p.id, why, 0);
         return false;
     };
     // Refuse a consume that could not do anything: a full pair and no heal

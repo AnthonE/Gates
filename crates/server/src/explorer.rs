@@ -332,9 +332,41 @@ pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Bat"];
 pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Bat"];
 
 const _: () = assert!(
-    MAX_ITEM_DEFS <= 128,
-    "FoodBook and yield sets are u128 masks"
+    MAX_ITEM_DEFS <= ItemMask::BITS,
+    "FoodBook and yield sets are ItemMask sets"
 );
+
+/// A set of item indices: the food book's verdicts and a kind's yields.
+/// Two words since the water pass took the item table past 128.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemMask([u128; 2]);
+
+impl ItemMask {
+    pub const BITS: usize = 256;
+
+    pub fn has(&self, item: u16) -> bool {
+        let i = usize::from(item);
+        i < Self::BITS && self.0[i / 128] & (1 << (i % 128)) != 0
+    }
+
+    pub fn set(&mut self, item: u16) {
+        let i = usize::from(item);
+        if i < Self::BITS {
+            self.0[i / 128] |= 1 << (i % 128);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == [0, 0]
+    }
+
+    /// The set holding `item` alone.
+    pub fn of(item: u16) -> Self {
+        let mut m = Self::default();
+        m.set(item);
+        m
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -475,29 +507,21 @@ impl Kind {
 /// verdicts, the way a player learns by pressing eat. No food table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoodBook {
-    pub not_food: u128,
-    pub feeds: u128,
-    pub waters: u128,
-    pub tried: u128,
+    pub not_food: ItemMask,
+    pub feeds: ItemMask,
+    pub waters: ItemMask,
+    pub tried: ItemMask,
 }
 
 impl FoodBook {
-    fn bit(item: u16) -> u128 {
-        if (item as usize) < 128 {
-            1 << item
-        } else {
-            0
-        }
-    }
-
     /// Worth trying to eat: known to feed, or never tried and not refused.
     pub fn may_feed(&self, item: u16) -> bool {
-        let b = Self::bit(item);
-        b != 0 && (self.feeds & b != 0 || (self.tried & b == 0 && self.not_food & b == 0))
+        usize::from(item) < ItemMask::BITS
+            && (self.feeds.has(item) || (!self.tried.has(item) && !self.not_food.has(item)))
     }
 
     pub fn waters_known(&self, item: u16) -> bool {
-        self.waters & Self::bit(item) != 0
+        self.waters.has(item)
     }
 }
 
@@ -568,7 +592,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [u128; KINDS],
+    pub yields: [ItemMask; KINDS],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
     /// A bag failed to go down near here a moment ago (`Home::bag_held`).
@@ -1707,7 +1731,21 @@ impl Survivor {
             .combat
             .strides
             .ahead_of(body.map_or([0.0; 3], |b| pressed_eye(b, intent.buttons)));
-        let f = self.hands.drive(&intent, &self.tracks, eye, base);
+        let mut f = self.hands.drive(&intent, &self.tracks, eye, base);
+        // In the water (the water pass) an agent swims at the surface and
+        // never dives: a look down at what it walks toward would steer it
+        // under, and nothing here counts its breath. Under anyway — knocked
+        // off a ledge, say — it comes up.
+        if let Some(b) = body {
+            let feet = b.qy as f32 * sim_core::movement::POS_Y_Q;
+            if sim_core::movement::swimming_at(feet) {
+                f.pitch = f.pitch.max(crate::agent::intent::LEVEL_PITCH);
+                f.buttons &= !sim_core::input::BTN_CROUCH;
+                if sim_core::movement::mouth_under(feet) {
+                    f.buttons |= sim_core::input::BTN_JUMP;
+                }
+            }
+        }
         self.combat.strides.sent(&f);
         core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
         self.sel = f.sel;
@@ -4632,7 +4670,7 @@ impl Survivor {
                 }
                 // A full pack drops what is made at the crafter's feet, and
                 // the inputs are spent either way.
-                if !room_for(core, FoodBook::bit(item))
+                if !room_for(core, ItemMask::of(item))
                     && !craft_fits(core, recipe, batch(core, recipe))
                 {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
@@ -5603,7 +5641,7 @@ impl Survivor {
                 tick,
             ));
             self.verdict = None;
-            self.memory.food.tried |= FoodBook::bit(item);
+            self.memory.food.tried.set(item);
         }
     }
 
@@ -7264,7 +7302,7 @@ impl Survivor {
             if let Some(a) = self.goal.as_mut() {
                 a.gained = a.gained.saturating_add(u32::from(added));
                 if let Some(kind) = Kind::of_goal(a.goal) {
-                    self.memory.yields[kind as usize] |= FoodBook::bit(item);
+                    self.memory.yields[kind as usize].set(item);
                 }
             }
             if self.target.is_some() {
@@ -7590,9 +7628,8 @@ impl Survivor {
             self.stats.refusals += 1;
             match self.awaiting {
                 Some((Pending::Consume { item, .. }, _)) => {
-                    let bit = FoodBook::bit(item);
                     if u32::from(reason) == REFUSE_C_NOT_FOOD {
-                        self.memory.food.not_food |= bit;
+                        self.memory.food.not_food.set(item);
                         self.verdict = Some(Verdict::Refused);
                     } else if u32::from(reason) == REFUSE_C_FULL {
                         self.verdict = Some(Verdict::Full);
@@ -7610,7 +7647,9 @@ impl Survivor {
                 _ => {}
             }
         }
-        if flags & APPLIED_DRANK != 0 {
+        // A vessel filled or poured rides the drink's flag too; only a
+        // mouthful is a drink.
+        if flags & APPLIED_DRANK != 0 && core.last_vessel.is_none() {
             self.stats.drinks += 1;
             if matches!(self.awaiting, Some((Pending::Drink, _))) {
                 self.verdict = Some(Verdict::Ok);
@@ -7618,17 +7657,16 @@ impl Survivor {
         }
         if flags & APPLIED_VITALS != 0 {
             if let Some((item, food, water)) = self.learning.take() {
-                let bit = FoodBook::bit(item);
                 if core.food > food {
-                    self.memory.food.feeds |= bit;
+                    self.memory.food.feeds.set(item);
                 }
                 if core.water > water {
-                    self.memory.food.waters |= bit;
+                    self.memory.food.waters.set(item);
                 }
                 if core.food <= food && core.water <= water {
                     // Consumed but restored neither meter: a bandage, say.
                     // Not food for this purpose, whatever else it does.
-                    self.memory.food.not_food |= bit;
+                    self.memory.food.not_food.set(item);
                 }
             }
         }
@@ -8000,11 +8038,10 @@ fn out_of_town(core: &ClientCore, body: &EntityState) -> Option<Intent> {
 
 /// Room for a node's yield: an empty slot, or a stack of something this
 /// kind has been seen to pay that is not yet at its ceiling.
-fn room_for(core: &ClientCore, yields: u128) -> bool {
+fn room_for(core: &ClientCore, yields: ItemMask) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
-            || (yields & FoodBook::bit(s.item) != 0
-                && s.count < core.catalog.row(s.item as usize).stack_max)
+            || (yields.has(s.item) && s.count < core.catalog.row(s.item as usize).stack_max)
     })
 }
 
@@ -8085,7 +8122,7 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
             _ => Some(i),
         })
     };
-    best(&mut slots().filter(|&i| book.feeds & FoodBook::bit(core.inv[i].item) != 0))
+    best(&mut slots().filter(|&i| book.feeds.has(core.inv[i].item)))
         .or_else(|| best(&mut slots().filter(|&i| book.may_feed(core.inv[i].item))))
 }
 
@@ -8096,11 +8133,10 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
 fn taste_slot(core: &ClientCore, book: &FoodBook) -> Option<usize> {
     (0..INV_SLOTS).find(|&i| {
         let s = core.inv[i];
-        let b = FoodBook::bit(s.item);
         s.count > 0
-            && b != 0
-            && book.tried & b == 0
-            && book.not_food & b == 0
+            && usize::from(s.item) < ItemMask::BITS
+            && !book.tried.has(s.item)
+            && !book.not_food.has(s.item)
             && core.catalog.row(usize::from(s.item)).food > 0
     })
 }
@@ -8220,7 +8256,7 @@ pub fn observe(
                     || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
-                    || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
+                    || !(room_for(core, ItemMask::of(def.output)) || craft_fits(core, r as u16, 1))
                 {
                     continue;
                 }
@@ -9985,7 +10021,7 @@ mod tests {
         let n = protocol::event::encode_event_vitals(110, 250, 500, 250, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let book = bot.memory.food;
-        assert!(book.not_food & 1 << 6 != 0 && book.feeds & 1 << 7 != 0);
+        assert!(book.not_food.has(6) && book.feeds.has(7));
         assert!(!book.may_feed(6) && book.may_feed(7));
         assert!(!book.waters_known(7));
     }
@@ -10315,7 +10351,7 @@ mod tests {
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);
-        assert_ne!(bot.memory.yields[Kind::Wood as usize], 0);
+        assert!(!bot.memory.yields[Kind::Wood as usize].is_empty());
         let core = bot.core.as_mut().unwrap();
         core.inv.fill(ItemStack {
             item: 6,

@@ -57,6 +57,7 @@ every item either way, because the painted ones are derived works of it.
 | `empty_propane_tank.png` | `delapouite/fire-extinguisher` |
 | `fire_arrow.png` | `lorc/flaming-arrow` |
 | `full_waterskin.png` | `delapouite/water-flask` |
+| `salt_waterskin.png` | `delapouite/water-flask`, by `full_waterskin.png` (`ci/icons/water_vessels.py` salts it) |
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |
 | `gears.png` | `lorc/gears` |
@@ -158,6 +159,7 @@ more (`ci/bake_icons.py` fetches from GitHub).
 |---|---|
 | `abyss_rug.png` | `ci/icons/abyss_rug.py`, off Meshy's painting (commissioned, ours) |
 | `blue_keycard.png` | `ci/icons/keycards.py` (ours) |
+| `full_water_jug.png` | `ci/icons/water_vessels.py` (ours) |
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
 | `green_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `map_player.png` | `ci/icons/map_player.svg` (ours) |
@@ -183,3 +185,4 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | `shape_wall.png` | `ci/icons/shape_wall.svg` (ours) |
 | `shape_wall_frame.png` | `ci/icons/shape_wall_frame.svg` (ours) |
 | `shape_window.png` | `ci/icons/shape_window.svg` (ours) |
+| `water_jug.png` | `ci/icons/water_vessels.py` (ours) |
