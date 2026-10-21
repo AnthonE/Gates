@@ -362,6 +362,10 @@ pub struct Feed {
     /// copied beside the tick for the same reason: every reader of the hour
     /// or the weather takes it as a `Res<Feed>`.
     pub env: sim_core::weather::Env,
+    /// `ClientCore::pending_pieces_gen`, copied each drain for
+    /// `structures::structures_changed`: a run condition is evaluated off
+    /// the main thread, so it cannot take the non-send `Net` (#416).
+    pub pending_pieces_gen: u32,
 }
 
 impl Feed {
@@ -607,6 +611,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
     feed.env = core.env;
+    feed.pending_pieces_gen = core.pending_pieces_gen();
 
     while let Some(h) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(h.damage);

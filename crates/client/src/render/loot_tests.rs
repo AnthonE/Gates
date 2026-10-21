@@ -457,3 +457,18 @@ fn a_thrown_stack_flies_out_of_the_hand_and_lies_where_it_rests() {
     assert_eq!(toss_born(0xFF, 258.0), 255.0);
     assert_eq!(toss_born(5, 250.0), 261.0);
 }
+
+/// #416: Bevy evaluates run conditions on whichever thread ticks the
+/// executor, so a condition holding a non-send resource reads it off the main
+/// thread and aborts. `structures_changed` took `NonSend<Net>` once.
+#[test]
+fn structures_changed_is_send() {
+    let mut app = App::new();
+    let cond = IntoSystem::into_system(structures_changed);
+    let mut cond: Box<dyn System<In = (), Out = bool>> = Box::new(cond);
+    cond.initialize(app.world_mut());
+    assert!(
+        cond.is_send(),
+        "a run condition must not take a non-send resource"
+    );
+}

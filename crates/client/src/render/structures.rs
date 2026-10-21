@@ -2676,17 +2676,14 @@ pub const STRUCT_APPLIED2: u32 =
 /// the kit unbuilt and the mirrors already seeded by the join drip, and a
 /// condition that only watched the news would leave the base a player logged
 /// out inside undrawn until someone hit it.
-pub fn structures_changed(
-    ring: Res<StructRing>,
-    feed: Res<super::feed::Feed>,
-    net: Option<NonSend<Net>>,
-) -> bool {
-    // Optional: the loot suites drive their own reconcile off this
-    // condition with no session in the world, and a missing non-send
-    // resource panics a run condition outright.
+///
+/// No `NonSend<Net>` here: Bevy evaluates run conditions on whichever thread
+/// ticks the executor, and a non-send read off the main thread aborts the
+/// client (#416). The pieces generation comes through the drained `Feed`.
+pub fn structures_changed(ring: Res<StructRing>, feed: Res<super::feed::Feed>) -> bool {
     ring.kit.is_none()
         || ring.pending_loot
-        || net.is_some_and(|n| ring.pending_pieces_gen != n.session.core.pending_pieces_gen())
+        || ring.pending_pieces_gen != feed.pending_pieces_gen
         || feed.applied & client_core::core::APPLIED_CATALOG != 0
         || feed.applied & STRUCT_APPLIED != 0
         || feed.applied2 & STRUCT_APPLIED2 != 0
