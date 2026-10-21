@@ -771,7 +771,13 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         for c in ov.cook.iter() {
             o.u16(*c);
         }
-        o.u32(ov.water);
+        // Only a planter has a tank, and the decoder refuses water on
+        // anything else: a stray value must not make the save unbootable.
+        o.u32(if ov.arch == crate::deploy::ARCH_PLANTER {
+            ov.water
+        } else {
+            0
+        });
     }
     for l in w.deploys.locks() {
         o.u16(l.cx);

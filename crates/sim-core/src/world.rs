@@ -3268,8 +3268,11 @@ impl World {
                 at,
             )
         } else {
+            // A bed's planter, not whatever box took its address after a
+            // raid or decay: that plant is stale until self-heal uproots it.
             self.deploys
                 .box_index(rec.host)
+                .filter(|&b| self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER)
                 .is_some_and(|b| self.box_reachable(b, slot))
         }
     }

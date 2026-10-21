@@ -661,3 +661,118 @@ fn rain_fills_an_open_planter_and_not_a_roofed_one() {
     assert!(tank(&w, open) > 0, "a storm did not fill an open planter");
     assert_eq!(tank(&w, roofed), 0, "a storm filled a roofed planter");
 }
+
+/// **A plant whose planter is gone cannot be tended through the box that
+/// took its address.** A raid drops the planter, a box goes down in the same
+/// cell before self-heal visits the plant, and a water, pick or clear on the
+/// stale plant is refused: no water lands in the box (which the save decoder
+/// refuses, so the shard would not boot), and the save still loads.
+#[test]
+fn a_stale_plant_is_not_tended_through_a_box_at_its_address() {
+    use sim_core::deploy::{ARCH_BOX, REFUSE_D_REACH};
+    use sim_core::farm::{TEND_CLEAR, TEND_WATER};
+    const BOX_ITEM: u16 = 25;
+    const HAND: usize = 4;
+    let (mut w, cx, cz) = farm_world();
+    quick(&mut w);
+    let host = place_planter(&mut w, cx, cz, 0);
+    plant(&mut w, host, 0);
+    let id = w.farm.entries()[0].id;
+    // A box row after the planter's, in this world and the one it loads into.
+    let add_box = |w: &mut World| {
+        w.gather.stack_max[BOX_ITEM as usize] = 1;
+        w.gather.item_count = w.gather.item_count.max(BOX_ITEM + 1);
+        let row = w.deploy.def_count;
+        w.deploy.defs[row as usize] = DeployDef {
+            arch: ARCH_BOX,
+            placement: PLACE_ANY,
+            hp: 100,
+            matter: MATTER_WOOD,
+            item: BOX_ITEM,
+            n_costs: 0,
+            costs: [(0, 0); 4],
+        };
+        w.deploy.def_count += 1;
+        row
+    };
+    let box_row = add_box(&mut w);
+    // Ripe, so a pick would pay if it were let through.
+    load_skin(&mut w, host);
+    for _ in 0..2_000 {
+        if w.farm.entries()[0].stage == STAGE_RIPE {
+            break;
+        }
+        w.tick(&[]);
+    }
+    assert_eq!(w.farm.entries()[0].stage, STAGE_RIPE);
+    // Plant 0 is visited on ticks where tick % 15 == 0; start just past one.
+    while w.tick % OVEN_PERIOD_TICKS != 1 {
+        w.tick(&[]);
+    }
+
+    let di = (0..w.deploys.len())
+        .find(|&i| w.deploys.entries()[i].cx == cx && w.deploys.entries()[i].cz == cz)
+        .unwrap();
+    let mut ev = sim_core::world::EventQueue::default();
+    assert!(sim_core::deploy::damage_deploy(
+        &w.deploy,
+        &mut w.pieces,
+        &mut w.deploys,
+        di,
+        9_999,
+        &mut ev,
+    ));
+    w.players[0].inv[PLANTER_SLOT] = ItemStack {
+        item: BOX_ITEM,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = PLANTER_SLOT as u8;
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: box_row,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let bi = w.deploys.box_index(host).expect("the box took the address");
+    assert_eq!(w.deploys.oven_states()[bi].arch, ARCH_BOX);
+    assert_eq!(w.farm.len(), 1, "self-heal has not reached the plant yet");
+
+    w.players[0].inv[HAND] = ItemStack {
+        item: SKIN_FULL,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = HAND as u8;
+    for act in [TEND_WATER, TEND_PICK, TEND_CLEAR] {
+        w.tick(&[Command::Tend {
+            id: PLAYER,
+            plant: id,
+            act,
+        }]);
+        assert_eq!(refused(&w), Some(REFUSE_D_REACH), "act {act} let through");
+    }
+    assert_eq!(w.players[0].inv[HAND].item, SKIN_FULL, "the skin was spent");
+    assert!(!w.players[0]
+        .inv
+        .iter()
+        .any(|s| s.item == CORN && s.count > 0));
+    assert_eq!(w.deploys.oven_states()[bi].water, 0, "water in a box");
+
+    idle(&mut w, OVEN_PERIOD_TICKS);
+    assert!(
+        w.farm.is_empty(),
+        "self-heal did not uproot the stale plant"
+    );
+    w.tick(&[Command::Leave { id: PLAYER }]);
+    let mut buf = vec![0u8; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut buf).expect("encodes");
+    let (mut back, _, _) = farm_world();
+    add_box(&mut back);
+    back.load(&buf[..n]).expect("the save loads");
+}

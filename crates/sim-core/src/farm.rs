@@ -944,7 +944,13 @@ pub fn tend(
             if fc.skin_wu == 0 || hand.count == 0 || hand.item != fc.water_full {
                 return Err(REFUSE_D_PLANT_ITEM);
             }
-            let Some(h) = deploys.box_index(rec.host) else {
+            // Only a planter has a tank. A planter gone by the drop path
+            // leaves its plants until self-heal reaches them, and a box
+            // placed at the same address takes the same key meanwhile.
+            let Some(h) = deploys
+                .box_index(rec.host)
+                .filter(|&h| deploys.oven_states()[h].arch == ARCH_PLANTER)
+            else {
                 return Err(REFUSE_D_SPOT);
             };
             let (_, ovens) = deploys.oven_parts_mut();
