@@ -893,7 +893,8 @@ fn structure_hp_crosses_and_follows_hits_and_repairs() {
         hp: 200,
         ..DeployRec::default()
     };
-    let len = encode_event_piece_sync(true, &[wall], &mut buf).unwrap();
+    let len =
+        encode_event_piece_sync(true, &[(wall, sim_core::frame::Frame::ZERO)], &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     let len = encode_event_deploy_sync(true, &[door], &mut buf).unwrap();
     feed(&mut c, &buf[..len]);

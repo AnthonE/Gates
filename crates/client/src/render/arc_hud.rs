@@ -32,6 +32,7 @@ pub fn setup(mut commands: Commands) {
         .spawn((
             super::WorldEntity,
             ArcBanner,
+            super::hud::HudTop,
             Node {
                 position_type: PositionType::Absolute,
                 // Under the compass and the marker row under it.

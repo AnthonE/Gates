@@ -1590,6 +1590,10 @@ pub struct Player {
     /// memory. Not saved and not hashed: a restart forgets it, except on a
     /// body restored dead, whose corpse marks itself.
     pub death_at: Option<(i32, i32)>,
+    /// The casino seat this body sits in (`seat.rs`), one past its index in
+    /// `town::SEATS`; 0 standing. Hashed; not saved: a restart, a death, a
+    /// sleep or a wound stands everybody up.
+    pub seat: u8,
 }
 
 impl Player {
@@ -1697,6 +1701,7 @@ impl Default for Player {
             born: 0,
             died: 0,
             death_at: None,
+            seat: 0,
         }
     }
 }
@@ -2011,6 +2016,30 @@ pub enum Command {
         /// past half a wall either way.
         plate: i8,
     },
+    /// Place baked piece row `row` on standing building `bld`'s lattice, at
+    /// footprint `sock` on socket `level` (freeform W2, `build::place_at`):
+    /// what the grid cannot name — a triangle, anything in a building
+    /// turned off the grid — and what it can, by the same rules.
+    PlaceAt {
+        id: u32,
+        row: u16,
+        bld: u16,
+        level: u8,
+        sock: crate::sock::Sock,
+    },
+    /// Start a building with a foundation placed free (freeform W2,
+    /// `build::place_free`): its frame's origin on the foundation's first
+    /// corner at world (`x_cm`, `z_cm`), turned `yaw`; `tri` asks for the
+    /// triangle; `plate` is `Place`'s asked band over its ground.
+    PlaceFree {
+        id: u32,
+        row: u16,
+        x_cm: i32,
+        z_cm: i32,
+        yaw: u16,
+        tri: bool,
+        plate: i8,
+    },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic). `pose` is where in
     /// the cell a body deployable stands and which way it faces (free
@@ -2252,6 +2281,12 @@ pub enum Command {
         id: u32,
         machine: u8,
         mult: u8,
+    },
+    /// Sit in casino seat `seat`, or stand up for `seat::SEAT_NONE`
+    /// (`seat.rs`). The sim checks the reach and that the seat is free.
+    Sit {
+        id: u32,
+        seat: u8,
     },
     /// Swipe a keycard at one of the ziggurat's doors, or pull its inside
     /// lever (`monument.rs`). The sim checks reach and the card.
@@ -4262,7 +4297,10 @@ impl World {
         // that shot and the bench must stay whole. Nothing but a door ever
         // hangs on an edge, so an edge tie only ever finds a door — the
         // breach point the whole raid ladder is priced around.
-        let on_edge = c.hit.loc == build::LOC_EDGE_XLO || c.hit.loc == build::LOC_EDGE_ZLO;
+        // A doorway the grid cannot name is struck at its spelled id, which
+        // its door shares (freeform W4); no other piece's spelled id holds
+        // a deployable.
+        let on_edge = deploy::is_edge_loc(c.hit.loc);
         let deploy = c.deploy
             || (on_edge
                 && self
@@ -4302,6 +4340,7 @@ impl World {
         };
         let rec = self.pieces.entries()[i];
         let amount = crate::build::structure_price(
+            &self.pieces,
             &rec,
             self.build.pieces[rec.row as usize].shape,
             c.from_x,
@@ -5207,6 +5246,7 @@ impl World {
                     // Not even for a dead save: a wipe's survivor is one
                     // (`server::wipe::survivor`), and its body is nowhere.
                     death_at: None,
+                    seat: 0,
                 };
                 craft::rearm(
                     &self.craft,
@@ -6073,6 +6113,97 @@ impl World {
                     }
                 }
             }
+            Command::PlaceAt {
+                id,
+                row,
+                bld,
+                level,
+                sock,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    // `Place`'s rule: never through a deployable.
+                    let blocked = row < self.build.piece_count
+                        && build::lattice_site(&self.pieces, bld, level, sock).is_ok_and(|site| {
+                            deploy::site_crosses_deploys(
+                                &self.pieces,
+                                self.deploys.entries(),
+                                &self.deploy,
+                                self.build.pieces[row as usize].shape,
+                                &site,
+                            )
+                        });
+                    if blocked {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, build::REFUSE_B_SPOT, 0);
+                        return;
+                    }
+                    build::place_at(
+                        self.seed,
+                        &self.haven,
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        self.tick,
+                        row,
+                        bld,
+                        level,
+                        sock,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::PlaceFree {
+                id,
+                row,
+                x_cm,
+                z_cm,
+                yaw,
+                tri,
+                plate,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let blocked = row < self.build.piece_count
+                        && build::free_site(
+                            self.seed,
+                            &self.haven,
+                            &self.pieces,
+                            (x_cm, z_cm),
+                            yaw,
+                            tri,
+                            plate,
+                        )
+                        .is_ok_and(|site| {
+                            deploy::site_crosses_deploys(
+                                &self.pieces,
+                                self.deploys.entries(),
+                                &self.deploy,
+                                self.build.pieces[row as usize].shape,
+                                &site,
+                            )
+                        });
+                    if blocked {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, build::REFUSE_B_SPOT, 0);
+                        return;
+                    }
+                    build::place_free(
+                        self.seed,
+                        &self.haven,
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        self.tick,
+                        row,
+                        (x_cm, z_cm),
+                        yaw,
+                        tri,
+                        plate,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::PlaceDeploy {
                 id,
                 row,
@@ -6344,6 +6475,7 @@ impl World {
                         let owner = deploy::lock_op(
                             &self.deploy,
                             &self.gather,
+                            self.pieces.cols(),
                             &mut self.deploys,
                             &mut self.players[slot],
                             cx,
@@ -6483,6 +6615,12 @@ impl World {
                         mult,
                         &mut self.events,
                     );
+                }
+            }
+            Command::Sit { id, seat } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let town = self.haven.town;
+                    crate::seat::sit(&town, &mut self.players, slot, seat);
                 }
             }
             Command::Shop { id, key, act } => {
@@ -7447,6 +7585,13 @@ impl World {
             if !self.players[i].active {
                 continue;
             }
+            // Only a live, awake, standing-up body sits (`seat.rs`).
+            {
+                let p = &mut self.players[i];
+                if p.dead || p.sleeping || p.wounded {
+                    p.seat = 0;
+                }
+            }
             // A body on the death screen is still a body: it falls and it
             // settles, so a player killed off a roof lands on the ground
             // the screen's next respawn will not be measured from. What it
@@ -7661,6 +7806,7 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
+            crate::seat::stand_if_moved(&mut self.players[i], &falling);
             if self.fall(i, falling) {
                 continue;
             }
@@ -7956,7 +8102,7 @@ impl World {
         // noise is recorded off the charge while its address still exists.
         for c in self.charges.entries() {
             if c.fires_at <= tick {
-                let (x, z) = crate::charge::epicentre(&self.deploys, c);
+                let (x, z) = crate::charge::epicentre(&self.pieces, &self.deploys, c);
                 self.noises.push(crate::noise::Noise {
                     qx: crate::movement::quant_xz(x),
                     qz: crate::movement::quant_xz(z),
@@ -8466,16 +8612,19 @@ impl World {
         self.prick_deploys();
         {
             // A slot a base now stands over does not grow back through it.
-            let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
+            let (table, haven, pieces) = (&self.scatter, &self.haven, &self.pieces);
             let built_over = |cx: u16, cz: u16| {
                 let slot = crate::terrain::scatter(seed, table, haven, cx as i32, cz as i32);
                 let (bx, bz) = (
                     crate::build::build_cell_of(slot.x),
                     crate::build::build_cell_of(slot.z),
                 );
+                // The grid's pieces, and the ones it cannot name standing
+                // over the cell (a triangle, a turned base).
                 (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bx)
                     && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
-                    && cols.get(bx as u16, bz as u16).has_piece()
+                    && (pieces.cols().get(bx as u16, bz as u16).has_piece()
+                        || pieces.posed_in(bx as u16, bz as u16))
             };
             let wild_until = |cx: u16, cz: u16| crate::gather::wild_grown_at(seed, cx, cz);
             self.slot_lives
@@ -8829,6 +8978,7 @@ impl World {
             h.update(&p.assist_by.to_le_bytes());
             h.update(&p.assist_ticks.to_le_bytes());
             h.update(&wb);
+            h.update(&[p.seat]);
             for s in p.inv.iter() {
                 h.update(&stack_bytes(s));
             }
@@ -8920,6 +9070,32 @@ impl World {
             // whether a body is standing or falling.
             buf[12] = r.plate as u8;
             h.update(&buf);
+            // Where it stands on its building's lattice (freeform W3): the
+            // identity the support rules read, and the id its collision
+            // row is filed under.
+            let mut at = [0u8; 24];
+            at[0..4].copy_from_slice(&r.id.to_le_bytes());
+            at[4..6].copy_from_slice(&r.bld.to_le_bytes());
+            at[6] = r.sock.foot;
+            at[7] = r.sock.dir;
+            for (k, c) in [r.sock.at.a, r.sock.at.b, r.sock.at.c, r.sock.at.d]
+                .into_iter()
+                .enumerate()
+            {
+                at[8 + 4 * k..12 + 4 * k].copy_from_slice(&c.to_le_bytes());
+            }
+            h.update(&at);
+        }
+        // The buildings' frames, in row order, and the id counter: two
+        // shards that disagree about a frame disagree about where every
+        // piece in it stands.
+        h.update(&self.pieces.next_id().to_le_bytes());
+        for (b, f) in self.pieces.buildings().iter() {
+            h.update(&b.to_le_bytes());
+            h.update(&f.origin_cm.0.to_le_bytes());
+            h.update(&f.origin_cm.1.to_le_bytes());
+            h.update(&f.band.to_le_bytes());
+            h.update(&f.yaw.to_le_bytes());
         }
         // Arrows in the air, and deliberately on the **player** idiom
         // rather than every store's above: skip-if-inactive, with no length

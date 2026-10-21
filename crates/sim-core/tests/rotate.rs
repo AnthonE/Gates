@@ -51,13 +51,19 @@ fn rotation_replays_and_survives_restart_with_its_original_clocks() {
             a.pieces.cols().get(original.cx, original.cz),
             b.pieces.cols().get(original.cx, original.cz)
         );
+        // The same record turned: its grid name and its footprint moved
+        // together, and nothing else did.
+        let turned = stairs(&a);
         assert_eq!(
-            stairs(&a),
+            turned,
             PieceRec {
                 loc: STAIR_LOCS[turn + 1],
+                sock: turned.sock,
                 ..original
             }
         );
+        assert_ne!(turned.sock, original.sock);
+        assert_eq!(turned.sock.at, original.sock.at);
         assert_eq!(a.pieces.placed(), placed);
         assert_eq!(
             a.events

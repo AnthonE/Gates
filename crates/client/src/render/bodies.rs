@@ -303,7 +303,15 @@ pub fn stream(
         // A sleeper lies on its back; a corpse or a downed body is laid down
         // by `Death01` instead.
         let asleep = rs.sleeping && !rs.dead && !rs.wounded;
-        let (root, turn) = super::anim::root_pose(pos, facing, asleep);
+        // A sitter faces its seat (v130), whichever way its owner looks.
+        let seat_yaw = rs
+            .seated
+            .then(|| super::casino::seat_yaw(&core.haven().town, rs.x, rs.z))
+            .flatten();
+        let (root, turn) = match seat_yaw {
+            Some(yaw) => super::anim::sit_pose(pos, yaw),
+            None => super::anim::root_pose(pos, facing, asleep),
+        };
         match known {
             Some(entity) => {
                 if let Ok((_, mut t, mut anim)) = q.get_mut(entity) {
@@ -326,7 +334,8 @@ pub fn stream(
                     // killed player is drawn standing at idle.
                     anim.airborne = rs.airborne;
                     anim.crouched = rs.crouched;
-                    anim.facing = wire_yaw_to_radians(rs.yaw);
+                    anim.seated = seat_yaw.is_some();
+                    anim.facing = seat_yaw.unwrap_or(wire_yaw_to_radians(rs.yaw));
                     anim.hold = shoulders(&core.catalog, &rs);
                     anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
@@ -381,7 +390,8 @@ pub fn stream(
                 let mut anim = BodyAnim {
                     airborne: rs.airborne,
                     crouched: rs.crouched,
-                    facing: wire_yaw_to_radians(rs.yaw),
+                    seated: seat_yaw.is_some(),
+                    facing: seat_yaw.unwrap_or(wire_yaw_to_radians(rs.yaw)),
                     hold: shoulders(&core.catalog, &rs),
                     ..BodyAnim::default()
                 };

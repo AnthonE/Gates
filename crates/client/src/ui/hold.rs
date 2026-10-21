@@ -1005,41 +1005,86 @@ pub struct SkinModelDef {
     /// The [`HELD_MODELS`] row it covers.
     pub key: &'static str,
     pub path: &'static str,
+    /// Its emissive map burns (`ci/meshy_retexture.py --glow`): Rust's glow
+    /// skins. The one thing in a hand that may emit, and only where a skin
+    /// says so here (`tests/held_assets.rs`). Bloom, not light: nothing
+    /// around it is lit.
+    pub glow: bool,
 }
 
-/// Every skin that has its own model. Made by `ci/meshy_gen.py`
-/// (`assets/models/MANIFEST.md`, `held/skins/`).
-pub const SKIN_MODELS: [SkinModelDef; 6] = [
-    SkinModelDef {
-        catalog: 1,
-        key: "bat",
-        path: "models/held/skins/obsidian_bat.glb",
-    },
-    SkinModelDef {
-        catalog: 2,
-        key: "stone_hatchet",
-        path: "models/held/skins/ember_hatchet.glb",
-    },
-    SkinModelDef {
-        catalog: 3,
-        key: "stone_pickaxe",
-        path: "models/held/skins/frost_pickaxe.glb",
-    },
-    SkinModelDef {
-        catalog: 4,
-        key: "hunting_bow",
-        path: "models/held/skins/bone_bow.glb",
-    },
-    SkinModelDef {
-        catalog: 7,
-        key: "bat",
-        path: "models/held/skins/founder_bat.glb",
-    },
-    SkinModelDef {
-        catalog: 8,
-        key: "stone_hatchet",
-        path: "models/held/skins/founder_hatchet.glb",
-    },
+impl SkinModelDef {
+    const fn new(catalog: u16, key: &'static str, path: &'static str) -> Self {
+        Self {
+            catalog,
+            key,
+            path,
+            glow: false,
+        }
+    }
+
+    const fn glowing(self) -> Self {
+        Self { glow: true, ..self }
+    }
+
+    /// Its store and inventory picture under `assets/`: a render of the
+    /// model (`iconbake --skins`), named by catalog id, the one key the
+    /// browser shell's store has too (`client-web/web/app.js` `skinArt`).
+    pub fn icon(&self) -> String {
+        format!("icons/skins/{}.png", self.catalog)
+    }
+}
+
+/// Every skin that has its own model. Made by `ci/meshy_gen.py` (a new
+/// object) or `ci/meshy_retexture.py` (the row's own mesh repainted, Rust's
+/// way: held, aimed and fired exactly as the item is), then
+/// `assets/models/MANIFEST.md`, `held/skins/`.
+pub const SKIN_MODELS: [SkinModelDef; 19] = [
+    SkinModelDef::new(1, "bat", "models/held/skins/obsidian_bat.glb"),
+    SkinModelDef::new(2, "stone_hatchet", "models/held/skins/ember_hatchet.glb").glowing(),
+    SkinModelDef::new(3, "stone_pickaxe", "models/held/skins/frost_pickaxe.glb"),
+    SkinModelDef::new(4, "hunting_bow", "models/held/skins/bone_bow.glb"),
+    SkinModelDef::new(5, "revolver", "models/held/skins/gilded_revolver.glb"),
+    SkinModelDef::new(7, "bat", "models/held/skins/founder_bat.glb"),
+    SkinModelDef::new(8, "stone_hatchet", "models/held/skins/founder_hatchet.glb"),
+    // The Realm drop (`content/skins.toml`): Verdigris, Lapis, Tidewrack.
+    SkinModelDef::new(11, "assault_rifle", "models/held/skins/verdigris_rifle.glb").glowing(),
+    SkinModelDef::new(
+        12,
+        "python_revolver",
+        "models/held/skins/verdigris_python.glb",
+    )
+    .glowing(),
+    SkinModelDef::new(13, "longsword", "models/held/skins/verdigris_longsword.glb").glowing(),
+    SkinModelDef::new(
+        14,
+        "metal_hatchet",
+        "models/held/skins/verdigris_hatchet.glb",
+    )
+    .glowing(),
+    SkinModelDef::new(15, "thompson", "models/held/skins/lapis_thompson.glb"),
+    SkinModelDef::new(
+        16,
+        "bolt_action_rifle",
+        "models/held/skins/lapis_bolt_rifle.glb",
+    ),
+    SkinModelDef::new(17, "metal_pickaxe", "models/held/skins/lapis_pickaxe.glb"),
+    SkinModelDef::new(18, "mace", "models/held/skins/lapis_mace.glb"),
+    SkinModelDef::new(
+        19,
+        "pump_shotgun",
+        "models/held/skins/tidewrack_shotgun.glb",
+    ),
+    SkinModelDef::new(20, "custom_smg", "models/held/skins/tidewrack_smg.glb"),
+    SkinModelDef::new(
+        21,
+        "semi_automatic_rifle",
+        "models/held/skins/tidewrack_sar.glb",
+    ),
+    SkinModelDef::new(
+        22,
+        "salvaged_cleaver",
+        "models/held/skins/tidewrack_cleaver.glb",
+    ),
 ];
 
 /// The [`SKIN_MODELS`] index of skin `skin` worn on [`HELD_MODELS`] row

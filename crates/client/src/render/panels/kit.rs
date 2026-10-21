@@ -57,6 +57,34 @@ pub fn screen(commands: &mut Commands, width: f32, body: impl FnOnce(&mut ChildS
         });
 }
 
+/// A page in the strip (`ui::nav` — the island and the team): [`screen`]'s
+/// card, under the same strip the inventory and crafting pages wear, so a
+/// player can click from one to the next without the keys.
+pub fn page(
+    commands: &mut Commands,
+    ui: &super::Ui,
+    width: f32,
+    body: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    super::page_frame(commands, ui, super::Seat::Centre, false, |zone| {
+        zone.spawn((
+            Node {
+                width: Val::Px(width),
+                max_height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(14.0)),
+                row_gap: Val::Px(6.0),
+                border: UiRect::all(Val::Px(1.0)),
+                overflow: Overflow::clip_y(),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderColor::all(LINE),
+        ))
+        .with_children(body);
+    });
+}
+
 /// The card's head: a title on the left, an optional right-hand label, and
 /// the status line under them — the one line that says what just happened.
 pub fn header(p: &mut ChildSpawnerCommands, title: &str, right: Option<&str>, status: &str) {

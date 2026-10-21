@@ -287,10 +287,11 @@ struct NametagStar;
 const TAG_INK: Color = Color::srgba(0.96, 0.94, 0.88, 0.95);
 
 /// What the nametag shows now, so it is only rewritten when that changes:
-/// who, their label, whether the picture has landed, and whether a friend.
+/// who, their label, whether the picture has landed, whether a friend, and
+/// how they are marked in your contacts.
 #[derive(Resource, Default)]
 struct Shown {
-    who: Option<(u32, String, bool, bool)>,
+    who: Option<(u32, String, bool, bool, crate::contacts::Rel)>,
 }
 
 fn setup(mut commands: Commands) {
@@ -356,6 +357,7 @@ fn nametag(
     mut star: Query<&mut Visibility, (With<NametagStar>, Without<Nametag>, Without<NametagPic>)>,
     mut text: Query<(&mut Text, &mut TextColor), With<NametagName>>,
     friends: Option<Res<super::friends::Friends>>,
+    contacts: Option<Res<super::contacts::Contacts>>,
 ) {
     let core = &mut net.session.core;
     let who = if core.dead {
@@ -384,7 +386,11 @@ fn nametag(
         let friend = t
             .zip(friends.as_deref())
             .is_some_and(|(t, f)| f.set.has(&t.address));
-        (id, label, handle.is_some(), friend)
+        let rel = t
+            .zip(contacts.as_deref())
+            .and_then(|(t, c)| c.book.get(&t.address).map(|c| c.rel))
+            .unwrap_or_default();
+        (id, label, handle.is_some(), friend, rel)
     });
     if next == shown.who {
         return;
@@ -398,9 +404,16 @@ fn nametag(
         };
     }
     let friend = next.as_ref().is_some_and(|n| n.3);
+    let rel = next.as_ref().map(|n| n.4).unwrap_or_default();
     for (mut t, mut ink) in &mut text {
         t.0 = next.as_ref().map(|n| n.1.clone()).unwrap_or_default();
-        ink.0 = if friend { super::ui::FRIEND } else { TAG_INK };
+        // Your own mark first, Rust's colours: friendly blue, enemy red.
+        // An Elo Pros friend you have not marked keeps the friend colour.
+        ink.0 = match rel {
+            crate::contacts::Rel::Seen if friend => super::ui::FRIEND,
+            crate::contacts::Rel::Seen => TAG_INK,
+            r => super::panels::contacts::ink(r),
+        };
     }
     for mut v in &mut star {
         *v = if friend {

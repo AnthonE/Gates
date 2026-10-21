@@ -31,7 +31,7 @@ fn inserts_survive_late_definitions_and_rebuilds_then_unseal_on_removal() {
             row: 3,
             ..PieceRec::default()
         };
-        let n = encode_event_piece_placed(&piece, &mut buf).unwrap();
+        let n = encode_event_piece_placed(&piece, &sim_core::frame::Frame::ZERO, &mut buf).unwrap();
         c.on_stream(&buf[..n]).unwrap();
         let insert = DeployRec {
             cx,

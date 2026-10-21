@@ -1627,6 +1627,17 @@ pub fn hit_number(
 #[derive(Component)]
 pub struct Compass;
 
+/// The HUD's top-centre block — the compass, its marker row and the arc
+/// banner. A page's strip sits where it does, so it steps aside while one
+/// is up (`panels::hud_under_pages`), as Rust's compass does.
+#[derive(Component)]
+pub struct HudTop;
+
+/// The hotbar's row. On the inventory page the belt row is the hotbar
+/// (Rust's arrangement), so this one steps aside while it is up.
+#[derive(Component)]
+pub struct HotbarRow;
+
 /// Rust's death marker on the compass (operator, 2026-10-15): your last
 /// death, a skull riding the marker row over the bearing number at its
 /// bearing, with how far. Shown from the respawn until the next death moves
@@ -1862,6 +1873,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
     commands
         .spawn((
             super::WorldEntity,
+            HotbarRow,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(HOTBAR_BOTTOM_PX),
@@ -1962,7 +1974,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
                             width: Val::Px(SLOT_COND_W),
                             ..default()
                         },
-                        BackgroundColor(VITAL_TROUGH),
+                        BackgroundColor(super::panels::PIP_TROUGH),
                         Visibility::Hidden,
                         Pickable::IGNORE,
                     ))
@@ -1977,7 +1989,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
                                 height: Val::Percent(0.0),
                                 ..default()
                             },
-                            BackgroundColor(Vital::Hp.fill()),
+                            BackgroundColor(super::panels::PIP_FILL),
                             Pickable::IGNORE,
                         ));
                     });
@@ -2465,6 +2477,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
         .spawn((
             super::WorldEntity,
             Compass,
+            HudTop,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(0.0),
@@ -2577,6 +2590,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
     commands
         .spawn((
             super::WorldEntity,
+            HudTop,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(COMPASS_MARK_TOP),
@@ -2911,23 +2925,36 @@ pub fn update(
         // the page disagreed about both.
         let shown = sim_core::research::blueprint_target(&core.research, stack)
             .map_or(stack, |t| sim_core::gather::ItemStack { item: t, ..stack });
-        let [tr, tg, tb] =
-            crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
-        let tint = Color::srgb(tr, tg, tb);
-        if img.color != tint {
-            img.color = tint;
-        }
-        match crate::ui::icons::icon_stem(&core.catalog, shown).and_then(|s| art.verb(s)) {
-            Some(h) => {
+        // A skin with a model of its own shows its own picture.
+        let skinned = (stack.count > 0)
+            .then(|| art.skin(stack.skin))
+            .flatten()
+            .map(|h| (h, Color::WHITE));
+        let plain = || {
+            let [tr, tg, tb] =
+                crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
+            crate::ui::icons::icon_stem(&core.catalog, shown)
+                .and_then(|s| art.verb(s))
+                .map(|h| (h, Color::srgb(tr, tg, tb)))
+        };
+        match skinned.or_else(plain) {
+            Some((h, tint)) => {
+                if img.color != tint {
+                    img.color = tint;
+                }
                 if img.image != h {
                     img.image = h;
                 }
-                *vis = Visibility::Inherited;
+                // Through `set_if_neq`: a bare write marks every cell
+                // changed every frame, and visibility propagation re-walks it.
+                vis.set_if_neq(Visibility::Inherited);
             }
             // Hidden rather than cleared: an `ImageNode` with a default handle
             // draws Bevy's white placeholder square, which is a filled cell
             // claiming to hold something.
-            None => *vis = Visibility::Hidden,
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
         }
     }
     for (slot, mut text, mut ink) in counts.iter_mut() {
@@ -3521,20 +3548,20 @@ pub fn readout(
     // This player's own blows only (wire v77): the island-wide
     // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
     if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
-        let (cx, cz, _, _, left, max) = core.own_struct_hit;
+        let (cx, cz, level, loc, left, max) = core.own_struct_hit;
         // `max == 0` is the defs-not-arrived state and pins nothing: the
         // same honesty rule the toast held (`struct_hit_line`'s doc).
         if max > 0 {
-            ro.wall = Some((cx, cz));
+            ro.wall = Some(cell_of(core, (cx, cz, level, loc)));
             ro.wall_left = left;
             ro.wall_max = max;
             ro.wall_secs = TOAST_SECS;
         }
     }
     if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
-        let (cx, cz, _, _, _, fuse) = core.charge_placed;
+        let (cx, cz, level, loc, _, fuse) = core.charge_placed;
         if fuse > 0 {
-            ro.charge = Some((cx, cz));
+            ro.charge = Some(cell_of(core, (cx, cz, level, loc)));
             ro.charge_secs = fuse as f32 / sim_core::limits::TICK_HZ as f32;
         }
     }
@@ -4878,6 +4905,21 @@ pub fn pickups(
             colour.0 = c;
         }
     }
+}
+
+/// The cell an event's piece address stands in: the address's own, or —
+/// for a spelled id (freeform W2, `build::spell_id`) — the cell the mirror
+/// files that piece under.
+fn cell_of(
+    core: &client_core::core::ClientCore,
+    (cx, cz, level, loc): (u16, u16, u8, u8),
+) -> (u16, u16) {
+    if sim_core::build::spelled_id(cx, cz, level, loc).is_none() {
+        return (cx, cz);
+    }
+    core.pieces
+        .find(cx, cz, level, loc)
+        .map_or((cx, cz), |r| (r.cx, r.cz))
 }
 
 #[cfg(test)]

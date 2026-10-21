@@ -651,7 +651,12 @@ pub fn place_eye(
     let want = if core.crouched() { 1.0 } else { 0.0 };
     let k = 1.0 - (-time.delta_secs() / super::CROUCH_EASE_S).exp();
     eye.crouch += (want - eye.crouch) * k;
+    // **Seated** (v130): toward the sitting clip's eye, the same way.
+    let want = if core.seated() { 1.0 } else { 0.0 };
+    let k = 1.0 - (-time.delta_secs() / super::SEAT_EASE_S).exp();
+    eye.seat += (want - eye.seat) * k;
     let base = EYE_HEIGHT - (EYE_HEIGHT - super::CROUCH_EYE_M) * eye.crouch;
+    let base = base - (base - super::SEAT_EYE_M) * eye.seat;
     let height = base - (base - super::wounded::CRAWL_EYE_M) * eye.down;
     eye.height = height;
     eye.pos = Vec3::new(x, y + height, z);

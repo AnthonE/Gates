@@ -2022,11 +2022,15 @@ pub fn bag_wake_body(
         x - rec.cx as f32 * BUILD_CELL_M,
         z - rec.cz as f32 * BUILD_CELL_M,
     );
-    if !on_plane {
+    // Off the grid's planes, the slab the grid cannot name under it.
+    let y = if on_plane {
+        crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
+            + crate::build::level_y(rec.level)
+    } else if let Some(y) = cols.hulls().posed_floor(rec.level, x, z) {
+        y
+    } else {
         return crate::movement::Body::at(seed, haven, x, z);
-    }
-    let y = crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
-        + crate::build::level_y(rec.level);
+    };
     crate::movement::Body {
         qx: crate::movement::quant_xz(x),
         qy: crate::movement::quant_y(y),
@@ -2130,7 +2134,7 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// ([`BODY_LOCS`]): the player aimed at a spot, not at a slot number.
 pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => is_edge_loc(loc),
         // A lock goes where its target lives: a door on a doorway's edge,
         // a box or a hearth in its body slot (locks on boxes, `DOORS.md`
         // §9.8). The support arm below still requires a lockable
@@ -2144,17 +2148,55 @@ pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
 
 /// The slots a cell's body deployables are filed under, in the order they
 /// are handed out: every four-bit `loc` but the two straight edges, which a
-/// door or a window in the cell's doorway owns. Slot 0 is `LOC_PLANE`, so
+/// door or a window in the cell's doorway owns, and `LOC_NONE`, an insert
+/// in an edge the grid cannot name (freeform W4). Slot 0 is `LOC_PLANE`, so
 /// the first deployable in a cell has exactly the address it had before
 /// free placement. In the deploy store a `loc` is a name and nothing more —
 /// slot 1 is not a riser and slot 4 is not a triangle.
-pub const BODY_LOCS: [u8; 14] = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+pub const BODY_LOCS: [u8; 13] = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15];
 
 /// Whether a deploy-store `loc` is a doorway edge — the door's, a window
-/// insert's — rather than a body slot.
+/// insert's — rather than a body slot: a grid edge, or `LOC_NONE`, an edge
+/// the grid cannot name, whose address then spells its id exactly as the
+/// piece's does (`build::spell_id`, freeform W4).
 #[inline]
 pub fn is_edge_loc(loc: u8) -> bool {
-    loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO
+    loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == crate::build::LOC_NONE
+}
+
+/// Where an insert in an edge the grid cannot name hangs (freeform W4): the
+/// edge's collision row, read off the index both ends keep — its middle
+/// (world XZ), its floor, its run and its anticlockwise normal. `None` for
+/// a grid address, or an edge the index does not hold.
+pub fn posed_insert(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Option<InsertAt> {
+    let id = crate::build::spelled_id(cx, cz, level, loc)?;
+    let h = cols.hulls().find(crate::build::hull_key(id))?;
+    let half = crate::build::BUILD_CELL_M * 0.5;
+    Some(InsertAt {
+        x: h.ox + h.ux * half,
+        z: h.oz + h.uz * half,
+        floor_y: h.floor_y,
+        run: (h.ux, h.uz),
+        normal: (h.vx, h.vz),
+    })
+}
+
+/// [`posed_insert`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsertAt {
+    pub x: f32,
+    pub z: f32,
+    pub floor_y: f32,
+    pub run: (f32, f32),
+    pub normal: (f32, f32),
+}
+
+/// An edge insert's middle: the grid's anchor, or a posed edge's.
+pub fn edge_mid(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> (f32, f32) {
+    match posed_insert(cols, cx, cz, level, loc) {
+        Some(at) => (at.x, at.z),
+        None => crate::build::anchor(cx, cz, loc),
+    }
 }
 
 impl DeployRec {
@@ -2166,13 +2208,26 @@ impl DeployRec {
         crate::footprint::centre(self.cx, self.cz, self.pose)
     }
 
+    /// Where it is for a claim, a reach or a bill: a door or an insert in
+    /// an edge the grid cannot name at that edge's middle — its address
+    /// spells the edge's id, not a cell (freeform W4) — and anything else
+    /// where [`Self::xz`] has always put it.
+    #[inline]
+    pub fn place_xz(&self, cols: &ColIndex) -> (f32, f32) {
+        if self.loc == crate::build::LOC_NONE {
+            edge_mid(cols, self.cx, self.cz, self.level, self.loc)
+        } else {
+            self.xz()
+        }
+    }
+
     /// Where a hand reaches it: a door, a garage door or a shutter (an edge
     /// address) at its doorway's middle, where it hangs (`build::anchor`);
     /// anything else where it stands ([`Self::xz`]).
     #[inline]
-    pub fn hand_xz(&self) -> (f32, f32) {
+    pub fn hand_xz(&self, cols: &ColIndex) -> (f32, f32) {
         if is_edge_loc(self.loc) {
-            crate::build::anchor(self.cx, self.cz, self.loc)
+            edge_mid(cols, self.cx, self.cz, self.level, self.loc)
         } else {
             self.xz()
         }
@@ -2191,12 +2246,8 @@ impl DeployRec {
 /// for anything placed freely. The deploy store's twin of `anchor`, which
 /// reads a body slot's `loc` as a piece location and would answer a corner
 /// the deployable is nowhere near.
-pub fn rec_anchor(rec: &DeployRec) -> (f32, f32) {
-    if is_edge_loc(rec.loc) {
-        crate::build::anchor(rec.cx, rec.cz, rec.loc)
-    } else {
-        rec.xz()
-    }
+pub fn rec_anchor(cols: &ColIndex, rec: &DeployRec) -> (f32, f32) {
+    rec.hand_xz(cols)
 }
 
 /// The first body slot of `(cx, cz, level)` no record holds, or `None` when
@@ -2252,7 +2303,9 @@ pub fn ground_base(seed: u64, haven: &terrain::Haven, rect: &Rect, solid: bool) 
 /// foundation, and a plane's removal takes what stood on it).
 ///
 /// The height is the column's floor (`build::column_floor_y` against its
-/// stored plate) plus the storey — `collide::solid_bottom`'s rule exactly.
+/// stored plate) plus the storey — or, off the grid's planes, the floor of
+/// the slab the grid cannot name under the centre (`Hulls::posed_floor`).
+/// `collide::solid_bottom` is this function.
 #[allow(clippy::too_many_arguments)]
 pub fn built_floor(
     seed: u64,
@@ -2264,14 +2317,19 @@ pub fn built_floor(
     x: f32,
     z: f32,
 ) -> Option<f32> {
-    if level == 0
-        && !cols.get(cx, cz).plane_covers(
-            0,
-            x - cx as f32 * BUILD_CELL_M,
-            z - cz as f32 * BUILD_CELL_M,
-        )
-    {
-        return None;
+    if !cols.get(cx, cz).plane_covers(
+        level,
+        x - cx as f32 * BUILD_CELL_M,
+        z - cz as f32 * BUILD_CELL_M,
+    ) {
+        // A slab the grid cannot name — a triangle, a floor of a building
+        // turned off the grid — carries its own floor (freeform W4).
+        if let Some(y) = cols.hulls().posed_floor(level, x, z) {
+            return Some(y);
+        }
+        if level == 0 {
+            return None;
+        }
     }
     Some(crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level))
 }
@@ -2290,6 +2348,9 @@ pub fn body_base_y(
     arch: u8,
 ) -> f32 {
     if is_edge_loc(rec.loc) {
+        if let Some(at) = posed_insert(cols, rec.cx, rec.cz, rec.level, rec.loc) {
+            return at.floor_y;
+        }
         return crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
             + crate::build::level_y(rec.level);
     }
@@ -2347,21 +2408,24 @@ fn planes_carry(
         }
         let (i, j) = (i as u16, j as u16);
         let m = cols.get(i, j);
-        m.plane_covers(
+        let grid = m.plane_covers(
             level,
             x - i as f32 * BUILD_CELL_M,
             z - j as f32 * BUILD_CELL_M,
-        ) && crate::collide::col_base_y(seed, haven, cols, i, j) + crate::build::level_y(level)
-            == floor
+        ) && crate::collide::col_base_y(seed, haven, cols, i, j)
+            + crate::build::level_y(level)
+            == floor;
+        grid || cols.hulls().posed_floor(level, x, z) == Some(floor)
     })
 }
 
 /// Whether every sample of the rectangle is on a plane at `level` —
 /// [`planes_carry`] without the heights, which is all a removal can change
 /// (the floors that remain do not move). `gone` counts one piece that has
-/// just left the index — `(cx, cz, loc)`, a full plane or a triangle half —
-/// as still there, which is how the removal cascade asks "was it carried".
-fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Option<(u16, u16, u8)>) -> bool {
+/// just left the index as still there, which is how the removal cascade
+/// asks "was it carried": a grid piece by `(cx, cz, loc)`, a full plane or
+/// a triangle half, or a slab the grid cannot name by the row it had.
+fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Gone) -> bool {
     rect.samples().iter().all(|&(x, z)| {
         let (i, j) = (
             crate::build::build_cell_of(x),
@@ -2372,16 +2436,95 @@ fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Option<(u16, u16,
         }
         let (i, j) = (i as u16, j as u16);
         let (dx, dz) = (x - i as f32 * BUILD_CELL_M, z - j as f32 * BUILD_CELL_M);
-        let was = gone.is_some_and(|(gx, gz, loc)| {
-            gx == i
-                && gz == j
-                && (loc == LOC_PLANE
-                    || ((crate::build::LOC_TRI_XLO_ZLO..=crate::build::LOC_TRI_XHI_ZHI)
-                        .contains(&loc)
-                        && crate::collide::tri_half_has(loc, dx, dz)))
-        });
+        let was = match gone {
+            Gone::Grid(gx, gz, loc) => {
+                gx == i
+                    && gz == j
+                    && (loc == LOC_PLANE
+                        || ((crate::build::LOC_TRI_XLO_ZLO..=crate::build::LOC_TRI_XHI_ZHI)
+                            .contains(&loc)
+                            && crate::collide::tri_half_has(loc, dx, dz)))
+            }
+            Gone::Posed(h) => h.level == level && h.slab_holds(x, z),
+            Gone::Nothing => false,
+        };
         was || cols.get(i, j).plane_covers(level, dx, dz)
+            || cols.hulls().posed_floor(level, x, z).is_some()
     })
+}
+
+/// The piece [`planes_cover`] counts as still standing.
+#[derive(Clone, Copy)]
+enum Gone {
+    Nothing,
+    Grid(u16, u16, u8),
+    Posed(crate::hull::Hull),
+}
+
+/// Whether a convex footprint (corners in order round it) and a rectangle
+/// share area: the separating-axis test over both shapes' edge normals,
+/// touching apart as [`Rect::overlaps`] reads it.
+pub(crate) fn foot_overlaps(pts: &[(f32, f32)], r: &Rect) -> bool {
+    let n = pts.len();
+    let mut axes = [
+        (r.c, -r.s),
+        (r.s, r.c),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ];
+    for k in 0..n {
+        let (ax, az) = pts[k];
+        let (bx, bz) = pts[(k + 1) % n];
+        let (ex, ez) = (bx - ax, bz - az);
+        let len = (ex * ex + ez * ez).sqrt();
+        if len > 1e-6 {
+            axes[2 + k] = (-ez / len, ex / len);
+        }
+    }
+    for &(nx, nz) in &axes[..2 + n] {
+        if nx == 0.0 && nz == 0.0 {
+            continue;
+        }
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &(x, z) in pts {
+            let d = x * nx + z * nz;
+            lo = lo.min(d);
+            hi = hi.max(d);
+        }
+        let mid = r.x * nx + r.z * nz;
+        let half = r.hw * crate::fmath::fabs(r.c * nx - r.s * nz)
+            + r.hd * crate::fmath::fabs(r.s * nx + r.c * nz);
+        if hi <= mid - half + crate::footprint::TOUCH_M
+            || lo >= mid + half - crate::footprint::TOUCH_M
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether a row's footprint shares area with the rectangle — a flight on
+/// a triangle, whose footprint its row cannot say, anywhere within a side
+/// of its first corner.
+fn hull_crosses(h: &crate::hull::Hull, rect: &Rect) -> bool {
+    let (pts, n) = h.footprint();
+    if n == 0 {
+        return rect.dist2(h.ox, h.oz) < BUILD_CELL_M * BUILD_CELL_M;
+    }
+    foot_overlaps(&pts[..n], rect)
+}
+
+/// Every row the grid cannot name (freeform W4) filed near the rectangle,
+/// until `f` answers true.
+fn posed_near(cols: &ColIndex, rect: &Rect, mut f: impl FnMut(&crate::hull::Hull) -> bool) -> bool {
+    let (ex, ez) = rect.half_aabb();
+    let (ex, ez) = (ex + EDGE_HALF_M, ez + EDGE_HALF_M);
+    cols.hulls()
+        .near(rect.x - ex, rect.z - ez, rect.x + ex, rect.z + ez, |h| {
+            h.hit.loc == crate::build::LOC_NONE && f(h)
+        })
 }
 
 /// Half the thickness a wall, a doorway, a window or a frame occupies either
@@ -2445,7 +2588,11 @@ fn edges_cross(cols: &ColIndex, rect: &Rect, level: u8) -> bool {
             }
         }
     }
-    false
+    // And the edges the grid cannot name: a triangle's sides, the walls of
+    // a building turned off the grid.
+    posed_near(cols, rect, |h| {
+        h.kind == crate::hull::HULL_EDGE && h.level == level && hull_crosses(h, rect)
+    })
 }
 
 /// Whether the rectangle overlaps a cell holding a stair-class riser at
@@ -2475,7 +2622,13 @@ fn cell_bodies_cross(cols: &ColIndex, rect: &Rect, level: u8, ground: bool) -> b
             }
         }
     }
-    false
+    // The bodies the grid cannot name, by their own footprints: a flight of
+    // the storey, and on bare ground anything standing on the ground.
+    posed_near(cols, rect, |h| {
+        let foundation = ground && h.level == 0 && h.is_body();
+        let riser = h.kind == crate::hull::HULL_RISER && h.level == level;
+        (foundation || riser) && hull_crosses(h, rect)
+    })
 }
 
 /// Whether two deployables may share floor: exactly one of them is a rug. A
@@ -2553,15 +2706,23 @@ pub fn body_site(
         return Err(REFUSE_D_SPOT);
     };
     let m = cols.get(cx, cz);
-    let on_plane = m.plane_covers(
+    let on_grid = m.plane_covers(
         level,
         rect.x - cx as f32 * BUILD_CELL_M,
         rect.z - cz as f32 * BUILD_CELL_M,
     );
+    // Off the grid's planes, a slab the grid cannot name may be under it.
+    let posed = if on_grid {
+        None
+    } else {
+        cols.hulls().posed_floor(level, rect.x, rect.z)
+    };
+    let on_plane = on_grid || posed.is_some();
     let solid = solid_vol(arch).is_some();
     let site = if on_plane && placement != PLACE_GROUND {
-        let floor =
-            crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level);
+        let floor = posed.unwrap_or_else(|| {
+            crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level)
+        });
         if !planes_carry(seed, haven, cols, &rect, level, floor) {
             return Err(REFUSE_D_SUPPORT);
         }
@@ -2685,6 +2846,61 @@ pub fn piece_crosses_deploys(
             }
         }
         d.rect(arch).is_some_and(|rr| rr.overlaps(&piece))
+    })
+}
+
+/// [`piece_crosses_deploys`] for a lattice site (`build::lattice_site`,
+/// `build::free_site`): a site the grid names asks it by its grid address;
+/// one the grid cannot name — a triangle, a building turned off the grid —
+/// by the footprint its row would have.
+pub fn site_crosses_deploys(
+    pieces: &Pieces,
+    recs: &[DeployRec],
+    dc: &DeployContent,
+    shape: u8,
+    site: &crate::build::Site,
+) -> bool {
+    let level = site.addr.level;
+    if let Some((cx, cz, loc)) = site.grid {
+        return piece_crosses_deploys(pieces.cols(), recs, dc, shape, cx, cz, level, loc);
+    }
+    let Some(frame) = site.frame(pieces) else {
+        return false;
+    };
+    let hit = crate::collide::PieceHit {
+        cx: 0,
+        cz: 0,
+        level,
+        loc: crate::build::LOC_NONE,
+    };
+    let h = crate::hull::posed_hull(1, hit, frame, &site.addr, shape);
+    // A foundation meets what stands on bare ground, a flight or an edge
+    // what stands on its storey; floors and roofs land above it all.
+    let ground_only = crate::support::grounded(shape);
+    if !(ground_only || h.kind == crate::hull::HULL_RISER || h.kind == crate::hull::HULL_EDGE) {
+        return false;
+    }
+    let cols = pieces.cols();
+    recs.iter().any(|d| {
+        if d.level != level || is_edge_loc(d.loc) || d.row as u16 >= dc.def_count {
+            return false;
+        }
+        let Some(r) = d.rect(dc.defs[d.row as usize].arch) else {
+            return false;
+        };
+        if ground_only {
+            // Only what stands on bare ground, as the grid's rule reads it.
+            let (x, z) = d.xz();
+            let c = BUILD_CELL_M;
+            if cols
+                .get(d.cx, d.cz)
+                .plane_covers(0, x - d.cx as f32 * c, z - d.cz as f32 * c)
+                || cols.hulls().posed_floor(0, x, z).is_some()
+            {
+                return false;
+            }
+        }
+        hull_crosses(&h, &r)
     })
 }
 
@@ -2842,6 +3058,9 @@ pub fn place_deploy(
     // it always was.
     let (ax, az) = match deploys.find(cx, cz, level, loc) {
         Some(host) if def.placement == PLACE_DOOR && !is_edge_loc(loc) => host.xz(),
+        // An insert in an edge the grid cannot name is reached at that
+        // edge's middle; a grid insert at its cell's centre, as ever.
+        _ if loc == crate::build::LOC_NONE => edge_mid(pieces.cols(), cx, cz, level, loc),
         _ => crate::footprint::centre(cx, cz, pose),
     };
     if crate::terrain::build_reserved(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
@@ -3171,6 +3390,7 @@ pub fn take_stock(
 #[allow(clippy::too_many_arguments)]
 fn door_in_reach(
     dc: &DeployContent,
+    cols: &ColIndex,
     deploys: &Deploys,
     p: &Player,
     cx: u16,
@@ -3192,7 +3412,7 @@ fn door_in_reach(
     // behind it; a locked box to where it stands. The storey and the line
     // are `reach.rs`'s, asked by `World`, which holds the collision index.
     let rec = &deploys.entries[i];
-    let (ax, az) = rec.hand_xz();
+    let (ax, az) = rec.hand_xz(cols);
     let reach = if is_edge_loc(rec.loc) {
         crate::backpack::LOOT_REACH_M
     } else {
@@ -3270,7 +3490,18 @@ pub fn use_door(
     loc: u8,
     events: &mut EventQueue,
 ) -> Option<u32> {
-    let i = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events)?;
+    let i = door_in_reach(
+        dc,
+        pieces.cols(),
+        deploys,
+        p,
+        cx,
+        cz,
+        level,
+        loc,
+        arch_is_door,
+        events,
+    )?;
     if !deploys.lock_passes(cx, cz, level, loc, p.id)
         && !key_crew_passes(pieces, deploys, cx, cz, level, loc, p.id)
     {
@@ -3323,7 +3554,7 @@ fn key_crew_passes(
     let Some(d) = deploys.find(cx, cz, level, loc) else {
         return false;
     };
-    let (x, z) = d.xz();
+    let (x, z) = d.place_xz(pieces.cols());
     crate::claim::any_claim(pieces, deploys, x, z)
         && !crate::claim::foreign_claim(pieces, deploys, x, z, id)
 }
@@ -3345,6 +3576,7 @@ fn key_crew_passes(
 pub fn lock_op(
     dc: &DeployContent,
     gc: &GatherContent,
+    cols: &ColIndex,
     deploys: &mut Deploys,
     p: &mut Player,
     cx: u16,
@@ -3357,7 +3589,7 @@ pub fn lock_op(
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
 ) -> Option<u32> {
-    let di = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events)?;
+    let di = door_in_reach(dc, cols, deploys, p, cx, cz, level, loc, lockable, events)?;
     let Some(li) = deploys.locks.find_index(cx, cz, level, loc) else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NO_LOCK, 0);
         return None;
@@ -3515,7 +3747,7 @@ pub fn pick_up(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
-    let (ax, az) = deploys.entries[i].xz();
+    let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
     let (px, pz) = player_xz(p);
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
@@ -3771,19 +4003,30 @@ pub(crate) fn drop_piece(
     events: &mut EventQueue,
 ) {
     let rec = pieces.entries()[i];
+    // A slab the grid cannot name is read by its row, which leaves the
+    // index with it.
+    let posed = pieces
+        .cols()
+        .hulls()
+        .find(crate::build::hull_key(rec.id))
+        .copied()
+        .filter(|h| h.hit.loc == crate::build::LOC_NONE);
     pieces.remove_at(i, shape);
-    events.push(
-        EV_PIECE_REMOVED,
-        crate::gather::cell_key(rec.cx, rec.cz),
-        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-        0,
-    );
+    let (a, b) = rec.ev_addr();
+    events.push(EV_PIECE_REMOVED, a, b | rec.row as u32, 0);
     // An edge piece takes the insert hung in it — the door in the doorway,
-    // the bars in the window — which shares its address exactly.
-    if is_edge_loc(rec.loc) {
-        if let Some(di) = deploys.entries[..deploys.len].iter().position(|d| {
-            d.cx == rec.cx && d.cz == rec.cz && d.level == rec.level && d.loc == rec.loc
-        }) {
+    // the bars in the window — which shares its address exactly (a posed
+    // edge's spelled id, freeform W4).
+    let at = rec.target();
+    let edge = match posed {
+        Some(h) => h.kind == crate::hull::HULL_EDGE,
+        None => is_edge_loc(at.3),
+    };
+    if edge {
+        if let Some(di) = deploys.entries[..deploys.len]
+            .iter()
+            .position(|d| (d.cx, d.cz, d.level, d.loc) == at)
+        {
             drop_deploy(dc, pieces, deploys, di, events);
         }
         return;
@@ -3793,7 +4036,10 @@ pub(crate) fn drop_piece(
     // (free placement — one may span two foundations, and loses its
     // footing with either). Walked from the back so a swap-remove only
     // ever moves a record this walk has already passed.
-    let gone = Some((rec.cx, rec.cz, rec.loc));
+    let gone = match posed {
+        Some(h) => Gone::Posed(h),
+        None => Gone::Grid(rec.cx, rec.cz, rec.loc),
+    };
     let cell = Rect::aligned(
         rec.cx as f32 * BUILD_CELL_M,
         rec.cz as f32 * BUILD_CELL_M,
@@ -3813,9 +4059,13 @@ pub(crate) fn drop_piece(
         // Carried with the removed piece and not without it. A deployable
         // on bare ground was never carried by a plane, so it stays whatever
         // was taken down beside it.
-        if r.overlaps(&cell)
+        let under = match posed {
+            Some(h) => hull_crosses(&h, &r),
+            None => r.overlaps(&cell),
+        };
+        if under
             && planes_cover(pieces.cols(), &r, d.level, gone)
-            && !planes_cover(pieces.cols(), &r, d.level, None)
+            && !planes_cover(pieces.cols(), &r, d.level, Gone::Nothing)
         {
             drop_deploy(dc, pieces, deploys, di, events);
         }
@@ -3905,10 +4155,11 @@ pub fn damage_piece(
         left = 1;
     }
     let dealt = rec.hp - left;
+    let (a, b) = rec.ev_addr();
     events.push(
         EV_STRUCT_HIT,
-        crate::gather::cell_key(rec.cx, rec.cz),
-        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        a,
+        b | rec.row as u32,
         ((dealt as u32) << 16) | left as u32,
     );
     if left == 0 {
@@ -3924,15 +4175,7 @@ pub fn damage_piece(
         // Take the legs out and the base comes down: everything that
         // rested on this address is re-checked against the same support
         // rule that let it be placed (build.rs).
-        crate::build::collapse_from(
-            dc,
-            bc,
-            pieces,
-            deploys,
-            (rec.cx, rec.cz, rec.level, rec.loc),
-            budget,
-            events,
-        );
+        crate::build::collapse_from(dc, bc, pieces, deploys, rec.addr(), budget, events);
         return true;
     }
     pieces.set_hp(i, left);
@@ -4206,7 +4449,15 @@ pub fn upkeep_sweep(
         // and never move structure (upkeep v2, `upkeep::inside`).
         let scale = crate::upkeep::scale(
             dc,
-            crate::upkeep::inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, def.shape),
+            crate::upkeep::piece_inside(
+                pieces.cols(),
+                rec.id,
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+                def.shape,
+            ),
         );
         let mut hp = rec.hp;
         let mut uh = rec.uh;
@@ -4273,15 +4524,7 @@ pub fn upkeep_sweep(
             // from under it falls exactly as one a raider broke would.
             drop_piece(dc, pieces, deploys, i, def.shape, events);
             *budget -= 1;
-            crate::build::collapse_from(
-                dc,
-                bc,
-                pieces,
-                deploys,
-                (rec.cx, rec.cz, rec.level, rec.loc),
-                budget,
-                events,
-            );
+            crate::build::collapse_from(dc, bc, pieces, deploys, rec.addr(), budget, events);
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
         } else {
             pieces.set_upkeep(i, hp, uh);
@@ -4299,10 +4542,10 @@ pub fn upkeep_sweep(
             continue;
         }
         let def = dc.defs[rec.row as usize];
-        let (x, z) = rec.xz();
+        let (x, z) = rec.place_xz(pieces.cols());
         let scale = crate::upkeep::scale(
             dc,
-            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc),
+            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, x, z),
         );
         // A door or an insert pays its own build cost's rent like the
         // wall it sits in (`pays_rent`); asked of the claim once per visit
@@ -6240,6 +6483,7 @@ mod tests {
         lock_op(
             dc,
             &GatherContent::probe_fixture(),
+            &ColIndex::new(),
             deploys,
             p,
             CX,
@@ -6358,6 +6602,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -6439,6 +6684,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 deploys,
                 r,
                 CX,
@@ -6470,6 +6716,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut raider,
             CX,
@@ -6509,6 +6756,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6574,6 +6822,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 &mut deploys,
                 &mut stranger,
                 CX,
@@ -6594,6 +6843,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6611,6 +6861,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut far,
             CX,
@@ -6634,6 +6885,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6972,6 +7224,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6997,6 +7250,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7012,6 +7266,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -7035,6 +7290,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7140,6 +7396,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7248,6 +7505,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -7269,6 +7527,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7303,6 +7562,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7363,6 +7623,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7381,6 +7642,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut guest,
             CX,
@@ -7471,6 +7733,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut friend,
             CX,
@@ -7534,6 +7797,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7549,6 +7813,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7567,6 +7832,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut guest,
             CX,
@@ -7609,6 +7875,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -8071,6 +8338,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 d,
                 p,
                 CX,

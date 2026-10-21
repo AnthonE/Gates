@@ -466,6 +466,15 @@ pub fn bake_catalog(
                 revive: survival.revives(idx as u16),
                 pour: survival.vessel_full(idx as u16).is_some(),
                 class: item.class.code(),
+                // What one hit takes off a body (v131), the order the sim
+                // reads a hand in: a gun or a bow, else a swing, else a
+                // throw.
+                damage: combat
+                    .held_ranged(idx as u16)
+                    .map(|d| d.damage)
+                    .or_else(|| combat.held_melee(idx as u16).map(|d| d.damage))
+                    .or_else(|| combat.held_throw(idx as u16).map(|d| d.damage))
+                    .unwrap_or(0),
                 gun,
             },
         )

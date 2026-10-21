@@ -135,8 +135,8 @@ const _: () =
     assert!(VOICE_SLOTS == VOICE_CAP + VOICE_RESERVE + STARTS_PER_FRAME * VOICE_SLACK_FRAMES);
 
 /// Held slots for the beds: wind, surf, submerged, rain, rotor, town, night,
-/// the rotor's far layer, one each.
-pub const HELD_BEDS: usize = 8;
+/// the rotor's far layer and the furnace, one each.
+pub const HELD_BEDS: usize = 9;
 /// The band a held slot's [`Cmd::Place`] rate may lie in: a Doppler shift
 /// is a few percent, and a rate outside this is a command nobody meant.
 pub const PLACE_RATE_MIN: f32 = 0.5;
@@ -148,7 +148,7 @@ pub const HELD_MUSIC: usize = 4;
 /// All held slots. A `slot` byte in a [`Cmd`] is an index below this; which
 /// slots are beds and which are one-shots is the game thread's convention
 /// ([`HELD_BEDS`] first), not a rule the renderer enforces.
-pub const HELD: usize = 12;
+pub const HELD: usize = 13;
 const _: () = assert!(HELD == HELD_BEDS + HELD_MUSIC);
 
 /// The renderer's own command queue, filled by [`Renderer::push`] between

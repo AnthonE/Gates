@@ -560,6 +560,8 @@ const TICKS: u64 = 900;
 /// than the LUTs' 1.4° steps, so the fixture gun's rounds land elsewhere.
 /// **Moved → `0xF5EC_8D2C_AC0F_ACE9` at bigger barrels and solid cactus
 /// arms** (2026-10-20).
+/// **Moved → `0x7A45_8D13_0403_3749` at the casino's seats** (2026-10-21):
+/// `state_hash` reads `Player::seat`.
 /// **Moved → `0x9CA6_5039_3C68_9AAF` at the water pass** (2026-10-21): bodies swim
 /// in deep water instead of walking the bed, and the beach and the shallows
 /// take foundations and the beach deployables — with both reverted the old
@@ -686,6 +688,8 @@ const GOLDEN_FINAL_HASH: u64 = 0x9CA6_5039_3C68_9AAF;
 /// final hash.
 /// **Moved → `0xD2DC_F376_72B4_9018` at bigger barrels and solid cactus arms**
 /// (2026-10-20), with the final hash.
+/// **Moved → `0xE06B_9175_7ECB_60ED` at the casino's seats** (2026-10-21), with the final
+/// hash.
 /// **Moved → `0xA2AC_DF36_56A7_48D8` at the water pass** (2026-10-21), with the final
 /// hash and for its reason.
 const GOLDEN_TRACE_HASH: u64 = 0xA2AC_DF36_56A7_48D8;

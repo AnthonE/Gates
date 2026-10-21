@@ -567,7 +567,7 @@ fn interrupted_rotation_pair_resyncs_the_whole_piece_set() {
             blocked = if drop_removal {
                 matches!(event, protocol::EventMsg::PieceRemoved { loc, .. } if loc == from)
             } else {
-                matches!(event, protocol::EventMsg::PiecePlaced { rec } if rec.loc == to)
+                matches!(event, protocol::EventMsg::PiecePlaced { rec, .. } if rec.loc == to)
             };
             !blocked
         });

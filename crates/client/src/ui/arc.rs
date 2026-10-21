@@ -76,6 +76,131 @@ pub fn gives_line(w: &WorkView) -> String {
     }
 }
 
+/// A work's three steps, Rust's monument progression read left to right.
+pub const STEPS: [&str; 3] = ["SEALED", "OPEN", "BURNING"];
+
+/// Where a work stands on [`STEPS`]: the step it is on (0..3), and the third
+/// step's own word, which is EMBERS once a lit work's tank has run dry.
+pub fn step(w: &WorkView) -> (usize, &'static str) {
+    let last = if w.state == WORK_LIT && w.def.fuel_max > 0 && w.fuel == 0 {
+        "EMBERS"
+    } else {
+        STEPS[2]
+    };
+    let at = match w.state {
+        WORK_SEALED => 0,
+        WORK_OPEN => 1,
+        _ => 2,
+    };
+    (at, last)
+}
+
+/// The one sentence that says what to do at this work right now.
+pub fn todo_line(w: &WorkView, now: f64) -> String {
+    match w.state {
+        WORK_SEALED => format!(
+            "It opens {}. Gather what it takes in the meantime.",
+            span(hours_until(w.def.opens_at, now))
+        ),
+        WORK_OPEN => format!(
+            "Anyone can put things in. Fill every bar and it lights for the whole \
+             island, or it wakes by itself {} with an empty tank.",
+            span(hours_until(w.def.fallback_at, now))
+        ),
+        WORK_LIT if w.def.fuel_max > 0 && w.fuel == 0 => {
+            "Its tank is dry, so the boost is off. Fuel it to bring the boost back.".into()
+        }
+        WORK_LIT if w.def.fuel_max > 0 => {
+            "Burning. Keep the tank fed and the boost stays on for everyone.".into()
+        }
+        WORK_LIT => "Burning for the rest of the wipe.".into(),
+        _ => String::new(),
+    }
+}
+
+/// `2x`, `1.5x`, `1.25x`: per cent as a multiplier.
+pub fn times(pct: u16) -> String {
+    let (whole, frac) = (pct / 100, pct % 100);
+    match frac {
+        0 => format!("{whole}x"),
+        f if f % 10 == 0 => format!("{whole}.{}x", f / 10),
+        f => format!("{whole}.{f:02}x"),
+    }
+}
+
+/// What a work's burn does, in a player's words: `furnaces smelt 2x as
+/// fast`. `None` when its ceiling turns no knob.
+pub fn boost_line(w: &WorkView) -> Option<String> {
+    use sim_core::works::{
+        KNOB_EXTRACT_PCT, KNOB_GATHER_PCT, KNOB_HEAL_PCT, KNOB_RESEARCH_PCT, KNOB_SMELT_PCT,
+    };
+    let pct = w.boost_pct;
+    if w.boost_knob == protocol::NO_BOOST || pct == 0 || pct == 100 {
+        return None;
+    }
+    let what = match w.boost_knob {
+        KNOB_SMELT_PCT => "furnaces smelt",
+        KNOB_HEAL_PCT => "wounds heal",
+        KNOB_RESEARCH_PCT => "research tables study",
+        KNOB_GATHER_PCT => "every swing gathers",
+        KNOB_EXTRACT_PCT => "the exchange lets out",
+        _ => return None,
+    };
+    let how = match w.boost_knob {
+        KNOB_GATHER_PCT | KNOB_EXTRACT_PCT => "as much",
+        _ => "as fast",
+    };
+    Some(if pct > 100 {
+        format!("{what} {} {how}", times(pct))
+    } else {
+        format!("{what} at {pct}%")
+    })
+}
+
+/// The items unlock `u` lets anyone make or buy, in content order and once
+/// each: the recipes that wait on it, then the kiosk offers.
+pub fn unlocked_items(
+    u: u8,
+    recipes: &sim_core::craft::CraftContent,
+    vend: &sim_core::vend::VendContent,
+) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    if u == sim_core::works::NO_UNLOCK {
+        return out;
+    }
+    let made = recipes
+        .recipes
+        .iter()
+        .take(recipes.recipe_count as usize)
+        .filter(|r| r.unlock == u)
+        .map(|r| r.output);
+    let sold = vend
+        .offers
+        .iter()
+        .take(vend.count as usize)
+        .filter(|o| o.unlock == u)
+        .map(|o| o.get);
+    for item in made.chain(sold) {
+        if !out.contains(&item) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+/// One quota line's count: `41,200 / 60,000`.
+pub fn quota_count(got: u32, need: u32) -> String {
+    format!("{} / {}", thousands(got.min(need)), thousands(need))
+}
+
+/// What is still owed on one quota line: `18,800 more`, or `DONE`.
+pub fn quota_left(got: u32, need: u32) -> String {
+    match need.saturating_sub(got) {
+        0 => "DONE".into(),
+        n => format!("{} more", thousands(n)),
+    }
+}
+
 /// This player's share of a work, in words, or `None` before they gave.
 pub fn share_line(w: &WorkView) -> Option<String> {
     (w.mine > 0).then(|| format!("YOUR SHARE {}.{}%", w.mine / 100, (w.mine % 100) / 10))

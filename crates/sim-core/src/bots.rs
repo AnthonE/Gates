@@ -10,9 +10,9 @@
 //! its own `Pcg32`, so nothing here moves a digest that existed before it.
 
 use crate::build::{
-    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, LOC_TRI_XLO_ZLO, MAT_STONE,
-    MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS_L,
-    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
+    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY,
+    SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS_L, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL,
 };
 use crate::deploy::{
     box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE, ARCH_BOX, ARCH_DOOR, ARCH_HEARTH,
@@ -597,11 +597,8 @@ const X: u8 = LOC_EDGE_XLO;
 const Z: u8 = LOC_EDGE_ZLO;
 const P: u8 = LOC_PLANE;
 
-const T: u8 = LOC_TRI_XLO_ZLO;
-const D: u8 = LOC_DIAG_B;
-
-/// The Rust starter a bot builds: a **2x1 with a triangle airlock, two
-/// storeys and a roof**, laid out and built in the order players build it
+/// The Rust starter a bot builds: a **2x1 with an airlock, two storeys and
+/// a roof**, laid out and built in the order players build it
 /// (`reference/BUILDING.md` §7b). Seen from above, the plot cell is the core:
 ///
 /// ```text
@@ -611,20 +608,19 @@ const D: u8 = LOC_DIAG_B;
 ///  west  |   TC   |  cell  |  east  two cells stays open
 ///        |        |   L    |
 ///        +--------+--door--+      the inner door
-///                 d       /
-///   outer door -> o     /         the airlock: half a cell, its long
-///                 o   /           side a diagonal wall
-///                 r /
-///                 +
+///                 d        |
+///   outer door -> o airlock|
+///                 o        |
+///                 r        |
+///                 +--------+
 ///               south
 /// ```
 ///
 /// - **The cupboard goes down first**, right after the core's foundation, so
 ///   the plot is claimed before anybody else can build on it.
 /// - **Two doors between the outside and the cupboard.** The front door opens
-///   into a triangle, the second out of it into the room: whoever follows you
-///   in meets a shut door, which is what an airlock is for, and the triangle
-///   is the cheapest room there is (half a foundation).
+///   into the airlock, the second out of it into the room: whoever follows you
+///   in meets a shut door, which is what an airlock is for.
 /// - **An L flight in the stair cell** climbs north up its east side, turns
 ///   west along its north wall and lands on the core's upper floor through
 ///   the open edge between the cells. A flight lands a full storey up right
@@ -645,8 +641,9 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Foundation, 0, 0, 0, P),
     Deploy(Kit::Hearth, 0, 0, 0, P),
     Place(Part::Foundation, 1, 0, 0, P),
-    Place(Part::TriFoundation, 1, 1, 0, T),
-    // The ground floor's shell, the airlock's two doorways and its long side.
+    Place(Part::Foundation, 1, 1, 0, P),
+    // The ground floor's shell, the airlock's two doorways and its outer
+    // walls.
     Place(Part::Wall, 0, 0, 0, X),
     Place(Part::Wall, 0, 0, 0, Z),
     Place(Part::Wall, 0, 1, 0, Z),
@@ -654,7 +651,8 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Wall, 2, 0, 0, X),
     Place(Part::Doorway, 1, 1, 0, Z),
     Place(Part::Doorway, 1, 1, 0, X),
-    Place(Part::Wall, 1, 1, 0, D),
+    Place(Part::Wall, 2, 1, 0, X),
+    Place(Part::Wall, 1, 2, 0, Z),
     // Doors: metal on the front if there is one, else wood; wood on the
     // inner one (refused wherever a door already hangs). The front door is
     // first because it is the one a single door goes on. Its lock is set
@@ -679,7 +677,7 @@ pub const STARTER: &[BaseOp] = &[
     Place(Part::Wall, 1, 1, 1, Z),
     Place(Part::Roof, 0, 0, 2, P),
     Place(Part::Roof, 1, 0, 2, P),
-    Place(Part::TriRoof, 1, 1, 1, T),
+    Place(Part::Roof, 1, 1, 1, P),
     // Grade in stone: the core's walls first, then the rest of the shell.
     Upgrade(0, 0, 0, X, MAT_STONE),
     Upgrade(0, 0, 0, Z, MAT_STONE),
@@ -688,10 +686,11 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(2, 0, 0, X, MAT_STONE),
     Upgrade(1, 1, 0, Z, MAT_STONE),
     Upgrade(1, 1, 0, X, MAT_STONE),
-    Upgrade(1, 1, 0, D, MAT_STONE),
+    Upgrade(2, 1, 0, X, MAT_STONE),
+    Upgrade(1, 2, 0, Z, MAT_STONE),
     Upgrade(0, 0, 0, P, MAT_STONE),
     Upgrade(1, 0, 0, P, MAT_STONE),
-    Upgrade(1, 1, 0, T, MAT_STONE),
+    Upgrade(1, 1, 0, P, MAT_STONE),
     // Loot upstairs, over the cupboard.
     Deploy(Kit::Box, 0, 0, 1, P),
     // What stone did not reach goes to wood with what wood is left (refused
@@ -703,10 +702,11 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(2, 0, 0, X, MAT_WOOD),
     Upgrade(1, 1, 0, Z, MAT_WOOD),
     Upgrade(1, 1, 0, X, MAT_WOOD),
-    Upgrade(1, 1, 0, D, MAT_WOOD),
+    Upgrade(2, 1, 0, X, MAT_WOOD),
+    Upgrade(1, 2, 0, Z, MAT_WOOD),
     Upgrade(0, 0, 0, P, MAT_WOOD),
     Upgrade(1, 0, 0, P, MAT_WOOD),
-    Upgrade(1, 1, 0, T, MAT_WOOD),
+    Upgrade(1, 1, 0, P, MAT_WOOD),
     // And the second storey the same way, once the ground floor is done.
     Upgrade(1, 0, 0, LOC_RISER_ZLO, MAT_STONE),
     Upgrade(0, 0, 1, P, MAT_STONE),
@@ -718,7 +718,7 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(1, 1, 1, Z, MAT_STONE),
     Upgrade(0, 0, 2, P, MAT_STONE),
     Upgrade(1, 0, 2, P, MAT_STONE),
-    Upgrade(1, 1, 1, T, MAT_STONE),
+    Upgrade(1, 1, 1, P, MAT_STONE),
     Upgrade(1, 0, 0, LOC_RISER_ZLO, MAT_WOOD),
     Upgrade(0, 0, 1, P, MAT_WOOD),
     Upgrade(0, 0, 1, X, MAT_WOOD),
@@ -729,7 +729,7 @@ pub const STARTER: &[BaseOp] = &[
     Upgrade(1, 1, 1, Z, MAT_WOOD),
     Upgrade(0, 0, 2, P, MAT_WOOD),
     Upgrade(1, 0, 2, P, MAT_WOOD),
-    Upgrade(1, 1, 1, T, MAT_WOOD),
+    Upgrade(1, 1, 1, P, MAT_WOOD),
     // Rent.
     Feed(0, 0, 0),
 ];
@@ -740,9 +740,9 @@ pub const STARTER_FOOTPRINT: [(i8, i8); 3] = [(0, 0), (1, 0), (1, 1)];
 
 /// Where the owner stands while it builds, in metres from the plot cell's
 /// low corner: in the core, in front of the cupboard by the north wall, where
-/// every address of [`STARTER`] is inside `build::BUILD_REACH_M` (planar
-/// reach, so every storey is) and which both doors stand between and the
-/// outside.
+/// every address of [`STARTER`] but the airlock's outer walls is inside
+/// `build::BUILD_REACH_M` (planar reach, so every storey is) and which both
+/// doors stand between and the outside.
 pub const STARTER_STAND_M: (f32, f32) = (2.45, 0.75);
 
 /// How the cupboard stands in the core: at its centre, turned a quarter to
@@ -755,8 +755,8 @@ pub const HEARTH_POSE: crate::footprint::Pose = crate::footprint::Pose {
     yaw: 64,
 };
 
-/// Where the owner stands to set the front door's lock: inside the airlock
-/// triangle, in line with the inner doorway it came in by.
+/// Where the owner stands to set the front door's lock: inside the airlock,
+/// in line with the inner doorway it came in by.
 pub const AIRLOCK_STAND_M: (f32, f32) = (4.4, 3.7);
 
 /// Where it stands to hang the inner door and set its lock: in the room,
@@ -765,15 +765,20 @@ pub const INNER_STAND_M: (f32, f32) = (4.5, 2.2);
 
 /// Where the owner stands for `op`, in metres from the plot cell's low
 /// corner: [`STARTER_STAND_M`] for everything but the two doors' locks,
-/// which are worked from beside their doors. A door is reached at
-/// `backpack::LOOT_REACH_M`, in sight and on its storey (`reach.rs`), and
-/// neither door is, from the core.
+/// which are worked from beside their doors, and the airlock's two outer
+/// walls, past build reach from the core and worked from the room. A door
+/// is reached at `backpack::LOOT_REACH_M`, in sight and on its storey
+/// (`reach.rs`), and neither door is, from the core.
 pub fn stand_m(op: BaseOp) -> (f32, f32) {
     match op {
         Deploy(Kit::Lock, 1, 1, 0, X) | Code(1, 1, 0, X) => AIRLOCK_STAND_M,
         Deploy(Kit::Door, 1, 1, 0, Z) | Deploy(Kit::Lock, 1, 1, 0, Z) | Code(1, 1, 0, Z) => {
             INNER_STAND_M
         }
+        Place(_, 2, 1, 0, X)
+        | Place(_, 1, 2, 0, Z)
+        | Upgrade(2, 1, 0, X, _)
+        | Upgrade(1, 2, 0, Z, _) => INNER_STAND_M,
         _ => STARTER_STAND_M,
     }
 }

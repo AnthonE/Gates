@@ -1487,6 +1487,8 @@ pub fn spawn_item(
                         MeshMaterial3d::<StandardMaterial>(Handle::default()),
                         Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
                         Visibility::Hidden,
+                        // Your shadow is the whole body's (`own_shadow.rs`).
+                        bevy::light::NotShadowCaster,
                     ))
                     // The bow's live string and the arrow on it, in the
                     // model's own frame (`bow::drive` shows them).
@@ -1843,8 +1845,13 @@ pub fn dress_arms(
     // third time, in a third disguise. It is safe to disable here and only
     // here: the arms are a handful of triangles that are in view by
     // construction, so there is nothing for a culler to save.
+    //
+    // And they cast nothing: your shadow is the whole body's
+    // (`own_shadow.rs`), and an arm's on top of it floats beside it.
     for e in drawn {
-        commands.entity(e).insert(NoFrustumCulling);
+        commands
+            .entity(e)
+            .insert((NoFrustumCulling, bevy::light::NotShadowCaster));
     }
 
     // The half that is not arms. `Visibility` and not scale: a skinned mesh's
