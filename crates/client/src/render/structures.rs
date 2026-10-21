@@ -657,6 +657,9 @@ struct Live {
     /// Redraw state for the reason `plate` is: the floor under it can arrive
     /// after it does, and the height is read off what is under it now.
     base_y: f32,
+    /// The footprint a piece was drawn at: a flight the grid cannot name
+    /// turns by its footprint alone, keeping address, row and facing.
+    sock: sim_core::sock::Sock,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -2940,6 +2943,7 @@ pub fn stream(
                 && live.own == own
                 && live.facing == rec.facing
                 && live.foot_drop == foot_drop
+                && live.sock == rec.sock
             {
                 continue;
             }
@@ -2996,6 +3000,7 @@ pub fn stream(
                 facing: rec.facing,
                 foot_drop,
                 base_y: 0.0,
+                sock: rec.sock,
             },
         );
     }
@@ -3135,6 +3140,7 @@ pub fn stream(
                 facing: 0,
                 foot_drop: 0.0,
                 base_y,
+                sock: Default::default(),
             },
         );
     }
@@ -3217,6 +3223,7 @@ pub fn stream(
                     facing: 0,
                     foot_drop: 0.0,
                     base_y: 0.0,
+                    sock: Default::default(),
                 },
             );
             continue;
@@ -3293,6 +3300,7 @@ pub fn stream(
                 facing: 0,
                 foot_drop: 0.0,
                 base_y: 0.0,
+                sock: Default::default(),
             },
         );
     }

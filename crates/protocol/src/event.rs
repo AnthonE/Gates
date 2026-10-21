@@ -9885,6 +9885,17 @@ mod tests {
         );
         // Any other loc past the edges is still no door's.
         assert!(encode_event_door(cx, cz, level, 4, true, false, false, false, &mut buf).is_err());
+        // And the hand on it goes out: a use, and a code at its lock.
+        let len = crate::encode_action_use(cx, cz, level, loc, &mut buf).unwrap();
+        assert_eq!(
+            crate::decode_action(&buf[..len]).unwrap(),
+            crate::ActionMsg::Use { cx, cz, level, loc }
+        );
+        let len = crate::encode_action_access(cx, cz, level, loc, 0, 1234, &mut buf).unwrap();
+        assert!(matches!(
+            crate::decode_action(&buf[..len]).unwrap(),
+            crate::ActionMsg::Access { loc: l, .. } if l == loc
+        ));
     }
 }
 

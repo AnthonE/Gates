@@ -3330,8 +3330,10 @@ pub fn encode_action_use(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        // The deploy store's whole range, as the decoder reads it: a body
+        // slot, a doorway's edge, or a doorway the grid cannot name.
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(true)
     {
         return Err(WireError::Range);
     }
@@ -3445,7 +3447,7 @@ pub fn encode_action_access(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(true)
         || op > sim_core::deploy::ACCESS_OP_MAX
     {
         return Err(WireError::Range);

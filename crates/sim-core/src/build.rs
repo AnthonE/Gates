@@ -3521,6 +3521,8 @@ pub fn rotate(
         return;
     }
     let (next, sock) = if crate::circulation::is_riser(def.shape) {
+        // The record's own storey: a posed piece's command address spells
+        // its id, level bits and all (`spell_id`).
         let here = rec.addr();
         let body = here.sock.body();
         let at = |level: u8, sock: crate::sock::Sock| crate::sock::PieceAddr {
@@ -3540,7 +3542,7 @@ pub fn rotate(
         }
         // A spiral carrying the flight above it.
         if matches!(def.shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
-            && level_step(level, 1).is_some_and(|up| {
+            && level_step(here.level, 1).is_some_and(|up| {
                 let (fl, n) = flights_of(&body);
                 fl[..n]
                     .iter()
@@ -3554,7 +3556,7 @@ pub fn rotate(
         let (fl, n) = flights_of(&body);
         if fl[..n]
             .iter()
-            .any(|&f| f != here.sock && pieces.find_addr(&at(level, f)).is_some())
+            .any(|&f| f != here.sock && pieces.find_addr(&at(here.level, f)).is_some())
         {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
             return;
@@ -3566,7 +3568,7 @@ pub fn rotate(
         } else {
             crate::sock::Sock::riser(here.sock.at, here.sock.dir + 9)
         };
-        if !crate::support::supported(pieces, bc, def.shape, &at(level, turned)) {
+        if !crate::support::supported(pieces, bc, def.shape, &at(here.level, turned)) {
             events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
             return;
         }
