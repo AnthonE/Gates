@@ -65,6 +65,7 @@ pub mod roster;
 pub mod sentry;
 pub mod shop;
 pub mod skin;
+pub mod sock;
 pub mod space;
 pub mod spent;
 pub mod spot;

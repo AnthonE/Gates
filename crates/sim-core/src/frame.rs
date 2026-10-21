@@ -13,6 +13,26 @@ use crate::lattice::LPt;
 /// Centimetres in a metre, for the frame's integer origin.
 const CM: f32 = 0.01;
 
+/// √3 / 2.
+const H3: f32 = 0.866_025_4;
+
+/// (cos, sin) of k × 30°, the lattice's twelve directions in its own
+/// metres (x along ζ⁰, z along ζ³).
+pub const STEP_CS: [(f32, f32); 12] = [
+    (1.0, 0.0),
+    (H3, 0.5),
+    (0.5, H3),
+    (0.0, 1.0),
+    (-0.5, H3),
+    (-H3, 0.5),
+    (-1.0, 0.0),
+    (-H3, -0.5),
+    (-0.5, -H3),
+    (0.0, -1.0),
+    (0.5, -H3),
+    (H3, -0.5),
+];
+
 /// Where a building's lattice stands. `yaw` follows `footprint::Rect` and
 /// `yaw_dir`: 0 faces +z, increasing turns toward +x, 65 536 a whole turn,
 /// so local +x lands on (c, −s) and local +z on (s, c).
@@ -65,6 +85,12 @@ impl Frame {
         (dx * self.c - dz * self.s, dx * self.s + dz * self.c)
     }
 
+    /// The world unit vector of lattice direction `k` (ζᵏ).
+    pub fn axis(&self, k: u8) -> (f32, f32) {
+        let (lx, lz) = STEP_CS[(k % 12) as usize];
+        (lx * self.c + lz * self.s, -lx * self.s + lz * self.c)
+    }
+
     /// World height of `y` bands above the frame's floor.
     pub fn y_m(&self, y: i32) -> f32 {
         (self.band + y) as f32 * crate::build::BUILD_BASE_Q_M
@@ -98,6 +124,24 @@ mod tests {
         assert!((x - 3.0) * (x - 3.0) < 1e-8 && z * z < 1e-8, "({x}, {z})");
         let r = crate::footprint::Rect::new(0.0, 0.0, 1.0, 1.0, 64);
         assert!((r.s - f.s) * (r.s - f.s) < 1e-8 && (r.c - f.c) * (r.c - f.c) < 1e-8);
+    }
+
+    /// `axis` is the direction `to_world` moves a point along an edge.
+    #[test]
+    fn an_axis_is_where_an_edge_goes() {
+        for yaw in [0u16, 1, 9_000, 16_384, 40_000, 65_535] {
+            let f = Frame::new((10_000, 20_000), 0, yaw);
+            let o = f.to_world(LPt::ZERO);
+            for k in 0..12 {
+                let (x, z) = f.to_world(LPt::edge(k));
+                let (ax, az) = f.axis(k);
+                let (ex, ez) = ((x - o.0) / 3.0, (z - o.1) / 3.0);
+                assert!(
+                    (ax - ex).abs() < 1e-4 && (az - ez).abs() < 1e-4,
+                    "{yaw} {k}"
+                );
+            }
+        }
     }
 
     #[test]
