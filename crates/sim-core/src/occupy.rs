@@ -237,7 +237,11 @@ pub struct SlotCache {
     /// none — a COUNT, which is quotable on any box, unlike the elapsed time
     /// that motivated the cache.
     resolves: u32,
-    lines: [Line; SLOT_CACHE_SLOTS],
+    /// Sized at construction like the crags: one body's prediction needs
+    /// [`SLOT_CACHE_SLOTS`], a shard's spread-out roster
+    /// `limits::SLOT_CACHE_LINES`.
+    lines: Box<[Line]>,
+    line_shift: u32,
     /// Resolved rock formations (`boulder::formation`), keyed by formation
     /// cell. On the heap: the line array above already sits in this struct.
     rocks: Box<[RockLine; ROCK_CACHE_LINES]>,
@@ -313,6 +317,7 @@ impl SlotCache {
     /// A cache for one body's queries: a client's prediction, a fixture.
     pub fn new() -> Self {
         Self::with_lines(
+            SLOT_CACHE_SLOTS,
             crate::limits::CRAG_CACHE_LINES_ONE,
             crate::limits::FACE_CACHE_LINES_ONE,
         )
@@ -321,21 +326,28 @@ impl SlotCache {
     /// A cache for a whole shard's bodies.
     pub fn shard() -> Self {
         Self::with_lines(
+            crate::limits::SLOT_CACHE_LINES,
             crate::limits::CRAG_CACHE_LINES,
             crate::limits::FACE_CACHE_LINES,
         )
     }
 
-    fn with_lines(n: usize, faces: usize) -> Self {
-        assert!(n.is_power_of_two() && n >= 2);
+    fn with_lines(slots: usize, n: usize, faces: usize) -> Self {
+        assert!(slots.is_power_of_two() && slots >= 2);
+        assert!(n.is_power_of_two() && n >= 4);
         assert!(faces.is_power_of_two() && faces >= 2);
         Self {
             seed: 0,
             resolves: 0,
-            lines: [Line {
-                key: NO_KEY,
-                slot: EMPTY_SLOT,
-            }; SLOT_CACHE_SLOTS],
+            lines: vec![
+                Line {
+                    key: NO_KEY,
+                    slot: EMPTY_SLOT,
+                };
+                slots
+            ]
+            .into_boxed_slice(),
+            line_shift: 32 - slots.trailing_zeros(),
             rocks: crate::boxed_array(RockLine {
                 key: NO_KEY,
                 f: crate::boulder::Formation::EMPTY,
@@ -348,7 +360,8 @@ impl SlotCache {
                 n
             ]
             .into_boxed_slice(),
-            crag_shift: 32 - n.trailing_zeros(),
+            // One set per two lines (`crag`).
+            crag_shift: 32 - (n / 2).trailing_zeros(),
             heights: vec![
                 SurfLine {
                     key: NO_KEY,
@@ -397,17 +410,27 @@ impl SlotCache {
 
     /// The crag spot (`gi`, `gj`) grows, resolved once per seed.
     #[inline]
+    ///
+    /// Two-way: the lines pair into sets, the more recent of a set first. A
+    /// spread roster's spots collide often enough in a direct map that two
+    /// bodies' spots took turns evicting each other every tick (profile,
+    /// 2026-10-20); a second way ends that at the same size.
     pub fn crag(&mut self, seed: u64, haven: &Haven, gi: i32, gj: i32) -> crate::cliff::Crag {
         if self.seed != seed {
             self.reset(seed);
         }
         let key = ((gi as u32 & 0xFFFF) << 16) | (gj as u32 & 0xFFFF);
-        let ix = (key.wrapping_mul(2_654_435_761) >> self.crag_shift) as usize;
-        if self.crags[ix].key == key {
-            return self.crags[ix].c;
+        let set = ((key.wrapping_mul(2_654_435_761) >> self.crag_shift) as usize) << 1;
+        if self.crags[set].key == key {
+            return self.crags[set].c;
+        }
+        if self.crags[set + 1].key == key {
+            self.crags.swap(set, set + 1);
+            return self.crags[set].c;
         }
         let c = crate::cliff::crag(&mut self.lat, seed, haven, gi, gj);
-        self.crags[ix] = CragLine { key, c };
+        self.crags[set + 1] = self.crags[set];
+        self.crags[set] = CragLine { key, c };
         c
     }
 
@@ -569,10 +592,8 @@ impl SlotCache {
     /// Drop every line. Not a tick path — only a seed change reaches it.
     fn reset(&mut self, seed: u64) {
         self.seed = seed;
-        let mut i = 0;
-        while i < SLOT_CACHE_SLOTS {
-            self.lines[i].key = NO_KEY;
-            i += 1;
+        for line in self.lines.iter_mut() {
+            line.key = NO_KEY;
         }
         let mut i = 0;
         while i < ROCK_CACHE_LINES {
@@ -620,7 +641,7 @@ impl SlotCache {
         // Fibonacci hash, the same mix `collide::ColIndex` uses to spread its
         // build cells; the low bits of a cell key alone would put a whole row
         // of the island on one line.
-        let ix = (key.wrapping_mul(2_654_435_761) >> 16) as usize & (SLOT_CACHE_SLOTS - 1);
+        let ix = (key.wrapping_mul(2_654_435_761) >> self.line_shift) as usize;
         if self.lines[ix].key == key {
             return self.lines[ix].slot;
         }

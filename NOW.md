@@ -27,6 +27,72 @@ asked rather than a verdict (`§0fp` 1).
 
 # Buildable now — a loop can pick any of these
 
+## 0fb · Freeform building — what the honest ghost and the lattice left *(sim+client lane; W items on `next-wipe`)*
+
+The ghost runs the server's own `build::check_place` and a placed piece draws on the click
+(`ClientCore::predict_place`). `sim-core/src/lattice.rs`, `frame.rs` and `space.rs` are the
+freeform address space, exact and tested, and **nothing reads them yet**. The design is the
+operator's pick, 2026-10-20: Rust's freeform building, squares and equilateral triangles at
+30° steps, any base at any angle. W items are WIPE work: branch from `next-wipe`, PR into it,
+and merge `main` into `next-wipe` when one starts.
+
+1. **Playtest the two built halves.** A floating wall or a crossed triangle must draw red and
+   send nothing, and a placed piece must appear on the click and vanish on a refusal.
+2. **W1 · store and collision on `space`.** `PieceRec` gains `id`, building, lattice point, `y`
+   and `dir`, and `collide.rs` answers from `space::Space` with the same signatures. Map today's
+   grid onto frame 0 so the wire stays still. Bump `WORLD_SAVE_FORMAT`.
+3. **W2 · wire, save and the client mirror.** Add a `BuildingSync` message, and have events
+   carry the piece id. A piece's transform is frame ∘ lattice ∘ dir, computed per piece with no
+   Bevy hierarchy.
+4. **W3 · snap and place.** `build::snap(aim, held)` is shared by the ghost and the server.
+   `Place` becomes either (parent, socket) or a free foundation (cm, yaw), and the server
+   recomputes the pose. An unsnapped foundation mints a frame. Add equilateral triangle rows to
+   `content/*.toml`. Support and claim run on lattice neighbours.
+5. **W4 · deployables in world pose**, with a parent piece id (`deploy.rs` `body_site` and its
+   helpers).
+6. **W5 · chunk interest** on `space`'s buckets. This closes §0n1.
+7. **The ghost still cannot see a hearth's claim** (`ui::place::check` answers no for it), so a
+   placement inside a stranger's claim draws blue. A claim mirror (hearth positions and crews
+   in reach) would make it fully honest.
+8. **The ghost still jumps 3 m cells as the crosshair moves.** That ends with W3. Until then a
+   little hysteresis in `ui::place::target_at_with` would calm it.
+
+## 0sc · 500 players — what the cache fix and the phase timer left *(server+sim lane)*
+
+`bin/profile` (release, 100 clients) after #408. Clustered at 6 m: 1.6 ms a tick, 1.1 ms of it
+snapshot encode. Spread at 60 m: 1.4 ms, down from 9.9, because movement's scatter and crag
+memos stopped thrashing (`limits::SLOT_CACHE_LINES`, the two-way `SlotCache::crag`).
+`/status.json` now reports per-phase p50, p99 and max.
+
+1. **Soak at current features.** Run `bin/bots` at 100 and more against a release shard, read
+   `/status.json`'s `phase_*_us` and lane bytes, and record what moved, not the method.
+2. **The gun's worst case is unmeasured.** Give `bin/profile` a firing mode (a rifle, automatics
+   into open sky), then try the march early-out in `ranged::world_stop`: skip
+   `terrain::ground` where `y` clears the cached corner maximum by a measured slack. Ship it only
+   if a 100k-ray equivalence test holds and the replay golden does not move.
+3. **Parallel fan-out.** Run `update_interest`, `drip_client` and `encode_snapshot` on
+   `std::thread::scope` workers over disjoint client slices, giving each worker its own copy of
+   the `dg_buf`/`more_buf`/`ev_buf` scratch. Gate it on a test that each slot's bytes are
+   identical with 1 worker and with N. The sim stays on one thread.
+4. **512 online, 1024 bodies.**
+   - Split `MAX_PLAYERS` into connections and world slots.
+   - Fix the places the cap leaks:
+     - the id's slot byte (`net.rs` `gen<<8|slot`, client-core `id & 0xFF`);
+     - the `u128` slot masks (`client.rs` `TAGS_ALL`, `core.rs` `worn_dressed`);
+     - `MAX_COMMANDS_PER_TICK - MAX_PLAYERS`, which underflows;
+     - the players inline in `World`.
+   - Add a body bucket grid for interest and target scans.
+   - The crag memo scales with `MAX_PLAYERS` (23 MB at 512): make it four-way first.
+5. **Bandwidth.** 500 × 99 kB/s is about 400 Mbit/s. The fixes:
+   - a per-client byte budget;
+   - far entities at 10 Hz;
+   - per-client 8-bit entity handles;
+   - a degradation ladder driven by the phase timer.
+6. **Still linear.**
+   - the server's `world_slot_of` (`core.rs`, 18 uses);
+   - `Deploys::find`/`find_index`, which `World::chip` calls per edge hit;
+   - the broadcast arms of `route_events` that §0fan item 3 lists.
+
 ## 5sp · Spectator seats and signed agents are built — what they still owe *(net lane)*
 
 Wire v73 (2026-09-22): a viewer's own client watches a consenting player
@@ -476,9 +542,16 @@ act):
    §open "event-lane fan-out v0" is owed.
 2. Operator's call: should an owner hear their door knocked from anywhere? No owner
    check exists (`server/src/core.rs` `EV_KNOCK` arm, `hud.rs`).
-3. `EV_DEPLOY_PLACED` and the deploy walk are aimed (`interest::owned_in_interest`);
-   `EV_DOOR`/`EV_OVEN`/`EV_GROW` are still broadcast, because a client keeps every record
-   it was told about. Sizing: `findings/swing-fanout-20260824.md`.
+3. `EV_DEPLOY_PLACED`, the deploy walk, `EV_DOOR` and `EV_GROW` are aimed
+   (`interest::owned_in_interest`, owner exempt). A far client heals a missed door or bed from
+   its walk record after the 32 m re-arm.
+   - `EV_OVEN` is still broadcast. Burn state is not on the record, so a missed "went out" stays
+     lit. Fix the client first: it should clear an oven's lit bit when that oven's walk record
+     arrives.
+   - Also still broadcast: `WHEEL_SPIN`, `MECH_SOLVED`, `WORK`, `BAG_REMOVED`, `STRUCT_HIT`,
+     `PIECE_REPAIRED`, `CHARGE_PLACED`, `FIRE`, `NODE_STAGE`, the slot arms and the removals
+     (§0n1).
+   - Sizing: `findings/swing-fanout-20260824.md`.
 4. The combat and raid storms pass alone but together fill the 256-event cap (88
    dropped, all resync; `findings/note-20260830-two-storms-are-additive.md`).
    Candidate: §open "refusal coalescing v0" (window, counting, site unspoken).
@@ -497,8 +570,9 @@ act):
 
 ## 0sp · The encoder is the tick's largest phase now *(server lane)*
 
-1. The encoder is ~0.43 ms of a 0.83 ms tick (100 clients, one AOI cell). Rank with
-   `valgrind --tool=callgrind`; `server/src/bin/profile.rs` must never be a gate.
+1. The encoder is ~1.1 ms of a 1.6 ms tick (100 clients in one AOI cell, release, 2026-10-21).
+   Spread out it is 0.25 ms of 1.4 ms. Rank it with `valgrind --tool=callgrind`.
+   `server/src/bin/profile.rs` must never be a gate. §0sc item 3 is the structural answer.
 2. `World::scatter_clear` (`sim-core/src/world.rs:2367`) resolves cells cold, but a
    memo only pays across repeated picks: measure a respawn storm before `&mut self`.
 3. The soak still owes tick jitter and real bytes (§0q item 4).

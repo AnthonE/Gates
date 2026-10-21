@@ -41,6 +41,11 @@ pub const REMOVED_RING: usize = sim_core::limits::MAX_REMOVALS_PER_TICK;
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
 
+/// Placements this client sent and the server has not answered: how many
+/// are drawn at once, and how long one is drawn without an answer.
+pub const PENDING_PIECES: usize = 8;
+const PENDING_PIECE_MS: f64 = 1500.0;
+
 /// Shots heard between two drains, drop-oldest (guns v1): sixteen, so a
 /// fire-fight of automatics — an AK is a round every four ticks — does
 /// not evict the tracer and the count of a shot nobody drew yet.
@@ -2308,6 +2313,18 @@ pub struct ClientCore {
     /// belonged to some *other* queued action rolls this door back early
     /// — harmless, because a use that does land announces right behind.
     pending_door: Option<(u16, u16, u8, u8)>,
+    /// Pieces this client placed and the server has not confirmed, oldest
+    /// first, and the `now_ms` each stops being drawn at. Drawn the frame the
+    /// click lands and never collided with: the predictor walks the server's
+    /// world, and a piece the server refuses must not have moved anyone. The
+    /// broadcast at the same address confirms one, the next build refusal
+    /// takes the oldest, and the clock takes the rest.
+    pending_pieces: [PieceRec; PENDING_PIECES],
+    pending_until: [f64; PENDING_PIECES],
+    n_pending_pieces: usize,
+    /// Bumped on every change to `pending_pieces`, so the renderer redraws on
+    /// a click and an expiry as well as on the wire's news.
+    pending_pieces_gen: u32,
     /// The last removal's grid address (valid while the flags say a
     /// removal was applied this message).
     pub removed_addr: (u16, u16, u8, u8),
@@ -2578,6 +2595,10 @@ impl ClientCore {
             deploy_refusal_len: 0,
             ovens: LitOvens::new(),
             pending_door: None,
+            pending_pieces: [PieceRec::default(); PENDING_PIECES],
+            pending_until: [0.0; PENDING_PIECES],
+            n_pending_pieces: 0,
+            pending_pieces_gen: 0,
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
             own_struct_hit: (0, 0, 0, 0, 0, 0),
@@ -3324,6 +3345,7 @@ impl ClientCore {
                 flags |= APPLIED_RECIPES;
             }
             EventMsg::PiecePlaced { rec } => {
+                self.settle_pending_piece(rec.cx, rec.cz, rec.level, rec.loc);
                 if self
                     .pieces
                     .insert(rec, &self.piece_defs, self.piece_defs_have)
@@ -3356,6 +3378,13 @@ impl ClientCore {
                 }
             }
             EventMsg::BuildRefused { reason } => {
+                // Answers arrive in the order the actions went, so a refusal
+                // is the oldest placement's. One that belonged to an upgrade
+                // or a repair takes a placement down early, and the
+                // broadcast right behind puts it back.
+                if self.n_pending_pieces > 0 {
+                    self.drop_pending_piece(0);
+                }
                 if self.build_refusal_len == REFUSAL_RING {
                     self.build_refusal_head = (self.build_refusal_head + 1) % REFUSAL_RING;
                     self.build_refusal_len -= 1;
@@ -4321,6 +4350,53 @@ impl ClientCore {
         &self.piece_changes[..self.n_piece_changes]
     }
 
+    /// Draw a placement this client just sent, before the server answers.
+    /// Render-only (`pending_pieces`); a second one at the same address
+    /// replaces the first, and past [`PENDING_PIECES`] the oldest goes.
+    pub fn predict_place(&mut self, rec: PieceRec) {
+        if let Some(i) = self.pending_pieces[..self.n_pending_pieces]
+            .iter()
+            .position(|p| (p.cx, p.cz, p.level, p.loc) == (rec.cx, rec.cz, rec.level, rec.loc))
+        {
+            self.drop_pending_piece(i);
+        }
+        if self.n_pending_pieces == PENDING_PIECES {
+            self.drop_pending_piece(0);
+        }
+        let n = self.n_pending_pieces;
+        self.pending_pieces[n] = rec;
+        self.pending_until[n] = self.now_ms + PENDING_PIECE_MS;
+        self.n_pending_pieces += 1;
+        self.pending_pieces_gen = self.pending_pieces_gen.wrapping_add(1);
+    }
+
+    /// The placements drawn ahead of the server, oldest first.
+    pub fn pending_pieces(&self) -> &[PieceRec] {
+        &self.pending_pieces[..self.n_pending_pieces]
+    }
+
+    /// Changes whenever [`pending_pieces`](Self::pending_pieces) does.
+    pub fn pending_pieces_gen(&self) -> u32 {
+        self.pending_pieces_gen
+    }
+
+    fn settle_pending_piece(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
+        if let Some(i) = self.pending_pieces[..self.n_pending_pieces]
+            .iter()
+            .position(|p| (p.cx, p.cz, p.level, p.loc) == (cx, cz, level, loc))
+        {
+            self.drop_pending_piece(i);
+        }
+    }
+
+    fn drop_pending_piece(&mut self, i: usize) {
+        let n = self.n_pending_pieces;
+        self.pending_pieces.copy_within(i + 1..n, i);
+        self.pending_until.copy_within(i + 1..n, i);
+        self.n_pending_pieces -= 1;
+        self.pending_pieces_gen = self.pending_pieces_gen.wrapping_add(1);
+    }
+
     /// Toggle the door at the address **optimistically**, on this
     /// client's own input, before the server has spoken — NETCODE.md
     /// §6.1: your own door plays on input, remote doors on the event.
@@ -5209,6 +5285,9 @@ impl ClientCore {
         // why the native client never could.
         let dt_ms = clock::sane_dt(dt_ms);
         self.now_ms += dt_ms;
+        while self.n_pending_pieces > 0 && self.pending_until[0] <= self.now_ms {
+            self.drop_pending_piece(0);
+        }
         // The playout delay slews toward its jitter-derived target
         // (netcode v2 S5): floor + K jitters of margin, bounded by the
         // rails, moved slowly enough that the slide is beneath notice.
@@ -5520,6 +5599,46 @@ mod tests {
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// A placement is drawn from the click until the server answers: its
+    /// broadcast settles it, a refusal takes the oldest, the clock the rest.
+    #[test]
+    fn a_predicted_piece_lives_until_the_server_answers() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let at = |cx: u16| PieceRec {
+            cx,
+            cz: 9,
+            ..PieceRec::default()
+        };
+        c.predict_place(at(1));
+        c.predict_place(at(2));
+        c.predict_place(at(1)); // the same address again replaces, not stacks
+        assert_eq!(c.pending_pieces(), &[at(2), at(1)]);
+        let gen = c.pending_pieces_gen();
+        let len = protocol::encode_event_piece_placed(&at(1), &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.pending_pieces(), &[at(2)]);
+        assert_ne!(c.pending_pieces_gen(), gen, "a settle must redraw");
+        let len = protocol::encode_event_build_refused(1, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(c.pending_pieces().is_empty());
+        c.predict_place(at(3));
+        // Frame-sized steps: one `advance` claims at most `MAX_FRAME_MS`.
+        let mut waited = 0.0;
+        while waited + 100.0 < PENDING_PIECE_MS {
+            c.advance(100.0);
+            waited += 100.0;
+        }
+        assert_eq!(c.pending_pieces(), &[at(3)]);
+        c.advance(100.0);
+        assert!(c.pending_pieces().is_empty(), "nobody answered, so it goes");
+        for cx in 0..PENDING_PIECES as u16 + 2 {
+            c.predict_place(at(cx));
+        }
+        assert_eq!(c.pending_pieces().len(), PENDING_PIECES);
+        assert_eq!(c.pending_pieces()[0], at(2), "the oldest make room");
     }
 
     /// An agent's mark answers for the full id it was sent for: the next

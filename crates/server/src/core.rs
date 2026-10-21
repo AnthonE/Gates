@@ -423,6 +423,25 @@ struct Seat {
 const NO_SEAT: u8 = u8::MAX;
 const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
+/// The parts of a tick, as [`ShardCore::tick_marked`] marks them and
+/// `ShardStats::phase_hist` files them. The index is the histogram row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The shard loop's own work before the tick: joins, inputs, voice,
+    /// saves (`net.rs`).
+    Net = 0,
+    /// Inputs and actions into commands, before the sim runs.
+    Prep = 1,
+    /// `World::tick`.
+    Sim = 2,
+    /// Standings, teams and every client's interest set.
+    Interest = 3,
+    /// Event routing and the per-client drips.
+    Events = 4,
+    /// Every client's snapshot.
+    Encode = 5,
+}
+
 /// The side channels an admin verb needs and the sim's own state
 /// cannot provide — passed into [`ShardCore::tick`] rather than held,
 /// because every one of them belongs to a thread that is not this one.
@@ -2426,16 +2445,16 @@ impl ShardCore {
     /// world is not listening. It costs no allocation, which is why the
     /// suites that drive thousands of ticks use it.
     pub fn tick_bare(&mut self, stats: &ShardStats, send: impl FnMut(Lane, usize, &[u8]) -> bool) {
-        self.tick_bare_marked(stats, send, || {});
+        self.tick_bare_marked(stats, send, |_| {});
     }
 
-    /// [`Self::tick_bare`] with [`Self::tick_marked`]'s phase mark — the
-    /// profiler's (`bin/profile.rs`) way to time the snapshot phase apart.
+    /// [`Self::tick_bare`] with [`Self::tick_marked`]'s phase marks — the
+    /// profiler's (`bin/profile.rs`) way to time the phases apart.
     pub fn tick_bare_marked(
         &mut self,
         stats: &ShardStats,
         send: impl FnMut(Lane, usize, &[u8]) -> bool,
-        mark: impl FnOnce(),
+        mark: impl FnMut(Phase),
     ) {
         let mut log = crate::anomaly::Sink::off();
         let mut save_now = false;
@@ -2454,19 +2473,20 @@ impl ShardCore {
         ops: &mut Ops<'_>,
         send: impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
-        self.tick_marked(stats, ops, send, || {});
+        self.tick_marked(stats, ops, send, |_| {});
     }
 
-    /// [`Self::tick`], calling `mark` once just before the snapshot phase.
-    /// The shard passes a no-op (inlined away); the profiler stamps a clock
-    /// there, which is the only way to split encode from the rest now that
-    /// every tick is a snapshot tick (`SNAPSHOT_INTERVAL_TICKS` = 1).
+    /// [`Self::tick`], calling `mark` as each [`Phase`] starts: the shard
+    /// stamps a clock there for its per-phase histograms (`stats.rs`), the
+    /// profiler for its split. Whatever ran before the first mark is the
+    /// command build ([`Phase::Prep`]'s time); the last phase ends when this
+    /// returns.
     pub fn tick_marked(
         &mut self,
         stats: &ShardStats,
         ops: &mut Ops<'_>,
         mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
-        mark: impl FnOnce(),
+        mut mark: impl FnMut(Phase),
     ) {
         // Owned skin sets the platform answered since the last tick, queued
         // behind whatever else this window holds — so a join queued in the
@@ -2919,7 +2939,9 @@ impl ShardCore {
                 n += 1;
             }
         }
+        mark(Phase::Sim);
         self.world.tick(&self.cmd_buf[..n]);
+        mark(Phase::Interest);
         self.note_standings();
         self.note_achievements(n);
         // The boards, rebuilt at most every five seconds; whatever moved
@@ -2956,6 +2978,7 @@ impl ShardCore {
                 self.update_interest(MAX_PLAYERS + i, stats);
             }
         }
+        mark(Phase::Events);
         self.fan_out(&live, stats, ops, &mut send);
 
         self.note_worn();
@@ -2975,7 +2998,7 @@ impl ShardCore {
             }
         }
 
-        mark();
+        mark(Phase::Encode);
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             for slot in 0..MAX_PLAYERS {
                 if !self.clients[slot].connected {
@@ -4828,17 +4851,23 @@ impl ShardCore {
                     }
                 }
                 EV_DOOR => {
-                    // A door's state is a world fact: broadcast, not
-                    // AOI'd — though the placement that put it there is
-                    // now (`NOW.md` §0n1 item 2). A client keeps every
-                    // record it was ever told about (nothing un-subscribes
-                    // it), so one that walked away still holds this door
-                    // and must hear it swing. Aiming this needs the re-arm
-                    // argument, and it is `NOW.md` §0fan's. A client that
-                    // misses one re-derives it from the deploy walk — the
-                    // sync record carries the bit.
+                    // Aimed like the placement that put the door there
+                    // (`EV_DEPLOY_PLACED`'s predicate, owner exempt). A
+                    // client that walked away keeps its stale record, and
+                    // that is safe by the re-arm argument: to come back
+                    // inside `AOI_ENTER` it must move past the re-arm
+                    // distance, the re-arm re-walks everything in range,
+                    // and a walk record overwrites the door's open and lock
+                    // bits (`DeploySet::insert`, `seal_for`) before the
+                    // player can reach it.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let owner = self
+                        .world
+                        .deploys
+                        .find(cx, cz, level, loc)
+                        .map_or(0, |d| d.owner);
+                    let at = interest::cell_cm(cx, cz);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     let has_lock = ev.b & 4 != 0;
                     // Which kind of lock, off the store at encode (v120):
@@ -4857,7 +4886,19 @@ impl ShardCore {
                     ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        owner,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -4960,13 +5001,20 @@ impl ShardCore {
                     }
                 }
                 EV_GROW => {
-                    // A planter's beds (crops v1): broadcast, `EV_OVEN`'s
-                    // posture. A client that misses one reads the byte off
-                    // the deploy walk on its resync.
+                    // A planter's beds (crops v1): aimed like `EV_DOOR`, for
+                    // its reason — the walk record carries the beds byte,
+                    // so a client that missed a stage reads it back before
+                    // it is near enough to see the planter.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
                     let loc = (ev.b >> 8) as u8;
                     let stages = ev.b as u8;
+                    let owner = self
+                        .world
+                        .deploys
+                        .find(cx, cz, level, loc)
+                        .map_or(0, |d| d.owner);
+                    let at = interest::cell_cm(cx, cz);
                     match protocol::encode_event_planter(
                         cx,
                         cz,
@@ -4977,7 +5025,19 @@ impl ShardCore {
                     ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        owner,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -5706,8 +5766,14 @@ impl ShardCore {
         }
     }
 
-    /// Resolve which connection slot player `id` belongs to.
+    /// Resolve which connection slot player `id` belongs to. The shard mints
+    /// ids with the connection slot in the low byte (`net.rs`), so that slot
+    /// is asked first; anything else (a test's arbitrary id) takes the scan.
     fn client_slot_of(&self, id: u32) -> Option<usize> {
+        let guess = (id & 0xFF) as usize;
+        if guess < MAX_PLAYERS && self.clients[guess].connected && self.clients[guess].id == id {
+            return Some(guess);
+        }
         (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
     }
 
