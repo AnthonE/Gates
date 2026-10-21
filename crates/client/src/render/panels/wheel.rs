@@ -311,7 +311,21 @@ pub fn build_hammer_screen(
                     let verb = ui
                         .hover
                         .map(|i| hammer::VERBS[i.min(hammer::VERBS.len() - 1)]);
-                    let name = verb.map(hammer::label).unwrap_or("Hammer");
+                    let action =
+                        verb.map(|v| hammer::act(v, near, &core.piece_defs, core.piece_defs_have));
+                    // The grade the Upgrade wedge climbs to, and the look
+                    // `Q` and `E` have picked for it (`hammer::GradeSkin`).
+                    let grade = match action {
+                        Some(hammer::Act::Upgrade { material, .. }) => Some((
+                            material,
+                            ui.grade_skin[material as usize % ui.grade_skin.len()],
+                        )),
+                        _ => None,
+                    };
+                    let name = match grade {
+                        Some((m, pick)) => format!("Upgrade to {}", hammer::skin_name(m, pick)),
+                        None => verb.map(hammer::label).unwrap_or("Hammer").to_string(),
+                    };
                     // The chosen verb's own glyph over its name, the way the
                     // shape wheel's `readout` puts the piece's over its. Only
                     // while a wedge is hovered: with nothing chosen there is
@@ -332,12 +346,32 @@ pub fn build_hammer_screen(
                             Pickable::IGNORE,
                         ));
                     }
+                    // The title, between the reference's `Q` and `E` chips
+                    // when the grade has looks to pick from.
+                    let skins = grade.is_some_and(|(m, _)| !hammer::grade_skins(m).is_empty());
                     c.spawn((
-                        Text::new(name.to_string()),
-                        font_bold(18.0),
-                        TextColor(Color::srgb(0.99, 0.98, 0.96)),
+                        Node {
+                            flex_direction: FlexDirection::Row,
+                            align_items: AlignItems::Center,
+                            column_gap: Val::Px(6.0),
+                            ..default()
+                        },
                         Pickable::IGNORE,
-                    ));
+                    ))
+                    .with_children(|row| {
+                        if skins {
+                            key_chip(row, "\u{2039} Q");
+                        }
+                        row.spawn((
+                            Text::new(name),
+                            font_bold(17.0),
+                            TextColor(Color::srgb(0.99, 0.98, 0.96)),
+                            Pickable::IGNORE,
+                        ));
+                        if skins {
+                            key_chip(row, "E \u{203a}");
+                        }
+                    });
                     c.spawn((
                         Text::new(hammer::target_name(
                             near,
@@ -351,8 +385,6 @@ pub fn build_hammer_screen(
                         TextColor(BADGE),
                         Pickable::IGNORE,
                     ));
-                    let action =
-                        verb.map(|v| hammer::act(v, near, &core.piece_defs, core.piece_defs_have));
                     // The repair's bill (wire v102), the rows
                     // `build::repair` takes for the hp last reported — a
                     // floor, since decay drains hp unannounced
@@ -373,7 +405,9 @@ pub fn build_hammer_screen(
                     };
                     let line = match action {
                         Some(hammer::Act::Say(why)) => why.to_string(),
-                        Some(hammer::Act::Upgrade { .. }) => "Upgrade cost".into(),
+                        Some(hammer::Act::Upgrade { material, .. }) => {
+                            hammer::grade_blurb(material).into()
+                        }
                         Some(hammer::Act::Repair { .. }) => {
                             hammer::repair_line(near, repair.map(|(_, n)| n))
                         }
@@ -389,6 +423,26 @@ pub fn build_hammer_screen(
                         TextColor(TEXT_DIM),
                         Pickable::IGNORE,
                     ));
+                    // A picked skin is the client's alone until pieces carry
+                    // one (`hammer::GradeSkin`), and the wheel says so rather
+                    // than let a player pay for a look that does not land.
+                    if let Some((m, _)) = grade.filter(|(_, pick)| *pick != 0) {
+                        c.spawn((
+                            Node {
+                                max_width: Val::Px(170.0),
+                                ..default()
+                            },
+                            Text::new(format!(
+                                "preview only: skins are not live yet, \
+                                 this builds plain {}",
+                                crate::ui::build::material_label(m)
+                            )),
+                            font(10.0),
+                            TextColor(BADGE),
+                            TextLayout::new_with_justify(Justify::Center),
+                            Pickable::IGNORE,
+                        ));
+                    }
                     if matches!(action, Some(hammer::Act::Upgrade { .. })) {
                         if let Some(row) = near.and_then(|t| {
                             hammer::upgrade_row(t, &core.piece_defs, core.piece_defs_have)
@@ -442,12 +496,36 @@ pub fn build_hammer_screen(
                 b.spawn((
                     Text::new(
                         "the ring picks the verb   -   release fires it   \
+                         -   Q / E pick the upgrade's skin   \
                          -   let go over the centre to cancel",
                     ),
                     font(12.0),
                     TextColor(TEXT_DIM),
                 ));
             });
+        });
+}
+
+/// A key's chip beside the hammer's title: our green, dark ink, the way the
+/// reference sets its `Q` and `E`.
+fn key_chip(parent: &mut ChildSpawnerCommands, key: &str) {
+    parent
+        .spawn((
+            Node {
+                padding: UiRect::axes(Val::Px(5.0), Val::Px(1.0)),
+                border_radius: BorderRadius::all(Val::Px(3.0)),
+                ..default()
+            },
+            BackgroundColor(WHEEL_INK),
+            Pickable::IGNORE,
+        ))
+        .with_children(|chip| {
+            chip.spawn((
+                Text::new(key.to_string()),
+                font_bold(11.0),
+                TextColor(crate::render::ui::GO_INK),
+                Pickable::IGNORE,
+            ));
         });
 }
 
@@ -640,75 +718,85 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
     use sim_core::build::{BuildContent, PieceDef, LOC_EDGE_XLO, MAT_STONE, MAT_WOOD, SHAPE_WALL};
 
+    /// A wood wall and its stone row, and the wood wall aimed at, half hp.
+    fn wall() -> (ClientCore, Target) {
+        let mut core = ClientCore::new(1, 0, 0);
+        core.piece_defs = BuildContent::EMPTY;
+        core.piece_defs.piece_count = 2;
+        core.piece_defs_have = 2;
+        core.piece_defs.repair_pct = 100;
+        core.piece_defs.pieces[0] = PieceDef {
+            shape: SHAPE_WALL,
+            material: MAT_WOOD,
+            hp: 500,
+            n_costs: 1,
+            costs: [(3, 10), (0, 0)],
+        };
+        core.piece_defs.pieces[1] = PieceDef {
+            material: MAT_STONE,
+            n_costs: 1,
+            costs: [(2, 37), (0, 0)],
+            ..core.piece_defs.pieces[0]
+        };
+        let target = Target {
+            store: Store::Piece,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: LOC_EDGE_XLO,
+            row: 0,
+            dmg: 1,
+            hp: 250,
+            hp_max: 500,
+            side: Some(true),
+        };
+        (core, target)
+    }
+
+    /// Every line of text the hammer wheel draws for `ui`.
+    fn words(ui: Ui, core: ClientCore, target: Target) -> Vec<String> {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.world_mut()
+            .run_system_once(move |mut commands: Commands| {
+                build_hammer_screen(&mut commands, &ui, &core, Some(&target), &Icons::default());
+            })
+            .unwrap();
+        let world = app.world_mut();
+        world
+            .query::<&Text>()
+            .iter(world)
+            .map(|t| t.0.clone())
+            .collect()
+    }
+
     #[test]
     fn every_hammer_verb_builds_real_nodes_with_a_target_and_upgrade_price() {
         for verb in hammer::VERBS {
-            let mut app = App::new();
-            app.add_plugins(MinimalPlugins);
-            let mut core = ClientCore::new(1, 0, 0);
-            core.piece_defs = BuildContent::EMPTY;
-            core.piece_defs.piece_count = 2;
-            core.piece_defs_have = 2;
-            core.piece_defs.repair_pct = 100;
-            core.piece_defs.pieces[0] = PieceDef {
-                shape: SHAPE_WALL,
-                material: MAT_WOOD,
-                hp: 500,
-                n_costs: 1,
-                costs: [(3, 10), (0, 0)],
-            };
-            core.piece_defs.pieces[1] = PieceDef {
-                material: MAT_STONE,
-                n_costs: 1,
-                costs: [(2, 37), (0, 0)],
-                ..core.piece_defs.pieces[0]
-            };
-            let target = Target {
-                store: Store::Piece,
-                cx: 7,
-                cz: 9,
-                level: 1,
-                loc: LOC_EDGE_XLO,
-                row: 0,
-                dmg: 1,
-                hp: 250,
-                hp_max: 500,
-                side: Some(true),
-            };
+            let (core, target) = wall();
             let ui = Ui {
                 panel: Panel::Hammer,
                 hover: hammer::VERBS.iter().position(|v| *v == verb),
                 ..Ui::default()
             };
-            app.world_mut()
-                .run_system_once(move |mut commands: Commands| {
-                    build_hammer_screen(
-                        &mut commands,
-                        &ui,
-                        &core,
-                        Some(&target),
-                        &Icons::default(),
-                    );
-                })
-                .unwrap();
-            let world = app.world_mut();
-            let words: Vec<String> = world
-                .query::<&Text>()
-                .iter(world)
-                .map(|t| t.0.clone())
-                .collect();
+            let words = words(ui, core, target);
             assert!(
                 words.iter().any(|s| s == "Wood Wall"),
                 "{verb:?}: {words:?}"
             );
-            assert!(words.iter().any(|s| s == hammer::label(verb)));
             if verb == hammer::Verb::Upgrade {
+                // The wedge names the grade it climbs to, between its `Q`
+                // and `E` chips, and the price.
+                assert!(words.iter().any(|s| s == "Upgrade to Stone"), "{words:?}");
+                assert!(words.iter().any(|s| s.ends_with(" Q")), "{words:?}");
                 assert!(
                     words
                         .iter()
                         .any(|s| s.starts_with("37 ") && s.ends_with("(0)")),
                     "{words:?}"
                 );
+            } else {
+                assert!(words.iter().any(|s| s == hammer::label(verb)));
             }
             if verb == hammer::Verb::Repair {
                 // Half of a 10-unit wall's hp is 5 units — the bill for the
@@ -728,5 +816,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A look picked with `Q`/`E` titles the Upgrade wedge, and the wheel
+    /// says it is a preview while pieces cannot carry one.
+    #[test]
+    fn a_picked_building_skin_titles_the_upgrade_and_says_it_is_a_preview() {
+        let (core, target) = wall();
+        let mut ui = Ui {
+            panel: Panel::Hammer,
+            hover: hammer::VERBS
+                .iter()
+                .position(|v| *v == hammer::Verb::Upgrade),
+            ..Ui::default()
+        };
+        ui.grade_skin[MAT_STONE as usize] = 2;
+        let words = words(ui, core, target);
+        let name = hammer::grade_skins(MAT_STONE)[1].name;
+        assert!(
+            words.iter().any(|s| *s == format!("Upgrade to {name}")),
+            "{words:?}"
+        );
+        assert!(
+            words.iter().any(|s| s.contains("builds plain Stone")),
+            "{words:?}"
+        );
     }
 }
