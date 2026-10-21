@@ -645,7 +645,9 @@ fn build(commands: &mut Commands, v: &View) {
                 root.spawn((ui::backdrop(b.0.clone()), Drifts));
                 root.spawn(ui::scrim());
             }
-            if let Some(p) = v.portrait {
+            // On PLAY GAME only: the other pages' panes are translucent and
+            // he showed through them.
+            if let (Some(p), Nav::Play) = (v.portrait, v.browse.nav) {
                 hero(root, p);
             }
             header(root, v.who, v.my);
@@ -684,14 +686,15 @@ fn build(commands: &mut Commands, v: &View) {
         });
 }
 
-/// Triple T, bottom left under the nav: over the wash, under every panel,
-/// so the server list covers him rather than the other way round.
+/// Triple T, standing on the beach at the right of the open scene on PLAY
+/// GAME: over the wash, under the panel. He stood under the nav until the nav
+/// grew to the reference's length and reached down to him.
 fn hero(root: &mut ChildSpawnerCommands, portrait: &super::portrait::Portrait) {
     use super::portrait::{view, H_PX, W_PX};
     root.spawn((
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(HERO_LEFT_PX),
+            right: Val::Px(GUT + 24.0),
             bottom: Val::Px(40.0),
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
@@ -711,9 +714,8 @@ fn hero(root: &mut ChildSpawnerCommands, portrait: &super::portrait::Portrait) {
 }
 
 /// The menu's Triple T: tall enough to read at 720p without reaching the
-/// nav's last entry, and centred under the nav column.
+/// account corner.
 const HERO_H_PX: f32 = 300.0;
-const HERO_LEFT_PX: f32 = GUT + NAV_W / 2.0 - HERO_H_PX / 3.0;
 
 /// The name the account corner and PLAYING AS show: your platform name, or
 /// the wallet, or GUEST.
@@ -790,7 +792,7 @@ fn header(root: &mut ChildSpawnerCommands, who: &Who, my: &MyFace) {
             })
             .with_children(|col| {
                 col.spawn(ui::strong(shown_name(who, my), 16.0, ui::TITLE));
-                col.spawn(ui::label(who.0.line(), 12.5, ui::DIM));
+                col.spawn(ui::label(who_line(who), 12.5, ui::DIM));
             });
             face(chip, who, my, 40.0);
         });
@@ -820,14 +822,40 @@ fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub) {
     });
 }
 
-/// The row PLAY joins: the one picked, or the top of the list until one is.
+/// The row PLAY joins: the one picked, or until one is, the top listed
+/// shard. The Direct row (the address this binary was started with, a
+/// loopback dev shard by default) is the default only when nothing else is
+/// listed: PLAY on a fresh install must not dial the player's own machine.
 fn picked_row(menu: &Menu, browse: &Browse) -> Option<usize> {
     let shown = servers::visible(&menu.rows, &browse.filter, &browse.favourites);
     shown
         .iter()
         .copied()
         .find(|&i| browse.selected.as_deref() == Some(menu.rows[i].id.as_str()))
+        .or_else(|| shown.iter().copied().find(|&i| !menu.rows[i].direct))
         .or_else(|| shown.first().copied())
+}
+
+/// One short line on who is playing and how we know: the page's address
+/// under the name. `Player::line` says the same at length for the log.
+fn who_line(who: &Who) -> String {
+    let short = |a: &str| {
+        if a.len() > 12 {
+            format!("{}...{}", &a[..6], &a[a.len() - 4..])
+        } else {
+            a.to_string()
+        }
+    };
+    match &who.0 {
+        crate::elo::Player::Anonymous => "guest - no Elo launcher".to_string(),
+        crate::elo::Player::Declared(a) => format!("{}  ·  declared", short(a)),
+        crate::elo::Player::Launcher {
+            address: Some(a), ..
+        } => format!("{}  ·  signed in with Elo", short(a)),
+        crate::elo::Player::Launcher { address: None, .. } => {
+            "the Elo launcher is not signed in".to_string()
+        }
+    }
 }
 
 /// PLAY GAME's panel: who is playing, where, and the button — the page's.
@@ -863,7 +891,7 @@ fn play_panel(body: &mut ChildSpawnerCommands, v: &View, pick: Option<usize>) {
             })
             .with_children(|c| {
                 c.spawn(ui::strong(shown_name(v.who, v.my), 18.0, ui::TITLE));
-                c.spawn(ui::label(v.who.0.line(), 13.0, ui::DIM));
+                c.spawn(ui::label(who_line(v.who), 13.0, ui::DIM));
             });
         });
 
@@ -901,10 +929,14 @@ fn play_panel(body: &mut ChildSpawnerCommands, v: &View, pick: Option<usize>) {
             });
         });
 
+        // Shrinks to scroll rather than pushing PLAY off the panel when the
+        // list is longer than the window has room for.
         p.spawn((
             Node {
+                flex_direction: FlexDirection::Column,
                 border: UiRect::all(Val::Px(1.0)),
                 flex_shrink: 1.0,
+                min_height: Val::Px(0.0),
                 ..default()
             },
             BackgroundColor(ui::WELL),
@@ -1159,9 +1191,9 @@ fn footer(root: &mut ChildSpawnerCommands, v: &View) {
         ));
         f.spawn(ui::label("Elo Pros", 12.0, ui::DIM));
         f.spawn(ui::spacer());
-        // A section's hand-off says how it went here, on the pages that
-        // have no status line of their own.
-        if !matches!(v.browse.nav, Nav::Play | Nav::Hub(Section::Store)) {
+        // A launcher section's hand-off says how it went here: its panel
+        // has no status line of its own.
+        if matches!(v.browse.nav, Nav::Hub(s) if s != Section::Store) {
             f.spawn(ui::label(v.menu.status.clone(), 12.0, ui::DIM));
         }
         f.spawn(ui::label(

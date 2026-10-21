@@ -29,7 +29,7 @@
 
 use bevy::asset::{uuid_handle, AssetId};
 use bevy::prelude::*;
-use bevy::text::Font;
+use bevy::text::{Font, FontWeight};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 // ---- the face ------------------------------------------------------------
@@ -96,16 +96,25 @@ pub fn font(size: f32) -> TextFont {
     TextFont {
         font: SANS,
         font_size: size,
+        weight: FontWeight::NORMAL,
         ..default()
     }
 }
 
 /// A `TextFont` in the bold face — the reference's default, and ours. Every
 /// label, heading, number, button and item name.
+///
+/// ⚠ **The weight is what picks the face, not the handle.** Bevy 0.18 hands
+/// cosmic-text the handle's *family name* and `TextFont::weight` (400 unless
+/// set), and both of our faces are family "Roboto Condensed" — so with the
+/// weight left at its default every bold string drew in Regular, the whole
+/// client long, while the browser page (`font-weight: 700`) drew the face
+/// this doc names. Found 2026-10-21 setting the two front ends side by side.
 pub fn font_bold(size: f32) -> TextFont {
     TextFont {
         font: SANS_BOLD,
         font_size: size,
+        weight: FontWeight::BOLD,
         ..default()
     }
 }
