@@ -2988,13 +2988,29 @@ pub fn stream(
             if live.open != rec.open {
                 if let Some(m) = marks.as_deref_mut() {
                     let arch = core.deploy_defs.defs[live.row as usize].arch;
-                    let was = deploy_transform(seed, haven, key, arch, live.open, live.plate);
+                    let was = deploy_transform(
+                        seed,
+                        haven,
+                        core.pieces.cols(),
+                        key,
+                        arch,
+                        live.open,
+                        live.plate,
+                    );
                     m.forget_later(was.translation, DOOR_FORGET_R_M);
                 }
                 // The swing is heard at the leaf — your own on the press
                 // (the mirror is predicted), anyone else's on the event.
                 if let Some(sound) = sound.as_deref_mut().filter(|_| live.row == rec.row) {
-                    let leaf = deploy_transform(seed, haven, key, arch, rec.open, plate);
+                    let leaf = deploy_transform(
+                        seed,
+                        haven,
+                        core.pieces.cols(),
+                        key,
+                        arch,
+                        rec.open,
+                        plate,
+                    );
                     let cue = if rec.open {
                         crate::sound::Cue::DoorOpen
                     } else {
@@ -3567,6 +3583,7 @@ const DOOR_FORGET_R_M: f32 = 1.8;
 pub fn deploy_transform(
     seed: u64,
     haven: &terrain::Haven,
+    cols: &ColIndex,
     addr: Addr,
     arch: u8,
     open: bool,
@@ -3575,6 +3592,13 @@ pub fn deploy_transform(
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let [w, h, d] = DEPLOY[idx].0;
     let (cx, cz, level, loc) = addr;
+    // Hung in an edge the grid cannot name (freeform W4): the grid's west
+    // edge's layout, in that edge's own frame off its collision row.
+    if let Some(at) = sim_core::deploy::posed_insert(cols, cx, cz, level, loc) {
+        let root = Transform::from_xyz(at.x, at.floor_y, at.z)
+            .with_rotation(Quat::from_rotation_y(at.run.0.atan2(at.run.1)));
+        return root * edge_insert_local(arch, open, w, h, d);
+    }
     let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
@@ -3621,6 +3645,34 @@ pub fn deploy_transform(
         (LOC_EDGE_ZLO, true) => Transform::from_xyz(x0 + hinge, y, z0 + d * 0.5),
         _ => Transform::from_xyz(cxm, y, czm),
     }
+}
+
+/// An edge insert under its doorway's root, the root's local +z the edge's
+/// run and +x the side an open door lies on: [`deploy_transform`]'s grid
+/// west-edge arm, for an edge the grid cannot name.
+fn edge_insert_local(arch: u8, open: bool, w: f32, h: f32, d: f32) -> Transform {
+    let lift = h * 0.5
+        + if matches!(
+            arch,
+            ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+        ) {
+            WINDOW_SILL_M
+        } else {
+            0.0
+        };
+    if arch == ARCH_GARAGE_DOOR && open {
+        return Transform::from_xyz(0.0, LEVEL_H_M - FRAME_RIM_M * 0.5, 0.0).with_scale(Vec3::new(
+            1.0,
+            FRAME_RIM_M / h,
+            1.0,
+        ));
+    }
+    if arch == ARCH_DOOR && open {
+        let hinge = BUILD_CELL_M * 0.5 - d * 0.5 + w * 0.5;
+        return Transform::from_xyz(d * 0.5, lift, hinge - BUILD_CELL_M * 0.5)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    }
+    Transform::from_xyz(0.0, lift, 0.0)
 }
 
 /// How far a standing deployable sits below [`deploy_transform`]'s box
@@ -3755,6 +3807,7 @@ pub fn spawn_deploy(
         let mut t = deploy_transform(
             seed,
             haven,
+            cols,
             (rec.cx, rec.cz, rec.level, rec.loc),
             arch,
             rec.open,

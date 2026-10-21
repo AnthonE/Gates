@@ -1373,6 +1373,61 @@ pub fn body_aim(aim: &Aim, feet: (f32, f32), turn: u8) -> Option<(Target, Pose)>
     ))
 }
 
+/// The doorway, window or frame the grid cannot name (freeform W4) whose
+/// middle is nearest the aim on the aimed storey, within a cell's reach of
+/// it — or, for a lock, the door hung in one — if it is nearer than the
+/// grid's own target `grid`. What a door in hand reaches for on a
+/// triangle's side.
+pub fn posed_insert_target(
+    store: &sim_core::build::Pieces,
+    site: &DeploySite<'_>,
+    placement: u8,
+    aim: (f32, f32),
+    level: u8,
+    grid: Target,
+) -> Option<Target> {
+    let near2 = BUILD_CELL_M * BUILD_CELL_M;
+    let grid_mid = sim_core::deploy::edge_mid(site.cols, grid.cx, grid.cz, grid.level, grid.loc);
+    let d2 = |(x, z): (f32, f32)| (x - aim.0) * (x - aim.0) + (z - aim.1) * (z - aim.1);
+    let mut best: Option<(f32, Target)> = None;
+    let mut offer = |at: (u16, u16, u8, u8)| {
+        let d = d2(sim_core::deploy::edge_mid(
+            site.cols, at.0, at.1, at.2, at.3,
+        ));
+        if d <= near2 && d < d2(grid_mid) && best.is_none_or(|(b, _)| d < b) {
+            best = Some((
+                d,
+                Target {
+                    cx: at.0,
+                    cz: at.1,
+                    level: at.2,
+                    loc: at.3,
+                },
+            ));
+        }
+    };
+    if placement == sim_core::deploy::PLACE_DOOR {
+        for d in site.deploys {
+            if d.loc == sim_core::build::LOC_NONE && d.level == level {
+                offer((d.cx, d.cz, d.level, d.loc));
+            }
+        }
+    } else {
+        let want = socket_shape(placement)?;
+        for r in store.entries() {
+            let known = (r.row as u16) < site.piece_have.min(site.piece_defs.piece_count);
+            if !r.on_grid()
+                && r.level == level
+                && known
+                && site.piece_defs.pieces[r.row as usize].shape == want
+            {
+                offer(r.target());
+            }
+        }
+    }
+    best.map(|(_, t)| t)
+}
+
 /// How far a body deployable's ghost may slide back toward the player to
 /// clear what it was aimed into, metres ([`body_slide`]).
 pub const DEPLOY_SLIDE_MAX_M: f32 = 1.2;
@@ -1498,10 +1553,12 @@ impl DeploySite<'_> {
             .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
     }
 
+    /// The piece an address names — its grid address, or its spelled id
+    /// (`build::spell_id`, freeform W2).
     fn piece_at(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
         self.pieces
             .iter()
-            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
+            .find(|r| r.target() == (cx, cz, level, loc))
     }
 }
 
@@ -1566,6 +1623,9 @@ pub fn deploy_verdict(t: Target, pose: Pose, row: u8, site: &DeploySite<'_>) -> 
     let (ax, az) = match site.deploy_at(t.cx, t.cz, t.level, t.loc) {
         Some(host) if def.placement == PLACE_DOOR && !sim_core::deploy::is_edge_loc(t.loc) => {
             host.xz()
+        }
+        _ if t.loc == sim_core::build::LOC_NONE => {
+            sim_core::deploy::edge_mid(site.cols, t.cx, t.cz, t.level, t.loc)
         }
         _ => sim_core::footprint::centre(t.cx, t.cz, pose),
     };

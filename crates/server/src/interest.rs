@@ -191,8 +191,26 @@ pub fn owned_in_interest(anchor: (i64, i64), viewer: u32, owner: u32, at: (i64, 
 /// [`owned_in_interest`] for a placed deployable, measured at its cell's
 /// centre like a piece.
 #[inline]
-pub fn deploy_in_interest(anchor: (i64, i64), viewer: u32, rec: &DeployRec) -> bool {
-    owned_in_interest(anchor, viewer, rec.owner, cell_cm(rec.cx, rec.cz))
+pub fn deploy_in_interest(
+    anchor: (i64, i64),
+    viewer: u32,
+    rec: &DeployRec,
+    pieces: &sim_core::build::Pieces,
+) -> bool {
+    let (cx, cz) = deploy_cell(rec, pieces);
+    owned_in_interest(anchor, viewer, rec.owner, cell_cm(cx, cz))
+}
+
+/// The cell a deployable is measured from: its own, or — hung in an edge
+/// the grid cannot name, its address that edge's spelled id (freeform W4)
+/// — the cell the edge is filed under.
+pub fn deploy_cell(rec: &DeployRec, pieces: &sim_core::build::Pieces) -> (u16, u16) {
+    if sim_core::build::spelled_id(rec.cx, rec.cz, rec.level, rec.loc).is_some() {
+        if let Some(r) = pieces.find(rec.cx, rec.cz, rec.level, rec.loc) {
+            return (r.cx, r.cz);
+        }
+    }
+    (rec.cx, rec.cz)
 }
 
 /// [`owned_in_interest`] for a standing backpack, measured where it lies.

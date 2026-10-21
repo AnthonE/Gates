@@ -204,6 +204,7 @@ pub fn resolve(
         y,
     );
     let mut aim = Aim::new(x, z, fx, fz);
+    aim.cols = Some(core.pieces.cols());
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,

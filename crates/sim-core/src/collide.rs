@@ -720,6 +720,15 @@ pub struct ColIndex {
     hulls: crate::hull::Hulls,
 }
 
+/// Named, not dumped: the index is tens of thousands of rows, and what a
+/// debug print of a borrower (`client::ui::interact::Aim`) wants is that
+/// one is there.
+impl core::fmt::Debug for ColIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ColIndex")
+    }
+}
+
 const OCCUPIED: u32 = 1 << 31;
 
 /// `ColIndex::bands`' "not filled yet". No cell's terrain band is anywhere

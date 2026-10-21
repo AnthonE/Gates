@@ -275,7 +275,7 @@ pub fn place(
     // answer. Content sets the arm's length; the sim sets the ceiling.
     let reach_m = (def.reach_cm as f32 * 0.01).min(BUILD_REACH_M);
     let (ax, az) = if deploy {
-        crate::deploy::rec_anchor(&deploys.entries()[i])
+        crate::deploy::rec_anchor(pieces.cols(), &deploys.entries()[i])
     } else {
         pieces.anchor_of(&pieces.entries()[i])
     };
@@ -801,7 +801,7 @@ pub fn blast(
         if n >= BLAST_TARGET_CAP {
             break;
         }
-        let (tx, tz) = crate::deploy::rec_anchor(rec);
+        let (tx, tz) = crate::deploy::rec_anchor(pieces.cols(), rec);
         let ly = match dc.defs.get(rec.row as usize) {
             Some(def) => crate::deploy::body_base_y(seed, haven, pieces.cols(), rec, def.arch),
             None => {

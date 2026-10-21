@@ -4651,7 +4651,8 @@ impl ShardCore {
                         hp: placed.map_or(0, |d| d.hp),
                         ..DeployRec::default()
                     };
-                    let at = interest::cell_cm(rec.cx, rec.cz);
+                    let (acx, acz) = interest::deploy_cell(&rec, &self.world.pieces);
+                    let at = interest::cell_cm(acx, acz);
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -7364,7 +7365,7 @@ impl ShardCore {
             let mut scanned = 0usize;
             for src in deploys[owed - window..owed].iter().rev() {
                 scanned += 1;
-                if !interest::deploy_in_interest(anchor, viewer, src) {
+                if !interest::deploy_in_interest(anchor, viewer, src, &self.world.pieces) {
                     continue;
                 }
                 let dst = &mut wire[n];

@@ -995,6 +995,21 @@ pub fn deploy_track(
                 core.deploy_defs_have,
             ),
         };
+        // A doorway on a triangle's side, or a door hung in one (freeform
+        // W4), when it is nearer the aim than the grid's.
+        let t = if seen.is_none() {
+            place::posed_insert_target(
+                core.pieces.store(),
+                &site,
+                def.placement,
+                aim.at,
+                t.level,
+                t,
+            )
+            .unwrap_or(t)
+        } else {
+            t
+        };
         // A lock on a free-placed box or hearth is drawn on its front, half
         // way up, where it stands — not at its cell's centre.
         let host = if arch as u8 == sim_core::deploy::ARCH_LOCK
@@ -1024,6 +1039,7 @@ pub fn deploy_track(
             None => deploy_transform(
                 world.seed,
                 &world.haven,
+                core.pieces.cols(),
                 (t.cx, t.cz, t.level, t.loc),
                 arch as u8,
                 false,

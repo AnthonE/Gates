@@ -6396,6 +6396,7 @@ impl World {
                         let owner = deploy::lock_op(
                             &self.deploy,
                             &self.gather,
+                            self.pieces.cols(),
                             &mut self.deploys,
                             &mut self.players[slot],
                             cx,

@@ -2127,7 +2127,7 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// ([`BODY_LOCS`]): the player aimed at a spot, not at a slot number.
 pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => is_edge_loc(loc),
         // A lock goes where its target lives: a door on a doorway's edge,
         // a box or a hearth in its body slot (locks on boxes, `DOORS.md`
         // §9.8). The support arm below still requires a lockable
@@ -2141,17 +2141,55 @@ pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
 
 /// The slots a cell's body deployables are filed under, in the order they
 /// are handed out: every four-bit `loc` but the two straight edges, which a
-/// door or a window in the cell's doorway owns. Slot 0 is `LOC_PLANE`, so
+/// door or a window in the cell's doorway owns, and `LOC_NONE`, an insert
+/// in an edge the grid cannot name (freeform W4). Slot 0 is `LOC_PLANE`, so
 /// the first deployable in a cell has exactly the address it had before
 /// free placement. In the deploy store a `loc` is a name and nothing more —
 /// slot 1 is not a riser and slot 4 is not a triangle.
-pub const BODY_LOCS: [u8; 14] = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+pub const BODY_LOCS: [u8; 13] = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15];
 
 /// Whether a deploy-store `loc` is a doorway edge — the door's, a window
-/// insert's — rather than a body slot.
+/// insert's — rather than a body slot: a grid edge, or `LOC_NONE`, an edge
+/// the grid cannot name, whose address then spells its id exactly as the
+/// piece's does (`build::spell_id`, freeform W4).
 #[inline]
 pub fn is_edge_loc(loc: u8) -> bool {
-    loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO
+    loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == crate::build::LOC_NONE
+}
+
+/// Where an insert in an edge the grid cannot name hangs (freeform W4): the
+/// edge's collision row, read off the index both ends keep — its middle
+/// (world XZ), its floor, its run and its anticlockwise normal. `None` for
+/// a grid address, or an edge the index does not hold.
+pub fn posed_insert(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Option<InsertAt> {
+    let id = crate::build::spelled_id(cx, cz, level, loc)?;
+    let h = cols.hulls().find(crate::build::hull_key(id))?;
+    let half = crate::build::BUILD_CELL_M * 0.5;
+    Some(InsertAt {
+        x: h.ox + h.ux * half,
+        z: h.oz + h.uz * half,
+        floor_y: h.floor_y,
+        run: (h.ux, h.uz),
+        normal: (h.vx, h.vz),
+    })
+}
+
+/// [`posed_insert`]'s answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InsertAt {
+    pub x: f32,
+    pub z: f32,
+    pub floor_y: f32,
+    pub run: (f32, f32),
+    pub normal: (f32, f32),
+}
+
+/// An edge insert's middle: the grid's anchor, or a posed edge's.
+pub fn edge_mid(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> (f32, f32) {
+    match posed_insert(cols, cx, cz, level, loc) {
+        Some(at) => (at.x, at.z),
+        None => crate::build::anchor(cx, cz, loc),
+    }
 }
 
 impl DeployRec {
@@ -2167,9 +2205,9 @@ impl DeployRec {
     /// address) at its doorway's middle, where it hangs (`build::anchor`);
     /// anything else where it stands ([`Self::xz`]).
     #[inline]
-    pub fn hand_xz(&self) -> (f32, f32) {
+    pub fn hand_xz(&self, cols: &ColIndex) -> (f32, f32) {
         if is_edge_loc(self.loc) {
-            crate::build::anchor(self.cx, self.cz, self.loc)
+            edge_mid(cols, self.cx, self.cz, self.level, self.loc)
         } else {
             self.xz()
         }
@@ -2188,12 +2226,8 @@ impl DeployRec {
 /// for anything placed freely. The deploy store's twin of `anchor`, which
 /// reads a body slot's `loc` as a piece location and would answer a corner
 /// the deployable is nowhere near.
-pub fn rec_anchor(rec: &DeployRec) -> (f32, f32) {
-    if is_edge_loc(rec.loc) {
-        crate::build::anchor(rec.cx, rec.cz, rec.loc)
-    } else {
-        rec.xz()
-    }
+pub fn rec_anchor(cols: &ColIndex, rec: &DeployRec) -> (f32, f32) {
+    rec.hand_xz(cols)
 }
 
 /// The first body slot of `(cx, cz, level)` no record holds, or `None` when
@@ -2287,6 +2321,9 @@ pub fn body_base_y(
     arch: u8,
 ) -> f32 {
     if is_edge_loc(rec.loc) {
+        if let Some(at) = posed_insert(cols, rec.cx, rec.cz, rec.level, rec.loc) {
+            return at.floor_y;
+        }
         return crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
             + crate::build::level_y(rec.level);
     }
@@ -2835,6 +2872,9 @@ pub fn place_deploy(
     // it always was.
     let (ax, az) = match deploys.find(cx, cz, level, loc) {
         Some(host) if def.placement == PLACE_DOOR && !is_edge_loc(loc) => host.xz(),
+        // An insert in an edge the grid cannot name is reached at that
+        // edge's middle; a grid insert at its cell's centre, as ever.
+        _ if loc == crate::build::LOC_NONE => edge_mid(pieces.cols(), cx, cz, level, loc),
         _ => crate::footprint::centre(cx, cz, pose),
     };
     if crate::terrain::build_reserved(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
@@ -3164,6 +3204,7 @@ pub fn take_stock(
 #[allow(clippy::too_many_arguments)]
 fn door_in_reach(
     dc: &DeployContent,
+    cols: &ColIndex,
     deploys: &Deploys,
     p: &Player,
     cx: u16,
@@ -3185,7 +3226,7 @@ fn door_in_reach(
     // behind it; a locked box to where it stands. The storey and the line
     // are `reach.rs`'s, asked by `World`, which holds the collision index.
     let rec = &deploys.entries[i];
-    let (ax, az) = rec.hand_xz();
+    let (ax, az) = rec.hand_xz(cols);
     let reach = if is_edge_loc(rec.loc) {
         crate::backpack::LOOT_REACH_M
     } else {
@@ -3263,7 +3304,18 @@ pub fn use_door(
     loc: u8,
     events: &mut EventQueue,
 ) -> Option<u32> {
-    let i = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events)?;
+    let i = door_in_reach(
+        dc,
+        pieces.cols(),
+        deploys,
+        p,
+        cx,
+        cz,
+        level,
+        loc,
+        arch_is_door,
+        events,
+    )?;
     if !deploys.lock_passes(cx, cz, level, loc, p.id)
         && !key_crew_passes(pieces, deploys, cx, cz, level, loc, p.id)
     {
@@ -3338,6 +3390,7 @@ fn key_crew_passes(
 pub fn lock_op(
     dc: &DeployContent,
     gc: &GatherContent,
+    cols: &ColIndex,
     deploys: &mut Deploys,
     p: &mut Player,
     cx: u16,
@@ -3350,7 +3403,7 @@ pub fn lock_op(
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
 ) -> Option<u32> {
-    let di = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events)?;
+    let di = door_in_reach(dc, cols, deploys, p, cx, cz, level, loc, lockable, events)?;
     let Some(li) = deploys.locks.find_index(cx, cz, level, loc) else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NO_LOCK, 0);
         return None;
@@ -3768,11 +3821,15 @@ pub(crate) fn drop_piece(
     let (a, b) = rec.ev_addr();
     events.push(EV_PIECE_REMOVED, a, b | rec.row as u32, 0);
     // An edge piece takes the insert hung in it — the door in the doorway,
-    // the bars in the window — which shares its address exactly.
-    if is_edge_loc(rec.loc) {
-        if let Some(di) = deploys.entries[..deploys.len].iter().position(|d| {
-            d.cx == rec.cx && d.cz == rec.cz && d.level == rec.level && d.loc == rec.loc
-        }) {
+    // the bars in the window — which shares its address exactly (a posed
+    // edge's spelled id, freeform W4). A piece the grid cannot name
+    // carries nothing else yet.
+    let at = rec.target();
+    if is_edge_loc(at.3) {
+        if let Some(di) = deploys.entries[..deploys.len]
+            .iter()
+            .position(|d| (d.cx, d.cz, d.level, d.loc) == at)
+        {
             drop_deploy(dc, pieces, deploys, di, events);
         }
         return;
@@ -6214,6 +6271,7 @@ mod tests {
         lock_op(
             dc,
             &GatherContent::probe_fixture(),
+            &ColIndex::new(),
             deploys,
             p,
             CX,
@@ -6332,6 +6390,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -6413,6 +6472,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 deploys,
                 r,
                 CX,
@@ -6444,6 +6504,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut raider,
             CX,
@@ -6483,6 +6544,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6548,6 +6610,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 &mut deploys,
                 &mut stranger,
                 CX,
@@ -6568,6 +6631,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6585,6 +6649,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut far,
             CX,
@@ -6608,6 +6673,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6946,6 +7012,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6971,6 +7038,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -6986,6 +7054,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -7009,6 +7078,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7114,6 +7184,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7222,6 +7293,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut stranger,
             CX,
@@ -7243,6 +7315,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7277,6 +7350,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7337,6 +7411,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7355,6 +7430,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut guest,
             CX,
@@ -7445,6 +7521,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut friend,
             CX,
@@ -7508,6 +7585,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7523,6 +7601,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -7541,6 +7620,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut guest,
             CX,
@@ -7583,6 +7663,7 @@ mod tests {
         lock_op(
             &dc,
             &gc,
+            &ColIndex::new(),
             &mut deploys,
             &mut p,
             CX,
@@ -8045,6 +8126,7 @@ mod tests {
             lock_op(
                 &dc,
                 &gc,
+                &ColIndex::new(),
                 d,
                 p,
                 CX,

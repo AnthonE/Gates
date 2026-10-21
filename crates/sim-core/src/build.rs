@@ -3821,7 +3821,7 @@ pub fn repair(
     // A free-placed deployable is reached where it stands, not at the
     // corner a body slot's `loc` would name as a piece.
     let (ax, az) = if deploy {
-        crate::deploy::rec_anchor(&deploys.entries()[i])
+        crate::deploy::rec_anchor(pieces.cols(), &deploys.entries()[i])
     } else {
         pieces.anchor_of(&pieces.entries()[i])
     };

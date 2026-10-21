@@ -556,3 +556,136 @@ fn a_placement_snaps_to_the_nearest_free_socket() {
     // Nothing near, nothing to snap to.
     assert!(snap(&w.pieces, SHAPE_WALL, 0, at.0 + 40.0, at.1, 6.0, 0).is_none());
 }
+
+/// A door hangs in a doorway on a triangle's side (freeform W4): placed at
+/// the doorway's spelled address, it shuts the opening to bodies, opens and
+/// shuts by the use verb from in reach, and comes down with its doorway.
+#[test]
+fn a_door_hangs_in_a_triangles_doorway() {
+    use sim_core::world::Command;
+    const DOOR: u16 = 2; // `DeployContent::probe_fixture`'s door row
+    let (mut w, p, at) = fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: p.id }]);
+    let slot = w
+        .players
+        .iter()
+        .position(|q| q.active && q.id == p.id)
+        .unwrap();
+    w.players[slot].body = p.body;
+    let site = core(&w, at, 13_000);
+    let (x_cm, z_cm) = site.mint.unwrap().origin_cm;
+    w.tick(&[Command::PlaceFree {
+        id: p.id,
+        row: FOUNDATION,
+        x_cm,
+        z_cm,
+        yaw: 13_000,
+        tri: false,
+        plate: 0,
+    }]);
+    let core_rec = w.pieces.entries()[0];
+    let bld = core_rec.bld;
+    let frame = *w.pieces.frame(bld).unwrap();
+    let (sides, _) = core_rec.sock.sides();
+    let side = sides[1];
+    let out = -side.side_of(core_rec.sock.at);
+    let (_, tri) = beside(&side, out);
+    w.tick(&[Command::PlaceAt {
+        id: p.id,
+        row: TRI_FOUNDATION,
+        bld,
+        level: 0,
+        sock: tri,
+    }]);
+    let (ts, k) = tri.sides();
+    let outer = *ts[..k].iter().find(|e| **e != side).unwrap();
+    w.tick(&[Command::PlaceAt {
+        id: p.id,
+        row: DOORWAY,
+        bld,
+        level: 0,
+        sock: outer,
+    }]);
+    let doorway = *w
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.sock == outer)
+        .expect("the doorway");
+    let (cx, cz, level, loc) = doorway.target();
+    assert_eq!(loc, LOC_NONE);
+
+    // Stand on the triangle beside the doorway and hang a door in it.
+    let (mx, mz) = frame.to_world(outer.at);
+    let (tx, tz) = frame.to_world(tri.at);
+    let inside = (mx + (tx - mx) * 0.6, mz + (tz - mz) * 0.6);
+    w.players[slot].body = Body::at(SEED, &w.haven, inside.0, inside.1);
+    w.players[slot].body.qy = (band_y(frame.band) / movement::POS_Y_Q).round() as i32 + 1;
+    w.players[slot].inv[0] = sim_core::gather::ItemStack {
+        item: w.deploy.defs[DOOR as usize].item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: p.id,
+        row: DOOR,
+        cx,
+        cz,
+        level,
+        loc,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    let door = w
+        .deploys
+        .find(cx, cz, level, loc)
+        .copied()
+        .expect("the door hangs");
+    assert!(!door.open, "a door hangs shut");
+
+    // Shut, the doorway stops a body; open, it lets one through.
+    let floor_y = band_y(frame.band);
+    let (nx, nz) = frame.axis((outer.dir + 3) % 12);
+    let cross = |w: &World| {
+        let a = (mx - nx * 0.4, mz - nz * 0.4);
+        let b = (mx + nx * 0.4, mz + nz * 0.4);
+        !collide::blocked(SEED, &w.haven, w.pieces.cols(), a.0, a.1, b.0, b.1, floor_y)
+    };
+    assert!(!cross(&w), "a shut door is a wall");
+    w.tick(&[Command::Use {
+        id: p.id,
+        cx,
+        cz,
+        level,
+        loc,
+    }]);
+    assert!(
+        w.deploys.find(cx, cz, level, loc).unwrap().open,
+        "the use verb swings it"
+    );
+    assert!(cross(&w), "an open doorway is a way through");
+    w.tick(&[Command::Use {
+        id: p.id,
+        cx,
+        cz,
+        level,
+        loc,
+    }]);
+    assert!(!cross(&w), "and shut again it is a wall again");
+
+    // The doorway taken down takes its door with it.
+    w.tick(&[Command::Demolish {
+        id: p.id,
+        deploy: false,
+        cx,
+        cz,
+        level,
+        loc,
+    }]);
+    assert!(w.pieces.find(cx, cz, level, loc).is_none());
+    assert!(
+        w.deploys.find(cx, cz, level, loc).is_none(),
+        "the door went with its doorway"
+    );
+}

@@ -150,7 +150,11 @@ pub fn nearest(
         // The deploy store's own anchor: a door's doorway middle, a
         // free-placed deployable's own centre (`deploy::rec_anchor`, what
         // the sim's repair measures to).
-        let (ax, az) = sim_core::deploy::rec_anchor(rec);
+        let (ax, az) = if sim_core::deploy::is_edge_loc(rec.loc) {
+            anchor(rec.cx, rec.cz, rec.loc)
+        } else {
+            rec.xz()
+        };
         let (dx, dz) = (ax - at.0, az - at.1);
         let d2 = dx * dx + dz * dz;
         // `<=` rather than `<`: a tie goes to the deployable. See the header.
@@ -196,7 +200,7 @@ pub fn seen_deploy(
         let Some(rect) = rec.rect(arch) else {
             continue;
         };
-        let (ax, az) = sim_core::deploy::rec_anchor(rec);
+        let (ax, az) = sim_core::deploy::rec_anchor(cols, rec);
         let (dx, dz) = (ax - at.0, az - at.1);
         if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
             continue;
@@ -278,7 +282,7 @@ pub fn struck(
         let rec = deploys.iter().find(|r| same(r.cx, r.cz, r.level, r.loc))?;
         (
             deploy_target(rec, deploy_defs, deploy_have),
-            sim_core::deploy::rec_anchor(rec),
+            sim_core::deploy::rec_anchor(pieces.cols(), rec),
         )
     } else {
         // The address a hit names is the one the store answers to — a

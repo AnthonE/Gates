@@ -929,6 +929,9 @@ pub struct Aim<'a> {
     /// The eye's own ray, when the caller has one: a deployable placed
     /// freely is then picked only when the crosshair is ON it ([`Sight`]).
     pub sight: Option<Sight<'a>>,
+    /// The collision index, when the caller has one: where a door hung in
+    /// an edge the grid cannot name is (`deploy::posed_insert`).
+    pub cols: Option<&'a sim_core::collide::ColIndex>,
 }
 
 impl Aim<'_> {
@@ -942,6 +945,7 @@ impl Aim<'_> {
             reach: REACH_M,
             radius: AIM_RADIUS_M,
             sight: None,
+            cols: None,
         }
     }
 }
@@ -1182,7 +1186,10 @@ pub fn resolve(
             {
                 continue;
             }
-            let (hx, hz) = rec.hand_xz();
+            let (hx, hz) = match aim.cols {
+                Some(cols) => rec.hand_xz(cols),
+                None => sim_core::build::anchor(rec.cx, rec.cz, rec.loc),
+            };
             let r = aim.reach.min(LOOT_REACH_M);
             if (hx - aim.x) * (hx - aim.x) + (hz - aim.z) * (hz - aim.z) > r * r {
                 continue;
