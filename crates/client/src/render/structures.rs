@@ -2673,11 +2673,14 @@ pub const STRUCT_APPLIED2: u32 =
 pub fn structures_changed(
     ring: Res<StructRing>,
     feed: Res<super::feed::Feed>,
-    net: NonSend<Net>,
+    net: Option<NonSend<Net>>,
 ) -> bool {
+    // Optional: the loot suites drive their own reconcile off this
+    // condition with no session in the world, and a missing non-send
+    // resource panics a run condition outright.
     ring.kit.is_none()
         || ring.pending_loot
-        || ring.pending_pieces_gen != net.session.core.pending_pieces_gen()
+        || net.is_some_and(|n| ring.pending_pieces_gen != n.session.core.pending_pieces_gen())
         || feed.applied & client_core::core::APPLIED_CATALOG != 0
         || feed.applied & STRUCT_APPLIED != 0
         || feed.applied2 & STRUCT_APPLIED2 != 0
