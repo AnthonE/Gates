@@ -310,6 +310,9 @@ pub const REFUSE_B_PLATE_LOW: u32 = 14;
 /// or on the town's own stations. Rust's safe zone lets no weapon be drawn,
 /// and its monuments cannot be raided.
 pub const REFUSE_B_SAFE: u32 = 15;
+/// Not from the water (water pass): a swimmer builds nothing until its feet
+/// find the bottom (`movement::swimming`).
+pub const REFUSE_B_SWIMMING: u32 = 16;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -320,10 +323,26 @@ pub const LEVEL_H_M: f32 = 3.0;
 /// default, same §open row.
 pub const BUILD_REACH_M: f32 = 5.0;
 /// Foundation terrain rules: cell-center height at least this (above the
-/// beach line, so the sea floor can't hold a base) and slope under this
-/// (the spawn walkability shape). Proposed defaults, same §open row.
+/// beach line) and slope under this (the spawn walkability shape) is ground
+/// a base stands WELL on — what fixtures and the agents look for
+/// ([`foundation_terrain_ok`]). Proposed defaults, same §open row.
 pub const FOUNDATION_MIN_H_M: f32 = 1.5;
 pub const FOUNDATION_MAX_SLOPE: f32 = 1.0;
+/// The deepest water `place` stands a foundation in (the water pass,
+/// 2026-10-21, [`foundation_ground_ok`]): the reference builds wherever a
+/// foundation touches the ground, the beach and the lake's edge included,
+/// and its lakes are pitched as base spots. Two metres is where a
+/// foundation's top still reaches the waterline at the most a plate lifts
+/// it (`PLATE_RISE_MAX_BANDS`), so a shore base can wade out without a floor
+/// nobody can stand on. Deeper is a later knob (an underwater base), not a
+/// different rule.
+pub const FOUNDATION_MAX_WATER_M: f32 = 2.0;
+pub const FOUNDATION_FLOOR_H_M: f32 = terrain::SEA_LEVEL - FOUNDATION_MAX_WATER_M;
+/// The ground a deployable stands on bare: dry land, the beach included. A
+/// fire, a box or a bed does not go in the water (the reference refuses the
+/// same); a deployable that belongs in it — a pump, a trap — would be the
+/// first to ask for a different rule.
+pub const DEPLOY_MIN_H_M: f32 = terrain::LAND_MIN_H;
 
 /// The vertical build lattice: a column's floor height is its cell-center
 /// terrain sample snapped to multiples of this, so neighbouring cells whose
@@ -1469,11 +1488,28 @@ pub fn structure_price(rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -
     }
 }
 
-/// Will this ground hold a foundation? One definition — `place` refuses on
-/// it, and a fixture that needs buildable ground finds it with it, so the
-/// two can never drift apart.
+/// Is this ground a base stands well on — dry, over the beach line? What a
+/// fixture that needs buildable ground looks for, and the agents' site
+/// picker: every cell it finds, `place` takes ([`foundation_ground_ok`] is
+/// the wider rule), so the two cannot drift into a fixture `place` refuses.
 pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
-    terrain::ground(seed, haven, ax, az) >= FOUNDATION_MIN_H_M
+    terrain_ok(seed, haven, ax, az, FOUNDATION_MIN_H_M)
+}
+
+/// Will this ground hold a foundation? `place`'s rule: dry land, the beach,
+/// or the shallows to [`FOUNDATION_MAX_WATER_M`].
+pub fn foundation_ground_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
+    terrain_ok(seed, haven, ax, az, FOUNDATION_FLOOR_H_M)
+}
+
+/// Will this bare ground hold a deployable? [`foundation_terrain_ok`]'s
+/// rule, dry: [`DEPLOY_MIN_H_M`] rather than the foundation's water.
+pub fn deploy_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
+    terrain_ok(seed, haven, ax, az, DEPLOY_MIN_H_M)
+}
+
+fn terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32, min_h: f32) -> bool {
+    terrain::ground(seed, haven, ax, az) >= min_h
         && terrain::ground_slope(seed, haven, ax, az) < FOUNDATION_MAX_SLOPE
         // The town's floor is flat and nobody's: it answers here too, so
         // every scan for buildable ground passes it by.
@@ -2101,7 +2137,7 @@ pub fn check_place(
     if matches!(
         def.shape,
         SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS
-    ) && !foundation_terrain_ok(seed, haven, ax, az)
+    ) && !foundation_ground_ok(seed, haven, ax, az)
     {
         // The anchor is the shape's own: the cell centre for a square,
         // the half's centroid for a triangle — the ground actually under
@@ -2185,6 +2221,12 @@ pub fn place(
             return;
         }
     };
+    // Asked after the spot: a swimmer aiming at the open sea hears that the
+    // ground is wrong, which is the more useful of the two.
+    if crate::movement::swimming(&p.body) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SWIMMING, 0);
+        return;
+    }
     let def = &bc.pieces[row as usize];
     let rec = PieceRec {
         cx,
@@ -6024,6 +6066,9 @@ mod tests {
             body: Body::at(SEED, hv(), 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
             ..Player::default()
         };
+        // The corner cell is open sea: stand the builder on its foundation,
+        // not on the sea floor under it, where it would be swimming.
+        p.body.qy = 0;
         p.inv[0] = ItemStack {
             item: 0,
             count: 9,

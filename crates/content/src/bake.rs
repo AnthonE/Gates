@@ -1294,18 +1294,32 @@ impl Content {
         sc.spawn_hp = u16f(s.spawn_hp, "spawn_hp")?;
         sc.spawn_food = u16f(s.spawn_food, "spawn_food")?;
         sc.spawn_water = u16f(s.spawn_water, "spawn_water")?;
-        match (&s.vessel, &s.vessel_full) {
-            (Some(e), Some(f)) => {
-                let idx = |id: &str| {
-                    self.item_index(id)
-                        .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
-                };
-                sc.vessel = idx(e)?;
-                sc.vessel_full = idx(f)?;
-            }
-            (None, None) => {}
-            _ => return Err("bake: survival names one half of the vessel pair".to_string()),
+        sc.drink_water_salt = u16f(
+            s.drink_water_salt.unwrap_or(s.drink_water),
+            "drink_water_salt",
+        )?;
+        if s.vessels.len() > sim_core::survival::MAX_VESSELS {
+            return Err(format!(
+                "bake: survival names {} vessels, over MAX_VESSELS {}",
+                s.vessels.len(),
+                sim_core::survival::MAX_VESSELS
+            ));
         }
+        for (k, v) in s.vessels.iter().enumerate() {
+            let idx = |id: &str| {
+                self.item_index(id)
+                    .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
+            };
+            sc.vessels[k] = sim_core::survival::Vessel {
+                empty: idx(&v.empty)?,
+                fresh: idx(&v.fresh)?,
+                salt: match &v.salt {
+                    Some(id) => idx(id)?,
+                    None => sim_core::gather::NO_ITEM,
+                },
+            };
+        }
+        sc.vessel_count = s.vessels.len() as u8;
         let span = |min: u32, what: &str| {
             min.checked_mul(TICKS_PER_MIN)
                 .ok_or_else(|| format!("bake: survival {what} {min} min overflows the tick span"))
@@ -1388,6 +1402,8 @@ impl Content {
         ex.fel_ward_max = u16f(e.fel_ward_max, "fel_ward_max")?;
         ex.fel_pocket_per_s = u16f(e.fel_pocket_per_s, "fel_pocket_per_s")?;
         ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
+        ex.air_ticks = u16f(e.air_s.saturating_mul(TICK_HZ), "air_s")?;
+        ex.drown_hp_per_s = u16f(e.drown_hp_per_s, "drown_hp_per_s")?;
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
             temperate_low_dc: dc(cl.temperate_low_c),
@@ -1467,10 +1483,15 @@ impl Content {
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;
         }
-        if sc.vessel_full != sim_core::gather::NO_ITEM
-            && sc.consumable[sc.vessel_full as usize].water == 0
-        {
-            return Err("bake: survival vessel_full holds no water".to_string());
+        for v in sc.vessels() {
+            if sc.consumable[v.fresh as usize].water == 0 {
+                return Err("bake: a survival vessel's fresh item holds no water".to_string());
+            }
+            if v.salt != sim_core::gather::NO_ITEM && sc.consumable[v.salt as usize].is_food() {
+                // Salt water is boiled, never drunk from the vessel: a row
+                // here would be the sea with no price.
+                return Err("bake: a survival vessel's salt item is a consumable".to_string());
+            }
         }
         Ok(sc)
     }

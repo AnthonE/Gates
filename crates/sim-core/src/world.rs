@@ -292,8 +292,11 @@ pub const EV_CONSUMED: u8 = 22;
 /// that eats the input and says nothing is indistinguishable from a broken
 /// one, so every refusal is announced (craft/build/deploy's posture).
 pub const EV_CONSUME_REFUSED: u8 = 23;
-/// EV_DRANK: a = player id, b = water units restored, c = hp the drink
-/// cost. Own-fact, and it exists for the cost: `EV_HEALTH` is absolute and
+/// EV_DRANK: a = player id, b = `survival::drank_b(kind, n)`: a mouthful
+/// (`DRANK_DRINK`, n the water units restored, c = hp the drink cost), a
+/// vessel filled (`DRANK_FILL`, n 1 for salt) or one poured out
+/// (`DRANK_POUR`, n the fires it put out, c the planters it reached, with
+/// `survival::POURED_SALT` set for salt water). Own-fact, and it exists for the cost: `EV_HEALTH` is absolute and
 /// states the new number without naming what took it, so a client that
 /// heard only the health drop could not tell a mouthful of sea from a
 /// knife (survival.rs). A refused drink rides `EV_CONSUME_REFUSED` — one
@@ -1109,8 +1112,11 @@ pub const DEATH_BY_CACTUS: u8 = 11;
 /// A barbed barricade or floor spikes cut them to death (wire v123,
 /// [`World::prick_deploys`]).
 pub const DEATH_BY_SPIKES: u8 = 12;
+/// The water took them (water pass, [`World::breathe`]): they stayed under
+/// past their breath.
+pub const DEATH_BY_DROWN: u8 = 13;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_SPIKES;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_DROWN;
 
 /// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
 /// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
@@ -1141,6 +1147,18 @@ pub const SPIKES_TOP_M: f32 = 0.3;
 pub const FALL_SAFE_MPS: f32 = 12.6;
 pub const FALL_HP_PER_MPS: f32 = 9.0;
 pub const FALL_SEA_CM: f32 = 80.0;
+
+/// Water poured from a vessel lands this far ahead of the feet and splashes
+/// this far round, metres (the reference's water ball: 2.5 m).
+pub const POUR_AHEAD_M: f32 = 1.5;
+pub const POUR_RADIUS_M: f32 = 2.5;
+
+/// Drowning bites this often, ticks: five times a second, so the ramp reads
+/// as a ramp on the health bar ([`World::breathe`]).
+pub const DROWN_PERIOD_TICKS: u64 = 6;
+/// Surfacing gives the whole breath back over this many ticks: the
+/// reference's oxygen refills in a second.
+pub const AIR_BACK_TICKS: u16 = 30;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -1512,6 +1530,10 @@ pub struct Player {
     /// cold's; a body restored from the player store comes back clean.
     pub fel: u16,
     pub fel_acc: u32,
+    /// Ticks the mouth has been under water, less what surfacing gave back:
+    /// 0 is a full breath (`World::breathe`). Hashed, not saved — a load is
+    /// a breath, as `bloom` settles over one.
+    pub under: u16,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1664,6 +1686,7 @@ impl Default for Player {
             air_dc: 0,
             fel: 0,
             fel_acc: 0,
+            under: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
@@ -5154,6 +5177,7 @@ impl World {
                     air_dc: 0,
                     fel: 0,
                     fel_acc: 0,
+                    under: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -6911,6 +6935,99 @@ impl World {
         false
     }
 
+    /// Pour out the full vessel slot `i` holds (water pass, the reference's
+    /// right mouse): it lands [`POUR_AHEAD_M`] ahead and splashes
+    /// [`POUR_RADIUS_M`] round, putting out every fire it reaches — a lit
+    /// camp fire or furnace, a fire arrow's — and watering every planter,
+    /// or with salt water, drying it. The vessel is empty after. False when
+    /// the hand holds no full vessel, so the right mouse means nothing here.
+    fn pour(&mut self, i: usize) -> bool {
+        let p = &self.players[i];
+        let sel = p.frame.sel as usize;
+        let held = p.inv.get(sel).copied().unwrap_or_default();
+        let Some((v, salt)) = self
+            .survival
+            .vessel_full(held.item)
+            .filter(|_| held.count == 1)
+        else {
+            return false;
+        };
+        let (fx, fz) = crate::yaw_lut::yaw_dir(p.frame.yaw);
+        let x = p.body.qx as f32 * POS_XZ_Q + fx * POUR_AHEAD_M;
+        let z = p.body.qz as f32 * POS_XZ_Q + fz * POUR_AHEAD_M;
+        let y = p.body.qy as f32 * POS_Y_Q;
+        let id = p.id;
+        let r = POUR_RADIUS_M;
+        let events = &mut self.events;
+        let mut doused = self.fires.douse(x, y, z, r, |f| {
+            events.push(EV_FIRE, fire_a(0, f.qx), f.qz as u32, f.qy as u32);
+        });
+        let water_ticks = self.cook.water_ticks;
+        let mut watered = 0u16;
+        let (boxes, ovens) = self.deploys.oven_parts_mut();
+        for (b, st) in boxes.iter().zip(ovens.iter_mut()) {
+            let (bx, bz) = b.xz();
+            let (dx, dz) = (bx - x, bz - z);
+            // Planar, as a box's own reach is (`Deploys::box_in_reach`).
+            if dx * dx + dz * dz > r * r {
+                continue;
+            }
+            if st.burns() && st.lit {
+                st.lit = false;
+                crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, id, &mut self.events);
+                doused += 1;
+            } else if st.arch == crate::deploy::ARCH_PLANTER && water_ticks > 0 {
+                st.burn = if salt { 0 } else { water_ticks };
+                watered += 1;
+            }
+        }
+        self.players[i].inv[sel].item = v.empty;
+        let c = u32::from(watered) | if salt { survival::POURED_SALT } else { 0 };
+        self.events.push(
+            EV_DRANK,
+            id,
+            survival::drank_b(survival::DRANK_POUR, doused),
+            c,
+        );
+        true
+    }
+
+    /// Breath for slot `i`, every tick (water pass): a mouth under the
+    /// surface spends a tick of air and one out of it gets the whole breath
+    /// back in about a second. Past half the air gone the water costs hp, on
+    /// [`DROWN_PERIOD_TICKS`], ramping to `drown_hp_per_s` at none — the
+    /// reference's oxygen, which kills a full body in about 12 s. True when
+    /// it killed the body, the caller's `continue`.
+    fn breathe(&mut self, i: usize) -> bool {
+        let ec = &self.survival.exposure;
+        let air = ec.air_ticks;
+        let p = &mut self.players[i];
+        if air == 0 {
+            return false;
+        }
+        let feet = p.body.qy as f32 * movement::POS_Y_Q;
+        if !movement::mouth_under(feet) {
+            p.under = p.under.saturating_sub((air / AIR_BACK_TICKS).max(1));
+            return false;
+        }
+        p.under = (p.under + 1).min(air);
+        let half = air / 2;
+        if p.under <= half || !(self.tick + i as u64).is_multiple_of(DROWN_PERIOD_TICKS) {
+            return false;
+        }
+        let span = u32::from(air - half).max(1);
+        let per_s = u32::from(ec.drown_hp_per_s) * u32::from(p.under - half).min(span) / span;
+        let dmg = (per_s * DROWN_PERIOD_TICKS as u32 / crate::limits::TICK_HZ).max(1) as u16;
+        let took = combat::hurt_unreduced(p, dmg);
+        let (id, hp, hp_max) = (p.id, u32::from(p.hp), u32::from(p.hp_max));
+        self.events.push(EV_HEALTH, id, hp, hp_max);
+        if took.died {
+            self.die(i, id, DEATH_BY_DROWN, NO_ITEM, 0);
+            return true;
+        }
+        false
+    }
+
     /// Fall damage for slot `i`, whose body was `before` ahead of this
     /// tick's step. True when the landing downed or killed it — the
     /// caller's `continue`, as for the cold.
@@ -7409,6 +7526,8 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                // A sleeper floats, but one left on a sunken floor drowns.
+                self.breathe(i);
                 continue;
             }
             // Down (wounded v0): the clock, the roll, the crawl, and none
@@ -7469,6 +7588,8 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                // A body down in the water still has to breathe.
+                self.breathe(i);
                 continue;
             }
             // The clock runs before the arm. A body that starves this tick
@@ -7543,6 +7664,15 @@ impl World {
             if self.fall(i, falling) {
                 continue;
             }
+            if self.breathe(i) {
+                continue;
+            }
+            // The right mouse with a full vessel in hand pours it out (the
+            // water pass). Once: the vessel is empty after, and holding the
+            // button over an empty one means nothing.
+            if self.players[i].frame.buttons & crate::input::BTN_AIM != 0 {
+                self.pour(i);
+            }
             // A drawn bow takes the arm before the gather scan sees it.
             // `gather::swing` searches the 3×3 cell ring for a node and
             // absorbs the swing into it, which is precisely what would eat
@@ -7567,7 +7697,9 @@ impl World {
             // spear, a bow, a gun or a charge in hand there does nothing at
             // all, so nothing leaves the zone to hurt anyone outside it.
             // The client holsters it on screen (`ItemRow::holster`).
-            let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i]);
+            // Nor fired from the water: a swimmer keeps only melee.
+            let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i])
+                || combat::waterlogged(&self.combat, &self.players[i]);
             let took_arm = holstered
                 || ranged::draw(
                     tick,
@@ -8648,6 +8780,11 @@ impl World {
                 fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
                 fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
                 h.update(&fb);
+            }
+            // The held breath, the same way: a world nobody swam in hashes
+            // as it did before there was water to hold it under.
+            if p.under != 0 {
+                h.update(&p.under.to_le_bytes());
             }
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact

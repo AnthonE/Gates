@@ -79,14 +79,14 @@ pub use event::{
     encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
     encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
     encode_event_stump_grubbed, encode_event_swing, encode_event_swipe_refused, encode_event_tag,
-    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
-    encode_event_weak_mark, encode_event_worn, encode_event_wounded, shot_is_instant, EventMsg,
-    GunRow, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, WireToss,
-    BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO, COIN_JUNK, COIN_NONE,
-    COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
-    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, NODE_STAGE_BATCH, PIECE_DEFS_BATCH,
-    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH, VENDOR_NAME_BYTES,
-    VEND_BATCH,
+    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vessel,
+    encode_event_vitals, encode_event_weak_mark, encode_event_worn, encode_event_wounded,
+    shot_is_instant, EventMsg, GunRow, InvSlot, ItemCatalog, ItemRow, SkinCatalog, SkinRow,
+    WireBag, WireGItem, WireToss, BAG_KIND_BODY, BAG_KIND_PACK, BAG_SYNC_BATCH, CATALOG_BATCH,
+    COIN_ELO, COIN_JUNK, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    NODE_STAGE_BATCH, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH,
+    SLOT_SYNC_BATCH, VENDOR_NAME_BYTES, VEND_BATCH,
 };
 pub use event::{encode_event_achievement, Achieved};
 pub use event::{
@@ -1268,7 +1268,11 @@ pub use voice::{
 /// gift, the skins it hands over and its price (`TopicOffer`), and
 /// `SUB_ARC_TEXT` says what asking one came to (`ARC_GIFT_*`, 3 bits after
 /// the topic), so the talk panel draws an offer as a card with a button.
-pub const PROTO_VER: u16 = 130;
+/// v131 — the water pass: bodies swim and float (`movement::swimming`), so
+/// both ends must step the same water; the death cause admits 13
+/// (`DEATH_BY_DROWN`); and `SUB_EXPOSURE` carries the breath left and
+/// whether the water is costing hp, after the Verdigris' pair.
+pub const PROTO_VER: u16 = 131;
 
 /// This game's slug in the elo catalog.
 ///

@@ -1372,13 +1372,27 @@ pub struct Survival {
     /// requires a gatherable to answer thirst instead.
     pub drink_water: u32,
     pub drink_hp_cost: u32,
-    /// The water vessel (`survival::drink`): holding `vessel` at fresh
-    /// water, the drink verb fills it into `vessel_full` instead, and
-    /// drinking `vessel_full` (a consumable) hands `vessel` back.
+    /// A mouthful of the sea, when it differs from a lake's `drink_water`
+    /// (the water pass: salt water is the poorer drink). Absent is the
+    /// lake's mouthful; zero refuses the sea to the mouth.
     #[serde(default)]
-    pub vessel: Option<String>,
+    pub drink_water_salt: Option<u32>,
+    /// The water vessels (`survival::drink`, `World::pour`): holding an
+    /// `empty` one at water, the drink verb fills it into `fresh` (or `salt`,
+    /// at the sea, when the vessel names one) instead; drinking `fresh` (a
+    /// consumable) hands `empty` back.
     #[serde(default)]
-    pub vessel_full: Option<String>,
+    pub vessels: Vec<VesselDef>,
+}
+
+/// One water vessel (`[[survival.vessels]]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VesselDef {
+    pub empty: String,
+    pub fresh: String,
+    #[serde(default)]
+    pub salt: Option<String>,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,
@@ -1512,6 +1526,13 @@ pub struct Exposure {
     /// the air freezes. Absent, snow wets as the rain does.
     #[serde(default = "thousand")]
     pub snow_wet_pm: u32,
+    /// Drowning (`sim_core::World::breathe`): the seconds of breath a body
+    /// holds with its mouth under, and the hp a second the water costs at
+    /// none left, ramping in from half. Absent is water nobody drowns in.
+    #[serde(default)]
+    pub air_s: u32,
+    #[serde(default)]
+    pub drown_hp_per_s: u32,
 }
 
 /// `Exposure::snow_wet_pm`'s default: all of the rain's.

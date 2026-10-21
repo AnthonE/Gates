@@ -295,7 +295,7 @@ pub fn stream(
         // The old draw added 0.9 m to the wire's y to centre a pill; a glTF
         // humanoid stands on its own origin, so adding it again floats every
         // player a metre off the ground. The wire's y IS the feet — no offset.
-        let pos = Vec3::new(rs.x, rs.y, rs.z);
+        let pos = Vec3::new(rs.x, rs.y + swim_lift(rs.y), rs.z);
         // The wire has carried yaw since the first snapshot and nothing ever
         // read it: bodies faced +Z no matter where they were looking or
         // walking. A capsule hid that; a figure with a face cannot.
@@ -910,3 +910,21 @@ pub fn light_flames(
         }
     }
 }
+
+/// How far a body floating at the surface is drawn above its feet's line,
+/// metres. The sim floats a swimmer with its feet `movement::FLOAT_DEPTH_M`
+/// under (the head out), but the swim clips hold the hips near standing
+/// height, so drawn at the feet the swimmer's back is half a metre under:
+/// lifted, it lies along the surface. Only at the float line — a diver is
+/// drawn where it is.
+pub fn swim_lift(feet_y: f32) -> f32 {
+    let float = sim_core::terrain::SEA_LEVEL - sim_core::movement::FLOAT_DEPTH_M;
+    if (feet_y - float).abs() < 0.15 {
+        SWIM_DRAW_LIFT_M
+    } else {
+        0.0
+    }
+}
+
+/// See [`swim_lift`].
+pub const SWIM_DRAW_LIFT_M: f32 = 0.4;

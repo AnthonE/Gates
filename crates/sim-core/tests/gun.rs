@@ -69,6 +69,8 @@ fn hv(seed: u64) -> &'static terrain::Haven {
 
 /// The browser-smoke seed, and the one the shard ships.
 const SEED: u64 = 20260731;
+/// Dry ground on `SEED`: `ci/scene.sh`'s measured spawn.
+const DRY: (f32, f32) = (1500.0, 600.0);
 
 /// The item index the fixture makes a revolver, and the one it makes its
 /// round. Arbitrary and distinct; nothing else in the fixture uses either.
@@ -518,10 +520,16 @@ fn a_miss_marks_the_world_and_a_hit_does_not() {
     let mut sc = Scratch::barren();
 
     // Down at the ground, from five metres over it: nothing in the line
-    // but the island, and it is inside the barrel's fifty.
+    // but the island, and it is inside the barrel's fifty. On dry land —
+    // over the sea floor the shooter would be swimming, and a swimmer does
+    // not fire (`combat::waterlogged`).
     let mut alone = Box::new([Player::default(); MAX_PLAYERS]);
-    let g = terrain::ground(SEED, hv(SEED), 600.0, 600.0);
-    alone[0] = shooter(1, 600.0, g + 5.0, 600.0, 0, 0, 6);
+    let g = terrain::ground(SEED, hv(SEED), DRY.0, DRY.1);
+    assert!(
+        g > terrain::SEA_LEVEL,
+        "the fixture's ground is under water"
+    );
+    alone[0] = shooter(1, DRY.0, g + 5.0, DRY.1, 0, 0, 6);
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut alone);
     let marks: Vec<_> = s
         .events
@@ -573,8 +581,8 @@ fn a_client_beam_stops_where_the_shards_mark_did() {
     let cc = gun_fixture();
     let mut sc = Scratch::barren();
     let mut alone = Box::new([Player::default(); MAX_PLAYERS]);
-    let g = terrain::ground(SEED, hv(SEED), 600.0, 600.0);
-    alone[0] = shooter(1, 600.0, g + 5.0, 600.0, 0, 0, 6);
+    let g = terrain::ground(SEED, hv(SEED), DRY.0, DRY.1);
+    alone[0] = shooter(1, DRY.0, g + 5.0, DRY.1, 0, 0, 6);
     let body = alone[0].body;
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut alone);
     let mark = *s

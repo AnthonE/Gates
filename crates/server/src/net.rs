@@ -464,6 +464,7 @@ pub fn bake_catalog(
                 oven: cook.packed_roles(idx as u16),
                 holster: sim_core::combat::drawn_weapon(combat, gather, idx as u16),
                 revive: survival.revives(idx as u16),
+                pour: survival.vessel_full(idx as u16).is_some(),
                 class: item.class.code(),
                 gun,
             },

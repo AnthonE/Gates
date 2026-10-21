@@ -2445,8 +2445,8 @@ fn a_clock_with_no_answer_is_refused() {
             // Both to zero: a cost with no water is its own refusal one
             // check earlier, and it would answer for the wrong reason.
             *text = text.replace(
-                "drink_water = 25\ndrink_hp_cost = 2",
-                "drink_water = 0\ndrink_hp_cost = 0",
+                "drink_water = 30\ndrink_hp_cost = 3\ndrink_water_salt = 15",
+                "drink_water = 0\ndrink_hp_cost = 0\ndrink_water_salt = 0",
             );
         }
     }
@@ -2465,14 +2465,14 @@ fn a_clock_with_no_answer_is_refused() {
 fn a_drink_that_is_not_a_trade_is_refused() {
     refuses(
         "balance.toml",
-        "drink_water = 25\ndrink_hp_cost = 2",
-        "drink_water = 0\ndrink_hp_cost = 2",
+        "drink_water = 30\ndrink_hp_cost = 3",
+        "drink_water = 0\ndrink_hp_cost = 3",
         "restores no water",
     );
     refuses(
         "balance.toml",
-        "drink_water = 25\ndrink_hp_cost = 2",
-        "drink_water = 25\ndrink_hp_cost = 100",
+        "drink_water = 30\ndrink_hp_cost = 3",
+        "drink_water = 30\ndrink_hp_cost = 100",
         "the sea is salt, not lethal",
     );
 }
@@ -3854,10 +3854,14 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         if have.contains(c.fuel.item.as_str()) {
             grew |= have.insert(c.fuel.byproduct.as_str());
         }
-        // The drink verb fills a vessel you hold at fresh water.
-        if let (Some(e), Some(f)) = (&c.balance.survival.vessel, &c.balance.survival.vessel_full) {
-            if have.contains(e.as_str()) {
-                grew |= have.insert(f.as_str());
+        // The drink verb fills a vessel you hold at water: fresh at a lake,
+        // salt at the sea when the vessel holds it.
+        for v in &c.balance.survival.vessels {
+            if have.contains(v.empty.as_str()) {
+                grew |= have.insert(v.fresh.as_str());
+                if let Some(salt) = &v.salt {
+                    grew |= have.insert(salt.as_str());
+                }
             }
         }
         for k in &c.cooks {

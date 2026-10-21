@@ -4679,7 +4679,9 @@ impl ShardCore {
                     // A meal and a drink are also heard by whoever is near.
                     match ev.code {
                         EV_CONSUMED => self.hear(ev.a, DEED_MEAL, (ev.b >> 16) as u16),
-                        EV_DRANK => self.hear(ev.a, DEED_DRINK, NO_ITEM),
+                        EV_DRANK if (ev.b >> 16) as u16 == sim_core::survival::DRANK_DRINK => {
+                            self.hear(ev.a, DEED_DRINK, NO_ITEM)
+                        }
                         _ => {}
                     }
                     let Some(slot) = self.client_slot_of(ev.a) else {
@@ -4696,7 +4698,23 @@ impl ShardCore {
                         EV_CONSUMED => {
                             encode_event_consumed((ev.b >> 16) as u16, ev.b as u8, &mut self.ev_buf)
                         }
-                        EV_DRANK => encode_event_drank(ev.b as u16, ev.c as u16, &mut self.ev_buf),
+                        EV_DRANK => match (ev.b >> 16) as u16 {
+                            sim_core::survival::DRANK_FILL => protocol::encode_event_vessel(
+                                false,
+                                ev.b as u16 != 0,
+                                0,
+                                0,
+                                &mut self.ev_buf,
+                            ),
+                            sim_core::survival::DRANK_POUR => protocol::encode_event_vessel(
+                                true,
+                                ev.c & sim_core::survival::POURED_SALT != 0,
+                                ev.b as u16,
+                                ev.c as u16,
+                                &mut self.ev_buf,
+                            ),
+                            _ => encode_event_drank(ev.b as u16, ev.c as u16, &mut self.ev_buf),
+                        },
                         _ => {
                             // NOW.md §5b: the wire field is four bits and
                             // the reason domain is 1..=REFUSE_C_MAX — the

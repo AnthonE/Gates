@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 181] = [
+const GOLDEN: [&[u8]; 182] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -244,6 +244,7 @@ const GOLDEN: [&[u8]; 181] = [
     include_bytes!("golden/event_wheel_bet.bin"),
     include_bytes!("golden/event_wheel_paid.bin"),
     include_bytes!("golden/event_slots.bin"),
+    include_bytes!("golden/event_vessel.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -544,8 +545,10 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 178);
     g!(seen, golden_event, 179);
     g!(seen, golden_event, 180);
+    // The water pass (v131).
+    g!(seen, golden_event, 181);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 181, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 182, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -2004,6 +2007,8 @@ fn golden_event(fixture: &[u8], name: &str) {
                     air_c: -7,
                     fel_pct: 40,
                     fel_hurting: false,
+                    breath_pct: 30,
+                    drowning: true,
                 }
             );
             protocol::encode_event_exposure(&protocol::goldens::exposure(), &mut buf).unwrap()
@@ -2112,6 +2117,20 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_consume_refused(reason, &mut buf).unwrap()
+        }
+        "event_vessel.bin" => {
+            let (poured, salt, doused, watered) = protocol::goldens::event_vessel();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Vessel {
+                    poured,
+                    salt,
+                    doused,
+                    watered
+                },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_vessel(poured, salt, doused, watered, &mut buf).unwrap()
         }
         "event_drank.bin" => {
             let (water, hp_cost) = event_drank();

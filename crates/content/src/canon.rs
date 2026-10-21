@@ -525,8 +525,13 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.spawn_hp);
     h.u(sv.spawn_food);
     h.u(sv.spawn_water);
-    h.s(sv.vessel.as_deref().unwrap_or(""));
-    h.s(sv.vessel_full.as_deref().unwrap_or(""));
+    h.u(sv.drink_water_salt.map_or(u32::MAX, |w| w));
+    h.u(sv.vessels.len() as u32);
+    for v in &sv.vessels {
+        h.s(&v.empty);
+        h.s(&v.fresh);
+        h.s(v.salt.as_deref().unwrap_or(""));
+    }
 
     let ex = &c.balance.exposure;
     h.s("exposure");
@@ -580,6 +585,8 @@ pub fn hash(c: &Content) -> u64 {
         ex.fel_ward_max,
         ex.fel_pocket_per_s,
         ex.snow_wet_pm,
+        ex.air_s,
+        ex.drown_hp_per_s,
     ] {
         h.u(v);
     }
