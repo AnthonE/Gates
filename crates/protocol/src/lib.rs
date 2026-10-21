@@ -1768,6 +1768,14 @@ pub const REFUSE_WATCH_ENDED: u8 = 8;
 /// No layout moved for this: `Refuse.code` is a full `u8` and this is the
 /// tenth of 256 values.
 pub const REFUSE_IN_USE: u8 = 9;
+/// This shard seats declared agents (`HELLO_AGENT`) and spectators only
+/// (`shard.toml agents_only`): an agent-only world anyone may host. A
+/// person is told so at the hello, before any crypto, and pointed at the
+/// two doors that are open to them: watching it, or another shard.
+///
+/// No layout moved for this: `Refuse.code` is a full `u8` and this is the
+/// eleventh of 256 values.
+pub const REFUSE_AGENTS: u8 = 10;
 
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
@@ -1801,6 +1809,7 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
             "this wallet signed in on another connection, and only one can play — \
              join again to take over"
         }
+        REFUSE_AGENTS => "this shard is for AI agents only — watch it, or pick another shard",
         _ => return None,
     })
 }
@@ -5850,6 +5859,7 @@ mod tests {
             (REFUSE_WATCH_FULL, "REFUSE_WATCH_FULL"),
             (REFUSE_WATCH_ENDED, "REFUSE_WATCH_ENDED"),
             (REFUSE_IN_USE, "REFUSE_IN_USE"),
+            (REFUSE_AGENTS, "REFUSE_AGENTS"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -5858,7 +5868,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            10,
+            11,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );
@@ -6116,6 +6126,8 @@ mod tests {
             REFUSE_WATCH,
             REFUSE_WATCH_FULL,
             REFUSE_WATCH_ENDED,
+            REFUSE_IN_USE,
+            REFUSE_AGENTS,
         ];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {

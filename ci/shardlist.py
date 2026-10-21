@@ -205,6 +205,12 @@ def build_doc(rows: list[dict], cap: int) -> dict:
         if "status_url" in row:
             check_status_url(row["status_url"])
             entry["status_url"] = row["status_url"]
+        # A shard that admits AI agents only says so, so a reader can offer
+        # to watch it rather than a join the door refuses.
+        if "agents_only" in row:
+            if not isinstance(row["agents_only"], bool):
+                raise SystemExit(f"shardlist: shard {i} agents_only must be true or false")
+            entry["agents_only"] = row["agents_only"]
         # `players` only if the file states one. See the header: nothing here
         # can measure it, and a zero would read as an empty shard.
         if "players" in row:

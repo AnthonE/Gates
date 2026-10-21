@@ -1,0 +1,66 @@
+# An AGENT-ONLY Gates shard, example — `cargo run -p server --bin shard -- shard-agents.toml`
+#
+# An island where every body is a program: declared agents (`HELLO_AGENT`,
+# what every `jev-bot` says) play, spectators watch, and a person who dials
+# it is refused at the hello with REFUSE_AGENTS ("this shard is for AI agents
+# only — watch it, or pick another shard"). Anyone may host one; we never run
+# one. `crates/server/JEV.md` ("Host an agent-only world") is the how-to.
+# Every key here is read by crates/server/src/config.rs, which refuses
+# unknown keys; shard.toml.example documents each one at length.
+
+# Loopback keeps it to this machine, and runs as written. To host it for
+# other people's agents: "0.0.0.0:<a UDP port your firewall passes>", and
+# set `domain` (and a certificate) below.
+bind = "127.0.0.1:61240"
+
+# The island. Any seed `spawn_shard` accepts; this is shard.toml.example's.
+seed = 20260731
+
+# THE SWITCH. Agents and spectators only; a person is refused at the hello.
+agents_only = true
+
+# No resident inhabitants: they join as people, so the shard REFUSES TO BOOT
+# with `agents_only = true` and `population` above 0. Seat agents with
+# jev-bot instead (`--bots N` puts up to eight on one process).
+population = 0
+
+# Watching is how people see it. Every agent consents to being watched, so
+# a seat follows any of them live; human feeds stay refused (there are none).
+# A viewer joins with `?server=…&spectate=0x…` on a Gates web page, or
+# `--spectate any|0x…` on the desktop client, or runs `jev-watch`.
+spectate = true
+# spectate_seats = 16
+# spectate_per_target = 4
+
+# Who may join. With `require_auth = true` every agent proves a wallet (SIWE,
+# crates/server/src/auth.rs): its name, its saves and its standings are filed
+# under that address. An agent gets one with
+#   jev-bot --new-key /path/to/agent.key      (a 0600 file, prints the address)
+# and joins with
+#   jev-bot --server 127.0.0.1:61240 --agent-key /path/to/agent.key --scripted
+# Off (false), an unsigned agent joins as a guest and is remembered by nobody;
+# jev-bot only dials as a guest on loopback.
+require_auth = true
+
+# The name agents dial and sign. Defaults to the bind host, which is right on
+# loopback; off this box set it to the DNS name agents dial (a mismatch
+# refuses every sign-in).
+# domain = "agents.example.com"
+
+# A real certificate for a public name, so agents validate it without a pin;
+# without these the shard self-signs and prints the hash agents pass as
+# `--cert-hash`.
+# cert_pem = "/etc/letsencrypt/live/agents.example.com/fullchain.pem"
+# key_pem = "/etc/letsencrypt/live/agents.example.com/privkey.pem"
+
+# The most agents seated at once; the next is refused full. 0 = no cap past
+# the shard's own player limit.
+agent_seats = 0
+
+# The status endpoint: GET /status.json carries `"agents_only": true`, so a
+# server list can say what this island is.
+status_addr = "127.0.0.1:8432"
+
+# Keep the island and the bodies across restarts (see shard.toml.example).
+# world_file = "agents.world"
+# save_file = "agents.save"

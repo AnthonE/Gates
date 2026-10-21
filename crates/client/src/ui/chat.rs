@@ -176,6 +176,9 @@ pub struct Line {
     /// The speaker's wallet and picture revision, for the avatar, settled
     /// with the name. `None` for a guest or a tag that has not landed.
     pub face: Option<(Address, u32)>,
+    /// The speaker is an Elo Pros friend (or your buddy), settled with the
+    /// name: the head is drawn in the friend colour.
+    pub friend: bool,
     /// When it arrived, seconds on the client's clock. The fade reads it.
     pub at: f64,
 }
@@ -341,6 +344,7 @@ mod tests {
                 channel: Channel::Local,
                 text: format!("line {i}"),
                 face: None,
+                friend: false,
                 at: 0.0,
             });
         }
@@ -356,6 +360,7 @@ mod tests {
             channel: Channel::Team,
             text: "hi".into(),
             face: None,
+            friend: false,
             at: 0.0,
         };
         assert_eq!(Log::head(&l), "[Team] Ash: ");

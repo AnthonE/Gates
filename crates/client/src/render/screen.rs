@@ -118,6 +118,8 @@ pub struct Browse {
     /// The picked server row, by id; `None` is the top of the list. PLAY
     /// joins it, and so does a second click on it.
     pub selected: Option<String>,
+    /// What is typed into FRIENDS' add box: a wallet or a name.
+    pub friend_add: crate::friends::AddBox,
 }
 
 /// The nav column, in the reference's own order.
@@ -135,6 +137,8 @@ pub struct Browse {
 pub enum Nav {
     #[default]
     Play,
+    /// Your Elo Pros friends, where they are playing, and their asks.
+    Friends,
     /// The skins this wallet owns (`render/locker.rs`).
     Inventory,
     /// A launcher-backed section: NEWS, ITEM STORE, WORKSHOP. The store's

@@ -236,6 +236,10 @@ pub const TITLE: Color = Color::srgb(0.93, 0.92, 0.90);
 pub const TEXT: Color = Color::srgb(0.92, 0.90, 0.85);
 pub const DIM: Color = Color::srgba(0.74, 0.72, 0.68, 0.85);
 pub const FAINT: Color = Color::srgba(0.62, 0.60, 0.56, 0.80);
+/// An Elo Pros friend's name — on a nametag, a chat line, a FRIENDS row. A
+/// cool teal no channel ink and no state colour already uses, so a friend
+/// reads as a friend in any of them.
+pub const FRIEND: Color = Color::srgb(0.42, 0.86, 0.88);
 
 /// What a button's background is at rest and under the pointer.
 ///

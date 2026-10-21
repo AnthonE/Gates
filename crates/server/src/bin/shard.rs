@@ -572,6 +572,16 @@ async fn main() {
             }
         );
     }
+    // Who this shard seats at all, said once at boot either way, so an
+    // operator reading the log knows which kind of island this is.
+    println!(
+        "agents_only: {}",
+        if cfg.agents_only {
+            "true — declared agents and spectators only; a person is refused at the hello"
+        } else {
+            "false — people and agents alike"
+        }
+    );
     // The names a sign-in may be bound to, said once where the operator
     // listed more than `domain` (`config.rs`). Without the key this prints
     // nothing, and the shard is the one-name shard it always was.
@@ -752,7 +762,7 @@ async fn main() {
             // three ride the line that always prints.
             "tick {} · joins {} leaves {} · in ok/bad/drop {}/{}/{} · snap sent/skip/err {}/{}/{} · \
              aoi offered/carried/shed {}/{}/{} · \
-             refused v/full/agents {}/{}/{} · handshake errors {} · dropped-ticks {} · saves restored/written/lost {}/{}/{} · \
+             refused v/full/agents/people {}/{}/{}/{} · handshake errors {} · dropped-ticks {} · saves restored/written/lost {}/{}/{} · \
              sleepers {} (took over {}, evicted {}) · worlds written/skipped/failed {}/{}/{}",
             ShardStats::get(&s.current_tick),
             ShardStats::get(&s.joins),
@@ -769,6 +779,7 @@ async fn main() {
             ShardStats::get(&s.refused_version),
             ShardStats::get(&s.refused_full),
             ShardStats::get(&s.refused_agents),
+            ShardStats::get(&s.refused_agents_only),
             ShardStats::get(&s.handshake_errors),
             ShardStats::get(&s.ticks_dropped),
             ShardStats::get(&s.saves_restored),

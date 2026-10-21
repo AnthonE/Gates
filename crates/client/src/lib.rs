@@ -76,6 +76,10 @@ pub mod deeplink;
 // once-per-change handoff). Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod discord;
 pub mod elo;
+// Friends from the Elo Pros platform: the list, who is playing where, and the
+// signed text that changes it. Pure and on every target; `render/friends.rs`
+// owns the reads and the signing.
+pub mod friends;
 pub mod shardlist;
 // Where a player's screenshot goes and what it is called. Unconditional for
 // `config`'s reason exactly: a path rule and a filename rule are pure, they

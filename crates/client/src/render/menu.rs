@@ -90,6 +90,7 @@
 
 use bevy::prelude::*;
 
+use super::friends::{who_address, Friends};
 use super::hub::HubState;
 use super::icons::Icons;
 use super::locker::{self, Locker};
@@ -97,17 +98,20 @@ use super::locker::{self, Locker};
 // part of, because a browser build keeps them and does not keep this file.
 use super::screen::{Browse, Connecting, Menu, Nav, Screen, Who};
 use super::ui;
+use crate::friends::Op;
 use crate::shardlist::{self, Shard, MAX_DOC_BYTES};
 use crate::ui::hub::{Hub, Section};
 use crate::ui::locker::Shelf;
 use crate::ui::servers::{self, Listing};
 
 impl Nav {
-    /// The reference's order (the operator's frames, 2026-10-21): PLAY GAME,
+    /// The reference's order (the operator's frames, 2026-10-21): PLAY GAME
+    /// (with FRIENDS under it, where a launcher keeps its friends tab),
     /// NEWS, INVENTORY, ITEM STORE, WORKSHOP, its RUST+ (ours is TEAM APP,
     /// with BUDDIES before it), then OPTIONS and QUIT.
-    const ALL: [Nav; 9] = [
+    const ALL: [Nav; 10] = [
         Nav::Play,
+        Nav::Friends,
         Nav::Hub(Section::News),
         Nav::Inventory,
         Nav::Hub(Section::Store),
@@ -122,9 +126,14 @@ impl Nav {
     /// platform can rename a section of its own site without a client
     /// release — [`crate::ui::hub::Section::label`] is where the blank-and-
     /// whitespace guard lives.
-    fn label(self, hub: &Hub) -> String {
+    ///
+    /// FRIENDS counts the asks waiting on you, the way a launcher's friends
+    /// tab does.
+    fn label(self, hub: &Hub, asks_in: usize) -> String {
         match self {
             Nav::Play => "PLAY GAME".to_string(),
+            Nav::Friends if asks_in > 0 => format!("FRIENDS ({asks_in})"),
+            Nav::Friends => "FRIENDS".to_string(),
             Nav::Inventory => "INVENTORY".to_string(),
             Nav::Hub(s) => s.label(hub),
             // OPTIONS, as the reference and the browser page say it; the
@@ -138,7 +147,10 @@ impl Nav {
     /// are verbs; everything else is a screen. Drawn identically either way,
     /// which is the reference's arrangement too.
     fn is_pane(self) -> bool {
-        matches!(self, Nav::Play | Nav::Inventory | Nav::Hub(_))
+        matches!(
+            self,
+            Nav::Play | Nav::Friends | Nav::Inventory | Nav::Hub(_)
+        )
     }
 }
 
@@ -208,6 +220,11 @@ pub struct NavButton(pub Nav);
 /// OPEN IN LAUNCHER, on a hub pane.
 #[derive(Component)]
 pub struct HubButton(pub Section);
+
+/// A button that is one [`Pick`] and nothing else: every button on the
+/// FRIENDS pane.
+#[derive(Component)]
+pub struct PickButton(pub Pick);
 
 /// REFRESH, beside the SERVER heading.
 #[derive(Component)]
@@ -444,6 +461,7 @@ pub fn setup(
     my: Res<MyFace>,
     state: Res<HubState>,
     locker: Res<Locker>,
+    friends: Res<Friends>,
     scroll: Res<ui::ScrollMemo>,
     icons: Option<Res<Icons>>,
     backdrop: Option<Res<ui::Backdrop>>,
@@ -458,6 +476,7 @@ pub fn setup(
             my: &my,
             hub: &state.hub,
             locker: &locker,
+            friends: &friends,
             scroll: scroll.0,
             icons: icons.as_deref(),
             backdrop: backdrop.as_deref(),
@@ -552,6 +571,7 @@ pub fn rebuild(
     my: Res<MyFace>,
     mut state: ResMut<HubState>,
     locker: Res<Locker>,
+    friends: Res<Friends>,
     scroll: Res<ui::ScrollMemo>,
     icons: Option<Res<Icons>>,
     backdrop: Option<Res<ui::Backdrop>>,
@@ -578,6 +598,7 @@ pub fn rebuild(
             my: &my,
             hub: &state.hub,
             locker: &locker,
+            friends: &friends,
             scroll: scroll.0,
             icons: icons.as_deref(),
             backdrop: backdrop.as_deref(),
@@ -594,6 +615,7 @@ struct View<'a> {
     my: &'a MyFace,
     hub: &'a Hub,
     locker: &'a Locker,
+    friends: &'a Friends,
     /// Where the page's scroll area was left (`ui::ScrollMemo`).
     scroll: f32,
     icons: Option<&'a Icons>,
@@ -661,7 +683,7 @@ fn build(commands: &mut Commands, v: &View) {
                 ..default()
             })
             .with_children(|body| {
-                nav(body, v.browse.nav, v.hub);
+                nav(body, v.browse.nav, v.hub, v.friends.asks_in());
                 // The payload. OPTIONS and QUIT are verbs rather than screens
                 // (`Nav::is_pane`), so they never reach here — the pane keeps
                 // whatever was last open while they act.
@@ -677,8 +699,9 @@ fn build(commands: &mut Commands, v: &View) {
                         locker::store(body, v.locker, v.icons, note, v.scroll);
                     }
                     Nav::Hub(section) => hub_pane(body, section, v.hub),
+                    Nav::Friends => friends_pane(body, v.browse, v.friends),
                     _ => {
-                        let pick = picked_row(v.menu, v.browse);
+                        let pick = picked_row(v.menu, v.browse, v.friends);
                         play_panel(body, v, pick);
                         stage(body, v.menu, pick);
                     }
@@ -801,7 +824,7 @@ fn header(root: &mut ChildSpawnerCommands, who: &Who, my: &MyFace) {
     });
 }
 
-fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub) {
+fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub, asks_in: usize) {
     body.spawn(Node {
         width: Val::Px(NAV_W),
         flex_shrink: 0.0,
@@ -811,15 +834,18 @@ fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub) {
     })
     .with_children(|col| {
         for n in Nav::ALL {
-            // The reference's breaks: PLAY GAME alone, then the platform's
-            // sections, then OPTIONS, then QUIT.
+            // The reference's breaks: PLAY GAME (and FRIENDS), then the
+            // platform's sections, then OPTIONS, then QUIT.
             if matches!(n, Nav::Hub(Section::News) | Nav::Settings | Nav::Quit) {
                 col.spawn(Node {
                     height: Val::Px(18.0),
                     ..default()
                 });
             }
-            col.spawn((ui::nav_item(&n.label(hub), n == picked), NavButton(n)));
+            col.spawn((
+                ui::nav_item(&n.label(hub, asks_in), n == picked),
+                NavButton(n),
+            ));
         }
     });
 }
@@ -828,14 +854,28 @@ fn nav(body: &mut ChildSpawnerCommands, picked: Nav, hub: &Hub) {
 /// shard. The Direct row (the address this binary was started with, a
 /// loopback dev shard by default) is the default only when nothing else is
 /// listed: PLAY on a fresh install must not dial the player's own machine.
-fn picked_row(menu: &Menu, browse: &Browse) -> Option<usize> {
-    let shown = servers::visible(&menu.rows, &browse.filter, &browse.favourites);
+fn picked_row(menu: &Menu, browse: &Browse, friends: &Friends) -> Option<usize> {
+    let shown = servers::visible(
+        &menu.rows,
+        &browse.filter,
+        &browse.favourites,
+        &friend_ids(friends),
+    );
     shown
         .iter()
         .copied()
         .find(|&i| browse.selected.as_deref() == Some(menu.rows[i].id.as_str()))
         .or_else(|| shown.iter().copied().find(|&i| !menu.rows[i].direct))
         .or_else(|| shown.first().copied())
+}
+
+/// The row ids an Elo Pros friend is playing on (`crate::friends`).
+fn friend_ids(friends: &Friends) -> Vec<String> {
+    friends
+        .view
+        .as_ref()
+        .map(crate::friends::shard_ids)
+        .unwrap_or_default()
 }
 
 /// One short line on who is playing and how we know: the page's address
@@ -863,7 +903,12 @@ fn who_line(who: &Who) -> String {
 /// PLAY GAME's panel: who is playing, where, and the button — the page's.
 fn play_panel(body: &mut ChildSpawnerCommands, v: &View, pick: Option<usize>) {
     let (menu, browse) = (v.menu, v.browse);
-    let shown = servers::visible(&menu.rows, &browse.filter, &browse.favourites);
+    let shown = servers::visible(
+        &menu.rows,
+        &browse.filter,
+        &browse.favourites,
+        &friend_ids(v.friends),
+    );
     body.spawn(ui::panel(PANEL_W)).with_children(|p| {
         p.spawn(ui::strong("PLAY GAME", 26.0, ui::TITLE));
         p.spawn(ui::label(PLAY_BLURB, 14.0, ui::DIM));
@@ -949,7 +994,14 @@ fn play_panel(body: &mut ChildSpawnerCommands, v: &View, pick: Option<usize>) {
                 // One clock read per build, so every row's "wipes in" agrees.
                 let now = unix_now();
                 for &i in &shown {
-                    server_row(list, &menu.rows[i], i, Some(i) == pick, now);
+                    let listing = &menu.rows[i];
+                    let here = match &v.friends.view {
+                        Some(f) if !listing.direct => {
+                            crate::friends::on_shard(f, &listing.id).len()
+                        }
+                        _ => 0,
+                    };
+                    server_row(list, listing, i, Some(i) == pick, now, here);
                 }
                 if let Some(why) =
                     servers::empty_reason(&browse.filter, menu.rows.len(), shown.len())
@@ -988,6 +1040,7 @@ fn server_row(
     index: usize,
     picked: bool,
     now_unix: u64,
+    friends_here: usize,
 ) {
     let (idle, over) = if picked {
         (PICKED_ROW, PICKED_ROW_HOVER)
@@ -1059,6 +1112,9 @@ fn server_row(
                 // the handshake (`REFUSE_VERSION`). Which side moves
                 // decides the words: a newer shard wants a newer game, an
                 // older one is mid-release and will catch up.
+                if listing.agents_only() {
+                    n.spawn(ui::strong("AI AGENTS ONLY", 11.0, ui::DIM));
+                }
                 if listing.needs_update() {
                     n.spawn(ui::strong("UPDATE NEEDED", 11.0, super::panels::TEXT_SHORT));
                 } else if listing.server_updating() {
@@ -1082,11 +1138,23 @@ fn server_row(
                 .flatten()
                 .collect::<Vec<_>>()
                 .join("  ·  ");
-            if line.is_empty() {
-                c.spawn(ui::label("players unknown", 13.0, ui::DIM));
-            } else {
-                c.spawn(ui::strong(line, 13.0, ui::TEXT));
-            }
+            // ...and who of your friends is on it, in their colour.
+            c.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: Val::Px(12.0),
+                ..default()
+            })
+            .with_children(|l| {
+                if line.is_empty() {
+                    l.spawn(ui::label("players unknown", 13.0, ui::DIM));
+                } else {
+                    l.spawn(ui::strong(line, 13.0, ui::TEXT));
+                }
+                if let Some(here) = servers::friends_here(friends_here) {
+                    l.spawn(ui::strong(here, 13.0, ui::FRIEND));
+                }
+            });
         });
     });
 }
@@ -1270,6 +1338,255 @@ fn hub_pane(body: &mut ChildSpawnerCommands, section: Section, hub: &Hub) {
     });
 }
 
+/// How many friends, and how many asks each way, the pane draws before
+/// pointing at the profile page: the pane does not scroll.
+const FRIEND_ROWS: usize = 12;
+const ASK_ROWS: usize = 5;
+/// A face on the FRIENDS pane, pixels.
+const FRIEND_FACE_PX: f32 = 34.0;
+
+/// FRIENDS: the Elo Pros friends list — who is on, where, a JOIN for a
+/// friend on a Gates shard — the asks either way, and the add box.
+///
+/// Read once when the pane opens and on REFRESH (`render::friends`); a change
+/// signs in the launcher and the list redraws from what the act answered.
+fn friends_pane(body: &mut ChildSpawnerCommands, browse: &Browse, friends: &Friends) {
+    let signed_in = friends.me.is_some();
+    body.spawn(ui::panel(PANEL_W)).with_children(|panel| {
+        panel.spawn(ui::strong("FRIENDS", 26.0, ui::TITLE));
+        panel.spawn(ui::label(
+            "Your Elo Pros friends, where they are playing, and who asked. \
+             Your AI buddies are here too.",
+            14.0,
+            ui::DIM,
+        ));
+        if !signed_in {
+            return;
+        }
+        panel.spawn(ui::group_rule("ADD A FRIEND"));
+        // The search box's rectangle, for the add box's reason: Bevy has no
+        // text input, so this draws what the keyboard put in `friend_add`.
+        panel
+            .spawn((
+                Node {
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(9.0)),
+                    border: UiRect::all(Val::Px(1.0)),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                BackgroundColor(ui::WELL),
+                BorderColor::all(ui::RULE),
+            ))
+            .with_children(|b| {
+                let empty = browse.friend_add.is_empty();
+                b.spawn(ui::label(
+                    if empty {
+                        "their wallet, or their name...".to_string()
+                    } else {
+                        format!("{}|", browse.friend_add.text)
+                    },
+                    14.0,
+                    if empty { ui::FAINT } else { ui::TEXT },
+                ));
+            });
+        panel
+            .spawn((
+                ui::button(PANEL_W - 42.0, true),
+                PickButton(Pick::FriendAdd),
+            ))
+            .with_children(|b| {
+                b.spawn(ui::strong("ASK", 13.0, ui::TITLE));
+            });
+        panel.spawn(ui::label(
+            "Friends lists are public, like playtime. Every change is signed once \
+             in your launcher.",
+            12.0,
+            ui::FAINT,
+        ));
+        panel.spawn(ui::spacer());
+        panel
+            .spawn((
+                ui::button(PANEL_W - 42.0, false),
+                PickButton(Pick::FriendRefresh),
+            ))
+            .with_children(|b| {
+                b.spawn(ui::strong("REFRESH", 13.0, ui::TITLE));
+            });
+        panel.spawn(ui::label(friends.status.clone(), 12.0, ui::FAINT));
+    });
+
+    fn note(pane: &mut ChildSpawnerCommands, text: String, color: Color) {
+        pane.spawn((
+            ui::label(text, 14.0, color),
+            Node {
+                margin: UiRect::new(Val::Px(16.0), Val::Px(16.0), Val::Px(12.0), Val::Px(4.0)),
+                max_width: Val::Px(620.0),
+                ..default()
+            },
+        ));
+    }
+    fn head(pane: &mut ChildSpawnerCommands, text: &str) {
+        pane.spawn((
+            Node {
+                padding: UiRect::new(Val::Px(16.0), Val::Px(16.0), Val::Px(4.0), Val::Px(6.0)),
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+            children![ui::group_rule(text)],
+        ));
+    }
+    body.spawn(ui::pane()).with_children(|pane| {
+        if !signed_in {
+            note(
+                pane,
+                format!(
+                    "{} Start Gates from the Elo launcher signed in, or pass \
+                     --identity 0x... - your list is the one on your Elo Pros profile.",
+                    super::friends::SIGNED_OUT
+                ),
+                ui::DIM,
+            );
+            return;
+        }
+        let now = crate::shot::now_secs();
+        if let Some(v) = &friends.view {
+            let everyone: Vec<&crate::friends::Friend> = v.everyone().collect();
+            head(
+                pane,
+                &format!("FRIENDS  ({})   ·   {} ONLINE", everyone.len(), v.online()),
+            );
+            if v.blind() {
+                note(
+                    pane,
+                    "Elo Pros can't see who's playing right now.".into(),
+                    ui::FAINT,
+                );
+            }
+            if everyone.is_empty() {
+                note(
+                    pane,
+                    "No friends yet. Type their wallet or their name into the box, \
+                     then ASK."
+                        .into(),
+                    ui::DIM,
+                );
+            }
+            for f in everyone.iter().take(FRIEND_ROWS) {
+                friend_row(pane, f, now);
+            }
+            if everyone.len() > FRIEND_ROWS {
+                note(
+                    pane,
+                    format!(
+                        "+ {} more on your Elo Pros profile",
+                        everyone.len() - FRIEND_ROWS
+                    ),
+                    ui::FAINT,
+                );
+            }
+            for (title, asks, incoming) in [
+                ("ASKING TO BE YOUR FRIEND", &v.asks_in, true),
+                ("YOU ASKED", &v.asks_out, false),
+            ] {
+                if asks.is_empty() {
+                    continue;
+                }
+                head(pane, title);
+                for a in asks.iter().take(ASK_ROWS) {
+                    ask_row(pane, a, incoming, now);
+                }
+                if asks.len() > ASK_ROWS {
+                    note(
+                        pane,
+                        format!("+ {} more on your Elo Pros profile", asks.len() - ASK_ROWS),
+                        ui::FAINT,
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// One line of the pane: a face, the name and where they are, and the
+/// buttons that row takes.
+fn friend_line(
+    pane: &mut ChildSpawnerCommands,
+    who: &crate::friends::Friend,
+    line: String,
+    buttons: &[(&'static str, bool, Pick)],
+) {
+    pane.spawn((
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(12.0),
+            padding: UiRect::axes(Val::Px(16.0), Val::Px(8.0)),
+            border: UiRect::bottom(Val::Px(1.0)),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        BorderColor::all(ui::RULE),
+    ))
+    .with_children(|r| {
+        super::friends::face(r, who, FRIEND_FACE_PX);
+        r.spawn(Node {
+            flex_grow: 1.0,
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(2.0),
+            ..default()
+        })
+        .with_children(|c| {
+            c.spawn(ui::strong(who.label(), 16.0, ui::TEXT));
+            c.spawn(ui::label(line, 12.0, ui::DIM));
+        });
+        for (label, accent, pick) in buttons {
+            r.spawn((ui::button(96.0, *accent), PickButton(*pick)))
+                .with_children(|b| {
+                    b.spawn(ui::strong(*label, 12.0, ui::TITLE));
+                });
+        }
+    });
+}
+
+fn friend_row(pane: &mut ChildSpawnerCommands, f: &crate::friends::Friend, now: u64) {
+    let Some(a) = f.address() else {
+        return;
+    };
+    let mut buttons = Vec::new();
+    if f.on_gates().is_some() {
+        buttons.push(("JOIN", true, Pick::FriendJoin(a)));
+    }
+    // A buddy is yours, not a friendship: it leaves when you stop running it.
+    if !f.is_buddy() {
+        buttons.push(("REMOVE", false, Pick::FriendOp(Op::Remove, a)));
+    }
+    friend_line(pane, f, crate::friends::presence_line(f, now), &buttons);
+}
+
+fn ask_row(pane: &mut ChildSpawnerCommands, ask: &crate::friends::Ask, incoming: bool, now: u64) {
+    let Some(a) = protocol::Address::from_hex(ask.wallet.as_bytes()) else {
+        return;
+    };
+    let who = crate::friends::Friend {
+        wallet: ask.wallet.clone(),
+        name: ask.name.clone(),
+        ..Default::default()
+    };
+    let when = ask
+        .at
+        .map(|t| format!("asked {}", crate::friends::ago(now.saturating_sub(t))))
+        .unwrap_or_else(|| "asked".into());
+    let buttons: &[(&'static str, bool, Pick)] = if incoming {
+        &[
+            ("ACCEPT", true, Pick::FriendOp(Op::Accept, a)),
+            ("DECLINE", false, Pick::FriendOp(Op::Decline, a)),
+        ]
+    } else {
+        &[("CANCEL", false, Pick::FriendOp(Op::Cancel, a))]
+    };
+    friend_line(pane, &who, when, buttons);
+}
+
 /// OFFICIAL beside a shard we run ([`Listing::official`]): the sigil, then
 /// the word in the mark's green.
 fn official_tag(parent: &mut ChildSpawnerCommands) {
@@ -1342,6 +1659,7 @@ pub fn click(
     shelves: Query<(&Interaction, &locker::ShelfButton), Changed<Interaction>>,
     stores: Query<&Interaction, (Changed<Interaction>, With<locker::OpenStore>)>,
     inventory: Query<&Interaction, (Changed<Interaction>, With<locker::RefreshInventory>)>,
+    picks: Query<(&Interaction, &PickButton), Changed<Interaction>>,
     mut picked: ResMut<Picked>,
 ) {
     let pressed = |i: &Interaction| *i == Interaction::Pressed;
@@ -1377,18 +1695,67 @@ pub fn click(
     if inventory.iter().any(pressed) {
         picked.0 = Some(Pick::RefreshInventory);
     }
+    for (i, p) in picks.iter() {
+        if pressed(i) {
+            picked.0 = Some(p.0);
+        }
+    }
 }
 
 /// Keyboard: Enter plays, the page's binding; Esc does the smaller thing
 /// first — back to PLAY GAME from another page, and only quits from there.
+///
+/// On FRIENDS the typing goes to the add box instead, Enter asks, and Esc
+/// clears the box and then goes back.
 pub fn keys(
     keyboard: Res<ButtonInput<KeyCode>>,
-    browse: Res<Browse>,
+    mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    mut browse: ResMut<Browse>,
+    mut menu: ResMut<Menu>,
     mut picked: ResMut<Picked>,
     // `MessageWriter`, not `EventWriter` — Bevy 0.18 renamed events to
     // messages and the prelude carries only the new name.
     mut exit: MessageWriter<AppExit>,
 ) {
+    if browse.nav == Nav::Friends {
+        if keyboard.just_pressed(KeyCode::Escape) {
+            chars.clear();
+            if browse.friend_add.is_empty() {
+                picked.0 = Some(Pick::Nav(Nav::Play));
+            } else {
+                browse.friend_add.clear();
+                menu.dirty = true;
+            }
+            return;
+        }
+        if keyboard.any_just_pressed([KeyCode::Enter, KeyCode::NumpadEnter]) {
+            chars.clear();
+            picked.0 = Some(Pick::FriendAdd);
+            return;
+        }
+        let mut changed = false;
+        for ev in chars.read() {
+            if !ev.state.is_pressed() {
+                continue;
+            }
+            match &ev.logical_key {
+                bevy::input::keyboard::Key::Backspace => changed |= browse.friend_add.backspace(),
+                bevy::input::keyboard::Key::Space => changed |= browse.friend_add.push(' '),
+                bevy::input::keyboard::Key::Character(s) => {
+                    for c in s.chars() {
+                        changed |= browse.friend_add.push(c);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if changed {
+            menu.dirty = true;
+        }
+        return;
+    }
+    // Nothing else types: what was keyed on another page is not owed here.
+    chars.clear();
     if keyboard.just_pressed(KeyCode::Escape) {
         if browse.nav == Nav::Play {
             exit.write(AppExit::Success);
@@ -1420,6 +1787,14 @@ pub enum Pick {
     /// An item store tab.
     Shelf(Shelf),
     RefreshInventory,
+    /// JOIN on a FRIENDS row: dial the shard that friend is on.
+    FriendJoin(protocol::Address),
+    /// Accept, decline, cancel or remove, on a FRIENDS row.
+    FriendOp(Op, protocol::Address),
+    /// ASK, or Enter in the add box: ask whoever the box names.
+    FriendAdd,
+    /// FRIENDS' REFRESH: read the list again.
+    FriendRefresh,
 }
 
 /// What was chosen this frame, if anything. A resource rather than an event
@@ -1443,19 +1818,62 @@ pub fn take_pick(
     mut elo: Option<NonSendMut<crate::elo::Elo>>,
     mut next: ResMut<NextState<Screen>>,
     mut exit: MessageWriter<AppExit>,
+    mut friends: ResMut<Friends>,
+    who: Res<Who>,
 ) {
     let Some(pick) = picked.0.take() else {
         return;
     };
+    let origin = crate::ui::names::origin_of(menu.servers_url.as_deref());
     match pick {
         // Every entry that opens a pane is the same arm: set it and redraw.
         // Keeping this one branch rather than one per section is what makes
         // adding a section a change to `Nav::ALL` and nothing else.
+        // FRIENDS reads its list as it opens (`render::friends`: never on a
+        // timer).
         Pick::Nav(n) if n.is_pane() => {
             if browse.nav != n {
                 scroll.0 = 0.0;
             }
             browse.nav = n;
+            menu.dirty = true;
+            if n == Nav::Friends {
+                friends.ask(&origin, who_address(&who));
+            }
+        }
+        Pick::FriendRefresh => {
+            friends.ask(&origin, who_address(&who));
+            menu.dirty = true;
+        }
+        Pick::FriendJoin(wallet) => {
+            let got = match &friends.view {
+                Some(v) => crate::friends::join_target(v, &wallet, &menu.rows),
+                None => Err("your friends list has not loaded yet".into()),
+            };
+            match got {
+                Ok(addr) => {
+                    connecting.addr = addr;
+                    connecting.rx = None;
+                    next.set(Screen::Connecting);
+                }
+                Err(why) => {
+                    friends.say(why);
+                    menu.dirty = true;
+                }
+            }
+        }
+        Pick::FriendOp(op, wallet) => {
+            friends.act(op, &super::friends::hex(wallet));
+            menu.dirty = true;
+        }
+        Pick::FriendAdd => {
+            let typed = browse.friend_add.text.trim().to_string();
+            if typed.is_empty() {
+                friends.say("Type their wallet or their name into the box first.");
+            } else {
+                friends.act(Op::Ask, &typed);
+                browse.friend_add.clear();
+            }
             menu.dirty = true;
         }
         Pick::Open(section) => {
@@ -1482,7 +1900,9 @@ pub fn take_pick(
         // arms above. An arm here would be unreachable, and a `_ => {}`
         // would silently swallow a nav entry added without an action —
         // which is exactly the dead row this nav is arranged to prevent.
-        Pick::Nav(Nav::Play | Nav::Inventory | Nav::Hub(_)) => unreachable!("handled by is_pane"),
+        Pick::Nav(Nav::Play | Nav::Friends | Nav::Inventory | Nav::Hub(_)) => {
+            unreachable!("handled by is_pane")
+        }
         Pick::Shelf(shelf) => {
             if locker.shelf != shelf {
                 scroll.0 = 0.0;
@@ -1521,7 +1941,7 @@ pub fn take_pick(
             next.set(Screen::Connecting);
         }
         Pick::Go => {
-            let Some(i) = picked_row(&menu, &browse) else {
+            let Some(i) = picked_row(&menu, &browse, &friends) else {
                 return;
             };
             connecting.addr = menu.rows[i].addr.clone();
@@ -1744,7 +2164,7 @@ mod tests {
     #[test]
     fn every_nav_entry_reads_as_itself() {
         // A nav entry needs something behind it — `settings.rs`'s policy
-        // against greyed rows, applied to the column. Five of these nine are
+        // against greyed rows, applied to the column. Five of these ten are
         // the launcher's and their "something" is a state sentence rather
         // than a screen we drew (`crate::ui::hub`), which is why they are
         // here rather than left off.
@@ -1755,7 +2175,7 @@ mod tests {
         // of a manifest edit, and it would leave a player unable to tell
         // which column they clicked.
         let hub = Hub::default();
-        let labels: Vec<String> = Nav::ALL.iter().map(|n| n.label(&hub)).collect();
+        let labels: Vec<String> = Nav::ALL.iter().map(|n| n.label(&hub, 0)).collect();
         for l in &labels {
             assert!(!l.trim().is_empty(), "an unclickable hole in the nav");
         }
@@ -1763,6 +2183,10 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), labels.len(), "two nav entries read the same");
+        // FRIENDS sits under PLAY and counts the asks waiting on you.
+        assert_eq!(Nav::ALL[1], Nav::Friends);
+        assert_eq!(Nav::Friends.label(&hub, 0), "FRIENDS");
+        assert_eq!(Nav::Friends.label(&hub, 2), "FRIENDS (2)");
 
         // Exactly the entries that open a pane are the ones `take_pick`
         // routes through `is_pane`; the other two are verbs. An entry in

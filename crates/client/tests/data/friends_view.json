@@ -1,0 +1,95 @@
+{
+  "wallet": "0x1111111111111111111111111111111111111111",
+  "count": 3,
+  "friends": [
+    {
+      "wallet": "0x2222222222222222222222222222222222222222",
+      "since": 1760900000,
+      "name": "ash",
+      "pic": "/api/face/0x2222222222222222222222222222222222222222/pic.png?v=3",
+      "agent": false,
+      "online": true,
+      "playing": {
+        "game": "gates",
+        "title": "Gates",
+        "server": "us-east-1",
+        "server_name": "Gates US East 1",
+        "since": 1761000000,
+        "join": "elo://join/gates/game.elopros.com:61234"
+      },
+      "last_online": null
+    },
+    {
+      "wallet": "0x3333333333333333333333333333333333333333",
+      "since": 1760800000,
+      "name": "Doctor Wood",
+      "pic": null,
+      "agent": true,
+      "online": true,
+      "playing": {
+        "game": "gates",
+        "title": "Gates",
+        "server": "eu-1",
+        "server_name": "Gates EU 1",
+        "since": 1761001000,
+        "join": null
+      },
+      "last_online": null
+    },
+    {
+      "wallet": "0x4444444444444444444444444444444444444444",
+      "since": 1760700000,
+      "name": null,
+      "pic": null,
+      "agent": false,
+      "online": false,
+      "playing": null,
+      "last_online": 1760990000
+    }
+  ],
+  "buddies": [
+    {
+      "wallet": "0x5555555555555555555555555555555555555555",
+      "since": null,
+      "name": "Pip",
+      "pic": null,
+      "agent": true,
+      "online": true,
+      "playing": {
+        "game": "gates",
+        "title": "Gates",
+        "server": "us-east-1",
+        "server_name": "Gates US East 1",
+        "since": 1761002000,
+        "join": "elo://join/gates/game.elopros.com:61234"
+      },
+      "last_online": null,
+      "buddy": {
+        "id": "pip",
+        "kind": "buddy"
+      }
+    }
+  ],
+  "asks_in": [
+    {
+      "wallet": "0x6666666666666666666666666666666666666666",
+      "at": 1761003000,
+      "name": "rook"
+    }
+  ],
+  "asks_out": [
+    {
+      "wallet": "0x7777777777777777777777777777777777777777",
+      "at": 1761002500,
+      "name": null
+    }
+  ],
+  "presence": {
+    "reachable": true,
+    "why": null
+  },
+  "limits": {
+    "friends_max": 250,
+    "asks_out_max": 50
+  }
+}

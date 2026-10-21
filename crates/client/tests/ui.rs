@@ -3579,7 +3579,7 @@ fn the_list_is_sorted_busy_first_with_unknown_last() {
     // FIRST — a shard nobody could poll would head the list as if it were the
     // busiest thing on it.
     let rows = listing();
-    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default());
+    let shown = servers::visible(&rows, &Filter::default(), &Favourites::default(), &[]);
     assert_eq!(
         names(&rows, &shown),
         ["Direct", "full", "busy", "quiet", "unknown"],
@@ -3609,7 +3609,7 @@ fn the_direct_row_survives_every_filter_except_the_search_box() {
             ..default_filter()
         },
     ] {
-        let shown = servers::visible(&rows, &filter, &favs);
+        let shown = servers::visible(&rows, &filter, &favs, &[]);
         assert_eq!(
             rows[shown[0]].name, "Direct",
             "{filter:?} hid the direct row"
@@ -3623,7 +3623,7 @@ fn the_direct_row_survives_every_filter_except_the_search_box() {
         query: "busy".into(),
         ..default_filter()
     };
-    let shown = servers::visible(&rows, &typed, &favs);
+    let shown = servers::visible(&rows, &typed, &favs, &[]);
     assert_eq!(names(&rows, &shown), ["busy"]);
     assert!(servers::empty_reason(&typed, rows.len(), shown.len()).is_none());
 }
@@ -3647,6 +3647,7 @@ fn empty_and_unknown_are_not_the_same_thing() {
             ..Filter::default()
         },
         &favs,
+        &[],
     );
     assert_eq!(names(&rows, &shown), ["Direct", "full", "busy", "unknown"]);
 
@@ -3657,6 +3658,7 @@ fn empty_and_unknown_are_not_the_same_thing() {
             ..Filter::default()
         },
         &favs,
+        &[],
     );
     assert_eq!(names(&rows, &shown), ["Direct", "busy", "quiet", "unknown"]);
 }
@@ -3673,7 +3675,7 @@ fn a_search_reads_only_what_the_row_prints() {
             query: q.into(),
             ..Filter::default()
         };
-        names(&rows, &servers::visible(&rows, &f, &favs))
+        names(&rows, &servers::visible(&rows, &f, &favs, &[]))
     };
     assert_eq!(hits("BUSY"), ["busy"], "case-insensitive");
     assert_eq!(hits("island"), ["busy"], "the map is searched");
@@ -3695,13 +3697,13 @@ fn a_star_binds_to_a_row_and_survives_a_round_trip() {
         ..Filter::default()
     };
     assert_eq!(
-        names(&rows, &servers::visible(&rows, &f, &favs)),
+        names(&rows, &servers::visible(&rows, &f, &favs, &[])),
         ["Direct", "busy"]
     );
     // The rail counts the whole list, never the filtered one: a tab that read
     // `0` beside the thing you have to click to see anything is the opposite
     // of what a count on a tab is for.
-    assert_eq!(servers::counts(&rows, &favs), [5, 1]);
+    assert_eq!(servers::counts(&rows, &favs, &[]), [5, 1, 0]);
 
     // Off the disk and back, which is the shape `config::parse` hands over.
     let round = Favourites::from_disk(favs.ids().to_vec());
@@ -3710,6 +3712,60 @@ fn a_star_binds_to_a_row_and_survives_a_round_trip() {
     // writer to emit `favourites = ""` rather than omit the key.
     assert!(favs.toggle("id-busy"));
     assert!(favs.is_empty());
+}
+
+#[test]
+fn the_friends_rail_keeps_the_rows_a_friend_is_on() {
+    // `friends::shard_ids` names row ids; the rail keeps exactly those rows,
+    // the Direct row stays as it does under every category, and a friend on a
+    // shard this list does not carry lights nothing.
+    let rows = listing();
+    let favs = Favourites::default();
+    let ids = vec!["id-quiet".to_string(), "not-listed".to_string()];
+    let f = Filter {
+        cat: SCat::Friends,
+        ..Filter::default()
+    };
+    assert_eq!(
+        names(&rows, &servers::visible(&rows, &f, &favs, &ids)),
+        ["Direct", "quiet"]
+    );
+    assert_eq!(servers::counts(&rows, &favs, &ids), [5, 0, 1]);
+    // Nobody on a listed shard: the pane says where to look instead.
+    let only_direct = servers::visible(&rows[1..], &f, &favs, &[]);
+    assert!(only_direct.is_empty());
+    assert!(servers::empty_reason(&f, 4, 0).unwrap().contains("FRIENDS"));
+    assert_eq!(servers::friends_here(0), None);
+    assert_eq!(servers::friends_here(1).as_deref(), Some("1 friend here"));
+    assert_eq!(servers::friends_here(3).as_deref(), Some("3 friends here"));
+}
+
+#[test]
+fn an_agents_only_shard_says_watch_before_the_click() {
+    let mut row = Listing::from_shard(&shardlist_shard("h:1"));
+    assert!(!row.agents_only());
+    let st =
+        client::shardlist::parse_status(br#"{"players":3,"max_players":100,"agents_only":true}"#)
+            .unwrap();
+    assert!(row.apply_status(&st), "the mode is drawn, so it redraws");
+    assert!(row.agents_only());
+    assert!(
+        row.sub_line(0).contains(servers::AGENTS_ONLY),
+        "{}",
+        row.sub_line(0)
+    );
+    assert!(row
+        .details(0)
+        .iter()
+        .any(|(_, v)| v == servers::AGENTS_ONLY));
+    // A poll that leaves it out keeps it; the shard list can say it too.
+    row.apply_status(
+        &client::shardlist::parse_status(br#"{"players":3,"max_players":100}"#).unwrap(),
+    );
+    assert!(row.agents_only());
+    let mut s = shardlist_shard("h:2");
+    s.agents_only = Some(true);
+    assert!(Listing::from_shard(&s).agents_only());
 }
 
 #[test]
@@ -3758,6 +3814,7 @@ fn shardlist_shard(addr: &str) -> client::shardlist::Shard {
         map: None,
         ping_ms: None,
         status_url: None,
+        agents_only: None,
     }
 }
 

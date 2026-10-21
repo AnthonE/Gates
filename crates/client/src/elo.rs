@@ -168,7 +168,7 @@ pub use protocol::SLUG;
 /// which lags). Regenerate ONLY when re-vendoring an upstream change:
 /// `sha256sum crates/client/src/elo_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "934a2b5def89309ff15eef3990df13704fdab536470c6b5f3d7f08bb79baa773";
+    "a5bb9bfb72221ecdfe536a7c795e6a929d1debaf82da512a10500acfac3f6035";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`

@@ -271,6 +271,32 @@ fn serves_spectators_apart_from_players() {
     assert_eq!(field(body, "agents"), 1);
 }
 
+/// An agent-only shard says so (`agents_only`): `false` on every other
+/// shard, `true` once the flag is raised at spawn.
+#[test]
+fn says_whether_the_island_is_agent_only() {
+    let body = |stats: Arc<ShardStats>| {
+        let resp = exchange(
+            start(stats),
+            b"GET /status.json HTTP/1.1\r\nHost: t\r\n\r\n",
+        );
+        let text = String::from_utf8(resp).expect("the response is text");
+        text.split("\r\n\r\n").nth(1).expect("a body").to_owned()
+    };
+    let open = body(Arc::new(ShardStats::default()));
+    assert!(open.contains("\"agents_only\":false,"), "{open}");
+    let stats = Arc::new(ShardStats::default());
+    ShardStats::raise(&stats.agents_only);
+    let agents = body(stats);
+    assert!(agents.contains("\"agents_only\":true,"), "{agents}");
+    // The integers either side still read as integers.
+    assert_eq!(field(&agents, "spectators"), 0);
+    assert_eq!(
+        field(&agents, "max_players"),
+        sim_core::limits::MAX_PLAYERS as u64
+    );
+}
+
 /// `agents` counts connected slots whose tenant declared `HELLO_AGENT`: a
 /// flag left on a slot its agent has left is not counted.
 #[test]

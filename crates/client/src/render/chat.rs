@@ -337,7 +337,12 @@ fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
 }
 
 /// Drain the core's chat ring into the log.
-pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>, time: Res<Time<Real>>) {
+pub fn drain(
+    mut net: NonSendMut<Net>,
+    mut chat: ResMut<Chat>,
+    time: Res<Time<Real>>,
+    friends: Option<Res<super::friends::Friends>>,
+) {
     let now = time.elapsed_secs_f64();
     while let Some((speaker, channel, text)) = net.session.core.pop_chat() {
         // Valid UTF-8 by construction (`ChatText` is only built by
@@ -350,12 +355,16 @@ pub fn drain(mut net: NonSendMut<Net>, mut chat: ResMut<Chat>, time: Res<Time<Re
         let core = &net.session.core;
         let name = crate::ui::names::of(core, speaker);
         let face = core.tag(speaker).map(|t| (t.address, t.pic));
+        let friend = face
+            .zip(friends.as_deref())
+            .is_some_and(|((address, _), f)| f.set.has(&address));
         chat.log.push(Line {
             speaker,
             name,
             channel,
             text: s.to_string(),
             face,
+            friend,
             at: now,
         });
         chat.dirty = true;
@@ -472,7 +481,13 @@ pub fn draw(
                 row.spawn((
                     Text::new(Log::head(&l)),
                     super::ui::font_bold(LINE_PX),
-                    TextColor(ink(l.channel)),
+                    // A friend's name in the friend colour, whatever the
+                    // channel: the channel is still the tag before it.
+                    TextColor(if l.friend {
+                        super::ui::FRIEND
+                    } else {
+                        ink(l.channel)
+                    }),
                     // The chat log is the one floating string a stranger
                     // writes the content of, so it most has to stay readable
                     // over whatever the player is facing (`ui::TEXT_SHADOW`).
