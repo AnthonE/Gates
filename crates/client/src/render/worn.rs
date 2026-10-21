@@ -265,28 +265,44 @@ pub fn load(
         Vec3::new(0.329, 1.054, -0.084),
         Vec3::new(0.490, 0.910, -0.030),
     );
-    let tip = wrist + (wrist - elbow).normalize() * 0.14;
+    let tip = wrist + (wrist - elbow).normalize() * 0.15;
     let mut limb = |a: Vec3, b: Vec3, ra: f32, rb: f32| {
         [add(tube(a, b, ra, rb)), add(tube(m(a), m(b), ra, rb))]
     };
     let thigh = limb(hip, knee, 0.072, 0.064);
     let shin = limb(knee + Vec3::Y * 0.01, ankle, 0.07, 0.06);
     let shaft = limb(ankle - Vec3::Y * 0.05, ankle + Vec3::Y * 0.17, 0.072, 0.068);
-    let glove = limb(wrist - (wrist - elbow).normalize() * 0.03, tip, 0.05, 0.056);
+    let glove = limb(
+        wrist - (wrist - elbow).normalize() * 0.04,
+        tip,
+        0.068,
+        0.078,
+    );
     let sleeve = limb(shoulder, elbow, 0.068, 0.048);
     let cuff = limb(elbow, wrist, 0.05, 0.045);
     let coat_sleeve = limb(shoulder, elbow, 0.078, 0.058);
     let coat_cuff = limb(elbow, wrist, 0.06, 0.054);
     let mut foot = |x: f32| {
-        add(Cuboid::new(0.13, 0.09, 0.32)
+        add(Cuboid::new(0.22, 0.11, 0.38)
             .mesh()
             .build()
-            .translated_by(Vec3::new(x, 0.042, 0.06)))
+            .translated_by(Vec3::new(x, 0.052, 0.07)))
     };
-    let feet = [foot(0.15), foot(-0.155)];
+    let feet = [foot(0.163), foot(-0.168)];
+    // Up under a shirt's hem, so no bark shows between the two.
     let band = add(lathe(
         Vec2::new(0.0, -0.076),
-        &[(0.64, 0.178, 0.164), (0.80, 0.176, 0.162)],
+        &[(0.64, 0.178, 0.164), (0.95, 0.176, 0.162)],
+        None,
+    ));
+    // A bandana over this rig's mouth and chin, under the Ash Mask's band.
+    let kerchief = add(lathe(
+        Vec2::ZERO,
+        &[
+            (1.32, 0.19, 0.245),
+            (1.40, 0.197, 0.252),
+            (1.48, 0.19, 0.246),
+        ],
         None,
     ));
     let coat = add(lathe(
@@ -311,11 +327,11 @@ pub fn load(
     let cap = add(lathe(
         Vec2::ZERO,
         &[
-            (1.64, 0.232, 0.283),
-            (1.70, 0.235, 0.286),
-            (1.80, 0.21, 0.26),
-            (1.88, 0.15, 0.18),
-            (1.93, 0.0, 0.0),
+            (1.69, 0.232, 0.283),
+            (1.75, 0.235, 0.286),
+            (1.84, 0.21, 0.26),
+            (1.91, 0.15, 0.18),
+            (1.96, 0.0, 0.0),
         ],
         None,
     ));
@@ -388,14 +404,14 @@ pub fn load(
                     sleeves(&snow, true),
                 ),
             ),
-            ("Bandana", vec![part(mask.clone(), &red, Bone::Head)]),
+            ("Bandana", vec![part(kerchief, &red, Bone::Head)]),
             (
                 "Improvised Balaclava",
                 vec![part(hood.clone(), &burlap, Bone::Head)],
             ),
             ("Beenie Hat", vec![part(cap.clone(), &red, Bone::Head)]),
             ("Burlap Hood", vec![part(hood.clone(), &burlap, Bone::Head)]),
-            ("Ash Mask", vec![part(mask.clone(), &ash, Bone::Head)]),
+            ("Ash Mask", vec![part(mask, &ash, Bone::Head)]),
             // The suit is the tunic's cut in the mask's blacked cloth: two
             // parts, so a helmet over it still fits `MAX_PARTS`.
             (

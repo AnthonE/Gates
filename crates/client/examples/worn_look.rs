@@ -234,6 +234,10 @@ fn shoot(
         ("back", mid + Vec3::new(0.0, 0.4, -6.2)),
         ("side", mid + Vec3::new(-5.0, 0.5, 1.5)),
         ("heads", Vec3::new(PITCH_M * 2.0, 1.75, 1.6)),
+        // Clothing v1's two outfits up close: the whole kit, and the hands
+        // and feet.
+        ("kit", Vec3::new(PITCH_M * 4.5, 1.1, 3.0)),
+        ("ends", Vec3::new(PITCH_M * 4.5, 0.6, 1.9)),
     ];
     if shots.step >= poses.len() {
         if shots.frame > SETTLE_FRAMES {
@@ -243,10 +247,11 @@ fn shoot(
         return;
     }
     let (label, at) = poses[shots.step];
-    let look = if label == "heads" {
-        Vec3::new(PITCH_M * 2.0, 1.45, 0.0)
-    } else {
-        mid
+    let look = match label {
+        "heads" => Vec3::new(PITCH_M * 2.0, 1.45, 0.0),
+        "kit" => Vec3::new(PITCH_M * 4.5, 1.0, 0.0),
+        "ends" => Vec3::new(PITCH_M * 4.5, 0.45, 0.0),
+        _ => mid,
     };
     if let Ok(mut t) = eye.single_mut() {
         *t = Transform::from_translation(at).looking_at(look, Vec3::Y);
