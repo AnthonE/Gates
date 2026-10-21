@@ -18,7 +18,8 @@
 //! **A slot machine** is one player's at a time: a spin costs
 //! [`SLOT_COST`] × a multiplier of 1 to [`SLOT_MULT_MAX`], the reels are
 //! drawn as it starts (`EV_SLOTS` tells the spinner), and it pays when it
-//! stops [`SLOT_SPIN_TICKS`] later.
+//! stops [`SLOT_SPIN_TICKS`] later. Only three of a kind pays; any other
+//! spin pays nothing.
 //!
 //! Every draw mixes in the world's secret (`mech::ArcState::salt`), which no
 //! client is ever sent, so nobody can see a spin coming from the seed.
@@ -88,8 +89,9 @@ pub const SYM_CLOTH: u8 = 14;
 pub const SYM_SEVEN: u8 = 15;
 pub const SLOT_SYMBOLS: usize = 16;
 /// Each reel's stops by symbol (Rust's `VirtualFaces`; its own weights are
-/// not public, so these are ours). All three reels share them.
-pub const SLOT_WEIGHTS: [u32; SLOT_SYMBOLS] = [2, 7, 3, 6, 10, 5, 12, 2, 2, 3, 2, 3, 2, 2, 2, 1];
+/// not public, so these are ours). All three reels share them. Charcoal and
+/// wood are the common wins: some triple lands about one spin in 13.
+pub const SLOT_WEIGHTS: [u32; SLOT_SYMBOLS] = [1, 7, 2, 3, 13, 2, 26, 1, 1, 1, 1, 2, 1, 1, 1, 1];
 pub const SLOT_STOPS: u32 = {
     let mut sum = 0;
     let mut i = 0;
@@ -99,13 +101,11 @@ pub const SLOT_STOPS: u32 = {
     }
     sum
 };
-/// Three of a kind pays this much junk at ×1, by symbol: Rust's table.
-pub const SLOT_TRIPLE: [u32; SLOT_SYMBOLS] =
-    [400, 40, 0, 80, 25, 45, 15, 0, 0, 0, 0, 100, 0, 0, 0, 1000];
-/// Each low grade showing pays this on top, triple or not (Rust's face
-/// payout).
-pub const SLOT_FACE: u8 = SYM_LOWGRADE;
-pub const SLOT_FACE_PAY: u32 = 5;
+/// Three of a kind pays this much junk at ×1, by symbol; the rarer the
+/// symbol, the more. Every symbol's triple pays, so three of anything wins.
+pub const SLOT_TRIPLE: [u32; SLOT_SYMBOLS] = [
+    500, 150, 300, 200, 60, 300, 15, 500, 500, 500, 500, 300, 500, 500, 500, 1000,
+];
 /// Bits a symbol takes in the packed reels (`EV_SLOTS.c`).
 pub const REEL_BITS: u32 = 4;
 
@@ -248,13 +248,14 @@ pub fn slot_reels(seed: u64, salt: u64, tick: u64, m: usize, id: u32) -> [u8; 3]
     core::array::from_fn(|r| reel(draw(seed, salt, CH_SLOTS ^ r as u64, tick, at)))
 }
 
-/// What three reels pay at ×1: a triple's prize, and every low grade's on
-/// top.
+/// What three reels pay at ×1: a triple's prize, and nothing else.
 pub fn slot_pay(reels: [u8; 3]) -> u32 {
     let [a, b, c] = reels.map(|s| s as usize % SLOT_SYMBOLS);
-    let triple = if a == b && b == c { SLOT_TRIPLE[a] } else { 0 };
-    let faces = reels.iter().filter(|&&s| s == SLOT_FACE).count() as u32;
-    triple + faces * SLOT_FACE_PAY
+    if a == b && b == c {
+        SLOT_TRIPLE[a]
+    } else {
+        0
+    }
 }
 
 /// The reels packed for the wire, low reel first.
@@ -278,9 +279,6 @@ pub fn slot_return_pm() -> u32 {
     for (s, &w) in SLOT_WEIGHTS.iter().enumerate() {
         paid += (w as u64).pow(3) * SLOT_TRIPLE[s] as u64;
     }
-    // Each reel shows the face symbol with weight w out of n: three reels,
-    // n² ways for the other two.
-    paid += 3 * SLOT_WEIGHTS[SLOT_FACE as usize] as u64 * n * n * SLOT_FACE_PAY as u64;
     (paid * 1000 / (n * n * n * SLOT_COST as u64)) as u32
 }
 
@@ -460,12 +458,26 @@ mod tests {
         assert!(pm.abs_diff(slot_return_pm() as u64) < 30, "{pm}‰");
     }
 
+    /// Only three of a kind pays, and every triple pays more than the spin
+    /// cost. A low grade on one reel once paid on its own, and a spin with
+    /// no match handed the player junk.
     #[test]
-    fn a_triple_and_its_faces_pay_together() {
+    fn only_three_of_a_kind_pays() {
         assert_eq!(slot_pay([SYM_SEVEN; 3]), 1000);
-        assert_eq!(slot_pay([SYM_LOWGRADE; 3]), 80 + 15);
-        assert_eq!(slot_pay([SYM_LOWGRADE, SYM_WOOD, SYM_WOOD]), 5);
-        assert_eq!(slot_pay([SYM_WOOD, SYM_WOOD, SYM_ROPE]), 0);
+        assert_eq!(slot_pay([SYM_LOWGRADE, SYM_WOOD, SYM_CHARCOAL]), 0);
+        assert_eq!(slot_pay([SYM_LOWGRADE, SYM_LOWGRADE, SYM_WOOD]), 0);
+        for a in 0..SLOT_SYMBOLS as u8 {
+            for b in 0..SLOT_SYMBOLS as u8 {
+                for c in 0..SLOT_SYMBOLS as u8 {
+                    let pay = slot_pay([a, b, c]);
+                    if a == b && b == c {
+                        assert!(pay > SLOT_COST, "three of {a} pays {pay}");
+                    } else {
+                        assert_eq!(pay, 0, "{a} {b} {c} is no match");
+                    }
+                }
+            }
+        }
         let r = [SYM_SEVEN, SYM_GATE, SYM_JUNK];
         assert_eq!(unpack_reels(pack_reels(r)), r);
     }
