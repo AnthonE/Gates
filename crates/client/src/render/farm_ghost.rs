@@ -38,6 +38,8 @@ pub fn plant_ghost(
     kit: Option<Res<CropKit>>,
     mouse: Res<ButtonInput<MouseButton>>,
     ui: Option<Res<Ui>>,
+    chat: Option<Res<super::chat::Chat>>,
+    reports: Option<Res<super::report::Reports>>,
     mut toast: ResMut<Toast>,
     mut ghost: Query<(&mut Transform, &mut Visibility), With<SproutGhost>>,
 ) {
@@ -50,10 +52,17 @@ pub fn plant_ghost(
         &core.inv,
         net.sel,
     );
+    // A panel, the chat composer or the report overlay owns the click (and
+    // the ghost hides), as `ghost::deploy_track` and `input.rs` have it: a
+    // text field is a text field whether it sits in a panel or not.
+    let busy = ui.as_ref().is_some_and(|u| u.panel != Panel::None)
+        || chat.as_ref().is_some_and(|c| c.open())
+        || reports.as_ref().is_some_and(|r| r.open);
     let pick = &aimed.0;
     let target = match world.as_deref() {
         Some(w)
-            if click == Click::Plant
+            if !busy
+                && click == Click::Plant
                 && !core.wounded
                 && !core.dead
                 && pick.arch == ARCH_PLANTER
@@ -127,11 +136,10 @@ pub fn plant_ghost(
         }
     }
 
-    let busy = ui.as_ref().is_some_and(|u| u.panel != Panel::None);
     let Some((host, spot, _)) = target else {
         return;
     };
-    if busy || !mouse.just_pressed(MouseButton::Left) {
+    if !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];

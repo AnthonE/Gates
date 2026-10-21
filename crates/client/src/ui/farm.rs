@@ -80,6 +80,24 @@ pub fn planter_of<'a>(
     })
 }
 
+/// Whether the hand gets at plant `p` the way the shard asks it
+/// (`World::plant_reachable`): a bed plant through its planter (`planter`,
+/// off [`planter_of`]; one the mirror does not hold cannot be reached), a
+/// ground plant where it lies. `deploy_clear` and `lying_clear` are the
+/// line tests the deploy and loose-stack picks use (`sim_core::reach`).
+pub fn plant_in_sight(
+    p: &WirePlant,
+    planter: Option<&DeployRec>,
+    deploy_clear: impl Fn(&DeployRec) -> bool,
+    lying_clear: impl Fn((i32, i32, i32)) -> bool,
+) -> bool {
+    if p.in_bed() {
+        planter.is_some_and(deploy_clear)
+    } else {
+        lying_clear((p.qx, p.qy, p.qz))
+    }
+}
+
 /// Whether a stack is a full waterskin: at a planter, the full skin is the
 /// only fuel (`CookContent::roles`, `ROLE_FUEL` is `water_full` alone).
 pub fn is_water(roles_at_planter: Option<u8>) -> bool {
@@ -178,5 +196,27 @@ mod tests {
             ..p
         };
         assert!(planter_of(&ground, &deploys, &defs, 1).is_none());
+    }
+
+    /// A bed plant is in sight when its planter is, and never without one;
+    /// a ground plant when the point it lies at is.
+    #[test]
+    fn a_crop_is_offered_only_when_the_hand_gets_at_it() {
+        let bed = plant_at(2, 1.0, 2.0, 3.0);
+        let rec = planter(0);
+        let seen = |_: &DeployRec| true;
+        let walled = |_: &DeployRec| false;
+        let never = |_: (i32, i32, i32)| panic!("a bed plant asked the lying test");
+        assert!(plant_in_sight(&bed, Some(&rec), seen, never));
+        assert!(!plant_in_sight(&bed, Some(&rec), walled, never));
+        assert!(!plant_in_sight(&bed, None, seen, never));
+        let ground = WirePlant {
+            spot: sim_core::farm::SPOT_GROUND,
+            ..bed
+        };
+        let q = (bed.qx, bed.qy, bed.qz);
+        let no_deploy = |_: &DeployRec| panic!("a ground plant asked its planter");
+        assert!(plant_in_sight(&ground, None, no_deploy, |at| at == q));
+        assert!(!plant_in_sight(&ground, None, no_deploy, |_| false));
     }
 }

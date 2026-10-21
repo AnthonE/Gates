@@ -827,7 +827,7 @@ pub fn step(
 
 /// Plant one unit of `p.inv[slot]` in spot `spot` of the planter `b`
 /// (`Command::Plant`). The caller has checked the planter is one and is in
-/// reach; `feet_y` is its floor (`col_base_y + level_y`). Returns the new
+/// reach; `feet_y` is its floor (`deploy::box_base_y`). Returns the new
 /// plant's store index, or a `REFUSE_D_*`.
 #[allow(clippy::too_many_arguments)]
 pub fn plant_bed(

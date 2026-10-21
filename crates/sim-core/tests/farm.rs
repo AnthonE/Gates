@@ -275,6 +275,49 @@ fn planting_takes_one_seed_and_a_spot_holds_one_plant() {
     assert_eq!(w.farm.len(), 6, "six beds");
 }
 
+/// **A bed plant roots in the soil of the planter as it is drawn**: on bare
+/// ground the planter stands at `deploy::body_base_y` (the lowest terrain
+/// under it), not the column's band, and the plant's point is that floor
+/// plus the bed's soil rise (`client::ui::farm::soil_rise`, the planting
+/// ghost's height), so the seed sits in the bed and not in the air above it.
+#[test]
+fn a_bed_plant_roots_in_the_soil_of_a_planter_on_bare_ground() {
+    use sim_core::build::{band_floor_y, terrain_band};
+    use sim_core::deploy::{body_base_y, DEPLOY_VOL};
+    use sim_core::farm::BED_SOIL_DROP_M;
+    use sim_core::movement::{quant_y, POS_Y_Q};
+    let (mut w, cx, cz) = farm_world();
+    // A cell beside the fixture's where the band and the ground disagree,
+    // so the old floor (the column's band) would have floated the plant.
+    let (cx, cz) = (0..8u16)
+        .flat_map(|dx| (0..8u16).map(move |dz| (cx + dx, cz + dz)))
+        .find(|&(x, z)| {
+            let rec = sim_core::deploy::DeployRec {
+                cx: x,
+                cz: z,
+                ..Default::default()
+            };
+            let drawn = body_base_y(SEED, hv(SEED), w.pieces.cols(), &rec, ARCH_PLANTER);
+            sim_core::fmath::fabs(band_floor_y(terrain_band(SEED, hv(SEED), x, z), 0) - drawn) > 0.1
+        })
+        .expect("no cell near the fixture's where the band is off the ground");
+    let (x, z) = cell_center(cx, cz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z - 1.5);
+    let host = place_planter(&mut w, cx, cz, 0);
+    plant(&mut w, host, 2);
+    assert_eq!(refused(&w), None);
+    let rec = *w.deploys.find(cx, cz, 0, 0).expect("the planter");
+    let floor = body_base_y(SEED, hv(SEED), w.pieces.cols(), &rec, ARCH_PLANTER);
+    let soil = floor + DEPLOY_VOL[ARCH_PLANTER as usize][1] - BED_SOIL_DROP_M;
+    let p = w.farm.entries()[0];
+    assert_eq!(
+        p.qy,
+        quant_y(soil),
+        "the plant stands at {} and the bed's soil is at {soil}",
+        p.qy as f32 * POS_Y_Q
+    );
+}
+
 /// **Watered, open and by day, a plant passes every stage at its share of
 /// the grow and is ripe at the crop's seconds** — 900 s, one period either
 /// way (a plant steps on its 15-tick turn).

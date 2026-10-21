@@ -220,8 +220,6 @@ pub fn resolve(
         core.deploy_defs_have,
         core.bags.entries(),
     );
-    // Its hold on the core ends here; the island below takes the core mutably.
-    drop(lying);
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
@@ -255,6 +253,16 @@ pub fn resolve(
                 core.deploy_defs_have,
             )
         });
+        // The shard's hand test, as the deploy pick asks it: a crop behind
+        // a wall or a window is not offered, since the tend would be refused.
+        let hit = hit.filter(|(p, _)| {
+            crate::ui::farm::plant_in_sight(
+                p,
+                planter,
+                |d| reach(d, sim_core::deploy::ARCH_PLANTER),
+                |q| lying(q, [0; 3]),
+            )
+        });
         aimed.0 = interact::fold_plant(aimed.0, hit, planter);
         if aimed.0.verb == Verb::Plant {
             let held = core.inv.get(sel as usize).copied().unwrap_or_default();
@@ -266,6 +274,8 @@ pub fn resolve(
                 ));
         }
     }
+    // Its hold on the core ends here; the island below takes the core mutably.
+    drop(lying);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);

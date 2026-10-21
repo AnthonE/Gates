@@ -3293,9 +3293,16 @@ impl World {
             return Err(deploy::REFUSE_D_REACH);
         }
         let rec = self.deploys.boxes()[b];
-        let feet =
-            crate::collide::col_base_y(self.seed, &self.haven, self.pieces.cols(), rec.cx, rec.cz)
-                + build::level_y(rec.level);
+        // The floor the planter is drawn, collides and is reached at, so
+        // the soil a plant roots in is the bed's (on bare ground the lowest
+        // terrain under it, not the column's band).
+        let feet = deploy::box_base_y(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            &rec,
+            deploy::ARCH_PLANTER,
+        );
         crate::farm::plant_bed(
             &self.cook.farm,
             self.seed,
@@ -8552,8 +8559,7 @@ impl World {
         let day_tick = crate::weather::day_tick(tick, &self.env);
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
         let feet_of = |b: &crate::deploy::BoxRec| {
-            crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
-                + crate::build::level_y(b.level)
+            deploy::box_base_y(seed, haven, pieces.cols(), b, deploy::ARCH_PLANTER)
         };
         let open_sky_at =
             |x: f32, z: f32, y: f32| !crate::collide::roofed(seed, haven, pieces.cols(), x, z, y);

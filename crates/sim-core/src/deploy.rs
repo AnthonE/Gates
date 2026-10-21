@@ -2308,6 +2308,22 @@ pub fn body_base_y(
     }
 }
 
+/// [`body_base_y`] for the deployable box `b` belongs to: the box carries
+/// its record's address and pose, which is all that reads. For a caller
+/// that holds the box store mutably and cannot look the record up (the
+/// farm's tank, `farm::step`).
+pub fn box_base_y(seed: u64, haven: &terrain::Haven, cols: &ColIndex, b: &BoxRec, arch: u8) -> f32 {
+    let rec = DeployRec {
+        cx: b.cx,
+        cz: b.cz,
+        level: b.level,
+        loc: b.loc,
+        pose: b.pose,
+        ..DeployRec::default()
+    };
+    body_base_y(seed, haven, cols, &rec, arch)
+}
+
 /// The collision index's row for a blocking deployable, or `None` for one
 /// that does not block. Its ground is computed here, once, by the same
 /// function on the server and in the client's predictor.
