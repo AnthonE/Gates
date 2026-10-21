@@ -152,7 +152,7 @@ pub fn shape_icon(shape: u8) -> &'static str {
         SHAPE_WINDOW => "shape_window",
         SHAPE_FRAME => "shape_wall_frame",
         SHAPE_FLOOR => "shape_floor",
-        SHAPE_FLOOR_FRAME => "shape_wall_frame",
+        SHAPE_FLOOR_FRAME => "shape_floor_frame",
         SHAPE_TRI_FOUNDATION => "shape_tri_foundation",
         SHAPE_TRI_FLOOR => "shape_tri_floor",
         SHAPE_TRI_ROOF => "shape_tri_roof",
