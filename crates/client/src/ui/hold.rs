@@ -583,6 +583,8 @@ pub const HELD_MODELS: [HeldModelDef; 122] = [
     // standing with the grip on the +Y axis, so no `stand_grip.py` pass. The
     // metal tools and the spear carry the stone rows' poses; everything small
     // is palmed upright. The deployables are the world's own models again.
+    // The metal hatchet's edge is to −X like the stone one's: built to +X, it
+    // was carried with the blade facing back at the player.
     HeldModelDef::hafted(
         "metal_hatchet",
         "models/held/metal_hatchet.glb",
