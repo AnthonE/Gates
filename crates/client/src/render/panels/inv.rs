@@ -1646,7 +1646,6 @@ fn cell(
                 // a swatch in the corner says it is skinned even where the
                 // tint is subtle.
                 let tint = crate::ui::skins::tint_of(&core.skins, stack.skin);
-                let [tr, tg, tb] = tint.unwrap_or([1.0, 1.0, 1.0]);
                 if let Some([r, g, b]) = tint {
                     c.spawn((
                         Node {
@@ -1661,8 +1660,8 @@ fn cell(
                         Pickable::IGNORE,
                     ));
                 }
-                match icons.item(&name) {
-                    Some(image) => c.spawn((
+                match icons.look(&name, stack.skin, tint) {
+                    Some((image, color)) => c.spawn((
                         Node {
                             position_type: PositionType::Absolute,
                             left: Val::Px(4.0),
@@ -1671,12 +1670,13 @@ fn cell(
                             height: Val::Px(SLOT_PX - 10.0),
                             ..default()
                         },
-                        // A colour picture, drawn as it is — or through the
+                        // A colour picture, drawn as it is: the skin's own
+                        // where it has a model, else the item's through the
                         // skin's tint, the one colour a picture is
                         // multiplied by.
                         ImageNode {
                             image,
-                            color: Color::srgb(tr, tg, tb),
+                            color,
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -2654,8 +2654,12 @@ fn spawn_ghost(
             GlobalZIndex(50),
         ))
         .with_children(|g| {
-            match icons.item(&art) {
-                Some(image) => g.spawn((
+            match icons.look(
+                &art,
+                stack.skin,
+                crate::ui::skins::tint_of(&core.skins, stack.skin),
+            ) {
+                Some((image, color)) => g.spawn((
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Px(4.0),
@@ -2664,13 +2668,10 @@ fn spawn_ghost(
                         height: Val::Px(SLOT_PX - 10.0),
                         ..default()
                     },
-                    // The skin's tint, as the cell it came out of wears it.
+                    // The skin's look, as the cell it came out of wears it.
                     ImageNode {
                         image,
-                        color: crate::ui::skins::tint_of(&core.skins, stack.skin)
-                            .map_or(super::super::icons::PICTURE, |[r, g, b]| {
-                                Color::srgb(r, g, b)
-                            }),
+                        color,
                         ..default()
                     },
                     Pickable::IGNORE,

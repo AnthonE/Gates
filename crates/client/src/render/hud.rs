@@ -2909,14 +2909,23 @@ pub fn update(
         // the page disagreed about both.
         let shown = sim_core::research::blueprint_target(&core.research, stack)
             .map_or(stack, |t| sim_core::gather::ItemStack { item: t, ..stack });
-        let [tr, tg, tb] =
-            crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
-        let tint = Color::srgb(tr, tg, tb);
-        if img.color != tint {
-            img.color = tint;
-        }
-        match crate::ui::icons::icon_stem(&core.catalog, shown).and_then(|s| art.verb(s)) {
-            Some(h) => {
+        // A skin with a model of its own shows its own picture.
+        let skinned = (stack.count > 0)
+            .then(|| art.skin(stack.skin))
+            .flatten()
+            .map(|h| (h, Color::WHITE));
+        let plain = || {
+            let [tr, tg, tb] =
+                crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
+            crate::ui::icons::icon_stem(&core.catalog, shown)
+                .and_then(|s| art.verb(s))
+                .map(|h| (h, Color::srgb(tr, tg, tb)))
+        };
+        match skinned.or_else(plain) {
+            Some((h, tint)) => {
+                if img.color != tint {
+                    img.color = tint;
+                }
                 if img.image != h {
                     img.image = h;
                 }

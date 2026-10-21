@@ -932,9 +932,78 @@ sidecars, prompts included, are in `To Examine/skins/`.
 | `frost_pickaxe.glb` | Frost Pickaxe (3) | stone_pickaxe | `01a13bcd-5081` | `01a13bcd-a272` |
 | `bone_bow.glb` | Bone Bow (4) | hunting_bow | `01a13bcd-507e` | `01a13bcd-f206` |
 
-The Gilded Revolver (5) and Moss Tunic (6) stay tints: the revolver's hold
-is built for the generated straight-gripped gun, and worn pieces are lathe
-meshes on the body.
+The Moss Tunic (6) stays a tint: worn pieces are lathe meshes on the body.
+
+### The Realm drop and the rework (2026-10-21)
+
+Rust's skins are the item's own mesh in a new finish, so these are too:
+**`ci/meshy_retexture.py`** strips the shipped `.glb` to its geometry, has
+Meshy repaint it on its own UVs (`retexture`, meshy-6, `enable_original_uv`;
+every delivery measured 100% of its UVs ours) and grafts the maps back onto
+the shipped geometry byte for byte, so height, grip and muzzle are the item's
+own. `--concept` first paints the finish over the item's own icon render
+(nano-banana-pro image-to-image) and textures from that picture: the first
+Verdigris rifle textured from words alone came out near-black with 0.4% of
+it lit; from a concept, the crack web lands on every part. Guns are shown to
+the generator lying flat (`--pose gun`), since its front view of a barrel-up
+gun is the muzzle. Then `ktx_pack.py --size 1024` (by `basisu`, its header).
+
+The glow (`--glow 3.0 --veins HUE`) is the albedo's own cracks of that hue,
+burnt at the fel cracks' strength: meshy-6's emission map came back black.
+`SkinModelDef::glow` is the one carve-out from "nothing held glows".
+
+Meshy paid plan, no `NOTICE` entry, no proper noun in any prompt. 1,297 →
+871 credits for the lot, test rolls included, run ten at a time (so the
+per-row deltas in the sidecars overlap and are not recorded here).
+
+| file | skin (catalog) | base | retexture task | glow |
+|---|---|---|---|---|
+| `gilded_revolver.glb` | Gilded Revolver (5) | new: `meshy_gen.py`, image `01a15d42-415b`, mesh `01a15d42-be08` | — | |
+| `verdigris_rifle.glb` | Verdigris AR (11) | `assault_rifle` | `01a15d49-61a8` | 120° |
+| `verdigris_python.glb` | Verdigris Python (12) | `python_revolver` | `01a15d4f-a483` | 120° |
+| `verdigris_longsword.glb` | Verdigris Longsword (13) | `longsword` | `01a15d4f-a604` | 120° |
+| `verdigris_hatchet.glb` | Verdigris Hatchet (14) | `metal_hatchet` | `01a15d4f-a3ec` | 120° |
+| `lapis_thompson.glb` | Lapis Thompson (15) | `thompson` | `01a15d4f-c9dc` | |
+| `lapis_bolt_rifle.glb` | Lapis Bolt Rifle (16) | `bolt_action_rifle` | `01a15d4f-c942` | |
+| `lapis_pickaxe.glb` | Lapis Pickaxe (17) | `metal_pickaxe` | `01a15d4f-a5c6` | |
+| `lapis_mace.glb` | Lapis Mace (18) | `mace` | `01a15d4f-cc25` | |
+| `tidewrack_shotgun.glb` | Tidewrack Shotgun (19) | `pump_shotgun` | `01a15d4f-a355` | |
+| `tidewrack_smg.glb` | Tidewrack SMG (20) | `custom_smg` | `01a15d50-693b` | |
+| `tidewrack_sar.glb` | Tidewrack SAR (21) | `semi_automatic_rifle` | `01a15d4f-a67f` | |
+| `tidewrack_cleaver.glb` | Tidewrack Cleaver (22) | `salvaged_cleaver` | `01a15d52-bb90` | |
+| `ember_hatchet.glb` | Ember Hatchet (2), reworked | its 2026-10-14 self | `01a15d52-c230` | 30° |
+| `obsidian_bat.glb` | Obsidian Bat (1), reworked | its 2026-10-14 self | `01a15d52-be7d` | |
+| `founder_bat.glb` | Founder's Bat (7), reworked | its 2026-10-14 self | `01a15d52-e3d8` | |
+
+The revolver was imported as the guns were (`--turn=z-90,y-90`, 0.261 m),
+then `stand_grip.py --shaft 0.45 0.98 --grip 0.19` three times: the
+default 0.40..0.95 window took in the cylinder and flipped ±4° per pass,
+where this one converges to 0.00°.
+
+Prompts, in full. Every retexture's concept prompt is "Exactly this object,
+the same shape, proportions and parts, seen the same way, repainted as a
+premium cosmetic skin: " + the set's line + " Plain white background.", and
+every set's line ends "Realistic, highly detailed. No text, no letters, no
+logos, no symbols."
+
+> **Verdigris** — "the wooden parts become glossy black volcanic glass, the metal becomes dark corroded bronze crusted with pale blue-green verdigris and worn to bright bronze on the edges, and a web of jagged cracks runs across the whole object, every crack filled with brilliant saturated neon-green light like molten green glass." The longsword: "the blade becomes glossy black volcanic glass, the crossguard and pommel dark corroded bronze crusted with pale blue-green verdigris, the grip black leather, and a web of jagged cracks runs along the whole blade, every crack filled with brilliant saturated neon-green light like molten green glass." The rifle: "the wooden stock, grip and handguard become glossy black volcanic glass, the steel becomes dark corroded bronze crusted with pale blue-green verdigris and worn to bright bronze on the edges, and a web of jagged cracks runs across the stock, handguard, receiver and magazine, every crack filled with brilliant saturated neon-green light like molten green glass. Glowing green ring at the muzzle."
+>
+> **Lapis** — "the wooden parts become polished black obsidian inlaid with brilliant deep-blue lapis lazuli panels flecked with gold, the metal becomes dark blackened steel edged with tarnished antique gold filigree and fine engraved gold scrollwork. Regal, ancient, ornate."
+>
+> **Tidewrack** — "the wooden parts become pale sun-bleached driftwood, silver-grey and weathered smooth with deep open grain, bound with frayed tarred rope lashings, the metal becomes sea-worn brass and dark iron crusted with small white barnacles and specks of rust, with inset pieces of frosted sea-glass in pale aqua and green. A salvaged coastal look."
+>
+> **Ember Hatchet** — "the stone head becomes charred black volcanic rock split by a web of deep jagged cracks glowing with brilliant orange-yellow molten ember light, the wooden haft is burnt to black charcoal with a few thin glowing orange ember cracks, the binding is blackened iron wire."
+>
+> **Obsidian Bat** — "the whole bat is carved from glossy black obsidian volcanic glass with sharp conchoidal fracture facets and a deep violet and purple iridescent sheen across its surface, the studs are polished black glass points, the grip wrapped in black leather."
+>
+> **Founder's Bat** — "the barrel of the bat becomes polished deep-blue lapis lazuli stone flecked with gold, bound with bands of bright gold wire, the handle is dark polished walnut wrapped in deep-blue cloth tape, a gold cap on the knob."
+>
+> **gilded_revolver** — "A single compact six-shot revolver lying on its side on a plain white background, seen exactly from the side, muzzle pointing right. A short four-inch barrel, a fluted cylinder, a spur hammer, a slim straight grip. The whole gun is gilded: polished gold plate deeply engraved with scrolling vines and leaves, darker antique brass in the recesses of the engraving, the grip panels of carved ivory-white bone. 26 centimetres long, 13 centimetres tall and 4 centimetres wide. Real, photographed in soft daylight. Exactly one object. No ground, no people, no hands, no text, no labels, no logos, no scale bar."  ·  texture: "Polished gold plate with deep scrolling vine engraving, darker antique brass in the recesses, carved ivory-white bone grip panels, no text, no logos"
+
+Each skin's store and inventory picture is a render of its model, named by
+catalog id (`iconbake --skins` → `ci/icons/skin_renders/<catalog>.png`, then
+`finish_icons.py --only-renders` → `assets/icons/skins/<catalog>.png`), held by
+`tests/held_assets.rs`; the browser shell's store reads the same file.
 
 ## Textures are KTX2/UASTC at 1024, and the reason is VRAM
 

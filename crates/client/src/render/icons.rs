@@ -62,6 +62,9 @@ pub const LOCK_TINT: Color = Color::srgba(0.86, 0.85, 0.82, 0.95);
 #[derive(Resource, Default)]
 pub struct Icons {
     by_name: HashMap<String, Handle<Image>>,
+    /// A skin's own picture, by catalog id: a render of its model
+    /// (`ui::hold::SKIN_MODELS`), where Rust's store shows the skinned item.
+    skins: HashMap<u16, Handle<Image>>,
 }
 
 impl Icons {
@@ -73,12 +76,34 @@ impl Icons {
     /// is folded with `all`, never indexed — so iterating the map is safe
     /// here in a way wall 1 forbids inside the sim.
     pub fn handles(&self) -> impl Iterator<Item = &Handle<Image>> {
-        self.by_name.values()
+        self.by_name.values().chain(self.skins.values())
     }
 
     /// The icon for an item's display name, if one was baked.
     pub fn item(&self, name: &str) -> Option<Handle<Image>> {
         self.by_name.get(&stem(name)).cloned()
+    }
+
+    /// What an item named `name` wearing skin `skin` looks like in a cell:
+    /// the skin's own picture, drawn as it is, where the skin has a model;
+    /// otherwise the item's picture under `tint` (`ui::skins::tint_of`, the
+    /// skin's colour or `None` for its own look).
+    pub fn look(
+        &self,
+        name: &str,
+        skin: u16,
+        tint: Option<[f32; 3]>,
+    ) -> Option<(Handle<Image>, Color)> {
+        if let Some(h) = self.skins.get(&skin) {
+            return Some((h.clone(), PICTURE));
+        }
+        let colour = tint.map_or(PICTURE, |[r, g, b]| Color::srgb(r, g, b));
+        self.item(name).map(|h| (h, colour))
+    }
+
+    /// A skin's own picture, if it has a model to have been photographed.
+    pub fn skin(&self, skin: u16) -> Option<Handle<Image>> {
+        self.skins.get(&skin).cloned()
     }
 
     /// A building shape's icon — `shape_wall`, `shape_foundation`, …
@@ -112,5 +137,9 @@ pub fn load(mut commands: Commands, server: Res<AssetServer>) {
     for s in STEMS {
         by_name.insert(s.to_string(), server.load(format!("icons/{s}.png")));
     }
-    commands.insert_resource(Icons { by_name });
+    let skins = crate::ui::hold::SKIN_MODELS
+        .iter()
+        .map(|s| (s.catalog, server.load(s.icon())))
+        .collect();
+    commands.insert_resource(Icons { by_name, skins });
 }
