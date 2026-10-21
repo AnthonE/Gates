@@ -1268,7 +1268,9 @@ pub use voice::{
 /// gift, the skins it hands over and its price (`TopicOffer`), and
 /// `SUB_ARC_TEXT` says what asking one came to (`ARC_GIFT_*`, 3 bits after
 /// the topic), so the talk panel draws an offer as a card with a button.
-pub const PROTO_VER: u16 = 130;
+/// v131 — a catalog row carries `damage` (16 bits after `class`): what one
+/// hit of the item takes off a body, for the inventory's item card.
+pub const PROTO_VER: u16 = 131;
 
 /// This game's slug in the elo catalog.
 ///

@@ -4,9 +4,8 @@
 //! the ACTIONS it takes (eat, wear, unload, split, drop).
 //!
 //! Everything a card shows is already on the client: the catalog row
-//! (`protocol::event::ItemRow`) carries the gun handling, the armor, the eat
-//! columns and the condition ceiling. Damage is not on the wire, so the card
-//! does not invent one.
+//! (`protocol::event::ItemRow`) carries the damage (v131), the gun handling,
+//! the armor, the eat columns and the condition ceiling.
 //!
 //! The bars are drawn against fixed presentation ceilings ([`RPM_CAP`] and
 //! friends), not against the strongest item in the catalog, so a bar means
@@ -16,7 +15,7 @@ use protocol::event::ItemRow;
 use sim_core::combat::{ARMOR_MAX_PCT, WEAR_NONE};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
-use sim_core::limits::{MAX_PELLETS, TICK_HZ};
+use sim_core::limits::TICK_HZ;
 
 /// One INFORMATION row: a label, a value and, for a number with a sensible
 /// ceiling, how full its bar is (0..=1).
@@ -37,6 +36,9 @@ pub const RECOIL_CAP: f32 = 800.0;
 pub const WAIT_CAP_S: f32 = 6.0;
 /// What one bite a full bar stands for (food, water or health).
 pub const EAT_CAP: f32 = 100.0;
+/// The damage of one shot or swing a full bar stands for — a shotgun's
+/// whole spread (14 × 15) sits near the top, a bat (20) near the foot.
+pub const DAMAGE_CAP: f32 = 250.0;
 
 fn frac(v: f32, cap: f32) -> Option<f32> {
     Some((v / cap).clamp(0.0, 1.0))
@@ -60,6 +62,20 @@ pub fn worn_on(wear_slot: u8) -> Option<&'static str> {
 /// `loaded` is the rounds in the gun when the card is the gun in your hand.
 pub fn stats(row: ItemRow, stack: ItemStack, loaded: Option<u16>) -> Vec<Stat> {
     let mut out = Vec::new();
+    if row.damage > 0 {
+        // A shot of pellets is that many hits: said as both numbers, and
+        // its bar the whole spread landing.
+        let pellets = row.gun.map_or(1, |g| g.pellets.max(1));
+        out.push(Stat {
+            label: "DAMAGE",
+            value: if pellets > 1 {
+                format!("{} × {pellets}", row.damage)
+            } else {
+                row.damage.to_string()
+            },
+            frac: frac(row.damage as f32 * pellets as f32, DAMAGE_CAP),
+        });
+    }
     if let Some(g) = row.gun {
         let rpm = (60 * TICK_HZ) as f32 / g.rate_ticks.max(1) as f32;
         out.push(Stat {
@@ -83,13 +99,6 @@ pub fn stats(row: ItemRow, stack: ItemStack, loaded: Option<u16>) -> Vec<Stat> {
             value: format!("{:.1}°", kick / 100.0),
             frac: frac(kick, RECOIL_CAP),
         });
-        if g.pellets > 1 {
-            out.push(Stat {
-                label: "PELLETS",
-                value: g.pellets.to_string(),
-                frac: frac(g.pellets as f32, MAX_PELLETS as f32),
-            });
-        }
         if g.reload_ticks > 0 {
             let s = secs(g.reload_ticks as u32);
             out.push(Stat {
@@ -257,6 +266,7 @@ mod tests {
         let row = ItemRow {
             cond_max: 10_000,
             stack_max: 1,
+            damage: 35,
             gun: Some(GunRow {
                 rate_ticks: 5,
                 reload_ticks: 102,
@@ -278,11 +288,25 @@ mod tests {
         assert_eq!(get("RELOAD").as_deref(), Some("3.4 s"));
         assert_eq!(get("LOADED").as_deref(), Some("8"));
         assert_eq!(get("CONDITION").as_deref(), Some("50%"));
-        assert!(get("PELLETS").is_none(), "one pellet is not a stat");
+        assert_eq!(get("DAMAGE").as_deref(), Some("35"), "one pellet: no ×");
+        assert_eq!(s[0].label, "DAMAGE", "damage heads the card, Rust's order");
         assert!(get("STACK").is_none(), "a gun does not stack");
         assert!(s
             .iter()
             .all(|x| x.frac.is_none_or(|f| (0.0..=1.0).contains(&f))));
+        // A shotgun's shot is its pellets, and its bar the whole spread.
+        let shotgun = ItemRow {
+            damage: 14,
+            gun: row.gun.map(|g| GunRow { pellets: 15, ..g }),
+            ..row
+        };
+        let s = stats(shotgun, stack(1, 5_000), None);
+        assert_eq!(s[0].value, "14 × 15");
+        assert_eq!(s[0].frac, Some(210.0 / DAMAGE_CAP));
+        // Nothing that does not hit says DAMAGE.
+        assert!(stats(ItemRow::EMPTY, stack(1, 0), None)
+            .iter()
+            .all(|x| x.label != "DAMAGE"));
     }
 
     #[test]

@@ -864,8 +864,11 @@ pub const PANEL_BG: Color = Color::srgba(0.169, 0.153, 0.137, 0.97);
 /// the cells over the dimmed world, and so does this. One constant so the
 /// regions agree if they ever take a ground again.
 pub const REGION_BG: Color = Color::NONE;
-/// The screen-wide scrim behind a panel.
-pub const SCRIM: Color = Color::srgba(0.055, 0.047, 0.039, 0.72);
+/// The screen-wide scrim behind a panel: near-black, Rust's. 0.88 rather
+/// than the 0.72 it was because Bevy blends UI in linear light, where 0.72
+/// took a sunlit beach from 0.55 to 0.31 — the world read through every
+/// page at half strength. At 0.88 it sits near 0.2, there but out of the way.
+pub const SCRIM: Color = Color::srgba(0.047, 0.041, 0.035, 0.88);
 /// An empty cell. The reference's grid cells are the panel with a hairline,
 /// not a lighter block — the ITEM is what carries the value there, which is
 /// why our text-only cells need more separation than its do.

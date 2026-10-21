@@ -1324,13 +1324,15 @@ pub fn event_catalog() -> ItemCatalog {
                 ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
-        // The draw columns' coverage (v82), at the byte's corner.
+        // The draw columns' coverage (v82), at the byte's corner, and the
+        // damage column's (v131) at its own.
         (
             b"Hunting Bow",
             ItemRow {
                 draw_ticks: u8::MAX,
                 nock_ticks: u8::MAX - 1,
                 class: CLASS_WEAPONS,
+                damage: u16::MAX,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),

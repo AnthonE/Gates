@@ -62,8 +62,8 @@ pub const GROW_SYNC_BATCH: usize = 32;
 pub const NODE_STAGE_BATCH: usize = 32;
 
 /// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 427 bits with a gun's handling, and six of them would pass
-/// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+/// row is 443 bits with a gun's handling and v131's damage, and six of them
+/// would pass `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 5;
 
 /// Skin rows one skin-catalog message carries. A row is at most
@@ -1226,6 +1226,13 @@ pub struct ItemRow {
     /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
     /// also what a row past the drip watermark reads as.
     pub class: u8,
+    /// What one hit of it takes off a body (v131): the ranged row's
+    /// `damage` for a gun or a bow (per pellet — a shotgun's card multiplies
+    /// by [`GunRow::pellets`]), else the melee swing's, else a throwable's;
+    /// 0 for anything that does not hit. The client draws it on the item
+    /// card (Rust's DAMAGE) and decides nothing with it. Full width, the
+    /// sim's own `u16`.
+    pub damage: u16,
     /// How a gun handles (v126, `combat::Gun`), for the client to kick its
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
@@ -1301,6 +1308,7 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + OVEN_ROLE_BITS as usize
     + 2
     + ITEM_CLASS_BITS as usize
+    + 16
     + 1
     + GUN_ROW_BITS;
 // A full batch of the widest rows fits one message. v102's class nibble is
@@ -1327,6 +1335,7 @@ impl ItemRow {
         holster: false,
         revive: false,
         class: CLASS_OTHER,
+        damage: 0,
         gun: None,
     };
 
@@ -2920,6 +2929,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.revive)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
+        // The damage a hit does (v131), full width.
+        w.write(row.damage as u32, 16)?;
         // A gun's handling (v126), behind a presence bit.
         w.write_bit(row.gun.is_some())?;
         if let Some(g) = row.gun {
@@ -6134,6 +6145,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
+                    damage: r.read(16)? as u16,
                     gun: if r.read_bit()? {
                         let rate_ticks = r.read(8)? as u8;
                         let reload_ticks = r.read(GUN_RELOAD_BITS)? as u16;
@@ -8473,6 +8485,8 @@ mod tests {
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
+                // The damage (v131) at the width's corner, distinct per row.
+                damage: u16::MAX - 5 * i as u16,
                 gun: None,
             };
             cat.set(i, &name, row).unwrap();
