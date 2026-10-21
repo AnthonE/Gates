@@ -1612,20 +1612,25 @@ fn a_foreign_claim_refuses_a_seed_and_the_crew_sows() {
     assert_eq!(refused(&w), None, "the crew's own ground");
 }
 
-/// **One planter sows at most 48 ground plants, the island 512.**
-#[test]
-fn the_49th_ground_plant_of_one_owner_refuses() {
-    use sim_core::limits::{MAX_GROUND_PLANTS, MAX_GROUND_PLANTS_PER_OWNER};
-    let (mut w, _, _) = farm_world();
-    let (x, z) = meadow(&w);
-    let far = |k: usize, owner: u32| PlantRec {
+/// Ground plant `k` of `owner`, far off along the island's edge: a cap's
+/// worth of them, put straight in the store.
+fn far(k: usize, owner: u32) -> PlantRec {
+    PlantRec {
         owner,
         host: HOST_GROUND,
         spot: SPOT_GROUND,
         qx: 10 + k as i32 * 100,
         qz: 10,
         ..PlantRec::default()
-    };
+    }
+}
+
+/// **One planter sows at most 48 ground plants, the island 512.**
+#[test]
+fn the_49th_ground_plant_of_one_owner_refuses() {
+    use sim_core::limits::{MAX_GROUND_PLANTS, MAX_GROUND_PLANTS_PER_OWNER};
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
     for k in 0..MAX_GROUND_PLANTS_PER_OWNER - 1 {
         w.farm.insert(far(k, PLAYER)).expect("room");
     }
@@ -1644,6 +1649,201 @@ fn the_49th_ground_plant_of_one_owner_refuses() {
     stand_by(&mut w, x, z);
     sow(&mut w, SEED_SLOT, x, z);
     assert_eq!(refused(&w), Some(REFUSE_D_PLANTS_FULL), "the 513th");
+}
+
+/// **A relog keeps the sower's ground plants on its cap**: a player id is
+/// a connection's, and the sleeper woken under a new one still owns its 48
+/// (`World::remap_player_ids`, which the restart's id floor reads too).
+#[test]
+fn a_relog_keeps_the_sowers_ground_plants_on_its_cap() {
+    use sim_core::limits::MAX_GROUND_PLANTS_PER_OWNER;
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    for k in 0..MAX_GROUND_PLANTS_PER_OWNER {
+        w.farm.insert(far(k, PLAYER)).expect("room");
+    }
+    let mut seen = 0;
+    w.remap_player_ids(&mut |id| {
+        seen += (id == PLAYER) as usize;
+        id
+    });
+    assert!(
+        seen > MAX_GROUND_PLANTS_PER_OWNER,
+        "the id floor misses a sower"
+    );
+    w.tick(&[Command::Leave { id: PLAYER }]);
+    const NEW: u32 = 0x0100 | PLAYER;
+    w.tick(&[Command::Wake {
+        id: NEW,
+        sleeper: PLAYER,
+    }]);
+    assert_eq!(w.players[0].id, NEW, "the sleeper did not wake");
+    assert_eq!(
+        (w.farm.ground_count_of(PLAYER), w.farm.ground_count_of(NEW)),
+        (0, MAX_GROUND_PLANTS_PER_OWNER)
+    );
+    stand_by(&mut w, x, z);
+    w.tick(&[Command::Plant {
+        id: NEW,
+        slot: SEED_SLOT as u8,
+        host: HOST_GROUND,
+        spot: 0,
+        qx: quant_xz(x),
+        qz: quant_xz(z),
+    }]);
+    let why = w
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_DEPLOY_REFUSED && e.a == NEW)
+        .map(|e| e.b);
+    assert_eq!(why, Some(REFUSE_D_PLANTS_FULL), "a relog reset the cap");
+}
+
+/// A cell whose centre is soft soil a foundation may stand on, with a
+/// buildable neighbour at +x: the fixture for building over a plant.
+fn soft_cell(w: &World) -> (u16, u16) {
+    let (cx0, cz0) = buildable_cell(SEED);
+    for r in 0..24i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let (cx, cz) = ((cx0 as i32 + dx) as u16, (cz0 as i32 + dz) as u16);
+                let (x, z) = cell_center(cx, cz);
+                let soft = site(w, x, z).is_ok_and(|(_, b)| {
+                    w.cook.farm.soil_pm.get(b as usize).is_some_and(|&s| s > 0)
+                });
+                if soft
+                    && foundation_terrain_ok(SEED, hv(SEED), x, z)
+                    && foundation_terrain_ok(SEED, hv(SEED), x + BUILD_CELL_M, z)
+                {
+                    return (cx, cz);
+                }
+            }
+        }
+    }
+    panic!("no soft buildable cell near the fixture — the generator moved");
+}
+
+/// Place the fixture's workbench (row 1, item 3) at the centre of
+/// `(cx, cz)`, standing outside its footprint.
+fn place_bench(w: &mut World, cx: u16, cz: u16) {
+    let (x, z) = cell_center(cx, cz);
+    w.players[0].inv[PLANTER_SLOT] = ItemStack {
+        item: 3,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = PLANTER_SLOT as u8;
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 1.5);
+    let before = w.deploys.len();
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: 1,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    assert_eq!(w.deploys.len(), before + 1, "the workbench did not place");
+}
+
+/// Place build row `row` at `(cx, cz, level, loc)`, standing off the cell.
+fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
+    let (x, z) = cell_center(cx, cz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 2.5);
+    let before = w.pieces.len();
+    w.tick(&[Command::Place {
+        id: PLAYER,
+        row,
+        cx,
+        cz,
+        level,
+        loc,
+        freehand: false,
+        plate: 0,
+    }]);
+    assert_eq!(w.pieces.len(), before + 1, "piece {row} did not place");
+}
+
+/// Tick until plant `id` is uprooted, at most `ticks`; whether it was.
+fn uprooted_within(w: &mut World, id: u32, ticks: u64) -> bool {
+    for _ in 0..ticks {
+        if gone(w) == Some((id, GONE_UPROOTED as u32, 0)) {
+            return true;
+        }
+        w.tick(&[]);
+    }
+    gone(w) == Some((id, GONE_UPROOTED as u32, 0))
+}
+
+/// **A seed does not sow inside a standing deploy**: a workbench is taller
+/// than a step, and its top is still built over the soil.
+#[test]
+fn a_seed_does_not_sow_inside_a_workbench() {
+    let (mut w, _, _) = farm_world();
+    let (cx, cz) = soft_cell(&w);
+    place_bench(&mut w, cx, cz);
+    let (x, z) = cell_center(cx, cz);
+    assert_eq!(site(&w, x, z).err(), Some(Ground::Built));
+    sow(&mut w, SEED_SLOT, x, z);
+    assert_eq!(refused(&w), Some(REFUSE_D_PLANT_SOIL));
+    assert!(w.farm.is_empty(), "a seed sowed inside the bench");
+}
+
+/// **Building over a ground plant uproots it** within a period: a
+/// foundation laid over its soil, a deploy set on it, or a floor roofed
+/// over it. Left there it could never ripen, be cut or be cleared, and it
+/// would hold its owner's cap and the island's for good.
+#[test]
+fn building_over_a_ground_plant_uproots_it() {
+    let sown = |w: &mut World, x: f32, z: f32| {
+        stand_by(w, x, z);
+        sow_clone(w, x, z, g(b"XXXXXX"))
+    };
+
+    // A foundation.
+    let (mut w, _, _) = farm_world();
+    let (cx, cz) = soft_cell(&w);
+    let (x, z) = cell_center(cx, cz);
+    let id = sown(&mut w, x, z);
+    place_piece(&mut w, 0, cx, cz, 0, LOC_PLANE);
+    assert!(
+        uprooted_within(&mut w, id, OVEN_PERIOD_TICKS + 1),
+        "under a foundation"
+    );
+    assert_eq!(w.farm.ground_count_of(PLAYER), 0);
+
+    // A workbench.
+    let (mut w, _, _) = farm_world();
+    let id = sown(&mut w, x, z);
+    place_bench(&mut w, cx, cz);
+    assert!(
+        uprooted_within(&mut w, id, OVEN_PERIOD_TICKS + 1),
+        "inside a bench"
+    );
+
+    // A floor over the cell, held up by the wall of the base beside it:
+    // roofed, with nothing built on the soil itself.
+    let (mut w, _, _) = farm_world();
+    let id = sown(&mut w, x, z);
+    place_piece(&mut w, 0, cx + 1, cz, 0, LOC_PLANE);
+    place_piece(&mut w, 1, cx + 1, cz, 0, LOC_EDGE_XLO);
+    idle(&mut w, OVEN_PERIOD_TICKS + 1);
+    assert!(
+        w.farm.index_of_id(id).is_some(),
+        "the base beside it uprooted it"
+    );
+    place_piece(&mut w, 2, cx, cz, 1, LOC_PLANE);
+    assert_eq!(site(&w, x, z).err(), Some(Ground::Roofed));
+    assert!(
+        uprooted_within(&mut w, id, OVEN_PERIOD_TICKS + 1),
+        "under a floor"
+    );
 }
 
 /// **Meadow corn on full water ripens in its grow over the soil's 0.55 and

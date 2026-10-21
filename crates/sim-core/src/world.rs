@@ -5450,11 +5450,11 @@ impl World {
     /// Every player id the world files anything under, through `f`: each
     /// body's own, the killer on each corpse, every owner — a bag's, a
     /// cupboard's, a box's, a lock's, a turret's, a death bag's, a planted
-    /// charge's, a fire's — every cupboard crew and lock list, each arrow
-    /// lodged in a body, and each works credit. [`World::rekey`] moves a
-    /// player's things with them to a new connection id through it, and the
-    /// server reads the highest id a saved world still holds through it
-    /// (`worldfile::id_floor`), so the two cannot disagree about what a
+    /// charge's, a fire's, a plant's — every cupboard crew and lock list,
+    /// each arrow lodged in a body, and each works credit. [`World::rekey`]
+    /// moves a player's things with them to a new connection id through it,
+    /// and the server reads the highest id a saved world still holds through
+    /// it (`worldfile::id_floor`), so the two cannot disagree about what a
     /// player owns.
     ///
     /// Arrows in flight and the per-tick scratch are not visited: they live
@@ -5479,6 +5479,8 @@ impl World {
         for w in self.works.w.iter_mut() {
             w.map_ids(f);
         }
+        // A ground plant's owner is its cap's key (`farm::ground_ok`).
+        self.farm.map_ids(f);
     }
 
     /// Everything `from` owns is `to`'s: the same player, back on a new
@@ -8629,6 +8631,9 @@ impl World {
         };
         let open_sky_at =
             |x: f32, z: f32, y: f32| !crate::collide::roofed(seed, haven, pieces.cols(), x, z, y);
+        let ground_open = |x: f32, z: f32, y: f32| {
+            crate::farm::ground_cover(seed, haven, pieces.cols(), x, z, y).is_ok()
+        };
         crate::farm::step(
             &self.cook.farm,
             &self.survival.exposure.air,
@@ -8640,6 +8645,7 @@ impl World {
             day_tick,
             &feet_of,
             &open_sky_at,
+            &ground_open,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point

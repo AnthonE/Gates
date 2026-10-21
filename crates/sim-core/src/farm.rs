@@ -590,6 +590,15 @@ impl Farm {
         })
     }
 
+    /// Every sower through `f` (`World::remap_player_ids`): a ground plant
+    /// counts against its owner's cap, so a relog must not hand back a
+    /// fresh 48 and a restart must not mint a stale owner's id.
+    pub fn map_ids(&mut self, f: &mut impl FnMut(u32) -> u32) {
+        for p in self.entries[..self.len].iter_mut() {
+            p.owner = f(p.owner);
+        }
+    }
+
     /// A load (`worldsave.rs`, which validated every record).
     pub fn restore(&mut self, recs: &[PlantRec], next_id: u32) {
         self.len = recs.len().min(MAX_PLANTS);
@@ -772,10 +781,12 @@ impl FarmContent {
 
 /// One farm period's slice (`World::tick`, right after `oven::sweep`):
 /// (a) every planter whose turn it is banks rain under open sky; (b) every
-/// plant whose turn it is is visited — its host checked, its ripe or dying
-/// clock run, or (by day under open sky) it drinks and grows by the worst
-/// of its water, soil and air. `feet_of` is a planter box's floor height,
-/// `open_sky_at` whether a point is unroofed.
+/// plant whose turn it is is visited — its host checked (a ground plant's
+/// soil still open), its ripe or dying clock run, or (by day under open
+/// sky) it drinks and grows by the worst of its water, soil and air.
+/// `feet_of` is a planter box's floor height, `open_sky_at` whether a point
+/// is unroofed, `ground_open` whether soil is unroofed and unbuilt
+/// ([`ground_cover`]).
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     fc: &FarmContent,
@@ -788,6 +799,7 @@ pub fn step(
     day_tick: u64,
     feet_of: &dyn Fn(&BoxRec) -> f32,
     open_sky_at: &dyn Fn(f32, f32, f32) -> bool,
+    ground_open: &dyn Fn(f32, f32, f32) -> bool,
     events: &mut EventQueue,
 ) {
     let period = FARM_PERIOD_TICKS as usize;
@@ -861,6 +873,15 @@ pub fn step(
                     continue;
                 }
             }
+        } else {
+            // A ground plant's soil is still open: a foundation, a deploy
+            // or a roof built over it uproots it, or it would hold there
+            // for good (and on its owner's cap) where no verb reaches it.
+            let (x, y, z) = rec.pos();
+            if !ground_open(x, z, y) {
+                defer(i, GONE_UPROOTED, &mut n_rm);
+                continue;
+            }
         }
         // 2. Ripe and dying run on their clock alone.
         if !is_growing(rec.stage) {
@@ -881,8 +902,9 @@ pub fn step(
             continue;
         };
         let (x, y, z) = rec.pos();
-        // One roof test a visit, asked only when rain or the sun needs it.
-        let mut sky = None;
+        // One roof test a visit, asked only when rain or the sun needs it;
+        // a ground plant's was its open-soil test, just passed.
+        let mut sky = bed.is_none().then_some(true);
         let mut open = || *sky.get_or_insert_with(|| open_sky_at(x, z, y));
         // A ground plant banks the rain that reaches its soil, day or night.
         if bed.is_none() && ground_rain > 0 && rec.water < fc.ground_cap_wu && open() {
@@ -1071,6 +1093,21 @@ pub enum Ground {
 pub const GROUND_RESERVE_M: f32 = 0.5;
 /// How far over the soil a built surface must stand to be over it, m.
 pub const GROUND_BUILT_M: f32 = 0.05;
+/// How high over the soil a built top still stands over it, m: a storey,
+/// past the tallest solid deploy on the slope it may sit across and a
+/// stilted foundation's leg. A slab higher than this is a roof, which
+/// [`ground_cover`] asks first.
+pub const GROUND_BUILT_LID_M: f32 = crate::build::LEVEL_H_M;
+
+const _: () = {
+    // Every solid deploy's top, a metre of slope under its centre allowed,
+    // is under the lid: a seed never sows inside a vending machine.
+    let mut i = 0;
+    while i < DEPLOY_VOL.len() {
+        assert!(DEPLOY_VOL[i][1] + 1.0 <= GROUND_BUILT_LID_M);
+        i += 1;
+    }
+};
 
 /// The soil height at `(x, z)` if the ground there could take a seed:
 /// above the land line, off the road, outside every authored site, not in a
@@ -1105,14 +1142,35 @@ pub fn ground_site(
     if terrain::ground_slope(seed, haven, x, z) >= crate::build::FOUNDATION_MAX_SLOPE {
         return Err(Ground::Steep);
     }
+    ground_cover(seed, haven, cols, x, z, y)?;
+    Ok(y)
+}
+
+/// Whether the soil at `(x, z)`, height `y`, is open: no roof over it
+/// ([`Ground::Roofed`]) and nothing built on it ([`Ground::Built`]) — a
+/// piece or a solid deploy whose top stands within [`GROUND_BUILT_LID_M`]
+/// over the point. [`ground_site`]'s last test, and [`step`]'s self-heal:
+/// a ground plant someone builds over is uprooted, because under a roof or
+/// inside a foundation it could never ripen, be cut or be cleared. It reads
+/// the column index and the solid table, as the tick's roof test does.
+pub fn ground_cover(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &crate::collide::ColIndex,
+    x: f32,
+    z: f32,
+    y: f32,
+) -> Result<(), Ground> {
     if crate::collide::roofed(seed, haven, cols, x, z, y) {
         return Err(Ground::Roofed);
     }
-    let over = crate::collide::piece_ground(seed, haven, cols, x, z, y + crate::reach::LIFT_M);
-    if over > y + GROUND_BUILT_M {
+    // `piece_ground` counts what a body could step onto from `feet`, so
+    // feet a step under the lid see every top up to it.
+    let feet = y + GROUND_BUILT_LID_M - crate::movement::STEP_UP;
+    if crate::collide::piece_ground(seed, haven, cols, x, z, feet) > y + GROUND_BUILT_M {
         return Err(Ground::Built);
     }
-    Ok(y)
+    Ok(())
 }
 
 /// Whether `owner` may sow the open ground at `(x, z)` (`Command::Plant`
