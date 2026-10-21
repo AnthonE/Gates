@@ -562,11 +562,11 @@ const TICKS: u64 = 900;
 /// arms** (2026-10-20).
 /// **Moved → `0x7A45_8D13_0403_3749` at the casino's seats** (2026-10-21):
 /// `state_hash` reads `Player::seat`.
-/// **Moved → `0x9CA6_5039_3C68_9AAF` at the water pass** (2026-10-21): bodies swim
+/// **Moved → `0x5CC0_ADCF_F6BF_2C03` at the water pass** (2026-10-21): bodies swim
 /// in deep water instead of walking the bed, and the beach and the shallows
 /// take foundations and the beach deployables — with both reverted the old
 /// hash came back exactly.
-const GOLDEN_FINAL_HASH: u64 = 0x9CA6_5039_3C68_9AAF;
+const GOLDEN_FINAL_HASH: u64 = 0x5CC0_ADCF_F6BF_2C03;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
