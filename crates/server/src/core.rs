@@ -372,6 +372,13 @@ pub struct ShardCore {
     pub mints: crate::mints::Mints,
     /// Who is connected, for the platform's `/online.json` (`online.rs`).
     pub online: crate::online::Online,
+    /// The companion's end of its rings (`companion.rs`). Not sim state.
+    pub companion: crate::companion::Companion,
+    /// Bases recently alerted as under attack, by hearth address, and when:
+    /// one alert per base per `companion::RAID_QUIET_TICKS`.
+    raid_quiet: [(u64, u64); 16],
+    /// Structure hits looked up for an alert this tick (at most two).
+    raid_checks: u8,
     /// Every wallet's achievements (`achievements.rs`), tallied off the
     /// sim's events per connection. Not sim state.
     pub achievements: crate::achievements::Achievements,
@@ -725,6 +732,9 @@ impl ShardCore {
             gifts: crate::gifts::Gifts::off(),
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
+            companion: crate::companion::Companion::off(),
+            raid_quiet: [(u64::MAX, 0); 16],
+            raid_checks: 0,
             teams: crate::team::Teams::default(),
             standings_tell: [0; MAX_PLAYERS],
             standings_say: Vec::new(),
@@ -1088,6 +1098,197 @@ impl ShardCore {
             });
         }
         self.online.publish(roster);
+    }
+
+    /// The island as the companion shows it (`companion.rs`): every body
+    /// with its wallet, state, place and team, and every base's crew.
+    pub fn publish_companion(&mut self) {
+        use crate::companion::{Base, Person, Snap, ToWeb};
+        let m = |q: i32| ((q as i64 * 3) / 100).clamp(0, protocol::TEAM_POS_MAX_M as i64) as u16;
+        let mut people = Vec::new();
+        for p in self.world.players.iter() {
+            if !p.active || p.id == 0 {
+                continue;
+            }
+            let state = if p.sleeping {
+                protocol::TEAM_ASLEEP
+            } else if p.dead || p.wounded {
+                protocol::TEAM_DEAD
+            } else {
+                protocol::TEAM_AWAKE
+            };
+            let team = self.teams.leader_of(p.id);
+            people.push(Person {
+                wallet: self.wallet_of(p.id).unwrap_or_default(),
+                name: self.name_of(p.id),
+                id: p.id,
+                state,
+                x_m: m(p.body.qx),
+                z_m: m(p.body.qz),
+                online: (0..MAX_PLAYERS)
+                    .any(|s| self.clients[s].connected && self.clients[s].id == p.id),
+                team,
+                leader: team == p.id,
+            });
+        }
+        let bases = self
+            .world
+            .deploys
+            .hearths()
+            .iter()
+            .map(|h| {
+                let (x, z) = self.world.deploys.hearth_xz(h);
+                Base {
+                    x_m: x.clamp(0.0, protocol::TEAM_POS_MAX_M as f32) as u16,
+                    z_m: z.clamp(0.0, protocol::TEAM_POS_MAX_M as f32) as u16,
+                    crew: h.crew.members().to_vec(),
+                }
+            })
+            .collect();
+        let players = (0..MAX_PLAYERS)
+            .filter(|&s| self.clients[s].connected)
+            .count() as u32;
+        self.companion.send(ToWeb::Snap(Snap {
+            tick: self.world.tick,
+            players,
+            people,
+            bases,
+        }));
+    }
+
+    /// Player `id`'s wallet: a connected player's, else a sleeper's. `None`
+    /// for a guest or a gone body.
+    fn wallet_of(&self, id: u32) -> Option<String> {
+        let key = match (0..MAX_PLAYERS)
+            .find(|&s| self.clients[s].connected && self.clients[s].id == id)
+        {
+            Some(slot) => *self.keys.get(slot)?.as_ref()?,
+            None => self.sleepers.key_of(id)?,
+        };
+        core::str::from_utf8(key.as_bytes())
+            .ok()
+            .map(str::to_ascii_lowercase)
+    }
+
+    /// What player `id` is called, from the tag row that last named them.
+    fn name_of(&self, id: u32) -> String {
+        self.tags
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| t.name.as_str().to_string())
+            .unwrap_or_default()
+    }
+
+    /// A team line for the companion's history: who said it, and every
+    /// wallet on the team, connected or asleep, so a teammate away from the
+    /// game reads it later.
+    fn tell_companion(&mut self, from: u32, text: &protocol::ChatText, team: &[u32], web: bool) {
+        if !self.companion.on() {
+            return;
+        }
+        let line = crate::companion::Line {
+            from: self.wallet_of(from).unwrap_or_default(),
+            name: self.name_of(from),
+            text: String::from_utf8_lossy(text.as_bytes()).into_owned(),
+            hearers: team.iter().filter_map(|&id| self.wallet_of(id)).collect(),
+            web,
+        };
+        self.companion.send(crate::companion::ToWeb::Line(line));
+    }
+
+    /// A line typed on the companion page: said on the wallet's team channel
+    /// as if typed in the game, from their body, connected or asleep.
+    fn say_from_web(
+        &mut self,
+        line: crate::companion::WebLine,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let id = (0..MAX_PLAYERS)
+            .find(|&s| {
+                self.clients[s].connected
+                    && self.keys.get(s).and_then(|k| k.as_ref()) == Some(&line.wallet)
+            })
+            .map(|s| self.clients[s].id)
+            .or_else(|| {
+                self.sleepers
+                    .find(&line.wallet)
+                    .filter(|&id| self.world.is_sleeper(id))
+            });
+        let Some(id) = id else {
+            ShardStats::bump(&stats.chat_undelivered);
+            return;
+        };
+        let mut team = [0u32; protocol::TEAM_MAX];
+        let mates = self.teams.team_of(id);
+        team[..mates.len()].copy_from_slice(mates);
+        let team = &team[..mates.len()];
+        if team.is_empty() {
+            ShardStats::bump(&stats.chat_undelivered);
+            return;
+        }
+        self.tell_companion(id, &line.text, team, true);
+        let len = match encode_event_chat(id, protocol::Channel::Team, &line.text, &mut self.ev_buf)
+        {
+            Ok(len) => len,
+            Err(_) => {
+                ShardStats::bump(&stats.encode_range_errors);
+                return;
+            }
+        };
+        for to_slot in 0..MAX_PLAYERS {
+            if !self.clients[to_slot].connected || !team.contains(&self.clients[to_slot].id) {
+                continue;
+            }
+            if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
+                ShardStats::bump(&stats.ev_sent);
+            } else {
+                ShardStats::bump(&stats.chat_undelivered);
+            }
+        }
+    }
+
+    /// A structure took a hit at build cell `(cx, cz)`: tell the crew of
+    /// every base whose claim covers it, once a base per quiet window, and
+    /// look up at most two hits a tick.
+    fn note_raid(&mut self, cx: u16, cz: u16) {
+        if !self.companion.on() || self.raid_checks >= 2 {
+            return;
+        }
+        self.raid_checks += 1;
+        let tick = self.world.tick;
+        let (x, z) = sim_core::deploy::cell_center(cx, cz);
+        for hi in 0..self.world.deploys.hearths().len() {
+            let h = self.world.deploys.hearths()[hi];
+            if !self.world.deploys.hearth_covers(hi, x, z) {
+                continue;
+            }
+            let key = ((h.cx as u64) << 24) | ((h.cz as u64) << 8) | h.level as u64;
+            if self
+                .raid_quiet
+                .iter()
+                .any(|&(k, t)| k == key && tick < t + crate::companion::RAID_QUIET_TICKS)
+            {
+                continue;
+            }
+            let oldest = (0..self.raid_quiet.len())
+                .min_by_key(|&i| (self.raid_quiet[i].0 != u64::MAX, self.raid_quiet[i].1))
+                .unwrap_or(0);
+            self.raid_quiet[oldest] = (key, tick);
+            let (hx, hz) = self.world.deploys.hearth_xz(&h);
+            let wallets = h
+                .crew
+                .members()
+                .iter()
+                .filter_map(|&id| self.wallet_of(id))
+                .collect();
+            self.companion
+                .send(crate::companion::ToWeb::Alert(crate::companion::Alert {
+                    x_m: hx.clamp(0.0, protocol::TEAM_POS_MAX_M as f32) as u16,
+                    z_m: hz.clamp(0.0, protocol::TEAM_POS_MAX_M as f32) as u16,
+                    wallets,
+                }));
+        }
     }
 
     /// The wallet on `slot`, as the standings file it. `None` for a guest.
@@ -3604,6 +3805,10 @@ impl ShardCore {
                 }
             }
         }
+        // Lines typed on the companion page (`companion.rs`).
+        while let Some(line) = self.companion.pop() {
+            self.say_from_web(line, stats, send);
+        }
         for from_slot in 0..MAX_PLAYERS {
             let Some(msg) = self.clients[from_slot].pending_chat.take() else {
                 continue;
@@ -3648,6 +3853,9 @@ impl ShardCore {
                     send,
                 );
                 continue;
+            }
+            if msg.channel == protocol::Channel::Team {
+                self.tell_companion(from_id, &msg.text, team, false);
             }
             let len = match encode_event_chat(from_id, msg.channel, &msg.text, &mut self.ev_buf) {
                 Ok(len) => len,
@@ -3716,6 +3924,7 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        self.raid_checks = 0;
         for i in 0..self.world.events.len() {
             let ev = self.world.events.entries()[i];
             match ev.code {
@@ -5332,6 +5541,9 @@ impl ShardCore {
                 }
                 EV_STRUCT_HIT => {
                     ShardStats::bump(&stats.struct_hits);
+                    // The crew hears of it on the companion, killing blow
+                    // included.
+                    self.note_raid((ev.a >> 16) as u16, ev.a as u16);
                     // A structure still standing after a raid swing: the
                     // address, what it took, what is left. Broadcast like
                     // a placement — the wall is a world fact, and anyone

@@ -207,6 +207,10 @@ pub struct ShardConfig {
     /// separate operator act again. Port 0 binds ephemeral (the test path,
     /// same as `bind`). DECISIONS.md §open ("shard status endpoint v0").
     pub status_addr: Option<SocketAddr>,
+    /// Where the companion listens (`companion.rs`): the page and API a
+    /// player or an agent signs in to from outside the game. Unset serves
+    /// nothing, like `status_addr`.
+    pub companion_addr: Option<SocketAddr>,
     /// The shard's name for SIWE domain binding — what goes in the signed
     /// message, and what a player sees in their wallet prompt.
     ///
@@ -433,6 +437,7 @@ impl ShardConfig {
             wipe: None,
             blueprint_wipe_every: 2,
             status_addr: None,
+            companion_addr: None,
             domain: "127.0.0.1".into(),
             siwe_domains: None,
             entitle: crate::entitle::Config::off(),
@@ -626,6 +631,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut wipe_anchor: Option<u64> = None;
     let mut blueprint_wipe_every: u32 = 2;
     let mut status_addr: Option<SocketAddr> = None;
+    let mut companion_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
     let mut siwe_domains: Option<Vec<String>> = None;
     let mut entitle_origin: Option<String> = None;
@@ -958,6 +964,12 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // — an empty value fails the same parse, so the "a line the
             // operator wrote is a line they meant" rule holds without a
             // separate check. Off is the key being absent.
+            "companion_addr" => {
+                companion_addr =
+                    Some(value.parse().map_err(|e| {
+                        format!("shard.toml line {}: bad companion_addr: {e}", n + 1)
+                    })?);
+            }
             "status_addr" => {
                 status_addr = Some(
                     value
@@ -1486,6 +1498,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         world_file,
         world_save_interval_ticks,
         status_addr,
+        companion_addr,
         // Unset ⇒ 0, which admits every client that can talk to this shard at
         // all. `PROTO_VER` is still exact; this floor is the operator's extra.
         min_client: min_client.unwrap_or(0),

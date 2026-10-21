@@ -46,6 +46,8 @@ pub mod botclient;
 /// An agent player's bug reports: F7's document, filed by a bot's body.
 pub mod bugs;
 pub mod client;
+/// Gates' Rust+: the team, team chat and raid alerts, from outside the game.
+pub mod companion;
 pub mod cond;
 pub mod config;
 pub mod core;
