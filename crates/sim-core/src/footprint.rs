@@ -55,7 +55,7 @@ impl Pose {
 /// lock is never a record.
 pub const DEPLOY_FOOT: [[f32; 2]; 23] = [
     [1.9, 0.8],   // 0 bag — a bedroll a body is longer than
-    [1.2, 0.6],   // 1 hearth
+    [1.54, 0.92], // 1 hearth
     [1.2, 0.7],   // 2 box
     [0.7, 0.7],   // 3 fire
     [1.56, 1.02], // 4 furnace

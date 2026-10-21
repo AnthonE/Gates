@@ -1939,6 +1939,42 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 m.id
             ));
         }
+        // A bred brain: text that decodes, on a species whose fights it can
+        // choose, from a tier the island has.
+        match (&m.genome, m.genome_tier) {
+            (None, Some(_)) => {
+                return Err(format!(
+                    "mob `{}`: genome_tier without a genome — a tier for a brain that is not there",
+                    m.id
+                ));
+            }
+            (Some(g), tier) => {
+                sim_core::genome::Genome::decode(sim_core::brain::WOLF_NET_PREFIX, g.as_bytes())
+                    .map_err(|e| {
+                        format!(
+                        "mob `{}`: genome does not read as a bred wolf brain ({e:?}); it starts {}",
+                        m.id,
+                        std::str::from_utf8(sim_core::brain::WOLF_NET_PREFIX).unwrap_or("gw1:")
+                    )
+                    })?;
+                if m.pack_m == 0 || m.attack == 0 {
+                    return Err(format!(
+                        "mob `{}`: a genome chooses a pack hunter's fights, and this species \
+                         never hunts in one (pack_m {}, attack {})",
+                        m.id, m.pack_m, m.attack
+                    ));
+                }
+                if tier.unwrap_or(0) as usize >= sim_core::mob::FEL_TIERS {
+                    return Err(format!(
+                        "mob `{}`: genome_tier {} — the island has fel tiers 0–{}",
+                        m.id,
+                        tier.unwrap_or(0),
+                        sim_core::mob::FEL_TIERS - 1
+                    ));
+                }
+            }
+            (None, None) => {}
+        }
         if m.orbit_m <= m.attack_range_m || m.orbit_m > m.roam_m {
             return Err(format!(
                 "mob `{}`: orbit_m {} — the circle lies outside its {}m bite and inside \

@@ -208,7 +208,7 @@ pub const ARCH_RUG: u8 = 22;
 /// `test_replay` moves with it, deliberately).
 pub const DEPLOY_VOL: [[f32; 3]; 23] = [
     [0.0, 0.0, 0.0],     // 0 bag — walk-over
-    [1.2, 1.0, 0.6],     // 1 hearth
+    [1.54, 1.8, 0.92],   // 1 hearth — Rust's cupboard, as tall as you
     [1.2, 0.65, 0.7],    // 2 box
     [0.0, 0.0, 0.0],     // 3 fire — walk-over
     [1.56, 1.14, 1.02],  // 4 furnace

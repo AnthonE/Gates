@@ -908,6 +908,16 @@ pub struct Mob {
     /// Tick this slot may hatch on. Zero on a fresh world, so every homed
     /// slot hatches on tick 1 under armed content.
     pub respawn_at: u64,
+    /// A bred brain's choice in force, one past its action index
+    /// (`brain::NET_CHARGE`…): whether a chase bites, which way a circle
+    /// runs. Zero for an animal no net drives, which is every animal unless
+    /// content installs one (`brain::Nets`).
+    pub pick: u8,
+    /// Under a bred brain, the tick its current hunt began or it last
+    /// pressed in (chasing or biting), whichever is later; zero with no
+    /// target. The engagement budget (`brain::NET_STALE_TICKS`) runs off
+    /// it. Always zero without a net.
+    pub pressed_at: u64,
 }
 
 /// The roster: fixed slots, one species each ([`kind_of`]), of which the
@@ -1251,6 +1261,8 @@ pub fn step(
     nav: &mut Nav,
     bites: &mut Bites,
     howls: &mut Howls,
+    nets: &brain::Nets,
+    tier: u8,
 ) {
     bites.clear();
     howls.clear();
@@ -1318,6 +1330,9 @@ pub fn step(
                 peers: &peers,
                 nav,
                 ground: &mut ground,
+                net: nets.get(mob.kind, tier),
+                netted: false,
+                pick: brain::NO_PICK,
             };
             brain::think(&mut ctx, slot, &def, mob, bites);
             peers[slot] = brain::Peer::of(mob, tick);
@@ -1470,6 +1485,8 @@ fn hatch(
     mob.hurt_at = 0;
     mob.howled_at = 0;
     mob.ambushed = false;
+    mob.pick = 0;
+    mob.pressed_at = 0;
     mob.path.clear();
 }
 

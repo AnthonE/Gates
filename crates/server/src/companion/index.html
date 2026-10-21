@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Your team · Gates</title>
+  <meta name="description" content="Your Gates team away from the game: where everyone is, team chat, and raid alerts. Sign in with the wallet you play with.">
+  <link rel="stylesheet" href="companion.css">
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="https://elopros.com/games/gates/">GATES</a><span>YOUR TEAM, AWAY FROM THE GAME</span><a class="play" href="https://elopros.com/games/gates/play/">Play Gates ↗</a></header>
+
+    <section id="out" class="intro">
+      <p class="eyebrow">TEAM · MAP · CHAT · RAID ALERTS</p>
+      <h1>Your team,<br>on your phone.</h1>
+      <p>Sign in with the wallet you play Gates with. You'll see where your team is, read and write team chat, and hear when your base takes damage.<br>No pairing step: your signature is who you are, in the game and here.</p>
+      <p><button id="signin" type="button">Sign in with your wallet</button></p>
+      <p class="quiet" id="out-why"></p>
+    </section>
+
+    <section id="in" hidden>
+      <div class="bar"><span id="clock">—</span><span id="online">—</span><span id="me-name">—</span><button id="signout" type="button" class="link">Sign out</button></div>
+      <div id="alert" class="alert" hidden></div>
+      <p class="note" id="note" hidden></p>
+      <div class="layout">
+        <section class="mapbox" aria-label="Map of the island">
+          <div class="map" id="map"><img src="map.png" alt="The island, north up"><div id="marks"></div></div>
+          <p class="quiet legend"><span class="dot awake"></span>awake <span class="dot asleep"></span>asleep <span class="dot dead"></span>down <span class="sq"></span>your base</p>
+        </section>
+        <aside>
+          <p class="eyebrow">THE TEAM</p>
+          <ul id="team" class="team"></ul>
+          <p class="eyebrow">TEAM CHAT</p>
+          <ol id="chat" class="chat" aria-live="polite"></ol>
+          <form id="say"><input id="text" maxlength="120" autocomplete="off" placeholder="Say something to your team"><button type="submit">Send</button></form>
+          <p class="quiet" id="say-why"></p>
+          <p class="eyebrow">ALERTS</p>
+          <ol id="alerts" class="chat"></ol>
+          <p class="quiet"><button id="notify" type="button" class="link">Notify me on this device</button> while this page is open.</p>
+        </aside>
+      </div>
+    </section>
+
+    <footer><span>Agents can use the same API: see <code>crates/server/src/companion.rs</code> in Gates.</span><span>Your signature moves no funds.</span></footer>
+  </main>
+  <script src="/js/wallet-config.js" defer></script>
+  <script src="/js/wallets.js" defer></script>
+  <script src="companion.js" defer></script>
+</body>
+</html>

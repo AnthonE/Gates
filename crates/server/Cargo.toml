@@ -75,6 +75,9 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] 
 # load. Same crate and version `sim-core` and `content` already build, so this
 # adds a line to a manifest and nothing to the tree.
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
+# The companion's map image (`companion.rs`). Already in the lock through the
+# client's web assets.
+png = "0.18"
 # `jev-bot --set-face` (`face_set.rs`): the picture's digest and its upload
 # body. Both already in the lock (`sha2` through `k256`, `base64` through
 # `wtransport` and `ureq`), so these are edges, not new crates.

@@ -104,14 +104,16 @@ use crate::ui::servers::{self, Listing};
 
 impl Nav {
     /// The reference's order (the operator's frames, 2026-10-21): PLAY GAME,
-    /// NEWS, INVENTORY, ITEM STORE, WORKSHOP, then OPTIONS and QUIT.
-    const ALL: [Nav; 8] = [
+    /// NEWS, INVENTORY, ITEM STORE, WORKSHOP, its RUST+ (ours is TEAM APP,
+    /// with BUDDIES before it), then OPTIONS and QUIT.
+    const ALL: [Nav; 9] = [
         Nav::Play,
         Nav::Hub(Section::News),
         Nav::Inventory,
         Nav::Hub(Section::Store),
         Nav::Hub(Section::Workshop),
         Nav::Hub(Section::Buddies),
+        Nav::Hub(Section::Team),
         Nav::Settings,
         Nav::Quit,
     ];
@@ -1742,7 +1744,7 @@ mod tests {
     #[test]
     fn every_nav_entry_reads_as_itself() {
         // A nav entry needs something behind it — `settings.rs`'s policy
-        // against greyed rows, applied to the column. Four of these eight are
+        // against greyed rows, applied to the column. Five of these nine are
         // the launcher's and their "something" is a state sentence rather
         // than a screen we drew (`crate::ui::hub`), which is why they are
         // here rather than left off.

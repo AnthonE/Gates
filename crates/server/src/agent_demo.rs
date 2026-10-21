@@ -287,6 +287,10 @@ pub struct MindArgs {
     pub model: Option<String>,
     /// Counts what the mind decides and who decided it (`bench.rs`).
     pub tally: Option<std::sync::Arc<crate::bench::Tally>>,
+    /// Decide on the caller's thread (`Mind::inline`), for a lockstep island
+    /// (`--warp`, `lockstep.rs`): only a mind that never waits on anything
+    /// — the scripted policy or a student — may.
+    pub inline: bool,
 }
 
 /// `--autopilot-s`'s default: a long think for a big model, well inside the
@@ -313,6 +317,7 @@ impl Default for MindArgs {
             harness: None,
             model: None,
             tally: None,
+            inline: false,
         }
     }
 }
@@ -456,6 +461,13 @@ impl MindArgs {
         &self,
         speech: Option<crate::agent_voice::SpeechTx>,
     ) -> Result<Mind, String> {
+        if self.inline && !matches!(self.source, Source::Scripted | Source::Student(_)) {
+            return Err(
+                "--warp plays the scripted policy or a --student: a model or a \
+                        harness thinks on the wall clock, and a warped island does not wait"
+                    .into(),
+            );
+        }
         let voiced = |door: crate::external::External| match speech {
             Some(tx) => door.with_speech(tx),
             None => door,
@@ -547,11 +559,14 @@ impl MindArgs {
         match &self.record {
             Some(dir) => {
                 let (harness, model) = self.labels();
-                Mind::new(
-                    crate::distill::Recorder::open(source, dir, harness, model)?,
-                    cfg,
-                )
+                let source = crate::distill::Recorder::open(source, dir, harness, model)?;
+                if self.inline {
+                    Mind::inline(source, cfg)
+                } else {
+                    Mind::new(source, cfg)
+                }
             }
+            None if self.inline => Mind::inline(source, cfg),
             None => Mind::new(source, cfg),
         }
     }
@@ -603,6 +618,7 @@ pub async fn spawn_bench(
 ) -> Result<crate::net::ShardHandle, String> {
     let mut cfg = local_config()?;
     cfg.world_file = Some(base.display().to_string());
+    cfg.dev_arc_hour = Some(crate::bench::BENCH_ARC_HOUR);
     boot_local(cfg, content_dir).await
 }
 
