@@ -1053,7 +1053,7 @@ impl Vital {
         }
     }
 
-    /// The baked icon's file stem, and the ASCII the square falls back to.
+    /// The baked icon's file stem.
     ///
     /// **The glyph was a placeholder that named itself as one and outlived
     /// three icon passes.** `+`, `~` and `*` sat in the bottom-right corner of
@@ -1062,24 +1062,17 @@ impl Vital {
     /// rather than through a material — the bars were authored and the thing
     /// labelling them was typography.
     ///
-    /// The fallback is not dead code and must stay: `icons::load` is a
-    /// `Startup` system, a shard can be entered before its handles settle, and
-    /// this module's own rule is to draw something truthful rather than an
-    /// empty square. It is the same shape `panels::inv` uses for item cells.
+    /// And it kept coming back after the icons landed: a join straight into a
+    /// shard (`--server`, the launcher's) builds the HUD on the `Loading`
+    /// transition, which runs before `Startup` and so before `icons::load`
+    /// has made its `Icons`. [`setup`] asks the asset server for the file
+    /// itself, which exists from the first frame and hands back the same
+    /// handle `icons::load` will.
     fn icon_stem(self) -> &'static str {
         match self {
             Vital::Hp => "vital_hp",
             Vital::Water => "vital_water",
             Vital::Food => "vital_food",
-        }
-    }
-
-    /// What the square draws when the icon has not loaded.
-    fn glyph(self) -> &'static str {
-        match self {
-            Vital::Hp => "+",
-            Vital::Water => "~",
-            Vital::Food => "*",
         }
     }
 
@@ -1820,7 +1813,10 @@ pub struct PadRoot;
 #[derive(Component)]
 pub struct AmmoText;
 
-pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
+pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
+    // Off the asset server rather than `icons::Icons`, which does not exist
+    // yet on a join straight into a shard ([`Vital::icon_stem`]).
+    let glyph = |stem: &str| -> Handle<Image> { server.load(format!("icons/{stem}.png")) };
     // The bow's readout, sitting one line above the hotbar and to the right
     // of it. Spawned empty and left that way by `update` for every hand
     // that is not a bow.
@@ -2136,16 +2132,13 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         },
                     ))
                     .with_children(|row| {
-                        // The icon square, left of the bar. The baked picture
-                        // when it is loaded, the ASCII glyph when it is not —
-                        // never an empty square.
+                        // The icon square, left of the bar.
                         //
                         // Pale on a faint square, as the reference draws its
                         // `+`, cup and fork: the bar carries the colour, the
                         // cell is a *label* for it, and an icon inked in the
                         // fill's own hue read as a fourth swatch.
-                        let icon = icons.as_ref().and_then(|i| i.glyph(v.icon_stem()));
-                        let mut square = row.spawn((
+                        row.spawn((
                             Node {
                                 width: Val::Px(VITAL_ICON_PX),
                                 height: Val::Px(VITAL_ICON_PX),
@@ -2154,31 +2147,16 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                                 ..default()
                             },
                             BackgroundColor(VITAL_ICON_BG),
+                            children![(
+                                ImageNode::new(glyph(v.icon_stem())).with_color(VITAL_ICON_INK),
+                                Node {
+                                    width: Val::Px(VITAL_ICON_PX - 5.0),
+                                    height: Val::Px(VITAL_ICON_PX - 5.0),
+                                    ..default()
+                                },
+                                Pickable::IGNORE,
+                            )],
                         ));
-                        match icon {
-                            Some(h) => {
-                                square.with_children(|c| {
-                                    c.spawn((
-                                        ImageNode::new(h).with_color(VITAL_ICON_INK),
-                                        Node {
-                                            width: Val::Px(VITAL_ICON_PX - 5.0),
-                                            height: Val::Px(VITAL_ICON_PX - 5.0),
-                                            ..default()
-                                        },
-                                        Pickable::IGNORE,
-                                    ));
-                                });
-                            }
-                            None => {
-                                square.with_children(|c| {
-                                    c.spawn((
-                                        Text::new(v.glyph().to_string()),
-                                        super::ui::font_bold(13.0),
-                                        TextColor(VITAL_ICON_INK),
-                                    ));
-                                });
-                            }
-                        }
                         // The bar: a trough, the fill over it, and the number
                         // over both. Only the fill's width animates.
                         row.spawn((
@@ -2666,17 +2644,15 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Pickable::IGNORE,
                 ))
                 .with_children(|disc| {
-                    if let Some(h) = icons.as_ref().and_then(|i| i.glyph("map_death")) {
-                        disc.spawn((
-                            ImageNode::new(h),
-                            Node {
-                                width: Val::Px(COMPASS_MARK_PX * 0.7),
-                                height: Val::Px(COMPASS_MARK_PX * 0.7),
-                                ..default()
-                            },
-                            Pickable::IGNORE,
-                        ));
-                    }
+                    disc.spawn((
+                        ImageNode::new(glyph("map_death")),
+                        Node {
+                            width: Val::Px(COMPASS_MARK_PX * 0.7),
+                            height: Val::Px(COMPASS_MARK_PX * 0.7),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
                 });
                 mark.spawn((
                     DeathMarkText,

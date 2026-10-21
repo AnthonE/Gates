@@ -484,7 +484,7 @@ pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
 /// How far either side of the bearing the compass reaches, degrees: the
 /// tape's numbers end here and a mark this far round sits at the row's end.
 /// Rust's tape shows about this much (`render::hud`'s compass).
-pub const COMPASS_HALF_SPAN_DEG: f32 = 60.0;
+pub const COMPASS_HALF_SPAN_DEG: f32 = 45.0;
 
 /// Where a world point sits on the compass's marker row.
 #[derive(Clone, Copy, Debug, PartialEq)]
