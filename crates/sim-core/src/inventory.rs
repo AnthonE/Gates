@@ -237,14 +237,21 @@ pub fn takes_deposits(kind: u8) -> bool {
 /// other branch. A rule about two directions wants a case per direction
 /// **per plan** — `a_take_that_merges_out_of_a_crate_is_not_a_deposit` is
 /// that missing case.
+///
+/// "Different items" stopped being the swap test when `plan_move` began
+/// merging only on equal item, skin **and** cond: a worn hatchet taken onto
+/// a fresh one, or blank seeds onto clones, is a `Swap` of one item. So the
+/// backward arm now asks `plan_move`'s own merge predicate, negated
+/// (`a_take_onto_the_same_item_at_another_cond_is_a_deposit`).
 pub fn deposit_refused(from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
     let forward = !takes_deposits(to_kind) && from_kind != to_kind && src.count > 0;
-    // Only a SWAP sends anything backwards, and only two different items
-    // swap (`plan_move`'s same-item branch returns a `Transfer` before the
-    // swap arm is reached, and a partial onto a different item is
-    // `REFUSE_M_NO_ROOM` rather than either).
+    // Only a SWAP sends anything backwards, and everything `plan_move`
+    // will not merge swaps: its merge branch (equal item, skin and cond)
+    // returns a `Transfer` before the swap arm is reached, and a partial
+    // onto anything else is `REFUSE_M_NO_ROOM` rather than either.
+    let merges = dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond;
     let swapped_back =
-        !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0 && dst.item != src.item;
+        !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0 && !merges;
     forward || swapped_back
 }
 
@@ -375,12 +382,14 @@ pub const REFUSE_M_MAX: u32 = REFUSE_M_GIVE;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovePlan {
     /// `count` of `item` leaves the source slot for the destination,
-    /// which was either empty or already holding the same item with room.
+    /// which was either empty or already holding the same item, skin and
+    /// cond with room.
     Transfer { item: u16, count: u16 },
-    /// Two occupied slots holding different items exchange wholesale.
-    /// Only ever planned for a whole-stack ask — a partial drop onto a
-    /// different item is `REFUSE_M_NO_ROOM`, because there is no third
-    /// slot to put the remainder in and inventing one is how a dupe ships.
+    /// Two occupied slots that do not merge (a different item, skin or
+    /// cond) exchange wholesale. Only ever planned for a whole-stack ask —
+    /// a partial drop onto a stack it cannot merge with is
+    /// `REFUSE_M_NO_ROOM`, because there is no third slot to put the
+    /// remainder in and inventing one is how a dupe ships.
     Swap,
 }
 
