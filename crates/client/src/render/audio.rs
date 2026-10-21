@@ -1830,6 +1830,15 @@ pub fn feed(
             let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
             sound.play(Request::at(Cue::Knock, [x, y + 1.3, z]));
         }
+        // Something mended, at it: a repair latches the readout at its
+        // whole hp (`APPLIED_STRUCT_HIT`'s doc), where a hit leaves it short.
+        let (cx, cz, level, loc, left, max) = core.struct_hit;
+        if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 && max > 0 && left == max {
+            let (x, z) = sim_core::build::anchor(cx, cz, loc);
+            let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+            let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+            sound.play(Request::at(Cue::Repair, [x, y + 1.2, z]));
+        }
         // A lock or a hearth took the code: the keypad's accept, at it.
         for &(cx, cz, level, loc, grant) in feed.auths() {
             if grant == sim_core::lock::GRANT_NONE {

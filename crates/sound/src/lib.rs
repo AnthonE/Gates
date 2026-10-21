@@ -522,11 +522,25 @@ pub enum Cue {
     ShotPistolFar,
     ShotShotgunFar,
     ShotBoltFar,
+    /// A sheet-metal door swinging open, at the leaf: the latch, then the
+    /// leaf to its stop. [`Cue::DoorOpen`] stays the wooden door's creak.
+    /// Appended, the enum's append-order rule, like the three after it.
+    DoorMetalOpen,
+    /// A sheet-metal door slammed into its frame.
+    DoorMetalClose,
+    /// A garage door rolling up its track.
+    GarageOpen,
+    /// A garage door rolling down and its bottom rail landing.
+    GarageClose,
+    /// A piece or a deployable mended (`R`, the hammer): a hammer on wood,
+    /// at what was mended, whoever mended it. Appended, the enum's
+    /// append-order rule.
+    Repair,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 135;
+pub const CUE_COUNT: usize = 140;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -670,6 +684,11 @@ impl Cue {
         Cue::ShotPistolFar,
         Cue::ShotShotgunFar,
         Cue::ShotBoltFar,
+        Cue::DoorMetalOpen,
+        Cue::DoorMetalClose,
+        Cue::GarageOpen,
+        Cue::GarageClose,
+        Cue::Repair,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -819,7 +838,12 @@ impl Cue {
             | Cue::RemoteReloadRifle
             | Cue::RemoteReloadPistol
             | Cue::RemoteReloadShotgun
-            | Cue::RemoteReloadBolt => 0.07,
+            | Cue::RemoteReloadBolt
+            | Cue::DoorMetalOpen
+            | Cue::DoorMetalClose
+            | Cue::GarageOpen
+            | Cue::GarageClose
+            | Cue::Repair => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -1297,6 +1321,14 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 400.0, 0.31,  60, 6, true),  // pistol, far
     row(GAME, 400.0, 0.36,  60, 6, true),  // shotgun, far
     row(GAME, 600.0, 0.34,  60, 6, true),  // bolt, far
+    // The metal doors: the wooden door's reach, a little louder for the
+    // metal, and the garage's roll a little further for its size.
+    row(GAME, 24.0, 0.60,  60, 4, true),   // metal door open
+    row(GAME, 24.0, 0.65,  60, 4, true),   // metal door close
+    row(GAME, 30.0, 0.60, 200, 4, true),   // garage door open
+    row(GAME, 30.0, 0.65, 200, 4, true),   // garage door close
+    // The hammer: a blow's reach and register, at the mended piece.
+    row(GAME, 32.0, 0.65, 100, 4, true),   // repair
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).
