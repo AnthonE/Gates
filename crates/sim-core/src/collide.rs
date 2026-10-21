@@ -1579,14 +1579,8 @@ pub fn solid_bottom(
     p: &SolidPose,
     rect: &Rect,
 ) -> f32 {
-    let m = cols.get(p.cx, p.cz);
-    let dx = rect.x - p.cx as f32 * BUILD_CELL_M;
-    let dz = rect.z - p.cz as f32 * BUILD_CELL_M;
-    if p.level > 0 || m.plane_covers(0, dx, dz) {
-        col_base_y(seed, haven, cols, p.cx, p.cz) + crate::build::level_y(p.level)
-    } else {
-        p.ground_y
-    }
+    crate::deploy::built_floor(seed, haven, cols, p.cx, p.cz, p.level, rect.x, rect.z)
+        .unwrap_or(p.ground_y)
 }
 
 /// Whether a solid deployable stops a capsule standing at (`x`, `z`) with

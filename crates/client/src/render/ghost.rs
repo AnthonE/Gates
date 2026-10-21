@@ -451,6 +451,19 @@ pub fn track(
             return;
         };
         match place::check_lattice(&site, row, l, level, want) {
+            // Nor through a deployable, as on the grid.
+            Ok((at_site, _))
+                if sim_core::deploy::site_crosses_deploys(
+                    core.pieces.store(),
+                    core.deploys.entries(),
+                    &core.deploy_defs,
+                    shape,
+                    &at_site,
+                ) =>
+            {
+                verdict = Verdict::No("spot taken");
+                placement = None;
+            }
             Ok((_, at)) => {
                 verdict = Verdict::Ok;
                 placement = Some(at);

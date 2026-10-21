@@ -2283,7 +2283,9 @@ pub fn ground_base(seed: u64, haven: &terrain::Haven, rect: &Rect, solid: bool) 
 /// foundation, and a plane's removal takes what stood on it).
 ///
 /// The height is the column's floor (`build::column_floor_y` against its
-/// stored plate) plus the storey — `collide::solid_bottom`'s rule exactly.
+/// stored plate) plus the storey — or, off the grid's planes, the floor of
+/// the slab the grid cannot name under the centre (`Hulls::posed_floor`).
+/// `collide::solid_bottom` is this function.
 #[allow(clippy::too_many_arguments)]
 pub fn built_floor(
     seed: u64,
@@ -2295,14 +2297,19 @@ pub fn built_floor(
     x: f32,
     z: f32,
 ) -> Option<f32> {
-    if level == 0
-        && !cols.get(cx, cz).plane_covers(
-            0,
-            x - cx as f32 * BUILD_CELL_M,
-            z - cz as f32 * BUILD_CELL_M,
-        )
-    {
-        return None;
+    if !cols.get(cx, cz).plane_covers(
+        level,
+        x - cx as f32 * BUILD_CELL_M,
+        z - cz as f32 * BUILD_CELL_M,
+    ) {
+        // A slab the grid cannot name — a triangle, a floor of a building
+        // turned off the grid — carries its own floor (freeform W4).
+        if let Some(y) = cols.hulls().posed_floor(level, x, z) {
+            return Some(y);
+        }
+        if level == 0 {
+            return None;
+        }
     }
     Some(crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level))
 }
@@ -2381,21 +2388,24 @@ fn planes_carry(
         }
         let (i, j) = (i as u16, j as u16);
         let m = cols.get(i, j);
-        m.plane_covers(
+        let grid = m.plane_covers(
             level,
             x - i as f32 * BUILD_CELL_M,
             z - j as f32 * BUILD_CELL_M,
-        ) && crate::collide::col_base_y(seed, haven, cols, i, j) + crate::build::level_y(level)
-            == floor
+        ) && crate::collide::col_base_y(seed, haven, cols, i, j)
+            + crate::build::level_y(level)
+            == floor;
+        grid || cols.hulls().posed_floor(level, x, z) == Some(floor)
     })
 }
 
 /// Whether every sample of the rectangle is on a plane at `level` —
 /// [`planes_carry`] without the heights, which is all a removal can change
 /// (the floors that remain do not move). `gone` counts one piece that has
-/// just left the index — `(cx, cz, loc)`, a full plane or a triangle half —
-/// as still there, which is how the removal cascade asks "was it carried".
-fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Option<(u16, u16, u8)>) -> bool {
+/// just left the index as still there, which is how the removal cascade
+/// asks "was it carried": a grid piece by `(cx, cz, loc)`, a full plane or
+/// a triangle half, or a slab the grid cannot name by the row it had.
+fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Gone) -> bool {
     rect.samples().iter().all(|&(x, z)| {
         let (i, j) = (
             crate::build::build_cell_of(x),
@@ -2406,16 +2416,95 @@ fn planes_cover(cols: &ColIndex, rect: &Rect, level: u8, gone: Option<(u16, u16,
         }
         let (i, j) = (i as u16, j as u16);
         let (dx, dz) = (x - i as f32 * BUILD_CELL_M, z - j as f32 * BUILD_CELL_M);
-        let was = gone.is_some_and(|(gx, gz, loc)| {
-            gx == i
-                && gz == j
-                && (loc == LOC_PLANE
-                    || ((crate::build::LOC_TRI_XLO_ZLO..=crate::build::LOC_TRI_XHI_ZHI)
-                        .contains(&loc)
-                        && crate::collide::tri_half_has(loc, dx, dz)))
-        });
+        let was = match gone {
+            Gone::Grid(gx, gz, loc) => {
+                gx == i
+                    && gz == j
+                    && (loc == LOC_PLANE
+                        || ((crate::build::LOC_TRI_XLO_ZLO..=crate::build::LOC_TRI_XHI_ZHI)
+                            .contains(&loc)
+                            && crate::collide::tri_half_has(loc, dx, dz)))
+            }
+            Gone::Posed(h) => h.level == level && h.slab_holds(x, z),
+            Gone::Nothing => false,
+        };
         was || cols.get(i, j).plane_covers(level, dx, dz)
+            || cols.hulls().posed_floor(level, x, z).is_some()
     })
+}
+
+/// The piece [`planes_cover`] counts as still standing.
+#[derive(Clone, Copy)]
+enum Gone {
+    Nothing,
+    Grid(u16, u16, u8),
+    Posed(crate::hull::Hull),
+}
+
+/// Whether a convex footprint (corners in order round it) and a rectangle
+/// share area: the separating-axis test over both shapes' edge normals,
+/// touching apart as [`Rect::overlaps`] reads it.
+fn foot_overlaps(pts: &[(f32, f32)], r: &Rect) -> bool {
+    let n = pts.len();
+    let mut axes = [
+        (r.c, -r.s),
+        (r.s, r.c),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ];
+    for k in 0..n {
+        let (ax, az) = pts[k];
+        let (bx, bz) = pts[(k + 1) % n];
+        let (ex, ez) = (bx - ax, bz - az);
+        let len = (ex * ex + ez * ez).sqrt();
+        if len > 1e-6 {
+            axes[2 + k] = (-ez / len, ex / len);
+        }
+    }
+    for &(nx, nz) in &axes[..2 + n] {
+        if nx == 0.0 && nz == 0.0 {
+            continue;
+        }
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for &(x, z) in pts {
+            let d = x * nx + z * nz;
+            lo = lo.min(d);
+            hi = hi.max(d);
+        }
+        let mid = r.x * nx + r.z * nz;
+        let half = r.hw * crate::fmath::fabs(r.c * nx - r.s * nz)
+            + r.hd * crate::fmath::fabs(r.s * nx + r.c * nz);
+        if hi <= mid - half + crate::footprint::TOUCH_M
+            || lo >= mid + half - crate::footprint::TOUCH_M
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether a row's footprint shares area with the rectangle — a flight on
+/// a triangle, whose footprint its row cannot say, anywhere within a side
+/// of its first corner.
+fn hull_crosses(h: &crate::hull::Hull, rect: &Rect) -> bool {
+    let (pts, n) = h.footprint();
+    if n == 0 {
+        return rect.dist2(h.ox, h.oz) < BUILD_CELL_M * BUILD_CELL_M;
+    }
+    foot_overlaps(&pts[..n], rect)
+}
+
+/// Every row the grid cannot name (freeform W4) filed near the rectangle,
+/// until `f` answers true.
+fn posed_near(cols: &ColIndex, rect: &Rect, mut f: impl FnMut(&crate::hull::Hull) -> bool) -> bool {
+    let (ex, ez) = rect.half_aabb();
+    let (ex, ez) = (ex + EDGE_HALF_M, ez + EDGE_HALF_M);
+    cols.hulls()
+        .near(rect.x - ex, rect.z - ez, rect.x + ex, rect.z + ez, |h| {
+            h.hit.loc == crate::build::LOC_NONE && f(h)
+        })
 }
 
 /// Half the thickness a wall, a doorway, a window or a frame occupies either
@@ -2479,7 +2568,11 @@ fn edges_cross(cols: &ColIndex, rect: &Rect, level: u8) -> bool {
             }
         }
     }
-    false
+    // And the edges the grid cannot name: a triangle's sides, the walls of
+    // a building turned off the grid.
+    posed_near(cols, rect, |h| {
+        h.kind == crate::hull::HULL_EDGE && h.level == level && hull_crosses(h, rect)
+    })
 }
 
 /// Whether the rectangle overlaps a cell holding a stair-class riser at
@@ -2509,7 +2602,13 @@ fn cell_bodies_cross(cols: &ColIndex, rect: &Rect, level: u8, ground: bool) -> b
             }
         }
     }
-    false
+    // The bodies the grid cannot name, by their own footprints: a flight of
+    // the storey, and on bare ground anything standing on the ground.
+    posed_near(cols, rect, |h| {
+        let foundation = ground && h.level == 0 && h.is_body();
+        let riser = h.kind == crate::hull::HULL_RISER && h.level == level;
+        (foundation || riser) && hull_crosses(h, rect)
+    })
 }
 
 /// Whether two deployables may share floor: exactly one of them is a rug. A
@@ -2587,15 +2686,23 @@ pub fn body_site(
         return Err(REFUSE_D_SPOT);
     };
     let m = cols.get(cx, cz);
-    let on_plane = m.plane_covers(
+    let on_grid = m.plane_covers(
         level,
         rect.x - cx as f32 * BUILD_CELL_M,
         rect.z - cz as f32 * BUILD_CELL_M,
     );
+    // Off the grid's planes, a slab the grid cannot name may be under it.
+    let posed = if on_grid {
+        None
+    } else {
+        cols.hulls().posed_floor(level, rect.x, rect.z)
+    };
+    let on_plane = on_grid || posed.is_some();
     let solid = solid_vol(arch).is_some();
     let site = if on_plane && placement != PLACE_GROUND {
-        let floor =
-            crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level);
+        let floor = posed.unwrap_or_else(|| {
+            crate::collide::col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(level)
+        });
         if !planes_carry(seed, haven, cols, &rect, level, floor) {
             return Err(REFUSE_D_SUPPORT);
         }
@@ -2719,6 +2826,61 @@ pub fn piece_crosses_deploys(
             }
         }
         d.rect(arch).is_some_and(|rr| rr.overlaps(&piece))
+    })
+}
+
+/// [`piece_crosses_deploys`] for a lattice site (`build::lattice_site`,
+/// `build::free_site`): a site the grid names asks it by its grid address;
+/// one the grid cannot name — a triangle, a building turned off the grid —
+/// by the footprint its row would have.
+pub fn site_crosses_deploys(
+    pieces: &Pieces,
+    recs: &[DeployRec],
+    dc: &DeployContent,
+    shape: u8,
+    site: &crate::build::Site,
+) -> bool {
+    let level = site.addr.level;
+    if let Some((cx, cz, loc)) = site.grid {
+        return piece_crosses_deploys(pieces.cols(), recs, dc, shape, cx, cz, level, loc);
+    }
+    let Some(frame) = site.frame(pieces) else {
+        return false;
+    };
+    let hit = crate::collide::PieceHit {
+        cx: 0,
+        cz: 0,
+        level,
+        loc: crate::build::LOC_NONE,
+    };
+    let h = crate::hull::posed_hull(1, hit, frame, &site.addr, shape);
+    // A foundation meets what stands on bare ground, a flight or an edge
+    // what stands on its storey; floors and roofs land above it all.
+    let ground_only = crate::support::grounded(shape);
+    if !(ground_only || h.kind == crate::hull::HULL_RISER || h.kind == crate::hull::HULL_EDGE) {
+        return false;
+    }
+    let cols = pieces.cols();
+    recs.iter().any(|d| {
+        if d.level != level || is_edge_loc(d.loc) || d.row as u16 >= dc.def_count {
+            return false;
+        }
+        let Some(r) = d.rect(dc.defs[d.row as usize].arch) else {
+            return false;
+        };
+        if ground_only {
+            // Only what stands on bare ground, as the grid's rule reads it.
+            let (x, z) = d.xz();
+            let c = BUILD_CELL_M;
+            if cols
+                .get(d.cx, d.cz)
+                .plane_covers(0, x - d.cx as f32 * c, z - d.cz as f32 * c)
+                || cols.hulls().posed_floor(0, x, z).is_some()
+            {
+                return false;
+            }
+        }
+        hull_crosses(&h, &r)
     })
 }
 
@@ -3817,15 +3979,26 @@ pub(crate) fn drop_piece(
     events: &mut EventQueue,
 ) {
     let rec = pieces.entries()[i];
+    // A slab the grid cannot name is read by its row, which leaves the
+    // index with it.
+    let posed = pieces
+        .cols()
+        .hulls()
+        .find(crate::build::hull_key(rec.id))
+        .copied()
+        .filter(|h| h.hit.loc == crate::build::LOC_NONE);
     pieces.remove_at(i, shape);
     let (a, b) = rec.ev_addr();
     events.push(EV_PIECE_REMOVED, a, b | rec.row as u32, 0);
     // An edge piece takes the insert hung in it — the door in the doorway,
     // the bars in the window — which shares its address exactly (a posed
-    // edge's spelled id, freeform W4). A piece the grid cannot name
-    // carries nothing else yet.
+    // edge's spelled id, freeform W4).
     let at = rec.target();
-    if is_edge_loc(at.3) {
+    let edge = match posed {
+        Some(h) => h.kind == crate::hull::HULL_EDGE,
+        None => is_edge_loc(at.3),
+    };
+    if edge {
         if let Some(di) = deploys.entries[..deploys.len]
             .iter()
             .position(|d| (d.cx, d.cz, d.level, d.loc) == at)
@@ -3839,7 +4012,10 @@ pub(crate) fn drop_piece(
     // (free placement — one may span two foundations, and loses its
     // footing with either). Walked from the back so a swap-remove only
     // ever moves a record this walk has already passed.
-    let gone = Some((rec.cx, rec.cz, rec.loc));
+    let gone = match posed {
+        Some(h) => Gone::Posed(h),
+        None => Gone::Grid(rec.cx, rec.cz, rec.loc),
+    };
     let cell = Rect::aligned(
         rec.cx as f32 * BUILD_CELL_M,
         rec.cz as f32 * BUILD_CELL_M,
@@ -3859,9 +4035,13 @@ pub(crate) fn drop_piece(
         // Carried with the removed piece and not without it. A deployable
         // on bare ground was never carried by a plane, so it stays whatever
         // was taken down beside it.
-        if r.overlaps(&cell)
+        let under = match posed {
+            Some(h) => hull_crosses(&h, &r),
+            None => r.overlaps(&cell),
+        };
+        if under
             && planes_cover(pieces.cols(), &r, d.level, gone)
-            && !planes_cover(pieces.cols(), &r, d.level, None)
+            && !planes_cover(pieces.cols(), &r, d.level, Gone::Nothing)
         {
             drop_deploy(dc, pieces, deploys, di, events);
         }

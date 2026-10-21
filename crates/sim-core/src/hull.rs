@@ -297,8 +297,63 @@ impl Hull {
     }
 
     #[inline]
-    fn is_body(&self) -> bool {
+    pub fn is_body(&self) -> bool {
         matches!(self.kind, HULL_PLANE | HULL_HALF | HULL_RISER | HULL_TRI)
+    }
+
+    /// Whether the row is a whole slab — a square or a triangle, not a
+    /// frame — whose footprint holds the world point: what a deployable
+    /// stands on.
+    #[inline]
+    pub fn slab_holds(&self, x: f32, z: f32) -> bool {
+        if !matches!(self.kind, HULL_PLANE | HULL_TRI) || self.open {
+            return false;
+        }
+        let (lx, lz) = self.local(x, z);
+        self.holds(lx, lz)
+    }
+
+    /// The row's footprint, world XZ corners in order round it: a body's
+    /// square or triangle, an edge's strip half a wall's thickness either
+    /// side of its line and past its ends. The count is live; 0 for a
+    /// flight on a triangle, whose turned frame does not say which third of
+    /// the turn its triangle lies in, and for the legacy diagonal.
+    pub fn footprint(&self) -> ([(f32, f32); 4], usize) {
+        let at = |a: f32, b: f32| {
+            (
+                self.ox + a * self.ux + b * self.vx,
+                self.oz + a * self.uz + b * self.vz,
+            )
+        };
+        let t = WALL_THICKNESS_M * 0.5;
+        match self.kind {
+            HULL_TRI => (
+                [
+                    at(0.0, 0.0),
+                    at(SIDE_M, 0.0),
+                    at(SIDE_M * 0.5, SIDE_M * H3),
+                    (0.0, 0.0),
+                ],
+                3,
+            ),
+            HULL_EDGE => (
+                [at(-t, -t), at(SIDE_M + t, -t), at(SIDE_M + t, t), at(-t, t)],
+                4,
+            ),
+            HULL_RISER if crate::support::foot_of(self.shape) == crate::sock::FOOT_TRI_RISER => {
+                ([(0.0, 0.0); 4], 0)
+            }
+            HULL_PLANE | HULL_HALF | HULL_RISER => (
+                [
+                    at(0.0, 0.0),
+                    at(SIDE_M, 0.0),
+                    at(SIDE_M, SIDE_M),
+                    at(0.0, SIDE_M),
+                ],
+                4,
+            ),
+            _ => ([(0.0, 0.0); 4], 0),
+        }
     }
 
     /// Edge or diagonal against a mover (x, z) → (nx, nz) with an extra
@@ -857,6 +912,42 @@ impl Hulls {
             };
             if stops && best.is_none_or(|b| h.rank() < b.rank()) {
                 best = Some(*h);
+            }
+            false
+        });
+        best
+    }
+
+    /// The floor of a slab the grid cannot name (freeform W4) at socket
+    /// `level` whose footprint holds (`x`, `z`) — a square or a triangle,
+    /// never a frame or a flight — as the row stores it; the highest, should
+    /// two buildings' slabs overlap there, so the answer is the rows' and
+    /// not their filing order's. What a deployable on a triangle foundation,
+    /// or on a floor of a building turned off the grid, stands on
+    /// (`deploy::built_floor`).
+    pub fn posed_floor(&self, level: u8, x: f32, z: f32) -> Option<f32> {
+        let mut best: Option<f32> = None;
+        self.near(x, z, x, z, |h| {
+            if h.hit.loc == crate::build::LOC_NONE && h.level == level && h.slab_holds(x, z) {
+                best = Some(best.map_or(h.floor_y, |b| b.max(h.floor_y)));
+            }
+            false
+        });
+        best
+    }
+
+    /// The socket of a slab the grid cannot name whose top at (`x`, `z`)
+    /// is `y`: the storey an aim that met that surface is on, read off the
+    /// slab rather than off the column under it, which a building turned
+    /// off the grid need not share a band with.
+    pub fn posed_level(&self, x: f32, z: f32, y: f32) -> Option<u8> {
+        let mut best: Option<u8> = None;
+        self.near(x, z, x, z, |h| {
+            if h.hit.loc == crate::build::LOC_NONE
+                && fabs(h.floor_y - y) < 0.01
+                && h.slab_holds(x, z)
+            {
+                best = Some(best.map_or(h.level, |b| b.min(h.level)));
             }
             false
         });

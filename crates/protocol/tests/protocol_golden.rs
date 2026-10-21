@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 181] = [
+const GOLDEN: [&[u8]; 183] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -244,6 +244,8 @@ const GOLDEN: [&[u8]; 181] = [
     include_bytes!("golden/event_wheel_bet.bin"),
     include_bytes!("golden/event_wheel_paid.bin"),
     include_bytes!("golden/event_slots.bin"),
+    include_bytes!("golden/action_place_at.bin"),
+    include_bytes!("golden/action_place_free.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -544,8 +546,11 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 178);
     g!(seen, golden_event, 179);
     g!(seen, golden_event, 180);
+    // The lattice placement verbs (v130).
+    g!(seen, golden_action, 181);
+    g!(seen, golden_action, 182);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 181, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 183, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1102,6 +1107,36 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_action_research(slot, &mut buf).unwrap()
+        }
+        "action_place_at.bin" => {
+            let (row, bld, level, sock) = protocol::goldens::action_place_at();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::PlaceAt {
+                    row,
+                    bld,
+                    level,
+                    sock
+                },
+                "{name}"
+            );
+            protocol::encode_action_place_at(row, bld, level, &sock, &mut buf).unwrap()
+        }
+        "action_place_free.bin" => {
+            let (row, x_cm, z_cm, yaw, tri, plate) = protocol::goldens::action_place_free();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::PlaceFree {
+                    row,
+                    x_cm,
+                    z_cm,
+                    yaw,
+                    tri,
+                    plate
+                },
+                "{name}"
+            );
+            protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap()
         }
         other => panic!("unknown action fixture {other}"),
     };

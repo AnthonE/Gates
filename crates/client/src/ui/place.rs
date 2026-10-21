@@ -359,6 +359,10 @@ fn level_of(
     z: f32,
     y: f32,
 ) -> u8 {
+    // A slab the grid cannot name knows its own storey (freeform W4).
+    if let Some(level) = cols.hulls().posed_level(x, z, y) {
+        return level;
+    }
     let (cx, cz) = (build_cell_of(x), build_cell_of(z));
     if !in_grid(cx, cz) {
         return 0;

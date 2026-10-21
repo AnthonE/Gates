@@ -6082,6 +6082,22 @@ impl World {
                 sock,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    // `Place`'s rule: never through a deployable.
+                    let blocked = row < self.build.piece_count
+                        && build::lattice_site(&self.pieces, bld, level, sock).is_ok_and(|site| {
+                            deploy::site_crosses_deploys(
+                                &self.pieces,
+                                self.deploys.entries(),
+                                &self.deploy,
+                                self.build.pieces[row as usize].shape,
+                                &site,
+                            )
+                        });
+                    if blocked {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, build::REFUSE_B_SPOT, 0);
+                        return;
+                    }
                     build::place_at(
                         self.seed,
                         &self.haven,
@@ -6108,6 +6124,30 @@ impl World {
                 plate,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    let blocked = row < self.build.piece_count
+                        && build::free_site(
+                            self.seed,
+                            &self.haven,
+                            &self.pieces,
+                            (x_cm, z_cm),
+                            yaw,
+                            tri,
+                            plate,
+                        )
+                        .is_ok_and(|site| {
+                            deploy::site_crosses_deploys(
+                                &self.pieces,
+                                self.deploys.entries(),
+                                &self.deploy,
+                                self.build.pieces[row as usize].shape,
+                                &site,
+                            )
+                        });
+                    if blocked {
+                        self.events
+                            .push(EV_BUILD_REFUSED, id, build::REFUSE_B_SPOT, 0);
+                        return;
+                    }
                     build::place_free(
                         self.seed,
                         &self.haven,

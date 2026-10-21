@@ -621,7 +621,8 @@ fn a_door_hangs_in_a_triangles_doorway() {
     let (tx, tz) = frame.to_world(tri.at);
     let inside = (mx + (tx - mx) * 0.6, mz + (tz - mz) * 0.6);
     w.players[slot].body = Body::at(SEED, &w.haven, inside.0, inside.1);
-    w.players[slot].body.qy = (band_y(frame.band) / movement::POS_Y_Q).round() as i32 + 1;
+    w.players[slot].body.qy =
+        sim_core::fmath::round(band_y(frame.band) / movement::POS_Y_Q) as i32 + 1;
     w.players[slot].inv[0] = sim_core::gather::ItemStack {
         item: w.deploy.defs[DOOR as usize].item,
         count: 1,
@@ -687,5 +688,239 @@ fn a_door_hangs_in_a_triangles_doorway() {
     assert!(
         w.deploys.find(cx, cz, level, loc).is_none(),
         "the door went with its doorway"
+    );
+}
+
+/// A body deployable on slabs the grid cannot name (freeform W4): a bench
+/// spans a turned square and the triangle beside it at their floor, may not
+/// hang off the triangle's open side or stand in a wall on it, and comes
+/// down with the triangle.
+#[test]
+fn a_bench_spans_a_triangle_and_falls_with_it() {
+    use sim_core::deploy::{self, ARCH_WORKBENCH, REFUSE_D_SPOT, REFUSE_D_SUPPORT};
+    use sim_core::footprint::Pose;
+    use sim_core::world::Command;
+    const BENCH: u16 = 1; // `DeployContent::probe_fixture`'s workbench row
+    let (mut w, p, at) = fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: p.id }]);
+    let slot = w
+        .players
+        .iter()
+        .position(|q| q.active && q.id == p.id)
+        .unwrap();
+    w.players[slot].body = p.body;
+    let site = core(&w, at, 13_000);
+    let (x_cm, z_cm) = site.mint.unwrap().origin_cm;
+    w.tick(&[Command::PlaceFree {
+        id: p.id,
+        row: FOUNDATION,
+        x_cm,
+        z_cm,
+        yaw: 13_000,
+        tri: false,
+        plate: 0,
+    }]);
+    let core_rec = w.pieces.entries()[0];
+    let bld = core_rec.bld;
+    let frame = *w.pieces.frame(bld).unwrap();
+    let (sides, _) = core_rec.sock.sides();
+    let side = sides[1];
+    let out = -side.side_of(core_rec.sock.at);
+    let (_, tri) = beside(&side, out);
+    w.tick(&[Command::PlaceAt {
+        id: p.id,
+        row: TRI_FOUNDATION,
+        bld,
+        level: 0,
+        sock: tri,
+    }]);
+    let tri_rec = *w
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.sock == tri)
+        .expect("the triangle");
+    let floor_y = band_y(frame.band);
+    w.players[slot].body = Body::at(SEED, &w.haven, at.0, at.1);
+    w.players[slot].body.qy = sim_core::fmath::round(floor_y / movement::POS_Y_Q) as i32 + 1;
+
+    // A bench across the shared side, its length along the side's normal:
+    // half on the square, half on the triangle.
+    let (mx, mz) = frame.to_world(side.at);
+    let (tx, tz) = frame.to_world(tri.at);
+    let d = sim_core::fmath::hypot(tx - mx, tz - mz);
+    let (nx, nz) = ((tx - mx) / d, (tz - mz) / d);
+    // The yaw whose local +x (a bench's length) runs along (ax, az).
+    let yaw_along = |ax: f32, az: f32| {
+        let turns = sim_core::fmath::atan2(-az, ax) / core::f32::consts::TAU;
+        (sim_core::fmath::round(turns * 256.0) as i32).rem_euclid(256) as u8
+    };
+    let yaw = yaw_along(nx, nz);
+    let pose_at = |x: f32, z: f32, yaw: u8| {
+        let (cx, cz, ox, oz) = sim_core::footprint::quantize(x, z).unwrap();
+        (cx, cz, Pose { ox, oz, yaw })
+    };
+    let site_at = |w: &World, x: f32, z: f32, yaw: u8| {
+        let (cx, cz, pose) = pose_at(x, z, yaw);
+        deploy::body_site(
+            SEED,
+            &w.haven,
+            w.pieces.cols(),
+            w.deploys.entries(),
+            &w.deploy,
+            w.deploy.defs[BENCH as usize].placement,
+            ARCH_WORKBENCH,
+            cx,
+            cz,
+            0,
+            pose,
+        )
+    };
+    let on = site_at(&w, mx, mz, yaw).expect("a bench spans the square and its triangle");
+    assert!(!on.ground);
+    assert_eq!(
+        on.base_y, floor_y,
+        "at the building's floor, not the column's"
+    );
+
+    // Pushed out to the triangle's apex it hangs off the slab.
+    let apex = (mx + nx * 2.2, mz + nz * 2.2);
+    assert_eq!(site_at(&w, apex.0, apex.1, yaw), Err(REFUSE_D_SUPPORT));
+
+    // A wall on the square's far side keeps a bench along it out of its
+    // strip.
+    let back = sides[3];
+    let (bx, bz) = frame.to_world(back.at);
+    let (ax, az) = frame.axis(back.dir);
+    let (cx0, cz0) = frame.to_world(core_rec.sock.at);
+    let din = sim_core::fmath::hypot(cx0 - bx, cz0 - bz);
+    let (ix, iz) = ((cx0 - bx) / din, (cz0 - bz) / din);
+    let (ex, ez) = (bx + ix * 0.45, bz + iz * 0.45);
+    let along = yaw_along(ax, az);
+    let clear = site_at(&w, ex, ez, along);
+    w.tick(&[Command::PlaceAt {
+        id: p.id,
+        row: WALL,
+        bld,
+        level: 0,
+        sock: back,
+    }]);
+    assert!(
+        w.pieces.entries().iter().any(|r| r.sock == back),
+        "the wall stands"
+    );
+    let walled = site_at(&w, ex, ez, along);
+    assert!(
+        clear.is_ok() && walled == Err(REFUSE_D_SPOT),
+        "the wall's strip refuses it: before {clear:?}, after {walled:?}"
+    );
+
+    // Placed, it stands at the floor; the triangle taken down takes it.
+    let (cx, cz, pose) = pose_at(mx, mz, yaw);
+    w.players[slot].inv[0] = sim_core::gather::ItemStack {
+        item: w.deploy.defs[BENCH as usize].item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: p.id,
+        row: BENCH,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose,
+    }]);
+    let bench = *w
+        .deploys
+        .entries()
+        .iter()
+        .find(|d| d.row == BENCH as u8)
+        .expect("the bench stands");
+    assert_eq!(
+        deploy::body_base_y(SEED, &w.haven, w.pieces.cols(), &bench, ARCH_WORKBENCH),
+        floor_y
+    );
+    let (tcx, tcz, tl, tloc) = tri_rec.target();
+    w.tick(&[Command::Demolish {
+        id: p.id,
+        deploy: false,
+        cx: tcx,
+        cz: tcz,
+        level: tl,
+        loc: tloc,
+    }]);
+    assert!(
+        w.pieces.find(tcx, tcz, tl, tloc).is_none(),
+        "the triangle is down"
+    );
+    assert!(
+        !w.deploys.entries().iter().any(|d| d.row == BENCH as u8),
+        "the bench went with the triangle under half of it"
+    );
+}
+
+/// A foundation the grid cannot name is not built through a deployable on
+/// the ground where it would go (`Place`'s rule, freeform W4).
+#[test]
+fn a_triangle_is_not_built_over_a_fire() {
+    use sim_core::footprint::Pose;
+    use sim_core::world::Command;
+    const FIRE: u16 = 4; // `DeployContent::probe_fixture`'s fire row
+    let (mut w, p, at) = fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: p.id }]);
+    let slot = w
+        .players
+        .iter()
+        .position(|q| q.active && q.id == p.id)
+        .unwrap();
+    w.players[slot].body = p.body;
+    let site = core(&w, at, 13_000);
+    let (x_cm, z_cm) = site.mint.unwrap().origin_cm;
+    w.tick(&[Command::PlaceFree {
+        id: p.id,
+        row: FOUNDATION,
+        x_cm,
+        z_cm,
+        yaw: 13_000,
+        tri: false,
+        plate: 0,
+    }]);
+    let core_rec = w.pieces.entries()[0];
+    let frame = *w.pieces.frame(core_rec.bld).unwrap();
+    let (sides, _) = core_rec.sock.sides();
+    let out = -sides[1].side_of(core_rec.sock.at);
+    let (_, tri) = beside(&sides[1], out);
+    let (tx, tz) = frame.to_world(tri.at);
+    let (cx, cz, ox, oz) = sim_core::footprint::quantize(tx, tz).unwrap();
+    w.players[slot].inv[0] = sim_core::gather::ItemStack {
+        item: w.deploy.defs[FIRE as usize].item,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: p.id,
+        row: FIRE,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: Pose { ox, oz, yaw: 0 },
+    }]);
+    assert_eq!(w.deploys.entries().len(), 1, "the fire is lit");
+    w.tick(&[Command::PlaceAt {
+        id: p.id,
+        row: TRI_FOUNDATION,
+        bld: core_rec.bld,
+        level: 0,
+        sock: tri,
+    }]);
+    assert!(
+        !w.pieces.entries().iter().any(|r| r.sock == tri),
+        "no triangle through the fire"
     );
 }

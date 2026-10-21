@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 181] = [
+pub const FIXTURES: [&str; 183] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -324,6 +324,10 @@ pub const FIXTURES: [&str; 181] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
+    // The lattice placement verbs (v130): a site on a standing building,
+    // and a foundation placed free.
+    "action_place_at.bin",
+    "action_place_free.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -1846,7 +1850,8 @@ pub fn event_deploy_placed() -> DeployRec {
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     // The loc walks the store's whole four-bit domain (wire v89: two edges
-    // and fourteen body slots), so every value reaches the bytes.
+    // and fourteen body slots; v130: slot 13 an edge the grid cannot name),
+    // so every value reaches the bytes.
     let recs = core::array::from_fn(|i| {
         let mut rec = DeployRec {
             cx: rng.next_bounded(1024) as u16,
@@ -3068,4 +3073,25 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
 /// as the same drag succeeding and failing.
 pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
     (9, 0, 19, 4, 0)
+}
+
+/// A lattice placement (v130): a triangle flight on the top storey of a
+/// building past the first byte of ids, its centre's coefficients mixed in
+/// sign so a lost bias or a swapped pair moves the bytes, and a turn that
+/// needs every direction bit.
+pub fn action_place_at() -> (u16, u16, u8, sim_core::sock::Sock) {
+    let body = sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::new(-42, 18, 6, -30), 3);
+    (
+        13,
+        3_001,
+        (sim_core::limits::MAX_BUILD_SOCKETS - 1) as u8,
+        sim_core::sock::Sock::tri_riser(body.at, 3 + 4 * 2),
+    )
+}
+
+/// A free foundation (v130): the triangle, its origin west and north of
+/// the world's zero so both signs are live, a yaw past 32 768 and an asked
+/// band negative and nonzero (`action_place`'s reasons).
+pub fn action_place_free() -> (u16, i32, i32, u16, bool, i8) {
+    (13, -123_457, 98_765, 40_961, true, -2)
 }
