@@ -216,7 +216,7 @@ mod tests {
 
     fn close(p: LPt, x: f32, z: f32) -> bool {
         let (px, pz) = p.to_xz();
-        (px - x).abs() < 1e-4 && (pz - z).abs() < 1e-4
+        crate::fmath::fabs(px - x) < 1e-4 && crate::fmath::fabs(pz - z) < 1e-4
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
                 .iter()
                 .map(|p| p.to_xz())
                 .fold((0.0, 0.0), |a, b| (a.0 + b.0 / 3.0, a.1 + b.1 / 3.0));
-            assert!((x - cx).abs() < 1e-4 && (z - cz).abs() < 1e-4);
+            assert!(crate::fmath::fabs(x - cx) < 1e-4 && crate::fmath::fabs(z - cz) < 1e-4);
         }
     }
 
@@ -282,7 +282,7 @@ mod tests {
                 let (x0, z0) = lo[0].to_xz();
                 let (x1, z1) = lo[1].to_xz();
                 let len2 = (x1 - x0) * (x1 - x0) + (z1 - z0) * (z1 - z0);
-                assert!((len2 - 9.0).abs() < 1e-3, "{b:?} {e:?}");
+                assert!(crate::fmath::fabs(len2 - 9.0) < 1e-3, "{b:?} {e:?}");
                 // The body is on exactly one side, and `beside` finds it.
                 let side = e.side_of(b.at);
                 assert!(side != 0);

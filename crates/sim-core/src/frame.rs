@@ -137,7 +137,7 @@ mod tests {
                 let (ax, az) = f.axis(k);
                 let (ex, ez) = ((x - o.0) / 3.0, (z - o.1) / 3.0);
                 assert!(
-                    (ax - ex).abs() < 1e-4 && (az - ez).abs() < 1e-4,
+                    crate::fmath::fabs(ax - ex) < 1e-4 && crate::fmath::fabs(az - ez) < 1e-4,
                     "{yaw} {k}"
                 );
             }
