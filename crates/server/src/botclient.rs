@@ -685,7 +685,7 @@ pub fn walk_ticks(duration: Duration) -> u64 {
 /// Is this failure the box saying "not now", rather than the shard saying no?
 ///
 /// The distinction is the whole point and it is exact, not a heuristic.
-/// **Our** refusals are `REFUSE_VERSION..=REFUSE_IN_USE`, 0..=9, closed with
+/// **Our** refusals are `REFUSE_VERSION..=REFUSE_AGENTS`, 0..=10, closed with
 /// the refusal text beside them (`net.rs`) — those are ANSWERS and are
 /// returned on the first try, because retrying one would let a suite sleep
 /// through a version gate that had begun rejecting everybody. `0x107` is

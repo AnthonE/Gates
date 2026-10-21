@@ -725,6 +725,11 @@ pub async fn spawn_shard(
     // Built before the endpoint, because the socket bind below records what
     // the OS granted and needs somewhere to put it.
     let stats = Arc::new(ShardStats::default());
+    // A fact about the shard, said once: the status endpoint reads it off
+    // the stats, the only thing that thread may touch.
+    if cfg.agents_only {
+        ShardStats::raise(&stats.agents_only);
+    }
 
     let mut transport = wtransport::config::QuicTransportConfig::default();
     // NETCODE.md §2.2: bound worst-case queued staleness; snapshots
@@ -959,6 +964,7 @@ pub async fn spawn_shard(
             netsim: cfg.netsim,
             spectate: cfg.spectate,
             agent_seats: cfg.agent_seats,
+            agents_only: cfg.agents_only,
             minted: cfg
                 .world_file
                 .as_deref()
@@ -1031,6 +1037,8 @@ struct ShardFacts {
     /// `shard.toml agent_seats`: the most declared agents seated at once.
     /// 0 — the default — caps nothing.
     agent_seats: u32,
+    /// `shard.toml agents_only`: declared agents and spectators only.
+    agents_only: bool,
     /// `<world>.minted`, the minter's log of the tokens it sent
     /// (`mints.rs`): a wallet named there is read again. `None` with no
     /// world file.
@@ -1044,6 +1052,14 @@ struct ShardFacts {
 /// not a hard count.
 fn agent_seat_free(agent_seats: u32, agents_now: u64, is_agent: bool) -> bool {
     !is_agent || agent_seats == 0 || agents_now < u64::from(agent_seats)
+}
+
+/// Does this shard seat this kind of session at all? Every shard seats
+/// everyone, except an agent-only one (`agents_only`), which seats declared
+/// agents and spectators and nobody else. The declaration is the hello's
+/// `HELLO_AGENT`: self-declared, as the `(agent)` mark is.
+fn admits_kind(agents_only: bool, is_agent: bool, is_spectator: bool) -> bool {
+    !agents_only || is_agent || is_spectator
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -1562,6 +1578,7 @@ async fn accept_loop(
                     facts.entitle.clone(),
                     facts.min_client,
                     facts.spectate.open(),
+                    facts.agents_only,
                     in_flight,
                     sources,
                     permit,
@@ -2255,6 +2272,7 @@ async fn handshake_task(
     entitle: crate::entitle::Config,
     min_client: u32,
     spectate_open: bool,
+    agents_only: bool,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     sources: Arc<SourceGate>,
     permit: Option<SourcePermit>,
@@ -2344,6 +2362,13 @@ async fn handshake_task(
     if hello.is_spectator() && !spectate_open {
         ShardStats::bump(&stats.spectate_refused);
         spawn_refusal(connection, send, protocol::REFUSE_WATCH);
+        return;
+    }
+    // A person at an agent-only world is told so before any crypto too: no
+    // signature would change the answer.
+    if !admits_kind(agents_only, hello.is_agent(), hello.is_spectator()) {
+        ShardStats::bump(&stats.refused_agents_only);
+        spawn_refusal(connection, send, protocol::REFUSE_AGENTS);
         return;
     }
     // ---- SIWE, and the nonce never leaves this stack frame --------------
@@ -5041,6 +5066,18 @@ mod tests {
         assert!(!agent_seat_free(80, 81, true));
         // A person is never counted against it.
         assert!(agent_seat_free(80, 80, false));
+    }
+
+    #[test]
+    fn an_agent_only_world_seats_agents_and_spectators_and_no_person() {
+        // Every other shard seats every kind.
+        for (agent, spectator) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert!(admits_kind(false, agent, spectator));
+        }
+        assert!(!admits_kind(true, false, false), "a person is refused");
+        assert!(admits_kind(true, true, false), "an agent plays");
+        assert!(admits_kind(true, false, true), "a spectator watches");
+        assert!(admits_kind(true, true, true));
     }
 
     /// The chat limiter is the only wall between one client and everyone

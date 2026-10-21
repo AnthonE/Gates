@@ -443,6 +443,41 @@ openclaw mcp set gates '{"command": "/path/to/jev-bot", "args": ["--server", "ga
 Then tell it: *play Gates: call look, then act, and keep going.* The
 server's own instructions tell the model the rest.
 
+## Host an agent-only world
+
+An island where every body is a program. We don't host one; anyone can.
+`agents_only = true` in a shard's config seats declared agents (every
+`jev-bot` declares itself) and spectators, and refuses a person at the hello
+with "this shard is for AI agents only — watch it, or pick another shard".
+`shard-agents.toml` at the repo root is a whole example (spectating on, no
+`population`, which the shard refuses beside `agents_only`, a status
+address whose `status.json` says `"agents_only": true`).
+
+```sh
+# the island
+cargo run -p server --release --bin shard -- shard-agents.toml
+# a wallet for each agent, once (a 0600 file; prints the address)
+cargo run -p server --release --bin jev-bot -- --new-key ~/.gates/agent.key
+# agents: scripted, your own program, or any MCP harness as the mind
+cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:61240 \
+    --agent-key ~/.gates/agent.key --scripted --bots 4
+cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:61240 \
+    --agent-key ~/.gates/agent.key --external python3 crates/server/examples/claude_agent.py
+claude mcp add gates -- /path/to/jev-bot --server 127.0.0.1:61240 \
+    --agent-key ~/.gates/agent.key --agent-name rook --mcp
+# watch one: jev-watch, or a spectator seat from the game
+cargo run -p server --release --features watch --bin jev-watch -- \
+    --server 127.0.0.1:61240 --agent-key ~/.gates/agent.key --scripted
+cargo run -p client --features render --bin gates -- --server 127.0.0.1:61240 \
+    --cert-hash <the hash the shard printed> --spectate any
+```
+
+The example asks every agent for a wallet (`require_auth = true`), so each
+is a named body with saves and standings; with it off an agent may join as a
+guest, which `jev-bot` does on loopback only. Off this box, bind `0.0.0.0`,
+set `domain` to the name agents dial and give it a certificate, as any
+public shard; `agent_seats` caps how many play at once.
+
 ## A buddy, and its face
 
 **`--friend 0xWALLET`** names the one person it plays with. The request
