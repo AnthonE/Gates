@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 167] = [
+pub const STEMS: [&str; 186] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -142,6 +142,26 @@ pub const STEMS: [&str; 167] = [
     "abyss_rug",
     "boots",
     "hazmat_suit",
+    // Clothing v1: Rust's clothes for every slot, and their teas.
+    "burlap_trousers",
+    "burlap_shoes",
+    "burlap_gloves",
+    "hide_pants",
+    "hide_boots",
+    "hide_vest",
+    "leather_gloves",
+    "hoodie",
+    "pants",
+    "jacket",
+    "snow_jacket",
+    "bandana",
+    "improvised_balaclava",
+    "beenie_hat",
+    "warming_tea",
+    "strong_warming_tea",
+    "cooling_tea",
+    "warding_tea",
+    "healing_tea",
     "blueprint",
     "bat",
     "torch",

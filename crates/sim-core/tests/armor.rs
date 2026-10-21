@@ -354,12 +354,12 @@ fn the_set_is_clamped_at_the_ceiling() {
     cc.armor[HEADWRAP as usize] = ArmorDef {
         reduction_pct: 80,
         slot: WEAR_HEAD,
-        full: false,
+        fills: 0,
     };
     cc.armor[PLATE as usize] = ArmorDef {
         reduction_pct: 80,
         slot: WEAR_BODY,
-        full: false,
+        fills: 0,
     };
     let mut p = Player::default();
     p.worn[0] = one(HEADWRAP);
@@ -615,6 +615,11 @@ fn a_full_pack_does_not_destroy_the_plates() {
     // slot full, so the body carries `INV_SLOTS + WEAR_SLOTS` stacks. An
     // item no pocket holds, so nothing merges with it either.
     w.players[1].worn[2] = one(9);
+    // And the four slots clothing v1 added (legs, hands, shirt, face), each
+    // an item nothing else holds.
+    for (k, s) in w.players[1].worn[3..].iter_mut().enumerate() {
+        *s = one(40 + k as u16);
+    }
     swings_to_kill(&mut w, yaw);
     finish_off(&mut w, yaw);
 
@@ -1032,13 +1037,13 @@ fn a_wear_move_does_not_open_a_container_it_did_not_name() {
     );
 }
 
-/// **A full-body suit is worn alone** (Rust's hazmat, `ArmorDef::full`):
+/// **A full-body suit is worn alone** (Rust's hazmat, `ArmorDef::fills`):
 /// it does not go on over a helmet, a helmet does not go on over it, and
 /// taking it off frees the other slots again.
 #[test]
 fn a_full_body_suit_is_worn_alone() {
     let mut w = dressing_room();
-    w.combat.armor[PLATE as usize].full = true;
+    w.combat.armor[PLATE as usize].fills = !(1 << (WEAR_BODY - 1));
     let s = w.live_slot_of(1).unwrap();
 
     w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);

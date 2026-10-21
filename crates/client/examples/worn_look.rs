@@ -21,11 +21,28 @@ use client::render::bodies::Body;
 use client::render::worn::{hang, WornKit, WornRig};
 
 /// What each body in the row wears, left to right.
-const OUTFITS: [&[&str]; 4] = [
+const OUTFITS: [&[&str]; 6] = [
     &[],
     &["Burlap Hood", "Burlap Tunic"],
     &["Bone Helmet", "Hide Poncho"],
     &["Burlap Hood", "Roadsign Vest"],
+    // Clothing v1: a winter kit, and the snow gear.
+    &[
+        "Beenie Hat",
+        "Bandana",
+        "Hoodie",
+        "Jacket",
+        "Pants",
+        "Leather Gloves",
+        "Boots",
+    ],
+    &[
+        "Improvised Balaclava",
+        "Snow Jacket",
+        "Hide Pants",
+        "Burlap Gloves",
+        "Hide Boots",
+    ],
 ];
 const PITCH_M: f32 = 1.4;
 const SETTLE_FRAMES: u32 = 40;
@@ -211,10 +228,10 @@ fn shoot(
         return;
     }
     shots.frame += 1;
-    let mid = Vec3::new(PITCH_M * 1.5, 1.0, 0.0);
+    let mid = Vec3::new(PITCH_M * (OUTFITS.len() as f32 - 1.0) / 2.0, 1.0, 0.0);
     let poses = [
-        ("front", mid + Vec3::new(0.0, 0.4, 4.6)),
-        ("back", mid + Vec3::new(0.0, 0.4, -4.6)),
+        ("front", mid + Vec3::new(0.0, 0.4, 6.2)),
+        ("back", mid + Vec3::new(0.0, 0.4, -6.2)),
         ("side", mid + Vec3::new(-5.0, 0.5, 1.5)),
         ("heads", Vec3::new(PITCH_M * 2.0, 1.75, 1.6)),
     ];

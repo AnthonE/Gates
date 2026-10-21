@@ -362,10 +362,19 @@ const _: () = assert!(
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
 /// Item definitions the sim preallocates for (the alpha set is ~48 rows,
-/// CONTENT.md §2). The content bake refuses a set past this. 127 is the
-/// most the wire's 7-bit held field can name beside its empty-hand code
-/// (`protocol::HELD_NONE`); past it, that field widens.
-pub const MAX_ITEM_DEFS: usize = 127;
+/// CONTENT.md §2). The content bake refuses a set past this. 255 is the
+/// most the wire's 8-bit held field can name beside its empty-hand code
+/// (`protocol::HELD_NONE`); past it, that field widens. 127 → 255 at
+/// clothing v1, when Rust's clothes and teas found the table full.
+pub const MAX_ITEM_DEFS: usize = 255;
+
+/// Item indices a hand can be seen holding: the wire's 7-bit held field
+/// (`protocol::HELD_BITS`) beside its empty-hand code. The bake ranks every
+/// hand item (`slot = "hand"`) ahead of the rest, so they all land under
+/// this; anything else held is drawn as an empty hand. The snapshot is a
+/// byte under its datagram budget at 64 bodies, so the field did not widen
+/// when `MAX_ITEM_DEFS` did (clothing v1).
+pub const MAX_HELD_DEFS: usize = 127;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -430,8 +439,9 @@ pub const INV_SLOTS: usize = 30;
 /// cap is to name a slot the array does not have, which `combat::worn_pct`
 /// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
 /// Proposed default, DECISIONS.md §open ("armor reduction v0"). 2 → 3 for
-/// the feet (Rust's boots, 2026-10-18).
-pub const WEAR_SLOTS: usize = 3;
+/// the feet (Rust's boots, 2026-10-18). 3 → 7 for clothing v1: Rust's seven
+/// clothing slots, as head, body, feet, legs, hands, shirt and face.
+pub const WEAR_SLOTS: usize = 7;
 
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the

@@ -1448,7 +1448,7 @@ fn step_in(
             });
             let dmg = crate::combat::part_damage(a.damage, part, a.head_pct, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
-            let h = crate::combat::hurt(cc, v, dmg);
+            let h = crate::combat::hurt_cutting(cc, v, dmg);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             // The scaled number on both events, not the bow's column.
@@ -2715,7 +2715,7 @@ fn hitscan_in(
             let dmg = h.damage.min(u32::from(u16::MAX)) as u16;
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0).
-            let hurt = crate::combat::hurt(cc, v, dmg);
+            let hurt = crate::combat::hurt_cutting(cc, v, dmg);
             let (vid, left, vmax) = (v.id, hurt.left as u32, v.hp_max as u32);
             // A beam has no flight to reverse, so the bearing is the muzzle
             // to the victim's **live** body — `strike`'s rule: it is an

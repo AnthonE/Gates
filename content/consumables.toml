@@ -2,12 +2,15 @@
 # (CONTENT.md §1). Hunger is a minimal timer-drain at alpha (DESIGN.md §2);
 # food resets the timer, health deltas apply over `seconds`.
 
+# `stanch`: hit points of bleeding it stops (Rust's bandage 50, large medkit
+# 100; `sim_core::exposure::stanch`), on yourself or on a downed friend.
 [[consumable]]
 id = "item.bandage"
 health = 20
 food = 0
 water = 0
 seconds = 4
+stanch = 50
 
 [[consumable]]
 id = "item.medkit"
@@ -15,6 +18,7 @@ health = 60
 food = 0
 water = 0
 seconds = 8
+stanch = 100
 # reference/WOUNDED.md §2.5: paid only on a failed roll, from the belt.
 belt_recovery = true
 
@@ -115,3 +119,60 @@ health = 0
 food = 0
 water = 100
 seconds = 2
+
+# Teas (Rust's tea modifiers, clothing v1). Every one is +30 water, as all of
+# theirs are. `brew_amount` is degrees for warming and cooling, per cent kept
+# out for warding. Theirs: basic warming +5 for 20 min; the floor (their Min
+# Temperature) on the strong one is ours at 1 °C, the line where the cold
+# starts to cost hp (`[exposure] cold_below_c` less 12) — for half an hour
+# nothing the cold does can hurt you, and that is the tea's whole point.
+[[consumable]]
+id = "item.tea_warming"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "warming"
+brew_amount = 5
+brew_minutes = 20
+
+[[consumable]]
+id = "item.tea_warming_strong"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "warming"
+brew_amount = 10
+brew_floor_c = 1
+brew_minutes = 30
+
+[[consumable]]
+id = "item.tea_cooling"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "cooling"
+brew_amount = 10
+brew_minutes = 20
+
+# Their anti-rad tea's basic tier, for the Verdigris: 15 % for 30 min, on top
+# of what is worn (never past 95 %, `exposure::BREW_WARD_CEIL_PM`).
+[[consumable]]
+id = "item.tea_warding"
+health = 0
+food = 0
+water = 30
+seconds = 2
+brew = "warding"
+brew_amount = 15
+brew_minutes = 30
+
+# Their basic healing tea: 30 hp over 30 s.
+[[consumable]]
+id = "item.tea_healing"
+health = 30
+food = 0
+water = 30
+seconds = 30

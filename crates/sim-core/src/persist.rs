@@ -76,7 +76,8 @@ use crate::world::Player;
 /// `SAVE_FORMAT` 9 (reload v1): `MAX_MAGS` pairs of `u16`, 369 → 401. A
 /// loaded revolver you log off holding is a loaded revolver you log in holding.
 /// The blueprint mask's high word closes the head since `SAVE_FORMAT` 10,
-/// 401 → 409, and the feet's stack (Rust's boots) 409 → 417.
+/// 401 → 409, and the feet's stack (Rust's boots) 409 → 417. Four more worn
+/// stacks at `SAVE_FORMAT` 12 (clothing v1: legs, hands, shirt, face).
 pub const PLAYER_SAVE_BYTES: usize =
     SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8 + MAX_MAGS * 4;
 
@@ -688,6 +689,12 @@ mod tests {
             cond: 0x7788,
             skin: 0,
         };
+        s.worn[6] = ItemStack {
+            item: 17,
+            count: 1,
+            cond: 0x99AA,
+            skin: 0,
+        };
         s
     }
 
@@ -712,13 +719,14 @@ mod tests {
     /// 401 → 417 at `SAVE_FORMAT` 10: the blueprint mask's high word (+8)
     /// and the feet (+8, Rust's boots).
     /// 417 → 449 at `SAVE_FORMAT` 11: sixteen magazines (guns v1).
+    /// 449 → 481 at `SAVE_FORMAT` 12: four more worn stacks (clothing v1).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 449, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 481, "the on-disk record size moved");
         assert_eq!(MAX_MAGS, 16);
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
-        assert_eq!(WEAR_SLOTS, 3);
+        assert_eq!(WEAR_SLOTS, 7);
     }
 
     /// A byte golden over the fixture. Not decoration: `write_le` is 20
@@ -846,24 +854,29 @@ mod tests {
             &0x7788u16.to_le_bytes(),
             "worn[2].cond at 381 — the feet (store format 10)"
         );
-        // The magazine closes the record (format 9): pairs from 385, the
+        assert_eq!(
+            &buf[409..411],
+            &17u16.to_le_bytes(),
+            "worn[6].item at 409 — the face (store format 12)"
+        );
+        // The magazine closes the record (format 9): pairs from 417, the
         // round written `+ 1` so an empty one is zero bytes.
-        assert_eq!(&buf[385..389], &[0, 0, 0, 0], "mag[0] empty at 385");
-        assert_eq!(&buf[393..395], &6u16.to_le_bytes(), "mag[2] at 393");
+        assert_eq!(&buf[417..421], &[0, 0, 0, 0], "mag[0] empty at 417");
+        assert_eq!(&buf[425..427], &6u16.to_le_bytes(), "mag[2] at 425");
         assert_eq!(
-            &buf[395..397],
+            &buf[427..429],
             &0x2123u16.to_le_bytes(),
-            "mag_round[2] + 1 at 395"
+            "mag_round[2] + 1 at 427"
         );
         assert_eq!(
-            &buf[407..409],
+            &buf[439..441],
             &0x3133u16.to_le_bytes(),
-            "mag_round[5] + 1 at 407"
+            "mag_round[5] + 1 at 439"
         );
         assert_eq!(
-            &buf[413..417],
+            &buf[445..449],
             &[0, 0, 0, 0],
-            "mag[7] closes the record at 417"
+            "mag[7] closes the record at 449"
         );
     }
 

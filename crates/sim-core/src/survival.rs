@@ -103,6 +103,30 @@ pub struct ConsumableDef {
     /// immediately: negative draws the corruption out (the Charcoal Tonic,
     /// Rust's anti-rad pills).
     pub fel: i16,
+    /// Hit points of bleeding it stanches (Rust's bandage 50, medkit 100;
+    /// `exposure::stanch`).
+    pub stanch: u16,
+    /// A tea (`exposure::Brew`): `brew` is its kind plus one (0: not a tea),
+    /// what it gives, its floor, and how many seconds it works for.
+    pub brew: u8,
+    pub brew_amount: u16,
+    pub brew_floor_dc: i16,
+    pub brew_s: u16,
+}
+
+impl ConsumableDef {
+    pub const NONE: Self = Self {
+        health: 0,
+        food: 0,
+        water: 0,
+        seconds: 0,
+        fel: 0,
+        stanch: 0,
+        brew: 0,
+        brew_amount: 0,
+        brew_floor_dc: crate::exposure::NO_FLOOR,
+        brew_s: 0,
+    };
 }
 
 impl ConsumableDef {
@@ -110,7 +134,12 @@ impl ConsumableDef {
     /// not, so this is the sim's read of "is the held item food".
     #[inline]
     pub fn is_food(&self) -> bool {
-        self.health > 0 || self.food > 0 || self.water > 0 || self.fel != 0
+        self.health > 0
+            || self.food > 0
+            || self.water > 0
+            || self.fel != 0
+            || self.stanch > 0
+            || self.brew > 0
     }
 }
 
@@ -165,13 +194,7 @@ pub struct SurvivalContent {
 
 impl SurvivalContent {
     pub const EMPTY: Self = Self {
-        consumable: [ConsumableDef {
-            health: 0,
-            food: 0,
-            water: 0,
-            seconds: 0,
-            fel: 0,
-        }; MAX_ITEM_DEFS],
+        consumable: [ConsumableDef::NONE; MAX_ITEM_DEFS],
         belt_recovery: [false; MAX_ITEM_DEFS],
         revive: [false; MAX_ITEM_DEFS],
         max_food: 0,
@@ -218,7 +241,7 @@ impl SurvivalContent {
             food: 40,
             water: 30,
             seconds: 2,
-            fel: 0,
+            ..ConsumableDef::NONE
         };
         c
     }
@@ -476,6 +499,21 @@ pub fn announce_vitals(sc: &SurvivalContent, p: &Player, events: &mut EventQueue
     );
 }
 
+/// Pour `def`'s tea into `p`, replacing any of the same kind (Rust's: one
+/// tea of a kind at a time, the last one drunk).
+pub fn brew(def: ConsumableDef, p: &mut Player) {
+    if def.brew == 0 || def.brew_s == 0 {
+        return;
+    }
+    if let Some(b) = p.brew.get_mut(def.brew as usize - 1) {
+        *b = crate::exposure::Brew {
+            amount: def.brew_amount,
+            floor_dc: def.brew_floor_dc,
+            left_s: def.brew_s,
+        };
+    }
+}
+
 /// Start `def`'s heal ramp on `p` — the half of eating that does not spend
 /// anything, shared by `consume` and a revive (`World::treat`).
 pub fn start_heal(def: ConsumableDef, p: &mut Player, heal_pct: u32) {
@@ -532,7 +570,9 @@ pub fn consume(
     let would_feed = (def.food > 0 && p.food < sc.max_food)
         || (def.water > 0 && p.water < sc.max_water)
         || (def.fel < 0 && p.fel > 0)
-        || def.fel > 0;
+        || def.fel > 0
+        || (def.stanch > 0 && p.bleed > 0)
+        || def.brew > 0;
     if def.health == 0 && !would_feed {
         events.push(EV_CONSUME_REFUSED, p.id, REFUSE_C_FULL, 0);
         return false;
@@ -564,6 +604,8 @@ pub fn consume(
     p.food = p.food.saturating_add(def.food).min(sc.max_food);
     p.water = p.water.saturating_add(def.water).min(sc.max_water);
     p.fel = (i32::from(p.fel) + i32::from(def.fel)).clamp(0, 1000) as u16;
+    crate::exposure::stanch(p, def.stanch);
+    brew(def, p);
     start_heal(def, p, heal_pct);
     events.push(
         EV_CONSUMED,
@@ -864,6 +906,7 @@ mod tests {
             water: 0,
             seconds: 1,
             fel: -400,
+            ..ConsumableDef::NONE
         };
         let drink = |sc: &SurvivalContent, fel: u16| {
             let mut p = player(sc);
@@ -897,7 +940,7 @@ mod tests {
             food: u16::MAX,
             water: u16::MAX,
             seconds: 0,
-            fel: 0,
+            ..ConsumableDef::NONE
         };
         let mut p = player(&sc);
         p.food = sc.max_food - 1;

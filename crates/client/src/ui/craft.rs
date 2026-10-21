@@ -588,6 +588,31 @@ pub fn wear_line(catalog: &ItemCatalog, item: u16) -> Option<String> {
     })
 }
 
+/// What the craft detail pane says a piece of clothing does when worn
+/// (clothing v1): its slot, the blows it takes off, the cold it keeps out or
+/// draws in, the Verdigris it wards off — Rust's protection rows. `None`
+/// for anything that is not worn.
+pub fn clothing_line(catalog: &ItemCatalog, item: u16) -> Option<String> {
+    let row = catalog.row(item as usize);
+    if row.wear_slot == sim_core::combat::WEAR_NONE {
+        return None;
+    }
+    let mut line = format!(
+        "Worn: {} · protection {}%",
+        crate::ui::slots::wear_slot_label(row.wear_slot as usize - 1),
+        row.armor_pct
+    );
+    match row.warmth_pct {
+        0 => {}
+        w if w > 0 => line.push_str(&format!(" · warmth +{w}%")),
+        w => line.push_str(&format!(" · draws the cold in ({w}%)")),
+    }
+    if row.ward_pct > 0 {
+        line.push_str(&format!(" · Verdigris ward {}%", row.ward_pct));
+    }
+    Some(line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

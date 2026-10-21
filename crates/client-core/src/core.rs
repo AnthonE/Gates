@@ -2122,6 +2122,10 @@ pub struct ClientCore {
     /// costing hp (wire v113).
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// Hit points still to bleed out (wire v130), and minutes left on each
+    /// tea by `sim_core::exposure::BREW_*`.
+    pub bleed: u8,
+    pub brew_min: [u8; sim_core::exposure::BREW_KINDS],
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2531,6 +2535,8 @@ impl ClientCore {
             air_c: 0,
             fel_pct: 0,
             fel_hurting: false,
+            bleed: 0,
+            brew_min: [0; sim_core::exposure::BREW_KINDS],
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -4101,6 +4107,8 @@ impl ClientCore {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
+                brew_min,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -4110,6 +4118,8 @@ impl ClientCore {
                 self.air_c = air_c;
                 self.fel_pct = fel_pct;
                 self.fel_hurting = fel_hurting;
+                self.bleed = bleed;
+                self.brew_min = brew_min;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }

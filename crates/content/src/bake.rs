@@ -8,8 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, DeployMatter, Material, NodeArchetype,
-    Placement, Shape, Station, Weapon, WeaponKind,
+    Ammo, Armor, CookStation, DeployArchetype, DeployMatter, EquipSlot, Item, Material,
+    NodeArchetype, Placement, Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -19,8 +19,7 @@ use sim_core::build::{
     SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_FEET,
-    WEAR_HEAD, WEAR_NONE,
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_NONE,
 };
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
@@ -41,7 +40,7 @@ use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
     MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ, WEAR_SLOTS,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -119,17 +118,17 @@ impl Content {
             .map_or("?", |i| i.id.as_str())
     }
 
+    /// An item's index: its rank by id, **the hand items first** (clothing
+    /// v1). The held field a snapshot carries for every body is seven bits
+    /// (`sim_core::limits::MAX_HELD_DEFS`) and the table is wider, so the
+    /// things a hand holds take the low indices and the rest (resources,
+    /// clothing, deployables) the high ones.
     pub fn item_index(&self, id: &str) -> Option<u16> {
-        let mut rank = 0u16;
-        let mut found = false;
-        for item in &self.items {
-            if item.id.as_str() < id {
-                rank += 1;
-            } else if item.id == id {
-                found = true;
-            }
+        fn key(i: &Item) -> (bool, &str) {
+            (i.slot != EquipSlot::Hand, i.id.as_str())
         }
-        found.then_some(rank)
+        let me = key(self.items.iter().find(|i| i.id == id)?);
+        Some(self.items.iter().filter(|i| key(i) < me).count() as u16)
     }
 
     /// The gather tables. Refuses sets the sim's fixed capacities can't
@@ -659,6 +658,19 @@ impl Content {
                 self.items.len()
             ));
         }
+        // The hand items rank first (`item_index`) and must all fit the held
+        // field a snapshot carries.
+        let hand = self
+            .items
+            .iter()
+            .filter(|i| i.slot == EquipSlot::Hand)
+            .count();
+        if hand > sim_core::limits::MAX_HELD_DEFS {
+            return Err(format!(
+                "bake: {hand} hand items exceed the held field's {}",
+                sim_core::limits::MAX_HELD_DEFS
+            ));
+        }
         let mut cc = CombatContent::EMPTY;
         cc.player_hp = u16::try_from(self.balance.globals.player_hp).map_err(|_| {
             format!(
@@ -680,6 +692,11 @@ impl Content {
             };
             cc.fist_self_damage = narrow(f.self_damage, "self_damage")?;
         }
+        // Bleeding (clothing v1): `[exposure]`'s, read at every cutting blow.
+        let e = &self.balance.exposure;
+        cc.bleed_pct = u8::try_from(e.bleed_pct.min(100)).unwrap_or(100);
+        cc.bleed_max = u16::try_from(e.bleed_max)
+            .map_err(|_| format!("bake: exposure bleed_max {} overflows u16", e.bleed_max))?;
         // `validate::structural` has already pinned this to 0..=100, so the
         // narrow cannot fail on shipped content; it is written as a bake
         // refusal anyway for `repair_cost_pct`'s reason one function over —
@@ -1189,12 +1206,15 @@ impl Content {
         })?;
         cc.armor[idx] = ArmorDef {
             reduction_pct,
-            slot: match a.slot {
-                ArmorSlot::Head => WEAR_HEAD,
-                ArmorSlot::Body => WEAR_BODY,
-                ArmorSlot::Feet => WEAR_FEET,
+            slot: a.slot.wear(),
+            // Every slot but its own for Rust's Full Body; else the slots
+            // it names (`fills`), zero-based like `Player::worn`.
+            fills: if a.full_body {
+                (((1u16 << WEAR_SLOTS) - 1) as u8) & !(1 << (a.slot.wear() - 1))
+            } else {
+                a.fills.iter().fold(0u8, |m, f| m | 1 << (f.wear() - 1))
+                    & !(1 << (a.slot.wear() - 1))
             },
-            full: a.full_body,
         };
         Ok(())
     }
@@ -1388,6 +1408,9 @@ impl Content {
         ex.fel_ward_max = u16f(e.fel_ward_max, "fel_ward_max")?;
         ex.fel_pocket_per_s = u16f(e.fel_pocket_per_s, "fel_pocket_per_s")?;
         ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
+        ex.warm_full_pm = u16f(e.warm_full_pct.saturating_mul(10), "warm_full_pct")?;
+        ex.dry_ref_dc = dc(e.dry_ref_c);
+        ex.bleed_hp_per_min = u16f(e.bleed_hp_per_min, "bleed_hp_per_min")?;
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
             temperate_low_dc: dc(cl.temperate_low_c),
@@ -1411,6 +1434,7 @@ impl Content {
             // Per cent to per mille of chill kept out, and of the Verdigris.
             ex.warmth[idx] = (a.cold_pct * 10) as i16;
             ex.ward[idx] = (a.fel_pct * 10) as u16;
+            ex.waterproof[idx] = a.waterproof;
         }
         // Furnishings (a rug): comfort per item, read where the sim finds a
         // placed deployable's item (`World::furnish_comfort`).
@@ -1457,12 +1481,30 @@ impl Content {
                         con.id, con.fel
                     )
                 })?;
+            let (brew, brew_amount) = match con.brew {
+                None => (0, 0),
+                // Degrees to tenths; a ward's per cent to per mille.
+                Some(k) => (
+                    k.code() + 1,
+                    u16f(con.brew_amount.saturating_mul(10), "brew_amount")?,
+                ),
+            };
+            if brew > 0 && con.brew_minutes == 0 {
+                return Err(format!("bake: tea `{}` lasts no time", con.id));
+            }
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
                 water: u16f(con.water, "water")?,
                 seconds,
                 fel,
+                stanch: u16f(con.stanch, "stanch")?,
+                brew,
+                brew_amount,
+                brew_floor_dc: con.brew_floor_c.map_or(sim_core::exposure::NO_FLOOR, |c| {
+                    (c.clamp(-100, 100) * 10) as i16
+                }),
+                brew_s: u16f(con.brew_minutes.saturating_mul(60), "brew_minutes")?,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;

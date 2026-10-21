@@ -45,7 +45,9 @@
 
 use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
-use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_FEET, WEAR_HEAD};
+use sim_core::combat::{
+    ARMOR_MAX_PCT, WEAR_BODY, WEAR_FACE, WEAR_FEET, WEAR_HANDS, WEAR_HEAD, WEAR_LEGS, WEAR_SHIRT,
+};
 use sim_core::deploy::{box_key, holds_items, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
@@ -429,6 +431,36 @@ pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
     }
     pct.min(ARMOR_MAX_PCT)
 }
+
+/// What a worn set keeps out of the cold, whole percent: the sum of every
+/// piece's `warmth_pct` in the slot its row names (clothing v1). Negative
+/// pieces (a road sign jacket) are summed in as they are, so the line says
+/// what the set nets. `exposure::target_chill` halves the keep when soaked,
+/// which the line does not try to say.
+pub fn worn_warmth(catalog: &ItemCatalog, worn: &[ItemStack]) -> i32 {
+    worn.iter()
+        .enumerate()
+        .take(WEAR_SLOTS)
+        .filter(|(i, s)| s.count > 0 && catalog.wear_slot(s.item as usize) as usize == i + 1)
+        .map(|(_, s)| catalog.warmth_pct(s.item as usize) as i32)
+        .sum()
+}
+
+/// What a worn set wards off of the Verdigris, whole percent, held to
+/// `[exposure] fel_ward_max`'s shipped 90 the way the sim holds it.
+pub fn worn_ward(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
+    let sum: u32 = worn
+        .iter()
+        .enumerate()
+        .take(WEAR_SLOTS)
+        .filter(|(i, s)| s.count > 0 && catalog.wear_slot(s.item as usize) as usize == i + 1)
+        .map(|(_, s)| catalog.ward_pct(s.item as usize) as u32)
+        .sum();
+    sum.min(WARD_SHOWN_MAX)
+}
+
+/// The most ward the panel says a set has: the shipped `fel_ward_max`.
+pub const WARD_SHOWN_MAX: u32 = 90;
 
 /// May this item be worn in wear-container slot `s`? The client's read of
 /// `sim_core::combat::wearable_in`, off the same catalog column.
@@ -1120,6 +1152,10 @@ pub fn wear_slot_label(s: usize) -> &'static str {
         Ok(WEAR_HEAD) => "HEAD",
         Ok(WEAR_BODY) => "BODY",
         Ok(WEAR_FEET) => "FEET",
+        Ok(WEAR_LEGS) => "LEGS",
+        Ok(WEAR_HANDS) => "HANDS",
+        Ok(WEAR_SHIRT) => "SHIRT",
+        Ok(WEAR_FACE) => "FACE",
         _ => "-",
     }
 }

@@ -492,7 +492,13 @@ fn scan() -> Scan {
                 || text.trim_start().starts_with("pub fn ")
                 || text.trim_start().starts_with("pub(crate) fn ");
             if !declares {
-                for (needle, reduced) in [("hurt_unreduced(", false), ("hurt(", true)] {
+                // `hurt_cutting` is `hurt` that also opens a wound (clothing
+                // v1): reduced, the same route.
+                for (needle, reduced) in [
+                    ("hurt_unreduced(", false),
+                    ("hurt(", true),
+                    ("hurt_cutting(", true),
+                ] {
                     if text.contains(needle) {
                         calls.push(Call {
                             file: name.clone(),

@@ -593,7 +593,7 @@ name = "Burlap Tunic"
 stack = 1
 tier = 1
 rarity = "uncommon"
-slot = "body"
+slot = "shirt"
 class = "clothing"
 description = "A cloth tunic. Light protection and some warmth."
 
@@ -1158,7 +1158,7 @@ name = "Ash Mask"
 stack = 1
 tier = 1
 rarity = "uncommon"
-slot = "head"
+slot = "face"
 class = "clothing"
 description = "Charcoal in cloth over mouth and nose. Keeps the Verdigris out of your lungs."
 
@@ -1411,7 +1411,7 @@ name = "Tank Top"
 stack = 1
 tier = 1
 rarity = "common"
-slot = "body"
+slot = "shirt"
 class = "clothing"
 description = "A cloth vest. A little protection and a little warmth."
 
@@ -1482,3 +1482,203 @@ rarity = "uncommon"
 slot = "body"
 class = "clothing"
 description = "A sealed suit, hood and boots in one. Keeps out the cold and the green."
+
+# --- clothing v1: Rust's seven clothing slots --------------------------------
+# Rust's cloth and hide pieces for the slots armor v0 never had: the legs,
+# the hands, the shirt under the body piece and the face under the hat. Names,
+# slots and Cold columns are theirs (wiki.facepunch.com/rust/item/*, early
+# 2026); the blows each takes off are ours (`armor.toml`).
+
+[[item]]
+id = "item.armor_burlap_legs"
+name = "Burlap Trousers"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "legs"
+class = "clothing"
+description = "Sacking trousers. A little warmth for the legs."
+
+[[item]]
+id = "item.armor_burlap_feet"
+name = "Burlap Shoes"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "feet"
+class = "clothing"
+description = "Sacking tied round the feet. Better than bare."
+
+[[item]]
+id = "item.armor_burlap_hands"
+name = "Burlap Gloves"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "hands"
+class = "clothing"
+description = "Sacking gloves. Warm hands go a long way in the cold."
+
+[[item]]
+id = "item.armor_hide_legs"
+name = "Hide Pants"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "legs"
+class = "clothing"
+description = "Leather trousers. Tough, but they let the wind through."
+
+[[item]]
+id = "item.armor_hide_feet"
+name = "Hide Boots"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "feet"
+class = "clothing"
+description = "Leather wrapped round the feet."
+
+[[item]]
+id = "item.armor_hide_shirt"
+name = "Hide Vest"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "shirt"
+class = "clothing"
+description = "A leather vest. Wear it under a poncho."
+
+[[item]]
+id = "item.armor_leather_hands"
+name = "Leather Gloves"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hands"
+class = "clothing"
+description = "Stitched leather gloves. The warmest thing for your hands."
+
+[[item]]
+id = "item.armor_hoodie_shirt"
+name = "Hoodie"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "shirt"
+class = "clothing"
+description = "A thick hooded top. Warm, and it goes under a jacket or plate."
+
+[[item]]
+id = "item.armor_pants_legs"
+name = "Pants"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "legs"
+class = "clothing"
+description = "Heavy cotton trousers."
+
+[[item]]
+id = "item.armor_jacket_body"
+name = "Jacket"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "body"
+class = "clothing"
+description = "A lined jacket. Very warm over a hoodie."
+
+[[item]]
+id = "item.armor_snowjacket_body"
+name = "Snow Jacket"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "body"
+class = "clothing"
+description = "A padded parka, shirt and coat in one. The answer to a mountain night."
+
+[[item]]
+id = "item.armor_bandana_face"
+name = "Bandana"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "face"
+class = "clothing"
+description = "A cloth over the mouth. Keeps the wind off your face."
+
+[[item]]
+id = "item.armor_balaclava_face"
+name = "Improvised Balaclava"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "face"
+class = "clothing"
+description = "Sacking pulled over the face. Warm."
+
+[[item]]
+id = "item.armor_beenie_head"
+name = "Beenie Hat"
+stack = 1
+tier = 1
+rarity = "common"
+slot = "head"
+class = "clothing"
+description = "A knitted cap."
+
+# --- teas (Rust's tea modifiers) ----------------------------------------------
+# One of each kind works at a time; drinking another replaces it
+# (`consumables.toml`, `sim_core::exposure::Brew`).
+
+[[item]]
+id = "item.tea_warming"
+name = "Warming Tea"
+stack = 5
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Berries steeped with fat. You feel the cold less for twenty minutes."
+
+[[item]]
+id = "item.tea_warming_strong"
+name = "Strong Warming Tea"
+stack = 5
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "food"
+description = "A thick, hot brew. For half an hour the cold cannot hurt you."
+
+[[item]]
+id = "item.tea_cooling"
+name = "Cooling Tea"
+stack = 5
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Cactus and berries, steeped cold. You feel the heat less for twenty minutes."
+
+[[item]]
+id = "item.tea_warding"
+name = "Warding Tea"
+stack = 5
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+class = "food"
+description = "Charcoal and mushroom steeped long. Keeps some of the Verdigris out for half an hour."
+
+[[item]]
+id = "item.tea_healing"
+name = "Healing Tea"
+stack = 5
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "food"
+description = "Berries and mushrooms. Heals you slowly over half a minute."

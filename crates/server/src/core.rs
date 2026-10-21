@@ -8386,7 +8386,9 @@ impl ShardCore {
             return None;
         }
         let s = p.inv[sel];
-        if s.count == 0 || s.item == NO_ITEM {
+        // Past the held field's reach (`MAX_HELD_DEFS`): not a hand item,
+        // since the bake ranks those first, so the hand reads empty.
+        if s.count == 0 || s.item == NO_ITEM || s.item as usize >= sim_core::limits::MAX_HELD_DEFS {
             return None;
         }
         Some(s.item)

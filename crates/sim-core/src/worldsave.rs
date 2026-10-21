@@ -231,7 +231,9 @@ use crate::worldcont::WorldContRec;
 /// (+8), so no older file reads.
 /// **28 — guns v1**: `MAX_MAGS` 8 → 16, so every body's `PlayerSave` grew
 /// eight magazines (+32) and no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 28;
+/// **29 — clothing v1**: every body's `PlayerSave` grew four worn stacks
+/// (+32), and its tail bleeding and the teas (+24); no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 29;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -307,9 +309,11 @@ pub const SECTION_COUNTS: usize = 12 * 2 + 4;
 ///
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
 /// the weak-spot pair, the four death-screen facts, `craft_done_at`, wet and
-/// cold (8) and the Verdigris (6).
+/// cold (8), the Verdigris (6), and bleeding (6) with the teas (6 each,
+/// format 29).
 /// The magazine rode here from format 12 to 22; it is `PlayerSave`'s now.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + 6 + SKIN_WORDS * 8;
+const PLAYER_TAIL_BYTES: usize =
+    4 + 8 + 9 + 8 + 6 + 9 + 8 + 8 + 6 + 6 + 6 * crate::exposure::BREW_KINDS + SKIN_WORDS * 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -686,6 +690,12 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         // The Verdigris (format 24): hashed, so saved.
         o.u16(p.fel);
         o.u32(p.fel_acc);
+        // Bleeding and the teas (format 29): hashed, so saved.
+        o.u16(p.bleed);
+        o.u32(p.bleed_acc);
+        for b in p.brew.iter() {
+            o.bytes(&b.to_le_bytes());
+        }
         // The owned skins (format 16): hashed, so saved. A body that
         // reloads asleep keeps the set until its owner's next session
         // replaces it (`World::take_over` clears it at the door).
@@ -1124,6 +1134,16 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cold_acc = r.u32()?;
         let fel = r.u16()?;
         let fel_acc = r.u32()?;
+        let bleed = r.u16()?;
+        let bleed_acc = r.u32()?;
+        let mut brew = [crate::exposure::Brew::NONE; crate::exposure::BREW_KINDS];
+        for b in brew.iter_mut() {
+            let mut raw = [0u8; 6];
+            for x in raw.iter_mut() {
+                *x = r.u8()?;
+            }
+            *b = crate::exposure::Brew::from_le_bytes(raw);
+        }
         let mut skin_bytes = [0u8; SKIN_WORDS * 8];
         for b in skin_bytes.iter_mut() {
             *b = r.u8()?;
@@ -1204,6 +1224,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             air_dc: 0,
             fel,
             fel_acc,
+            bleed,
+            bleed_acc,
+            brew,
             skins,
             safe: false,
             hostile: 0,
@@ -2029,7 +2052,8 @@ mod tests {
         // 92 → 124 at format 16: the owned skin set, `SKIN_WORDS` words.
         // 124 → 92 at format 23: the magazine moved into `PlayerSave`.
         // 92 → 98 at format 24: the Verdigris' meter and its remainder.
-        assert_eq!(PLAYER_TAIL_BYTES, 98);
+        // 98 → 122 at format 29: bleeding (6) and three teas (6 each).
+        assert_eq!(PLAYER_TAIL_BYTES, 122);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
@@ -2043,8 +2067,10 @@ mod tests {
         // 493 → 499 at format 24: the Verdigris in the tail. 499 → 515 at
         // format 27: the blueprint mask's high word and the feet's stack in
         // `PlayerSave`. 515 → 547 at format 28: sixteen magazines (guns v1).
+        // 547 → 603 at format 29: four more worn stacks in `PlayerSave`
+        // (+32), bleeding and the teas in the tail (+24) (clothing v1).
         assert_eq!(
-            PLAYER_BYTES, 547,
+            PLAYER_BYTES, 603,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -2055,7 +2081,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
-            + 100 * 547                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27)
+            + 100 * 603                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27, seven worn + bleeding + teas at 29)
             + 32_768 * 21                   // pieces + plate + placement tick
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
@@ -2190,8 +2216,10 @@ mod tests {
         // 4_478_302 at format 27: the blueprint mask's high word and the
         // feet's stack, sixteen bytes on 100 bodies. 4_481_502 at format
         // 28: eight more magazines, 32 bytes on 100 bodies (guns v1).
+        // 4_487_102 at format 29: four more worn stacks, bleeding and three
+        // teas, 56 bytes on 100 bodies (clothing v1).
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 4_481_502,
+            WORLD_SAVE_MAX_BYTES, 4_487_102,
             "the world save ceiling moved"
         );
     }

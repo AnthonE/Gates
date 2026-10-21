@@ -276,7 +276,11 @@ vessel_full = "item.waterskin_full"
 # find a roof and a fire. A roof and a lit campfire take anyone back to zero.
 [exposure]
 wet_rain_per_s = 8
-dry_per_s = 2
+# Drying runs with the air (Rust's): 4 a second at 20 °C, twice that at 40,
+# rounded up so a cool day still dries a little, and none at 0 °C or under
+# but by a fire. A soaked body dries in about four minutes on a mild day.
+dry_per_s = 4
+dry_ref_c = 20
 dry_fire_per_s = 12
 soak_depth_cm = 120
 rain_cold = 250
@@ -288,7 +292,9 @@ heat_radius_cm = 450
 chill_rise_per_s = 8
 chill_fall_per_s = 20
 hurt_at = 600
-hurt_hp_per_min = 6
+# 8 at a full meter: the desert's dawn kills a bare body in about a quarter
+# of an hour (Rust's cold is gentle down to -10 °C and steep past -20).
+hurt_hp_per_min = 8
 # The cold eats (`NOW.md` §0wx item 1): at full chill food drains twice as
 # fast (the reference's cold burns calories); water is the heat's to burn
 # (`heat_water_pct` below), so the cold leaves it at the normal drain. Scaled
@@ -318,20 +324,27 @@ regen_calm_s = 10
 regen_food_pct = 100
 regen_water_pct = 50
 
+# Clothing v1 is Rust's rule (`PlayerMetabolism`): a worn set takes the share
+# of the cold that its summed `cold_pct` is of 400 (theirs: ColdExposure ÷ 6
+# × 1.5, so 400 % is all of it), wet clothes keeping half. Never a fixed
+# amount, so no kit makes the deep cold harmless and a fire still matters.
+# A hoodie, pants, boots, leather gloves, a jacket, a beenie and a balaclava
+# (129) take a third off: a clear temperate dawn heads for ~340 in it
+# against 500 bare, the desert's dawn for ~640 against 950, a peak's dawn for
+# ~680 — still past `hurt_at` without a fire, a roof or a tea.
+warm_full_pct = 400
 # The air (climate v0, `[climate]` below) is the cold now: every degree
 # under 13 °C adds 50, night or day, in place of the old flat night. So a
 # naked, dry, still body starts to hurt at 1 °C, which is where the
 # reference's cold damage starts (`PlayerMetabolism`, body under 1 °C), and
-# shows COLD (25 %) under about 8 °C, near their "too cold" at 5. A clear
-# temperate dawn (~4 °C) heads for ~465 naked, ~135 in burlap; the desert's
-# dawn (~-3 °C) for ~835 naked, past `hurt_at`, and ~505 in burlap.
+# shows COLD (25 %) under about 8 °C, near their "too cold" at 5.
 cold_below_c = 13
 cold_per_c = 50
 # The heat: every degree over 32 °C adds 50. The desert's afternoon (~35 °C)
-# is ~145 naked, a little thirsty. Warm clothes hold the heat in at 750 per
-# mille of their warmth, the reference's +10 °C × 1.5 × protection: burlap
-# +248, hide and bone +293, so a clothed body in the desert is HOT and drinks
-# more than double. Being soaked takes all of it off (theirs: −34 °C wet), a
+# is ~145 naked, a little thirsty. Warm clothes hold the heat in, Rust's up to
+# +10 °C for a set at all of `warm_full_pct`: 500 at a full share, so the
+# winter kit above adds ~160 in the desert and a body in it is HOT and
+# drinks more than double. Being soaked takes all of it off (theirs: −34 °C wet), a
 # roof's shade 8 degrees. Their heat damage needs a body past 60 °C, which
 # their desert never gives; ours keeps the rule at 600 and the shipped air
 # does not reach it either.
@@ -339,7 +352,7 @@ hot_above_c = 32
 heat_per_c = 50
 shade_c = 8
 wet_cool = 1000
-clothes_heat_pm = 750
+clothes_heat_pm = 500
 heat_water_pct = 300
 heat_hurt_at = 600
 heat_hp_per_min = 6
@@ -370,6 +383,13 @@ fel_pocket_per_s = 20
 # at half the rain's rate — the reference's `weather.wetness_snow` 0.2 against
 # `wetness_rain` 0.4. Per mille of the rain's.
 snow_wet_pm = 500
+# Bleeding (Rust's, clothing v1): a swing, a bite, an arrow or a round leaves
+# a fifth of what it dealt to run out of the body at a third of a point a
+# second (20 a minute), never more than 100 owed. A bandage stanches 50, a
+# medkit 100 (`consumables.toml`), and nothing mends while it runs.
+bleed_pct = 20
+bleed_max = 100
+bleed_hp_per_min = 20
 
 # The air (climate v0, `sim_core::climate`) — the reference's
 # `Climate.GetTemperature`: each biome's curve over the hour, coldest at

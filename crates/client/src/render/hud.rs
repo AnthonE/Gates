@@ -1086,6 +1086,11 @@ pub enum ExposureChip {
     /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
     /// red while it is costing hp, saying what stops it.
     Verdigris,
+    /// Rust's bleeding (clothing v1, `exposure::bleed`): shown while a wound
+    /// runs, saying what stops it.
+    Bleeding,
+    /// The teas working in the body and the minutes they have left.
+    Tea,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1140,6 +1145,30 @@ const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
 const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.9);
+const TEA_CHIP: Color = Color::srgba(0.42, 0.30, 0.18, 0.85);
+
+/// What the BLEEDING chip says: Rust's icon, and the bandage that stops it.
+pub fn bleed_line(hp: u8) -> String {
+    format!("BLEEDING {hp} · USE A BANDAGE")
+}
+
+/// What the tea chip says: each tea working and its minutes left, by
+/// `sim_core::exposure::BREW_*`. `None` when nothing is brewing.
+pub fn tea_line(brew_min: &[u8; sim_core::exposure::BREW_KINDS]) -> Option<String> {
+    const NAMES: [&str; sim_core::exposure::BREW_KINDS] = ["WARMING", "COOLING", "WARDING"];
+    let parts: Vec<String> = brew_min
+        .iter()
+        .zip(NAMES)
+        .filter(|(m, _)| **m > 0)
+        .map(|(m, n)| format!("{n} TEA {m}m"))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The worn warmth under which the COLD chip says to dress warmer: about a
+/// burlap tunic and hood.
+pub const DRESS_WARMER_PCT: i32 = 40;
 
 /// What the Verdigris chip says: the meter, and while it hurts, the way out.
 /// The player-facing name only — never the code's `fel`.
@@ -1254,6 +1283,16 @@ pub fn hot_line(hurting: bool, air_c: i8, wet_pct: u8, w: ExposureWorld) -> Stri
     format!("{what} · {air_c}°C · {help}")
 }
 
+/// The COLD chip's hint when what is worn keeps little out (clothing v1):
+/// the answer a fire and a roof are not.
+fn dress_warmer(core: &client_core::core::ClientCore) -> &'static str {
+    if crate::ui::slots::worn_warmth(&core.catalog, &core.worn) < DRESS_WARMER_PCT {
+        " · DRESS WARMER"
+    } else {
+        ""
+    }
+}
+
 /// Keep the wet and cold chips on what the server last said. Hidden while
 /// there is nothing to say — dry, and warm enough not to mention. The
 /// upkeep chip likewise: shown while the shard keeps re-telling you your
@@ -1293,12 +1332,24 @@ pub fn exposure(
             // The one chip that costs hp says what stops it.
             ExposureChip::Cold if core.cold_hurting && !hot => (
                 true,
-                format!("{air}°C · {}", cold_line(true, core.wet_pct, w)),
+                format!(
+                    "{air}°C · {}{}",
+                    cold_line(true, core.wet_pct, w),
+                    dress_warmer(core)
+                ),
                 FREEZE_CHIP,
             ),
             ExposureChip::Cold => (
                 core.cold_pct >= 25,
-                format!("{air}°C · {}", cold_line(false, core.wet_pct, w)),
+                format!(
+                    "{air}°C · {}{}",
+                    cold_line(false, core.wet_pct, w),
+                    if core.cold_pct >= 50 {
+                        dress_warmer(core)
+                    } else {
+                        ""
+                    }
+                ),
                 COLD_CHIP,
             ),
             ExposureChip::Hot if core.cold_hurting && hot => {
@@ -1336,6 +1387,11 @@ pub fn exposure(
                     FEL_CHIP
                 },
             ),
+            ExposureChip::Bleeding => (core.bleed > 0, bleed_line(core.bleed), BLEED_CHIP),
+            ExposureChip::Tea => match tea_line(&core.brew_min) {
+                Some(line) => (true, line, TEA_CHIP),
+                None => (false, String::new(), TEA_CHIP),
+            },
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1907,6 +1963,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Cold,
                 ExposureChip::Hot,
                 ExposureChip::Verdigris,
+                ExposureChip::Bleeding,
+                ExposureChip::Tea,
                 ExposureChip::Comfort,
             ] {
                 stack.spawn((

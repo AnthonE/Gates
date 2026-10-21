@@ -72,7 +72,7 @@ hits = 3
 guaranteed = [{ item = "item.junk", count_min = 2, count_max = 2 }]
 
 entries = [
-    { item = "item.rope", weight = 284, count_min = 1, count_max = 3 },
+    { item = "item.rope", weight = 200, count_min = 1, count_max = 3 },
     { item = "item.tarp", weight = 170, count_min = 1, count_max = 2 },
     { item = "item.sewing_kit", weight = 170, count_min = 3, count_max = 5 },
     { item = "item.metal_blade", weight = 154, count_min = 1, count_max = 1 },
@@ -87,6 +87,16 @@ entries = [
     # Their tree's deployables and the tank top, at their 1.1 % (2026-10-18),
     # out of the rope's share of their clothing third.
     { item = "item.armor_tanktop_body", weight = 11, count_min = 1, count_max = 1 },
+    # Clothing v1: their barrels' clothing third is hoodies, pants, boots,
+    # hats and bandanas as much as rope, so 84 of the rope's share goes to
+    # the cotton pieces at 1.2-1.4 % each.
+    { item = "item.armor_hoodie_shirt", weight = 12, count_min = 1, count_max = 1 },
+    { item = "item.armor_pants_legs", weight = 14, count_min = 1, count_max = 1 },
+    { item = "item.armor_beenie_head", weight = 14, count_min = 1, count_max = 1 },
+    { item = "item.armor_bandana_face", weight = 14, count_min = 1, count_max = 1 },
+    { item = "item.armor_leather_hands", weight = 12, count_min = 1, count_max = 1 },
+    { item = "item.armor_burlap_legs", weight = 9, count_min = 1, count_max = 1 },
+    { item = "item.armor_jacket_body", weight = 9, count_min = 1, count_max = 1 },
     { item = "item.barricade_wood", weight = 11, count_min = 1, count_max = 1 },
     { item = "item.floor_spikes", weight = 11, count_min = 1, count_max = 1 },
     { item = "item.window_shutters", weight = 11, count_min = 1, count_max = 1 },
@@ -109,8 +119,8 @@ hits = 4
 guaranteed = [{ item = "item.junk", count_min = 5, count_max = 5 }]
 
 entries = [
-    { item = "item.gears", weight = 81, count_min = 2, count_max = 3 },
-    { item = "item.metal_spring", weight = 81, count_min = 1, count_max = 2 },
+    { item = "item.gears", weight = 67, count_min = 2, count_max = 3 },
+    { item = "item.metal_spring", weight = 67, count_min = 1, count_max = 2 },
     { item = "item.sheet_metal", weight = 81, count_min = 1, count_max = 2 },
     { item = "item.metal_pipe", weight = 81, count_min = 1, count_max = 5 },
     { item = "item.road_signs", weight = 81, count_min = 2, count_max = 4 },
@@ -136,6 +146,10 @@ entries = [
     { item = "item.barricade_barbed", weight = 3, count_min = 1, count_max = 1 },
     # Their brown crate's hazmat, at its 4 %.
     { item = "item.armor_hazmat_suit", weight = 28, count_min = 1, count_max = 1 },
+    # Clothing v1: the warmest coat and a tea, for the walk up a mountain,
+    # out of the gears' and the springs' share so the rest keep their odds.
+    { item = "item.armor_snowjacket_body", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.tea_warming", weight = 20, count_min = 1, count_max = 2 },
     { item = "item.medkit", weight = 30, count_min = 1, count_max = 1 },
     { item = "item.bandage", weight = 25, count_min = 1, count_max = 1 },
     { item = "item.syringe", weight = 6, count_min = 1, count_max = 1 },

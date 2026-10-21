@@ -118,7 +118,9 @@ pub use event::{
     DEED_RELOAD,
 };
 use sim_core::input::InputFrame;
-use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{
+    HOTBAR_SLOTS, MAX_HELD_DEFS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES,
+};
 pub use sim_core::shop::ShopAct;
 pub use voice::{
     decode_voice, decode_voice_up, encode_voice, encode_voice_up, VoiceFrame, VOICE_DATAGRAM_MAX,
@@ -1262,7 +1264,13 @@ pub use voice::{
 /// a craft may be refused `REFUSE_CR_OWNED`.
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
-pub const PROTO_VER: u16 = 129;
+/// v130 — clothing v1: seven wear slots (`WEAR_SLOTS` 3 → 7: legs, hands,
+/// shirt, face), so `EventMsg::Worn` carries seven and a catalog row's
+/// `wear_slot` is three bits; and the row carries its `warmth_pct` and
+/// `ward_pct` for the wear panel. `MAX_ITEM_DEFS` 127 → 255, so a catalog's
+/// total and first index are eight bits; the held field stays seven and
+/// names only the hand items (`MAX_HELD_DEFS`), which rank first.
+pub const PROTO_VER: u16 = 130;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1368,9 +1376,11 @@ pub const VEL_BIAS: i32 = 8192;
 
 /// Width of the held-item field on an entity record (v56).
 ///
-/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` is 64,
-/// so the ids alone fill a six-bit field exactly and "empty hand" needs a
-/// value the ids cannot take. Derived-adjacent rather than typed — the
+/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` was 64,
+/// so the ids alone filled a six-bit field exactly and "empty hand" needs a
+/// value the ids cannot take. Since v130 the field names only
+/// `sim_core::limits::MAX_HELD_DEFS` ids — the hand items, which the bake
+/// ranks first — while the item table is wider. Derived-adjacent rather than typed — the
 /// gate `held_bits_hold_every_item_the_sim_can_define` fails if
 /// `MAX_ITEM_DEFS` ever grows past what this width can carry alongside
 /// [`HELD_NONE`], which is the shape a `KIND_BITS` widening took at v27.
@@ -4627,7 +4637,7 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     // `MAX_ITEM_DEFS` is not a truncation risk — it would fit seven bits
     // — it is a value the sim cannot mean, and the decoder refuses the
     // same band, so the two ends agree about what is representable.
-    if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
+    if e.held.is_some_and(|h| h as usize >= MAX_HELD_DEFS) {
         return Err(WireError::Range);
     }
     Ok(())
@@ -4875,7 +4885,7 @@ fn read_held(r: &mut BitReader) -> Result<Option<u16>, WireError> {
     if v == HELD_NONE {
         return Ok(None);
     }
-    if v as usize >= MAX_ITEM_DEFS {
+    if v as usize >= MAX_HELD_DEFS {
         return Err(WireError::Range);
     }
     Ok(Some(v))
@@ -5115,14 +5125,14 @@ mod tests {
     #[test]
     fn held_bits_hold_every_item_the_sim_can_define() {
         assert!(
-            MAX_ITEM_DEFS <= HELD_NONE as usize,
-            "MAX_ITEM_DEFS is {MAX_ITEM_DEFS}, which does not fit \
+            MAX_HELD_DEFS <= HELD_NONE as usize,
+            "MAX_HELD_DEFS is {MAX_HELD_DEFS}, which does not fit \
              {HELD_BITS} bits beside the {HELD_NONE} sentinel"
         );
         // And the sentinel is genuinely out of the sim's reach, not just
         // at its edge: an id equal to `HELD_NONE` would decode as an
         // empty hand.
-        assert!(HELD_NONE as usize >= MAX_ITEM_DEFS);
+        assert!(HELD_NONE as usize >= MAX_HELD_DEFS);
     }
 
     /// **An unfilled record is empty-handed**, which is the whole reason
@@ -5244,12 +5254,12 @@ mod tests {
         let mut buf = [0u8; 128];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
         let mut bad = ent(1);
-        bad.held = Some(MAX_ITEM_DEFS as u16);
+        bad.held = Some(MAX_HELD_DEFS as u16);
         assert_eq!(enc.add_entity(&bad), Err(WireError::Range));
         // The last legal id still fits, so the bound is exact rather than
         // conservative.
         let mut ok = ent(2);
-        ok.held = Some(MAX_ITEM_DEFS as u16 - 1);
+        ok.held = Some(MAX_HELD_DEFS as u16 - 1);
         assert_eq!(enc.add_entity(&ok), Ok(()));
     }
 
@@ -5277,15 +5287,15 @@ mod tests {
             read_held(&mut BitReader::new(&buf[..n]))
         };
         // Every unreachable code point.
-        for v in MAX_ITEM_DEFS as u16..HELD_NONE {
+        for v in MAX_HELD_DEFS as u16..HELD_NONE {
             assert_eq!(read(v), Err(WireError::Range), "id {v} was accepted");
         }
         // Both ends of the legal range are taken, so the bound is exact
         // and not conservative in either direction.
         assert_eq!(read(0), Ok(Some(0)));
         assert_eq!(
-            read(MAX_ITEM_DEFS as u16 - 1),
-            Ok(Some(MAX_ITEM_DEFS as u16 - 1))
+            read(MAX_HELD_DEFS as u16 - 1),
+            Ok(Some(MAX_HELD_DEFS as u16 - 1))
         );
         // And the sentinel is an empty hand rather than an id.
         assert_eq!(read(HELD_NONE), Ok(None));

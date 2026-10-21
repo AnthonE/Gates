@@ -1109,8 +1109,11 @@ pub const DEATH_BY_CACTUS: u8 = 11;
 /// A barbed barricade or floor spikes cut them to death (wire v123,
 /// [`World::prick_deploys`]).
 pub const DEATH_BY_SPIKES: u8 = 12;
+/// They bled out (clothing v1, `exposure::bleed`): a cut, a bite or a round
+/// that nobody bandaged.
+pub const DEATH_BY_BLEED: u8 = 13;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_SPIKES;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_BLEED;
 
 /// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
 /// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
@@ -1512,6 +1515,17 @@ pub struct Player {
     /// cold's; a body restored from the player store comes back clean.
     pub fel: u16,
     pub fel_acc: u32,
+    /// Bleeding (Rust's, clothing v1, `exposure::bleed`): the hp still to
+    /// run out of the body, and the partial point owed. A cut, a bite, an
+    /// arrow or a round adds a share of what it dealt; a bandage stanches
+    /// it. Hashed and world-saved like the cold's; a body restored from the
+    /// player store comes back stanched.
+    pub bleed: u16,
+    pub bleed_acc: u32,
+    /// The teas in the body (Rust's, `exposure::Brew`), one per kind:
+    /// warming, cooling, warding. Counted down a second at a time by the
+    /// exposure step. Hashed and world-saved; not kept by the player store.
+    pub brew: [crate::exposure::Brew; crate::exposure::BREW_KINDS],
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1664,6 +1678,9 @@ impl Default for Player {
             air_dc: 0,
             fel: 0,
             fel_acc: 0,
+            bleed: 0,
+            bleed_acc: 0,
+            brew: [crate::exposure::Brew::NONE; crate::exposure::BREW_KINDS],
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
@@ -4432,6 +4449,8 @@ impl World {
             self.works.unlocks,
             crate::works::KNOB_HEAL_PCT,
         );
+        // A bandage on a downed friend stanches them too.
+        crate::exposure::stanch(&mut self.players[t], def.stanch);
         survival::start_heal(def, &mut self.players[t], heal_pct);
     }
 
@@ -5154,6 +5173,9 @@ impl World {
                     air_dc: 0,
                     fel: 0,
                     fel_acc: 0,
+                    bleed: 0,
+                    bleed_acc: 0,
+                    brew: [crate::exposure::Brew::NONE; crate::exposure::BREW_KINDS],
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -6908,6 +6930,18 @@ impl World {
             self.survival.max_water,
             &mut self.players[i],
         );
+        // The wound runs (clothing v1), and the teas steep down a second.
+        let bled = crate::exposure::bleed(
+            &self.survival.exposure,
+            &mut self.players[i],
+            &mut self.events,
+        );
+        if bled == survival::Step::Died {
+            let id = self.players[i].id;
+            self.die(i, id, DEATH_BY_BLEED, NO_ITEM, 0);
+            return true;
+        }
+        crate::exposure::steep(&mut self.players[i]);
         false
     }
 
@@ -7015,8 +7049,10 @@ impl World {
         };
         let furnish = self.furnish_comfort(x, z, feet);
         let comfort = crate::exposure::comfort_target(ec, by_fire, awake, asleep, furnish);
+        // Rust's rain is halved over arid ground (clothing v1).
+        let arid_pm = (crate::terrain::aridity(self.seed, x, z) * 1000.0).clamp(0.0, 1000.0) as u16;
         crate::exposure::Inputs {
-            rain: wx.rain,
+            rain: crate::weather::local_rain(wx.rain, arid_pm),
             wind: wx.wind,
             night,
             roofed,
@@ -8004,7 +8040,7 @@ impl World {
                 crate::combat::bearing_sector(mqx - v.body.qx as i64, mqz - v.body.qz as i64);
             // The funnel, reduced: a bite is a hit.
             let crate::combat::Hurt { left, died, .. } =
-                crate::combat::hurt(&self.combat, v, b.damage);
+                crate::combat::hurt_cutting(&self.combat, v, b.damage);
             // A turned animal's bite carries the green, warded by the worn
             // set; a bite that downed the body leaves the meter alone.
             if b.fel > 0 && !died {
@@ -8062,7 +8098,7 @@ impl World {
                 let sector =
                     crate::combat::bearing_sector(hqx - v.body.qx as i64, hqz - v.body.qz as i64);
                 let crate::combat::Hurt { left, died, .. } =
-                    crate::combat::hurt(&self.combat, v, r.damage);
+                    crate::combat::hurt_cutting(&self.combat, v, r.damage);
                 let victim_id = v.id;
                 self.events
                     .push(EV_HURT, victim_id, sector as u32, r.damage as u32);
@@ -8130,7 +8166,7 @@ impl World {
             let sector =
                 crate::combat::bearing_sector(gx - v.body.qx as i64, gz - v.body.qz as i64);
             let crate::combat::Hurt { left, died, .. } =
-                crate::combat::hurt(&self.combat, v, r.damage);
+                crate::combat::hurt_cutting(&self.combat, v, r.damage);
             let victim_id = v.id;
             self.events
                 .push(EV_HURT, victim_id, sector as u32, r.damage as u32);
@@ -8191,7 +8227,7 @@ impl World {
             let sector =
                 crate::combat::bearing_sector(gx - v.body.qx as i64, gz - v.body.qz as i64);
             let crate::combat::Hurt { left, died, .. } =
-                crate::combat::hurt(&self.combat, v, r.damage);
+                crate::combat::hurt_cutting(&self.combat, v, r.damage);
             let victim_id = v.id;
             self.events
                 .push(EV_HURT, victim_id, sector as u32, r.damage as u32);
@@ -8648,6 +8684,18 @@ impl World {
                 fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
                 fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
                 h.update(&fb);
+            }
+            // Bleeding and the teas (clothing v1), the same way: a body
+            // nobody cut and nobody brewed for hashes as it did before.
+            if p.bleed != 0 || p.bleed_acc != 0 {
+                let mut bb = [0u8; 6];
+                bb[0..2].copy_from_slice(&p.bleed.to_le_bytes());
+                bb[2..6].copy_from_slice(&p.bleed_acc.to_le_bytes());
+                h.update(&bb);
+            }
+            for (k, b) in p.brew.iter().enumerate().filter(|(_, b)| b.left_s > 0) {
+                h.update(&[k as u8]);
+                h.update(&b.to_le_bytes());
             }
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact

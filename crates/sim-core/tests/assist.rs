@@ -349,7 +349,7 @@ fn a_syringe_stands_a_downed_body_up_at_once() {
         food: 0,
         water: 0,
         seconds: 2,
-        fel: 0,
+        ..ConsumableDef::NONE
     };
     w.survival.revive[SYRINGE as usize] = true;
     w.survival.consumable[MEDKIT as usize] = ConsumableDef {
@@ -357,7 +357,7 @@ fn a_syringe_stands_a_downed_body_up_at_once() {
         food: 0,
         water: 0,
         seconds: 8,
-        fel: 0,
+        ..ConsumableDef::NONE
     };
     w.players[0].inv[3] = ItemStack {
         item: SYRINGE,
@@ -433,7 +433,7 @@ fn a_syringe_out_of_reach_does_nothing() {
         food: 0,
         water: 0,
         seconds: 2,
-        fel: 0,
+        ..ConsumableDef::NONE
     };
     w.survival.revive[SYRINGE as usize] = true;
     w.players[0].inv[3] = ItemStack {

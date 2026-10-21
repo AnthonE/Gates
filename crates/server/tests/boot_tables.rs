@@ -370,11 +370,7 @@ fn the_shipped_catalog_carries_every_armor_row() {
             a.reduction_pct,
             tables.catalog.armor_pct(idx)
         );
-        let authored_slot = match a.slot {
-            content::schema::ArmorSlot::Head => sim_core::combat::WEAR_HEAD,
-            content::schema::ArmorSlot::Body => sim_core::combat::WEAR_BODY,
-            content::schema::ArmorSlot::Feet => sim_core::combat::WEAR_FEET,
-        };
+        let authored_slot = a.slot.wear();
         assert_eq!(
             tables.catalog.wear_slot(idx),
             authored_slot,

@@ -912,7 +912,7 @@ const _: () = assert!(sim_core::deploy::REFUSE_D_MAX < (1 << REFUSE_D_BITS));
 const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
 const SYNC_COUNT_BITS: u32 = 7;
-const CATALOG_TOTAL_BITS: u32 = 7;
+const CATALOG_TOTAL_BITS: u32 = 8;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
 /// A skin-catalog index or total: 0..=`MAX_SKINS` (256) in nine bits.
@@ -927,9 +927,14 @@ const COIN_BITS: u32 = 2;
 /// constant rather than against the width — a widened cap must move the
 /// refusal, not silently start truncating.
 const ARMOR_PCT_BITS: u32 = 7;
-/// A catalog row's `wear_slot` (v52): `WEAR_NONE`, `WEAR_HEAD`,
-/// `WEAR_BODY`. Two bits over `WEAR_SLOTS + 1` live values.
-const WEAR_SLOT_BITS: u32 = 2;
+/// A catalog row's `wear_slot` (v52): `WEAR_NONE` through `WEAR_FACE`.
+/// Three bits over `WEAR_SLOTS + 1` live values (clothing v1: seven slots).
+const WEAR_SLOT_BITS: u32 = 3;
+/// A catalog row's warmth (clothing v1): `armor.toml`'s `cold_pct`, ±100,
+/// eight bits two's complement.
+const WARMTH_BITS: u32 = 8;
+/// A catalog row's ward against the Verdigris: `fel_pct`, 0..=100.
+const WARD_BITS: u32 = 7;
 // `WEAR_SLOTS` live slots plus `WEAR_NONE`, so the ledger's largest value
 // is `WEAR_SLOTS` itself and that is what has to be representable.
 const _: () = assert!(WEAR_SLOTS < (1usize << WEAR_SLOT_BITS));
@@ -1137,9 +1142,15 @@ pub struct ItemRow {
     /// Damage reduction this piece pays **in its own slot**, whole
     /// percent, ≤ `combat::ARMOR_MAX_PCT`.
     pub armor_pct: u8,
-    /// `combat::WEAR_NONE` (not armor), `WEAR_HEAD` or `WEAR_BODY` —
-    /// one-based, so a zeroed row is inert rather than a headpiece.
+    /// `combat::WEAR_NONE` (not armor), or `WEAR_HEAD` through `WEAR_FACE`
+    /// — one-based, so a zeroed row is inert rather than a headpiece.
     pub wear_slot: u8,
+    /// The share of the cold this piece keeps out, whole percent; negative
+    /// draws it in (`armor.toml` `cold_pct`, clothing v1). What the wear
+    /// panel's WARMTH line sums.
+    pub warmth_pct: i8,
+    /// The share of the Verdigris it wards off, whole percent (`fel_pct`).
+    pub ward_pct: u8,
     /// The stack ceiling — `GatherContent::stack_max_of`, the number
     /// `inventory::plan_move` measures every merge against. 0 ⇒ the item
     /// has no ladder (`REFUSE_M_UNSTACKABLE`), which is also what a row
@@ -1285,6 +1296,8 @@ impl ItemRow {
         cond_max: 0,
         armor_pct: 0,
         wear_slot: 0,
+        warmth_pct: 0,
+        ward_pct: 0,
         stack_max: 0,
         food: 0,
         water: 0,
@@ -1328,7 +1341,10 @@ impl ItemRow {
     pub fn coherent(&self) -> bool {
         self.wear_slot as usize <= WEAR_SLOTS
             && self.armor_pct as u32 <= ARMOR_MAX_PCT
-            && (self.wear_slot != WEAR_NONE || self.armor_pct == 0)
+            && (self.wear_slot != WEAR_NONE
+                || (self.armor_pct == 0 && self.warmth_pct == 0 && self.ward_pct == 0))
+            && (-100..=100).contains(&self.warmth_pct)
+            && self.ward_pct <= 100
             && (self.cond_max == 0 || self.stack_max <= 1)
             // A nock is the cadence of a weapon that draws; on anything
             // else it is a number nothing reads.
@@ -1445,6 +1461,16 @@ impl ItemCatalog {
     /// that is not armor.
     pub fn wear_slot(&self, idx: usize) -> u8 {
         self.row(idx).wear_slot
+    }
+
+    /// The cold this piece keeps out, whole percent (negative draws it in).
+    pub fn warmth_pct(&self, idx: usize) -> i8 {
+        self.row(idx).warmth_pct
+    }
+
+    /// The share of the Verdigris this piece wards off, whole percent.
+    pub fn ward_pct(&self, idx: usize) -> u8 {
+        self.row(idx).ward_pct
     }
 
     /// The stack ceiling for one item index; 0 out of table and 0 for a
@@ -1652,6 +1678,10 @@ pub enum EventMsg {
         /// (wire v113, `exposure::corrode`).
         fel_pct: u8,
         fel_hurting: bool,
+        /// Hit points still to bleed out, and minutes left on each tea by
+        /// `exposure::BREW_*` (wire v130, clothing v1).
+        bleed: u8,
+        brew_min: [u8; sim_core::exposure::BREW_KINDS],
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -2863,6 +2893,9 @@ pub fn encode_event_catalog(
         w.write(row.cond_max as u32, 16)?;
         w.write(row.armor_pct as u32, ARMOR_PCT_BITS)?;
         w.write(row.wear_slot as u32, WEAR_SLOT_BITS)?;
+        // The warmth and the ward (clothing v1).
+        w.write(row.warmth_pct as u8 as u32, WARMTH_BITS)?;
+        w.write(row.ward_pct as u32, WARD_BITS)?;
         // Sixteen, like `cond_max` above it and unlike the two bitfields
         // between them: the value is a `u16` in `GatherContent`, so a
         // full-width field is the one shape that needs no range check and
@@ -5433,6 +5466,10 @@ pub fn encode_event_exposure(
     w.write(x.air_c as u8 as u32, 8)?;
     w.write(x.fel_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write_bit(x.fel_hurting)?;
+    w.write(x.bleed as u32, 8)?;
+    for m in x.brew_min {
+        w.write(m as u32, 8)?;
+    }
     Ok(w.finish())
 }
 
@@ -6062,6 +6099,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     cond_max: r.read(16)? as u16,
                     armor_pct: r.read(ARMOR_PCT_BITS)? as u8,
                     wear_slot: r.read(WEAR_SLOT_BITS)? as u8,
+                    warmth_pct: r.read(WARMTH_BITS)? as u8 as i8,
+                    ward_pct: r.read(WARD_BITS)? as u8,
                     stack_max: r.read(16)? as u16,
                     food: r.read(16)? as u16,
                     water: r.read(16)? as u16,
@@ -7526,6 +7565,11 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let air_c = r.read(8)? as u8 as i8;
             let fel_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let fel_hurting = r.read_bit()?;
+            let bleed = r.read(8)? as u8;
+            let mut brew_min = [0u8; sim_core::exposure::BREW_KINDS];
+            for m in brew_min.iter_mut() {
+                *m = r.read(8)? as u8;
+            }
             if wet_pct > 100
                 || cold_pct > 100
                 || comfort_pct > 100
@@ -7543,6 +7587,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
+                brew_min,
             }
         }
         SUB_ENV => {
@@ -7975,7 +8021,9 @@ mod tests {
         // mask leaves `armor_pct` untouched and the slot at `WEAR_NONE` —
         // a hand-counted bit offset would be a second copy of the layout
         // and would rot the next time a field lands above it.
-        cat.rows[0].wear_slot = WEAR_BODY;
+        // Head (001) and shirt (110) share no bit, so the mask is every bit
+        // of the three-bit field (clothing v1).
+        cat.rows[0].wear_slot = sim_core::combat::WEAR_SHIRT;
         let (len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
         let body = buf;
         cat.rows[0].wear_slot = WEAR_HEAD;
@@ -8301,8 +8349,16 @@ mod tests {
                 wear_slot: if i % 3 == 0 {
                     WEAR_NONE
                 } else {
-                    (i % 2 + 1) as u8
+                    (i % WEAR_SLOTS + 1) as u8
                 },
+                // The warmth's two corners and the ward's (v130), on worn
+                // rows only.
+                warmth_pct: match i % 3 {
+                    0 => 0,
+                    1 => -100,
+                    _ => 100,
+                },
+                ward_pct: if i % 3 == 0 { 0 } else { 100 },
                 // The width's corner on every row `coherent` lets carry
                 // one (v64): this test's job is the message CAP, so the
                 // ceiling column wants its widest legal value here, and
@@ -9783,6 +9839,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/mech.rs"),
         },
         Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
+        },
+        Module {
             file: "sentry.rs",
             src: include_str!("../../sim-core/src/sentry.rs"),
         },
@@ -10115,8 +10175,9 @@ mod wire_domains {
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
-            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123.
-            live_max: 12,
+            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123. 13 =
+            // DEATH_BY_BLEED at v130 (clothing v1).
+            live_max: 13,
         },
         Domain {
             what: "move refusal",
@@ -10171,8 +10232,10 @@ mod wire_domains {
             // `WEAR_FEET` since v123 (Rust's boots). One-based, so the
             // ledger is NONE/HEAD/BODY/FEET and the width is full — the
             // headroom this row guarded was spent on the feet, so a fifth
-            // slot widens `WEAR_SLOT_BITS` and bumps the wire.
-            live_max: 3,
+            // slot widens `WEAR_SLOT_BITS` and bumps the wire. It did at
+            // v130 (clothing v1): legs, hands, shirt and face, 3 → 7 in
+            // three bits, full again.
+            live_max: 7,
         },
         Domain {
             what: "consume refusal",
@@ -10910,6 +10973,11 @@ mod wire_domains {
             // Raising the cap is guarded by the compile-time assert beside
             // the declaration; there is no member list to count.
             "ARMOR_PCT_BITS",
+            // A worn piece's warmth (±100) and ward (0..=100), per cent of
+            // what content states, range-checked by `ItemRow::coherent` at
+            // both ends (clothing v1). Magnitudes, `ARMOR_PCT_BITS`' shape.
+            "WARMTH_BITS",
+            "WARD_BITS",
             // A bearing sector bounded by `combat::HURT_SECTORS`, which is
             // a sim-core *count* and not an enumeration — there is no
             // member block to scrape, only a compile-time assert beside the

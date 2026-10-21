@@ -25,7 +25,7 @@ use crate::{
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
-use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD, WEAR_NONE};
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_FACE, WEAR_HEAD, WEAR_NONE};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, CLASS_CLOTHING, CLASS_FOOD, CLASS_MEDICAL, CLASS_RESOURCES,
     CLASS_WEAPONS, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
@@ -466,6 +466,9 @@ pub fn exposure() -> sim_core::exposure::Readout {
         air_c: -7,
         fel_pct: 40,
         fel_hurting: false,
+        // Bleeding and a warming tea with 18 minutes left (v130).
+        bleed: 12,
+        brew_min: [18, 0, 0],
     }
 }
 
@@ -1325,6 +1328,9 @@ pub fn event_catalog() -> ItemCatalog {
             b"Burlap Headwrap",
             ItemRow {
                 class: CLASS_CLOTHING,
+                // The warmth and the ward (v130).
+                warmth_pct: 6,
+                ward_pct: 25,
                 ..row(0, 10, WEAR_HEAD, 1)
             },
         ),
@@ -1332,7 +1338,9 @@ pub fn event_catalog() -> ItemCatalog {
             b"Fixture Name Of Width 24",
             ItemRow {
                 class: CLASS_CLOTHING,
-                ..row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY, 1)
+                // A draw, so the sign bit is pinned (v130).
+                warmth_pct: -34,
+                ..row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_FACE, 1)
             },
         ),
         // Past the first batch: a plain food, charcoal what both burners
@@ -2426,7 +2434,7 @@ pub fn snapshot_cap() -> SnapshotCase {
         // absolute record spends `HELD_BITS` whatever the value is — and
         // it means a decoder that mis-shifted this field by a bit lands
         // on a different id in 63 records rather than passing on a zero.
-        e.held = Some((i % MAX_ITEM_DEFS) as u16);
+        e.held = Some((i % sim_core::limits::MAX_HELD_DEFS) as u16);
         e.lit = i % 3 == 0;
         *slot = e;
     }
@@ -2765,14 +2773,20 @@ pub fn action_respawn_at() -> (u16, u16, u8) {
 /// Player 0x0100_0007 in a bone helmet (item 41), a hide poncho (item
 /// 40) (wire v98) and boots (item 42, wire v123), the poncho skinned
 /// (catalog id 0x0B72, wire v102) and the rest plain, so both shapes of a
-/// slot are pinned.
+/// slot are pinned. Pants (item 43) and a bandana (item 44) since clothing
+/// v1 (wire v130); the hands and the shirt empty.
 #[allow(clippy::type_complexity)]
 pub fn event_worn() -> (
     u32,
     [u16; sim_core::limits::WEAR_SLOTS],
     [u16; sim_core::limits::WEAR_SLOTS],
 ) {
-    (0x0100_0007, [41, 40, 42], [0, 0x0B72, 0])
+    use sim_core::gather::NO_ITEM;
+    (
+        0x0100_0007,
+        [41, 40, 42, 43, NO_ITEM, NO_ITEM, 44],
+        [0, 0x0B72, 0, 0, 0, 0, 0],
+    )
 }
 
 /// Inject inventory slot 6 into downed player 0x0100_0009 (wire v99).
