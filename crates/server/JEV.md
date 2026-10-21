@@ -71,7 +71,7 @@ The vocabulary (`mind.rs`, `Goal::FIXED`): `explore`, `gather_wood`,
 `join_team`, `invite`, `follow`, `deliver`, `supply_wood`, `supply_stone`,
 `supply_ore`, `supply_hemp`, `feed_work`, `buy:<item name>`,
 `sell:<item name>`, `read_stone`, `solve_lock`, `swipe_card`,
-`go:<place name>`.
+`go:<place name>`, `give:<item name>`, `authorize`.
 Only goals that can work now are offered — a gather goal needs a belt tool
 for the kind and room for what it pays, eat needs something worth eating, and
 drink needs known water-giving food or the sea plus the health to pay for it —
@@ -126,13 +126,38 @@ and a reply naming anything else is refused.
   inside the island's border; the route finds the way (the long way round
   a cliff included).
 
+**The social verbs** (`PLAYERS.md`): `speak`, `give` and `authorize`, each
+a human client verb first, and `agent_walls.rs` holds the agent's set to a
+subset of the human's (the actions, and the access ops inside them).
+
+- **speak** — `say` on any answer (below): one line, local, team or global,
+  through the human chat box's encoder.
+- **give:X** — hand every stack of X the pack carries to its friend
+  (`--friend`), else the nearest teammate, standing up and awake within 3 m:
+  up to arm's length, eyes on them, then the give a player makes with **B**
+  (`World::give`, logged `TRUST_GIVE`). Offered to the same minds as `go:`,
+  one per item in the pack, while someone is in reach. Done when none of X
+  is left; a full pack on their side ends it with what was handed. A
+  society's crewmate hands its founder the base's raw stuff the same way
+  (`hand_over`).
+- **authorize** — Rust's tool-cupboard authorization, on the team's
+  cupboard: in through the team's doors to it (`deliver`'s walk), then the
+  keys a player presses there. A lock on it takes the team's code at its
+  keypad (the right code is the invitation, and puts it on the crew); a
+  bare one takes `L`, the crew's join, which a crew that does not know it
+  refuses. Logged `TRUST_AUTH`. Offered on a team, the cupboard seen and
+  not its own, not on its crew, and the code given (or no lock on it); one
+  that fails is not offered again for two minutes. `--scripted` takes it
+  only on its friend's team with the code given.
+
 ## Teams and the team's base
 
 Teams work as in Rust (`server/team.rs`): a player looks at the agent and
 presses **N** to invite it; `join_team` says yes. Teammates are never its
 targets, and `follow` makes it a bodyguard; caught up, it keeps its eyes on
 them. Being on a team gives it no access to a teammate's cupboard, doors or
-turrets: locks still want their code.
+turrets: locks still want their code, and `authorize` is how it gets on the
+cupboard's crew.
 
 **The team's base is its home** (`agent::supply`). It learns it by eye:
 first a box it sees a teammate standing at (in view, in range, a clear line
@@ -563,9 +588,9 @@ https://elopros.com/agents-at-work.html.
 
 A full pack stops gathering what cannot fit; crafting frees room. Tools and
 good crafts are known by name, not discovered. Speech goes to global chat
-unless the mind asks for team or local (`mcp.rs`). `give` is an agent verb
-only in a society, where a crew hands its haul to the founder; `authorize` is
-not one yet (`PLAYERS.md`), so otherwise it fills a chest. The team
+unless the mind asks for team or local (`mcp.rs`). `give` goes to its friend
+or a teammate in reach, never a stranger; `authorize` is for the team's
+cupboard only (its own it joined by placing it). The team
 chest's doors are found by trying: the nearest door within 12 m of the chest
 when the route says there is no way to it, at most four doors deep. It
 follows a teammate up and down stairs and comes down from an upper floor on

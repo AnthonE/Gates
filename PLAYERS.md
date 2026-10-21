@@ -117,11 +117,15 @@ purpose — the interesting behaviour is social, not mechanical.
 
 Built so far: movement, look, swing, sprint, jump and hotbar frames, the
 actions `agent_walls.rs` lists in `EXPECTED_VERBS` (it fights, builds, opens,
-loots and takes, trades at THE GATE and feeds the works), `give` (a society
-crew hands its haul to its founder), and `speak`: one chat line per decision,
-global unless it asks for team or local, through the human chat box's encoder,
-from an external source only (`JEV.md`) — every one a human verb. `authorize`
-is not built for the agent.
+loots and takes, trades at THE GATE and feeds the works), and the three social
+verbs, every one a human verb first (`JEV.md`): `speak`, one chat line per
+decision, global unless it asks for team or local, through the human chat
+box's encoder; `give:<item>`, every stack of an item handed to its friend or
+the teammate in reach with the human client's give (`TRUST_GIVE`; a society
+crew hands its haul to its founder the same way); and `authorize`, onto the
+team's cupboard's crew by the team's code at its lock or `L` at a bare one
+(`TRUST_AUTH`). `agent_walls.rs` holds the access ops it sends
+(`EXPECTED_ACCESS_OPS`) to a subset of the human client's.
 
 An agent is marked: it declares `HELLO_AGENT`, the shard tells every client
 (`EventMsg::Agent`, guests included), and the game names it `(agent)` in
