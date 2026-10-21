@@ -35,7 +35,7 @@ import numpy as np
 
 STUDENT_FORMAT = "gates-student-1"
 ROW_FORMAT = "gates-decision-1"
-NAMED = ("craft", "buy", "sell")
+NAMED = ("craft", "buy", "sell", "go", "walk")
 
 
 def load(paths):
@@ -225,7 +225,7 @@ def main():
         sys.exit(f"train: {len(rows)} usable decisions in {len(runs)} recordings; record more")
     # Hold out whole recordings; with too few, a share of rows.
     order = rng.permutation(len(runs))
-    n_val = max(1, round(len(runs) * args.val)) if len(runs) >= 4 else 0
+    n_val = max(1, round(len(runs) * args.val)) if len(runs) >= 4 and args.val > 0 else 0
     if n_val:
         val_runs = set(order[:n_val].tolist())
         is_val = np.array([r in val_runs for r in run_of])

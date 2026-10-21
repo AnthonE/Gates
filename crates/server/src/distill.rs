@@ -416,14 +416,16 @@ impl Student {
         x
     }
 
-    /// The label's own unit, else its kind's (`craft:*`) for a named goal
-    /// the teacher never picked.
+    /// The label's own unit, else its kind's (`craft:*`, `walk:*`) for a
+    /// named goal the teacher never picked — a model teacher walks to
+    /// a hundred places and goes to a dozen, and a student that knew only
+    /// the ones it saw could never take the rest.
     fn unit(&self, goal: Goal) -> Option<usize> {
         self.labels
             .get(goal.label().as_str())
             .copied()
             .or_else(|| match goal {
-                Goal::Craft(_) | Goal::Buy(_) | Goal::Sell(_) => {
+                Goal::Craft(_) | Goal::Buy(_) | Goal::Sell(_) | Goal::Go(_) | Goal::Walk(_) => {
                     self.labels.get(&format!("{}:*", goal.key())).copied()
                 }
                 _ => None,
