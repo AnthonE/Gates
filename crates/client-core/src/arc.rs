@@ -21,6 +21,10 @@ pub struct WorkView {
     pub floor_len: u8,
     pub ceiling_name: [u8; UNLOCK_NAME_BYTES],
     pub ceiling_len: u8,
+    /// The knob its ceiling turns while it burns (`sim_core::works::KNOB_*`),
+    /// `protocol::NO_BOOST` for none, and to what per cent.
+    pub boost_knob: u8,
+    pub boost_pct: u16,
     /// `sim_core::works::WORK_*`.
     pub state: u8,
     pub fuel: u32,

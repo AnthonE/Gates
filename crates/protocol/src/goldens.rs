@@ -366,6 +366,13 @@ pub fn event_work_def() -> (
             sim_core::works::WorkInput::default(),
         ],
     };
+    // Its ceiling runs the furnaces at 200% (wire v132).
+    wc.effects[wc.n_effects as usize] = sim_core::works::ArcEffect {
+        unlock: 32,
+        knob: sim_core::works::KNOB_SMELT_PCT,
+        pct: 200,
+    };
+    wc.n_effects += 1;
     (wc, b"THE CRUCIBLE", b"GUNPOWDER", b"SMELTING")
 }
 
@@ -1240,8 +1247,9 @@ pub fn action_fasttrack() -> (u16, u16) {
     (3, 41)
 }
 
-/// THE WORKS in wipe 7 (wire v104): two rows, the receiver third of 41,
-/// a three-place ORBS purse, 90 of 120 minutes played.
+/// THE WORKS in wipe 7 (wire v104): two rows, the first with its wallet
+/// (v132), the receiver third of 41, a three-place ORBS purse, 90 of 120
+/// minutes played.
 pub fn event_standing() -> crate::StandingBoard {
     let mut b = crate::StandingBoard {
         board: 1,
@@ -1251,7 +1259,11 @@ pub fn event_standing() -> crate::StandingBoard {
         my_score: 1_240,
         ..crate::StandingBoard::EMPTY
     };
-    b.push("ALICE", 98_765);
+    // ALICE's wallet rides with her row (wire v132); a guest's row has none.
+    let mut alice = [0u8; crate::ADDRESS_BYTES];
+    alice[0] = 0xA1;
+    alice[19] = 0xCE;
+    b.push_wallet("ALICE", 98_765, crate::Address(alice));
     b.push("0x12ab..cdef", 4_321);
     b.set_purse("ORBS", &[500, 300, 100]);
     b.my_prize = 100;

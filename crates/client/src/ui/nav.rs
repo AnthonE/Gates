@@ -7,8 +7,9 @@
 //! in its console. Across the top of every one of them sits the same strip,
 //! CONTACTS · CRAFTING · CLAN, and the button for the page you are on gives
 //! its seat to INVENTORY ("moves around to replace the opened menu button").
-//! Ours is ISLAND · CRAFTING · TEAM: the island's works and journal (`O`)
-//! where Rust has contacts, and the team (`M`) where it has the clan.
+//! Ours is ISLAND · CONTACTS · CRAFTING · TEAM: the island's works and
+//! journal (`O`), the players you have met (no key, Rust's neither), and the
+//! team (`M`) where Rust has the clan.
 //!
 //! This is the whole rule, kept out of the Bevy system so it can be tested:
 //! a page's own key closes it, any other page's key switches to that page,
@@ -23,6 +24,7 @@ pub enum Page {
     Inventory,
     Crafting,
     Island,
+    Contacts,
     Team,
     Other,
 }
@@ -41,13 +43,13 @@ pub fn click(tab: Page) -> Page {
     tab
 }
 
-/// The strip's three seats, left to right, with nothing open.
-const SEATS: [Page; 3] = [Page::Island, Page::Crafting, Page::Team];
+/// The strip's seats, left to right, with nothing open.
+const SEATS: [Page; 4] = [Page::Island, Page::Contacts, Page::Crafting, Page::Team];
 
-/// The buttons across the top while `open` is up: the three seats, with
-/// the open page's seat handed to INVENTORY — so the strip never offers the
-/// page you are on and never moves a button you did not click.
-pub fn strip(open: Page) -> [Page; 3] {
+/// The buttons across the top while `open` is up: the seats, with the open
+/// page's seat handed to INVENTORY — so the strip never offers the page you
+/// are on and never moves a button you did not click.
+pub fn strip(open: Page) -> [Page; 4] {
     let mut out = SEATS;
     match open {
         Page::Closed | Page::Other | Page::Inventory => {}
@@ -73,20 +75,21 @@ pub fn label(page: Page) -> &'static str {
         Page::Inventory => "INVENTORY",
         Page::Crafting => "CRAFTING",
         Page::Island => "ISLAND",
+        Page::Contacts => "CONTACTS",
         Page::Team => "TEAM",
         Page::Closed | Page::Other => "",
     }
 }
 
 /// The key that opens a page by default, as a bracketed hint the binds
-/// relabel (`render::binds::Keyed`).
+/// relabel (`render::binds::Keyed`). Empty for CONTACTS, which has none.
 pub fn key_hint(page: Page) -> &'static str {
     match page {
         Page::Inventory => "[Tab]",
         Page::Crafting => "[Q]",
         Page::Island => "[O]",
         Page::Team => "[M]",
-        Page::Closed | Page::Other => "",
+        Page::Contacts | Page::Closed | Page::Other => "",
     }
 }
 
@@ -94,7 +97,13 @@ pub fn key_hint(page: Page) -> &'static str {
 mod tests {
     use super::*;
 
-    const PAGES: [Page; 4] = [Page::Inventory, Page::Crafting, Page::Island, Page::Team];
+    const PAGES: [Page; 5] = [
+        Page::Inventory,
+        Page::Crafting,
+        Page::Island,
+        Page::Contacts,
+        Page::Team,
+    ];
 
     #[test]
     fn a_pages_own_key_closes_it_and_the_other_key_switches() {
@@ -108,6 +117,7 @@ mod tests {
         assert_eq!(press(Page::Island, Page::Island), Page::Closed);
         // The tech tree is not a page: a page key replaces it.
         assert_eq!(press(Page::Other, Page::Inventory), Page::Inventory);
+        assert_eq!(press(Page::Contacts, Page::Inventory), Page::Inventory);
     }
 
     #[test]
@@ -133,7 +143,9 @@ mod tests {
                 assert!(now == *seat || now == Page::Inventory);
             }
             for page in offered {
-                assert!(!label(page).is_empty() && !key_hint(page).is_empty());
+                assert!(!label(page).is_empty());
+                // CONTACTS has no key, Rust's neither; every other page does.
+                assert_eq!(key_hint(page).is_empty(), page == Page::Contacts);
             }
         }
         assert!(!has_strip(Page::Closed) && !has_strip(Page::Other));

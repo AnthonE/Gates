@@ -6131,8 +6131,16 @@ impl ShardCore {
             my_score: mine.map_or(0, |m| m.1.min(u32::MAX as u64) as u32),
             ..protocol::StandingBoard::EMPTY
         };
-        for (name, score) in &board.top {
-            wire.push(name, (*score).min(u32::MAX as u64) as u32);
+        // Each row with the wallet behind it, so a click opens a profile.
+        // `/standings.json` already names it; a guest or a dev key has none.
+        for (i, (name, score)) in board.top.iter().enumerate() {
+            let wallet = board
+                .top_keys
+                .get(i)
+                .filter(|k| crate::standings::is_wallet(k))
+                .and_then(|k| protocol::Address::from_hex(k.as_bytes()))
+                .unwrap_or(protocol::Address::GUEST);
+            wire.push_wallet(name, (*score).min(u32::MAX as u64) as u32, wallet);
         }
         // The purse: what each place pays, what this wallet would take now,
         // and its minutes against the minimum (`standings::Prizes`). On the

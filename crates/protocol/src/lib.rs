@@ -94,8 +94,8 @@ pub use event::{
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
     encode_event_work, encode_event_work_def, encode_event_work_state, TopicOffer, ARC_GIFT_GIVEN,
     ARC_GIFT_GUEST, ARC_GIFT_NONE, ARC_GIFT_OWNED, ARC_GIFT_SHORT, ARC_GIFT_WAITING,
-    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES,
-    WORK_NAME_BYTES,
+    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, NO_BOOST,
+    UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
@@ -1270,7 +1270,10 @@ pub use voice::{
 /// the topic), so the talk panel draws an offer as a card with a button.
 /// v131 — a catalog row carries `damage` (16 bits after `class`): what one
 /// hit of the item takes off a body, for the inventory's item card.
-pub const PROTO_VER: u16 = 131;
+/// v132 — names you can click: a standings row carries its wallet (a bit,
+/// then 20 bytes when set), and a work's definition what its ceiling does
+/// while it burns (a bit, then the knob in 3 bits and its per cent in 11).
+pub const PROTO_VER: u16 = 132;
 
 /// This game's slug in the elo catalog.
 ///
