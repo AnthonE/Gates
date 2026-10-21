@@ -1684,19 +1684,17 @@ pub const SHOT_FAR_M: f32 = 45.0;
 /// The layer of a report heard from `d` metres. Only the gun has a far
 /// layer; a bow does not carry far enough to need one.
 pub fn far_layer(cue: Cue, d: f32) -> Cue {
-    let gun = matches!(
-        cue,
-        Cue::ShotGun
-            | Cue::ShotRifle
-            | Cue::ShotSmg
-            | Cue::ShotPistol
-            | Cue::ShotShotgun
-            | Cue::ShotBolt
-    );
-    if gun && d > SHOT_FAR_M {
-        Cue::ShotGunFar
-    } else {
-        cue
+    if d <= SHOT_FAR_M {
+        return cue;
+    }
+    match cue {
+        Cue::ShotGun => Cue::ShotGunFar,
+        Cue::ShotRifle => Cue::ShotRifleFar,
+        Cue::ShotSmg => Cue::ShotSmgFar,
+        Cue::ShotPistol => Cue::ShotPistolFar,
+        Cue::ShotShotgun => Cue::ShotShotgunFar,
+        Cue::ShotBolt => Cue::ShotBoltFar,
+        c => c,
     }
 }
 

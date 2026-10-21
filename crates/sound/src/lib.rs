@@ -511,11 +511,22 @@ pub enum Cue {
     RemoteReloadPistol,
     RemoteReloadShotgun,
     RemoteReloadBolt,
+    /// The guns' far layers (`render/audio.rs::far_layer`): each family's
+    /// report from a long way off, its crack and the land's echo of it, so a
+    /// fight across the valley is still read by ear. [`Cue::ShotGunFar`]
+    /// stays the revolver's, and every shot the shard reports from past the
+    /// interest set (`SUB_REPORT` names no gun). Appended, the enum's
+    /// append-order rule.
+    ShotRifleFar,
+    ShotSmgFar,
+    ShotPistolFar,
+    ShotShotgunFar,
+    ShotBoltFar,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 130;
+pub const CUE_COUNT: usize = 135;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -654,6 +665,11 @@ impl Cue {
         Cue::RemoteReloadPistol,
         Cue::RemoteReloadShotgun,
         Cue::RemoteReloadBolt,
+        Cue::ShotRifleFar,
+        Cue::ShotSmgFar,
+        Cue::ShotPistolFar,
+        Cue::ShotShotgunFar,
+        Cue::ShotBoltFar,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -850,7 +866,12 @@ impl Cue {
             | Cue::ShotPistol
             | Cue::ShotShotgun
             | Cue::ShotBolt
-            | Cue::ShotRocket => 0.05,
+            | Cue::ShotRocket
+            | Cue::ShotRifleFar
+            | Cue::ShotSmgFar
+            | Cue::ShotPistolFar
+            | Cue::ShotShotgunFar
+            | Cue::ShotBoltFar => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -1267,6 +1288,15 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // The guns' own reloads: the revolver's rows, yours then theirs.
     RELOAD, RELOAD, RELOAD, RELOAD,
     RRELOAD, RRELOAD, RRELOAD, RRELOAD,
+    // The guns' far layers: the reference's reach for each (a pistol 400 m,
+    // a rifle 500, a heavy gun 600), and each gain meets its near row's
+    // level at the switch (45 m), as the revolver's far row does:
+    // g_near·(1 − 45/100)² = g_far·(1 − 45/R)².
+    row(GAME, 500.0, 0.31,  60, 6, true),  // rifle, far
+    row(GAME, 400.0, 0.31,  60, 6, true),  // smg, far
+    row(GAME, 400.0, 0.31,  60, 6, true),  // pistol, far
+    row(GAME, 400.0, 0.36,  60, 6, true),  // shotgun, far
+    row(GAME, 600.0, 0.34,  60, 6, true),  // bolt, far
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).
