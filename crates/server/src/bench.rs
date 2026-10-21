@@ -258,6 +258,10 @@ pub struct Bench<'a> {
     pub duration: Duration,
     pub name: &'a str,
     pub content: PathBuf,
+    /// Play each run on a lockstep island (`lockstep.rs`) as fast as the
+    /// box runs it, not on a loopback shard in wall-clock time (`--warp`).
+    /// The minds must decide inline (`MindArgs::inline`).
+    pub warp: bool,
 }
 
 /// Every bot's mind, built once and played through every run, and the tally
@@ -281,6 +285,9 @@ pub async fn run(
     run: u32,
 ) -> Result<Vec<BotRow>, String> {
     let dir = std::env::temp_dir().join(format!("gates-bench-{}-{run}", std::process::id()));
+    if b.warp {
+        return play_warp(b, minds, run);
+    }
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let out = play(b, minds, &dir).await;
@@ -368,6 +375,62 @@ async fn play(
         minds.push((mind, tally));
     }
     failed.map_or(Ok(out), Err)
+}
+
+/// One run on a lockstep island (`--warp`): the same seed, arc hour and
+/// spawn as a loopback bench island, the fleet seated as made-up wallets,
+/// played for the run's minutes of island time as fast as the box goes.
+fn play_warp(
+    b: &Bench<'_>,
+    minds: &mut Vec<(Mind, Arc<Tally>)>,
+    run: u32,
+) -> Result<Vec<BotRow>, String> {
+    use crate::agent::lock::{LockCode, LockSecret};
+    let cfg = crate::agent_demo::local_config()?;
+    let content = content::Content::load_dir(&b.content).map_err(|e| format!("content: {e}"))?;
+    let haven = sim_core::terrain::haven(cfg.seed);
+    // Each run's clock starts an hour past where the last one could have
+    // ended, so a mind carried across never sees time go back.
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = *START.get_or_init(std::time::Instant::now);
+    let t0 = start + (b.duration + Duration::from_secs(3_600)) * run;
+    let mut island =
+        crate::lockstep::Island::new(&content, &cfg, haven, BENCH_ARC_HOUR, t0, u64::from(run))?;
+    let mut before = Vec::with_capacity(minds.len());
+    let mut tallies = Vec::with_capacity(minds.len());
+    for (i, (mind, tally)) in minds.drain(..).enumerate() {
+        let name = bot_name(b.name, i, b.bots)?;
+        let mut opts = b.mind.opts();
+        opts.lock = Some(LockSecret::Code(LockCode::derive(b"warp", name.as_str())));
+        before.push(tally.read());
+        tallies.push(tally);
+        island.seat(Survivor::with(mind, opts), &crate::lockstep::wallet(i))?;
+    }
+    island.run(b.duration.as_secs() * u64::from(sim_core::limits::TICK_HZ));
+    let rules = island.core.standings.rules.clone();
+    let mut out = Vec::with_capacity(tallies.len());
+    for (i, tally) in tallies.iter().enumerate() {
+        let (d0, a0) = before[i];
+        let (d1, a1) = tally.read();
+        let (decisions, autopilot) = (d1.wrapping_sub(d0), a1.wrapping_sub(a0));
+        let row = island.row(i).cloned();
+        let at = |b: u8| row.as_ref().map_or(0, |r| r.score(b, &rules));
+        out.push(BotRow {
+            island: at(crate::standings::BOARD_ISLAND),
+            works: at(crate::standings::BOARD_WORKS),
+            hoard: at(crate::standings::BOARD_HOARD),
+            kills: at(crate::standings::BOARD_FIGHT),
+            deaths: row.as_ref().map_or(0, |r| u64::from(r.deaths)),
+            decisions,
+            answered: decisions.saturating_sub(autopilot),
+            autopilot,
+            alive_s: island.seats[i].alive_ticks / sim_core::limits::TICK_HZ,
+        });
+    }
+    for (seat, tally) in island.seats.drain(..).zip(tallies) {
+        minds.push((seat.bot.into_mind(), tally));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
