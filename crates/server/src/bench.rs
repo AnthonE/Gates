@@ -13,6 +13,13 @@
 //!
 //! It measures a mind playing alone on a quiet island: no people, nobody but
 //! its own fleet. A submitted result is the submitter's word.
+//!
+//! **The island starts at [`BENCH_ARC_HOUR`] of the wipe.** Until 2026-10-21
+//! it started at hour 0, and a run of up to four hours never reached the
+//! first work's opening (`content/arc.toml`, hour 12): every deposit was
+//! refused as sealed, so THE ISLAND scored hoard, kills and locks and never
+//! the works it pays most for. At hour 48 four works take deposits and none
+//! has lit itself (the first fallback is hour 72).
 
 use crate::agent_demo::{bot_name, lock_secret, Door, MindArgs};
 use crate::botclient::BotDriver;
@@ -30,6 +37,10 @@ pub const FORMAT: &str = "gates-bench-1";
 pub const MINUTES_MAX: u32 = 240;
 pub const RUNS_MAX: u32 = 32;
 pub const RUNS_DEFAULT: u32 = 3;
+/// The hour of the wipe a bench island starts at (`dev_arc_hour`): the
+/// Crucible, the Exchange, the Wells and the Observatory open and unpaid,
+/// the Spine still sealed, nothing lit by its fallback.
+pub const BENCH_ARC_HOUR: u32 = 48;
 /// How long a shut-down island may take to write its last standings.
 const FLUSH_WAIT: Duration = Duration::from_secs(60);
 

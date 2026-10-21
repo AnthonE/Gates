@@ -603,6 +603,7 @@ pub async fn spawn_bench(
 ) -> Result<crate::net::ShardHandle, String> {
     let mut cfg = local_config()?;
     cfg.world_file = Some(base.display().to_string());
+    cfg.dev_arc_hour = Some(crate::bench::BENCH_ARC_HOUR);
     boot_local(cfg, content_dir).await
 }
 
