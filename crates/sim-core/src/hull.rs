@@ -313,6 +313,47 @@ impl Hull {
         self.holds(lx, lz)
     }
 
+    /// The row's middle, world XZ: a body's centre (a triangle's centroid),
+    /// an edge's midpoint.
+    pub fn middle(&self) -> (f32, f32) {
+        let (a, b) = match self.kind {
+            HULL_EDGE => (SIDE_M * 0.5, 0.0),
+            HULL_TRI => (SIDE_M * 0.5, SIDE_M * H3 / 3.0),
+            _ => (SIDE_M * 0.5, SIDE_M * 0.5),
+        };
+        (
+            self.ox + a * self.ux + b * self.vx,
+            self.oz + a * self.uz + b * self.vz,
+        )
+    }
+
+    /// Whether the row's footprint ([`Self::footprint`]) holds the world
+    /// point, or comes within `tol` of it. A row with no footprint holds
+    /// nothing.
+    pub fn foot_contains(&self, x: f32, z: f32, tol: f32) -> bool {
+        let (pts, n) = self.footprint();
+        if n < 3 {
+            return false;
+        }
+        // Which way round the corners go: a frame turned off the grid may
+        // be mirrored, so the inside's side is read off the footprint.
+        let (ax, az) = pts[0];
+        let (bx, bz) = pts[1];
+        let (cx, cz) = pts[2];
+        let turn = if (bx - ax) * (cz - az) - (bz - az) * (cx - ax) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        (0..n).all(|k| {
+            let (ax, az) = pts[k];
+            let (bx, bz) = pts[(k + 1) % n];
+            let (ex, ez) = (bx - ax, bz - az);
+            let len = (ex * ex + ez * ez).sqrt();
+            turn * (ex * (z - az) - ez * (x - ax)) >= -tol * len
+        })
+    }
+
     /// The row's footprint, world XZ corners in order round it: a body's
     /// square or triangle, an edge's strip half a wall's thickness either
     /// side of its line and past its ends. The count is live; 0 for a
@@ -930,6 +971,27 @@ impl Hulls {
         self.near(x, z, x, z, |h| {
             if h.hit.loc == crate::build::LOC_NONE && h.level == level && h.slab_holds(x, z) {
                 best = Some(best.map_or(h.floor_y, |b| b.max(h.floor_y)));
+            }
+            false
+        });
+        best
+    }
+
+    /// The top of the slab at socket `level` under (`x`, `z`) — any whole
+    /// body, the grid's or not, never a frame — and whether it is one the
+    /// grid cannot name; the highest, as [`Self::posed_floor`] picks.
+    pub fn slab_top(&self, level: u8, x: f32, z: f32) -> Option<(f32, bool)> {
+        let mut best: Option<(f32, bool)> = None;
+        self.near(x, z, x, z, |h| {
+            if h.level != level || h.open || !matches!(h.kind, HULL_PLANE | HULL_HALF | HULL_TRI) {
+                return false;
+            }
+            let (lx, lz) = h.local(x, z);
+            if h.holds(lx, lz)
+                && h.body_solid(lx, lz, 0.0)
+                && best.is_none_or(|(y, _)| h.floor_y > y)
+            {
+                best = Some((h.floor_y, h.hit.loc == crate::build::LOC_NONE));
             }
             false
         });

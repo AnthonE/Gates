@@ -4425,7 +4425,15 @@ pub fn upkeep_sweep(
         // and never move structure (upkeep v2, `upkeep::inside`).
         let scale = crate::upkeep::scale(
             dc,
-            crate::upkeep::inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, def.shape),
+            crate::upkeep::piece_inside(
+                pieces.cols(),
+                rec.id,
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+                def.shape,
+            ),
         );
         let mut hp = rec.hp;
         let mut uh = rec.uh;
@@ -4513,7 +4521,7 @@ pub fn upkeep_sweep(
         let (x, z) = rec.xz();
         let scale = crate::upkeep::scale(
             dc,
-            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc),
+            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, x, z),
         );
         // A door or an insert pays its own build cost's rent like the
         // wall it sits in (`pays_rent`); asked of the claim once per visit

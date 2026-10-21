@@ -924,3 +924,60 @@ fn a_triangle_is_not_built_over_a_fire() {
         "no triangle through the fire"
     );
 }
+
+/// Upkeep's "inside" over pieces the grid cannot name (freeform W4): a
+/// triangle under the floor laid on its walls is inside, and so are the
+/// walls under that floor's rim and a deployable standing on it; the floor
+/// itself, with sky over it, and the square core, with nothing over it,
+/// are outside.
+#[test]
+fn a_triangle_under_a_floor_is_inside() {
+    use sim_core::upkeep::{deploy_inside, piece_inside};
+    let (mut w, mut p, at) = fixture();
+    let site = core(&w, at, 21_000);
+    put(&mut w, &mut p, FOUNDATION, &site).unwrap();
+    let bld = site.addr.bld;
+    let sq = site.addr.sock;
+    let (sides, n) = sq.sides();
+    let (_, tri) = beside(&sides[0], -sides[0].side_of(sq.at));
+    put(&mut w, &mut p, TRI_FOUNDATION, &on(bld, 0, tri)).unwrap();
+    let (ts, k) = tri.sides();
+    let walls: Vec<Sock> = ts[..k]
+        .iter()
+        .copied()
+        .filter(|e| !sides[..n].contains(e))
+        .collect();
+    for e in &walls {
+        put(&mut w, &mut p, WALL, &on(bld, 0, *e)).unwrap();
+    }
+    put(&mut w, &mut p, TRI_FLOOR, &on(bld, 1, tri)).unwrap();
+    let inside = |level: u8, sock: Sock| {
+        let i = w.pieces.find_addr(&PieceAddr { bld, level, sock }).unwrap();
+        let r = w.pieces.entries()[i];
+        let shape = w.build.pieces[r.row as usize].shape;
+        piece_inside(w.pieces.cols(), r.id, r.cx, r.cz, r.level, r.loc, shape)
+    };
+    assert!(inside(0, tri), "the triangle under its floor");
+    for e in &walls {
+        assert!(inside(0, *e), "a wall under the floor's rim");
+    }
+    assert!(!inside(1, tri), "the floor has sky over it");
+    assert!(!inside(0, sq), "the core has nothing over it");
+
+    // A deployable on the triangle, asked where it stands.
+    let frame = *w.pieces.frame(bld).unwrap();
+    let (tx, tz) = frame.to_world(tri.at);
+    let (cx, cz) = (build_cell_of(tx) as u16, build_cell_of(tz) as u16);
+    assert!(deploy_inside(w.pieces.cols(), cx, cz, 0, LOC_PLANE, tx, tz));
+    let (sx, sz) = frame.to_world(sq.at);
+    let (cx, cz) = (build_cell_of(sx) as u16, build_cell_of(sz) as u16);
+    assert!(!deploy_inside(
+        w.pieces.cols(),
+        cx,
+        cz,
+        0,
+        LOC_PLANE,
+        sx,
+        sz
+    ));
+}
