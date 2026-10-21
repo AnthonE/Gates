@@ -481,6 +481,16 @@ pub fn resolve(
             aimed.0 = casino;
         }
     }
+    // A casino seat, the same way: a free armchair to sit in, or the seat
+    // you are in to get up from.
+    if aimed.0.is_none() {
+        let seat = interact::resolve_seat(x, z, &core.haven().town, core.seated(), |k| {
+            super::casino::seat_taken(core, k)
+        });
+        if seat.verb != interact::Verb::None {
+            aimed.0 = seat;
+        }
+    }
     // A ziggurat door's reader or lever, the same way.
     if aimed.0.is_none() {
         let swipe = interact::resolve_swipe(x, y, z, &core.haven().ziggurat);
@@ -1174,8 +1184,20 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         // THE GATE's casino (`panels::casino`): the wheel's betting panel, or
-        // a slot machine's.
+        // a slot machine's — and its stool, sat on to play if it is free.
         Verb::Wheel | Verb::Slots => {
+            let k = pick.handle as usize;
+            let seat = if pick.verb == Verb::Wheel {
+                sim_core::town::terminal_seat(k)
+            } else {
+                sim_core::town::slot_seat(k)
+            };
+            let core = &net.session.core;
+            if !core.seated() && !super::casino::seat_taken(core, seat) {
+                send(net, toast, "sit", |buf| {
+                    protocol::encode_action_sit(seat as u8, buf)
+                });
+            }
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = if pick.verb == Verb::Wheel {
@@ -1191,6 +1213,15 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                     ui.dirty = true;
                 }
             }
+        }
+        // A seat, or getting up from one (`sim_core::seat`). Nothing is
+        // predicted: the server puts the body on the seat and says so on the
+        // next snapshot (`EntityState::seated`).
+        Verb::Sit => {
+            let seat = pick.handle as u8;
+            send(net, toast, "sit", |buf| {
+                protocol::encode_action_sit(seat, buf)
+            });
         }
         // A speaker opens the talk panel and asks the first topic that is
         // not a gift: they greet you. A gift is asked only by its own button

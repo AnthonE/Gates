@@ -156,6 +156,9 @@ pub enum Verb {
     /// One of THE GATE's slot machines: `handle` is the machine. By
     /// nearness.
     Slots,
+    /// A casino seat (`sim_core::seat`): `handle` is the seat, or
+    /// `seat::SEAT_NONE` to stand up. By nearness ([`resolve_seat`]).
+    Sit,
 }
 
 impl Verb {
@@ -211,6 +214,7 @@ impl Verb {
             Verb::Shop => 21,
             Verb::Wheel => 22,
             Verb::Slots => 23,
+            Verb::Sit => 24,
         }
     }
 
@@ -246,6 +250,7 @@ impl Verb {
             Verb::Shop => "VENDING MACHINE",
             Verb::Wheel => "BIG WHEEL",
             Verb::Slots => "SLOT MACHINE",
+            Verb::Sit => "SEAT",
         }
     }
 }
@@ -480,6 +485,10 @@ impl Pick {
             Verb::Shop => "[E] SHOP".to_string(),
             Verb::Wheel => "[E] BET ON THE WHEEL".to_string(),
             Verb::Slots => "[E] PLAY SLOTS".to_string(),
+            Verb::Sit if self.handle == sim_core::seat::SEAT_NONE as u32 => {
+                "[E] STAND UP".to_string()
+            }
+            Verb::Sit => "[E] SIT".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => match self.offers {
                 0 => "[E] TALK".to_string(),
@@ -622,6 +631,53 @@ pub fn resolve_casino(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
     match best {
         Some((verb, k, d2)) => Pick {
             verb,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The seat `E` would sit in, or a `None` pick: the nearest free one within
+/// the sim's own `SEAT_REACH_M` — or, `seated`, the one to stand up from.
+/// `taken` says whether somebody else sits in seat `k`. The stools at the
+/// machines are left to [`resolve_casino`]: a player sits on one by playing.
+pub fn resolve_seat(
+    x: f32,
+    z: f32,
+    town: &sim_core::town::Town,
+    seated: bool,
+    taken: impl Fn(usize) -> bool,
+) -> Pick {
+    use sim_core::town::{self, SeatKind, SEATS};
+    if !town.live {
+        return Pick::default();
+    }
+    if seated {
+        return Pick {
+            verb: Verb::Sit,
+            handle: sim_core::seat::SEAT_NONE as u32,
+            ..Pick::default()
+        };
+    }
+    let reach = sim_core::seat::SEAT_REACH_M;
+    let mut best: Option<(usize, f32)> = None;
+    for (k, seat) in SEATS.iter().enumerate() {
+        if seat.kind == SeatKind::Stool || taken(k) {
+            continue;
+        }
+        let Some((sx, sz)) = town::seat_world(town, k) else {
+            continue;
+        };
+        let d2 = (sx - x) * (sx - x) + (sz - z) * (sz - z);
+        if d2 <= reach * reach && best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Sit,
             handle: k as u32,
             d2,
             ..Pick::default()

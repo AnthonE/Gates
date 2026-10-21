@@ -1273,7 +1273,11 @@ pub use voice::{
 /// v132 — names you can click: a standings row carries its wallet (a bit,
 /// then 20 bytes when set), and a work's definition what its ceiling does
 /// while it burns (a bit, then the knob in 3 bits and its per cent in 11).
-pub const PROTO_VER: u16 = 132;
+/// v133 — the casino's seats (`sim_core::seat`): `ACT_SIT` sits in a seat
+/// or stands up, and `EntityState` gains `seated`: a bit after `crouched` in
+/// a delta record, and after the at-rest flag in an absolute one, only when
+/// at rest, so the full snapshot still fits its datagram.
+pub const PROTO_VER: u16 = 133;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2172,6 +2176,11 @@ const ACT_WHEEL: u32 = 37;
 /// Pull slot machine `machine`'s lever at ×`mult` (wire v123,
 /// `Command::Slots`).
 const ACT_SLOTS: u32 = 38;
+/// Sit in a casino seat, or stand up for `seat::SEAT_NONE` (wire v130,
+/// `Command::Sit`). Reach and a free seat are the sim's verdict.
+const ACT_SIT: u32 = 39;
+const SEAT_BITS: u32 = 8;
+const _: () = assert!(sim_core::town::SEATS.len() < sim_core::seat::SEAT_NONE as usize);
 /// Widths of the casino's fields.
 const WHEEL_COLOUR_BITS: u32 = 3;
 const WHEEL_STAKE_BITS: u32 = 7;
@@ -2209,7 +2218,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_SLOTS;
+const ACT_MAX: u32 = ACT_SIT;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2356,6 +2365,8 @@ pub enum ActionMsg {
     Wheel { colour: u8, stake: u16 },
     /// Pull slot machine `machine`'s lever at ×`mult` (v123).
     Slots { machine: u8, mult: u8 },
+    /// Sit in casino seat `seat`, or stand up for `seat::SEAT_NONE` (v130).
+    Sit { seat: u8 },
     /// Enqueue `count` crafts of recipe row `recipe`, minted wearing skin
     /// `skin` (a catalog id; 0 for the item's own look).
     Craft { recipe: u16, count: u16, skin: u16 },
@@ -2952,6 +2963,22 @@ pub fn encode_action_slots(machine: u8, mult: u8, buf: &mut [u8]) -> Result<usiz
     w.write(machine as u32, SLOT_MACHINE_BITS)?;
     w.write(mult as u32, SLOT_MULT_BITS)?;
     Ok(w.finish())
+}
+
+/// A seat — see [`ActionMsg::Sit`]. Refuses a seat past the town's.
+pub fn encode_action_sit(seat: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !sit_ok(seat) {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_SIT, ACTION_SUB_BITS)?;
+    w.write(seat as u32, SEAT_BITS)?;
+    Ok(w.finish())
+}
+
+fn sit_ok(seat: u8) -> bool {
+    seat == sim_core::seat::SEAT_NONE || (seat as usize) < sim_core::town::SEATS.len()
 }
 
 fn slots_ok(machine: u8, mult: u8) -> bool {
@@ -3828,6 +3855,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
             ActionMsg::Slots { machine, mult }
         }
+        ACT_SIT => {
+            let seat = r.read(SEAT_BITS)? as u8;
+            if !sit_ok(seat) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Sit { seat }
+        }
         ACT_TEAM => {
             let op = r.read(TEAM_OP_BITS)? as u8;
             if op > TEAM_OP_MAX {
@@ -4200,6 +4234,12 @@ pub struct EntityState {
     /// voices a hunting animal differently from a grazing one
     /// (`sound::voice`). A widened meaning, so the version turned.
     pub crouched: bool,
+    /// **This body sits in a casino seat** (wire v130,
+    /// `sim_core::world::Player::seat`): the client draws it sitting, facing
+    /// the seat it is on, which is the seat at its feet. Carried for
+    /// [`Self::crouched`]'s reason; a sitter is at rest (`qvy == 0`), and an
+    /// absolute record spends the bit only then.
+    pub seated: bool,
     pub yaw: u16,
     pub pitch: u8,
     /// **What this body is holding**, as the content item id in its
@@ -4270,6 +4310,7 @@ impl EntityState {
         dead: false,
         wounded: false,
         crouched: false,
+        seated: false,
         yaw: 0,
         pitch: 0,
         held: None,
@@ -4547,6 +4588,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(e.dead)?;
         self.w.write_bit(e.wounded)?;
         self.w.write_bit(e.crouched)?;
+        self.w.write_bit(e.seated)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -4579,6 +4621,11 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(e.wounded)?;
         self.w.write_bit(e.crouched)?;
         self.write_vel(e.qvy)?;
+        // A sitter is at rest (`check_ranges`), so the bit rides behind the
+        // at-rest flag and a moving body's record costs what it always did.
+        if e.qvy == 0 {
+            self.w.write_bit(e.seated)?;
+        }
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
         self.write_hand(e)?;
@@ -4639,6 +4686,10 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     // — it is a value the sim cannot mean, and the decoder refuses the
     // same band, so the two ends agree about what is representable.
     if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
+        return Err(WireError::Range);
+    }
+    // A sitter is at rest: the absolute record carries `seated` only then.
+    if e.seated && e.qvy != 0 {
         return Err(WireError::Range);
     }
     Ok(())
@@ -4803,6 +4854,7 @@ fn decode_entity(
         let wounded = r.read_bit()?;
         let crouched = r.read_bit()?;
         let qvy = read_vel(r)?;
+        let seated = if qvy == 0 { r.read_bit()? } else { false };
         return Ok(EntityState {
             id,
             qx,
@@ -4814,6 +4866,7 @@ fn decode_entity(
             dead,
             wounded,
             crouched,
+            seated,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
             held: read_held(r)?,
@@ -4838,6 +4891,7 @@ fn decode_entity(
     e.dead = r.read_bit()?;
     e.wounded = r.read_bit()?;
     e.crouched = r.read_bit()?;
+    e.seated = r.read_bit()?;
     if pos_changed {
         // wrapping: baseline values are the decoder's own prior state, but
         // totality on arbitrary bytes must hold regardless.
@@ -4937,6 +4991,7 @@ mod tests {
             dead: false,
             wounded: false,
             crouched: false,
+            seated: false,
             yaw: 0x1234,
             pitch: 7,
             held: None,
@@ -5096,19 +5151,20 @@ mod tests {
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
             // Identical to its baseline record: a found delta writes the id
-            // plus ten flag bits and nothing else — six until v48 added
+            // plus eleven flag bits and nothing else — six until v48 added
             // `dead` beside `sleeping`, seven until v56 added
             // `hand_changed` beside `look_changed`, eight until v63 added
-            // `wounded` beside `dead`, nine until v83 added `crouched`.
+            // `wounded` beside `dead`, nine until v83 added `crouched`, ten
+            // until v130 added `seated`.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 10 delta bits) plus the header. An
-        // at-rest absolute record is 32 + 87 (1 is_delta + 17 + 14 + 17 +
-        // 5 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
+        // 64 entities × (32 id bits + 11 delta bits) plus the header. An
+        // at-rest absolute record is 32 + 88 (1 is_delta + 17 + 14 + 17 +
+        // 5 flags + 1 at-rest + 1 seated + 16 + 8 + `HELD_BITS` + 1 lit), so a single
         // missed lookup adds 77 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 42).div_ceil(8);
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 43).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \
@@ -5231,12 +5287,13 @@ mod tests {
              flag doing anything at all",
             hands - still
         );
-        // …and the floor itself: an unchanged record is 40 bits, 32 id +
-        // 8 flags. If it is 47 the hand is not gated and every still body
-        // pays for it on every snapshot.
-        let one = encode(&want[..1]);
-        let two = encode(&want[..2]);
-        assert_eq!((two - one) * 8, 40, "the unchanged floor moved");
+        // …and the floor itself: an unchanged record is 43 bits, the 32-bit
+        // id and eleven flags (`seated` the eleventh, v130). If it is 50 the
+        // hand is not gated and every still body pays for it on every
+        // snapshot. Eight records are whole bytes, so they are measured
+        // against none.
+        let none = encode(&[]);
+        assert_eq!(still - none, 43, "the unchanged floor moved");
     }
 
     /// **The encoder refuses an item id the sim cannot mean**, up front,
@@ -5619,11 +5676,11 @@ mod tests {
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
-        // casino's wheel and slots (v123) 37 and 38.
-        assert_eq!(ACT_MAX, ACT_SLOTS);
+        // casino's wheel and slots (v123) 37 and 38, and its seats (v130) 39.
+        assert_eq!(ACT_MAX, ACT_SIT);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            25,
+            24,
             "the spare action codes moved — say so where the count is written"
         );
     }

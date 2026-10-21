@@ -10036,6 +10036,14 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/casino.rs"),
         },
         Module {
+            file: "seat.rs",
+            src: include_str!("../../sim-core/src/seat.rs"),
+        },
+        Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },

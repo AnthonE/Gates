@@ -275,6 +275,8 @@ fn main() {
     let (machine, mult, code, reels, pay) = goldens::event_slots();
     let len = protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[180], &buf[..len]);
+    let len = protocol::encode_action_sit(goldens::action_sit(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[181], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

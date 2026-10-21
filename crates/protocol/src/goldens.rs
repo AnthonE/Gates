@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 181] = [
+pub const FIXTURES: [&str; 182] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -324,6 +324,8 @@ pub const FIXTURES: [&str; 181] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
+    // The casino's seats (v130): a seat past 8 bits' half.
+    "action_sit.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -692,6 +694,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         wounded: false,
         // Upright, from no `rng` call, for the same reason (crouch, v83).
         crouched: false,
+        // Standing, from no `rng` call, for the same reason (seats, v130).
+        seated: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
         // Empty-handed and unlit, from no `rng` call, for the reason
@@ -817,6 +821,13 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // **true** — on the at-rest body, a third entity, so no two state bits
     // share a record and a swap between any pair cannot pass.
     entities[1].crouched = true;
+    // One sitter (v130), so the absolute encoder's `seated` bit is pinned at
+    // **true** — a fourth entity, drawn after the other three so none of
+    // their fields reshuffle, no state bit beside it, and at rest, where
+    // the absolute record carries the bit.
+    entities[3] = rng_entity(&mut rng, 103);
+    entities[3].qvy = 0;
+    entities[3].seated = true;
     // Two hands on the absolute path, and they are two different pins.
     // id 101 carries an item id with the flame OFF and id 100 an id with
     // the flame ON, so neither the field nor the bit can be read as the
@@ -845,7 +856,7 @@ pub fn snapshot_keyframe() -> SnapshotCase {
         baseline: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
         baseline_len: 0,
         entities,
-        entity_len: 3,
+        entity_len: 4,
     }
 }
 
@@ -929,6 +940,12 @@ pub fn snapshot_delta() -> SnapshotCase {
     baseline[4] = rng_entity(&mut rng, 6);
     entities[5] = baseline[4];
     entities[5].crouched = true;
+    // id 7: sat down this snapshot (v130) — the delta encoder's `seated` bit
+    // at **true** as a transition, on a body carrying no other state bit.
+    baseline[5] = rng_entity(&mut rng, 7);
+    baseline[5].qvy = 0;
+    entities[6] = baseline[5];
+    entities[6].seated = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 3_000,
@@ -941,9 +958,9 @@ pub fn snapshot_delta() -> SnapshotCase {
         },
         removed: &[90, 91],
         baseline,
-        baseline_len: 5,
+        baseline_len: 6,
         entities,
-        entity_len: 6,
+        entity_len: 7,
     }
 }
 
@@ -2094,6 +2111,11 @@ pub fn action_wheel() -> (u8, u16) {
 /// A lever (v123): the last machine at the top multiplier.
 pub fn action_slots() -> (u8, u8) {
     (3, sim_core::casino::SLOT_MULT_MAX)
+}
+
+/// A seat (v130): the last one, so a narrowed field drops a bit.
+pub fn action_sit() -> u8 {
+    (sim_core::town::SEATS.len() - 1) as u8
 }
 
 /// The wheel turns (v123): a round past 16 bits, the last segment.
