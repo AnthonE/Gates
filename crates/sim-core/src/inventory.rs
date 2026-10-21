@@ -421,8 +421,10 @@ pub fn plan_move(cap: u16, src: ItemStack, dst: ItemStack, count: u16) -> Result
         });
     }
     // Two skins of one item are two things to hold: they swap like two
-    // items, and a merge never has to pick whose look survives.
-    if dst.item == src.item && dst.skin == src.skin {
+    // items, and a merge never has to pick whose look survives. So are two
+    // conditions: a clone's `cond` is its genome (`farm.rs`), and a merge
+    // would quietly breed the source into the destination's genes.
+    if dst.item == src.item && dst.skin == src.skin && dst.cond == src.cond {
         // `saturating_sub`: a destination already over its ladder yields
         // zero room and refuses, rather than wrapping into a huge one.
         let room = cap.saturating_sub(dst.count);
@@ -472,11 +474,11 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
             // from `item` and `count` alone, dropped `cond`, and
             // **compiled either way**, so a moved tool arrived dead with
             // every gate green. Into an empty slot the source's condition
-            // travels; a merge keeps the destination's, and V7
-            // (condition ⇒ stack of 1) is what guarantees a merge is
-            // never asked to reconcile two conditions — a condition item
-            // at its one-stack ceiling refuses with `REFUSE_M_NO_ROOM`
-            // before this arm is reached. The skin is the same splice
+            // travels; a merge keeps the destination's, which is the
+            // source's too: `plan_move` merges only equal conditions (a
+            // clone's genes ride `cond`), and V7 (wear ⇒ stack of 1)
+            // refuses a worn item's merge with `REFUSE_M_NO_ROOM` before
+            // this arm is reached anyway. The skin is the same splice
             // one field on: it travels into an empty slot, and a merge
             // only ever joins two stacks wearing the same one
             // (`plan_move`).

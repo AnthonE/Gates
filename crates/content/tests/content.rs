@@ -4471,7 +4471,13 @@ fn a_blueprint_that_stacks_or_wears_is_refused() {
         "items.toml",
         from,
         "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1\ncondition_max = 100",
-        "must be stack 1 with no condition",
+        "a data condition cannot also wear",
+    );
+    refuses(
+        "items.toml",
+        "description = \"Read it to learn a recipe for good.\"\ncond_carries = \"target\"",
+        "description = \"Read it to learn a recipe for good.\"",
+        "cond_carries = \"target\"",
     );
 }
 
@@ -5196,4 +5202,66 @@ fn the_shipped_farm_bakes_to_its_numbers() {
     );
     assert_eq!((fc.ripe_ticks, fc.dying_ticks), (10_800 * 30, 1800 * 30));
     assert_eq!(fc.crop_of_item(corn.seed), Some(0));
+    assert_eq!((fc.good_gene_pm, fc.bad_w_pm), (500, 500));
+    assert_eq!((fc.g_pct, fc.y_pct, fc.h_pct, fc.w_pct), (10, 10, 10, 25));
+}
+
+/// Genes ride a seed's `cond` (a clone): the walls' ceiling for a seed is
+/// the genome count and for the blueprint its target, while a mint of
+/// either stays blank (`cond_max` 0).
+#[test]
+fn a_seed_carries_genes_and_the_blueprint_its_target_to_the_walls() {
+    let c = build(&sources()).expect("shipped content");
+    let gc = c.bake_gather().expect("bake");
+    let seed = c.item_index("item.corn_seed").unwrap();
+    let bp = c.item_index("item.blueprint").unwrap();
+    let wood = c.item_index("item.wood").unwrap();
+    assert_eq!(gc.cond_cap_of(seed), sim_core::farm::GENOME_VALUES as u16);
+    assert_eq!(gc.cond_cap_of(bp), sim_core::limits::MAX_ITEM_DEFS as u16);
+    assert_eq!((gc.cond_max_of(seed), gc.cond_max_of(bp)), (0, 0));
+    assert_eq!(gc.cond_cap_of(wood), 0);
+}
+
+/// Every crop seed carries genes and nothing else may; a data condition
+/// cannot wear; nothing that takes items blind to `cond` may take a seed;
+/// the gene knobs stay in range.
+#[test]
+fn genes_live_on_crop_seeds_alone_and_nothing_eats_them_blind() {
+    let corn_seed = "name = \"Corn Seed\"\nstack = 50\ntier = 0\nrarity = \"common\"\nslot = \"none\"\nclass = \"resources\"\ndescription = \"Hold it and plant one in a planter box.\"\ncond_carries = \"genes\"";
+    refuses(
+        "items.toml",
+        corn_seed,
+        &corn_seed.replace("\ncond_carries = \"genes\"", ""),
+        "a crop seed must carry cond_carries",
+    );
+    refuses(
+        "items.toml",
+        "description = \"Read it to learn a recipe for good.\"\ncond_carries = \"target\"",
+        "description = \"Read it to learn a recipe for good.\"\ncond_carries = \"genes\"",
+        "only a crop seed may",
+    );
+    refuses(
+        "items.toml",
+        corn_seed,
+        &corn_seed.replace("stack = 50", "stack = 1\ncondition_max = 100"),
+        "a data condition cannot also wear",
+    );
+    refuses(
+        "recipes.toml",
+        "seconds = 2\ninputs = [{ item = \"item.corn\", count = 1 }]",
+        "seconds = 2\ninputs = [{ item = \"item.corn\", count = 1 }, { item = \"item.hemp_seed\", count = 1 }]",
+        "carries genes",
+    );
+    refuses(
+        "cooking.toml",
+        "good_gene_pm = 500",
+        "good_gene_pm = 1001",
+        "past 1000 per mille",
+    );
+    refuses(
+        "cooking.toml",
+        "w_pct = 25",
+        "w_pct = 101",
+        "past 100 per cent",
+    );
 }

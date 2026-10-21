@@ -342,6 +342,14 @@ seconds = 5
 #
 # `stage_pct` is each growing stage's share of the grow: seed, seedling,
 # sapling, crossbreed, mature, fruiting (then ripe).
+#
+# Genes: six slots, each G (faster), Y (more yield), H (hardier against
+# poor soil and cold), W (thirstier) or X (nothing). A blank seed rolls a
+# good gene per slot `good_gene_pm` of the time, else a W `bad_w_pm` of
+# the time, else an X. Entering crossbreed, a bed plant's slots take the
+# heaviest letter of its touching neighbours of the same crop (W and X
+# weigh 10, G, Y and H 6) when it outweighs its own. A clone (cut at
+# sapling to mature) is the crop's seed carrying the plant's genes.
 [farm]
 water = "item.waterskin_full"
 emptied = "item.waterskin"
@@ -351,6 +359,12 @@ rain_water = 6
 stage_pct = [5, 15, 20, 5, 25, 30]
 ripe_seconds = 10800
 dying_seconds = 1800
+good_gene_pm = 500
+bad_w_pm = 500
+g_pct = 10
+y_pct = 10
+h_pct = 10
+w_pct = 25
 
 # A pick pays `count` of `yield` at full health, fewer for a plant that grew
 # thirsty, cold or in poor soil (never none).

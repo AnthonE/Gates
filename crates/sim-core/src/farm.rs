@@ -111,6 +111,76 @@ pub fn letters(g: u16) -> [u8; GENE_SLOTS] {
     out
 }
 
+/// A letter's pull in a crossbreed: red genes (W, X) outweigh green ones.
+pub const fn cross_weight(letter: u8) -> u32 {
+    if letter <= GENE_W {
+        CROSS_RED_W
+    } else {
+        CROSS_GREEN_W
+    }
+}
+
+/// A seed's genome, rolled when it is planted (a clone plants its own).
+/// Deterministic in the world seed, the plant's 3 m build cell, the tick and
+/// the new plant's id: per slot a good gene (G, Y or H, evenly) with
+/// `good_gene_pm`, else a W with `bad_w_pm`, else an X.
+pub fn roll_genes(fc: &FarmContent, seed: u64, cx: u16, cz: u16, tick: u64, id: u32) -> u16 {
+    use crate::rng::{cell_hash, splitmix64};
+    let h =
+        splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_GENES) ^ tick ^ ((id as u64) << 32));
+    let mut g = 0u16;
+    for k in 0..GENE_SLOTS {
+        let v = splitmix64(h.wrapping_add(k as u64));
+        let letter = if v % 1000 < fc.good_gene_pm as u64 {
+            [GENE_G, GENE_Y, GENE_H][((v >> 32) % 3) as usize]
+        } else if (v >> 16) % 1000 < fc.bad_w_pm as u64 {
+            GENE_W
+        } else {
+            GENE_X
+        };
+        g = with_gene(g, k, letter);
+    }
+    g
+}
+
+/// Crossbreed `own` with its neighbours' genomes (`(id, genes)`, at most
+/// [`MAX_CROSS_DONORS`]). Per slot every neighbour votes its letter at
+/// [`cross_weight`]; the heaviest letter wins, a tie going to the letter
+/// planted first (lowest id); it replaces the plant's own letter only if it
+/// outweighs it strictly. The plant's own gene never votes. Pure: no
+/// randomness, and the order of `nbrs` does not matter.
+pub fn crossbreed(own: u16, nbrs: &[(u32, u16)]) -> u16 {
+    let mut out = own;
+    for k in 0..GENE_SLOTS {
+        let mut sum = [0u32; 5];
+        let mut first = [u32::MAX; 5];
+        for &(id, g) in nbrs.iter().take(MAX_CROSS_DONORS) {
+            let l = gene(g, k);
+            sum[l as usize] += cross_weight(l);
+            first[l as usize] = first[l as usize].min(id);
+        }
+        let mut best = 0usize;
+        for l in 1..5 {
+            if sum[l] > sum[best] || (sum[l] == sum[best] && sum[l] > 0 && first[l] < first[best]) {
+                best = l;
+            }
+        }
+        if sum[best] > cross_weight(gene(own, k)) {
+            out = with_gene(out, k, best as u8);
+        }
+    }
+    out
+}
+
+/// The most neighbours a crossbreed counts (a bed spot has at most five).
+pub const MAX_CROSS_DONORS: usize = 8;
+
+/// The genome a seed stack plants: a clone's own (`cond` = genes + 1), or
+/// `None` for a blank seed, which rolls.
+pub fn clone_genes(cond: u16) -> Option<u16> {
+    (cond >= 1 && cond as u32 <= GENOME_VALUES).then(|| cond - 1)
+}
+
 // ---------------------------------------------------------------- beds
 
 pub const PLANTER_COLS: u8 = 3;
@@ -346,6 +416,17 @@ pub fn unpack(b: &[u8; PLANT_BYTES]) -> PlantRec {
     }
 }
 
+/// A crossbreed's donors (`Farm::donors_of`): `(id, genes)` ascending by
+/// id, and how many. On the stack.
+#[derive(Clone, Copy, Debug)]
+pub struct Donors(pub [(u32, u16); MAX_CROSS_DONORS], pub usize);
+
+impl Donors {
+    pub fn as_slice(&self) -> &[(u32, u16)] {
+        &self.0[..self.1.min(MAX_CROSS_DONORS)]
+    }
+}
+
 /// Every living plant: dense, swap-removed, boxed.
 pub struct Farm {
     entries: Box<[PlantRec; MAX_PLANTS]>,
@@ -440,6 +521,35 @@ impl Farm {
             .any(|p| p.host == host && p.spot == spot)
     }
 
+    /// `rec`'s crossbreed donors: the other plants in its bed, of its crop,
+    /// SEED..=RIPE, in an adjacent spot. One scan of the store, ascending
+    /// by id. Returns the buffer and how many it holds.
+    pub fn donors_of(&self, rec: &PlantRec) -> Donors {
+        let mut d = Donors([(0, 0); MAX_CROSS_DONORS], 0);
+        if rec.host == HOST_GROUND {
+            return d;
+        }
+        for p in self.entries() {
+            if d.1 < MAX_CROSS_DONORS
+                && p.id != rec.id
+                && p.host == rec.host
+                && p.crop == rec.crop
+                && is_donor(p.stage)
+                && adjacent(p.spot, rec.spot)
+            {
+                // Insertion by id.
+                let mut j = d.1;
+                while j > 0 && d.0[j - 1].0 > p.id {
+                    d.0[j] = d.0[j - 1];
+                    j -= 1;
+                }
+                d.0[j] = (p.id, p.genes);
+                d.1 += 1;
+            }
+        }
+        d
+    }
+
     pub fn has_host(&self, host: u32) -> bool {
         self.entries().iter().any(|p| p.host == host)
     }
@@ -527,7 +637,11 @@ pub struct FarmContent {
     /// How long a ripe plant stays ripe, and how long a dying one stands.
     pub ripe_ticks: u32,
     pub dying_ticks: u32,
-    /// Gene effects (S3): +g_pct% speed per G, +y_pct% yield per Y, each H
+    /// A rolled seed's genes, per slot: a good gene (G, Y or H, evenly)
+    /// with `good_gene_pm`, else a W with `bad_w_pm`, else an X.
+    pub good_gene_pm: u16,
+    pub bad_w_pm: u16,
+    /// Gene effects: +g_pct% speed per G, +y_pct% yield per Y, each H
     /// closes h_pct% of the soil and temperature gaps, +w_pct% water per W.
     pub g_pct: u8,
     pub y_pct: u8,
@@ -555,6 +669,8 @@ impl FarmContent {
         stage_end_pct: [100; 6],
         ripe_ticks: 0,
         dying_ticks: 0,
+        good_gene_pm: 0,
+        bad_w_pm: 0,
         g_pct: 0,
         y_pct: 0,
         h_pct: 0,
@@ -585,6 +701,8 @@ impl FarmContent {
         f.stage_end_pct = [5, 20, 40, 45, 70, 100];
         f.ripe_ticks = 10_800 * hz;
         f.dying_ticks = 1800 * hz;
+        f.good_gene_pm = 500;
+        f.bad_w_pm = 500;
         f.g_pct = 10;
         f.y_pct = 10;
         f.h_pct = 10;
@@ -796,14 +914,24 @@ pub fn step(
             }
         }
         let full = crop.grow_ticks as u64 * 1000;
+        let mut crossing = false;
         while is_growing(rec.stage)
             && rec.grown as u64 * 100 >= fc.stage_end_pct[rec.stage as usize] as u64 * full
         {
             rec.stage += 1;
             changed = true;
+            crossing |= rec.stage == STAGE_CROSSBREED;
             if rec.stage == STAGE_RIPE {
                 rec.deadline = tick + fc.ripe_ticks as u64;
             }
+        }
+        // Entering CROSSBREED, a bed plant takes genes from the plants of
+        // its crop around it, once in its life. Two neighbours crossing in
+        // one round cross in store order: the later one sees the earlier
+        // one's new genes (deterministic, not symmetric).
+        if crossing && bed.is_some() && rec.flags & FL_CROSSED == 0 {
+            rec.genes = crossbreed(rec.genes, farm.donors_of(&rec).as_slice());
+            rec.flags |= FL_CROSSED;
         }
         if rec.band() != band0 {
             changed = true;
@@ -827,12 +955,14 @@ pub fn step(
 
 /// Plant one unit of `p.inv[slot]` in spot `spot` of the planter `b`
 /// (`Command::Plant`). The caller has checked the planter is one and is in
-/// reach; `feet_y` is its floor (`deploy::box_base_y`). Returns the new
-/// plant's store index, or a `REFUSE_D_*`.
+/// reach; `feet_y` is its floor (`deploy::box_base_y`). A clone plants its
+/// own genes (`cond - 1`); a blank seed rolls them ([`roll_genes`]).
+/// Returns the new plant's store index, or a `REFUSE_D_*`.
 #[allow(clippy::too_many_arguments)]
 pub fn plant_bed(
     fc: &FarmContent,
     seed: u64,
+    tick: u64,
     farm: &mut Farm,
     b: &BoxRec,
     feet_y: f32,
@@ -854,12 +984,15 @@ pub fn plant_bed(
     }
     let (x, z) = spot_xz(b.cx, b.cz, b.pose, spot);
     let y = feet_y + DEPLOY_VOL[ARCH_PLANTER as usize][1] - BED_SOIL_DROP_M;
+    let genes = clone_genes(stack.cond)
+        .unwrap_or_else(|| roll_genes(fc, seed, b.cx, b.cz, tick, farm.next_id()));
     let rec = PlantRec {
         owner: p.id,
         host,
         spot,
         crop,
         stage: STAGE_SEED,
+        genes,
         soil_pm: 1000,
         arid_pm: (crate::terrain::aridity(seed, x, z) * 1000.0).clamp(0.0, 1000.0) as u16,
         alt_m: (y - crate::terrain::SEA_LEVEL).clamp(-1000.0, 10_000.0) as i16,
@@ -881,8 +1014,8 @@ pub fn plant_bed(
     Ok(i)
 }
 
-/// Tend plant `i` (`Command::Tend`): pick it, take a clone, clear it, or
-/// water it. The caller has checked reach. What will not fit the pack lands
+/// Tend plant `i` (`Command::Tend`): pick it, cut it for clones, clear it,
+/// or water it. The caller has checked reach. What will not fit the pack lands
 /// in `spill` for the caller to drain.
 #[allow(clippy::too_many_arguments)]
 pub fn tend(
@@ -925,8 +1058,33 @@ pub fn tend(
             farm.remove(i, GONE_PICKED, p.id, events);
             Ok(())
         }
-        // Clones land with genes (S3).
-        TEND_CLONE => Err(REFUSE_D_PLANT_STAGE),
+        TEND_CLONE => {
+            let Some(crop) = fc.crop(rec.crop).copied() else {
+                return Err(REFUSE_D_PLANT_STAGE);
+            };
+            if !is_clonable(rec.stage) || crop.clones == 0 {
+                return Err(REFUSE_D_PLANT_STAGE);
+            }
+            // The plant is cut for its clones: each is its seed carrying
+            // its genome, one more for every two Y (Rust's rule).
+            let n = crop.clones as u16 + (count(rec.genes, GENE_Y) / 2) as u16;
+            let added = crate::gather::inv_add_spilling(
+                &mut p.inv,
+                spill,
+                crop.seed,
+                n,
+                gc.stack_max_of(crop.seed),
+                rec.genes + 1,
+            );
+            events.push(
+                EV_GATHER,
+                p.id,
+                ((crop.seed as u32) << 16) | added as u32,
+                (n - added) as u32,
+            );
+            farm.remove(i, GONE_CLONED, p.id, events);
+            Ok(())
+        }
         TEND_CLEAR => {
             if rec.stage != STAGE_DYING {
                 return Err(REFUSE_D_PLANT_STAGE);

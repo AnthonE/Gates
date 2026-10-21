@@ -56,6 +56,12 @@ pub fn hash(c: &Content) -> u64 {
         // contents that disagree on it would run the same WAL to different
         // inventories (torch fuel v0).
         h.u(i.light_burn);
+        // What a data `cond` carries sets the save walls' ceiling.
+        h.u(match i.cond_carries {
+            None => 0,
+            Some(crate::schema::CondCarries::Genes) => 1,
+            Some(crate::schema::CondCarries::Target) => 2,
+        });
     }
 
     h.s("gatherables");
@@ -490,6 +496,16 @@ pub fn hash(c: &Content) -> u64 {
     }
     h.u(fm.ripe_seconds);
     h.u(fm.dying_seconds);
+    for v in [
+        fm.good_gene_pm,
+        fm.bad_w_pm,
+        fm.g_pct,
+        fm.y_pct,
+        fm.h_pct,
+        fm.w_pct,
+    ] {
+        h.u(v);
+    }
     h.u(c.crops.len() as u32);
     for k in &c.crops {
         h.s(&k.id);

@@ -117,6 +117,22 @@ pub struct Item {
     /// point per tick — see `sim_core::light::step`.
     #[serde(default)]
     pub light_burn: u32,
+    /// What this item's `cond` carries when it is DATA, not wear ([`CondCarries`]).
+    /// Absent means wear (or nothing, at `condition_max` 0). Requires
+    /// `condition_max = 0`: one field cannot be both.
+    #[serde(default)]
+    pub cond_carries: Option<CondCarries>,
+}
+
+/// An item whose stack `cond` is data (`sim_core::gather::GatherContent::cond_cap`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CondCarries {
+    /// A crop seed: `cond` = a clone's genes + 1 (`sim_core::farm`), 0 a
+    /// blank seed. Every `[[crop]]` seed carries genes, and nothing else does.
+    Genes,
+    /// The research blueprint: `cond` = the recipe's item + 1.
+    Target,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -782,6 +798,16 @@ pub struct FarmSection {
     /// How long a ripe plant stays ripe, and how long a dying one stands.
     pub ripe_seconds: u32,
     pub dying_seconds: u32,
+    /// A rolled seed's genes, per slot, per mille: a good gene (G, Y or H)
+    /// with `good_gene_pm`, else a W with `bad_w_pm`, else an X.
+    pub good_gene_pm: u32,
+    pub bad_w_pm: u32,
+    /// Per gene, per cent: G's speed, Y's yield, the share of the soil and
+    /// air gaps an H closes, and W's extra water.
+    pub g_pct: u32,
+    pub y_pct: u32,
+    pub h_pct: u32,
+    pub w_pct: u32,
 }
 
 /// One crop (`content/cooking.toml` `[[crop]]`): what plants it, what a

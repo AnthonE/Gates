@@ -3306,6 +3306,7 @@ impl World {
         crate::farm::plant_bed(
             &self.cook.farm,
             self.seed,
+            self.tick,
             &mut self.farm,
             &rec,
             feet,
@@ -5625,7 +5626,9 @@ impl World {
         let mut moved = 0u32;
         let mut clamp = |stacks: &mut [ItemStack]| {
             for s in stacks.iter_mut() {
-                let max = gc.cond_max_of(s.item);
+                // A seed's genes and a blueprint's target are data, not
+                // wear: the ceiling is what the item may carry.
+                let max = gc.cond_cap_of(s.item);
                 if s.count > 0 && s.cond > max {
                     s.cond = max;
                     moved += 1;

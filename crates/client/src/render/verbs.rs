@@ -1326,6 +1326,19 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
 /// on the press and taken back a tick later is worse than a flame that
 /// arrives a tick late.
 fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
+    // A crop between sapling and mature (farming v2): `C` cuts it for
+    // clones, its seed carrying its genes. The plant is consumed.
+    if pick.verb == Verb::Plant {
+        if pick.can_clone() {
+            let plant = pick.plant.id;
+            send(net, toast, "clone", |buf| {
+                protocol::encode_action_tend(plant, sim_core::farm::TEND_CLONE, buf)
+            });
+        } else {
+            toast.warn("a clone is cut from a sapling to a mature plant");
+        }
+        return;
+    }
     // A recycler takes the same key and the same action: `ACT_USE` carries
     // an address, and `oven::toggle` switches whatever converter stands
     // there. The refusal that separates them is the sim's — a fire with

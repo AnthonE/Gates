@@ -210,6 +210,7 @@ rarity = "rare"
 slot = "none"
 class = "other"
 description = "Read it to learn a recipe for good."
+cond_carries = "target"
 
 # --- T0, the naked era -------------------------------------------------
 
@@ -913,6 +914,7 @@ rarity = "common"
 slot = "none"
 class = "resources"
 description = "Hold it and plant one in a planter box."
+cond_carries = "genes"
 
 [[item]]
 id = "item.hemp_seed"
@@ -923,6 +925,7 @@ rarity = "common"
 slot = "none"
 class = "resources"
 description = "Hold it and plant one in a planter box."
+cond_carries = "genes"
 
 [[item]]
 id = "item.planter"

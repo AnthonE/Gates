@@ -867,12 +867,11 @@ fn the_planner_names_each_refusal() {
 /// Proven red by reverting the splice to `ItemStack { item, count: … }`
 /// with `cond: 0` — which still compiles, and reads 0 here.
 ///
-/// V7 (condition ⇒ stack of 1) is what guarantees no merge ever
-/// reconciles two conditions, so the splice fix is for correctness of the
-/// field, not merge semantics — the second half below pins that a
-/// condition tool's merge is unreachable (`REFUSE_M_NO_ROOM` at cap 1),
-/// and the third that a same-slot split of a plain stack carries the
-/// source's cond both ways.
+/// No merge ever reconciles two conditions: `plan_move` merges equal
+/// conditions only (farming v2, a clone's genes ride `cond`), so two tools
+/// worn differently swap like two items; two at the same condition still
+/// refuse at cap 1 (V7's arithmetic). The third half pins that a same-slot
+/// split of a plain stack carries the source's cond both ways.
 #[test]
 fn a_moved_tool_keeps_its_condition() {
     let worn = ItemStack {
@@ -893,7 +892,8 @@ fn a_moved_tool_keeps_its_condition() {
     );
     assert_eq!(dst, worn, "everything else travels too");
 
-    // A merge is unreachable for a condition tool: cap 1, slot occupied.
+    // A merge is unreachable for a condition tool: two conditions swap,
+    // and one condition at cap 1 has no room.
     let other = ItemStack {
         item: 5,
         count: 1,
@@ -902,8 +902,13 @@ fn a_moved_tool_keeps_its_condition() {
     };
     assert_eq!(
         plan_move(1, worn, other, 1),
+        Ok(MovePlan::Swap),
+        "two conditions can never be asked to reconcile"
+    );
+    assert_eq!(
+        plan_move(1, worn, worn, 1),
         Err(REFUSE_M_NO_ROOM),
-        "two conditions can never be asked to reconcile (V7's arithmetic)"
+        "V7's arithmetic: a stack of one has no room"
     );
 
     // A partial split of a PLAIN stack: both halves keep the source cond
@@ -940,4 +945,50 @@ fn a_moved_tool_keeps_its_condition() {
         (b, a),
         "a swap moves conditions with the stacks"
     );
+}
+
+/// **Two conditions of one item never merge** (farming v2: a clone's genes
+/// ride its seed's `cond`, so a merge would breed one genome into another).
+/// A whole stack onto a different `cond` swaps, a part of one refuses, and a
+/// payout tops up only the stack at its own `cond`.
+#[test]
+fn unequal_conditions_swap_or_refuse_and_never_merge() {
+    let seed = |count, cond| ItemStack {
+        item: 3,
+        count,
+        cond,
+        skin: 0,
+    };
+    let (clone, blank) = (seed(4, 1_235), seed(10, 0));
+    assert_eq!(plan_move(STACK_MAX, clone, blank, 4), Ok(MovePlan::Swap));
+    assert_eq!(
+        plan_move(STACK_MAX, clone, blank, 2),
+        Err(REFUSE_M_NO_ROOM),
+        "a part onto another genome has nowhere to go"
+    );
+    assert_eq!(
+        plan_move(STACK_MAX, clone, seed(1, 1_235), 2),
+        Ok(MovePlan::Transfer { item: 3, count: 2 }),
+        "the same genome merges"
+    );
+    // In a world, the swap is what lands.
+    let mut w = move_world();
+    w.players[0].inv[0] = clone;
+    w.players[0].inv[1] = blank;
+    let (code, _, _) = do_move(&mut w, 0, CONT_SELF, 0, CONT_SELF, 1, 4);
+    assert_eq!(code, EV_MOVED);
+    assert_eq!((w.players[0].inv[0], w.players[0].inv[1]), (blank, clone));
+
+    // A payout tops up only its own `cond`.
+    let mut inv = [ItemStack::default(); INV_SLOTS];
+    inv[0] = blank;
+    inv[1] = clone;
+    assert_eq!(
+        sim_core::gather::inv_add(&mut inv, 3, 5, STACK_MAX, 1_235),
+        5
+    );
+    assert_eq!((inv[0].count, inv[1].count), (10, 9));
+    assert_eq!(sim_core::gather::inv_add(&mut inv, 3, 5, STACK_MAX, 77), 5);
+    assert_eq!(inv[2], seed(5, 77), "a third genome takes its own slot");
+    assert_eq!((inv[0].count, inv[1].count), (10, 9));
 }

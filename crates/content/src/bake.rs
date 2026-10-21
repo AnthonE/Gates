@@ -159,6 +159,12 @@ impl Content {
                     item.id, item.light_burn
                 )
             })?;
+            // Data the stack's `cond` carries: the walls' ceiling for it.
+            gc.cond_cap[idx] = match item.cond_carries {
+                None => 0,
+                Some(crate::schema::CondCarries::Genes) => sim_core::farm::GENOME_VALUES as u16,
+                Some(crate::schema::CondCarries::Target) => MAX_ITEM_DEFS as u16,
+            };
         }
         for g in &self.gatherables {
             let slot = node_slot(g.archetype);
@@ -1576,6 +1582,24 @@ impl Content {
         fc.rain_wu_s = ticks(f.rain_water, "rain_water")?;
         fc.ripe_ticks = ticks(f.ripe_seconds, "ripe_seconds")?;
         fc.dying_ticks = ticks(f.dying_seconds, "dying_seconds")?;
+        let pm = |v: u32, what: &str| {
+            u16::try_from(v)
+                .ok()
+                .filter(|&v| v <= 1000)
+                .ok_or_else(|| format!("bake: farm {what} {v} is past 1000 per mille"))
+        };
+        let pct = |v: u32, what: &str| {
+            u8::try_from(v)
+                .ok()
+                .filter(|&v| v <= 100)
+                .ok_or_else(|| format!("bake: farm {what} {v} is past 100 per cent"))
+        };
+        fc.good_gene_pm = pm(f.good_gene_pm, "good_gene_pm")?;
+        fc.bad_w_pm = pm(f.bad_w_pm, "bad_w_pm")?;
+        fc.g_pct = pct(f.g_pct, "g_pct")?;
+        fc.y_pct = pct(f.y_pct, "y_pct")?;
+        fc.h_pct = pct(f.h_pct, "h_pct")?;
+        fc.w_pct = pct(f.w_pct, "w_pct")?;
         let mut sum = 0u32;
         for (k, pct) in f.stage_pct.iter().enumerate() {
             sum += *pct as u32;

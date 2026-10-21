@@ -43,6 +43,8 @@ const SEED_ITEM: u16 = 21;
 const CORN: u16 = 22;
 const SKIN_FULL: u16 = 23;
 const SKIN_EMPTY: u16 = 24;
+const HEMP_SEED: u16 = 26;
+const HEMP_YIELD: u16 = 27;
 /// Where the planter's item sits in the hand, and the seeds.
 const PLANTER_SLOT: usize = 3;
 const SEED_SLOT: usize = 6;
@@ -91,10 +93,15 @@ fn farm_world() -> (Box<World>, u16, u16) {
         (CORN, 50),
         (SKIN_FULL, 1),
         (SKIN_EMPTY, 1),
+        (HEMP_SEED, 50),
+        (HEMP_YIELD, 50),
     ] {
         w.gather.stack_max[item as usize] = cap;
     }
-    w.gather.item_count = w.gather.item_count.max(SKIN_EMPTY + 1);
+    w.gather.item_count = w.gather.item_count.max(HEMP_YIELD + 1);
+    for seed in [SEED_ITEM, HEMP_SEED] {
+        w.gather.cond_cap[seed as usize] = sim_core::farm::GENOME_VALUES as u16;
+    }
     let row = w.deploy.def_count;
     w.deploy.defs[row as usize] = DeployDef {
         arch: ARCH_PLANTER,
@@ -112,6 +119,19 @@ fn farm_world() -> (Box<World>, u16, u16) {
     fc.water_full = SKIN_FULL;
     fc.water_empty = SKIN_EMPTY;
     fc.rain_wu_s = 0;
+    // Blank seeds roll XXXXXX, the neutral genome, so every test that is
+    // not about genes grows at the crop's own numbers. The gene tests plant
+    // clones, whose genes they choose.
+    fc.good_gene_pm = 0;
+    fc.bad_w_pm = 0;
+    // A second crop, for the crossbreed's "same crop" rule.
+    fc.crops[1] = sim_core::farm::CropDef {
+        look: sim_core::farm::LOOK_HEMP,
+        seed: HEMP_SEED,
+        yield_item: HEMP_YIELD,
+        ..fc.crops[0]
+    };
+    fc.crop_count = 2;
     w.cook.farm = fc;
 
     let (cx, cz) = buildable_cell(SEED);
@@ -818,4 +838,481 @@ fn a_stale_plant_is_not_tended_through_a_box_at_its_address() {
     let (mut back, _, _) = farm_world();
     add_box(&mut back);
     back.load(&buf[..n]).expect("the save loads");
+}
+
+// ---------------------------------------------------------------- genes
+
+/// A genome from its six letters, slot 0 first.
+fn g(letters: &[u8; 6]) -> u16 {
+    letters.iter().enumerate().fold(0u16, |acc, (k, &c)| {
+        let l = sim_core::farm::GENE_CHARS
+            .iter()
+            .position(|&x| x == c)
+            .expect("a gene letter") as u8;
+        sim_core::farm::with_gene(acc, k, l)
+    })
+}
+
+/// Where the clone stacks sit in the pack for planting.
+const CLONE_SLOT: usize = 7;
+
+/// Plant a clone of `genes` (`item`'s seed carrying `cond = genes + 1`) in
+/// `spot`, and return the new plant's id.
+fn plant_clone(w: &mut World, host: u32, spot: u8, item: u16, genes: u16) -> u32 {
+    w.players[0].inv[CLONE_SLOT] = ItemStack {
+        item,
+        count: 1,
+        cond: genes + 1,
+        skin: 0,
+    };
+    let next = w.farm.next_id();
+    w.tick(&[Command::Plant {
+        id: PLAYER,
+        slot: CLONE_SLOT as u8,
+        host,
+        spot,
+        qx: 0,
+        qz: 0,
+    }]);
+    assert_eq!(refused(w), None, "the clone at spot {spot} did not plant");
+    next
+}
+
+fn plant_of(w: &World, id: u32) -> PlantRec {
+    let i = w.farm.index_of_id(id).expect("the plant stands");
+    w.farm.entries()[i]
+}
+
+/// Tick until plant `id` reaches `stage`, or panic after `max` ticks.
+fn grow_to(w: &mut World, id: u32, stage: u8, max: u64) {
+    for _ in 0..max {
+        if plant_of(w, id).stage >= stage {
+            return;
+        }
+        w.tick(&[]);
+    }
+    panic!(
+        "plant {id} stuck at stage {} short of {stage}",
+        plant_of(w, id).stage
+    );
+}
+
+mod crossbreed_unit {
+    use super::g;
+    use sim_core::farm::crossbreed;
+
+    /// (a) Two W neighbours outweigh an own G: 20 > 6.
+    #[test]
+    fn two_w_replace_an_own_g() {
+        let own = g(b"GXXXXX");
+        let n = [(1, g(b"WXXXXX")), (2, g(b"WXXXXX"))];
+        assert_eq!(crossbreed(own, &n), g(b"WXXXXX"));
+    }
+
+    /// (b) One X outweighs an own G: 10 > 6.
+    #[test]
+    fn one_x_replaces_an_own_g() {
+        assert_eq!(crossbreed(g(b"GGGGGG"), &[(4, g(b"XXXXXX"))]), g(b"XXXXXX"));
+    }
+
+    /// (c) One Y does not outweigh an own G: 6 is not more than 6.
+    #[test]
+    fn one_y_does_not_replace_an_own_g() {
+        assert_eq!(crossbreed(g(b"GGGGGG"), &[(4, g(b"YYYYYY"))]), g(b"GGGGGG"));
+    }
+
+    /// (d) Two Y outweigh an own W: 12 > 10.
+    #[test]
+    fn two_y_replace_an_own_w() {
+        let n = [(1, g(b"YYYYYY")), (2, g(b"YYYYYY"))];
+        assert_eq!(crossbreed(g(b"WWWWWW"), &n), g(b"YYYYYY"));
+    }
+
+    /// (e) One Y does not outweigh an own W: 6 < 10.
+    #[test]
+    fn one_y_does_not_replace_an_own_w() {
+        assert_eq!(crossbreed(g(b"WWWWWW"), &[(1, g(b"YYYYYY"))]), g(b"WWWWWW"));
+    }
+
+    /// (f) A tie between letters goes to the one planted first, and a tie
+    /// that does not outweigh the own gene changes nothing.
+    #[test]
+    fn a_tie_goes_to_the_first_planted_and_must_still_outweigh() {
+        // G (id 5) and Y (id 3) tie at 6, under the own X's 10.
+        let n = [(3, g(b"YXXXXX")), (5, g(b"GXXXXX"))];
+        assert_eq!(crossbreed(g(b"XXXXXX"), &n), g(b"XXXXXX"));
+        // Two G (7, 9) and two Y (3, 8): 12 each, over 10; Y was first.
+        let n = [
+            (3, g(b"YXXXXX")),
+            (7, g(b"GXXXXX")),
+            (8, g(b"YXXXXX")),
+            (9, g(b"GXXXXX")),
+        ];
+        assert_eq!(
+            sim_core::farm::gene(crossbreed(g(b"XXXXXX"), &n), 0),
+            sim_core::farm::GENE_Y
+        );
+        // The order the neighbours arrive in does not matter.
+        let mut r = n;
+        r.reverse();
+        assert_eq!(crossbreed(g(b"XXXXXX"), &r), crossbreed(g(b"XXXXXX"), &n));
+    }
+
+    /// (g) The own gene never votes: an own G and one G neighbour (6) lose
+    /// to two Y (12 > 6).
+    #[test]
+    fn the_own_gene_does_not_vote() {
+        let n = [(1, g(b"GXXXXX")), (2, g(b"YXXXXX")), (3, g(b"YXXXXX"))];
+        assert_eq!(
+            sim_core::farm::gene(crossbreed(g(b"GXXXXX"), &n), 0),
+            sim_core::farm::GENE_Y
+        );
+    }
+
+    /// (h) Every slot is decided on its own.
+    #[test]
+    fn slots_are_independent() {
+        let n = [(1, g(b"WYGHXW")), (2, g(b"WYGHXW"))];
+        // Slot 0: W 20 > G 6. Slot 1: Y 12 > W 10. Slot 2: G 12 > X 10.
+        // Slot 3: H 12 > G 6. Slot 4: X 20 > W 10. Slot 5: W 20 > G 6.
+        assert_eq!(crossbreed(g(b"GWXGWG"), &n), g(b"WYGHXW"));
+        // One donor: a green 6 moves nothing (not past a red 10 nor
+        // strictly past a green 6), a red 10 moves a green one only.
+        assert_eq!(crossbreed(g(b"GWXGWG"), &n[..1]), g(b"WWXGWW"));
+    }
+
+    /// (i) No neighbours, no change.
+    #[test]
+    fn no_neighbours_no_change() {
+        assert_eq!(crossbreed(g(b"GGYHWX"), &[]), g(b"GGYHWX"));
+    }
+}
+
+/// **A blank seed's genes are a deterministic roll**: equal inputs give
+/// equal genes, and over many rolls half the slots are good (G, Y or H in
+/// equal parts) and half the rest are W.
+#[test]
+fn a_seed_rolls_its_genes_deterministically_at_the_content_share() {
+    use sim_core::farm::{count, roll_genes, GENE_G, GENE_H, GENE_W, GENE_Y};
+    let fc = FarmContent::probe_fixture();
+    assert_eq!((fc.good_gene_pm, fc.bad_w_pm), (500, 500));
+    assert_eq!(
+        roll_genes(&fc, SEED, 40, 41, 1234, 7),
+        roll_genes(&fc, SEED, 40, 41, 1234, 7)
+    );
+    let mut tally = [0u32; 5];
+    let mut distinct = std::collections::BTreeSet::new();
+    for id in 1..=2000u32 {
+        let genes = roll_genes(&fc, SEED, 40, 41, 1234, id);
+        assert!((genes as u32) < sim_core::farm::GENOME_VALUES);
+        distinct.insert(genes);
+        for l in 0..5u8 {
+            tally[l as usize] += count(genes, l);
+        }
+    }
+    let slots = 2000 * 6;
+    let good = tally[GENE_G as usize] + tally[GENE_Y as usize] + tally[GENE_H as usize];
+    assert!(
+        (slots * 47 / 100..=slots * 53 / 100).contains(&good),
+        "good share {good} of {slots}"
+    );
+    let w = tally[GENE_W as usize];
+    let bad = slots - good;
+    assert!(
+        (bad * 45 / 100..=bad * 55 / 100).contains(&w),
+        "W share {w} of {bad}"
+    );
+    for l in [GENE_G, GENE_Y, GENE_H] {
+        let n = tally[l as usize];
+        assert!(n * 3 > good * 9 / 10 && n * 3 < good * 11 / 10, "{l}: {n}");
+    }
+    assert!(distinct.len() > 1500, "the id does not reach the roll");
+    // The tick and the cell reach it too.
+    assert_ne!(
+        (1..50)
+            .map(|t| roll_genes(&fc, SEED, 40, 41, t, 7))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        1
+    );
+    // Off: every slot X.
+    assert_eq!(roll_genes(&FarmContent::EMPTY, SEED, 40, 41, 1234, 7), 0);
+}
+
+/// **A blank seed plants a rolled genome, a clone plants its own.**
+#[test]
+fn a_clone_plants_its_genes_and_a_blank_seed_rolls() {
+    let (mut w, cx, cz) = farm_world();
+    w.cook.farm.good_gene_pm = 500;
+    w.cook.farm.bad_w_pm = 500;
+    let host = place_planter(&mut w, cx, cz, 0);
+    let want = g(b"GGYHWX");
+    let id = plant_clone(&mut w, host, 3, SEED_ITEM, want);
+    assert_eq!(plant_of(&w, id).genes, want);
+    assert_eq!(w.players[0].inv[CLONE_SLOT], ItemStack::default());
+    let next = w.farm.next_id();
+    let tick = w.tick;
+    plant(&mut w, host, 0);
+    let rolled = plant_of(&w, next).genes;
+    assert_eq!(
+        rolled,
+        sim_core::farm::roll_genes(&w.cook.farm, SEED, cx, cz, tick, next),
+        "the roll is the plant's cell, its tick and its id"
+    );
+    // A `cond` past the genome count is no clone: it rolls.
+    w.players[0].inv[CLONE_SLOT] = ItemStack {
+        item: SEED_ITEM,
+        count: 1,
+        cond: sim_core::farm::GENOME_VALUES as u16 + 1,
+        skin: 0,
+    };
+    let next = w.farm.next_id();
+    let tick = w.tick;
+    w.tick(&[Command::Plant {
+        id: PLAYER,
+        slot: CLONE_SLOT as u8,
+        host,
+        spot: 5,
+        qx: 0,
+        qz: 0,
+    }]);
+    assert_eq!(
+        plant_of(&w, next).genes,
+        sim_core::farm::roll_genes(&w.cook.farm, SEED, cx, cz, tick, next)
+    );
+}
+
+/// **Crossbreeding counts only the touching plants of its own crop in its
+/// own bed, alive**: hemp beside corn, a corn two columns over, a corn in
+/// another planter and a dying corn all leave it alone, and a touching
+/// corn takes it over. It runs once, entering CROSSBREED; a neighbour
+/// planted after it changes nothing.
+///
+/// Two touching plants that enter CROSSBREED in the same visit round cross
+/// in store order: the later one reads the earlier one's new genes. That is
+/// deterministic but not symmetric, so this test staggers its plantings.
+#[test]
+fn crossbreed_counts_touching_same_crop_live_neighbours_once() {
+    use sim_core::farm::{FL_CROSSED, STAGE_CROSSBREED, STAGE_DYING, STAGE_MATURE};
+    let (mut w, cx, cz) = farm_world();
+    quick(&mut w);
+    // Long enough a death that the dying donor stands through the cross.
+    w.cook.farm.dying_ticks = 3_000;
+    let gs = g(b"GGGGGG");
+    let ws = g(b"WWWWWW");
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    // Spot 3 touches spot 0: grow a W corn there to DYING first.
+    let dying = plant_clone(&mut w, host, 3, SEED_ITEM, ws);
+    grow_to(&mut w, dying, STAGE_DYING, 2_000);
+    // Then the target at 0, beside a W hemp (1), a W corn two columns away
+    // (2) and a W corn not touching (5). A Y corn at 4 touches but cannot
+    // outweigh G (6 is not > 6).
+    let target = plant_clone(&mut w, host, 0, SEED_ITEM, gs);
+    plant_clone(&mut w, host, 1, HEMP_SEED, ws);
+    plant_clone(&mut w, host, 2, SEED_ITEM, ws);
+    plant_clone(&mut w, host, 5, SEED_ITEM, ws);
+    plant_clone(&mut w, host, 4, SEED_ITEM, g(b"YYYYYY"));
+    // A W corn at spot 1 of a second planter: the same spot number,
+    // another bed.
+    let (x, z) = cell_center(cx + 1, cz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
+    let other = place_planter(&mut w, cx + 1, cz, 0);
+    plant_clone(&mut w, other, 1, SEED_ITEM, ws);
+    grow_to(&mut w, target, STAGE_CROSSBREED, 2_000);
+    assert_eq!(plant_of(&w, dying).stage, STAGE_DYING, "the donor withered");
+    let p = plant_of(&w, target);
+    assert_ne!(p.flags & FL_CROSSED, 0, "the cross did not run");
+    assert_eq!(p.genes, gs, "a neighbour that does not count changed it");
+    assert!(w
+        .events
+        .entries()
+        .iter()
+        .any(|e| e.code == EV_PLANT && e.a == target && e.b >> 8 == STAGE_CROSSBREED as u32));
+
+    // The same bed with a touching W corn (spot 3, alive) takes it over.
+    let (mut w, cx, cz) = farm_world();
+    quick(&mut w);
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    let target = plant_clone(&mut w, host, 0, SEED_ITEM, gs);
+    plant_clone(&mut w, host, 3, SEED_ITEM, ws);
+    grow_to(&mut w, target, STAGE_CROSSBREED, 2_000);
+    assert_eq!(
+        plant_of(&w, target).genes,
+        ws,
+        "a touching W corn did not count"
+    );
+    // Once: a G neighbour planted beside it now, and a whole grow on,
+    // leave the crossed genes alone.
+    plant_clone(&mut w, host, 1, SEED_ITEM, gs);
+    plant_clone(&mut w, host, 4, SEED_ITEM, gs);
+    grow_to(&mut w, target, STAGE_MATURE, 2_000);
+    idle(&mut w, 200);
+    assert_eq!(plant_of(&w, target).genes, ws, "it crossed twice");
+}
+
+/// **Six G ripen a plant in 1/1.6 of the crop's time.**
+#[test]
+fn six_g_ripen_in_one_part_in_one_point_six_of_the_time() {
+    let (mut w, cx, cz) = farm_world();
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    let start = w.tick;
+    let id = plant_clone(&mut w, host, 0, SEED_ITEM, g(b"GGGGGG"));
+    grow_to(&mut w, id, STAGE_RIPE, GROW);
+    let took = w.tick - start;
+    let want = GROW * 10 / 16;
+    assert!(
+        took.abs_diff(want) <= 2 * OVEN_PERIOD_TICKS,
+        "6G ripened in {took} ticks, wanted {want}"
+    );
+}
+
+/// **Six Y yield floor(4 × 1.6) = 6 corn.**
+#[test]
+fn six_y_pick_six_corn() {
+    let (mut w, cx, cz) = farm_world();
+    quick(&mut w);
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    let id = plant_clone(&mut w, host, 0, SEED_ITEM, g(b"YYYYYY"));
+    grow_to(&mut w, id, STAGE_RIPE, 2_000);
+    w.tick(&[Command::Tend {
+        id: PLAYER,
+        plant: id,
+        act: TEND_PICK,
+    }]);
+    assert_eq!(refused(&w), None);
+    let corn: u32 = w.players[0]
+        .inv
+        .iter()
+        .filter(|s| s.item == CORN)
+        .map(|s| s.count as u32)
+        .sum();
+    assert_eq!(corn, 6);
+}
+
+/// **Six W drink 2.5× the water** (37 wu a period against 15: the draw is
+/// whole water units).
+#[test]
+fn six_w_drain_a_planter_two_and_a_half_times_faster() {
+    let drained = |genes: u16| {
+        let (mut w, cx, cz) = farm_world();
+        let host = place_planter(&mut w, cx, cz, 0);
+        load_skin(&mut w, host);
+        plant_clone(&mut w, host, 0, SEED_ITEM, genes);
+        idle(&mut w, OVEN_PERIOD_TICKS);
+        let full = tank(&w, host);
+        idle(&mut w, 100 * OVEN_PERIOD_TICKS);
+        full - tank(&w, host)
+    };
+    let x = drained(g(b"XXXXXX"));
+    let w6 = drained(g(b"WWWWWW"));
+    assert_eq!(x, 100 * 15);
+    assert_eq!(w6, 100 * 37);
+    assert!(w6 * 10 >= x * 24 && w6 * 10 <= x * 25, "{w6} against {x}");
+}
+
+/// **A clone is cut from a sapling to a mature plant**: it pays the crop's
+/// clones (one more per two Y) as its seed carrying its genes, the plant is
+/// gone, and the clones never merge into a blank seed stack. A seedling or
+/// a fruiting plant refuses.
+#[test]
+fn a_clone_pays_seeds_carrying_genes_and_kills_the_plant() {
+    use sim_core::farm::{GONE_CLONED, STAGE_FRUITING, STAGE_SAPLING, STAGE_SEEDLING, TEND_CLONE};
+    let clone = |w: &mut World, id: u32| {
+        w.tick(&[Command::Tend {
+            id: PLAYER,
+            plant: id,
+            act: TEND_CLONE,
+        }])
+    };
+    let (mut w, cx, cz) = farm_world();
+    quick(&mut w);
+    // A blank stack with room, so a merge would have somewhere to go.
+    w.players[0].inv[SEED_SLOT].count = 10;
+    let host = place_planter(&mut w, cx, cz, 0);
+    load_skin(&mut w, host);
+    let genes = g(b"GGYHWX");
+    let id = plant_clone(&mut w, host, 0, SEED_ITEM, genes);
+    grow_to(&mut w, id, STAGE_SEEDLING, 2_000);
+    assert_eq!(plant_of(&w, id).stage, STAGE_SEEDLING);
+    clone(&mut w, id);
+    assert_eq!(refused(&w), Some(REFUSE_D_PLANT_STAGE), "a seedling cloned");
+    grow_to(&mut w, id, STAGE_SAPLING, 2_000);
+    clone(&mut w, id);
+    assert_eq!(refused(&w), None);
+    let ev = w
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_GATHER && e.a == PLAYER)
+        .copied()
+        .expect("a clone announces its pay");
+    assert_eq!(ev.b, (SEED_ITEM as u32) << 16 | 2, "two clones");
+    assert_eq!(gone(&w), Some((id, GONE_CLONED as u32, PLAYER)));
+    assert!(w.farm.index_of_id(id).is_none());
+    assert_eq!(
+        w.players[0].inv[SEED_SLOT],
+        ItemStack {
+            item: SEED_ITEM,
+            count: 10,
+            cond: 0,
+            skin: 0
+        },
+        "a clone merged into the blank seeds"
+    );
+    let clones: Vec<ItemStack> = w.players[0]
+        .inv
+        .iter()
+        .copied()
+        .filter(|s| s.item == SEED_ITEM && s.cond != 0)
+        .collect();
+    assert_eq!(
+        clones,
+        vec![ItemStack {
+            item: SEED_ITEM,
+            count: 2,
+            cond: genes + 1,
+            skin: 0
+        }]
+    );
+
+    // Two Y pay one more; past MATURE it refuses.
+    let yy = g(b"YYXXXX");
+    let id = plant_clone(&mut w, host, 1, SEED_ITEM, yy);
+    grow_to(&mut w, id, STAGE_SAPLING, 2_000);
+    clone(&mut w, id);
+    assert!(w
+        .events
+        .entries()
+        .iter()
+        .any(|e| e.code == EV_GATHER && e.b == (SEED_ITEM as u32) << 16 | 3));
+    let id = plant_clone(&mut w, host, 2, SEED_ITEM, yy);
+    grow_to(&mut w, id, STAGE_FRUITING, 2_000);
+    clone(&mut w, id);
+    assert_eq!(
+        refused(&w),
+        Some(REFUSE_D_PLANT_STAGE),
+        "a fruiting plant cloned"
+    );
+    // A clone of the clone grows the genes it was cut with.
+    let i = w.players[0]
+        .inv
+        .iter()
+        .position(|s| s.item == SEED_ITEM && s.cond == genes + 1)
+        .unwrap();
+    let next = w.farm.next_id();
+    w.tick(&[Command::Plant {
+        id: PLAYER,
+        slot: i as u8,
+        host,
+        spot: 3,
+        qx: 0,
+        qz: 0,
+    }]);
+    assert_eq!(refused(&w), None);
+    assert_eq!(plant_of(&w, next).genes, genes);
+    assert_eq!(w.players[0].inv[i].count, 1);
 }

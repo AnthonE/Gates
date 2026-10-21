@@ -500,7 +500,7 @@ fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16, co
         if left == 0 {
             break;
         }
-        if s.count > 0 && s.item == item && s.count < stack_max {
+        if s.count > 0 && s.item == item && s.cond == cond && s.count < stack_max {
             let room = stack_max - s.count;
             let put = room.min(left);
             s.count += put;
@@ -527,7 +527,7 @@ fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16, co
 
 /// Would `amount` of `item` fit whole? The question `slots_add` cannot be
 /// asked after the fact, and every conversion below asks it first.
-fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16) -> bool {
+fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16, cond: u16) -> bool {
     if stack_max == 0 {
         return false;
     }
@@ -535,7 +535,7 @@ fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16) -> bo
     for s in slots.iter() {
         if s.count == 0 {
             room += stack_max as u32;
-        } else if s.item == item && s.count < stack_max {
+        } else if s.item == item && s.cond == cond && s.count < stack_max {
             room += (stack_max - s.count) as u32;
         }
         if room >= amount as u32 {
@@ -693,13 +693,14 @@ pub fn sweep(
                 let units = ovens[i].bank / 100;
                 if units > 0 {
                     let cap = gather.stack_max_of(cc.byproduct);
-                    if slots_room(&boxes[i].items[out.clone()], cc.byproduct, units, cap) {
+                    let cond = gather.cond_max_of(cc.byproduct);
+                    if slots_room(&boxes[i].items[out.clone()], cc.byproduct, units, cap, cond) {
                         slots_add(
                             &mut boxes[i].items[out.clone()],
                             cc.byproduct,
                             units,
                             cap,
-                            gather.cond_max_of(cc.byproduct),
+                            cond,
                         );
                         ovens[i].bank -= units * 100;
                     }
@@ -867,8 +868,8 @@ mod tests {
             cond: 0,
             skin: 0,
         };
-        assert!(slots_room(&s, 1, 1, 10));
-        assert!(!slots_room(&s, 1, 2, 10));
+        assert!(slots_room(&s, 1, 1, 10, 0));
+        assert!(!slots_room(&s, 1, 2, 10, 0));
         assert_eq!(slots_add(&mut s, 1, 2, 10, 0), 1);
     }
 
@@ -877,7 +878,7 @@ mod tests {
     #[test]
     fn a_zero_cap_holds_nothing() {
         let mut s = stacks(2);
-        assert!(!slots_room(&s, 1, 1, 0));
+        assert!(!slots_room(&s, 1, 1, 0, 0));
         assert_eq!(slots_add(&mut s, 1, 1, 0, 0), 0);
     }
 

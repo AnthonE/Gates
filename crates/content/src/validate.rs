@@ -105,6 +105,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 i.id, i.condition_max, i.stack
             ));
         }
+        // A data `cond` (a clone's genes, a blueprint's target) is not wear:
+        // an item whose condition both wore and carried data would have its
+        // genes rewritten by every swing.
+        if i.cond_carries.is_some() && i.condition_max != 0 {
+            return Err(format!(
+                "item `{}`: cond_carries with condition_max {} — a data \
+                 condition cannot also wear",
+                i.id, i.condition_max
+            ));
+        }
         // --- torch fuel V8: a light spends condition, so it must have
         // some. `light_burn` is the predicate for *is this a light* as
         // well as its price (see the schema field), and a light with no
@@ -2331,6 +2341,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
     if fm.ripe_seconds == 0 || fm.dying_seconds == 0 {
         return Err("farm: ripe_seconds and dying_seconds must be above 0".to_string());
     }
+    for (what, v) in [("good_gene_pm", fm.good_gene_pm), ("bad_w_pm", fm.bad_w_pm)] {
+        if v > 1000 {
+            return Err(format!("farm: {what} {v} is past 1000 per mille"));
+        }
+    }
+    for (what, v) in [
+        ("g_pct", fm.g_pct),
+        ("y_pct", fm.y_pct),
+        ("h_pct", fm.h_pct),
+        ("w_pct", fm.w_pct),
+    ] {
+        if v > 100 {
+            return Err(format!("farm: {what} {v} is past 100 per cent"));
+        }
+    }
     if fm.skin_water == 0 || fm.skin_water > fm.planter_water {
         return Err(format!(
             "farm: a skin ({}) must hold water and fit a planter ({})",
@@ -2388,6 +2413,57 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // Genes ride a seed's `cond` (`sim_core::farm`, a clone). Every crop
+    // seed carries them and nothing else may, and nothing that takes items
+    // cond-blind (a craft's inputs, a kiosk, a work's quota) may take a
+    // genes item: it would eat a prized clone as a blank seed.
+    use crate::schema::CondCarries;
+    for i in &c.items {
+        let is_seed = c.crops.iter().any(|k| k.seed == i.id);
+        let genes = i.cond_carries == Some(CondCarries::Genes);
+        if is_seed != genes {
+            return Err(format!(
+                "item `{}`: a crop seed must carry cond_carries = \"genes\", and \
+                 only a crop seed may",
+                i.id
+            ));
+        }
+    }
+    let genes_item = |id: &str| {
+        c.items
+            .iter()
+            .any(|i| i.id == id && i.cond_carries == Some(CondCarries::Genes))
+    };
+    for r in &c.recipes {
+        if let Some(s) = r.inputs.iter().find(|s| genes_item(&s.item)) {
+            return Err(format!(
+                "recipe `{}`: input `{}` carries genes, and a craft takes it \
+                 blind to them",
+                r.id, s.item
+            ));
+        }
+    }
+    for v in &c.vendors {
+        for o in &v.offer {
+            if genes_item(&o.pay) || genes_item(&o.get) {
+                return Err(format!(
+                    "vendor `{}`: an offer trades a genes item (`{}` for `{}`), \
+                     and a kiosk is blind to genes",
+                    v.name, o.pay, o.get
+                ));
+            }
+        }
+    }
+    for w in &c.works {
+        if let Some(s) = w.inputs.iter().find(|s| genes_item(&s.item)) {
+            return Err(format!(
+                "work `{}`: input `{}` carries genes, and a deposit takes it \
+                 blind to them",
+                w.id, s.item
+            ));
+        }
+    }
+
     // The research table (`content/research.toml`, research v0). Same
     // posture as the oven rules above: every one of these refuses a
     // *silently inert* sink rather than a taste call, because a coin with
@@ -2413,11 +2489,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
             t.blueprint
         ));
     };
-    if paper.stack != 1 || paper.condition_max != 0 {
+    if paper.stack != 1
+        || paper.condition_max != 0
+        || paper.cond_carries != Some(crate::schema::CondCarries::Target)
+    {
         return Err(format!(
-            "research: blueprint `{}` must be stack 1 with no condition — its \
-             `cond` names what it teaches",
+            "research: blueprint `{}` must be stack 1 with no condition and \
+             cond_carries = \"target\" — its `cond` names what it teaches",
             t.blueprint
+        ));
+    }
+    if let Some(i) = c
+        .items
+        .iter()
+        .find(|i| i.id != t.blueprint && i.cond_carries == Some(crate::schema::CondCarries::Target))
+    {
+        return Err(format!(
+            "item `{}`: cond_carries = \"target\" belongs to the research \
+             blueprint alone",
+            i.id
         ));
     }
     let bp = t.blueprint.as_str();

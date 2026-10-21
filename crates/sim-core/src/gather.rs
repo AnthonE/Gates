@@ -434,6 +434,12 @@ pub struct GatherContent {
     /// with no `cond_max` to spend, and V9 holds it under `u16::MAX`,
     /// which is what bounds `light::step`'s debit to one point a tick.
     pub light_burn: [u16; MAX_ITEM_DEFS],
+    /// A ceiling for `cond` used as DATA rather than wear (content
+    /// `cond_carries`): a seed's clone genes (`farm::GENOME_VALUES`) or a
+    /// blueprint's target plus one (`MAX_ITEM_DEFS`). Zero for everything
+    /// else. Only the condition walls read it ([`Self::cond_cap_of`]); a
+    /// mint still stamps `cond_max`, so every minted seed is a blank one.
+    pub cond_cap: [u16; MAX_ITEM_DEFS],
     pub item_count: u16,
 }
 
@@ -459,6 +465,18 @@ impl GatherContent {
     pub fn cond_max_of(&self, item: u16) -> u16 {
         if (item as usize) < MAX_ITEM_DEFS {
             self.cond_max[item as usize]
+        } else {
+            0
+        }
+    }
+
+    /// The highest `cond` a stack of `item` may legally carry: its wear
+    /// ceiling, or the data it carries (`cond_cap`), whichever is higher.
+    /// The save walls (`server/src/cond.rs`) and `World::clamp_conditions`
+    /// ask this; mints keep asking [`Self::cond_max_of`].
+    pub fn cond_cap_of(&self, item: u16) -> u16 {
+        if (item as usize) < MAX_ITEM_DEFS {
+            self.cond_max[item as usize].max(self.cond_cap[item as usize])
         } else {
             0
         }
@@ -492,6 +510,7 @@ impl GatherContent {
         stack_max: [0; MAX_ITEM_DEFS],
         cond_max: [0; MAX_ITEM_DEFS],
         light_burn: [0; MAX_ITEM_DEFS],
+        cond_cap: [0; MAX_ITEM_DEFS],
         item_count: 0,
     };
 
@@ -774,9 +793,10 @@ pub struct ItemStack {
 /// loot roll pass `GatherContent::cond_max_of(item)` so a new tool arrives
 /// whole (Q3: re-craft IS the repair, so a crafted tool at 0 would repair
 /// nothing); a path moving an *existing* stack passes that stack's own
-/// `cond`, or looting would mend it. Top-ups never touch it: an item that
-/// stacks past 1 carries no condition (content rule V7), so there are
-/// never two conditions to reconcile.
+/// `cond`, or looting would mend it. Top-ups never touch it, and only join
+/// a stack at the same `cond`: an item that stacks past 1 carries no wear
+/// (content rule V7), but a clone's `cond` is its genome, and two genomes
+/// are two things to hold.
 pub fn inv_add(
     inv: &mut [ItemStack; INV_SLOTS],
     item: u16,
@@ -790,7 +810,8 @@ pub fn inv_add(
 /// [`inv_add`] for a mint that wears a skin (`skin.rs`): a finished craft
 /// whose job named one. Fresh stacks are stamped with it the way they are
 /// stamped with `cond`, and a top-up only ever joins a stack wearing the
-/// same skin, so two looks never merge into one.
+/// same skin AND the same `cond`, so two looks never merge into one and
+/// neither do two genomes (a clone's genes ride its `cond`, `farm.rs`).
 pub fn inv_add_skinned(
     inv: &mut [ItemStack; INV_SLOTS],
     item: u16,
@@ -807,7 +828,8 @@ pub fn inv_add_skinned(
         if left == 0 {
             return amount;
         }
-        if s.count > 0 && s.item == item && s.skin == skin && s.count < stack_max {
+        if s.count > 0 && s.item == item && s.skin == skin && s.cond == cond && s.count < stack_max
+        {
             let take = (stack_max - s.count).min(left);
             s.count += take;
             left -= take;

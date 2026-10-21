@@ -392,6 +392,12 @@ impl Pick {
         }
     }
 
+    /// `C` cuts a `Verb::Plant` for clones (`farm::TEND_CLONE`): only from
+    /// sapling to mature, as the sim takes it.
+    pub fn can_clone(&self) -> bool {
+        self.verb == Verb::Plant && sim_core::farm::is_clonable(self.plant.stage)
+    }
+
     /// A `Verb::Plant`'s readout under the prompt: crop, stage, health and
     /// genome, and whether it thirsts — `CORN SAPLING · 80% · GGYHWX`. Empty
     /// for every other verb.
@@ -550,15 +556,23 @@ impl Pick {
             // takes it: a ripe one is picked, a dead one cleared, a growing
             // bed plant watered from a full skin in hand, and otherwise its
             // planter opens. The crop's own line is [`Self::info`].
-            Verb::Plant => match self.tend() {
-                Some(sim_core::farm::TEND_PICK) => format!("[E] PICK {}", self.crop_name()),
-                Some(sim_core::farm::TEND_CLEAR) => {
-                    format!("[E] CLEAR DEAD {}", self.crop_name())
+            // From sapling to mature `C` cuts it for clones, named beside.
+            Verb::Plant => {
+                let e = match self.tend() {
+                    Some(sim_core::farm::TEND_PICK) => format!("[E] PICK {}", self.crop_name()),
+                    Some(sim_core::farm::TEND_CLEAR) => {
+                        format!("[E] CLEAR DEAD {}", self.crop_name())
+                    }
+                    Some(_) => format!("[E] WATER {}", self.crop_name()),
+                    None if self.handle != 0 => "[E] OPEN PLANTER".to_string(),
+                    None => String::new(),
+                };
+                match (self.can_clone(), e.is_empty()) {
+                    (false, _) => e,
+                    (true, true) => "[C] TAKE CLONE".to_string(),
+                    (true, false) => format!("{e}  ·  [C] TAKE CLONE"),
                 }
-                Some(_) => format!("[E] WATER {}", self.crop_name()),
-                None if self.handle != 0 => "[E] OPEN PLANTER".to_string(),
-                None => String::new(),
-            },
+            }
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
             Verb::Shop => "[E] SHOP".to_string(),
@@ -585,10 +599,22 @@ impl Pick {
             // A sheet names what it teaches with the panels' own words
             // (`research::teaching_label`, the spelling `stack_label` uses):
             // "Revolver Blueprint", not "Blueprint".
+            // A clone on the ground names its genome as the panels do.
             Verb::Take => format!(
                 "[E] TAKE {} ×{}",
-                crate::ui::research::teaching_label(catalog, self.item, self.teaches)
-                    .to_uppercase(),
+                match crate::ui::research::clone_genes(
+                    catalog,
+                    sim_core::gather::ItemStack {
+                        item: self.item,
+                        count: self.count.max(1),
+                        cond: self.cond,
+                        skin: 0,
+                    },
+                ) {
+                    Some(g) => crate::ui::research::clone_label(catalog, self.item, g),
+                    None => crate::ui::research::teaching_label(catalog, self.item, self.teaches),
+                }
+                .to_uppercase(),
                 self.count
             ),
             // A blade swung at it cuts more out than `E` pulls (`mobs.toml`
@@ -3036,7 +3062,7 @@ mod assist_tests {
 mod plant_tests {
     use super::*;
     use protocol::WirePlant;
-    use sim_core::farm::{LOOK_CORN, STAGE_DYING, STAGE_RIPE, STAGE_SAPLING};
+    use sim_core::farm::{LOOK_CORN, STAGE_DYING, STAGE_MATURE, STAGE_RIPE, STAGE_SAPLING};
     use sim_core::movement::{quant_xz, quant_y};
 
     fn corn(stage: u8, x: f32, y: f32, z: f32) -> WirePlant {
@@ -3116,9 +3142,20 @@ mod plant_tests {
         let cat = ItemCatalog::EMPTY;
         assert_eq!(at(STAGE_RIPE, false).prompt(&cat), "[E] PICK CORN");
         assert_eq!(at(STAGE_DYING, false).prompt(&cat), "[E] CLEAR DEAD CORN");
-        assert_eq!(at(STAGE_SAPLING, true).prompt(&cat), "[E] WATER CORN");
+        assert_eq!(
+            at(STAGE_SAPLING, true).prompt(&cat),
+            "[E] WATER CORN  ·  [C] TAKE CLONE"
+        );
         let sapling = at(STAGE_SAPLING, false);
-        assert_eq!(sapling.prompt(&cat), "[E] OPEN PLANTER");
+        assert_eq!(sapling.prompt(&cat), "[E] OPEN PLANTER  ·  [C] TAKE CLONE");
+        // A clone is cut from sapling to mature, not before or after.
+        assert!(at(STAGE_MATURE, false).can_clone());
+        assert!(!at(sim_core::farm::STAGE_SEEDLING, false).can_clone());
+        assert!(!at(sim_core::farm::STAGE_FRUITING, false).can_clone());
+        assert_eq!(
+            at(sim_core::farm::STAGE_FRUITING, false).prompt(&cat),
+            "[E] OPEN PLANTER"
+        );
         assert_eq!(sapling.info(), "CORN SAPLING · 80% · XXXXXX");
         let mut dry = sapling;
         dry.plant.dry = true;

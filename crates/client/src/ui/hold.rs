@@ -267,7 +267,11 @@ pub fn hand_hint(
                 format!("{}{left}   (F: light)", name())
             }
         }
-        Click::Plant => format!("[LMB] PLANT {}", name()),
+        // A clone names its genome ("CORN CLONE · GGYHWX").
+        Click::Plant => format!(
+            "[LMB] PLANT {}",
+            crate::ui::research::stack_label(catalog, research, stack).to_uppercase()
+        ),
         Click::Build | Click::Deploy => String::new(),
     }
 }
@@ -1985,6 +1989,31 @@ mod tests {
             hand_hint(&c, &r, Click::Plant, seed, false),
             "[LMB] PLANT CORN SEED"
         );
+        // A clone is the seed carrying genes + 1 in `cond`: it plants the
+        // same, and says what it will grow.
+        let genes = 2 + 2 * 5 + 3 * 25 + 4 * 125 + 625; // GGYHWX
+        let clone = ItemStack {
+            cond: genes + 1,
+            ..seed
+        };
+        assert_eq!(click_of(&c, &r, &d, 0, clone), Click::Plant);
+        assert_eq!(
+            hand_hint(&c, &r, Click::Plant, clone, false),
+            "[LMB] PLANT CORN CLONE · GGYHWX"
+        );
+        assert_eq!(
+            crate::ui::research::stack_label(&c, &r, clone),
+            "Corn Clone · GGYHWX"
+        );
+        // Past the genome count it is no clone (the wall refuses it), and
+        // a non-seed with a `cond` is never one.
+        let wild = ItemStack {
+            cond: sim_core::farm::GENOME_VALUES as u16 + 1,
+            ..seed
+        };
+        assert_eq!(crate::ui::research::stack_label(&c, &r, wild), "Corn Seed");
+        let wood = ItemStack { cond: 5, ..one(0) };
+        assert_eq!(crate::ui::research::clone_genes(&c, wood), None);
     }
 
     /// The bottom-left line says what the click will do, with the numbers,

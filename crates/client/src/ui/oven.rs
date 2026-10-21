@@ -206,8 +206,9 @@ pub fn drop_refusal(
             return Some(why);
         }
     }
-    let swap =
-        dst.count > 0 && (dst.item != src.item || dst.skin != src.skin) && units == src.count;
+    let swap = dst.count > 0
+        && (dst.item != src.item || dst.skin != src.skin || dst.cond != src.cond)
+        && units == src.count;
     if from_kind == CONT_BOX && swap {
         return refuses(from_slot, dst.item);
     }
@@ -260,7 +261,7 @@ pub fn fire_quick_move(
         let there = cont[s];
         if there.count == 0 {
             empty = empty.or(Some(s));
-        } else if there.item == src.item && there.skin == src.skin {
+        } else if there.item == src.item && there.skin == src.skin && there.cond == src.cond {
             let room = cap.saturating_sub(there.count);
             if room > 0 {
                 pick = Some((s, Grab::Fit(room)));
