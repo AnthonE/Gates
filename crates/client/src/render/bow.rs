@@ -347,7 +347,7 @@ pub struct WrapCloth;
 
 /// The sleeve's radius, metres: proud of the forearm's skin, so it reads as
 /// cloth wound on rather than as the arm turning white.
-pub const WRAP_CLOTH_R_M: f32 = 0.046;
+pub const WRAP_CLOTH_R_M: f32 = 0.05;
 
 /// The sleeve, spawned hidden under the rig once (`viewmodel::spawn_item`).
 pub(super) fn spawn_wrap_cloth(

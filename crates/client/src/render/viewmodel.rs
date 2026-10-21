@@ -1438,22 +1438,25 @@ impl Motion {
 
 /// The bandage's wrap (`ui::wrap`, Rust's `MedicalTool`): where the left arm
 /// is brought up to be wrapped, view space, metres. The upper arm starts low
-/// and left out of frame and the wrist sits left of centre under the
-/// crosshair, so the forearm lies across the bottom of the view for the
-/// right hand to go round.
-pub const WRAP_SHOULDER: Vec3 = Vec3::new(-0.16, -0.46, -0.16);
-pub const WRAP_WRIST: Vec3 = Vec3::new(0.04, -0.25, -0.42);
-/// Which way the wrapped arm's elbow points: down and out.
-pub const WRAP_ELBOW: Vec3 = Vec3::new(-0.5, -0.85, 0.15);
+/// low, left and back out of frame and the wrist sits right of centre a hand
+/// under the crosshair; the elbow bent out to the left lays the forearm
+/// across the lower middle of the view (the 75° vertical frame,
+/// `rig::FOV_DEG`) for the right hand to go round. Elbow and wrist land at
+/// about (490, 556) and (742, 503) on a 1280×720 frame. Bent DOWN instead,
+/// the forearm stood the hand up over the crosshair.
+pub const WRAP_SHOULDER: Vec3 = Vec3::new(-0.28, -0.29, -0.29);
+pub const WRAP_WRIST: Vec3 = Vec3::new(0.10, -0.14, -0.46);
+/// Which way the wrapped arm's elbow points: out to the left.
+pub const WRAP_ELBOW: Vec3 = Vec3::new(-1.0, 0.2, 0.3);
 /// Where the arm comes up from, and goes back down to, from its wrapped
 /// place: below the frame.
-pub const WRAP_LOW: Vec3 = Vec3::new(-0.05, -0.30, 0.10);
+pub const WRAP_LOW: Vec3 = Vec3::new(-0.05, -0.35, 0.10);
 /// `stumpy.glb`'s left upper arm and forearm, metres: `LeftForeArm`'s and
 /// `LeftHand`'s bone offsets at the rig's 0.01.
 pub const WRAP_UPPER_M: f32 = 0.224;
 pub const WRAP_FORE_M: f32 = 0.2375;
 /// How far off the forearm's axis the right palm goes round it.
-pub const WRAP_ORBIT_M: f32 = 0.075;
+pub const WRAP_ORBIT_M: f32 = 0.065;
 /// Where along the forearm the bandage starts, from the wrist, and how much
 /// of it the wrap covers, as shares of [`WRAP_FORE_M`].
 pub const WRAP_FROM: f32 = 0.10;
