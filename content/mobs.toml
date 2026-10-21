@@ -335,6 +335,15 @@ orbit_m = 7
 sleep_pct = 40
 hear_m = { gun = 100, bow = 15, strike = 25, blast = 200 }
 
+# **A bred brain, off until a playtest** (`brain::WOLF_NET`,
+# `server/examples/zoo.rs`, 2026-10-21). 101 mutations, bred against the
+# agent; on 200 held-out bouts it downs the agent 12% of the time to the
+# rule table's 8% (fitness 0.276 to 0.211), mostly by fighting spears, bows
+# and runners better, and a Pro with a bow still clears its pack 62% of the
+# time either way. Uncomment to put it on the wolves from the medium fel
+# tier (`genome_tier`, absent is 1): wipe day's wolves keep the rule table.
+# genome = "gw1:j5nRPUmcHkO2eIJ7ZFkpbqXfxDmvvaeL1RY6HHS8JAoDsUXU8Jy5b1cT3dVgOvOPo1eT-NLhktcb4wXjcYCKvNRu3ymPogfI9dxjWCFnB2arBxbpOuoZlhgkT8z3HSiFX0RGx7zCw_A0ukq2tHzx5WpXUoPx4n7nzmTjt-Lh5t-KZE2zy7I_ga3wdGzSga2TueMJI2u8fifzCZPVD5YzGt6R1pV-LWP3oJ2dwtHdF2IY6XyxTY5lP_WA64O1DxrvW9Ac-dbzXDOkiHbTFXw"
+
 # **The hide animal.** Their reworked wolf pays 75 leather, 40 bone, 35
 # cloth, 10 fat and 5 meat to a hatchet (and a skull); this is that at two
 # thirds, as the pig's row. You kill it for its pelt, or because it is
