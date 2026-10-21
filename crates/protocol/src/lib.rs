@@ -1272,7 +1272,14 @@ pub use voice::{
 /// one plant or its removal and `SUB_PLANT_SYNC` (108) the join walk.
 /// `ACT_PLANT` (39) plants a seed from an inventory slot in a bed spot (or
 /// on the ground) and `ACT_TEND` (40) picks, clones, clears or waters one.
-pub const PROTO_VER: u16 = 130;
+/// v131 — catalog headroom and the water catcher: `MAX_ITEM_DEFS` is 160, so
+/// the held field (`HELD_BITS`) and the catalog's total and first ride 8
+/// bits (`HELD_NONE` is 255); a deploy archetype admits 23 (`ARCH_CATCHER`);
+/// and a catalog row's oven roles carry five arches (`OVEN_ROLE_BITS` 15).
+/// A record with no baseline to be a delta of (a zero-state snapshot, an
+/// overflow datagram) no longer spends the is_delta bit, which keeps the
+/// zero-state cap of 64 moving bodies inside `DATAGRAM_BUDGET_BYTES`.
+pub const PROTO_VER: u16 = 131;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1376,15 +1383,15 @@ const _: () = assert!(sim_core::heli::Y_CEIL_Q < (1 << POS_Y_BITS) - POS_Y_BIAS)
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
 
-/// Width of the held-item field on an entity record (v56).
+/// Width of the held-item field on an entity record (v56; 8 bits since v131).
 ///
-/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` is 64,
-/// so the ids alone fill a six-bit field exactly and "empty hand" needs a
-/// value the ids cannot take. Derived-adjacent rather than typed — the
+/// Eight bits because seven do not fit the sentinel: `MAX_ITEM_DEFS` is
+/// 160, past the 127 ids seven bits hold beside "empty hand", which needs
+/// a value the ids cannot take. Derived-adjacent rather than typed — the
 /// gate `held_bits_hold_every_item_the_sim_can_define` fails if
 /// `MAX_ITEM_DEFS` ever grows past what this width can carry alongside
 /// [`HELD_NONE`], which is the shape a `KIND_BITS` widening took at v27.
-pub const HELD_BITS: u32 = 7;
+pub const HELD_BITS: u32 = 8;
 
 /// The wire's "empty hand" — the all-ones code point in [`HELD_BITS`],
 /// deliberately the far end of the field from id 0 so a truncated or
@@ -4671,7 +4678,13 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     }
 
     fn encode_absolute(&mut self, e: &EntityState) -> Result<(), WireError> {
-        self.w.write_bit(false)?; // is_delta
+        // is_delta, only where a delta could stand: a zero-state snapshot
+        // and an overflow datagram have no baseline, so every record is
+        // absolute and the bit says nothing (v131: the bit the 8-bit held
+        // field needed back to keep the zero-state cap inside the budget).
+        if self.has_baseline {
+            self.w.write_bit(false)?;
+        }
         self.w.write(e.qx as u32, POS_XZ_BITS)?;
         self.w.write((e.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
         self.w.write(e.qz as u32, POS_XZ_BITS)?;
@@ -4737,7 +4750,7 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     }
     // The hand, checked here for the reason the header states: up front,
     // so a `Range` refusal never needs a rollback. An id at or past
-    // `MAX_ITEM_DEFS` is not a truncation risk — it would fit seven bits
+    // `MAX_ITEM_DEFS` is not a truncation risk — it would fit eight bits
     // — it is a value the sim cannot mean, and the decoder refuses the
     // same band, so the two ends agree about what is representable.
     if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
@@ -4894,7 +4907,8 @@ fn decode_entity(
     baseline: &[EntityState],
 ) -> Result<EntityState, WireError> {
     let id = r.read(32)?;
-    let is_delta = r.read_bit()?;
+    // No baseline, no delta and no bit (`encode_absolute`).
+    let is_delta = baseline_age != 0 && r.read_bit()?;
     if !is_delta {
         let qx = r.read(POS_XZ_BITS)? as i32;
         let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
@@ -4979,7 +4993,7 @@ fn read_held_skin(r: &mut BitReader) -> Result<u16, WireError> {
 
 /// The held-item field, with the band the sim cannot mean refused.
 ///
-/// `MAX_ITEM_DEFS..HELD_NONE` is 63 unreachable code points and a decoder
+/// `MAX_ITEM_DEFS..HELD_NONE` is 95 unreachable code points and a decoder
 /// that accepted them would hand the renderer an id no catalog row
 /// answers — a silent empty hand at best, and at worst a lookup that
 /// depends on which crate's bounds check runs first.
@@ -5081,7 +5095,8 @@ mod tests {
     /// A snapshot overflow datagram (v121) at its worst — 64 moving bodies,
     /// every record absolute — still fits one datagram, round-trips, and the
     /// decoder refuses what it can never mean: part 0, a delta record, and
-    /// the snapshot's own kind.
+    /// the snapshot's own kind. (Since v131 a record here spends no
+    /// is_delta bit, which is what paid for the held field's eighth.)
     #[test]
     fn a_full_overflow_datagram_fits_and_round_trips() {
         let mut buf = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
@@ -5206,9 +5221,9 @@ mod tests {
         }
         let len = enc.finish().expect("finish");
         // 64 entities × (32 id bits + 10 delta bits) plus the header. An
-        // at-rest absolute record is 32 + 87 (1 is_delta + 17 + 14 + 17 +
+        // at-rest absolute record is 32 + 88 (1 is_delta + 17 + 14 + 17 +
         // 5 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
-        // missed lookup adds 77 bits and this bound catches it.
+        // missed lookup adds 78 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
         let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 42).div_ceil(8);
         assert_eq!(
@@ -5219,8 +5234,8 @@ mod tests {
     }
 
     /// **The width is a claim about `sim-core`, so it is checked against
-    /// `sim-core`.** `HELD_BITS` is seven because six hold the ids and
-    /// none hold the sentinel; if `MAX_ITEM_DEFS` ever grows past what
+    /// `sim-core`.** `HELD_BITS` is eight because seven hold 127 ids and
+    /// `MAX_ITEM_DEFS` is 160; if `MAX_ITEM_DEFS` ever grows past what
     /// this field can carry alongside `HELD_NONE`, that is a wire
     /// widening and a `PROTO_VER` turn, exactly as `KIND_BITS` was at
     /// v27 — and it must fail here rather than silently truncating an id
@@ -5322,14 +5337,14 @@ mod tests {
             })
             .collect();
         let hands = encode(&moved);
-        // Nine bits a record since v77: the seven-bit id, the flame, and
+        // Ten bits a record since v131: the eight-bit id, the flame, and
         // the skin's presence bit (none of these hands is skinned). Eight
-        // records are 72 bits, so exactly nine bytes.
+        // records are 80 bits, so exactly ten bytes.
         assert_eq!(
             hands - still,
-            9,
-            "eight changed hands cost {} B over eight unchanged ones, not 9 \
-             — nine bits per record is the field, so this is the gate on the \
+            10,
+            "eight changed hands cost {} B over eight unchanged ones, not 10 \
+             — ten bits per record is the field, so this is the gate on the \
              flag doing anything at all",
             hands - still
         );
@@ -5367,7 +5382,7 @@ mod tests {
     }
 
     /// **And the decoder refuses the same band**, which is the half a
-    /// hostile datagram reaches. `MAX_ITEM_DEFS..HELD_NONE` is 63 code
+    /// hostile datagram reaches. `MAX_ITEM_DEFS..HELD_NONE` is 95 code
     /// points no catalog row answers; accepting one hands the renderer an
     /// id whose behaviour depends on which crate's bounds check runs
     /// first.

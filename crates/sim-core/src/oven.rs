@@ -90,7 +90,7 @@
 
 use core::ops::Range;
 
-use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_PLANTER, ARCH_RECYCLER};
+use crate::deploy::{Deploys, ARCH_CATCHER, ARCH_FIRE, ARCH_FURNACE, ARCH_PLANTER, ARCH_RECYCLER};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
 use crate::world::{EventQueue, EV_OVEN};
@@ -104,9 +104,20 @@ pub const ROLE_OUTPUT: u8 = 4;
 
 /// The converters whose roles the item catalog carries, in the order their
 /// three-bit groups are packed ([`CookContent::packed_roles`]).
-pub const ROLE_ARCHES: [u8; 4] = [ARCH_FIRE, ARCH_FURNACE, ARCH_RECYCLER, ARCH_PLANTER];
+///
+/// Five groups are fifteen bits, and the catalog's `ItemRow::oven` is a
+/// `u16`: a sixth converter overflows it and widens that field (a wire
+/// turn), which the assert below refuses to let happen silently.
+pub const ROLE_ARCHES: [u8; 5] = [
+    ARCH_FIRE,
+    ARCH_FURNACE,
+    ARCH_RECYCLER,
+    ARCH_PLANTER,
+    ARCH_CATCHER,
+];
 /// Bits the packed roles take on the wire.
 pub const PACKED_ROLE_BITS: u32 = 3 * ROLE_ARCHES.len() as u32;
+const _: () = assert!(PACKED_ROLE_BITS <= u16::BITS);
 
 /// One archetype's three bits out of a packed set (`ItemRow::oven`), or 0
 /// for an archetype that is not a converter.
@@ -169,6 +180,17 @@ pub const PLANTER_LAYOUT: OvenLayout = OvenLayout {
 
 const _: () = assert!(PLANTER_LAYOUT.slots() <= BOX_SLOTS);
 
+/// A water catcher (farming v2): one skin slot. An empty waterskin there is
+/// filled from the barrel once it holds a skin's worth
+/// ([`crate::farm::FarmContent::skin_wu`]), exactly what pouring one pays.
+pub const CATCHER_LAYOUT: OvenLayout = OvenLayout {
+    fuel: 1,
+    input: 0,
+    output: 0,
+};
+
+const _: () = assert!(CATCHER_LAYOUT.slots() <= BOX_SLOTS);
+
 /// The sections of an archetype's slots, or `None` for a converter that has
 /// none yet: every slot of it takes whatever it accepts, fuel burns from any
 /// of them and what it makes lands in any.
@@ -176,6 +198,7 @@ pub fn layout(arch: u8) -> Option<OvenLayout> {
     match arch {
         ARCH_FIRE => Some(FIRE_LAYOUT),
         ARCH_PLANTER => Some(PLANTER_LAYOUT),
+        ARCH_CATCHER => Some(CATCHER_LAYOUT),
         _ => None,
     }
 }
@@ -382,6 +405,14 @@ impl CookContent {
         if waters && item == farm.water_full {
             roles |= ROLE_FUEL;
         }
+        // A catcher's one slot takes a skin, empty to be filled or full to
+        // be taken back out.
+        if arch == ARCH_CATCHER
+            && farm.skin_wu > 0
+            && (item == farm.water_empty || item == farm.water_full)
+        {
+            roles |= ROLE_FUEL;
+        }
         if self.row_for(arch, item).is_some() {
             roles |= ROLE_INPUT;
         }
@@ -447,8 +478,8 @@ pub struct OvenState {
     /// kinder reading and the one that cannot lose a player's food to a
     /// misclick.
     pub cook: [u16; BOX_SLOTS],
-    /// A planter's water tank, in water units (`farm.rs`: 1 wu is one plant
-    /// drinking for one tick). Zero for everything else.
+    /// A planter's or a catcher's water tank, in water units (`farm.rs`:
+    /// 1 wu is one plant drinking for one tick). Zero for everything else.
     pub water: u32,
 }
 
@@ -466,13 +497,23 @@ impl OvenState {
     /// Does this container convert at all — the sweep's filter and
     /// `oven_index`'s. A recycler answers yes and burns nothing.
     pub fn arch_converts(arch: u8) -> bool {
-        Self::arch_burns(arch) || arch == ARCH_RECYCLER || arch == ARCH_PLANTER
+        Self::arch_burns(arch)
+            || arch == ARCH_RECYCLER
+            || arch == ARCH_PLANTER
+            || arch == ARCH_CATCHER
     }
 
     /// Does this converter run without a switch? A planter is always
-    /// growing: there is nothing to light and nothing to snuff.
+    /// growing and a catcher always catching: there is nothing to light
+    /// and nothing to snuff.
     pub fn arch_always_on(arch: u8) -> bool {
-        arch == ARCH_PLANTER
+        arch == ARCH_PLANTER || arch == ARCH_CATCHER
+    }
+
+    /// Does this container keep a water tank ([`Self::water`])? A planter
+    /// and a catcher do; the save and the state hash carry it only there.
+    pub fn arch_has_tank(arch: u8) -> bool {
+        arch == ARCH_PLANTER || arch == ARCH_CATCHER
     }
 
     pub fn burns(&self) -> bool {
@@ -663,7 +704,8 @@ pub fn sweep(
             continue;
         }
         let arch = ovens[i].arch;
-        if arch == ARCH_PLANTER {
+        // The farm's tanks run in `farm::step`.
+        if arch == ARCH_PLANTER || arch == ARCH_CATCHER {
             continue;
         }
         let step = period as u16;

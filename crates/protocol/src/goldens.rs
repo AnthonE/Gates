@@ -2425,8 +2425,8 @@ pub fn snapshot_cap() -> SnapshotCase {
         if e.qvy == 0 {
             e.qvy = -1; // keep every velocity on the wire
         }
-        // **Every code point the held field can legally take, once.**
-        // `MAX_SNAPSHOT_ENTITIES` and `MAX_ITEM_DEFS` are both 64, so this
+        // **The held field's low code points, once each.**
+        // `MAX_SNAPSHOT_ENTITIES` is 64 and `MAX_ITEM_DEFS` 160, so this
         // walks 0..=63 across the 64 records and the sentinel is pinned
         // by the two fixtures above. It costs nothing in bytes — an
         // absolute record spends `HELD_BITS` whatever the value is — and

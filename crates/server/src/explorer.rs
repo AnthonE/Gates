@@ -332,8 +332,8 @@ pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Bat"];
 pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Bat"];
 
 const _: () = assert!(
-    MAX_ITEM_DEFS <= 128,
-    "FoodBook and yield sets are u128 masks"
+    MAX_ITEM_DEFS <= ItemBits::CAP,
+    "FoodBook and yield sets are ItemBits masks"
 );
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -471,33 +471,62 @@ impl Kind {
     }
 }
 
+/// A set of item indices, one bit each: 256 of them, so the whole catalog
+/// (`MAX_ITEM_DEFS`) fits. An index past the set is never in it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct ItemBits([u128; 2]);
+
+impl ItemBits {
+    pub const CAP: usize = 256;
+
+    /// The set holding `item` alone (empty when `item` is past the set).
+    pub fn bit(item: u16) -> Self {
+        let mut b = Self::default();
+        b.set(item);
+        b
+    }
+
+    pub fn set(&mut self, item: u16) {
+        let i = usize::from(item);
+        if i < Self::CAP {
+            self.0[i / 128] |= 1 << (i % 128);
+        }
+    }
+
+    pub fn has(&self, item: u16) -> bool {
+        let i = usize::from(item);
+        i < Self::CAP && self.0[i / 128] & 1 << (i % 128) != 0
+    }
+
+    pub fn or(&mut self, other: Self) {
+        self.0[0] |= other.0[0];
+        self.0[1] |= other.0[1];
+    }
+
+    pub fn any(&self) -> bool {
+        self.0 != [0; 2]
+    }
+}
+
 /// What the eat verb has taught this body, per item index: the sim's own
 /// verdicts, the way a player learns by pressing eat. No food table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoodBook {
-    pub not_food: u128,
-    pub feeds: u128,
-    pub waters: u128,
-    pub tried: u128,
+    pub not_food: ItemBits,
+    pub feeds: ItemBits,
+    pub waters: ItemBits,
+    pub tried: ItemBits,
 }
 
 impl FoodBook {
-    fn bit(item: u16) -> u128 {
-        if (item as usize) < 128 {
-            1 << item
-        } else {
-            0
-        }
-    }
-
     /// Worth trying to eat: known to feed, or never tried and not refused.
     pub fn may_feed(&self, item: u16) -> bool {
-        let b = Self::bit(item);
-        b != 0 && (self.feeds & b != 0 || (self.tried & b == 0 && self.not_food & b == 0))
+        usize::from(item) < ItemBits::CAP
+            && (self.feeds.has(item) || (!self.tried.has(item) && !self.not_food.has(item)))
     }
 
     pub fn waters_known(&self, item: u16) -> bool {
-        self.waters & Self::bit(item) != 0
+        self.waters.has(item)
     }
 }
 
@@ -568,7 +597,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [u128; KINDS],
+    pub yields: [ItemBits; KINDS],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
     /// A bag failed to go down near here a moment ago (`Home::bag_held`).
@@ -4632,7 +4661,7 @@ impl Survivor {
                 }
                 // A full pack drops what is made at the crafter's feet, and
                 // the inputs are spent either way.
-                if !room_for(core, FoodBook::bit(item))
+                if !room_for(core, ItemBits::bit(item))
                     && !craft_fits(core, recipe, batch(core, recipe))
                 {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
@@ -5603,7 +5632,7 @@ impl Survivor {
                 tick,
             ));
             self.verdict = None;
-            self.memory.food.tried |= FoodBook::bit(item);
+            self.memory.food.tried.set(item);
         }
     }
 
@@ -7264,7 +7293,7 @@ impl Survivor {
             if let Some(a) = self.goal.as_mut() {
                 a.gained = a.gained.saturating_add(u32::from(added));
                 if let Some(kind) = Kind::of_goal(a.goal) {
-                    self.memory.yields[kind as usize] |= FoodBook::bit(item);
+                    self.memory.yields[kind as usize].set(item);
                 }
             }
             if self.target.is_some() {
@@ -7590,9 +7619,8 @@ impl Survivor {
             self.stats.refusals += 1;
             match self.awaiting {
                 Some((Pending::Consume { item, .. }, _)) => {
-                    let bit = FoodBook::bit(item);
                     if u32::from(reason) == REFUSE_C_NOT_FOOD {
-                        self.memory.food.not_food |= bit;
+                        self.memory.food.not_food.set(item);
                         self.verdict = Some(Verdict::Refused);
                     } else if u32::from(reason) == REFUSE_C_FULL {
                         self.verdict = Some(Verdict::Full);
@@ -7618,17 +7646,16 @@ impl Survivor {
         }
         if flags & APPLIED_VITALS != 0 {
             if let Some((item, food, water)) = self.learning.take() {
-                let bit = FoodBook::bit(item);
                 if core.food > food {
-                    self.memory.food.feeds |= bit;
+                    self.memory.food.feeds.set(item);
                 }
                 if core.water > water {
-                    self.memory.food.waters |= bit;
+                    self.memory.food.waters.set(item);
                 }
                 if core.food <= food && core.water <= water {
                     // Consumed but restored neither meter: a bandage, say.
                     // Not food for this purpose, whatever else it does.
-                    self.memory.food.not_food |= bit;
+                    self.memory.food.not_food.set(item);
                 }
             }
         }
@@ -8000,11 +8027,10 @@ fn out_of_town(core: &ClientCore, body: &EntityState) -> Option<Intent> {
 
 /// Room for a node's yield: an empty slot, or a stack of something this
 /// kind has been seen to pay that is not yet at its ceiling.
-fn room_for(core: &ClientCore, yields: u128) -> bool {
+fn room_for(core: &ClientCore, yields: ItemBits) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
-            || (yields & FoodBook::bit(s.item) != 0
-                && s.count < core.catalog.row(s.item as usize).stack_max)
+            || (yields.has(s.item) && s.count < core.catalog.row(s.item as usize).stack_max)
     })
 }
 
@@ -8085,7 +8111,7 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
             _ => Some(i),
         })
     };
-    best(&mut slots().filter(|&i| book.feeds & FoodBook::bit(core.inv[i].item) != 0))
+    best(&mut slots().filter(|&i| book.feeds.has(core.inv[i].item)))
         .or_else(|| best(&mut slots().filter(|&i| book.may_feed(core.inv[i].item))))
 }
 
@@ -8096,11 +8122,10 @@ fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> 
 fn taste_slot(core: &ClientCore, book: &FoodBook) -> Option<usize> {
     (0..INV_SLOTS).find(|&i| {
         let s = core.inv[i];
-        let b = FoodBook::bit(s.item);
         s.count > 0
-            && b != 0
-            && book.tried & b == 0
-            && book.not_food & b == 0
+            && usize::from(s.item) < ItemBits::CAP
+            && !book.tried.has(s.item)
+            && !book.not_food.has(s.item)
             && core.catalog.row(usize::from(s.item)).food > 0
     })
 }
@@ -8220,7 +8245,7 @@ pub fn observe(
                     || (def.station != STATION_NONE && memory.station_held)
                     || (def.blueprint && !sim_core::research::knows(known, r as u16))
                     || !inputs_ok(core, r as u16)
-                    || !(room_for(core, FoodBook::bit(def.output)) || craft_fits(core, r as u16, 1))
+                    || !(room_for(core, ItemBits::bit(def.output)) || craft_fits(core, r as u16, 1))
                 {
                     continue;
                 }
@@ -8974,6 +8999,29 @@ mod tests {
 
     fn survivor() -> Survivor {
         Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap())
+    }
+
+    /// The catalog outgrew one u128 (127 rows filled it): ids on both
+    /// sides of the word boundary and the catalog's last row each land in
+    /// their own bit, and nothing past the set is ever in it.
+    #[test]
+    fn item_bits_hold_ids_across_the_word_boundary() {
+        let ids = [0u16, 127, 128, MAX_ITEM_DEFS as u16 - 1];
+        assert_eq!(MAX_ITEM_DEFS, 160);
+        let mut all = ItemBits::default();
+        assert!(!all.any());
+        for &id in &ids {
+            let one = ItemBits::bit(id);
+            assert!(one.any() && one.has(id), "id {id}");
+            for &other in &ids {
+                assert_eq!(one.has(other), other == id, "id {id} vs {other}");
+            }
+            all.or(one);
+        }
+        assert!(ids.iter().all(|&id| all.has(id)));
+        assert!(!all.has(1) && !all.has(129) && !all.has(MAX_ITEM_DEFS as u16));
+        assert!(!ItemBits::bit(ItemBits::CAP as u16).any());
+        assert!(!all.has(u16::MAX));
     }
 
     /// A welcomed controller with a small catalog: Rock (3), Wood (5) and,
@@ -9985,7 +10033,7 @@ mod tests {
         let n = protocol::event::encode_event_vitals(110, 250, 500, 250, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         let book = bot.memory.food;
-        assert!(book.not_food & 1 << 6 != 0 && book.feeds & 1 << 7 != 0);
+        assert!(book.not_food.has(6) && book.feeds.has(7));
         assert!(!book.may_feed(6) && book.may_feed(7));
         assert!(!book.waters_known(7));
     }
@@ -10315,7 +10363,7 @@ mod tests {
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);
-        assert_ne!(bot.memory.yields[Kind::Wood as usize], 0);
+        assert!(bot.memory.yields[Kind::Wood as usize].any());
         let core = bot.core.as_mut().unwrap();
         core.inv.fill(ItemStack {
             item: 6,

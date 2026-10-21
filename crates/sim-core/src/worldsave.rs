@@ -771,9 +771,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         for c in ov.cook.iter() {
             o.u16(*c);
         }
-        // Only a planter has a tank, and the decoder refuses water on
-        // anything else: a stray value must not make the save unbootable.
-        o.u32(if ov.arch == crate::deploy::ARCH_PLANTER {
+        // Only a planter or a catcher has a tank, and the decoder refuses
+        // water on anything else: a stray value must not make the save
+        // unbootable.
+        o.u32(if OvenState::arch_has_tank(ov.arch) {
             ov.water
         } else {
             0
@@ -1501,8 +1502,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         if !crate::deploy::holds_items(arch) {
             return Err(WorldSaveError::BadContentRow);
         }
-        // Only a planter has a tank; anything else's is the hash's blind spot.
-        if water != 0 && arch != crate::deploy::ARCH_PLANTER {
+        // Only a planter or a catcher has a tank; anything else's is the
+        // hash's blind spot.
+        if water != 0 && !OvenState::arch_has_tank(arch) {
             return Err(WorldSaveError::BadContentRow);
         }
         *b = BoxRec {

@@ -182,3 +182,4 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | `shape_stairs_tri_spiral.png` | `ci/icons/shape_stairs_tri_spiral.svg` (ours) |
 | `shape_stairs_u.png` | `ci/icons/shape_stairs_u.svg` (ours) |
 | `shape_tri_floor_frame.png` | `ci/icons/shape_tri_floor_frame.svg` (ours) |
+| `water_catcher.png` | `ci/icons/water_catcher.py` (ours) |

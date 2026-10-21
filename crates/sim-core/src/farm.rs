@@ -12,13 +12,19 @@
 //! for a window, dies, and withers away. Picking it pays the crop and kills
 //! the plant.
 //!
+//! A water catcher (`deploy::ARCH_CATCHER`, `oven::CATCHER_LAYOUT`) banks
+//! rain in the same kind of tank, fills an empty waterskin in its one slot
+//! for exactly what pouring one pays, and every tenth period waters the
+//! planters and ground plants within its reach.
+//!
 //! [`step`] runs right after the oven sweep, on the ovens' 15-tick stride:
-//! the planters bank rain, then every plant whose index matches the tick
-//! is visited. Removals are collected and applied after the pass, so a
-//! swap-remove never re-times a plant inside it. No HashMap, no allocation.
+//! the planters and catchers bank rain, then every plant whose index
+//! matches the tick is visited. Removals are collected and applied after
+//! the pass, so a swap-remove never re-times a plant inside it. No HashMap,
+//! no allocation.
 
 use crate::climate::ClimateContent;
-use crate::deploy::{box_key, BoxRec, Deploys, ARCH_PLANTER, DEPLOY_VOL};
+use crate::deploy::{box_key, BoxRec, Deploys, ARCH_CATCHER, ARCH_PLANTER, DEPLOY_VOL};
 use crate::deploy::{
     REFUSE_D_KIND, REFUSE_D_PLANTS_FULL, REFUSE_D_PLANT_ITEM, REFUSE_D_PLANT_SOIL,
     REFUSE_D_PLANT_SPOT, REFUSE_D_PLANT_STAGE, REFUSE_D_PLANT_WATER, REFUSE_D_SPOT,
@@ -291,6 +297,11 @@ pub const MAX_PLANT_REMOVALS_PER_TICK: usize = 64;
 pub const MAX_LOST_HOSTS_PER_TICK: usize = 8;
 /// One saved plant (`worldsave.rs`).
 pub const PLANT_BYTES: usize = 58;
+
+/// A catcher waters what stands in its reach once in this many of its
+/// visits (5 s): its scan of the boxes and the ground plants is the farm's
+/// widest, so it runs a tenth as often and pays ten periods' flow at once.
+pub const CATCHER_SPRINKLE_PERIODS: u64 = 10;
 
 // ---------------------------------------------------------------- records
 
@@ -665,6 +676,13 @@ pub struct FarmContent {
     /// in it per second, wu.
     pub ground_cap_wu: u32,
     pub ground_rain_wu_s: u32,
+    /// A water catcher's barrel: what it holds, what full rain banks in it
+    /// per second, and what it pours per second into each planter or
+    /// ground plant within `catcher_reach_cm` of it, wu.
+    pub catcher_cap_wu: u32,
+    pub catcher_rain_wu_s: u32,
+    pub catcher_flow_wu_s: u32,
+    pub catcher_reach_cm: u16,
 }
 
 impl FarmContent {
@@ -696,6 +714,10 @@ impl FarmContent {
         soil_pm: [0; crate::terrain::BIOMES],
         ground_cap_wu: 0,
         ground_rain_wu_s: 0,
+        catcher_cap_wu: 0,
+        catcher_rain_wu_s: 0,
+        catcher_flow_wu_s: 0,
+        catcher_reach_cm: 0,
     };
 
     /// A corn crop on the gather fixture's items (seed 1, yield 0, a full
@@ -732,6 +754,10 @@ impl FarmContent {
         f.soil_pm[crate::terrain::Biome::Forest as usize] = 450;
         f.ground_cap_wu = 1800 * hz;
         f.ground_rain_wu_s = 3 * hz;
+        f.catcher_cap_wu = 10_800 * hz;
+        f.catcher_rain_wu_s = 20 * hz;
+        f.catcher_flow_wu_s = 12 * hz;
+        f.catcher_reach_cm = 300;
         f
     }
 
@@ -780,13 +806,14 @@ impl FarmContent {
 // ---------------------------------------------------------------- tick
 
 /// One farm period's slice (`World::tick`, right after `oven::sweep`):
-/// (a) every planter whose turn it is banks rain under open sky; (b) every
-/// plant whose turn it is is visited — its host checked (a ground plant's
-/// soil still open), its ripe or dying clock run, or (by day under open
-/// sky) it drinks and grows by the worst of its water, soil and air.
-/// `feet_of` is a planter box's floor height, `open_sky_at` whether a point
-/// is unroofed, `ground_open` whether soil is unroofed and unbuilt
-/// ([`ground_cover`]).
+/// (a) every planter whose turn it is banks rain under open sky, and every
+/// catcher catches, fills a skin and waters its reach ([`catcher_visit`]);
+/// (b) every plant whose turn it is is visited — its host checked (a ground
+/// plant's soil still open), its ripe or dying clock run, or (by day under
+/// open sky) it drinks and grows by the worst of its water, soil and air.
+/// `feet_of` is a box's floor height as the archetype it is, `open_sky_at`
+/// whether a point is unroofed, `ground_open` whether soil is unroofed and
+/// unbuilt ([`ground_cover`]).
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     fc: &FarmContent,
@@ -797,7 +824,7 @@ pub fn step(
     night: bool,
     wx: &Wx,
     day_tick: u64,
-    feet_of: &dyn Fn(&BoxRec) -> f32,
+    feet_of: &dyn Fn(&BoxRec, u8) -> f32,
     open_sky_at: &dyn Fn(f32, f32, f32) -> bool,
     ground_open: &dyn Fn(f32, f32, f32) -> bool,
     events: &mut EventQueue,
@@ -807,30 +834,49 @@ pub fn step(
     let (boxes, ovens) = deploys.oven_parts_mut();
     let tank_top = DEPLOY_VOL[ARCH_PLANTER as usize][1];
 
-    // (a) Rain into every open planter's tank, idle ones too.
-    if wx.rain > 0 && fc.rain_wu_s > 0 && fc.planter_cap_wu > 0 {
-        let gain = (fc.rain_wu_s as u64 * FARM_PERIOD_TICKS * wx.rain.min(1000) as u64
-            / (TICK_HZ as u64 * 1000))
-            .min(u32::MAX as u64) as u32;
-        for i in (phase..ovens.len()).step_by(period) {
-            if ovens[i].arch != ARCH_PLANTER || ovens[i].water >= fc.planter_cap_wu {
-                continue;
+    // What the rain banks this period at `per_s` wu a second in full rain.
+    let rain = |per_s: u32, cap: u32| -> u32 {
+        if wx.rain == 0 || cap == 0 {
+            return 0;
+        }
+        (per_s as u64 * FARM_PERIOD_TICKS * wx.rain.min(1000) as u64 / (TICK_HZ as u64 * 1000))
+            .min(u32::MAX as u64) as u32
+    };
+    let planter_rain = rain(fc.rain_wu_s, fc.planter_cap_wu);
+    let catcher_rain = rain(fc.catcher_rain_wu_s, fc.catcher_cap_wu);
+    let ground_rain = rain(fc.ground_rain_wu_s, fc.ground_cap_wu);
+    let sprinkle = (tick / FARM_PERIOD_TICKS).is_multiple_of(CATCHER_SPRINKLE_PERIODS);
+
+    // (a) The tanks: rain into every open planter's, idle ones too, and
+    // every catcher's turn.
+    for i in (phase..ovens.len()).step_by(period) {
+        match ovens[i].arch {
+            ARCH_PLANTER => {
+                if planter_rain == 0 || ovens[i].water >= fc.planter_cap_wu {
+                    continue;
+                }
+                let (x, z) = boxes[i].xz();
+                if open_sky_at(x, z, feet_of(&boxes[i], ARCH_PLANTER) + tank_top) {
+                    ovens[i].water = ovens[i]
+                        .water
+                        .saturating_add(planter_rain)
+                        .min(fc.planter_cap_wu);
+                }
             }
-            let (x, z) = boxes[i].xz();
-            if open_sky_at(x, z, feet_of(&boxes[i]) + tank_top) {
-                ovens[i].water = ovens[i].water.saturating_add(gain).min(fc.planter_cap_wu);
-            }
+            ARCH_CATCHER => catcher_visit(
+                fc,
+                farm,
+                boxes,
+                ovens,
+                i,
+                catcher_rain,
+                sprinkle,
+                feet_of,
+                open_sky_at,
+            ),
+            _ => {}
         }
     }
-
-    // What full rain banks in a ground plant this period.
-    let ground_rain = if wx.rain > 0 && fc.ground_rain_wu_s > 0 && fc.ground_cap_wu > 0 {
-        (fc.ground_rain_wu_s as u64 * FARM_PERIOD_TICKS * wx.rain.min(1000) as u64
-            / (TICK_HZ as u64 * 1000))
-            .min(u32::MAX as u64) as u32
-    } else {
-        0
-    };
 
     // (b) The plants. A bed whose planter is gone is uprooted whole after
     // the pass (every plant in it, not only the one visited), so no plant
@@ -1001,6 +1047,95 @@ pub fn step(
     for &host in &lost[..n_lost] {
         farm.uproot_host(host, events);
     }
+}
+
+/// One catcher's turn in [`step`]'s pass (a):
+/// 1. rain into its barrel under open sky, up to its cap. The sky is asked
+///    at its feet: `open_sky_at` is a standing body's shelter question
+///    (`collide::roofed` adds a body's height), and a body standing on a
+///    1.1 m barrel would put its head through a storey's ceiling;
+/// 2. an empty waterskin in its slot filled once the barrel holds a skin's
+///    worth, for exactly `skin_wu` (what pouring one into a planter pays);
+/// 3. on a sprinkle period, every planter (box order) and then every
+///    growing ground plant (store order) whose centre is within
+///    `catcher_reach_cm` gets `min(room, barrel, flow × 5 s)`.
+#[allow(clippy::too_many_arguments)]
+fn catcher_visit(
+    fc: &FarmContent,
+    farm: &mut Farm,
+    boxes: &mut [BoxRec],
+    ovens: &mut [crate::oven::OvenState],
+    i: usize,
+    rain: u32,
+    sprinkle: bool,
+    feet_of: &dyn Fn(&BoxRec, u8) -> f32,
+    open_sky_at: &dyn Fn(f32, f32, f32) -> bool,
+) {
+    let cap = fc.catcher_cap_wu;
+    let mut water = ovens[i].water;
+    let (x, z) = boxes[i].xz();
+    if rain > 0 && water < cap && open_sky_at(x, z, feet_of(&boxes[i], ARCH_CATCHER)) {
+        water = water.saturating_add(rain).min(cap);
+    }
+    if fc.skin_wu > 0 && water >= fc.skin_wu {
+        if let Some(s) = boxes[i].items[crate::oven::fuel_slots(ARCH_CATCHER)]
+            .iter_mut()
+            .find(|s| s.count > 0 && s.item == fc.water_empty)
+        {
+            s.item = fc.water_full;
+            water -= fc.skin_wu;
+        }
+    }
+    let share = (fc.catcher_flow_wu_s as u64 * CATCHER_SPRINKLE_PERIODS * FARM_PERIOD_TICKS
+        / TICK_HZ as u64)
+        .min(u32::MAX as u64) as u32;
+    if sprinkle && water > 0 && share > 0 && fc.catcher_reach_cm > 0 {
+        let r = fc.catcher_reach_cm as f32 / 100.0;
+        let r2 = r * r;
+        let near = |px: f32, pz: f32| {
+            let (dx, dz) = (px - x, pz - z);
+            dx * dx + dz * dz <= r2
+        };
+        for j in 0..boxes.len() {
+            if water == 0 {
+                break;
+            }
+            if ovens[j].arch != ARCH_PLANTER {
+                continue;
+            }
+            let (px, pz) = boxes[j].xz();
+            if !near(px, pz) {
+                continue;
+            }
+            let pour = fc
+                .planter_cap_wu
+                .saturating_sub(ovens[j].water)
+                .min(water)
+                .min(share);
+            ovens[j].water += pour;
+            water -= pour;
+        }
+        for p in farm.entries[..farm.len].iter_mut() {
+            if water == 0 {
+                break;
+            }
+            if p.host != HOST_GROUND || !is_growing(p.stage) {
+                continue;
+            }
+            let (px, _, pz) = p.pos();
+            if !near(px, pz) {
+                continue;
+            }
+            let pour = fc
+                .ground_cap_wu
+                .saturating_sub(p.water)
+                .min(water)
+                .min(share);
+            p.water += pour;
+            water -= pour;
+        }
+    }
+    ovens[i].water = water;
 }
 
 // ---------------------------------------------------------------- verbs

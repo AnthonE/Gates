@@ -8626,8 +8626,8 @@ impl World {
         let wx = crate::weather::now(self.seed, tick, &self.env);
         let day_tick = crate::weather::day_tick(tick, &self.env);
         let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
-        let feet_of = |b: &crate::deploy::BoxRec| {
-            deploy::box_base_y(seed, haven, pieces.cols(), b, deploy::ARCH_PLANTER)
+        let feet_of = |b: &crate::deploy::BoxRec, arch: u8| {
+            deploy::box_base_y(seed, haven, pieces.cols(), b, arch)
         };
         let open_sky_at =
             |x: f32, z: f32, y: f32| !crate::collide::roofed(seed, haven, pieces.cols(), x, z, y);
@@ -9380,9 +9380,9 @@ impl World {
             for c in ov.cook.iter() {
                 h.update(&c.to_le_bytes());
             }
-            // A planter's tank (farming v2), only where there is one, so a
-            // world without one hashes as it did before.
-            if ov.arch == deploy::ARCH_PLANTER {
+            // A planter's or a catcher's tank (farming v2), only where there
+            // is one, so a world without one hashes as it did before.
+            if crate::oven::OvenState::arch_has_tank(ov.arch) {
                 h.update(&ov.water.to_le_bytes());
             }
         }

@@ -73,6 +73,7 @@ pub fn oven_refusal(arch: u8) -> &'static str {
         sim_core::deploy::ARCH_FURNACE => "a furnace takes wood and ore",
         sim_core::deploy::ARCH_RECYCLER => "the recycler only takes what it can break down",
         sim_core::deploy::ARCH_PLANTER => PLANT_BY_HAND,
+        sim_core::deploy::ARCH_CATCHER => "a water catcher takes a waterskin",
         _ => refusal_text(REFUSE_M_OVEN as u8),
     }
 }
@@ -99,12 +100,14 @@ impl Section {
     }
 
     /// The band's name on a converter of `arch`: a planter's beds and its
-    /// harvest, every other converter's FUEL, INPUT and OUTPUT.
+    /// harvest, a catcher's skin slot, every other converter's FUEL, INPUT
+    /// and OUTPUT.
     pub fn label_for(self, arch: u8) -> &'static str {
         match (arch, self) {
             (sim_core::deploy::ARCH_PLANTER, Section::Fuel) => "WATER",
             (sim_core::deploy::ARCH_PLANTER, Section::Input) => "PLANTED",
             (sim_core::deploy::ARCH_PLANTER, Section::Output) => "HARVEST",
+            (sim_core::deploy::ARCH_CATCHER, Section::Fuel) => "WATER",
             _ => self.label(),
         }
     }
@@ -273,6 +276,9 @@ pub fn fire_quick_move(
         let planter = arch == sim_core::deploy::ARCH_PLANTER;
         return Quick::Refused(match band {
             Section::Fuel if planter => "the planter is already watered",
+            Section::Fuel if arch == sim_core::deploy::ARCH_CATCHER => {
+                "the catcher already holds a skin"
+            }
             Section::Fuel => "the fire's fuel slot is full",
             Section::Input if planter => PLANT_BY_HAND,
             Section::Input => "the grill is full",

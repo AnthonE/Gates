@@ -721,6 +721,9 @@ pub enum DeployArchetype {
     /// A rug: a flat cloth floor piece, walked over. Its row's `comfort` is
     /// what it does.
     Rug,
+    /// A water catcher (farming v2): banks rain, fills a waterskin, waters
+    /// the planters and ground plants in reach (`cooking.toml` `[farm]`).
+    Catcher,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -816,6 +819,13 @@ pub struct FarmSection {
     /// mille: a ground plant's pace at best. A biome left out refuses a
     /// seed; an unknown name is refused.
     pub soil: BTreeMap<String, u32>,
+    /// The water catcher (`deployables.toml` archetype `catcher`): its
+    /// barrel, what full rain banks in it per second, what it pours per
+    /// second into each planter and ground plant in reach, and that reach.
+    pub catcher_water: u32,
+    pub catcher_rain: u32,
+    pub catcher_flow: u32,
+    pub catcher_reach_cm: u32,
 }
 
 /// One crop (`content/cooking.toml` `[[crop]]`): what plants it, what a

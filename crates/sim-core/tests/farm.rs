@@ -6,9 +6,9 @@
 
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::deploy::{
-    box_key, DeployContent, DeployDef, ARCH_PLANTER, MATTER_WOOD, PLACE_ANY, REFUSE_D_NOT_EMPTY,
-    REFUSE_D_PLANTS_FULL, REFUSE_D_PLANT_ITEM, REFUSE_D_PLANT_SOIL, REFUSE_D_PLANT_SPOT,
-    REFUSE_D_PLANT_STAGE, REFUSE_D_REACH,
+    box_key, DeployContent, DeployDef, ARCH_CATCHER, ARCH_PLANTER, MATTER_WOOD, PLACE_ANY,
+    REFUSE_D_NOT_EMPTY, REFUSE_D_PLANTS_FULL, REFUSE_D_PLANT_ITEM, REFUSE_D_PLANT_SOIL,
+    REFUSE_D_PLANT_SPOT, REFUSE_D_PLANT_STAGE, REFUSE_D_REACH,
 };
 use sim_core::farm::{
     ground_site, FarmContent, Ground, PlantRec, FL_DRY, GONE_PICKED, GONE_UPROOTED, GONE_WITHERED,
@@ -47,6 +47,7 @@ const SKIN_FULL: u16 = 23;
 const SKIN_EMPTY: u16 = 24;
 const HEMP_SEED: u16 = 26;
 const HEMP_YIELD: u16 = 27;
+const CATCHER: u16 = 28;
 /// Where the planter's item sits in the hand, and the seeds.
 const PLANTER_SLOT: usize = 3;
 const SEED_SLOT: usize = 6;
@@ -97,13 +98,27 @@ fn farm_world() -> (Box<World>, u16, u16) {
         (SKIN_EMPTY, 1),
         (HEMP_SEED, 50),
         (HEMP_YIELD, 50),
+        (CATCHER, 1),
     ] {
         w.gather.stack_max[item as usize] = cap;
     }
-    w.gather.item_count = w.gather.item_count.max(HEMP_YIELD + 1);
+    w.gather.item_count = w.gather.item_count.max(CATCHER + 1);
     for seed in [SEED_ITEM, HEMP_SEED] {
         w.gather.cond_cap[seed as usize] = sim_core::farm::GENOME_VALUES as u16;
     }
+    // The catcher's row, then the planter's: the planter stays the last row
+    // (`place_planter`), the catcher the one before it (`place_catcher`).
+    let row = w.deploy.def_count;
+    w.deploy.defs[row as usize] = DeployDef {
+        arch: ARCH_CATCHER,
+        placement: PLACE_ANY,
+        hp: 150,
+        matter: MATTER_WOOD,
+        item: CATCHER,
+        n_costs: 0,
+        costs: [(0, 0); 4],
+    };
+    w.deploy.def_count += 1;
     let row = w.deploy.def_count;
     w.deploy.defs[row as usize] = DeployDef {
         arch: ARCH_PLANTER,
@@ -122,6 +137,7 @@ fn farm_world() -> (Box<World>, u16, u16) {
     fc.water_empty = SKIN_EMPTY;
     fc.rain_wu_s = 0;
     fc.ground_rain_wu_s = 0;
+    fc.catcher_rain_wu_s = 0;
     // Blank seeds roll XXXXXX, the neutral genome, so every test that is
     // not about genes grows at the crop's own numbers. The gene tests plant
     // clones, whose genes they choose.
@@ -1978,5 +1994,268 @@ fn a_save_round_trips_a_ground_plant() {
     assert_eq!(back.farm.entries(), w.farm.entries());
     assert_eq!(back.farm.entries()[0].host, HOST_GROUND);
     assert!(back.farm.entries()[0].water > 0);
+    assert_eq!(back.state_hash(), w.state_hash());
+}
+
+// ---------------------------------------------------------------- catcher
+
+/// Place a water catcher at `(cx, cz)` + `pose` on `level`, standing the
+/// player on the spot first. Returns its box key, or `None` if it did not
+/// place.
+fn place_catcher(
+    w: &mut World,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    pose: sim_core::footprint::Pose,
+) -> Option<u32> {
+    let row = w.deploy.def_count - 2;
+    assert_eq!(w.deploy.defs[row as usize].arch, ARCH_CATCHER);
+    w.players[0].inv[PLANTER_SLOT] = ItemStack {
+        item: CATCHER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = PLANTER_SLOT as u8;
+    let (x, z) = sim_core::footprint::centre(cx, cz, pose);
+    let qy = w.players[0].body.qy;
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 1.0);
+    w.players[0].body.qy = w.players[0].body.qy.max(qy);
+    let before = w.deploys.len();
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row,
+        cx,
+        cz,
+        level,
+        loc: LOC_PLANE,
+        pose,
+    }]);
+    (w.deploys.len() == before + 1).then(|| box_key(cx, cz, level, 0))
+}
+
+fn set_tank(w: &mut World, host: u32, water: u32) {
+    let i = w.deploys.box_index(host).expect("a tank is a container");
+    w.deploys.set_box_water(i, water);
+    assert_eq!(tank(w, host), water, "the box has no tank");
+}
+
+fn slot0(w: &World, host: u32) -> ItemStack {
+    let i = w.deploys.box_index(host).expect("a catcher is a container");
+    w.deploys.box_slot(i, 0)
+}
+
+/// One sprinkle's pour into each target: 12 plant-seconds a second for the
+/// 5 s between sprinkles, at 30 ticks a second.
+const SHARE: u32 = 12 * 30 * 5;
+/// Long enough for every catcher to have sprinkled once.
+const SPRINKLE: u64 = sim_core::farm::CATCHER_SPRINKLE_PERIODS * OVEN_PERIOD_TICKS + 1;
+
+/// **A catcher banks rain only under open sky**, and stops at its cap.
+#[test]
+fn a_catcher_banks_rain_under_open_sky_up_to_its_cap() {
+    use sim_core::footprint::Pose;
+    use sim_core::weather::{FORCE_FADE_TICKS, KEEP_TIME, STORM};
+    let (mut w, cx, cz) = farm_world();
+    w.cook.farm.catcher_rain_wu_s = 20 * 30;
+    for (row, level, loc) in [
+        (0u16, 0u8, LOC_PLANE),
+        (1, 0, LOC_EDGE_XLO),
+        (2, 1, LOC_PLANE),
+    ] {
+        let before = w.pieces.len();
+        w.tick(&[Command::Place {
+            id: PLAYER,
+            row,
+            cx,
+            cz,
+            level,
+            loc,
+            freehand: false,
+            plate: 0,
+        }]);
+        assert_eq!(w.pieces.len(), before + 1, "piece {row} did not place");
+    }
+    let plate = w.pieces.cols().plate(cx, cz).unwrap_or(0);
+    let floor = sim_core::build::column_floor_y(SEED, hv(SEED), cx, cz, plate);
+    w.players[0].body.qy = sim_core::movement::quant_y(floor);
+    let roofed = place_catcher(&mut w, cx, cz, 0, Pose::CENTRE).expect("the roofed catcher");
+    w.players[0].body.qy = 0;
+    let open = place_catcher(&mut w, cx + 1, cz, 0, Pose::CENTRE).expect("the open catcher");
+    w.tick(&[Command::AdminEnv {
+        weather: STORM,
+        time_pm: KEEP_TIME,
+    }]);
+    idle(&mut w, FORCE_FADE_TICKS + 60);
+    assert!(tank(&w, open) > 0, "a storm did not fill an open catcher");
+    assert_eq!(tank(&w, roofed), 0, "a storm filled a roofed catcher");
+
+    // Nearly full, it tops out at its cap and holds there.
+    let cap = w.cook.farm.catcher_cap_wu;
+    set_tank(&mut w, open, cap - 10);
+    idle(&mut w, 4 * OVEN_PERIOD_TICKS);
+    assert_eq!(tank(&w, open), cap, "the barrel ran past its cap");
+}
+
+/// **A catcher fills an empty skin once it holds a skin's worth**, not a
+/// drop before, and the fill costs exactly what pouring a skin pays.
+#[test]
+fn a_catcher_fills_an_empty_skin_for_exactly_a_skins_worth() {
+    use sim_core::footprint::Pose;
+    let (mut w, cx, cz) = farm_world();
+    let c = place_catcher(&mut w, cx, cz, 0, Pose::CENTRE).expect("the catcher");
+    let skin = w.cook.farm.skin_wu;
+    let i = w.deploys.box_index(c).unwrap();
+    w.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: SKIN_EMPTY,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    set_tank(&mut w, c, skin - 1);
+    idle(&mut w, 2 * OVEN_PERIOD_TICKS);
+    assert_eq!(slot0(&w, c).item, SKIN_EMPTY, "filled short of a skin");
+    assert_eq!(
+        tank(&w, c),
+        skin - 1,
+        "the barrel moved with no skin filled"
+    );
+
+    set_tank(&mut w, c, skin + 500);
+    idle(&mut w, 2 * OVEN_PERIOD_TICKS);
+    assert_eq!(
+        slot0(&w, c).item,
+        SKIN_FULL,
+        "a skin's worth filled nothing"
+    );
+    assert_eq!(slot0(&w, c).count, 1);
+    assert_eq!(tank(&w, c), 500, "a fill cost other than one skin");
+    // And a full skin is left alone.
+    idle(&mut w, 2 * OVEN_PERIOD_TICKS);
+    assert_eq!(tank(&w, c), 500);
+}
+
+/// Water from a full catcher at `(cx, cz)` reaches a planter `dx_q` pose
+/// steps west of the next cell's centre (3 m less `dx_q` × 11.7 mm away),
+/// whose tank starts at `start`: what that planter holds a sprinkle later,
+/// and what the catcher lost.
+fn sprinkle_into_planter(dx_q: i8, start: u32) -> (u32, u32, u32) {
+    use sim_core::footprint::Pose;
+    let (mut w, cx, cz) = farm_world();
+    let p = {
+        let (x, z) = sim_core::footprint::centre(cx + 1, cz, Pose::CENTRE);
+        w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
+        let row = w.deploy.def_count - 1;
+        w.players[0].inv[PLANTER_SLOT] = ItemStack {
+            item: PLANTER,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        w.players[0].frame.sel = PLANTER_SLOT as u8;
+        let before = w.deploys.len();
+        w.tick(&[Command::PlaceDeploy {
+            id: PLAYER,
+            row,
+            cx: cx + 1,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            pose: Pose {
+                ox: -dx_q,
+                oz: 0,
+                yaw: 0,
+            },
+        }]);
+        assert_eq!(w.deploys.len(), before + 1, "the planter did not place");
+        box_key(cx + 1, cz, 0, 0)
+    };
+    let c = place_catcher(&mut w, cx, cz, 0, Pose::CENTRE).expect("the catcher");
+    let full = w.cook.farm.catcher_cap_wu;
+    set_tank(&mut w, c, full);
+    set_tank(&mut w, p, start);
+    idle(&mut w, SPRINKLE);
+    (tank(&w, p), full - tank(&w, c), w.cook.farm.planter_cap_wu)
+}
+
+/// **A catcher waters a planter 2.9 m away and not one 3.1 m away**, a
+/// sprinkle's share at a time.
+#[test]
+fn a_catcher_waters_a_planter_within_three_metres_only() {
+    // 9 pose steps is 0.105 m: 2.895 m and 3.105 m.
+    let (near, spent, _) = sprinkle_into_planter(9, 0);
+    assert_eq!(near, SHARE, "a planter 2.9 m away took {near}, not a share");
+    assert_eq!(spent, SHARE, "the catcher paid other than what it poured");
+    let (far, spent, _) = sprinkle_into_planter(-9, 0);
+    assert_eq!(far, 0, "a planter 3.1 m away was watered");
+    assert_eq!(spent, 0);
+}
+
+/// **A catcher never fills a planter past its cap**: it pours only the room.
+#[test]
+fn a_catcher_never_overfills_a_planter() {
+    let cap = FarmContent::probe_fixture().planter_cap_wu;
+    let (got, spent, cap2) = sprinkle_into_planter(9, cap - 100);
+    assert_eq!(cap, cap2);
+    assert_eq!(got, cap, "the planter ran past its cap");
+    assert_eq!(spent, 100, "the catcher paid for water that did not fit");
+}
+
+/// **A catcher feeds a dry ground plant in its reach.**
+#[test]
+fn a_catcher_feeds_a_dry_ground_plant_in_range() {
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    stand_by(&mut w, x, z);
+    let id = sow_clone(&mut w, x, z, g(b"XXXXXX"));
+    assert_eq!(plant_of(&w, id).water, 0);
+    // A catcher a couple of metres off, wherever the ground takes one.
+    let c = [
+        (1.6f32, 0.0f32),
+        (-1.6, 0.0),
+        (0.0, 1.8),
+        (0.0, -1.8),
+        (1.4, 1.4),
+    ]
+    .iter()
+    .find_map(|&(dx, dz)| {
+        let (cx, cz, ox, oz) = sim_core::footprint::quantize(x + dx, z + dz)?;
+        let pose = sim_core::footprint::Pose { ox, oz, yaw: 0 };
+        place_catcher(&mut w, cx, cz, 0, pose)
+    })
+    .expect("no catcher placed beside the plant");
+    assert!(w.farm.index_of_id(id).is_some(), "the catcher uprooted it");
+    let full = w.cook.farm.catcher_cap_wu;
+    set_tank(&mut w, c, full);
+    idle(&mut w, SPRINKLE);
+    let p = plant_of(&w, id);
+    assert!(p.water > 0, "a dry ground plant in reach was not fed");
+    assert!(p.water <= SHARE);
+    assert_eq!(
+        full - tank(&w, c),
+        SHARE,
+        "the catcher paid other than a share"
+    );
+}
+
+/// **A save keeps a catcher's barrel** to the same hash (the decoder takes
+/// water on a catcher as it does on a planter).
+#[test]
+fn a_save_round_trips_a_catchers_barrel() {
+    let (mut w, cx, cz) = farm_world();
+    let c =
+        place_catcher(&mut w, cx, cz, 0, sim_core::footprint::Pose::CENTRE).expect("the catcher");
+    set_tank(&mut w, c, 4321);
+    w.tick(&[Command::Leave { id: PLAYER }]);
+    let mut buf = vec![0u8; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut buf).expect("encodes");
+    let (mut back, _, _) = farm_world();
+    back.load(&buf[..n]).expect("its own bytes load");
+    assert_eq!(tank(&back, c), 4321);
     assert_eq!(back.state_hash(), w.state_hash());
 }

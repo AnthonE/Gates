@@ -522,6 +522,7 @@ impl Content {
                     DeployArchetype::BarricadeBarbed => sim_core::deploy::ARCH_BARRICADE_BARBED,
                     DeployArchetype::FloorSpikes => sim_core::deploy::ARCH_FLOOR_SPIKES,
                     DeployArchetype::Rug => sim_core::deploy::ARCH_RUG,
+                    DeployArchetype::Catcher => sim_core::deploy::ARCH_CATCHER,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -1602,6 +1603,15 @@ impl Content {
         fc.w_pct = pct(f.w_pct, "w_pct")?;
         fc.ground_cap_wu = ticks(f.ground_water, "ground_water")?;
         fc.ground_rain_wu_s = ticks(f.ground_rain, "ground_rain")?;
+        fc.catcher_cap_wu = ticks(f.catcher_water, "catcher_water")?;
+        fc.catcher_rain_wu_s = ticks(f.catcher_rain, "catcher_rain")?;
+        fc.catcher_flow_wu_s = ticks(f.catcher_flow, "catcher_flow")?;
+        fc.catcher_reach_cm = u16::try_from(f.catcher_reach_cm).map_err(|_| {
+            format!(
+                "bake: farm catcher_reach_cm {} is past a u16",
+                f.catcher_reach_cm
+            )
+        })?;
         for (name, v) in &f.soil {
             let b = sim_core::terrain::BIOME_NAMES
                 .iter()

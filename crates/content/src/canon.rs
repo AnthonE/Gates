@@ -505,6 +505,10 @@ pub fn hash(c: &Content) -> u64 {
         fm.w_pct,
         fm.ground_water,
         fm.ground_rain,
+        fm.catcher_water,
+        fm.catcher_rain,
+        fm.catcher_flow,
+        fm.catcher_reach_cm,
     ] {
         h.u(v);
     }

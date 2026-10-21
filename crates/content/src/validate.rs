@@ -2382,6 +2382,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
             fm.skin_water, fm.planter_water
         ));
     }
+    // A catcher fills a skin only once its barrel holds one, and waters a
+    // reach a hand could walk: a barrel under a skin fills nothing, and a
+    // reach of 0 or past 10 m is a typo.
+    if c.deployables
+        .iter()
+        .any(|d| d.archetype == DeployArchetype::Catcher)
+    {
+        if fm.catcher_water < fm.skin_water {
+            return Err(format!(
+                "farm: catcher_water {} holds less than a skin ({}), so no skin fills",
+                fm.catcher_water, fm.skin_water
+            ));
+        }
+        if !(1..=1000).contains(&fm.catcher_reach_cm) {
+            return Err(format!(
+                "farm: catcher_reach_cm {} is not within 1..=1000",
+                fm.catcher_reach_cm
+            ));
+        }
+    }
     if !c
         .deployables
         .iter()

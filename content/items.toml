@@ -1485,3 +1485,15 @@ rarity = "uncommon"
 slot = "body"
 class = "clothing"
 description = "A sealed suit, hood and boots in one. Keeps out the cold and the green."
+
+# Farming v2's water catcher: a tarp funnel over a barrel. It banks rain,
+# fills an empty waterskin left in it, and waters what grows near it.
+[[item]]
+id = "item.water_catcher"
+name = "Water Catcher"
+stack = 1
+tier = 0
+rarity = "common"
+slot = "hand"
+class = "items"
+description = "Catches rain. Fills a waterskin and waters planters within 3 m."

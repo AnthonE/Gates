@@ -301,8 +301,9 @@ fn test_content() {
     assert!(
         // 70 → 80 for crops v0's seeds and planter; → 92 for Rust's twelve
         // components (2026-10-13); → 106 for Rust's tree items (2026-10-17/18);
-        // → 130 for Rust's guns, their rounds, the rocket and C4 (guns v1).
-        (40..=130).contains(&(c.items.len() - fittings.len())),
+        // → 130 for Rust's guns, their rounds, the rocket and C4 (guns v1);
+        // → the catalog cap for farming v2 (`MAX_ITEM_DEFS` 160).
+        (40..=sim_core::limits::MAX_ITEM_DEFS).contains(&(c.items.len() - fittings.len())),
         "alpha core plus the window fittings, keycards and arrow kinds, got {} items",
         c.items.len()
     );
@@ -4890,11 +4891,11 @@ fn every_solid_deployable_places_on_the_plane() {
         }
     }
     assert_eq!(
-        seen, 14,
-        "expected exactly fourteen solid rows — the hearth, the box (twice), the \
+        seen, 15,
+        "expected exactly fifteen solid rows — the hearth, the box (twice), the \
          furnace, the three benches, the recycler, the research table, \
-         the barricade (twice: the barbed one), the planter, the auto turret and \
-         the vending machine — \
+         the barricade (twice: the barbed one), the planter, the auto turret, \
+         the vending machine and the water catcher — \
          and found {seen}. The floor used to be `>= 7`, which its own message \
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \
@@ -5211,6 +5212,48 @@ fn the_shipped_farm_bakes_to_its_numbers() {
     soil[Biome::Forest as usize] = 450;
     assert_eq!(fc.soil_pm, soil);
     assert_eq!((fc.ground_cap_wu, fc.ground_rain_wu_s), (1800 * 30, 3 * 30));
+    // The water catcher: three skins' barrel, its rain, its flow, 3 m.
+    assert_eq!(
+        (
+            fc.catcher_cap_wu,
+            fc.catcher_rain_wu_s,
+            fc.catcher_flow_wu_s,
+            fc.catcher_reach_cm
+        ),
+        (10_800 * 30, 20 * 30, 12 * 30, 300)
+    );
+    let dc = c.bake_deployables().expect("deployables bake");
+    let catcher = c.item_index("item.water_catcher").unwrap();
+    assert!(
+        dc.defs[..dc.def_count as usize]
+            .iter()
+            .any(|d| d.item == catcher && d.arch == sim_core::deploy::ARCH_CATCHER),
+        "the water catcher is no catcher deployable"
+    );
+    let cc = c.bake_cooking().expect("cooking bakes");
+    for skin in [fc.water_empty, fc.water_full] {
+        assert_eq!(
+            cc.roles(sim_core::deploy::ARCH_CATCHER, skin),
+            sim_core::oven::ROLE_FUEL
+        );
+    }
+}
+
+/// A catcher's barrel holds at least a skin, and its reach is a hand's walk.
+#[test]
+fn a_catcher_too_small_to_fill_a_skin_or_reaching_nowhere_is_refused() {
+    refuses(
+        "cooking.toml",
+        "catcher_water = 10800",
+        "catcher_water = 3000",
+        "less than a skin",
+    );
+    refuses(
+        "cooking.toml",
+        "catcher_reach_cm = 300",
+        "catcher_reach_cm = 0",
+        "within 1..=1000",
+    );
 }
 
 /// The ground's soil names biomes and stays per mille, and a ground plant's

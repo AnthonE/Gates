@@ -361,11 +361,12 @@ const _: () = assert!(
 /// §open.
 pub const PENDING_REMOVALS_CAP: usize = 256;
 
-/// Item definitions the sim preallocates for (the alpha set is ~48 rows,
-/// CONTENT.md §2). The content bake refuses a set past this. 127 is the
-/// most the wire's 7-bit held field can name beside its empty-hand code
-/// (`protocol::HELD_NONE`); past it, that field widens.
-pub const MAX_ITEM_DEFS: usize = 127;
+/// Item definitions the sim preallocates for (CONTENT.md §2). The content
+/// bake refuses a set past this. 160 leaves farming v2's rows headroom
+/// (127 filled the old 7-bit held field); the wire's held field is 8 bits
+/// since v131, so anything up to 255 fits beside its empty-hand code
+/// (`protocol::HELD_NONE`). Every per-item table in `World` grows with it.
+pub const MAX_ITEM_DEFS: usize = 160;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -871,6 +872,12 @@ pub const MAX_PLANTS: usize = 4_096;
 /// **refuse** the planting with `REFUSE_D_PLANTS_FULL`.
 pub const MAX_GROUND_PLANTS: usize = 512;
 pub const MAX_GROUND_PLANTS_PER_OWNER: usize = 48;
+
+/// Water catchers standing at once, island-wide (`deploy::ARCH_CATCHER`).
+/// Each one scans the boxes and the ground plants every tenth farm period
+/// to water what stands within its reach, so this bounds that scan.
+/// Overflow policy: **refuse** the placement with `REFUSE_D_FULL`.
+pub const MAX_CATCHERS: usize = 128;
 
 /// Crop rows the sim preallocates for (`content/cooking.toml` `[[crop]]`).
 /// Structural cap like [`MAX_COOK_ROWS`]: the bake refuses a set past it.

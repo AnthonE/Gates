@@ -76,6 +76,9 @@ pub enum Verb {
     Recycler,
     /// A planter box (crops v0): a container that grows. `E` opens it.
     Planter,
+    /// A water catcher (farming v2): a barrel with one skin slot. `E` opens
+    /// it, the planter's panel, to leave an empty skin or take a full one.
+    Catcher,
     /// A player's vending machine (`sim_core::shop`): `E` opens its shop
     /// panel, the offers and Buy for anyone, the slots and the offer editor
     /// for its owner's crew. `handle` is its box key.
@@ -215,6 +218,7 @@ impl Verb {
             Verb::Read => 17,
             Verb::Turn => 18,
             Verb::Planter => 19,
+            Verb::Catcher => 25,
             Verb::Sleeper => 20,
             Verb::Shop => 21,
             Verb::Wheel => 22,
@@ -251,6 +255,7 @@ impl Verb {
             Verb::Read => "INSCRIPTION",
             Verb::Turn => "DIAL",
             Verb::Planter => "PLANTER",
+            Verb::Catcher => "WATER CATCHER",
             Verb::Sleeper => "SLEEPING PLAYER",
             Verb::Shop => "VENDING MACHINE",
             Verb::Wheel => "BIG WHEEL",
@@ -1256,6 +1261,7 @@ pub fn resolve(
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
             sim_core::deploy::ARCH_PLANTER => Verb::Planter,
+            sim_core::deploy::ARCH_CATCHER => Verb::Catcher,
             sim_core::deploy::ARCH_VENDING => Verb::Shop,
             ARCH_RESEARCH => Verb::Research,
             ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
@@ -1271,6 +1277,7 @@ pub fn resolve(
             || verb == Verb::Fire
             || verb == Verb::Recycler
             || verb == Verb::Planter
+            || verb == Verb::Catcher
             || verb == Verb::Shop
             || verb == Verb::Research
         {
@@ -3129,6 +3136,17 @@ mod plant_tests {
         // Past reach: nothing.
         let far = corn(STAGE_SAPLING, 100.0, 10.8, 104.0);
         assert!(resolve_plant(&[far], eye, dir, sim_core::gather::PICK_REACH_M).is_none());
+    }
+
+    #[test]
+    fn a_water_catcher_says_open() {
+        let p = Pick {
+            verb: Verb::Catcher,
+            arch: sim_core::deploy::ARCH_CATCHER,
+            handle: 0x0102_0304,
+            ..Default::default()
+        };
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] OPEN WATER CATCHER");
     }
 
     #[test]

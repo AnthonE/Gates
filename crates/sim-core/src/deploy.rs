@@ -184,6 +184,10 @@ pub const ARCH_FLOOR_SPIKES: u8 = 21;
 /// A rug: a flat cloth floor piece a body walks over. Its row's comfort
 /// (`deployables.toml` `comfort`, `World::furnish_comfort`) is what it does.
 pub const ARCH_RUG: u8 = 22;
+/// A water catcher (farming v2, `farm.rs`): a tarp funnel over a barrel. It
+/// banks rain under open sky, fills an empty waterskin in its one slot, and
+/// waters the planters and ground plants within its reach.
+pub const ARCH_CATCHER: u8 = 23;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -206,7 +210,7 @@ pub const ARCH_RUG: u8 = 22;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 23] = [
+pub const DEPLOY_VOL: [[f32; 3]; 24] = [
     [0.0, 0.0, 0.0],     // 0 bag — walk-over
     [1.54, 1.8, 0.92],   // 1 hearth — Rust's cupboard, as tall as you
     [1.2, 0.65, 0.7],    // 2 box
@@ -230,6 +234,7 @@ pub const DEPLOY_VOL: [[f32; 3]; 23] = [
     [1.8, 1.4, 0.6],     // 20 barbed barricade — the barricade's wall
     [0.0, 0.0, 0.0],     // 21 floor spikes — walk-over, and that is the trap
     [0.0, 0.0, 0.0],     // 22 rug — a floor covering, walked on
+    [0.9, 1.1, 0.9],     // 23 water catcher — a funnel over a barrel
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -326,6 +331,7 @@ pub fn holds_items(arch: u8) -> bool {
         || arch == ARCH_RECYCLER
         || arch == ARCH_RESEARCH
         || arch == ARCH_PLANTER
+        || arch == ARCH_CATCHER
         || arch == ARCH_TURRET
         || arch == ARCH_VENDING
 }
@@ -1642,6 +1648,15 @@ impl Deploys {
             return;
         }
         self.boxes.entries[i].items[s] = stack;
+    }
+
+    /// Set box `i`'s water tank, a planter's or a catcher's (`farm.rs`).
+    /// Total like [`Self::set_box_slot`], and it writes nothing into any
+    /// other container, whose tank the save refuses.
+    pub fn set_box_water(&mut self, i: usize, water: u32) {
+        if i < self.boxes.len && crate::oven::OvenState::arch_has_tank(self.boxes.ovens[i].arch) {
+            self.boxes.ovens[i].water = water;
+        }
     }
 
     /// Planar distance from a box to a player, against [`STATION_REACH_M`].
@@ -2983,6 +2998,18 @@ pub fn place_deploy(
     // record below cannot be written into a full store, so the append that
     // follows the insert needs no second guard.
     if holds_items(def.arch) && deploys.boxes.len == MAX_BOXES {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
+        return;
+    }
+    // The catchers' own cap: each one's watering scan is bounded by it.
+    if def.arch == ARCH_CATCHER
+        && deploys
+            .oven_states()
+            .iter()
+            .filter(|o| o.arch == ARCH_CATCHER)
+            .count()
+            >= crate::limits::MAX_CATCHERS
+    {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
@@ -8790,6 +8817,76 @@ mod tests {
         assert_eq!(
             deploys.boxes.len, MAX_BOXES,
             "the record took the last slot"
+        );
+    }
+
+    /// **The 129th water catcher refuses** (`MAX_CATCHERS`): each catcher's
+    /// watering scan walks the boxes and the ground plants, so their number
+    /// is capped on its own, below the box store's. Written against the
+    /// private store like the box cap above; the 128 standing catchers are
+    /// oven rows, which is what the guard counts.
+    #[test]
+    fn the_129th_catcher_refuses_and_the_128th_places() {
+        use crate::limits::MAX_CATCHERS;
+        let mut dc = DeployContent::probe_fixture();
+        dc.defs[4] = DeployDef {
+            arch: ARCH_CATCHER,
+            placement: PLACE_FOUNDATION,
+            hp: 150,
+            item: 6,
+            ..DeployDef::INERT
+        };
+        dc.def_count = 5;
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 9), (6, 4)]);
+        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        let place =
+            |deploys: &mut Deploys, pieces: &mut Pieces, p: &mut Player, ev: &mut EventQueue| {
+                ev.clear();
+                place_deploy(
+                    SEED,
+                    hv(),
+                    &dc,
+                    &bc,
+                    pieces,
+                    deploys,
+                    p,
+                    0,
+                    4,
+                    CX,
+                    CZ,
+                    0,
+                    LOC_PLANE,
+                    crate::footprint::Pose::CENTRE,
+                    ev,
+                );
+            };
+
+        deploys.boxes.len = MAX_CATCHERS;
+        for o in deploys.boxes.ovens[..MAX_CATCHERS].iter_mut() {
+            o.arch = ARCH_CATCHER;
+        }
+        let before = deploys.len();
+        place(&mut deploys, &mut pieces, &mut p, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_REFUSED);
+        assert_eq!(last(&ev).2, REFUSE_D_FULL, "the 129th catcher refuses");
+        assert_eq!(deploys.len(), before, "and leaves no record standing");
+        assert_eq!(crate::craft::inv_count(&p.inv, 6), 4, "nor spends the item");
+
+        // One catcher fewer (a box in its row) and the same placement goes.
+        deploys.boxes.ovens[0].arch = ARCH_BOX;
+        place(&mut deploys, &mut pieces, &mut p, &mut ev);
+        assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
+        assert_eq!(
+            deploys
+                .oven_states()
+                .iter()
+                .filter(|o| o.arch == ARCH_CATCHER)
+                .count(),
+            MAX_CATCHERS
         );
     }
 }

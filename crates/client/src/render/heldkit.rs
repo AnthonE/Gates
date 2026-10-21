@@ -123,6 +123,7 @@ const FEATHER: Mat = m(0xece6d8, 0.8, 0.0, Tex::Weave);
 const FEATHER_RED: Mat = m(0xb83a30, 0.8, 0.0, Tex::Weave);
 const FEATHER_BLUE: Mat = m(0x3a6ab8, 0.8, 0.0, Tex::Weave);
 const SOIL: Mat = m(0x4a3524, 1.0, 0.0, Tex::Speckle);
+const TARP: Mat = m(0x5e6a3a, 0.9, 0.0, Tex::Weave);
 const LEAF: Mat = m(0x5f9a3a, 0.55, 0.0, Tex::Plain);
 const KERNEL: Mat = m(0xeec44a, 0.45, 0.0, Tex::Plain);
 const HEMP: Mat = m(0x8c7a4c, 0.6, 0.0, Tex::Speckle);
@@ -780,6 +781,7 @@ pub const NAMES: &[&str] = &[
     "glass_window",
     "camp_fire",
     "wood_shutters",
+    "water_catcher",
 ];
 
 /// The parts of the prop called `name`, or `None` for a name with none.
@@ -826,6 +828,7 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "glass_window" => glass_window(),
         "camp_fire" => fire_pit(),
         "wood_shutters" => insert(sim_core::deploy::ARCH_WINDOW_SHUTTER, WOOD),
+        "water_catcher" => water_catcher(),
         _ => return None,
     })
 }
@@ -1780,6 +1783,42 @@ fn fire_pit() -> Vec<Part> {
         part.at.translation.y += 0.01;
         part
     }));
+    out
+}
+
+/// A water catcher: a blue barrel in a frame of four poles, under an olive
+/// tarp sagging into a funnel over its mouth.
+fn water_catcher() -> Vec<Part> {
+    let mut out = vec![
+        p(cyl(0.075, 0.16), BLUE_PAINT, xf([0.0, 0.08, 0.0], [0.0; 3])),
+        p(cyl(0.05, 0.004), HOLE, xf([0.0, 0.161, 0.0], [0.0; 3])),
+        p(
+            frustum(0.115, 0.025, 0.07),
+            TARP,
+            xf([0.0, 0.225, 0.0], [0.0; 3]),
+        ),
+        p(cyl(0.012, 0.05), BLACK, xf([0.0, 0.18, 0.0], [0.0; 3])),
+    ];
+    for (x, z) in [
+        (-0.11f32, -0.11f32),
+        (0.11, -0.11),
+        (-0.11, 0.11),
+        (0.11, 0.11),
+    ] {
+        out.push(p(cuboid(0.02, 0.3, 0.02), WOOD, xf([x, 0.15, z], [0.0; 3])));
+    }
+    for s in [-0.11f32, 0.11] {
+        out.push(p(
+            cuboid(0.24, 0.02, 0.02),
+            WOOD_DARK,
+            xf([0.0, 0.27, s], [0.0; 3]),
+        ));
+        out.push(p(
+            cuboid(0.02, 0.02, 0.24),
+            WOOD_DARK,
+            xf([s, 0.27, 0.0], [0.0; 3]),
+        ));
+    }
     out
 }
 

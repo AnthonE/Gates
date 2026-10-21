@@ -1186,7 +1186,7 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     });
     let fed = h.until(9_000, |b| b.stats.drinks >= 1 && b.stats.eaten >= 1);
     assert!(fed, "no drink and meal: {}", h.explain());
-    assert_ne!(h.bot.memory().food.feeds, 0, "a meal teaches what feeds");
+    assert!(h.bot.memory().food.feeds.any(), "a meal teaches what feeds");
 
     // 3. A blow it survives, mid-goal: the fight reflex takes the frames —
     //    it turns on the body that struck it and fights back — the goal

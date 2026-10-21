@@ -353,6 +353,7 @@ const SUBJECTS: &[Subject] = &[
     kit("garage_door", [90.0, 0.0, 0.0]),
     kit("glass_window", [90.0, 0.0, 0.0]),
     kit("wood_shutters", [90.0, 0.0, 0.0]),
+    kit("water_catcher", [0.0, 0.0, 0.0]),
     // Rust's tree items (2026-10-17; Meshy, 2026-10-18).
     long(
         "salvaged_hammer",

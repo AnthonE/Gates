@@ -1115,9 +1115,10 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 }
             }
         }
-        Verb::Planter => {
+        Verb::Planter | Verb::Catcher => {
             // A planter's one slot is its water tank (farming v2): `E` opens
-            // it; seeds go in the soil by hand.
+            // it; seeds go in the soil by hand. A catcher's is the skin it
+            // fills.
             let handle = pick.handle;
             if send(net, toast, "open", |buf| {
                 protocol::encode_action_container(CONT_BOX, handle, buf)

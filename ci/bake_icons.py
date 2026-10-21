@@ -435,6 +435,7 @@ ELSEWHERE = {
     "keycard_blue": "keycards.py",
     "keycard_red": "keycards.py",
     "abyss_rug": "abyss_rug.py",
+    "water_catcher": "water_catcher.py",
 }
 
 # Ours, and NOT an item — so it cannot live in `OURS`, which is held equal to

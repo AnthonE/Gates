@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 24] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -570,6 +570,9 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
         0.95,
         0.0,
     ),
+    // 23 · water catcher: a barrel under a tarp funnel on a pole frame, as
+    // wide as a barrel and chest high, `DEPLOY_VOL`'s row, in its wood.
+    ([0.9, 1.1, 0.9], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -2318,6 +2321,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/barbed_barricade.glb"), // 20 barbed barricade
     Some("models/deploy/floor_spikes.glb"),     // 21 floor spikes
     Some("models/deploy/abyss_rug.glb"),        // 22 rug
+    None,                                       // 23 water catcher — the cuboid until a model
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too
@@ -4043,7 +4047,11 @@ pub fn is_container(arch: u8) -> bool {
 pub fn is_converter(arch: u8) -> bool {
     matches!(
         arch,
-        ARCH_FIRE | ARCH_FURNACE | ARCH_RECYCLER | sim_core::deploy::ARCH_PLANTER
+        ARCH_FIRE
+            | ARCH_FURNACE
+            | ARCH_RECYCLER
+            | sim_core::deploy::ARCH_PLANTER
+            | sim_core::deploy::ARCH_CATCHER
     )
 }
 
