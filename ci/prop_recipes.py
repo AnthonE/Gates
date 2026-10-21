@@ -227,7 +227,9 @@ def metal_pickaxe(k):
     k.tube([(0.03, 0, 0.61), (0.12, 0, 0.615), (0.20, 0, 0.59), (0.27, 0, 0.545)], 0.02, "dark", n=8, r_end=0.003)
     adze = [(-0.03, 0.585), (-0.03, 0.635), (-0.15, 0.62), (-0.25, 0.575), (-0.255, 0.555), (-0.15, 0.585)]
     k.slab(adze, 0.04, (0, 0, 0), "dark", bevel=0.004)
-    k.slab([(-0.245, 0.556), (-0.262, 0.554), (-0.256, 0.578), (-0.24, 0.578)], 0.044, (0, 0, 0), "steel", bevel=0.0)
+    # The ground edge, half the adze thick like the hatchet's: at 0.044 it
+    # sleeved the 0.04 adze and read as a cap on the end.
+    k.slab([(-0.245, 0.556), (-0.262, 0.554), (-0.256, 0.578), (-0.24, 0.578)], 0.02, (0, 0, 0), "steel", bevel=0.0)
 
 
 @recipe("metal_spear", "models/held/metal_spear.glb", kind="held")
