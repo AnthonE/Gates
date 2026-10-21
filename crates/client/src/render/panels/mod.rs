@@ -124,15 +124,15 @@ impl Panel {
             Panel::None => Page::Closed,
             Panel::Inventory => Page::Inventory,
             Panel::Craft => Page::Crafting,
+            Panel::Island => Page::Island,
+            Panel::Team => Page::Team,
             Panel::Wheel
             | Panel::Hammer
             | Panel::Tech
             | Panel::Vendor
             | Panel::Work
-            | Panel::Island
             | Panel::Talk
             | Panel::Read
-            | Panel::Team
             | Panel::Shop
             | Panel::BigWheel
             | Panel::Slots => Page::Other,
@@ -147,6 +147,8 @@ impl Panel {
             Page::Closed => Some(Panel::None),
             Page::Inventory => Some(Panel::Inventory),
             Page::Crafting => Some(Panel::Craft),
+            Page::Island => Some(Panel::Island),
+            Page::Team => Some(Panel::Team),
             Page::Other => None,
         }
     }
@@ -181,6 +183,10 @@ pub struct Ui {
     pub selected: Option<u16>,
     /// The quantity stepper, always ≥ 1.
     pub count: u16,
+    /// The slot the inventory page's item card shows, `(CONT_*, slot)` —
+    /// Rust's left-click select. Read live every redraw, so a slot that
+    /// empties draws no card rather than a stale one.
+    pub pick: Option<(u8, usize)>,
     /// How far the recipe grid is scrolled, px. Kept here because the grid
     /// is respawned on every redraw, and a fresh node scrolls to the top: a
     /// player who scrolled down and clicked a recipe was thrown back up to
@@ -359,6 +365,7 @@ impl Default for Ui {
             favs: Vec::new(),
             selected: None,
             count: 1,
+            pick: None,
             browser_scroll: 0.0,
             skin: 0,
             status: String::new(),
@@ -492,11 +499,46 @@ pub fn pop_in(
     }
     let scrim = SCRIM.with_alpha(SCRIM.alpha() * (0.35 + 0.65 * k));
     for mut bg in &mut roots {
-        if bg.0 == SCRIM || t < 1.0 {
+        // Only the panels' own scrim fades, and it lands on SCRIM itself on
+        // the last step. It used to skip that step (the last write was the
+        // previous frame's partial alpha, and nothing finished it), so a
+        // slow frame left the world barely dimmed until the next redraw.
+        if bg.0.with_alpha(SCRIM.alpha()) == SCRIM && bg.0 != scrim {
             bg.0 = scrim;
         }
     }
     *settled = t >= 1.0;
+}
+
+/// The HUD under a page steps aside: the compass and the arc banner while
+/// the strip is up (it sits where they do — Rust hides its compass the same
+/// way), and the hotbar on the inventory page, whose belt row stands in its
+/// place.
+pub fn hud_under_pages(
+    ui: Res<Ui>,
+    mut top: Query<&mut Visibility, (With<super::hud::HudTop>, Without<super::hud::HotbarRow>)>,
+    mut bar: Query<&mut Visibility, (With<super::hud::HotbarRow>, Without<super::hud::HudTop>)>,
+) {
+    let page = ui.panel.page();
+    let show = |hidden: bool| {
+        if hidden {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        }
+    };
+    let want_top = show(crate::ui::nav::has_strip(page));
+    for mut v in &mut top {
+        if *v != want_top {
+            *v = want_top;
+        }
+    }
+    let want_bar = show(page == crate::ui::nav::Page::Inventory);
+    for mut v in &mut bar {
+        if *v != want_bar {
+            *v = want_bar;
+        }
+    }
 }
 
 /// What a cell is called, for [`tooltip`]: set on a filled inventory slot,
@@ -521,7 +563,7 @@ pub struct TipText;
 pub fn tooltip(
     ui: Res<Ui>,
     window: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    tips: Query<(&Interaction, &Tip)>,
+    tips: Query<(&Interaction, &Tip, Option<&inv::SlotCell>)>,
     mut boxes: Query<(&mut Node, &ComputedNode), With<TipBox>>,
     mut texts: Query<&mut Text, With<TipText>>,
 ) {
@@ -532,8 +574,10 @@ pub fn tooltip(
         None
     } else {
         tips.iter()
-            .find(|(i, _)| matches!(i, Interaction::Hovered))
-            .map(|(_, t)| t)
+            .find(|(i, _, _)| matches!(i, Interaction::Hovered))
+            // The slot the item card is showing needs no second caption.
+            .filter(|(_, _, c)| c.is_none_or(|c| ui.pick != Some((c.kind, c.slot))))
+            .map(|(_, t, _)| t)
     };
     let win = window.single().ok();
     let at = win.and_then(|w| w.cursor_position().map(|p| (p, w.width(), w.height())));
@@ -603,47 +647,70 @@ pub fn spawn_tip(root: &mut ChildSpawnerCommands) {
 #[derive(Component)]
 pub struct TabGo(pub Panel);
 
-/// The strip across the top of the inventory and crafting pages — Rust's:
-/// a button to the other page, never one for the page you are on
-/// (`ui::nav::strip`), and its key in the tooltip rather than on it.
+/// The strip's buttons at rest and lit — Rust's: a lighter grey than the
+/// cells, translucent, with no edge, so the strip reads as navigation and
+/// not as three more slots.
+const STRIP_BG: Color = Color::srgba(0.345, 0.333, 0.310, 0.74);
+const STRIP_HOT: Color = Color::srgba(0.455, 0.439, 0.408, 0.88);
+
+/// The strip across the top of every page — Rust's CONTACTS · CRAFTING ·
+/// CLAN, ours ISLAND · CRAFTING · TEAM, with the page you are on handing its
+/// seat to INVENTORY (`ui::nav::strip`). Each button carries its key on its
+/// right, where Rust puts the button's glyph: the keys are the faster way
+/// back, and a button that teaches its key teaches it.
 pub fn page_tabs(root: &mut ChildSpawnerCommands, ui: &Ui) {
     use crate::ui::nav;
+    let open = ui.panel.page();
     root.spawn(Node {
         flex_direction: FlexDirection::Row,
-        column_gap: Val::Px(6.0),
+        column_gap: Val::Px(10.0),
         ..default()
     })
     .with_children(|row| {
-        for page in nav::strip(ui.panel.page()) {
-            let Some(panel) = Panel::of_page(*page) else {
+        if !nav::has_strip(open) {
+            return;
+        }
+        for page in nav::strip(open) {
+            let Some(panel) = Panel::of_page(page) else {
                 continue;
             };
             row.spawn((
                 Button,
                 TabGo(panel),
-                Tip(format!("or press {}", nav::key_hint(*page))),
                 Node {
-                    min_width: Val::Px(200.0),
-                    padding: UiRect::axes(Val::Px(18.0), Val::Px(6.0)),
-                    justify_content: JustifyContent::Center,
-                    border: UiRect::all(Val::Px(1.0)),
+                    width: Val::Px(STRIP_BUTTON_W),
+                    height: Val::Px(STRIP_BUTTON_H),
+                    padding: UiRect::horizontal(Val::Px(14.0)),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
                     ..default()
                 },
-                BackgroundColor(CELL_BG),
-                Hover::on(CELL_BG),
-                BorderColor::all(LINE),
+                BackgroundColor(STRIP_BG),
+                Hover::on(STRIP_BG).hot(STRIP_HOT),
             ))
             .with_children(|t| {
                 t.spawn((
-                    Text::new(nav::label(*page)),
-                    font_bold(18.0),
+                    Text::new(nav::label(page)),
+                    font_bold(17.0),
                     TextColor(TEXT),
+                    Pickable::IGNORE,
+                ));
+                t.spawn((
+                    Text::new(nav::key_hint(page)),
+                    font_bold(11.0),
+                    TextColor(TEXT_DIM),
+                    super::binds::Keyed(nav::key_hint(page).to_string()),
                     Pickable::IGNORE,
                 ));
             });
         }
     });
 }
+
+/// One strip button, px: wide enough for INVENTORY and its key at 720p,
+/// three of them well inside the narrowest window.
+pub const STRIP_BUTTON_W: f32 = 176.0;
+pub const STRIP_BUTTON_H: f32 = 34.0;
 
 /// Where the strip across the top of both pages sits, px from the top of the
 /// window. **Pinned**, so the button to the other page is where the last
@@ -660,6 +727,40 @@ pub const HOTBAR_CLEAR_PX: f32 = 64.0;
 /// under it the status line over the page's `body`, centred in the room
 /// that is left.
 pub fn page_root(commands: &mut Commands, ui: &Ui, body: impl FnOnce(&mut ChildSpawnerCommands)) {
+    page_frame(commands, ui, Seat::Centre, true, body);
+}
+
+/// Where a page's body sits in the room under the strip.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Seat {
+    /// Centred between the strip and the HUD's hotbar.
+    Centre,
+    /// Standing on the foot of the window, where the hotbar was: the
+    /// inventory page, whose belt row IS the hotbar while it is up (the HUD's
+    /// steps aside, `hud_under_pages`). Anchored at the foot, so the item
+    /// card grows upward and never shoves the grids out from under the
+    /// pointer that clicked.
+    OnHotbar,
+}
+
+/// The foot a [`Seat::OnHotbar`] page keeps clear, px: the hint line's
+/// breathing room off the window's edge.
+const FOOT_PX: f32 = 6.0;
+
+/// [`page_root`] with its two choices open: where the body sits
+/// ([`Seat`]), and whether the frame draws the status line (a kit card draws
+/// its own, in its header).
+pub fn page_frame(
+    commands: &mut Commands,
+    ui: &Ui,
+    seat: Seat,
+    status: bool,
+    body: impl FnOnce(&mut ChildSpawnerCommands),
+) {
+    let (justify, foot) = match seat {
+        Seat::Centre => (JustifyContent::Center, HOTBAR_CLEAR_PX),
+        Seat::OnHotbar => (JustifyContent::FlexEnd, FOOT_PX),
+    };
     commands
         .spawn((
             PanelRoot,
@@ -671,7 +772,7 @@ pub fn page_root(commands: &mut Commands, ui: &Ui, body: impl FnOnce(&mut ChildS
                 align_items: AlignItems::Center,
                 padding: UiRect {
                     top: Val::Px(STRIP_TOP_PX),
-                    bottom: Val::Px(HOTBAR_CLEAR_PX),
+                    bottom: Val::Px(foot),
                     ..default()
                 },
                 row_gap: Val::Px(8.0),
@@ -685,15 +786,21 @@ pub fn page_root(commands: &mut Commands, ui: &Ui, body: impl FnOnce(&mut ChildS
                 PanelBody,
                 Node {
                     flex_grow: 1.0,
+                    // Held to the room under the strip rather than grown to
+                    // its content, so a kit card's `max_height` has a height
+                    // to be a share of (the island page ran over the hotbar).
+                    min_height: Val::Px(0.0),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
-                    justify_content: JustifyContent::Center,
+                    justify_content: justify,
                     row_gap: Val::Px(8.0),
                     ..default()
                 },
             ))
             .with_children(|zone| {
-                status_line(zone, ui);
+                if status {
+                    status_line(zone, ui);
+                }
                 body(zone);
             });
             spawn_tip(root);
@@ -747,6 +854,11 @@ pub use super::ui::{font, font_bold, ACCENT, DIM as TEXT_DIM, RULE as LINE, TEXT
 /// over a *blurred* world, which we do not have and which is what lets it
 /// sit lower.
 pub const PANEL_BG: Color = Color::srgba(0.169, 0.153, 0.137, 0.97);
+/// An inventory-page region (your body, your pack, quick craft, what you
+/// are looting): Rust draws these with no frame at all, the heading and
+/// the cells over the dimmed world, and so does this. One constant so the
+/// regions agree if they ever take a ground again.
+pub const REGION_BG: Color = Color::NONE;
 /// The screen-wide scrim behind a panel.
 pub const SCRIM: Color = Color::srgba(0.055, 0.047, 0.039, 0.72);
 /// An empty cell. The reference's grid cells are the panel with a hairline,
@@ -757,6 +869,10 @@ pub const CELL_BG: Color = Color::srgba(0.220, 0.204, 0.184, 0.92);
 pub const CELL_FULL: Color = Color::srgba(0.278, 0.263, 0.235, 0.96);
 /// The cell the pointer is over, and the drag's source.
 pub const CELL_HOVER: Color = Color::srgba(0.369, 0.353, 0.329, 0.98);
+/// The slot the item card is showing (`Ui::pick`): a step up from a full
+/// cell, under a light edge.
+pub const CELL_PICK: Color = Color::srgba(0.333, 0.322, 0.290, 0.97);
+pub const LINE_PICK: Color = Color::srgba(0.90, 0.88, 0.82, 0.85);
 /// The belt slot in your hand — Rust's selection blue (≈#1F5D8D), filled,
 /// on the HUD's hotbar and on the inventory's belt row alike.
 pub const CELL_SEL: Color = Color::srgba(0.122, 0.365, 0.553, 0.88);
@@ -865,7 +981,13 @@ pub fn register(app: &mut App) {
                 (inv::drag_pointer, inv::hover_loot).chain(),
                 inv::skin_keys,
                 inv::table_clicks,
-                (inv::fire_clicks, inv::take_all_clicks, hearth::clicks).chain(),
+                (
+                    inv::fire_clicks,
+                    inv::take_all_clicks,
+                    inv::info_clicks,
+                    hearth::clicks,
+                )
+                    .chain(),
                 (craft::clicks, craft::skin_store).chain(),
                 craft::scroll,
                 tech::clicks,
@@ -879,7 +1001,7 @@ pub fn register(app: &mut App) {
                 inv::table_clock,
                 rebuild,
                 inv::ghost_follow,
-                (hover, pop_in),
+                (hover, pop_in, hud_under_pages),
                 tooltip,
             )
                 .chain()
@@ -949,6 +1071,7 @@ pub fn close(
 ) {
     ui.panel = Panel::None;
     ui.drag = None;
+    ui.pick = None;
     ui.dirty = false;
     for e in roots.iter() {
         commands.entity(e).despawn();
@@ -1101,38 +1224,21 @@ pub fn keys(
     if ui.panel == Panel::Inventory && !down && pressed(Action::Reload) {
         super::verbs::unload_held(&net, &mut toast);
     }
-    // `O`: the island (`ARC.md` F4). A toggle, and it takes over from any
-    // other screen the way `Tab` takes over from the tree.
+    // `O`: the island (`ARC.md` F4), and `M`: the team (`team.rs`). Pages
+    // like the other two since they joined the strip, so the same rule
+    // toggles them and switches between them.
     if pressed(Action::Island) {
-        ui.panel = if ui.panel == Panel::Island {
-            Panel::None
-        } else {
-            Panel::Island
-        };
-        ui.drag = None;
-        ui.search_focus = false;
-        ui.status.clear();
-        ui.dirty = true;
-        want = None;
-    }
-    // `M`: the team (`team.rs`), a toggle like `O`.
-    if pressed(Action::TeamScreen) {
-        ui.panel = if ui.panel == Panel::Team {
-            Panel::None
-        } else {
-            Panel::Team
-        };
-        ui.drag = None;
-        ui.search_focus = false;
-        ui.status.clear();
-        ui.dirty = true;
-        want = None;
+        want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Island));
+    } else if pressed(Action::TeamScreen) {
+        want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Team));
     }
     if let Some(to) = want.and_then(Panel::of_page) {
         if to != ui.panel {
             ui.panel = to;
             ui.drag = None;
             ui.search_focus = false;
+            ui.pick = None;
+            ui.status.clear();
             ui.dirty = true;
             // The crafting page opens on a recipe, never on an empty pane.
             if to == Panel::Craft && ui.selected.is_none() {
@@ -1163,6 +1269,7 @@ pub fn keys(
         } else {
             ui.panel = Panel::None;
             ui.drag = None;
+            ui.pick = None;
         }
         ui.dirty = true;
         // Consumed: `pause::open` runs after this and would otherwise read

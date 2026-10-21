@@ -1519,6 +1519,17 @@ pub fn hit_number(
 #[derive(Component)]
 pub struct Compass;
 
+/// The HUD's top-centre block — the compass, its marker row and the arc
+/// banner. A page's strip sits where it does, so it steps aside while one
+/// is up (`panels::hud_under_pages`), as Rust's compass does.
+#[derive(Component)]
+pub struct HudTop;
+
+/// The hotbar's row. On the inventory page the belt row is the hotbar
+/// (Rust's arrangement), so this one steps aside while it is up.
+#[derive(Component)]
+pub struct HotbarRow;
+
 /// Rust's death marker on the compass (operator, 2026-10-15): your last
 /// death, a skull riding the marker row over the bearing number at its
 /// bearing, with how far. Shown from the respawn until the next death moves
@@ -1659,6 +1670,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
     commands
         .spawn((
             super::WorldEntity,
+            HotbarRow,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: Val::Px(HOTBAR_BOTTOM_PX),
@@ -2274,6 +2286,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
     commands
         .spawn((
             super::WorldEntity,
+            HudTop,
             Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(COMPASS_MARK_TOP),
@@ -2345,6 +2358,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
     commands.spawn((
         super::WorldEntity,
         Compass,
+        HudTop,
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(COMPASS_TOP),

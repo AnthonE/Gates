@@ -1277,17 +1277,16 @@ pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(10.0)),
                 row_gap: Val::Px(6.0),
-                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(PANEL_BG),
-            BorderColor::all(LINE),
+            BackgroundColor(super::REGION_BG),
         ))
         .with_children(|col| {
             col.spawn((
                 Text::new("QUICK CRAFT".to_string()),
-                font_bold(15.0),
+                font_bold(17.0),
                 TextColor(TEXT),
+                crate::render::ui::TEXT_SHADOW,
             ));
             if all.is_empty() {
                 col.spawn((
