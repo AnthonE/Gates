@@ -1008,6 +1008,7 @@ pub fn fires(
             With<super::town_fx::Brazier>,
         )>,
     >,
+    recyclers: Query<(&GlobalTransform, &super::structures::RecyclerHum)>,
     mut sound: ResMut<Sound>,
     mut next: Local<(f32, u32)>,
 ) {
@@ -1016,6 +1017,19 @@ pub fn fires(
             f.filter(|f| (f.cx, f.cz, f.level, f.loc) == (cx, cz, level, loc))
                 .map(|f| (f, g.translation()))
         }) else {
+            // Not a fire: a recycler's engine, at the machine.
+            if let Some((g, _)) = recyclers
+                .iter()
+                .find(|(_, r)| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+            {
+                let cue = if lit {
+                    Cue::RecyclerStart
+                } else {
+                    Cue::RecyclerStop
+                };
+                let at = g.translation() + Vec3::Y * 0.6;
+                sound.play(Request::at(cue, at.to_array()));
+            }
             continue;
         };
         let cue = match (fire.furnace, lit) {
@@ -1828,7 +1842,18 @@ pub fn feed(
             let (x, z) = sim_core::build::anchor(cx, cz, loc);
             let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
             let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
-            sound.play(Request::at(Cue::Knock, [x, y + 1.3, z]));
+            // A sheet-metal or garage door rings under the fist.
+            let metal = core
+                .deploys
+                .entries()
+                .iter()
+                .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                .filter(|r| u16::from(r.row) < core.deploy_defs_have)
+                .is_some_and(|r| {
+                    core.deploy_defs.defs[r.row as usize].matter == sim_core::deploy::MATTER_METAL
+                });
+            let cue = if metal { Cue::KnockMetal } else { Cue::Knock };
+            sound.play(Request::at(cue, [x, y + 1.3, z]));
         }
         // Something mended, at it: a repair latches the readout at its
         // whole hp (`APPLIED_STRUCT_HIT`'s doc), where a hit leaves it short.

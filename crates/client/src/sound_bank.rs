@@ -181,6 +181,8 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::StagDeath, takes!("pd", "stag_death", 0 1)),
     (Cue::PlaceStone, takes!("pd", "place_stone", 0 1 2 3)),
     (Cue::PlaceMetal, takes!("pd", "place_metal", 0 1 2)),
+    (Cue::RecyclerStart, takes!("pd", "recycler_start", 0)),
+    (Cue::RecyclerStop, takes!("pd", "recycler_stop", 0)),
     (Cue::Swing, takes!("freesound", "swing", 0 1 2 3)),
     (Cue::Gather, takes!("kenney", "gather", 0 1 2)),
     (Cue::Eat, takes!("freesound", "eat", 0 1 2)),
@@ -240,6 +242,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteBrush => Cue::Brush,
         Cue::HurtAgain => Cue::Hurt,
         Cue::OreBreak => Cue::Collapse,
+        Cue::KnockMetal => Cue::ImpactMetal,
         c => c,
     }
 }

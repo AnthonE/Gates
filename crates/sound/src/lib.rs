@@ -552,11 +552,20 @@ pub enum Cue {
     PlaceStone,
     /// A piece upgraded to sheet metal: two blows as a sheet goes on.
     PlaceMetal,
+    /// A recycler switched on: its engine catching, at the machine. Its
+    /// running loop is [`Cue::BedTown`]. Appended, the enum's append-order
+    /// rule, like the two after it.
+    RecyclerStart,
+    /// …and switched off: the engine running down.
+    RecyclerStop,
+    /// A knock on a sheet-metal or garage door: a blow on metal, where
+    /// [`Cue::Knock`] is a fist on wood.
+    KnockMetal,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 148;
+pub const CUE_COUNT: usize = 151;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -713,6 +722,9 @@ impl Cue {
         Cue::StagDeath,
         Cue::PlaceStone,
         Cue::PlaceMetal,
+        Cue::RecyclerStart,
+        Cue::RecyclerStop,
+        Cue::KnockMetal,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -875,7 +887,10 @@ impl Cue {
             | Cue::BoarDeath
             | Cue::StagDeath
             | Cue::PlaceStone
-            | Cue::PlaceMetal => 0.07,
+            | Cue::PlaceMetal
+            | Cue::RecyclerStart
+            | Cue::RecyclerStop
+            | Cue::KnockMetal => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -1373,6 +1388,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // a little louder than a plank.
     row(GAME, 32.0, 0.65,  30, 4, true),   // upgraded to stone
     row(GAME, 32.0, 0.65,  30, 4, true),   // upgraded to metal
+    // The recycler's engine catching and running down: a little past its
+    // running loop's reach (`render/audio.rs`, 16 m).
+    row(GAME, 24.0, 0.55, 300, 3, true),   // recycler on
+    row(GAME, 24.0, 0.50, 300, 3, true),   // recycler off
+    row(GAME, 24.0, 0.60, 120, 4, true),   // knock, metal
 ];
 
 /// Your own reload, whichever gun (`Cue::Reload` and the four after it).
