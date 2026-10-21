@@ -764,9 +764,11 @@ const NET_COMPANY_CM: i64 = 1_000;
 /// a fel tier up (`content/mobs.toml` `genome`, `genome_tier`). Content,
 /// like the species table: built at boot, never written by a tick, and
 /// neither hashed nor saved (the genome text is in the content hash).
+/// Each net is boxed: a content table is moved by value through boot, and
+/// three inline weight arrays put ~16 kB on every frame that holds one.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Nets {
-    kinds: [Option<SpeciesNet>; MOB_KINDS],
+    kinds: [Option<Box<SpeciesNet>>; MOB_KINDS],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -786,11 +788,11 @@ impl Nets {
         let Some(slot) = self.kinds.get_mut(kind as usize) else {
             return false;
         };
-        *slot = Some(SpeciesNet {
+        *slot = Some(Box::new(SpeciesNet {
             genome: Some(genome),
             tier,
             net: Net::build(wolf_shape(), &genome),
-        });
+        }));
         true
     }
 
@@ -804,11 +806,11 @@ impl Nets {
         let Some(slot) = self.kinds.get_mut(kind as usize) else {
             return false;
         };
-        *slot = Some(SpeciesNet {
+        *slot = Some(Box::new(SpeciesNet {
             genome: None,
             tier,
             net,
-        });
+        }));
         true
     }
 
@@ -822,7 +824,7 @@ impl Nets {
     }
 
     pub fn species(&self, kind: u8) -> Option<&SpeciesNet> {
-        self.kinds.get(kind as usize)?.as_ref()
+        self.kinds.get(kind as usize)?.as_deref()
     }
 
     pub fn is_empty(&self) -> bool {
