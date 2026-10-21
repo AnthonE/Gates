@@ -1086,6 +1086,9 @@ pub enum ExposureChip {
     /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
     /// red while it is costing hp, saying what stops it.
     Verdigris,
+    /// Rust's BLEEDING: an open wound (`Player::bleed`) costing hp until a
+    /// bandage closes it.
+    Bleeding,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1140,6 +1143,12 @@ const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
 const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.92);
+
+/// What the BLEEDING chip says: Rust's word, and what stops it.
+pub fn bleed_line() -> String {
+    "BLEEDING · BANDAGE IT".to_string()
+}
 
 /// What the Verdigris chip says: the meter, and while it hurts, the way out.
 /// The player-facing name only — never the code's `fel`.
@@ -1336,6 +1345,7 @@ pub fn exposure(
                     FEL_CHIP
                 },
             ),
+            ExposureChip::Bleeding => (core.bleed > 0, bleed_line(), BLEED_CHIP),
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1908,6 +1918,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 ExposureChip::Hot,
                 ExposureChip::Verdigris,
                 ExposureChip::Comfort,
+                ExposureChip::Bleeding,
             ] {
                 stack.spawn((
                     chip,
@@ -2401,6 +2412,9 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
+    // The bandage being wrapped on (`ui::wrap`), for the hand's line.
+    bite: Option<Res<super::verbs::Bite>>,
+    time: Res<Time>,
 ) {
     let core = &net.session.core;
 
@@ -2507,7 +2521,16 @@ pub fn update(
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
-            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
+            let wrapping = bite
+                .as_deref()
+                .and_then(|b| b.wrap.left(time.elapsed_secs_f64()));
+            match wrapping {
+                Some(left) => format!(
+                    "WRAPPING  {}  {left:.1} s   (switch away to stop)",
+                    crate::ui::craft::item_label(&core.catalog, held.item).to_uppercase()
+                ),
+                None => crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit),
+            }
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {

@@ -1262,7 +1262,10 @@ pub use voice::{
 /// a craft may be refused `REFUSE_CR_OWNED`.
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
-pub const PROTO_VER: u16 = 129;
+/// v130 — Rust's bandage and bleeding: an item row carries `use_ticks` (a
+/// held use, the bandage's wrap), `SUB_EXPOSURE` the open wound's `bleed`
+/// after the Verdigris, and the death cause admits 13 (`DEATH_BY_BLEED`).
+pub const PROTO_VER: u16 = 130;
 
 /// This game's slug in the elo catalog.
 ///

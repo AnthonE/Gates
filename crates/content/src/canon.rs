@@ -258,6 +258,8 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.fel as u32);
         h.u(u32::from(con.belt_recovery));
         h.u(u32::from(con.revive));
+        h.u(con.bleed as u32);
+        h.u(con.use_seconds);
     }
 
     h.s("deployables");
@@ -527,6 +529,8 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.spawn_water);
     h.s(sv.vessel.as_deref().unwrap_or(""));
     h.s(sv.vessel_full.as_deref().unwrap_or(""));
+    h.u(sv.bleed_pct);
+    h.u(sv.bleed_hp_per_min);
 
     let ex = &c.balance.exposure;
     h.s("exposure");

@@ -965,6 +965,9 @@ pub struct Survivor {
     reload_at: Option<u32>,
     /// When armour or the belt was last seen to.
     dressed_at: Option<u32>,
+    /// The tick a bandage this bot is wrapping on has landed by (its
+    /// `use_ticks` and a second for the lane), while one is.
+    wrap_until: Option<u32>,
     /// Where a downed body is crawling to, if anywhere, and when that was
     /// looked for: a scan that found nothing waits before the next.
     crawl_to: Option<(Option<[f32; 2]>, u32)>,
@@ -1220,6 +1223,7 @@ impl Survivor {
             ack_age: 1,
             reload_at: None,
             dressed_at: None,
+            wrap_until: None,
             crawl_to: None,
             home: Home::new(),
             bag_job: BagJob::default(),
@@ -1707,7 +1711,12 @@ impl Survivor {
             .combat
             .strides
             .ahead_of(body.map_or([0.0; 3], |b| pressed_eye(b, intent.buttons)));
-        let f = self.hands.drive(&intent, &self.tracks, eye, base);
+        let mut f = self.hands.drive(&intent, &self.tracks, eye, base);
+        // A bandage being wrapped on keeps the hand that began it up: a
+        // switch would put it away unspent (`survival::tick_use`).
+        if self.wrapping(view.newest_applied.unwrap_or_default()) {
+            f.sel = self.sel;
+        }
         self.combat.strides.sent(&f);
         core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
         self.sel = f.sel;
@@ -5319,7 +5328,14 @@ impl Survivor {
     /// medkit is for a wound, not a scratch).
     fn dose(&mut self, core: &ClientCore, tick: u32, target_pct: u32, reflex: bool) -> Dosed {
         self.watch_dose(core, tick);
-        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ);
+        // A bandage answers when its wrap lands (`survival::begin_use`).
+        let wrap = match self.awaiting {
+            Some((Pending::Consume { item, .. }, _)) => {
+                u32::from(core.catalog.row(item as usize).use_ticks)
+            }
+            _ => 0,
+        };
+        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ + wrap);
         match verdict {
             Ok(Some(Verdict::Ok)) => {
                 if let Some(a) = self.goal.as_mut().filter(|a| a.goal == Goal::Heal) {
@@ -5439,6 +5455,14 @@ impl Survivor {
         }
     }
 
+    /// A bandage of mine is being wrapped on (`survival::begin_use`), by
+    /// its own clock: a goal that starts or ends mid-wrap drops the answer
+    /// it was waiting on, and the hands must still hold still.
+    fn wrapping(&self, tick: u32) -> bool {
+        self.wrap_until
+            .is_some_and(|until| (until.wrapping_sub(tick) as i32) > 0)
+    }
+
     /// Kit up between everything else, the way a player does when nothing
     /// presses: wear the best armour the pack holds for each slot (a move
     /// into the wear container, by the catalog's wear slot), and put a
@@ -5447,6 +5471,10 @@ impl Survivor {
     /// nobody is about, and the goal in hand is not one waiting on a move's
     /// answer of its own.
     fn dress(&mut self, core: &ClientCore, tick: u32, calm: bool) {
+        // Not under a wrap: moving the stack would put it away unspent.
+        if self.wrapping(tick) {
+            return;
+        }
         // Mid-walk through the doors a use or a code may go out any frame,
         // and a move in the outbox would take its place.
         let quiet = !self.builder.passing()
@@ -5594,6 +5622,10 @@ impl Survivor {
     fn consume(&mut self, core: &ClientCore, slot: usize, tick: u32) {
         let item = core.inv[slot].item;
         if self.queue(|buf| protocol::encode_action_consume(slot as u8, buf)) {
+            let wrap = u32::from(core.catalog.row(item as usize).use_ticks);
+            if wrap > 0 {
+                self.wrap_until = Some(tick.wrapping_add(wrap + TICK_HZ));
+            }
             self.awaiting = Some((
                 Pending::Consume {
                     item,

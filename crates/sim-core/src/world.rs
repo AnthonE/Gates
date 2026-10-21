@@ -1110,7 +1110,9 @@ pub const DEATH_BY_CACTUS: u8 = 11;
 /// [`World::prick_deploys`]).
 pub const DEATH_BY_SPIKES: u8 = 12;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_SPIKES;
+/// An open wound took the last hp (`Player::bleed`, survival.rs).
+pub const DEATH_BY_BLEED: u8 = 13;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_BLEED;
 
 /// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
 /// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
@@ -1541,6 +1543,25 @@ pub struct Player {
     /// over the body that rebuild in seconds, and the hp they move is
     /// hashed already.
     pub calm: u16,
+    /// The open wound, in hp it still owes (Rust's `bleeding`, up to
+    /// `survival::BLEED_MAX`): a hit opens it (`combat::hurt`), the survival
+    /// clock bleeds it out, a bandage closes it. Going down closes it too
+    /// (Rust: you do not bleed out while wounded). `bleed_acc` is the
+    /// clock's remainder.
+    ///
+    /// A use in the hands (Rust's `MedicalTool`, `survival::begin_use`): the
+    /// tick it lands (0 for none), the slot and item it will spend, and the
+    /// hand that was up when it began. Switching hands cancels it.
+    ///
+    /// None of these is hashed or saved, for `hostile`'s reason: the hp a
+    /// wound takes and the item a use spends are hashed when they move, and
+    /// a restart forgives a wound and ends every session's use.
+    pub bleed: u16,
+    pub bleed_acc: u32,
+    pub use_at: u64,
+    pub use_slot: u8,
+    pub use_sel: u8,
+    pub use_item: u16,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1669,6 +1690,12 @@ impl Default for Player {
             hostile: 0,
             comfort: 0,
             calm: 0,
+            bleed: 0,
+            bleed_acc: 0,
+            use_at: 0,
+            use_slot: 0,
+            use_sel: 0,
+            use_item: NO_ITEM,
             gate_spawn: false,
             gate_spawn_at: 0,
             born: 0,
@@ -3966,7 +3993,7 @@ impl World {
                     i64::from(f.qz - v.body.qz),
                 );
                 let v = &mut self.players[j];
-                let hurt = combat::hurt(&self.combat, v, FIRE_HP);
+                let hurt = combat::burn(&self.combat, v, FIRE_HP);
                 let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
                 self.events
                     .push(EV_HURT, vid, u32::from(from), u32::from(FIRE_HP));
@@ -4313,6 +4340,19 @@ impl World {
         );
     }
 
+    /// The survival clock's step for body `i`, and the death it ends in:
+    /// `true` when it died this tick and the slot is a corpse now.
+    fn clock(&mut self, i: usize) -> bool {
+        let cause = match survival::step(&self.survival, &mut self.players[i], &mut self.events) {
+            survival::Step::Died => DEATH_BY_CLOCK,
+            survival::Step::BledOut => DEATH_BY_BLEED,
+            survival::Step::Quiet | survival::Step::Changed => return false,
+        };
+        let id = self.players[i].id;
+        self.die(i, id, cause, NO_ITEM, 0);
+        true
+    }
+
     /// A lethal blow landed: lay the body down, or make the corpse.
     ///
     /// **Every kill site goes through here, and the choice is the
@@ -4367,6 +4407,11 @@ impl World {
         q.wounded = true;
         q.wound_until = self.tick + span as u64;
         q.hp = crate::wound::WOUNDED_HP;
+        // Rust: you do not bleed out while down (Devblog 54), and what was
+        // in the hands fell with you.
+        q.bleed = 0;
+        q.bleed_acc = 0;
+        survival::clear_use(q);
         q.death_by = by;
         q.death_cause = cause;
         q.death_item = item;
@@ -5175,6 +5220,12 @@ impl World {
                     hostile: 0,
                     comfort: 0,
                     calm: 0,
+                    bleed: 0,
+                    bleed_acc: 0,
+                    use_at: 0,
+                    use_slot: 0,
+                    use_sel: 0,
+                    use_item: NO_ITEM,
                     gate_spawn: false,
                     gate_spawn_at: 0,
                     // The save does not carry it: the clock starts here.
@@ -6553,17 +6604,27 @@ impl World {
             }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    survival::consume(
+                    // A bandage takes its time in the hands
+                    // (`survival::begin_use`); food goes down at once.
+                    let tick = self.tick;
+                    if !survival::begin_use(
                         &self.survival,
                         inv as usize,
                         &mut self.players[slot],
-                        &mut self.events,
-                        crate::works::knob_pct(
-                            &self.works_def,
-                            self.works.unlocks,
-                            crate::works::KNOB_HEAL_PCT,
-                        ),
-                    );
+                        tick,
+                    ) {
+                        survival::consume(
+                            &self.survival,
+                            inv as usize,
+                            &mut self.players[slot],
+                            &mut self.events,
+                            crate::works::knob_pct(
+                                &self.works_def,
+                                self.works.unlocks,
+                                crate::works::KNOB_HEAL_PCT,
+                            ),
+                        );
+                    }
                 }
             }
             Command::Drop {
@@ -7374,11 +7435,9 @@ impl World {
             // air over a base that decayed out from under it.
             if self.players[i].sleeping {
                 gather::strike_due(tick, &mut self.players[i]);
-                if survival::step(&self.survival, &mut self.players[i], &mut self.events)
-                    == survival::Step::Died
-                {
-                    let id = self.players[i].id;
-                    self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                // Nobody is holding the bandage any more.
+                survival::clear_use(&mut self.players[i]);
+                if self.clock(i) {
                     continue;
                 }
                 // A sleeper that was down when its owner left keeps its
@@ -7422,11 +7481,7 @@ impl World {
             // held, and `held` on the wire says so (`server/core.rs`).
             if self.players[i].wounded {
                 gather::strike_due(tick, &mut self.players[i]);
-                if survival::step(&self.survival, &mut self.players[i], &mut self.events)
-                    == survival::Step::Died
-                {
-                    let id = self.players[i].id;
-                    self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                if self.clock(i) {
                     continue;
                 }
                 // Wet and cold (weather v0): a body on the ground in the
@@ -7475,17 +7530,28 @@ impl World {
             // does not also get to swing on it — and running the clock
             // first is what makes the death below the tick's last word
             // about this slot, exactly as a combat death is.
-            if survival::step(&self.survival, &mut self.players[i], &mut self.events)
-                == survival::Step::Died
-            {
-                let id = self.players[i].id;
-                self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+            if self.clock(i) {
                 continue;
             }
             // Wet and cold (weather v0), on the clock's footing: before the
             // arm, so a body the cold kills does not also swing.
             if self.expose(i, tick, &wx, night) {
                 continue;
+            }
+            // The bandage being wrapped lands, or was put away.
+            if self.players[i].use_at != 0 {
+                let heal_pct = crate::works::knob_pct(
+                    &self.works_def,
+                    self.works.unlocks,
+                    crate::works::KNOB_HEAL_PCT,
+                );
+                survival::tick_use(
+                    &self.survival,
+                    &mut self.players[i],
+                    &mut self.events,
+                    self.tick,
+                    heal_pct,
+                );
             }
             // The torch burns on the same footing as the metabolism, and
             // deliberately beside it: both are clocks that spend something

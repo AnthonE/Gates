@@ -794,7 +794,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 53] = [
+    pub const RE_DERIVED: [&str; 59] = [
         // The town's safe zone: `safe` is read off the body every tick.
         "safe",
         // The life clock: the corpse keeps it for the death screen's
@@ -805,6 +805,13 @@ mod carried_through_death {
         // Comfort and the calm clock rebuild in seconds (`exposure.rs`).
         "comfort",
         "calm",
+        // A wound and a use in the hands are the body's, not the person's.
+        "bleed",
+        "bleed_acc",
+        "use_at",
+        "use_slot",
+        "use_sel",
+        "use_item",
         "assist_target",
         "assist_by",
         "assist_ticks", // an interrupted hand hold

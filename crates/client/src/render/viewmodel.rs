@@ -1378,6 +1378,11 @@ pub struct Motion {
     /// How closed the fist is on the row in it, 0..=1, eased with `fit`
     /// (`fingers::pose`).
     grip: f32,
+    /// How far the left arm is up for the bandage's wrap, 0..=1, eased
+    /// (`ui::wrap::raise`), and how far round it the right hand has gone,
+    /// turns (`bow::draw_arm` poses the arm, [`wrap_rig`] the hand).
+    wrap: f32,
+    wrap_turn: f32,
 }
 
 /// What the bow's string and arrow are drawn from this frame (`bow::drive`).
@@ -1414,6 +1419,12 @@ impl Motion {
         (self.idle_lag, self.idle_drift)
     }
 
+    /// The bandage's wrap: how far the left arm is up, and how far round it
+    /// the right hand has gone, turns.
+    pub fn wrap(&self) -> (f32, f32) {
+        (self.wrap, self.wrap_turn)
+    }
+
     pub fn bow(&self) -> BowPose {
         BowPose {
             pull: self.string,
@@ -1422,6 +1433,67 @@ impl Motion {
             raise: self.raise,
             hand: self.hand,
         }
+    }
+}
+
+/// The bandage's wrap (`ui::wrap`, Rust's `MedicalTool`): where the left arm
+/// is brought up to be wrapped, view space, metres. The upper arm starts low
+/// and left out of frame and the wrist sits left of centre under the
+/// crosshair, so the forearm lies across the bottom of the view for the
+/// right hand to go round.
+pub const WRAP_SHOULDER: Vec3 = Vec3::new(-0.16, -0.46, -0.16);
+pub const WRAP_WRIST: Vec3 = Vec3::new(0.04, -0.25, -0.42);
+/// Which way the wrapped arm's elbow points: down and out.
+pub const WRAP_ELBOW: Vec3 = Vec3::new(-0.5, -0.85, 0.15);
+/// Where the arm comes up from, and goes back down to, from its wrapped
+/// place: below the frame.
+pub const WRAP_LOW: Vec3 = Vec3::new(-0.05, -0.30, 0.10);
+/// `stumpy.glb`'s left upper arm and forearm, metres: `LeftForeArm`'s and
+/// `LeftHand`'s bone offsets at the rig's 0.01.
+pub const WRAP_UPPER_M: f32 = 0.224;
+pub const WRAP_FORE_M: f32 = 0.2375;
+/// How far off the forearm's axis the right palm goes round it.
+pub const WRAP_ORBIT_M: f32 = 0.075;
+/// Where along the forearm the bandage starts, from the wrist, and how much
+/// of it the wrap covers, as shares of [`WRAP_FORE_M`].
+pub const WRAP_FROM: f32 = 0.10;
+pub const WRAP_COVER: f32 = 0.50;
+/// How fast the arm follows the wrap's pose, 1/s.
+pub const WRAP_RATE: f32 = 14.0;
+
+/// The wrapped arm in view space, `w` of the way up: the shoulder, the
+/// elbow and the wrist.
+pub fn wrap_arm(w: f32) -> (Vec3, Vec3, Vec3) {
+    let low = WRAP_LOW * (1.0 - w);
+    let s = WRAP_SHOULDER + low;
+    let (elbow, wrist) =
+        super::bow::two_bone(s, WRAP_WRIST + low, WRAP_UPPER_M, WRAP_FORE_M, WRAP_ELBOW);
+    (s, elbow, wrist)
+}
+
+/// The forearm's axis (elbow to wrist) and two directions square to it, the
+/// first as near up as the axis allows: the frame the hand goes round in.
+pub fn wrap_frame(elbow: Vec3, wrist: Vec3) -> (Vec3, Vec3, Vec3) {
+    let axis = (wrist - elbow).normalize_or(Vec3::X);
+    let up = (Vec3::Y - axis * axis.y).normalize_or(Vec3::Z);
+    (axis, up, axis.cross(up))
+}
+
+/// The rig moved so the right palm goes `turn` times round the wrapped
+/// forearm, over the top and toward the eye first, sliding from the wrist
+/// toward the elbow as the bandage goes on; `w` of the way from where `t`
+/// had it.
+pub fn wrap_rig(t: Transform, w: f32, turn: f32) -> Transform {
+    let (_, elbow, wrist) = wrap_arm(w);
+    let (axis, up, side) = wrap_frame(elbow, wrist);
+    let th = turn * std::f32::consts::TAU;
+    let along = WRAP_FROM + WRAP_COVER * (turn / crate::ui::wrap::WRAP_TURNS);
+    let at =
+        wrist - axis * (WRAP_FORE_M * along) + (up * th.cos() + side * th.sin()) * WRAP_ORBIT_M;
+    let palm = t.transform_point(palm_rig());
+    Transform {
+        translation: t.translation + (at - palm) * w,
+        ..t
     }
 }
 
@@ -1460,6 +1532,9 @@ pub fn spawn_item(
         // motions. See [`HeldRig`].
         c.spawn((HeldRig, Transform::IDENTITY, Visibility::Inherited))
             .with_children(|rig| {
+                // The bandage going on round the wrapped forearm
+                // (`bow::draw_arm` shows it).
+                super::bow::spawn_wrap_cloth(rig, &mut meshes, &mut materials);
                 rig.spawn((
                     HeldItem,
                     item_pose(None, Quat::IDENTITY),
@@ -2476,6 +2551,8 @@ pub fn animate(
     mut item: Query<(&mut Transform, Has<InHand>), With<HeldItem>>,
     mut zoom: ResMut<DrawZoom>,
     gf: Option<Res<super::gunfeel::GunFeel>>,
+    // The bandage being wrapped on (`ui::wrap`), started by the click.
+    bite: Option<Res<super::verbs::Bite>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
     let dt = time.delta_secs();
@@ -2778,6 +2855,18 @@ pub fn animate(
     );
     let stow = m.stow * m.stow * (3.0 - 2.0 * m.stow);
     t.translation += VIEWMODEL_STOW * stow;
+    // The bandage's wrap: the left arm comes up (`bow::draw_arm`) and the
+    // right hand goes round it, over the whole assembly's motion.
+    let wrap = bite
+        .as_deref()
+        .and_then(|b| b.wrap.progress(time.elapsed_secs_f64()));
+    m.wrap += (wrap.map_or(0.0, crate::ui::wrap::raise) - m.wrap) * (1.0 - (-WRAP_RATE * dt).exp());
+    if let Some(p) = wrap {
+        m.wrap_turn = crate::ui::wrap::turns(p);
+    }
+    if m.wrap > 1e-3 {
+        *t = wrap_rig(*t, m.wrap, m.wrap_turn);
+    }
 
     // ── The wrist, on top of the arm ────────────────────────────────────
     //

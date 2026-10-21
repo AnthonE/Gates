@@ -466,6 +466,7 @@ pub fn exposure() -> sim_core::exposure::Readout {
         air_c: -7,
         fel_pct: 40,
         fel_hurting: false,
+        bleed: 27,
     }
 }
 

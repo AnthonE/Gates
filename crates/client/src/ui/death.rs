@@ -20,9 +20,9 @@ use protocol::event::ItemCatalog;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
 use sim_core::mob;
 use sim_core::world::{
-    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CACTUS, DEATH_BY_CHARGE, DEATH_BY_CLOCK,
-    DEATH_BY_COLD, DEATH_BY_FALL, DEATH_BY_FEL, DEATH_BY_HAND, DEATH_BY_HEAT, DEATH_BY_MOB,
-    DEATH_BY_SALT, DEATH_BY_SPIKES,
+    DEATH_BY_ARROW, DEATH_BY_BLEED, DEATH_BY_BULLET, DEATH_BY_CACTUS, DEATH_BY_CHARGE,
+    DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_FALL, DEATH_BY_FEL, DEATH_BY_HAND, DEATH_BY_HEAT,
+    DEATH_BY_MOB, DEATH_BY_SALT, DEATH_BY_SPIKES,
 };
 
 use super::craft::item_name;
@@ -71,6 +71,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         DEATH_BY_FALL => "you fell too far".to_string(),
         DEATH_BY_CACTUS => "you kept walking into a cactus".to_string(),
         DEATH_BY_SPIKES => "you stayed on the spikes".to_string(),
+        DEATH_BY_BLEED => "you bled out".to_string(),
         DEATH_BY_HAND if d.own_doing() => "you did it to yourself".to_string(),
         DEATH_BY_HAND => {
             let weapon = match item_name(catalog, d.item) {
@@ -233,6 +234,7 @@ pub fn killed_by(d: &Death, killer: &str, meters: Meters) -> String {
         DEATH_BY_FALL => "Fall".to_string(),
         DEATH_BY_CACTUS => "A cactus".to_string(),
         DEATH_BY_SPIKES => "Spikes".to_string(),
+        DEATH_BY_BLEED => "Bleeding".to_string(),
         DEATH_BY_FEL => "The Verdigris".to_string(),
         DEATH_BY_MOB => beast(d.killer).map_or("An animal", |b| b.name).to_string(),
         DEATH_BY_HAND | DEATH_BY_CHARGE if d.own_doing() => "Yourself".to_string(),
