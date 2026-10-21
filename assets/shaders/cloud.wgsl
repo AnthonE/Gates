@@ -29,7 +29,8 @@ struct Cloud {
     // xyz a grey base; w the coverage edge's width.
     base: vec4<f32>,
     // xyz toward the light that shapes the slab (the sun, the moon at
-    // night), y lifted so a march leaves the slab; w unused.
+    // night), y lifted so a march leaves the slab; w the sunlit term's
+    // weight (`deck::SLAB_SUN`).
     light: vec4<f32>,
     // xy toward the sun, horizontal; zw the flat deck's light-march step.
     sun: vec4<f32>,
@@ -251,7 +252,7 @@ fn march(d: vec3<f32>, px: vec2<f32>) -> vec4<f32> {
                 s *= 2.0;
             }
             let tau = od * sigma;
-            let sun = 0.8 * (ph * exp(-tau) + 0.35 * ph2 * exp(-0.25 * tau));
+            let sun = cl.light.w * (ph * exp(-tau) + 0.35 * ph2 * exp(-0.25 * tau));
             // Sky light from above: a base sees less of the sky than a top.
             let hgt = clamp((p.y - cl.slab.x) / (cl.slab.y - cl.slab.x), 0.0, 1.0);
             let amb = mix(0.5, 1.0, hgt);

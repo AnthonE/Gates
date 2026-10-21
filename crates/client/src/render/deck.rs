@@ -84,6 +84,11 @@ pub const DETAIL_TILE_M: f32 = 480.0;
 pub const DETAIL_N: usize = if cfg!(debug_assertions) { 32 } else { 64 };
 /// How fast a cumulus boils, m/s: the detail rising through the slab.
 pub const BOIL_MS: f32 = 0.8;
+/// The sunlit term's weight in the slab's light (`cloud.wgsl`'s `march`),
+/// over the sky term's. This is what sets a lit top against its grey belly.
+/// At 0.8 the tops reached luma ~190, where the Rust frames' reach ~226
+/// (2026-10-21), and the cumulus read as evenly lit cotton.
+pub const SLAB_SUN: f32 = 1.6;
 
 /// The raymarched slab as the stars and the moon read it for their cover
 /// (`deck.wgsl`'s `slab_shape`): x its floor, y its ceiling, metres; z
@@ -271,7 +276,7 @@ impl CloudParams {
         Self {
             top: v3(l.top).extend(l.thresh),
             base: v3(l.base).extend(sky::EDGE),
-            light: toward.extend(0.0),
+            light: toward.extend(super::rig::tune("GATES_TUNE_CLOUD_SUN", SLAB_SUN)), // TUNE
             sun: Vec4::new(l.sun_h.x, l.sun_h.y, l.toward.x, l.toward.y),
             moon: p.moon.extend(sky::HALO_COS),
             halo: (v3(sky::HALO_RGB) * p.night * p.moonlight).extend(sky::MOON_SCATTER_COS),
