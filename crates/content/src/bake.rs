@@ -104,6 +104,10 @@ pub const EXTRACT_UNLOCK: &str = "unlock.extraction";
 /// The coin that leaves through it.
 pub const EXTRACT_COIN: &str = "item.junk";
 
+/// The fel tier a bred brain starts driving in when its row does not say
+/// (`mobs.toml` `genome_tier`): act II's wolves are bred, wipe day's are not.
+pub const GENOME_TIER_DEFAULT: u32 = 1;
+
 impl Content {
     /// Rank of `id` among all item ids, sorted — the sim-side item index.
     /// The wire slice will ship this same mapping in the join bundle.
@@ -2645,6 +2649,36 @@ impl Content {
             },
             ammo,
         })
+    }
+
+    /// The bred brains the species rows carry (`genome`, `genome_tier`),
+    /// installed per roster kind. Empty when no row has one, which leaves
+    /// every animal on its rule table.
+    pub fn bake_nets(&self) -> Result<sim_core::brain::Nets, String> {
+        let mut nets = sim_core::brain::Nets::default();
+        for m in &self.mobs {
+            let Some(text) = &m.genome else {
+                continue;
+            };
+            let kind = match m.id.as_str() {
+                "mob.pig" => MOB_PIG,
+                "mob.wolf" => MOB_WOLF,
+                "mob.stag" => sim_core::mob::MOB_STAG,
+                other => {
+                    return Err(format!(
+                        "bake: mobs names species `{other}`, which the sim has no roster kind for"
+                    ))
+                }
+            };
+            let genome =
+                sim_core::genome::Genome::decode(sim_core::brain::WOLF_NET_PREFIX, text.as_bytes())
+                    .map_err(|e| format!("bake: mob `{}` genome: {e:?}", m.id))?;
+            let tier = m.genome_tier.unwrap_or(GENOME_TIER_DEFAULT);
+            let tier = u8::try_from(tier)
+                .map_err(|_| format!("bake: mob `{}` genome_tier {tier} overflows", m.id))?;
+            nets.install(kind, genome, tier);
+        }
+        Ok(nets)
     }
 
     pub fn bake_mobs(&self) -> Result<MobContent, String> {

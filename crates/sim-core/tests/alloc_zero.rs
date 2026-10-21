@@ -353,6 +353,10 @@ fn test_alloc_zero() {
     // A melee swing that lands on one also runs `mob::strike` and its
     // inventory write.
     world.mob = sim_core::mob::MobContent::probe_fixture();
+    // A bred brain on the wolves (`brain::WOLF_NET`): its features and its
+    // forward pass run inside the counted think, and both are on the stack.
+    let bred = sim_core::genome::Genome::new(0x5eed).child(1).unwrap();
+    assert!(world.nets.install(sim_core::mob::MOB_WOLF, bred, 0));
     // One work (`works.rs`): it opens, burns and lights itself on its own
     // sweep, all inside the tick.
     world.works_def = sim_core::works::WorksContent::probe_fixture();

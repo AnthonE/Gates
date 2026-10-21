@@ -26,6 +26,7 @@ done, failed, or the body died before the next decision. Autopilot turns
 import argparse
 import datetime
 import glob
+import gzip
 import json
 import math
 import os
@@ -35,18 +36,25 @@ import numpy as np
 
 STUDENT_FORMAT = "gates-student-1"
 ROW_FORMAT = "gates-decision-1"
-NAMED = ("craft", "buy", "sell")
+NAMED = ("craft", "buy", "sell", "go", "walk")
 
 
 def load(paths):
-    """Recordings, each its rows in decision order."""
+    """Recordings, each its rows in decision order: `*.jsonl`, or kept
+    gzipped as `*.jsonl.gz` (`ops/distill/data/`)."""
     files = []
     for p in paths:
-        files += sorted(glob.glob(os.path.join(p, "**", "*.jsonl"), recursive=True)) if os.path.isdir(p) else [p]
+        if os.path.isdir(p):
+            found = []
+            for pattern in ("*.jsonl", "*.jsonl.gz"):
+                found += glob.glob(os.path.join(p, "**", pattern), recursive=True)
+            files += sorted(found)
+        else:
+            files.append(p)
     runs = []
     for f in files:
         rows = []
-        with open(f) as fh:
+        with (gzip.open(f, "rt") if f.endswith(".gz") else open(f)) as fh:
             for line in fh:
                 try:
                     r = json.loads(line)
@@ -225,7 +233,7 @@ def main():
         sys.exit(f"train: {len(rows)} usable decisions in {len(runs)} recordings; record more")
     # Hold out whole recordings; with too few, a share of rows.
     order = rng.permutation(len(runs))
-    n_val = max(1, round(len(runs) * args.val)) if len(runs) >= 4 else 0
+    n_val = max(1, round(len(runs) * args.val)) if len(runs) >= 4 and args.val > 0 else 0
     if n_val:
         val_runs = set(order[:n_val].tolist())
         is_val = np.array([r in val_runs for r in run_of])

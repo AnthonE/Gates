@@ -216,6 +216,7 @@ impl<S: DecisionSource> DecisionSource for Recorder<S> {
     }
 }
 
+#[derive(Clone)]
 struct Layer {
     inputs: usize,
     outputs: usize,
@@ -226,6 +227,7 @@ struct Layer {
 
 /// The distilled classifier: features through a small ReLU network to one
 /// score per goal label it was trained on, read only for the goals offered.
+#[derive(Clone)]
 pub struct Student {
     features: BTreeMap<String, usize>,
     mean: Vec<f32>,
@@ -324,6 +326,65 @@ impl Student {
         Ok(student)
     }
 
+    /// FNV-1a over every weight's bits, layer by layer: what a bred
+    /// student's genome takes for its base (`examples/school.rs`), so the
+    /// same trained student always breeds by the same seeds.
+    pub fn fingerprint(&self) -> u32 {
+        let mut h: u32 = 0x811c_9dc5;
+        for l in &self.layers {
+            for v in l.w.iter().chain(&l.b) {
+                for b in v.to_bits().to_le_bytes() {
+                    h ^= b as u32;
+                    h = h.wrapping_mul(0x0100_0193);
+                }
+            }
+        }
+        h
+    }
+
+    /// Mutation number `g` with seed `m` on a genome whose base is `base`
+    /// (`sim_core::genome::perturb`, the wolves' own recipe): every layer's
+    /// weights and biases each draw their own stream, scaled by
+    /// 1/√fan-in, so a step is the same size whatever a layer's width.
+    pub fn mutate(&mut self, base: u32, g: usize, m: u16) {
+        for (k, l) in self.layers.iter_mut().enumerate() {
+            let scale = 1.0 / ((l.inputs + 1) as f32).sqrt();
+            let stream = g * 64 + 2 * k;
+            sim_core::genome::perturb(&mut l.w, |_| scale, base, stream, m);
+            sim_core::genome::perturb(&mut l.b, |_| scale, base, stream + 1, m);
+        }
+    }
+
+    /// The student as a `gates-student-1` file, its check recomputed on
+    /// `check_obs` (a mutated student scores its check otherwise than the
+    /// trainer did, and `from_json` would refuse the stale one).
+    pub fn to_json(&self, check_obs: Option<&Value>) -> Value {
+        let ordered = |m: &BTreeMap<String, usize>| -> Vec<String> {
+            let mut v = vec![String::new(); m.len()];
+            for (k, &i) in m {
+                v[i] = k.clone();
+            }
+            v
+        };
+        let mut out = json!({
+            "format": STUDENT_FORMAT,
+            "features": ordered(&self.features),
+            "mean": self.mean,
+            "scale": self.scale,
+            "labels": ordered(&self.labels),
+            "layers": self.layers.iter().map(|l| json!({
+                "in": l.inputs,
+                "out": l.outputs,
+                "w": l.w,
+                "b": l.b,
+            })).collect::<Vec<_>>(),
+        });
+        if let Some(obs) = check_obs {
+            out["check"] = json!({"obs": obs, "scores": self.scores(obs)});
+        }
+        out
+    }
+
     /// One score per label.
     pub fn scores(&self, obs: &Value) -> Vec<f32> {
         let mut x = vec![0.0f32; self.mean.len()];
@@ -355,14 +416,16 @@ impl Student {
         x
     }
 
-    /// The label's own unit, else its kind's (`craft:*`) for a named goal
-    /// the teacher never picked.
+    /// The label's own unit, else its kind's (`craft:*`, `walk:*`) for a
+    /// named goal the teacher never picked — a model teacher walks to
+    /// a hundred places and goes to a dozen, and a student that knew only
+    /// the ones it saw could never take the rest.
     fn unit(&self, goal: Goal) -> Option<usize> {
         self.labels
             .get(goal.label().as_str())
             .copied()
             .or_else(|| match goal {
-                Goal::Craft(_) | Goal::Buy(_) | Goal::Sell(_) => {
+                Goal::Craft(_) | Goal::Buy(_) | Goal::Sell(_) | Goal::Go(_) | Goal::Walk(_) => {
                     self.labels.get(&format!("{}:*", goal.key())).copied()
                 }
                 _ => None,
@@ -510,6 +573,38 @@ mod tests {
         assert!(
             student(&["explore"], &[0.0, 1.0]).is_err(),
             "shapes are checked"
+        );
+    }
+
+    /// A bred student (`examples/school.rs`): a mutation moves its weights
+    /// the same way every time and a different seed moves them otherwise,
+    /// and the file it writes reads back with its recomputed check — the
+    /// trainer's stale one would refuse it.
+    #[test]
+    fn a_mutated_student_is_reproducible_and_writes_a_file_that_reads_back() {
+        let base = student(&["explore", "gather_wood"], &[0.0, 1.0]).unwrap();
+        let obs = json!({"night": true});
+        let bred = |m: u16| {
+            let mut s = base.clone();
+            s.mutate(base.fingerprint(), 0, m);
+            s
+        };
+        assert_eq!(bred(7).scores(&obs), bred(7).scores(&obs));
+        assert_ne!(
+            bred(7).scores(&obs),
+            base.scores(&obs),
+            "a step moved nothing"
+        );
+        assert_ne!(bred(7).scores(&obs), bred(8).scores(&obs));
+        let written = bred(7).to_json(Some(&obs));
+        let back = Student::from_json(&written).expect("its own file reads back");
+        assert_eq!(back.scores(&obs), bred(7).scores(&obs));
+        assert_eq!(back.fingerprint(), bred(7).fingerprint());
+        let mut stale = written.clone();
+        stale["check"]["scores"] = json!(base.scores(&obs));
+        assert!(
+            Student::from_json(&stale).is_err(),
+            "a stale check is refused"
         );
     }
 }

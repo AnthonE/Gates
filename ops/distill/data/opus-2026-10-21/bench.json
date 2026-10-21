@@ -1,0 +1,69 @@
+{
+  "bots": 4,
+  "commit": "unknown",
+  "format": "gates-bench-1",
+  "harness": "claude_agent.py/api",
+  "layout": "c29982ce40d81d75",
+  "mind": "external",
+  "minutes": 100,
+  "model": "claude-opus-5-5",
+  "proto": 129,
+  "runs": [
+    {
+      "bots": [
+        {
+          "alive_s": 5999,
+          "answered": 263,
+          "autopilot": 0,
+          "deaths": 5,
+          "decisions": 263,
+          "hoard": 21,
+          "island": 21,
+          "kills": 0,
+          "works": 0
+        },
+        {
+          "alive_s": 5999,
+          "answered": 226,
+          "autopilot": 0,
+          "deaths": 3,
+          "decisions": 226,
+          "hoard": 0,
+          "island": 0,
+          "kills": 0,
+          "works": 0
+        },
+        {
+          "alive_s": 5999,
+          "answered": 241,
+          "autopilot": 0,
+          "deaths": 0,
+          "decisions": 241,
+          "hoard": 35,
+          "island": 105,
+          "kills": 0,
+          "works": 70
+        },
+        {
+          "alive_s": 5999,
+          "answered": 235,
+          "autopilot": 0,
+          "deaths": 1,
+          "decisions": 235,
+          "hoard": 126,
+          "island": 131,
+          "kills": 0,
+          "works": 5
+        }
+      ],
+      "island": 64.25
+    }
+  ],
+  "score": {
+    "ci95": 0.0,
+    "mean": 64.25,
+    "n": 1
+  },
+  "seed": 20260731,
+  "think_ms": 3000
+}

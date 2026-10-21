@@ -5080,3 +5080,62 @@ fn the_abyss_rug_is_a_baseline_comfort() {
         .count();
     assert_eq!(others, 0, "only the rug furnishes");
 }
+
+// ---------------------------------------------------------------------------
+// Bred brains (`mobs.toml` `genome`, `genome_tier`; `sim_core::genome`).
+
+/// The shipped set carries no brain, a wolf row takes one and it bakes into
+/// the roster's nets from the medium tier; prey cannot carry one, a tier
+/// past the island's is refused, a tier with no genome is, and text that is
+/// not a wolf genome is.
+#[test]
+fn a_bred_brain_bakes_onto_the_wolf_and_nowhere_else() {
+    use sim_core::mob::{MOB_PIG, MOB_WOLF};
+    let g = sim_core::genome::Genome::new(7).child(9).unwrap();
+    let mut buf = [0u8; sim_core::genome::TEXT_MAX];
+    let n = g.encode(sim_core::brain::WOLF_NET_PREFIX, &mut buf);
+    let text = std::str::from_utf8(&buf[..n]).unwrap().to_owned();
+    let with = |id: &str, extra: &str| {
+        let mut srcs = sources();
+        let e = srcs.iter_mut().find(|(n, _)| *n == "mobs.toml").unwrap();
+        let anchor = format!("id = \"{id}\"");
+        assert!(e.1.contains(&anchor), "test fixture rot: no {anchor}");
+        e.1 = e.1.replacen(&anchor, &format!("{anchor}\n{extra}"), 1);
+        srcs
+    };
+
+    let shipped = build(&sources()).expect("the shipped set validates");
+    assert!(
+        shipped.bake_nets().unwrap().is_empty(),
+        "the shipped set grew a brain"
+    );
+
+    let c =
+        build(&with("mob.wolf", &format!("genome = \"{text}\""))).expect("a wolf genome validates");
+    let nets = c.bake_nets().expect("a wolf genome bakes");
+    let wolf = nets.species(MOB_WOLF).expect("the wolf has its brain");
+    assert_eq!(wolf.genome, Some(g));
+    assert_eq!(
+        wolf.tier, 1,
+        "a row that names no tier starts at the medium one"
+    );
+    assert!(nets.species(MOB_PIG).is_none());
+
+    let refused = |srcs: Vec<(&'static str, String)>, phrase: &str| {
+        let err = build(&srcs).expect_err(phrase);
+        assert!(err.contains(phrase), "expected `{phrase}`, got: {err}");
+    };
+    refused(
+        with("mob.pig", &format!("genome = \"{text}\"")),
+        "never hunts in one",
+    );
+    refused(
+        with("mob.wolf", &format!("genome = \"{text}\"\ngenome_tier = 3")),
+        "fel tiers",
+    );
+    refused(with("mob.wolf", "genome_tier = 1"), "without a genome");
+    refused(
+        with("mob.wolf", "genome = \"qg2:776t3gEAAkADgATA__8\""),
+        "does not read as a bred wolf brain",
+    );
+}

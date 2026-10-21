@@ -515,6 +515,9 @@ pub struct SimTables {
     pub spawn_kit: sim_core::inventory::SpawnKit,
     pub loot: sim_core::loot::LootContent,
     pub mobs: sim_core::mob::MobContent,
+    /// Bred brains for the roster (`mobs.toml` `genome`); empty leaves every
+    /// animal on its rule table.
+    pub nets: sim_core::brain::Nets,
     /// The attack helicopter (`heli.rs`). Armed by the boot alone: test
     /// shards assign their tables field by field and leave it inert.
     pub heli: sim_core::heli::HeliDef,
@@ -572,6 +575,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         spawn_kit: content.bake_spawn_kit()?,
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
+        nets: content.bake_nets()?,
         heli: content.bake_heli()?,
         sentry: content.bake_sentry()?,
         turret: content.bake_turret()?,
@@ -595,6 +599,84 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         survival,
         cook,
     })
+}
+
+/// Every baked table into a fresh core, as a shard's boot installs them:
+/// the sim thread's list and a lockstep island's (`lockstep.rs`), one list.
+/// What belongs to neither the world nor the core comes back — the
+/// standings' rules and the achievements, which open beside files the
+/// caller owns.
+pub fn install_tables(
+    core: &mut ShardCore,
+    tables: SimTables,
+) -> (crate::standings::Rules, crate::achievements::Baked) {
+    // Destructured rather than field-by-field off `tables`, so that adding a
+    // table and forgetting to install it is a compile error naming the field
+    // — which is the whole reason this is a struct (`SimTables`).
+    let SimTables {
+        gather,
+        craft,
+        build,
+        deploy,
+        combat,
+        backpack,
+        survival,
+        cook,
+        spawn_kit,
+        loot,
+        mobs,
+        nets,
+        heli,
+        sentry,
+        turret,
+        research,
+        catalog,
+        item_descs,
+        skins,
+        skin_catalog,
+        vend,
+        vendor_names,
+        cards,
+        works,
+        work_names,
+        unlock_names,
+        lore,
+        mechs,
+        arc_text,
+        standing_rules,
+        achievements,
+    } = tables;
+    core.world.gather = gather;
+    core.world.craft = craft;
+    core.world.build = build;
+    core.world.deploy = deploy;
+    core.world.combat = combat;
+    core.world.backpack = backpack;
+    core.world.survival = survival;
+    core.world.cook = cook;
+    core.world.spawn_kit = spawn_kit;
+    core.world.loot = loot;
+    core.world.mob = mobs;
+    *core.world.nets = nets;
+    core.world.heli_def = heli;
+    core.world.sentry_def = sentry;
+    core.world.turret_def = turret;
+    core.world.research = research;
+    core.world.skins = skins;
+    core.catalog = catalog;
+    core.item_descs = item_descs;
+    core.skin_catalog = skin_catalog;
+    core.world.vend = vend;
+    core.vendor_names = vendor_names;
+    core.world.cards = cards;
+    core.world.works_def = works;
+    core.world.works.refresh(&core.world.works_def);
+    core.work_names = work_names;
+    core.unlock_names = unlock_names;
+    core.world.lore_def = lore;
+    core.world.mech_def = mechs;
+    core.arc_text = arc_text;
+    (standing_rules, achievements)
 }
 
 /// Each item's description line, by item index (`SUB_ITEM_DESC`). A line
@@ -4155,70 +4237,7 @@ fn sim_thread(
 ) {
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
-    // Destructured rather than field-by-field off `tables`, so that adding a
-    // table and forgetting to install it is a compile error naming the field
-    // — which is the whole reason this is a struct (`SimTables`).
-    let SimTables {
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        spawn_kit,
-        loot,
-        mobs,
-        heli,
-        sentry,
-        turret,
-        research,
-        catalog,
-        item_descs,
-        skins,
-        skin_catalog,
-        vend,
-        vendor_names,
-        cards,
-        works,
-        work_names,
-        unlock_names,
-        lore,
-        mechs,
-        arc_text,
-        standing_rules,
-        achievements,
-    } = tables;
-    core.world.gather = gather;
-    core.world.craft = craft;
-    core.world.build = build;
-    core.world.deploy = deploy;
-    core.world.combat = combat;
-    core.world.backpack = backpack;
-    core.world.survival = survival;
-    core.world.cook = cook;
-    core.world.spawn_kit = spawn_kit;
-    core.world.loot = loot;
-    core.world.mob = mobs;
-    core.world.heli_def = heli;
-    core.world.sentry_def = sentry;
-    core.world.turret_def = turret;
-    core.world.research = research;
-    core.world.skins = skins;
-    core.catalog = catalog;
-    core.item_descs = item_descs;
-    core.skin_catalog = skin_catalog;
-    core.world.vend = vend;
-    core.vendor_names = vendor_names;
-    core.world.cards = cards;
-    core.world.works_def = works;
-    core.world.works.refresh(&core.world.works_def);
-    core.work_names = work_names;
-    core.unlock_names = unlock_names;
-    core.world.lore_def = lore;
-    core.world.mech_def = mechs;
-    core.arc_text = arc_text;
+    let (standing_rules, achievements) = install_tables(&mut core, tables);
     core.install_admins(admins);
     // The teams, kept beside the world save across a restart.
     core.teams = crate::team::Teams::open(

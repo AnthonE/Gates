@@ -978,6 +978,17 @@ pub struct Mob {
     pub sleep_pct: u32,
     /// How far it hears each kind of noise, metres (`sim-core/src/noise.rs`).
     pub hear_m: Hearing,
+    /// A bred brain choosing this species' fights (`sim-core/src/genome.rs`,
+    /// `brain::WOLF_NET`): the text a breeding run prints, `gw1:` and
+    /// base64url (`cargo run -p server --release --example zoo`). Absent is
+    /// the rule table. Only a free pack hunter takes one: a guard keeps its
+    /// post's table, and validate refuses one on a species that never bites.
+    #[serde(default)]
+    pub genome: Option<String>,
+    /// The lowest fel tier (0–2) the bred brain drives in; below it the
+    /// rule table does, so wipe day's wolves are the old ones. Absent is 1.
+    #[serde(default)]
+    pub genome_tier: Option<u32>,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
