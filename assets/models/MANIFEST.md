@@ -1441,3 +1441,36 @@ ball; the rest are saguaros (`props::CACTUS_GLB`).
 |---|---|---|---|---|
 | `prop/cactus_saguaro.glb` | 2,559 | 1.41 × 3.60 × 0.49 (trunk ≈ `CACTUS_R_M`) | `01a1522a-31db-73e8-97e8-d30f66f0a68e` | `01a1522a-fbfe-72e0-b34d-dd672d3c2b67` |
 | `prop/cactus_ball.glb` | 1,212 | 0.62 × 0.60 × 0.62 (`BALL_CACTUS_TOP_M`) | `01a1522a-320a-7087-97ba-b7168bad2779` | `01a1522a-ae4a-7228-b011-275372bead61` |
+
+## `prop/rock/` — the formation rock pieces, generated (2026-10-21)
+
+Meshy, paid plan, so private ownership with no attribution owed (the
+`deploy/` rail's terms). Shape only: `render/boulders.rs` stretches a piece
+into each formation block's box and draws it in the ground's splat material,
+so no texture was made. `ci/meshy_gen.py --multiview --no-texture --tris
+1500` (nano-banana-pro image and two more views, then multi-image-to-3d,
+meshy-7.1), then `ci/rock_piece.py RAW block_x.glb --far block_x_far.glb`
+(fins and debris peeled, holes capped, base at the origin; the far piece is
+Meshy's remesh of it to 300). **243 credits for the twelve** (balance 823 →
+580; the six rolls ran at once, so per-roll figures are not kept).
+
+Each image prompt is the object sentence below followed by: *"Surface:
+weathered cool grey granite, matte, broken into big flat fractured planes
+with a few horizontal bedding cracks; edges chipped and softened by weather,
+never sharp machined edges. Not a dome, not a ball, not a cube, not a pile of
+separate stones. Alone on a plain white background, three-quarter view from
+slightly above, soft studio light, neutral grey shadow. No ground plane, no
+moss, no lichen, no grass, no plants, no people, no other objects, no text."*
+
+| file | tris near / far | object sentence | image | mesh | far remesh |
+|---|---|---|---|---|---|
+| `block_a` | 1,484 / 314 | "EXACTLY ONE large weathered granite block broken out of bedrock. It is about 4 metres wide, 4 metres deep and 3 metres tall: as deep as it is wide. Its sides are steep, nearly vertical rock faces; its top is broad and nearly flat, tilted only slightly." | `01a15d69-22a7-74e5-81ae-c814e6fad93a` | `01a15d69-c84e-7514-99e9-ddd9877d0faf` | `01a15d6e-c199-7126-9c08-3f8a35fe55de` |
+| `block_b` | 1,536 / 314 | "EXACTLY ONE large weathered granite block broken out of bedrock, split by one deep vertical crack across one end. It is about 5 metres wide, 4 metres deep and 3 metres tall. Its sides are steep, nearly vertical rock faces; its top is broad and nearly flat." | `01a15d69-2081-7108-9e80-4018c57b9f61` | `01a15d69-c47d-7647-97af-a7613b57178e` | `01a15d6e-c21a-7186-8f07-b30f513b8906` |
+| `block_c` | 1,526 / 314 | "EXACTLY ONE long weathered granite outcrop block. It is about 6.5 metres long, 4 metres deep and 3 metres tall. Its sides are steep, nearly vertical rock faces; its broad flat top steps down once, in a low ledge, toward one end." | `01a15d69-2298-71e9-9163-d126a8c1cb40` | `01a15d69-c662-7628-84fe-edfb1a90cc20` | `01a15d6e-c1bc-76c1-bb8e-8645b8661706` |
+| `block_d` | 1,513 / 314 | "EXACTLY ONE tall chunky weathered granite block standing upright, like a squat tor. It is about 4 metres wide, 3.5 metres deep and 4.5 metres tall. Its sides are steep, nearly vertical rock faces with deep vertical joints; its top is flat and broad." | `01a15d69-22a6-7021-a19a-06b198cfff65` | `01a15d69-a268-71ef-8e2c-99b2f2c0f4b0` | `01a15d6e-c1e0-73d3-92d3-a6201a7a3ece` |
+| `block_e` | 1,538 / 314 | "EXACTLY ONE low thick slab of weathered granite, like a stone table broken from bedrock. It is about 5 metres wide, 4 metres deep and 2 metres tall. Its sides are steep, nearly vertical rock faces; its top is wide, flat and nearly level." | `01a15d69-2290-77ea-a754-98bb0863c93b` | `01a15d69-a5aa-735c-8d40-409d48613ac1` | `01a15d6e-c20a-733a-8bfe-593772cef072` |
+| `block_f` | 1,476 / 314 | "EXACTLY ONE long ridge of weathered granite bedrock, a single block. It is about 8 metres long, 3.5 metres deep and 3 metres tall. Its sides are steep, nearly vertical rock faces with two shallow notches; its top is long, flat and nearly level." | `01a15d69-2272-725e-b5d6-46e7e8fe0b7a` | `01a15d69-a072-758f-8da3-c298d4480e9e` | `01a15d6e-c24a-736a-a0d1-a04e6f216042` |
+
+They fill 63 % (`block_a`) to 83 % (`block_b`) of their own boxes, so a body
+stops short of the drawn rock in places, most around `block_a` and `block_d`;
+a re-roll of those two is the first lever.
