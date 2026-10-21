@@ -467,6 +467,9 @@ pub fn setup(
     commands.spawn((
         super::WorldEntity,
         Sun,
+        // The world's layer and your own body's, which casts here and is
+        // drawn by no camera (`own_shadow.rs`).
+        super::own_shadow::sun_layers(),
         DirectionalLight {
             // White. The atmosphere reddens it on its way down now, which is
             // what the browser's hand-picked 0xfff4e2 was standing in for.
