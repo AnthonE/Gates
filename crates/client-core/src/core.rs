@@ -3322,6 +3322,7 @@ impl ClientCore {
                     .pieces
                     .insert(rec, frame, &self.piece_defs, self.piece_defs_have)
                 {
+                    self.reseal_at(rec.target());
                     self.push_piece_change(rec);
                     // A broadcast is a placement HAPPENING; only it rings
                     // (see `placed`). The walk's tail batch carrying the
@@ -3345,6 +3346,9 @@ impl ClientCore {
                         .pieces
                         .insert(rec, frame, &self.piece_defs, self.piece_defs_have)
                     {
+                        if !reset {
+                            self.reseal_at(rec.target());
+                        }
                         self.push_piece_change(rec);
                         flags |= APPLIED_PIECES;
                     }
@@ -4455,6 +4459,22 @@ impl ClientCore {
             {
                 self.pieces.add_solid(solid);
             }
+        }
+    }
+
+    /// Re-seal the door or insert hung at a piece's address, if one is: a
+    /// re-filed piece's collision row is filed open (an upgrade, a flip, a
+    /// later sync batch), and a door that arrived before its doorway had
+    /// nothing to seal. Bounded by the deploy mirror, event lane only.
+    fn reseal_at(&mut self, at: (u16, u16, u8, u8)) {
+        if let Some(d) = self
+            .deploys
+            .entries()
+            .iter()
+            .find(|d| (d.cx, d.cz, d.level, d.loc) == at)
+            .copied()
+        {
+            self.seal_for(d);
         }
     }
 
@@ -6363,6 +6383,86 @@ mod tests {
         let (len, _) = encode_event_deploy_defs(&dc, 0, 0, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!c.fire_warms(fx, fz, fy), "a zero reach warms nothing");
+    }
+
+    /// The collision row the walks read keeps a shut door through every way
+    /// its doorway is filed again: a re-sent record (an upgrade, a hammer
+    /// flip) re-files it open, and a doorway that arrives after its door —
+    /// the deploy walk and the piece walk race on a join — has nothing
+    /// sealed it yet. The door at its address seals it each time.
+    #[test]
+    fn a_refiled_doorway_keeps_its_shut_door() {
+        use protocol::{
+            encode_event_deploy_defs, encode_event_deploy_placed, encode_event_piece_defs,
+            encode_event_piece_placed,
+        };
+        use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO};
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) =
+            encode_event_piece_defs(&BuildContent::probe_fixture(), 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let (len, _) =
+            encode_event_deploy_defs(&DeployContent::probe_fixture(), 0, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let (ox, oz) = (340u16, 680u16);
+        let frame = sim_core::frame::Frame::new((ox as i32 * 300, oz as i32 * 300), 0, 0);
+        // Probe fixtures: piece row 3 is the doorway, deploy row 2 the door.
+        let doorway = |id: u32, cx: u16| PieceRec {
+            id,
+            cx,
+            cz: 682,
+            loc: LOC_EDGE_XLO,
+            row: 3,
+            hp: 1,
+            sock: sim_core::sock::from_grid(ox, oz, cx, 682, LOC_EDGE_XLO).unwrap(),
+            ..PieceRec::default()
+        };
+        let door = |cx: u16| DeployRec {
+            cx,
+            cz: 682,
+            loc: LOC_EDGE_XLO,
+            row: 2,
+            ..DeployRec::default()
+        };
+        let row_shut = |c: &ClientCore, id: u32| {
+            c.pieces
+                .cols()
+                .hulls()
+                .find(sim_core::build::hull_key(id))
+                .is_some_and(|h| h.shut)
+        };
+        let piece = |c: &mut ClientCore, rec: PieceRec| {
+            let mut b = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_piece_placed(&rec, &frame, &mut b).unwrap();
+            c.on_stream(&b[..len]).unwrap();
+        };
+        let deploy = |c: &mut ClientCore, rec: DeployRec| {
+            let mut b = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_deploy_placed(&rec, &mut b).unwrap();
+            c.on_stream(&b[..len]).unwrap();
+        };
+
+        // Doorway, then its door: sealed.
+        piece(&mut c, doorway(5, 341));
+        deploy(&mut c, door(341));
+        assert!(row_shut(&c, 5), "a placed door seals its doorway's row");
+        // The doorway's record again, its soft side flipped: still sealed.
+        piece(
+            &mut c,
+            PieceRec {
+                facing: 1,
+                ..doorway(5, 341)
+            },
+        );
+        assert!(row_shut(&c, 5), "a re-filed doorway keeps its shut door");
+
+        // A door before its doorway: sealed when the doorway lands.
+        deploy(&mut c, door(343));
+        piece(&mut c, doorway(6, 343));
+        assert!(row_shut(&c, 6), "a doorway after its door is sealed");
     }
 
     /// The predictor collides against the same closed doors the sim does,

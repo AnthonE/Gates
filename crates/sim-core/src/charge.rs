@@ -519,7 +519,7 @@ pub fn tick_fuses(
         // A charge on a piece the grid cannot name knows where it is only
         // through the piece (freeform W2): one whose piece is gone before
         // the fuse ran out goes with it.
-        if !c.deploy && posed_gone(pieces, &c) {
+        if posed_gone(pieces, &c) {
             charges.remove_at(i);
             continue;
         }
@@ -546,13 +546,17 @@ pub fn tick_fuses(
 /// record while it stands, and its cell's centre once an earlier blast took
 /// it. A charge on a piece, or on a door, is at `build::anchor` as before —
 /// or, on a piece the grid cannot name, at the piece's own middle
-/// (`Pieces::anchor_of`).
+/// (`Pieces::anchor_of`), and on a door in one's doorway at the doorway's
+/// (`deploy::posed_insert`).
 pub fn epicentre(pieces: &Pieces, deploys: &Deploys, c: &ChargeRec) -> (f32, f32) {
     if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
         return match deploys.find(c.cx, c.cz, c.level, c.loc) {
             Some(rec) => rec.xz(),
             None => crate::deploy::cell_center(c.cx, c.cz),
         };
+    }
+    if let Some(at) = posed_door(pieces, c) {
+        return (at.x, at.z);
     }
     match posed(pieces, c) {
         Some(rec) => pieces.anchor_of(rec),
@@ -568,14 +572,35 @@ fn posed<'a>(pieces: &'a Pieces, c: &ChargeRec) -> Option<&'a crate::build::Piec
     pieces.find(c.cx, c.cz, c.level, c.loc)
 }
 
-/// Whether a charge was planted on a posed piece that is gone.
+/// Where the door a charge is planted on hangs, when its doorway is one the
+/// grid cannot name and still stands — its address spells the doorway.
+fn posed_door(pieces: &Pieces, c: &ChargeRec) -> Option<crate::deploy::InsertAt> {
+    if !c.deploy {
+        return None;
+    }
+    crate::deploy::posed_insert(pieces.cols(), c.cx, c.cz, c.level, c.loc)
+}
+
+/// Whether a charge was planted on something the grid cannot name — a
+/// posed piece, or a door in a posed doorway — that is gone: it knew where
+/// it was only through that.
 fn posed_gone(pieces: &Pieces, c: &ChargeRec) -> bool {
-    crate::build::spelled_id(c.cx, c.cz, c.level, c.loc).is_some() && posed(pieces, c).is_none()
+    if crate::build::spelled_id(c.cx, c.cz, c.level, c.loc).is_none() {
+        return false;
+    }
+    if c.deploy {
+        posed_door(pieces, c).is_none()
+    } else {
+        posed(pieces, c).is_none()
+    }
 }
 
 /// The floor under a charge's storey: its column's, or its posed piece's
-/// building's.
+/// building's, or its posed doorway's.
 fn floor_y(seed: u64, haven: &crate::terrain::Haven, pieces: &Pieces, c: &ChargeRec) -> f32 {
+    if let Some(at) = posed_door(pieces, c) {
+        return at.floor_y;
+    }
     match posed(pieces, c).and_then(|r| pieces.frame(r.bld).map(|f| (f.band, r.level))) {
         Some((band, level)) => crate::build::band_y(band) + crate::build::level_y(level),
         None => {
@@ -615,7 +640,7 @@ fn detonate(
     };
     let b = Blast {
         at: (ax, ay, az),
-        cell: if posed(pieces, c).is_some() {
+        cell: if crate::build::spelled_id(c.cx, c.cz, c.level, c.loc).is_some() {
             (cell(ax), cell(az))
         } else {
             (c.cx, c.cz)

@@ -2019,11 +2019,15 @@ pub fn bag_wake_body(
         x - rec.cx as f32 * BUILD_CELL_M,
         z - rec.cz as f32 * BUILD_CELL_M,
     );
-    if !on_plane {
+    // Off the grid's planes, the slab the grid cannot name under it.
+    let y = if on_plane {
+        crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
+            + crate::build::level_y(rec.level)
+    } else if let Some(y) = cols.hulls().posed_floor(rec.level, x, z) {
+        y
+    } else {
         return crate::movement::Body::at(seed, haven, x, z);
-    }
-    let y = crate::collide::col_base_y(seed, haven, cols, rec.cx, rec.cz)
-        + crate::build::level_y(rec.level);
+    };
     crate::movement::Body {
         qx: crate::movement::quant_xz(x),
         qy: crate::movement::quant_y(y),
@@ -2199,6 +2203,19 @@ impl DeployRec {
     #[inline]
     pub fn xz(&self) -> (f32, f32) {
         crate::footprint::centre(self.cx, self.cz, self.pose)
+    }
+
+    /// Where it is for a claim, a reach or a bill: a door or an insert in
+    /// an edge the grid cannot name at that edge's middle — its address
+    /// spells the edge's id, not a cell (freeform W4) — and anything else
+    /// where [`Self::xz`] has always put it.
+    #[inline]
+    pub fn place_xz(&self, cols: &ColIndex) -> (f32, f32) {
+        if self.loc == crate::build::LOC_NONE {
+            edge_mid(cols, self.cx, self.cz, self.level, self.loc)
+        } else {
+            self.xz()
+        }
     }
 
     /// Where a hand reaches it: a door, a garage door or a shutter (an edge
@@ -2444,7 +2461,7 @@ enum Gone {
 /// Whether a convex footprint (corners in order round it) and a rectangle
 /// share area: the separating-axis test over both shapes' edge normals,
 /// touching apart as [`Rect::overlaps`] reads it.
-fn foot_overlaps(pts: &[(f32, f32)], r: &Rect) -> bool {
+pub(crate) fn foot_overlaps(pts: &[(f32, f32)], r: &Rect) -> bool {
     let n = pts.len();
     let mut axes = [
         (r.c, -r.s),
@@ -3530,7 +3547,7 @@ fn key_crew_passes(
     let Some(d) = deploys.find(cx, cz, level, loc) else {
         return false;
     };
-    let (x, z) = d.xz();
+    let (x, z) = d.place_xz(pieces.cols());
     crate::claim::any_claim(pieces, deploys, x, z)
         && !crate::claim::foreign_claim(pieces, deploys, x, z, id)
 }
@@ -3723,7 +3740,7 @@ pub fn pick_up(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
         return;
     }
-    let (ax, az) = deploys.entries[i].xz();
+    let (ax, az) = deploys.entries[i].place_xz(pieces.cols());
     let (px, pz) = player_xz(p);
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
@@ -4518,7 +4535,7 @@ pub fn upkeep_sweep(
             continue;
         }
         let def = dc.defs[rec.row as usize];
-        let (x, z) = rec.xz();
+        let (x, z) = rec.place_xz(pieces.cols());
         let scale = crate::upkeep::scale(
             dc,
             crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, x, z),

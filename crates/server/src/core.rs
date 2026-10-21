@@ -1751,7 +1751,7 @@ impl ShardCore {
             }
         }
         for e in d.entries() {
-            let (x, z) = e.xz();
+            let (x, z) = e.place_xz(self.world.pieces.cols());
             if let (Some(hi), Some(def)) = (covering(x, z), dc.defs.get(e.row as usize)) {
                 value[hi] += rules.worth(def.item, 1);
             }
@@ -4584,12 +4584,11 @@ impl ShardCore {
                                 // everything: the client has no body this
                                 // tick, and its pending walk will cover the
                                 // store from the position it does get.
+                                // The record's cell, not the event's address:
+                                // a piece the grid cannot name is addressed by
+                                // its spelled id, which is no place at all.
                                 if c.piece_anchor_valid
-                                    && !interest::piece_in_interest(
-                                        c.piece_anchor_cm,
-                                        addr.0,
-                                        addr.1,
-                                    )
+                                    && !interest::rec_in_interest(c.piece_anchor_cm, &rec)
                                 {
                                     ShardStats::bump(&stats.piece_events_skipped);
                                     continue;

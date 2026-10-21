@@ -375,7 +375,7 @@ pub fn track(
     // ground's band plus the `R`/`F` nudge. Heard by the sim only where
     // nothing else decides the plate; sent always, because the client cannot
     // know which case the server is in.
-    let want = place::plate_request(&site, target, aim.at, ghost.nudge);
+    let mut want = place::plate_request(&site, target, aim.at, ghost.nudge);
     let checked = place::check(target, row, &site, freehand, want);
     let mut placement = checked.ok();
     let mut verdict = match checked {
@@ -441,6 +441,15 @@ pub fn track(
         ghost.stair_turn,
         crate::look::yaw_u16(look.yaw),
     ) {
+        // A free foundation's middle is on the aim, and `free_site` reads
+        // its band off the ground there: it asks for the nudge alone, where
+        // the grid's request is measured from the aimed cell's ground.
+        if matches!(l, place::LatticeAim::Free { .. }) {
+            want = (ghost.nudge as i32).clamp(
+                -sim_core::build::PLATE_SINK_MAX_BANDS,
+                sim_core::build::PLATE_RISE_MAX_BANDS,
+            ) as i8;
+        }
         let drawn = place::lattice_site(&site, l, level, want)
             .ok()
             .and_then(|s| {

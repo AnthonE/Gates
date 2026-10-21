@@ -942,7 +942,8 @@ pub enum LatticeAim {
 /// near ([`sim_core::build::snap`]). A foundation, square or triangle, with
 /// nothing near starts a building of its own with its middle on the aim,
 /// facing `yaw` (the look's) — any base at any angle. Anything else does
-/// only where the nearest free footprint beside what stands near is one the
+/// where the nearest free footprint beside what stands near is in a
+/// building turned off the grid, within a cell of the aim; or is one the
 /// grid cannot name — a wall on a triangle's side — and is nearer the aim
 /// than the grid's own address, so a square base on the grid builds on as
 /// it always has.
@@ -957,38 +958,47 @@ pub fn lattice_aim(
 ) -> Option<LatticeAim> {
     use sim_core::sock::{FOOT_TRI, FOOT_TRI_RISER};
     let tri = matches!(sim_core::support::foot_of(shape), FOOT_TRI | FOOT_TRI_RISER);
-    match sim_core::build::snap(store, shape, level, aim.0, aim.1, SNAP_NEAR_M, turn) {
-        Some(s) => {
-            let frame = store.frame(s.bld)?;
-            let named = sim_core::build::grid_name(frame, &s.sock).is_some();
-            let (gx, gz) = anchor(grid.cx, grid.cz, grid.loc);
-            let g = ((gx - aim.0) * (gx - aim.0) + (gz - aim.1) * (gz - aim.1)).sqrt();
-            (tri || (!named && s.dist_m < g)).then_some(LatticeAim::At {
+    let snapped = sim_core::build::snap(store, shape, level, aim.0, aim.1, SNAP_NEAR_M, turn);
+    if let Some(s) = snapped {
+        let frame = store.frame(s.bld)?;
+        let named = sim_core::build::grid_name(frame, &s.sock).is_some();
+        let (gx, gz) = anchor(grid.cx, grid.cz, grid.loc);
+        let g = ((gx - aim.0) * (gx - aim.0) + (gz - aim.1) * (gz - aim.1)).sqrt();
+        // A building turned off the grid can never be joined through a
+        // grid address, so within a cell of its free socket that socket is
+        // the aim's, however near a grid cell's middle happens to be.
+        let turned = sim_core::build::grid_origin(frame).is_none();
+        if tri || (!named && s.dist_m < g) || (turned && s.dist_m <= BUILD_CELL_M) {
+            return Some(LatticeAim::At {
                 bld: s.bld,
                 sock: s.sock,
-            })
+            });
         }
-        None if (tri && sim_core::support::grounded(shape))
-            || shape == sim_core::build::SHAPE_FOUNDATION =>
-        {
-            // The body `build::free_site` lays has its first corner on the
-            // origin: step back from the aim to its middle.
-            let probe = sim_core::frame::Frame::new((0, 0), 0, yaw);
-            let mid = if tri {
-                sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0).at
-            } else {
-                sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0).at
-            };
-            let (ox, oz) = probe.to_world(mid);
-            Some(LatticeAim::Free {
-                x_cm: ((aim.0 - ox) * 100.0).round() as i32,
-                z_cm: ((aim.1 - oz) * 100.0).round() as i32,
-                yaw,
-                tri,
-            })
+        // Near a grid base, the grid's address; out past a turned one's
+        // reach, a foundation starts a building of its own.
+        if !turned {
+            return None;
         }
-        None => None,
     }
+    if !((tri && sim_core::support::grounded(shape)) || shape == sim_core::build::SHAPE_FOUNDATION)
+    {
+        return None;
+    }
+    // The body `build::free_site` lays has its first corner on the origin:
+    // step back from the aim to its middle.
+    let probe = sim_core::frame::Frame::new((0, 0), 0, yaw);
+    let mid = if tri {
+        sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0).at
+    } else {
+        sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0).at
+    };
+    let (ox, oz) = probe.to_world(mid);
+    Some(LatticeAim::Free {
+        x_cm: ((aim.0 - ox) * 100.0).round() as i32,
+        z_cm: ((aim.1 - oz) * 100.0).round() as i32,
+        yaw,
+        tri,
+    })
 }
 
 /// The site a lattice aim names, by the sim's own constructors.
@@ -1418,8 +1428,14 @@ pub fn posed_insert_target(
         }
     };
     if placement == sim_core::deploy::PLACE_DOOR {
+        // A door's address spells its doorway's id, level bits and all:
+        // the storey is the doorway's.
         for d in site.deploys {
-            if d.loc == sim_core::build::LOC_NONE && d.level == level {
+            if d.loc == sim_core::build::LOC_NONE
+                && store
+                    .find(d.cx, d.cz, d.level, d.loc)
+                    .is_some_and(|r| r.level == level)
+            {
                 offer((d.cx, d.cz, d.level, d.loc));
             }
         }
@@ -2448,5 +2464,53 @@ mod tests {
                 "{shape}: middle at ({mx}, {mz})"
             );
         }
+    }
+
+    /// Beside a building turned off the grid, a foundation takes the
+    /// building's own free socket though the aim sits on a grid cell's very
+    /// middle: the grid could never join it to that building.
+    #[test]
+    fn a_turned_base_builds_on_its_own_lattice() {
+        use sim_core::build::{BuildContent, Pieces, LOC_NONE, SHAPE_FOUNDATION};
+        use sim_core::sock::Sock;
+        let bc = BuildContent::probe_fixture();
+        assert_eq!(bc.pieces[0].shape, SHAPE_FOUNDATION);
+        let frame = sim_core::frame::Frame::new((123_456, 98_765), 0, 7_000);
+        let core_sq = Sock::square_from(sim_core::lattice::LPt::ZERO, 0);
+        let (cx, cz) = sim_core::build::anchor_cell(&frame, &core_sq);
+        let mut store = Pieces::new();
+        assert!(store.mirror_put(
+            PieceRec {
+                id: 1,
+                sock: core_sq,
+                row: 0,
+                cx,
+                cz,
+                loc: LOC_NONE,
+                hp: 1,
+                ..PieceRec::default()
+            },
+            frame,
+            |r| Some(bc.pieces[r as usize].shape),
+        ));
+        let (sides, _) = core_sq.sides();
+        let (next, _) = sim_core::sock::beside(&sides[0], -sides[0].side_of(core_sq.at));
+        let (mx, mz) = frame.to_world(next.at);
+        let (gx, gz) = (
+            sim_core::build::build_cell_of(mx) as u16,
+            sim_core::build::build_cell_of(mz) as u16,
+        );
+        let grid = Target {
+            cx: gx,
+            cz: gz,
+            level: 0,
+            loc: LOC_PLANE,
+        };
+        let aim = anchor(gx, gz, LOC_PLANE);
+        let got = lattice_aim(&store, SHAPE_FOUNDATION, 0, aim, grid, 0, 0);
+        assert!(
+            matches!(got, Some(LatticeAim::At { bld: 0, .. })),
+            "the grid cell took it: {got:?}"
+        );
     }
 }

@@ -25,6 +25,7 @@ const DOORWAY: u16 = 3;
 const TRI_FOUNDATION: u16 = 4;
 const TRI_FLOOR: u16 = 5;
 const TRI_SPIRAL: u16 = 6;
+const HALF_WALL: u16 = 7;
 
 fn fixture() -> (Box<World>, Player, (f32, f32)) {
     let mut w = Box::new(World::new(SEED));
@@ -37,6 +38,7 @@ fn fixture() -> (Box<World>, Player, (f32, f32)) {
         SHAPE_TRI_FOUNDATION,
         SHAPE_TRI_FLOOR,
         SHAPE_STAIRS_TRI_SPIRAL,
+        SHAPE_HALF_WALL,
     ];
     w.build.piece_count = rows.len() as u16;
     for (row, &shape) in rows.iter().enumerate() {
@@ -687,6 +689,22 @@ fn a_door_hangs_in_a_triangles_doorway() {
     }]);
     assert!(!cross(&w), "and shut again it is a wall again");
 
+    // A satchel on the door blows where the door hangs, not at the cell
+    // its address spells.
+    let charge = sim_core::charge::ChargeRec {
+        cx,
+        cz,
+        level,
+        loc,
+        deploy: true,
+        ..Default::default()
+    };
+    let (ex, ez) = sim_core::charge::epicentre(&w.pieces, &w.deploys, &charge);
+    assert!(
+        sim_core::fmath::hypot(ex - mx, ez - mz) < 1e-3,
+        "the blast centres on the doorway"
+    );
+
     // The doorway taken down takes its door with it.
     w.tick(&[Command::Demolish {
         id: p.id,
@@ -992,4 +1010,80 @@ fn a_triangle_under_a_floor_is_inside() {
         sx,
         sz
     ));
+}
+
+/// A slab the grid cannot name is part of its base in every cell it stands
+/// over, not only the one its middle files it under (`Pieces::posed_in`,
+/// what the claim walk counts): a square laid half a cell off the grid
+/// covers four.
+#[test]
+fn an_offset_foundation_is_built_in_every_cell_it_covers() {
+    let (mut w, mut p, at) = fixture();
+    let (cx, cz) = (build_cell_of(at.0) as u16, build_cell_of(at.1) as u16);
+    let half = |c: u16| ((c as f32 + 0.5) * BUILD_CELL_M * 100.0) as i32;
+    let site = free_site(SEED, &w.haven, &w.pieces, (half(cx), half(cz)), 0, false, 0).unwrap();
+    assert!(site.grid.is_none(), "half a cell off is off the grid");
+    put(&mut w, &mut p, FOUNDATION, &site).unwrap();
+    for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        assert!(w.pieces.posed_in(cx + dx, cz + dz), "cell +({dx}, {dz})");
+    }
+    for (x, z) in [(cx - 1, cz), (cx + 2, cz), (cx, cz + 2)] {
+        assert!(!w.pieces.posed_in(x, z), "({x}, {z}) is beside it");
+    }
+}
+
+/// The site the grid's own verb names for a piece in (`cx`, `cz`).
+#[allow(clippy::too_many_arguments)]
+fn grid_put(
+    w: &mut World,
+    p: &mut Player,
+    row: u16,
+    cx: u16,
+    cz: u16,
+    loc: u8,
+    freehand: bool,
+    want: i8,
+) -> Result<Site, u32> {
+    let shape = w.build.pieces[row as usize].shape;
+    let site = grid_site(
+        SEED, &w.haven, &w.pieces, cx, cz, 0, loc, shape, freehand, want,
+    )?;
+    put(w, p, row, &site)?;
+    Ok(site)
+}
+
+/// A wall on one grid base's side joins that base, though another base
+/// stands a cell further off with the lower id: only a building beside an
+/// edge can carry it.
+#[test]
+fn a_wall_joins_the_base_it_stands_beside() {
+    let (mut w, mut p, at) = fixture();
+    let (cx, cz) = (build_cell_of(at.0) as u16, build_cell_of(at.1) as u16);
+    let b = grid_put(&mut w, &mut p, FOUNDATION, cx + 1, cz, LOC_PLANE, false, 0).unwrap();
+    let a = grid_put(&mut w, &mut p, FOUNDATION, cx - 1, cz, LOC_PLANE, false, 0).unwrap();
+    assert!(b.addr.bld < a.addr.bld, "two bases, the far one first");
+    let wall = grid_put(&mut w, &mut p, WALL, cx, cz, LOC_EDGE_XLO, false, 0)
+        .expect("a wall on the near base's side");
+    assert_eq!(wall.addr.bld, a.addr.bld);
+}
+
+/// A grid address names one piece: a lattice placement in one grid
+/// building whose grid name another building's piece already holds is
+/// refused, though the two stack without overlapping — a half wall under
+/// the next base's wall, a half storey up.
+#[test]
+fn a_grid_name_is_one_pieces() {
+    let (mut w, mut p, at) = fixture();
+    let (cx, cz) = (build_cell_of(at.0) as u16, build_cell_of(at.1) as u16);
+    let a = grid_put(&mut w, &mut p, FOUNDATION, cx - 1, cz, LOC_PLANE, false, 0).unwrap();
+    // Its own base, half a storey higher, in the next column.
+    let b = grid_put(&mut w, &mut p, FOUNDATION, cx, cz, LOC_PLANE, true, 3).unwrap();
+    assert_ne!(a.addr.bld, b.addr.bld);
+    grid_put(&mut w, &mut p, WALL, cx, cz, LOC_EDGE_XLO, false, 0).expect("B's west wall");
+    let frame = *w.pieces.frame(a.addr.bld).unwrap();
+    let (ox, oz) = grid_origin(&frame).unwrap();
+    let east = sim_core::sock::from_grid(ox, oz, cx, cz, LOC_EDGE_XLO).unwrap();
+    let site = lattice_site(&w.pieces, a.addr.bld, 0, east).unwrap();
+    assert_eq!(site.grid, Some((cx, cz, LOC_EDGE_XLO)));
+    assert_eq!(put(&mut w, &mut p, HALF_WALL, &site), Err(REFUSE_B_SPOT));
 }

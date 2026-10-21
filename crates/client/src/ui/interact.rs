@@ -1029,10 +1029,25 @@ pub fn sight_hit(s: &Sight<'_>, rect: &Rect, bottom: f32, top: f32) -> Option<f3
 }
 
 /// The doorway a door hangs in, on the ground: its cell's low-x or low-z
-/// edge, a wall's thickness deep.
-fn doorway_rect(rec: &DeployRec) -> Rect {
+/// edge, a wall's thickness deep — or, for a doorway the grid cannot name
+/// (its address spells the doorway's id, freeform W4), the strip along that
+/// doorway's own run about its middle.
+fn doorway_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> Rect {
     let c = sim_core::build::BUILD_CELL_M;
     let t = sim_core::collide::WALL_THICKNESS_M * 0.5;
+    if let Some(at) =
+        cols.and_then(|k| sim_core::deploy::posed_insert(k, rec.cx, rec.cz, rec.level, rec.loc))
+    {
+        // Local +x, `(c, −s)`, along the run.
+        return Rect {
+            x: at.x,
+            z: at.z,
+            hw: c * 0.5,
+            hd: t,
+            s: -at.run.1,
+            c: at.run.0,
+        };
+    }
     let (x0, z0) = (rec.cx as f32 * c, rec.cz as f32 * c);
     if rec.loc == sim_core::build::LOC_EDGE_XLO {
         Rect::aligned(x0 - t, z0, x0 + t, z0 + c)
@@ -1207,7 +1222,7 @@ pub fn resolve(
         if verb == Verb::Door {
             if let Some(s) = aim.sight.as_ref() {
                 let (bottom, top) = (s.span)(rec, arch);
-                if sight_hit(s, &doorway_rect(rec), bottom, top).is_none() {
+                if sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top).is_none() {
                     continue;
                 }
                 seen = true;

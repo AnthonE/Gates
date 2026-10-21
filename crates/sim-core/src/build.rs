@@ -1108,14 +1108,21 @@ impl Pieces {
         ((lx - mx) * nx + (lz - mz) * nz > 0.0) == (rec.facing == 1)
     }
 
-    /// Whether a piece the grid cannot name is filed under cell (`cx`,
-    /// `cz`) — its middle stands in it (`anchor_cell`). What the claim walk
-    /// adds to the column masks so a triangle is part of its base.
+    /// Whether a piece the grid cannot name stands over cell (`cx`, `cz`):
+    /// its footprint shares area with the cell's square. What the claim walk
+    /// adds to the column masks so a triangle — or a turned base, whose
+    /// pieces straddle cells and whose middles can sit only diagonally
+    /// apart — is part of its base in every cell it stands over.
     pub fn posed_in(&self, cx: u16, cz: u16) -> bool {
         let (x0, z0) = (cx as f32 * BUILD_CELL_M, cz as f32 * BUILD_CELL_M);
-        pieces_near(self, x0, z0, x0 + BUILD_CELL_M, z0 + BUILD_CELL_M, |i| {
-            let r = &self.entries[i];
-            !r.on_grid() && (r.cx, r.cz) == (cx, cz)
+        let (x1, z1) = (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M);
+        let cell = crate::footprint::Rect::aligned(x0, z0, x1, z1);
+        self.cols.hulls().near(x0, z0, x1, z1, |h| {
+            if h.hit.loc != LOC_NONE {
+                return false;
+            }
+            let (pts, n) = h.footprint();
+            n >= 3 && crate::deploy::foot_overlaps(&pts[..n], &cell)
         })
     }
 
@@ -2643,7 +2650,7 @@ pub fn grid_site(
     }
     // The grid buildings with a piece in this column and in the four
     // beside it.
-    let (mut own, mut best): (Option<u16>, Option<(i32, u16)>) = (None, None);
+    let (mut own, mut best): (Option<u16>, Option<(bool, i32, u16)>) = (None, None);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     let pad = BUILD_CELL_M - 0.01;
@@ -2665,9 +2672,18 @@ pub fn grid_site(
             if (dx, dz) == (0, 0) {
                 own = Some(own.map_or(r.bld, |b| b.min(r.bld)));
             } else if dx.abs() + dz.abs() == 1 {
-                let cand = (f.band, r.bld);
-                let better =
-                    best.is_none_or(|(band, b)| cand.0 > band || (cand.0 == band && cand.1 < b));
+                // An edge lies between its own column and the one on its low
+                // side, and only a building there can have a body beside it:
+                // that one first, whatever stands higher across the way.
+                let touches = match loc {
+                    LOC_EDGE_XLO => (dx, dz) == (-1, 0),
+                    LOC_EDGE_ZLO => (dx, dz) == (0, -1),
+                    _ => true,
+                };
+                let cand = (touches, f.band, r.bld);
+                let better = best.is_none_or(|(t, band, b)| {
+                    (cand.0, cand.1) > (t, band) || ((cand.0, cand.1) == (t, band) && cand.2 < b)
+                });
                 if better {
                     best = Some(cand);
                 }
@@ -2679,7 +2695,7 @@ pub fn grid_site(
         if freehand && crate::support::grounded(shape) {
             None
         } else {
-            best.map(|(_, b)| b)
+            best.map(|(_, _, b)| b)
         }
     });
     if let Some(b) = joined {
@@ -3099,6 +3115,11 @@ pub fn check_site(
         || crate::support::foot_of(shape) != a.sock.foot
         || !crate::support::on_lattice(&a.sock)
         || (site.mint.is_none() && p.find_addr(&a).is_some())
+        // A grid name is one piece's: another building's piece there (the
+        // lattice key above sees only this building's) holds it.
+        || site
+            .grid
+            .is_some_and(|(cx, cz, loc)| p.find(cx, cz, a.level, loc).is_some())
         || site_conflict(bc, p, site, shape, &frame)
         || vertical_edge_clash(bc, p, &a, shape)
     {

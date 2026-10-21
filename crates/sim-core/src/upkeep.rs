@@ -482,7 +482,7 @@ pub fn bill(
         if rec.owner == WORLD_OWNER || !pays_rent(&def) {
             continue;
         }
-        let (x, z) = rec.xz();
+        let (x, z) = rec.place_xz(pieces.cols());
         if !deploys.hearth_covers(hi, x, z) {
             continue;
         }
