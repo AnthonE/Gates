@@ -263,6 +263,11 @@ pub struct Ui {
     pub contacts_filter: crate::contacts::Filter,
     pub contacts_sel: Option<String>,
     pub contacts_page: usize,
+    /// The note being written on a contact, `(wallet, draft)`: while it is
+    /// `Some` the note box has the keyboard, the search box's rule. Enter
+    /// sets `note_save`, which `contacts::clicks` writes to the book.
+    pub contact_note: Option<(String, String)>,
+    pub note_save: bool,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -416,6 +421,8 @@ impl Default for Ui {
             contacts_filter: crate::contacts::Filter::All,
             contacts_sel: None,
             contacts_page: 0,
+            contact_note: None,
+            note_save: false,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -1282,7 +1289,9 @@ pub fn keys(
     // and only `Tab` and `Esc` could close anything. The box takes the
     // keyboard only while it is clicked into (`Ui::search_focus`, Rust's
     // amber field), and while it does, `Q` and `I` are letters.
-    let typing = ui.panel == Panel::Craft && ui.search_focus;
+    // A contact's note box takes the keyboard the same way (`contacts.rs`).
+    let noting = ui.panel == Panel::Contacts && ui.contact_note.is_some();
+    let typing = (ui.panel == Panel::Craft && ui.search_focus) || noting;
     // While the search box has the keyboard only binds that type nothing
     // (Tab, by default) still work: a letter there is a letter.
     let pressed = |a: Action| {
@@ -1351,6 +1360,9 @@ pub fn keys(
         // a second one shuts the page.
         if ui.search_focus {
             ui.search_focus = false;
+        } else if noting {
+            // Out of the note without keeping it.
+            ui.contact_note = None;
         } else if ui.panel == Panel::Profile {
             ui.panel = ui.profile_back;
             ui.profile_back = Panel::None;
@@ -1486,6 +1498,38 @@ pub fn keys(
         }
         if changed {
             ui.browser_scroll = 0.0;
+            ui.dirty = true;
+        }
+    } else if noting {
+        let (mut save, mut changed) = (false, false);
+        if let Some((_, draft)) = ui.contact_note.as_mut() {
+            for ev in chars.read() {
+                if !ev.state.is_pressed() {
+                    continue;
+                }
+                use bevy::input::keyboard::Key;
+                changed = true;
+                match &ev.logical_key {
+                    Key::Backspace => {
+                        draft.pop();
+                    }
+                    Key::Enter => save = true,
+                    Key::Space => draft.push(' '),
+                    Key::Character(s) => draft.extend(s.chars().filter(|c| !c.is_control())),
+                    _ => changed = false,
+                }
+            }
+            // Capped as it is typed, so the box never shows what will not
+            // be kept.
+            if draft.chars().count() > crate::contacts::MAX_NOTE_CHARS {
+                *draft = draft
+                    .chars()
+                    .take(crate::contacts::MAX_NOTE_CHARS)
+                    .collect();
+            }
+        }
+        ui.note_save |= save;
+        if changed {
             ui.dirty = true;
         }
     } else {

@@ -95,6 +95,15 @@ impl Contacts {
         }
     }
 
+    /// Write a note on a contact, and the book. False when nothing changed.
+    pub fn set_note(&mut self, wallet: &Address, note: &str) -> bool {
+        let changed = self.book.set_note(wallet, note);
+        if changed {
+            self.changed();
+        }
+        changed
+    }
+
     /// Take a contact out of the book, and its mugshot with it.
     pub fn forget(&mut self, wallet: &Address) {
         if self.book.forget(wallet) {

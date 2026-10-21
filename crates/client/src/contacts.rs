@@ -2,7 +2,7 @@
 //! a few seconds near someone and they go in the book as SEEN, with a
 //! mugshot, a screen grab taken when you met. Mark one FRIENDLY or ENEMY and
 //! their nametag says so; someone who kills you goes in as an ENEMY unless
-//! you marked them a friend.
+//! you marked them a friend. Each can carry a note in your own words.
 //!
 //! This client's own memory, kept on this computer: a local mark, nothing on
 //! the wire and nothing on the platform. An Elo Pros friend is a different
@@ -31,6 +31,8 @@ pub const MUGSHOT_PX: u32 = 128;
 pub const MAX_BOOK_BYTES: usize = 512 * 1024;
 /// A name kept, characters.
 pub const MAX_NAME_CHARS: usize = 32;
+/// A note kept, characters: a line or two in the pane.
+pub const MAX_NOTE_CHARS: usize = 120;
 
 /// Where a contact stands with you.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -78,6 +80,9 @@ pub struct Contact {
     /// Times they killed you.
     #[serde(default)]
     pub killed_me: u32,
+    /// What you wrote about them.
+    #[serde(default)]
+    pub note: String,
 }
 
 impl Contact {
@@ -155,6 +160,16 @@ fn tidy_name(s: &str) -> String {
         .collect()
 }
 
+/// A note as kept: no control characters, no ends of blank, capped.
+pub fn tidy_note(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_NOTE_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn key(a: &Address) -> String {
     String::from_utf8_lossy(&a.to_hex()).into_owned()
 }
@@ -171,6 +186,7 @@ impl Book {
         for mut c in book.contacts.drain(..) {
             c.wallet.make_ascii_lowercase();
             c.name = tidy_name(&c.name);
+            c.note = tidy_note(&c.note);
             let ok = c.address().is_some_and(|a| !a.is_guest());
             if ok && !kept.iter().any(|k| k.wallet == c.wallet) {
                 kept.push(c);
@@ -250,6 +266,7 @@ impl Book {
             met: 1,
             mugshot_at: 0,
             killed_me: 0,
+            note: String::new(),
         });
         Sighting::New
     }
@@ -277,6 +294,19 @@ impl Book {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Write a note on a contact (empty clears it). False when they are not
+    /// in the book or the note did not change.
+    pub fn set_note(&mut self, wallet: &Address, note: &str) -> bool {
+        let note = tidy_note(note);
+        match self.get_mut(wallet) {
+            Some(c) if c.note != note => {
+                c.note = note;
+                true
+            }
+            _ => false,
         }
     }
 

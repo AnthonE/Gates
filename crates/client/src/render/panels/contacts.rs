@@ -1,8 +1,8 @@
 //! CONTACTS (`Panel::Contacts`), Rust's: the third button in the strip over
 //! the inventory and crafting pages. A grid of the players you have met, each
 //! with the mugshot taken when you met them, the most recent first; pick one
-//! and the pane on the right says when you met and lets you mark them
-//! FRIENDLY or ENEMY, open their profile, or forget them.
+//! and the pane on the right says when you met, keeps your note on them, and
+//! lets you mark them FRIENDLY or ENEMY, open their profile, or forget them.
 //!
 //! The book and its rules are `crate::contacts`; the watching and the grabs
 //! are `render::contacts`. This file is nodes and presses.
@@ -27,7 +27,9 @@ const CARD_PX: f32 = 96.0;
 const GAP_PX: f32 = 6.0;
 const GRID_W: f32 = COLS as f32 * CARD_PX + (COLS - 1) as f32 * GAP_PX;
 const DETAIL_W: f32 = 300.0;
-const SHOT_PX: f32 = 200.0;
+const SHOT_PX: f32 = 168.0;
+/// The note box's least height: two lines of note.
+const NOTE_H: f32 = 40.0;
 
 /// Rust's nametag colours: friendly blue, enemy red.
 pub const FRIENDLY: Color = Color::srgb(0.45, 0.66, 1.0);
@@ -51,6 +53,8 @@ pub enum ContactButton {
     Mark(Rel),
     Profile,
     Forget,
+    /// The note box: a press puts the keyboard in it.
+    Note,
 }
 
 /// The picked contact, if it is in the list on show; else the first.
@@ -124,7 +128,7 @@ pub fn build_screen(
                     &elo,
                 );
             });
-            detail(row, contacts, sel, now, &elo);
+            detail(row, ui, contacts, sel, now, &elo);
         });
         hint(zone);
     });
@@ -300,6 +304,7 @@ fn shot(p: &mut ChildSpawnerCommands, contacts: &Contacts, c: &Contact, px: f32)
 /// marks.
 fn detail(
     row: &mut ChildSpawnerCommands,
+    ui: &Ui,
     contacts: &Contacts,
     sel: Option<&Contact>,
     now: u64,
@@ -361,6 +366,7 @@ fn detail(
             };
             kit::line(d, format!("killed you {times}"), 12.0, super::TEXT_SHORT);
         }
+        note_box(d, ui, c);
         kit::row(d, |r| {
             for rel in [Rel::Friendly, Rel::Enemy, Rel::Seen] {
                 kit::button(r, rel.label(), ContactButton::Mark(rel), c.rel == rel);
@@ -371,6 +377,47 @@ fn detail(
             kit::button(r, "FORGET", ContactButton::Forget, false);
         });
     });
+}
+
+/// Your note on them: a box that takes the keyboard when pressed, lit amber
+/// while it has it, the search box's look.
+fn note_box(d: &mut ChildSpawnerCommands, ui: &Ui, c: &Contact) {
+    let draft = ui
+        .contact_note
+        .as_ref()
+        .filter(|(w, _)| *w == c.wallet)
+        .map(|(_, t)| t.as_str());
+    let (text, color) = match draft {
+        Some(t) => (format!("{t}|"), TEXT),
+        None if c.note.is_empty() => ("click to write a note".to_string(), TEXT_DIM),
+        None => (c.note.clone(), TEXT),
+    };
+    let bg = if draft.is_some() { CELL_FULL } else { CELL_BG };
+    d.spawn((
+        Button,
+        ContactButton::Note,
+        Node {
+            width: Val::Percent(100.0),
+            min_height: Val::Px(NOTE_H),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(bg),
+        Hover::on(bg),
+        BorderColor::all(if draft.is_some() { LINE_HOT } else { LINE }),
+    ))
+    .with_children(|b| {
+        b.spawn((
+            Text::new(text),
+            font(12.0),
+            TextColor(color),
+            Pickable::IGNORE,
+        ));
+    });
+    if draft.is_some() {
+        kit::line(d, "Enter saves   -   Esc cancels", 11.0, TEXT_DIM);
+    }
 }
 
 /// Redraw the page when the book moves: a meeting, a mark, a mugshot.
@@ -397,14 +444,31 @@ pub fn clicks(
     menu: Res<Menu>,
     presses: Query<(&Interaction, &ContactButton), Changed<Interaction>>,
 ) {
+    let press = presses
+        .iter()
+        .find(|(i, _)| **i == Interaction::Pressed)
+        .map(|(_, b)| b.clone());
+    // A note being written is kept on Enter, on a press anywhere else on the
+    // page, and when the page is left: only Escape throws it away.
+    let away = ui.panel != Panel::Contacts
+        || press
+            .as_ref()
+            .is_some_and(|b| !matches!(b, ContactButton::Note));
+    if ui.contact_note.is_some() && (ui.note_save || away) {
+        if let Some((w, draft)) = ui.contact_note.take() {
+            if let Some(a) = Address::from_hex(w.as_bytes()) {
+                if contacts.set_note(&a, &draft) {
+                    ui.status = "note saved".into();
+                }
+            }
+        }
+        ui.dirty = true;
+    }
+    ui.note_save = false;
     if ui.panel != Panel::Contacts {
         return;
     }
-    let Some(b) = presses
-        .iter()
-        .find(|(i, _)| **i == Interaction::Pressed)
-        .map(|(_, b)| b.clone())
-    else {
+    let Some(b) = press else {
         return;
     };
     let shown: Vec<String> = contacts
@@ -433,6 +497,18 @@ pub fn clicks(
             if let Some(a) = sel_addr {
                 contacts.set_rel(&a, rel);
                 ui.status = format!("marked {}", rel.label());
+            }
+        }
+        ContactButton::Note => {
+            if let (Some(w), Some(a)) = (sel.clone(), sel_addr) {
+                if ui.contact_note.as_ref().is_none_or(|(n, _)| *n != w) {
+                    let note = contacts
+                        .book
+                        .get(&a)
+                        .map(|c| c.note.clone())
+                        .unwrap_or_default();
+                    ui.contact_note = Some((w, note));
+                }
             }
         }
         ContactButton::Forget => {

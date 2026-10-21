@@ -3,7 +3,7 @@
 
 use client::contacts::{
     crop_mugshot, mugshot_rect, Book, Filter, Rel, Sighting, Watch, ENCOUNTER_GAP_S, MAX_CONTACTS,
-    MUGSHOT_PX, MUGSHOT_REFRESH_S, SEEN_S,
+    MAX_NOTE_CHARS, MUGSHOT_PX, MUGSHOT_REFRESH_S, SEEN_S,
 };
 use protocol::Address;
 
@@ -117,4 +117,25 @@ fn a_mugshot_is_the_square_around_them() {
         crop_mugshot(&frame, 4, true, (2, 2, 4)).is_none(),
         "off the frame"
     );
+}
+
+/// A note is kept tidy and capped, survives the file, and goes with the
+/// contact when they are forgotten.
+#[test]
+fn a_note_is_yours_and_kept() {
+    let mut book = Book::default();
+    let a = addr(1);
+    assert!(!book.set_note(&a, "who?"), "nobody to write on");
+    book.seen(&a, "RAIDER", false, 10);
+    assert!(book.set_note(&a, "  raids at dawn\n, door code 1234 "));
+    assert_eq!(book.get(&a).unwrap().note, "raids at dawn, door code 1234");
+    assert!(
+        !book.set_note(&a, "raids at dawn, door code 1234"),
+        "no change"
+    );
+    assert!(book.set_note(&a, &"x".repeat(500)));
+    assert_eq!(book.get(&a).unwrap().note.chars().count(), MAX_NOTE_CHARS);
+    assert_eq!(Book::parse(book.to_json().as_bytes()), book);
+    assert!(book.set_note(&a, ""));
+    assert!(book.get(&a).unwrap().note.is_empty());
 }
