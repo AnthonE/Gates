@@ -1801,7 +1801,11 @@ impl Plugin for GatesRenderPlugin {
                     // was drained on, so a body that streams before the
                     // drain reads last frame's swings and misses this
                     // frame's — a dropped arc nothing would report.
-                    (bodies::stream, own_shadow::stream).after(feed::drain),
+                    (
+                        bodies::stream,
+                        (own_shadow::stream, own_shadow::hold).chain(),
+                    )
+                        .after(feed::drain),
                     // The heli is the roster's last slot and the town's
                     // sentries the four below it, which `mobs::stream`
                     // leaves to `heli::stream` and `sentry::stream`.
