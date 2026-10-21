@@ -939,12 +939,13 @@ pub enum LatticeAim {
 
 /// Whether the ghost places on a lattice rather than on the grid, and
 /// where (freeform W2). A triangle always does: it snaps beside what stands
-/// near ([`sim_core::build::snap`]), or with nothing near, starts a building
-/// of its own with its middle on the aim, facing `yaw` (the look's). Anything
-/// else does only where the nearest free footprint beside what stands near
-/// is one the grid cannot name — a wall on a triangle's side — and is nearer
-/// the aim than the grid's own address, so a square base builds as it
-/// always has.
+/// near ([`sim_core::build::snap`]). A foundation, square or triangle, with
+/// nothing near starts a building of its own with its middle on the aim,
+/// facing `yaw` (the look's) — any base at any angle. Anything else does
+/// only where the nearest free footprint beside what stands near is one the
+/// grid cannot name — a wall on a triangle's side — and is nearer the aim
+/// than the grid's own address, so a square base on the grid builds on as
+/// it always has.
 pub fn lattice_aim(
     store: &sim_core::build::Pieces,
     shape: u8,
@@ -967,17 +968,23 @@ pub fn lattice_aim(
                 sock: s.sock,
             })
         }
-        None if tri && sim_core::support::grounded(shape) => {
-            // The triangle `build::free_site` lays has its first corner on
-            // the origin: step back from the aim to its middle.
+        None if (tri && sim_core::support::grounded(shape))
+            || shape == sim_core::build::SHAPE_FOUNDATION =>
+        {
+            // The body `build::free_site` lays has its first corner on the
+            // origin: step back from the aim to its middle.
             let probe = sim_core::frame::Frame::new((0, 0), 0, yaw);
-            let mid = sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0).at;
+            let mid = if tri {
+                sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0).at
+            } else {
+                sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0).at
+            };
             let (ox, oz) = probe.to_world(mid);
             Some(LatticeAim::Free {
                 x_cm: ((aim.0 - ox) * 100.0).round() as i32,
                 z_cm: ((aim.1 - oz) * 100.0).round() as i32,
                 yaw,
-                tri: true,
+                tri,
             })
         }
         None => None,
@@ -2401,6 +2408,45 @@ mod tests {
                     "bearing {b} pitch {p}: aim parked {d} out, past reach"
                 );
             }
+        }
+    }
+
+    /// A foundation aimed at open ground starts a building of its own,
+    /// square or triangle, its middle on the aim and turned to the look —
+    /// any base at any angle.
+    #[test]
+    fn a_lone_foundation_starts_its_own_turned_building() {
+        use sim_core::build::{SHAPE_FOUNDATION, SHAPE_TRI_FOUNDATION};
+        let store = sim_core::build::Pieces::new();
+        let aim = (1234.5, 987.25);
+        let grid = Target {
+            cx: 411,
+            cz: 329,
+            level: 0,
+            loc: LOC_PLANE,
+        };
+        for (shape, tri) in [(SHAPE_FOUNDATION, false), (SHAPE_TRI_FOUNDATION, true)] {
+            let got = lattice_aim(&store, shape, 0, aim, grid, 0, 9_000);
+            let Some(LatticeAim::Free {
+                x_cm,
+                z_cm,
+                yaw,
+                tri: t,
+            }) = got
+            else {
+                panic!("{shape}: {got:?}");
+            };
+            assert_eq!((yaw, t), (9_000, tri));
+            let sock = if tri {
+                sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::ZERO, 0)
+            } else {
+                sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0)
+            };
+            let (mx, mz) = sim_core::frame::Frame::new((x_cm, z_cm), 0, yaw).to_world(sock.at);
+            assert!(
+                (mx - aim.0).abs() < 0.01 && (mz - aim.1).abs() < 0.01,
+                "{shape}: middle at ({mx}, {mz})"
+            );
         }
     }
 }
