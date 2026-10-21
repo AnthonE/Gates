@@ -211,6 +211,7 @@ pub fn resolve(
         y,
     );
     let mut aim = Aim::new(x, z, fx, fz);
+    aim.cols = Some(core.pieces.cols());
     if world.is_some() {
         aim.sight = Some(interact::Sight {
             eye,
@@ -488,6 +489,16 @@ pub fn resolve(
             aimed.0 = casino;
         }
     }
+    // A casino seat, the same way: a free armchair to sit in, or the seat
+    // you are in to get up from.
+    if aimed.0.is_none() {
+        let seat = interact::resolve_seat(x, z, &core.haven().town, core.seated(), |k| {
+            super::casino::seat_taken(core, k)
+        });
+        if seat.verb != interact::Verb::None {
+            aimed.0 = seat;
+        }
+    }
     // A ziggurat door's reader or lever, the same way.
     if aimed.0.is_none() {
         let swipe = interact::resolve_swipe(x, y, z, &core.haven().ziggurat);
@@ -502,9 +513,18 @@ pub fn resolve(
             aimed.0 = work;
         }
     }
-    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way.
+    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way. A
+    // speaker says how many offers they have left for you.
     if aimed.0.is_none() {
-        let lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        let mut lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        if lore.verb == interact::Verb::Talk {
+            if let Some(s) = core.lore.speakers.get(lore.handle as usize) {
+                lore.offers =
+                    crate::ui::offer::open_count(s, &core.skins, &core.skins_owned, |item| {
+                        sim_core::craft::inv_count(&core.inv, item)
+                    });
+            }
+        }
         if lore.verb != interact::Verb::None {
             aimed.0 = lore;
         }
@@ -541,7 +561,7 @@ pub fn resolve(
         structure::struck(
             built?,
             (x, z),
-            core.pieces.entries(),
+            core.pieces.store(),
             &core.piece_defs,
             core.piece_defs_have,
             core.deploys.entries(),
@@ -1192,8 +1212,20 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         // THE GATE's casino (`panels::casino`): the wheel's betting panel, or
-        // a slot machine's.
+        // a slot machine's — and its stool, sat on to play if it is free.
         Verb::Wheel | Verb::Slots => {
+            let k = pick.handle as usize;
+            let seat = if pick.verb == Verb::Wheel {
+                sim_core::town::terminal_seat(k)
+            } else {
+                sim_core::town::slot_seat(k)
+            };
+            let core = &net.session.core;
+            if !core.seated() && !super::casino::seat_taken(core, seat) {
+                send(net, toast, "sit", |buf| {
+                    protocol::encode_action_sit(seat as u8, buf)
+                });
+            }
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = if pick.verb == Verb::Wheel {
@@ -1210,13 +1242,33 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 }
             }
         }
-        // A speaker opens the talk panel and asks the first topic: they greet
-        // you. The answer is the server's (`SUB_ARC_TEXT`).
+        // A seat, or getting up from one (`sim_core::seat`). Nothing is
+        // predicted: the server puts the body on the seat and says so on the
+        // next snapshot (`EntityState::seated`).
+        Verb::Sit => {
+            let seat = pick.handle as u8;
+            send(net, toast, "sit", |buf| {
+                protocol::encode_action_sit(seat, buf)
+            });
+        }
+        // A speaker opens the talk panel and asks the first topic that is
+        // not a gift: they greet you. A gift is asked only by its own button
+        // (`ui::offer`), since asking one takes it, price and all. The answer
+        // is the server's (`SUB_ARC_TEXT`).
         Verb::Talk => {
             let k = pick.handle as u8;
-            send(net, toast, "talk", |buf| {
-                protocol::encode_action_arc(sim_core::lore::OP_TALK, k, 0, buf)
-            });
+            let greeting = net
+                .session
+                .core
+                .lore
+                .speakers
+                .get(k as usize)
+                .and_then(|s| s.greeting());
+            if let Some(t) = greeting {
+                send(net, toast, "talk", |buf| {
+                    protocol::encode_action_arc(sim_core::lore::OP_TALK, k, t, buf)
+                });
+            }
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Talk;

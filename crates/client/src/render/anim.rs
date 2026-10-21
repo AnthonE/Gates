@@ -141,6 +141,10 @@ pub enum Clip {
     /// waves and plays a victory gesture, and this rig has neither, so the
     /// talking loop stands in for both. Nothing a player does plays it.
     Talk,
+    /// **In a casino seat** (wire v130, `sim_core::seat`): the rig's own
+    /// seated loop, the body lifted onto the seat and turned to face the
+    /// way it does ([`root_pose`]).
+    Sit,
 }
 
 impl Clip {
@@ -228,13 +232,14 @@ impl Clip {
             Clip::Swim => "Swim_Fwd_Loop",
             Clip::SwimIdle => "Swim_Idle_Loop",
             Clip::Talk => "Idle_Talking_Loop",
+            Clip::Sit => "Sitting_Idle_Loop",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 15] = [
+    pub const ALL: [Clip; 16] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
@@ -250,6 +255,7 @@ impl Clip {
         Clip::Swim,
         Clip::SwimIdle,
         Clip::Talk,
+        Clip::Sit,
     ];
 
     /// The ground speed a locomotion loop's feet were authored for, m/s, and
@@ -323,6 +329,7 @@ impl Clip {
             Clip::Swim => 12,
             Clip::SwimIdle => 13,
             Clip::Talk => 14,
+            Clip::Sit => 15,
         }
     }
 }
@@ -501,6 +508,17 @@ pub const ANIM_BODY_H_M: f32 = sim_core::collide::CAPSULE_HEIGHT_M;
 /// has this radius, so it is the sim's number.
 pub const SLEEP_LIFT_M: f32 = sim_core::collide::LIE_R_M;
 
+/// How far `Sitting_Idle_Loop` is lifted so its soles meet the floor: the
+/// clip sits its root 0.11–0.15 m above them (measured off `stumpy.glb`,
+/// skinned at the loop's first frame). It puts the seat at 0.46 m.
+pub const SIT_LIFT_M: f32 = 0.13;
+
+/// A seated body's root: lifted onto its seat and turned the way the seat
+/// faces (`render::casino::seat_yaw`), whichever way its owner looks.
+pub fn sit_pose(pos: Vec3, seat_yaw: f32) -> (Vec3, Quat) {
+    (pos + Vec3::Y * SIT_LIFT_M, Quat::from_rotation_y(seat_yaw))
+}
+
 /// Where a body's root is drawn and how it is turned. Awake: standing on the
 /// wire's feet. Asleep: tipped onto its back, face up, head behind where it
 /// faced, and centred over the feet — the capsule the sim hits a sleeper
@@ -531,10 +549,10 @@ pub struct Rig {
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 15],
+    nodes: [AnimationNodeIndex; 16],
     /// Each clip's length, seconds, indexed by `Clip::slot` — what the gait
     /// phase sync in [`drive`] converts a seek time into a stride phase with.
-    durations: [f32; 15],
+    durations: [f32; 16],
     /// The transients again, **masked off the legs** ([`Clip::upper_slot`]):
     /// a swing, flinch or shot played over a moving gait poses the arms and
     /// spine and leaves the hips and legs running. `None` for a clip the file
@@ -634,8 +652,8 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 15],
-        durations: [1.0; 15],
+        nodes: [AnimationNodeIndex::default(); 16],
+        durations: [1.0; 16],
         upper: [None; 3],
         hold: None,
         arms: AnimationNodeIndex::default(),
@@ -738,7 +756,7 @@ pub fn build(
     // The clips' lengths and the skeleton's node tree are sub-assets of the
     // glTF and can land a frame after it: wait for both rather than build a
     // graph that cannot phase-sync or cannot mask.
-    let mut durations = [1.0; 15];
+    let mut durations = [1.0; 16];
     for clip in Clip::ALL {
         if let Some(h) = gltf.named_animations.get(clip.name()) {
             let Some(c) = clips.get(h) else { return };
@@ -751,7 +769,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 15];
+    let mut nodes = [AnimationNodeIndex::default(); 16];
     let mut upper = [None; 3];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
@@ -936,6 +954,9 @@ pub struct BodyAnim {
     /// Crouched this frame, straight off the wire (`RemoteState::crouched`,
     /// v83); set beside [`BodyAnim::airborne`].
     pub crouched: bool,
+    /// In a casino seat, straight off the wire (`RemoteState::seated`,
+    /// v130); set beside [`BodyAnim::airborne`].
+    pub seated: bool,
     /// In deep water: [`BodyAnim::observe`] derives it from the feet's
     /// depth with hysteresis (`client_core::interp::swimming`), since no
     /// wire bit says so. Public because a swimmer takes no footsteps
@@ -992,7 +1013,7 @@ impl BodyAnim {
         if self.transient_full
             && matches!(
                 self.clip,
-                Some(Clip::CrouchIdle | Clip::CrouchWalk | Clip::Swim | Clip::SwimIdle)
+                Some(Clip::CrouchIdle | Clip::CrouchWalk | Clip::Swim | Clip::SwimIdle | Clip::Sit)
             )
         {
             self.swing_s = 0.0;
@@ -1019,6 +1040,11 @@ impl BodyAnim {
         }
         if sleeping {
             return Clip::Sleep;
+        }
+        // Seated (v130): the sim stands a sitter up the tick it moves, so
+        // nothing below can be true of one.
+        if self.seated {
+            return Clip::Sit;
         }
         // Hysteresis: the threshold to speed UP is above the nominal and the
         // one to slow DOWN is below it, so a body sitting on a boundary keeps

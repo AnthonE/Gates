@@ -68,11 +68,12 @@ use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 
 use super::{
     craft, font, font_bold, GhostRoot, Panel, Ui, BADGE, CELL_BG, CELL_FULL, CELL_GAP_PX,
-    CELL_HOVER, CELL_SEL, LINE, LINE_HOT, PANEL_BG, PAPER_BG, PIP_FILL, PIP_H_PX, PIP_TROUGH,
-    SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
+    CELL_HOVER, CELL_SEL, LINE, LINE_HOT, PAPER_BG, PIP_FILL, PIP_H_PX, PIP_TROUGH, SLOT_PX, TEXT,
+    TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
+use crate::ui::info;
 use crate::ui::oven::{self as oven_ui, Section};
 use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
@@ -106,7 +107,7 @@ pub fn build_screen(
     portrait: Option<&crate::render::portrait::Portrait>,
     hearth: Option<(u16, u16, u8)>,
 ) {
-    super::page_root(commands, ui, |zone| {
+    super::page_frame(commands, ui, super::Seat::OnHotbar, true, |zone| {
         // **The body is drawn unconditionally** (`NOW.md` §0eq item 4). It
         // used to be a branch inside `container_grid`, so it appeared only
         // when `CONT_WEAR` was the open container — and a box was the open
@@ -120,28 +121,48 @@ pub fn build_screen(
         // column is the container (the operator, 2026-09-16: *"we shouldnt
         // show crafting"*); with nothing open it is quick craft, and the
         // whole crafting menu is a button away.
+        //
+        // **The page stands on the hotbar** (`page_frame`'s FlexEnd): the
+        // item card opens over your pack and grows upward, so clicking an
+        // item never moves the grid out from under the pointer.
         zone.spawn(Node {
             flex_direction: FlexDirection::Row,
             column_gap: Val::Px(8.0),
-            align_items: AlignItems::FlexStart,
+            align_items: AlignItems::FlexEnd,
             ..default()
         })
         .with_children(|row| {
             wear_panel(row, core, icons, portrait);
-            own_grid(row, core, icons, sel as usize);
-            if let Some(at) = hearth {
-                // A hearth is not a container; its column is the upkeep
-                // (Rust's tool cupboard, `panels::hearth`).
-                super::hearth::column(row, core, icons, at);
-            } else if open_table(core).is_some() {
-                table_grid(row, ui, core, icons);
-            } else if let Some((arch, l)) = open_fire(core) {
-                fire_grid(row, core, icons, arch, l);
-            } else if looting(core.cont_kind) {
-                container_grid(row, core, icons);
-            } else {
-                craft::build_quick(row, ui, core, icons);
-            }
+            row.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|mid| {
+                info_card(mid, ui, core, icons, sel as usize);
+                mid.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(8.0),
+                    align_items: AlignItems::FlexStart,
+                    ..default()
+                })
+                .with_children(|row| {
+                    own_grid(row, core, icons, sel as usize);
+                    if let Some(at) = hearth {
+                        // A hearth is not a container; its column is the
+                        // upkeep (Rust's tool cupboard, `panels::hearth`).
+                        super::hearth::column(row, core, icons, at);
+                    } else if open_table(core).is_some() {
+                        table_grid(row, ui, core, icons);
+                    } else if let Some((arch, l)) = open_fire(core) {
+                        fire_grid(row, core, icons, arch, l);
+                    } else if looting(core.cont_kind) {
+                        container_grid(row, core, icons);
+                    } else {
+                        craft::build_quick(row, ui, core, icons);
+                    }
+                });
+            });
         });
 
         zone.spawn((
@@ -172,14 +193,425 @@ pub fn build_screen(
                  -   right-drag takes half   -   ctrl-drag takes one   \
                  -   hold Shift and sweep to take   -   Tab or Esc closes"
             } else {
-                "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
-                 -   right-click uses or wears   -   P re-skins   -   R unloads a gun   -   Q crafting   \
-                 -   O island   -   Tab or Esc closes"
+                // The pages' keys are on the strip now, so the hint is the
+                // gestures alone.
+                "click an item to inspect it   -   drag to move   -   right-drag takes half   \
+                 -   ctrl-drag takes one   -   right-click uses or wears   -   P re-skins   \
+                 -   Tab or Esc closes"
             }),
             font(12.0),
             TextColor(TEXT_DIM),
         ));
     });
+}
+
+/// A press on the item card's ACTIONS column.
+#[derive(Component, Clone, Copy)]
+pub struct InfoAct(pub info::Act);
+
+/// The card's width: the pack grid's, so it sits square over it.
+const CARD_W_PX: f32 = 6.0 * SLOT_PX + 5.0 * CELL_GAP_PX + 20.0;
+/// The ACTIONS column's width inside the card.
+const CARD_ACTS_W_PX: f32 = 136.0;
+/// The card's ground, a step under the panel, and its head a step under
+/// that — Rust's item panel is the darkest thing on its screen.
+const CARD_BG: Color = Color::srgba(0.133, 0.122, 0.110, 0.96);
+const CARD_HEAD: Color = Color::srgba(0.098, 0.090, 0.082, 0.98);
+/// The class strip: Rust's olive, the colour its card heads in.
+const CARD_STRIP: Color = Color::srgba(0.388, 0.475, 0.212, 0.95);
+const CARD_STRIP_TEXT: Color = Color::srgb(0.90, 0.95, 0.80);
+/// An action row at rest and lit.
+const ACT_BG: Color = Color::srgba(0.239, 0.224, 0.204, 0.96);
+const ACT_HOT: Color = Color::srgba(0.333, 0.322, 0.290, 0.98);
+/// A stat bar's fill: the panel's light ink, not a hue — a bar on this card
+/// is a length, not a verdict.
+const STAT_FILL: Color = Color::srgba(0.80, 0.78, 0.72, 0.85);
+
+/// Rust's item card: the picked slot (`Ui::pick`) named over its class
+/// strip, what it is for, its numbers (`ui::info::stats`) and its verbs
+/// (`ui::info::actions`). Drawn from the core's view on every redraw, and
+/// drawn not at all when the picked slot is empty or its container shut.
+fn info_card(
+    col: &mut ChildSpawnerCommands,
+    ui: &Ui,
+    core: &ClientCore,
+    icons: &Icons,
+    sel: usize,
+) {
+    let Some((kind, slot)) = ui.pick else {
+        return;
+    };
+    if !(kind == CONT_SELF || kind == CONT_WEAR || (looting(kind) && kind == core.cont_kind)) {
+        return;
+    }
+    let stack = cell_stack(core, kind, slot);
+    if stack.count == 0 {
+        return;
+    }
+    let row = core.catalog.row(stack.item as usize);
+    let paper = research_ui::is_paper(&core.research, stack);
+    let in_hand = kind == CONT_SELF && slot == sel;
+    let loaded = (in_hand && row.gun.is_some()).then(|| core.mag().1);
+    let name = research_ui::stack_label(&core.catalog, &core.research, stack);
+    let strip = info::strip(
+        crate::ui::craft::class_label(row.class),
+        crate::ui::skins::name(&core.skins, stack.skin),
+        paper,
+    );
+    let desc = String::from_utf8_lossy(core.item_descs.get(stack.item as usize)).into_owned();
+    let stats = info::stats(row, stack, loaded);
+    let acts = info::actions(
+        row,
+        stack,
+        info::Ctx {
+            kind,
+            looting: looting(core.cont_kind),
+            paper,
+            loaded_in_hand: loaded.is_some_and(|n| n > 0),
+            room: split_slot(&core.inv).is_some(),
+        },
+    );
+    col.spawn((
+        Node {
+            width: Val::Px(CARD_W_PX),
+            flex_direction: FlexDirection::Column,
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(CARD_BG),
+        BorderColor::all(LINE),
+    ))
+    .with_children(|card| {
+        // The head: the picture, the name, and the class strip under it.
+        card.spawn((
+            Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(CARD_HEAD),
+        ))
+        .with_children(|head| {
+            let art = research_ui::icon_name(&core.catalog, &core.research, stack);
+            let tint = crate::ui::skins::tint_of(&core.skins, stack.skin)
+                .map_or(super::super::icons::PICTURE, |[r, g, b]| {
+                    Color::srgb(r, g, b)
+                });
+            if let Some(image) = icons.item(&art) {
+                head.spawn((
+                    Node {
+                        width: Val::Px(34.0),
+                        height: Val::Px(34.0),
+                        ..default()
+                    },
+                    ImageNode {
+                        image,
+                        color: tint,
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ));
+            }
+            head.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                flex_grow: 1.0,
+                ..default()
+            })
+            .with_children(|t| {
+                t.spawn((
+                    Text::new(name.to_uppercase()),
+                    font_bold(16.0),
+                    TextColor(TEXT),
+                    Pickable::IGNORE,
+                ));
+                t.spawn((
+                    Node {
+                        padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+                        align_self: AlignSelf::FlexStart,
+                        ..default()
+                    },
+                    BackgroundColor(CARD_STRIP),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|chip| {
+                    chip.spawn((
+                        Text::new(strip),
+                        font_bold(10.0),
+                        TextColor(CARD_STRIP_TEXT),
+                        Pickable::IGNORE,
+                    ));
+                });
+            });
+            if stack.count > 1 {
+                head.spawn((
+                    Text::new(format!("x{}", stack.count)),
+                    font_bold(14.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+            }
+        });
+        // The body: the numbers on the left, what it is for and its verbs
+        // on the right — Rust's INFORMATION beside its ACTIONS.
+        card.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(8.0)),
+            ..default()
+        })
+        .with_children(|body| {
+            body.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                flex_grow: 1.0,
+                flex_basis: Val::Px(0.0),
+                row_gap: Val::Px(3.0),
+                ..default()
+            })
+            .with_children(|left| {
+                card_head(left, "INFORMATION");
+                if stats.is_empty() {
+                    left.spawn((
+                        Text::new("nothing to measure"),
+                        font(11.0),
+                        TextColor(TEXT_DIM),
+                        Pickable::IGNORE,
+                    ));
+                }
+                for stat in &stats {
+                    stat_row(left, stat);
+                }
+            });
+            body.spawn(Node {
+                width: Val::Px(CARD_ACTS_W_PX),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                ..default()
+            })
+            .with_children(|right| {
+                if !desc.is_empty() {
+                    right.spawn((
+                        Text::new(desc),
+                        font(11.0),
+                        TextColor(TEXT_DIM),
+                        Node {
+                            margin: UiRect::bottom(Val::Px(4.0)),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                }
+                if !acts.is_empty() {
+                    card_head(right, "ACTIONS");
+                }
+                for (act, label) in acts {
+                    act_button(right, act, label);
+                }
+            });
+        });
+    });
+}
+
+/// A card column's head — `INFORMATION`, `ACTIONS`.
+fn card_head(parent: &mut ChildSpawnerCommands, text: &str) {
+    parent.spawn((
+        Text::new(text.to_string()),
+        font_bold(10.0),
+        TextColor(TEXT_DIM),
+        Pickable::IGNORE,
+    ));
+}
+
+/// One INFORMATION row: the label, the bar where the number has one, the
+/// value.
+fn stat_row(parent: &mut ChildSpawnerCommands, stat: &info::Stat) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(6.0),
+            ..default()
+        })
+        .with_children(|r| {
+            r.spawn((
+                Node {
+                    width: Val::Px(66.0),
+                    justify_content: JustifyContent::FlexEnd,
+                    ..default()
+                },
+                Pickable::IGNORE,
+            ))
+            .with_children(|l| {
+                l.spawn((
+                    Text::new(stat.label),
+                    font_bold(10.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+            });
+            r.spawn((
+                Node {
+                    width: Val::Px(64.0),
+                    height: Val::Px(6.0),
+                    ..default()
+                },
+                BackgroundColor(if stat.frac.is_some() {
+                    PIP_TROUGH
+                } else {
+                    Color::NONE
+                }),
+                Pickable::IGNORE,
+            ))
+            .with_children(|t| {
+                if let Some(f) = stat.frac {
+                    t.spawn((
+                        Node {
+                            width: Val::Percent(f * 100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(STAT_FILL),
+                        Pickable::IGNORE,
+                    ));
+                }
+            });
+            r.spawn((
+                Text::new(stat.value.clone()),
+                font_bold(11.0),
+                TextColor(TEXT),
+                Pickable::IGNORE,
+            ));
+        });
+}
+
+/// One ACTIONS row: a chevron and the verb, lit under the pointer.
+fn act_button(parent: &mut ChildSpawnerCommands, act: info::Act, label: &str) {
+    parent
+        .spawn((
+            Button,
+            InfoAct(act),
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(22.0),
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(6.0),
+                padding: UiRect::horizontal(Val::Px(7.0)),
+                ..default()
+            },
+            BackgroundColor(ACT_BG),
+            super::Hover::on(ACT_BG).hot(ACT_HOT),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new(">"),
+                font_bold(12.0),
+                TextColor(if act == info::Act::Drop {
+                    TEXT_SHORT
+                } else {
+                    BADGE
+                }),
+                Pickable::IGNORE,
+            ));
+            b.spawn((
+                Text::new(label.to_string()),
+                font_bold(12.0),
+                TextColor(TEXT),
+                Pickable::IGNORE,
+            ));
+        });
+}
+
+/// Where a split lands: the first empty slot of the pack, then of the belt
+/// — the pack first, so a split does not fill the row in your hands.
+fn split_slot(inv: &[ItemStack; INV_SLOTS]) -> Option<usize> {
+    (HOTBAR_SLOTS..INV_SLOTS)
+        .chain(0..HOTBAR_SLOTS)
+        .find(|&s| inv[s].count == 0)
+}
+
+/// The item card's verbs. `Quick` is the slot's right-click (`quick`),
+/// so the card and the gesture are one path; the rest are the inventory's
+/// own sends.
+pub fn info_clicks(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    presses: Query<(&Interaction, &InfoAct), Changed<Interaction>>,
+    bite: Option<ResMut<super::super::verbs::Bite>>,
+    time: Res<Time>,
+    hearth: Option<Res<super::super::verbs::HearthView>>,
+) {
+    if ui.panel != Panel::Inventory {
+        return;
+    }
+    let Some(act) = presses
+        .iter()
+        .find(|(i, _)| **i == Interaction::Pressed)
+        .map(|(_, a)| a.0)
+    else {
+        return;
+    };
+    let Some((kind, slot)) = ui.pick else {
+        return;
+    };
+    let core = &net.session.core;
+    let stack = cell_stack(core, kind, slot);
+    if stack.count == 0 {
+        return;
+    }
+    match act {
+        info::Act::Quick => {
+            let hearth_at = hearth.as_ref().and_then(|h| h.0);
+            quick(
+                &mut ui,
+                &net,
+                kind,
+                slot,
+                hearth_at,
+                bite,
+                time.elapsed_secs_f64(),
+            );
+        }
+        info::Act::Unload => {
+            let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+            match protocol::encode_action_unload(&mut buf) {
+                Ok(len) => match net.session.send_action(&buf[..len]) {
+                    Ok(()) => ui.say("unloaded"),
+                    Err(e) => ui.say(e.to_string()),
+                },
+                Err(e) => ui.say(format!("the unload would not encode ({e:?})")),
+            }
+        }
+        info::Act::Split => {
+            let Some(to) = split_slot(&core.inv) else {
+                ui.say("no room in your inventory to split that");
+                return;
+            };
+            match move_args(
+                core.cont_handle,
+                kind,
+                slot,
+                CONT_SELF,
+                to,
+                Grab::Half,
+                &core.inv,
+                &core.cont,
+                &core.worn,
+            ) {
+                Some(args) => {
+                    send_move(&mut ui, &net, args);
+                }
+                None => ui.say("that stack cannot be split from here"),
+            }
+        }
+        info::Act::Drop => {
+            if kind == CONT_SELF {
+                drop_item(&mut ui, &net, slot, stack.count);
+            }
+        }
+    }
 }
 
 /// Your own 30 slots: the pack, then the belt along its foot — Rust's
@@ -190,11 +622,9 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, se
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(Val::Px(10.0)),
             row_gap: Val::Px(6.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(LINE),
+        BackgroundColor(super::REGION_BG),
     ))
     .with_children(|col| {
         section(col, "INVENTORY");
@@ -256,11 +686,9 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(Val::Px(10.0)),
             row_gap: Val::Px(6.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(LINE),
+        BackgroundColor(super::REGION_BG),
     ))
     .with_children(|col| {
         let converter = open_converter(core).is_some();
@@ -447,11 +875,9 @@ fn fire_grid(
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(Val::Px(10.0)),
             row_gap: Val::Px(6.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(LINE),
+        BackgroundColor(super::REGION_BG),
     ))
     .with_children(|col| {
         // The fire's own name as the head, the research table's reason: a
@@ -717,11 +1143,9 @@ fn table_grid(row: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(Val::Px(10.0)),
             row_gap: Val::Px(6.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(LINE),
+        BackgroundColor(super::REGION_BG),
     ))
     .with_children(|col| {
         // The table's own name as the head, and no name bar under it: the
@@ -888,8 +1312,9 @@ pub fn table_clock(
 const DOLL_HEAD_PX: f32 = 26.0;
 const DOLL_TORSO_PX: f32 = 52.0;
 const DOLL_W_PX: f32 = 40.0;
-/// The portrait's height in the wear panel: about the pack grid beside it.
-const DOLL_PORTRAIT_H_PX: f32 = 240.0;
+/// The portrait's height in the wear panel: with the worn row under it, the
+/// column is about the pack grid beside it.
+const DOLL_PORTRAIT_H_PX: f32 = 220.0;
 
 /// The worn container, drawn as a paperdoll rather than as a grid
 /// (`NOW.md` §0eq.1, off `inventory.jpeg`).
@@ -920,45 +1345,43 @@ fn wear_panel(
             flex_direction: FlexDirection::Column,
             padding: UiRect::all(Val::Px(10.0)),
             row_gap: Val::Px(6.0),
-            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(PANEL_BG),
-        BorderColor::all(LINE),
+        BackgroundColor(super::REGION_BG),
     ))
     .with_children(|col| {
         section(col, container_title(CONT_WEAR));
+        // You, as everyone else sees you (Triple T, `render/portrait.rs`),
+        // standing over what you wear — Rust's character over its clothing
+        // row. The two-block figure only until the portrait exists.
         col.spawn(Node {
-            flex_direction: FlexDirection::Row,
-            column_gap: Val::Px(8.0),
+            width: Val::Percent(100.0),
+            height: Val::Px(DOLL_PORTRAIT_H_PX),
+            justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
             ..default()
         })
-        .with_children(|body| {
-            body.spawn(Node {
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(CELL_GAP_PX),
-                ..default()
-            })
-            .with_children(|stack| {
-                for slot in 0..WEAR_SLOTS {
-                    wear_slot(stack, core, icons, slot);
-                }
-            });
-            // You, as everyone else sees you (Triple T, `render/portrait.rs`);
-            // the two-block figure only until the portrait exists.
-            match portrait {
-                Some(p) => {
-                    body.spawn(crate::render::portrait::view(
-                        p,
-                        DOLL_PORTRAIT_H_PX * 2.0 / 3.0,
-                        DOLL_PORTRAIT_H_PX,
-                    ));
-                }
-                None => silhouette(body),
+        .with_children(|stage| match portrait {
+            Some(p) => {
+                stage.spawn(crate::render::portrait::view(
+                    p,
+                    DOLL_PORTRAIT_H_PX * 2.0 / 3.0,
+                    DOLL_PORTRAIT_H_PX,
+                ));
             }
+            None => silhouette(stage),
         });
         protection_bar(col, pct);
+        col.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(CELL_GAP_PX),
+            ..default()
+        })
+        .with_children(|row| {
+            for slot in 0..WEAR_SLOTS {
+                wear_slot(row, core, icons, slot);
+            }
+        });
     });
 }
 
@@ -1223,7 +1646,6 @@ fn cell(
                 // a swatch in the corner says it is skinned even where the
                 // tint is subtle.
                 let tint = crate::ui::skins::tint_of(&core.skins, stack.skin);
-                let [tr, tg, tb] = tint.unwrap_or([1.0, 1.0, 1.0]);
                 if let Some([r, g, b]) = tint {
                     c.spawn((
                         Node {
@@ -1238,8 +1660,8 @@ fn cell(
                         Pickable::IGNORE,
                     ));
                 }
-                match icons.item(&name) {
-                    Some(image) => c.spawn((
+                match icons.look(&name, stack.skin, tint) {
+                    Some((image, color)) => c.spawn((
                         Node {
                             position_type: PositionType::Absolute,
                             left: Val::Px(4.0),
@@ -1248,12 +1670,13 @@ fn cell(
                             height: Val::Px(SLOT_PX - 10.0),
                             ..default()
                         },
-                        // A colour picture, drawn as it is — or through the
+                        // A colour picture, drawn as it is: the skin's own
+                        // where it has a model, else the item's through the
                         // skin's tint, the one colour a picture is
                         // multiplied by.
                         ImageNode {
                             image,
-                            color: Color::srgb(tr, tg, tb),
+                            color,
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -1441,8 +1864,10 @@ fn pip(parent: &mut ChildSpawnerCommands, stack: ItemStack, core: &ClientCore) {
 fn section(parent: &mut ChildSpawnerCommands, text: &str) {
     parent.spawn((
         Text::new(text.to_string()),
-        font_bold(15.0),
+        font_bold(17.0),
         TextColor(TEXT),
+        // No frame under it any more: the shadow keeps it off a bright sky.
+        crate::render::ui::TEXT_SHADOW,
     ));
 }
 
@@ -1568,6 +1993,11 @@ pub fn drag_pointer(
                 commands.entity(e).despawn();
             }
         }
+        // Whatever shut the page, the card goes with it: a box opened
+        // later must not open on a slot picked before.
+        if ui.pick.is_some() {
+            ui.pick = None;
+        }
         return;
     }
 
@@ -1627,19 +2057,25 @@ pub fn drag_pointer(
                 None
             }
         });
+        let resting = cell_stack(core, cell.kind, cell.slot);
+        // The slot the item card is showing keeps a light edge, Rust's
+        // selected cell, so the card always says which stack it is about.
+        let picked = resting.count > 0 && ui.pick == Some((cell.kind, cell.slot));
         let want = match takes {
             Some(true) => LINE_HOT,
             Some(false) if hot => TEXT_SHORT,
             _ if hot || source => LINE_HOT,
+            _ if picked => super::LINE_PICK,
             _ => LINE,
         };
         if border.top != want {
             *border = BorderColor::all(want);
         }
-        let resting = cell_stack(core, cell.kind, cell.slot);
         let active = cell.kind == CONT_SELF && cell.slot == net.sel as usize;
         let fill = if hot || source {
             CELL_HOVER
+        } else if picked && !active {
+            super::CELL_PICK
         } else {
             resting_fill(core, resting, active)
         };
@@ -1666,6 +2102,11 @@ pub fn drag_pointer(
         };
         if let (Some(grab), Some(cell)) = (grab, over) {
             let stack = cell_stack(core, cell.kind, cell.slot);
+            if stack.count == 0 && grab != Grab::Half && ui.pick.is_some() {
+                // A click on an empty slot puts the card away.
+                ui.pick = None;
+                ui.dirty = true;
+            }
             if stack.count > 0 {
                 ui.drag = Some(Drag {
                     kind: cell.kind,
@@ -1735,76 +2176,21 @@ pub fn drag_pointer(
     // this arm sends what it is handed and decides nothing.
     let table = open_table(core).is_some();
     if target.kind == drag.kind && target.slot == drag.slot {
-        // A material right-clicked with the hearth open goes into it, the
-        // way a right-click moves a stack into an open box.
-        if let Some(at) = hearth_at.filter(|_| drag.grab == Grab::Half && drag.kind == CONT_SELF) {
-            let known = super::hearth::known_rows(core, at);
-            if known.is_some_and(|r| crate::ui::hearth::takes(r, drag.stack.item)) {
-                feed_hearth(&mut ui, &net, at, drag.stack.item);
-                return;
-            }
-        }
         if drag.grab == Grab::Half {
-            // The plain container's plan is the whole stack, the first
-            // move and every one after it (`quick_move_stack`); a fire's
-            // and a table's stay one move, by their own rules.
-            let mut moves = Vec::new();
-            let quick = if let Some((arch, l)) = fire {
-                oven_ui::fire_quick_move(
-                    core.cont_handle,
-                    arch,
-                    l,
-                    drag.kind,
-                    drag.slot,
-                    &core.catalog,
-                    &core.inv,
-                    &core.cont,
-                    &core.worn,
-                )
-            } else if table {
-                research_ui::table_quick_move(
-                    core.cont_handle,
-                    open_table_running(core),
-                    drag.kind,
-                    drag.slot,
-                    &core.catalog,
-                    &core.research,
-                    &core.inv,
-                    &core.cont,
-                    &core.worn,
-                )
-            } else {
-                let (mut inv, mut cont, mut worn) = (core.inv, core.cont, core.worn);
-                quick_move_stack(
-                    core.cont_kind,
-                    core.cont_handle,
-                    drag.kind,
-                    drag.slot,
-                    &core.catalog,
-                    &mut inv,
-                    &mut cont,
-                    &mut worn,
-                    &mut moves,
-                )
-            };
-            match quick {
-                Quick::Send(args) if moves.is_empty() => {
-                    send_move(&mut ui, &net, args);
-                }
-                Quick::Send(_) => {
-                    // Stop at a full lane: what went is a prefix of the
-                    // plan, which the sim can play as it stands, and the
-                    // refusal stays on the status line rather than being
-                    // cleared by a later move that did go.
-                    for args in moves {
-                        if !send_move(&mut ui, &net, args) {
-                            break;
-                        }
-                    }
-                }
-                Quick::Use(slot) => use_item(&mut ui, &net, bite, time.elapsed_secs_f64(), slot),
-                Quick::Refused(why) => ui.say(why),
-            }
+            quick(
+                &mut ui,
+                &net,
+                drag.kind,
+                drag.slot,
+                hearth_at,
+                bite,
+                time.elapsed_secs_f64(),
+            );
+        } else if ui.pick != Some((drag.kind, drag.slot)) {
+            // A left click that did not drag: Rust's select. The item card
+            // over the pack shows what was clicked (`info_card`).
+            ui.pick = Some((drag.kind, drag.slot));
+            ui.dirty = true;
         }
         return;
     }
@@ -1888,7 +2274,103 @@ pub fn drag_pointer(
         return;
     };
 
-    send_move(&mut ui, &net, args);
+    // The card follows a whole stack to where it went.
+    if send_move(&mut ui, &net, args)
+        && grab == Grab::All
+        && ui.pick == Some((drag.kind, drag.slot))
+    {
+        ui.pick = Some((target.kind, target.slot));
+        ui.dirty = true;
+    }
+}
+
+/// The right-click on a slot, as one verb: a stack quick-moved across to
+/// the open container (or out of it), a piece worn or taken off, or the
+/// item used — and with the hearth open, a material fed to it. The drag's
+/// right-press released where it started sends this, and so does the item
+/// card's first action, so the card never offers a verb the gesture would
+/// not do. Every branch of the decision is `ui::slots::quick_move`'s (and
+/// the fire's and the table's own); this sends what it is handed.
+fn quick(
+    ui: &mut Ui,
+    net: &super::super::Net,
+    kind: u8,
+    slot: usize,
+    hearth_at: Option<(u16, u16, u8)>,
+    bite: Option<ResMut<super::super::verbs::Bite>>,
+    now: f64,
+) {
+    let core = &net.session.core;
+    let stack = cell_stack(core, kind, slot);
+    // A material right-clicked with the hearth open goes into it, the
+    // way a right-click moves a stack into an open box.
+    if let Some(at) = hearth_at.filter(|_| kind == CONT_SELF) {
+        let known = super::hearth::known_rows(core, at);
+        if known.is_some_and(|r| crate::ui::hearth::takes(r, stack.item)) {
+            feed_hearth(ui, net, at, stack.item);
+            return;
+        }
+    }
+    // The plain container's plan is the whole stack, the first move and
+    // every one after it (`quick_move_stack`); a fire's and a table's stay
+    // one move, by their own rules.
+    let mut moves = Vec::new();
+    let quick = if let Some((arch, l)) = open_fire(core) {
+        oven_ui::fire_quick_move(
+            core.cont_handle,
+            arch,
+            l,
+            kind,
+            slot,
+            &core.catalog,
+            &core.inv,
+            &core.cont,
+            &core.worn,
+        )
+    } else if open_table(core).is_some() {
+        research_ui::table_quick_move(
+            core.cont_handle,
+            open_table_running(core),
+            kind,
+            slot,
+            &core.catalog,
+            &core.research,
+            &core.inv,
+            &core.cont,
+            &core.worn,
+        )
+    } else {
+        let (mut inv, mut cont, mut worn) = (core.inv, core.cont, core.worn);
+        quick_move_stack(
+            core.cont_kind,
+            core.cont_handle,
+            kind,
+            slot,
+            &core.catalog,
+            &mut inv,
+            &mut cont,
+            &mut worn,
+            &mut moves,
+        )
+    };
+    match quick {
+        Quick::Send(args) if moves.is_empty() => {
+            send_move(ui, net, args);
+        }
+        Quick::Send(_) => {
+            // Stop at a full lane: what went is a prefix of the plan, which
+            // the sim can play as it stands, and the refusal stays on the
+            // status line rather than being cleared by a later move that
+            // did go.
+            for args in moves {
+                if !send_move(ui, net, args) {
+                    break;
+                }
+            }
+        }
+        Quick::Use(slot) => use_item(ui, net, bite, now, slot),
+        Quick::Refused(why) => ui.say(why),
+    }
 }
 
 /// Hover-loot (NOW §0p2 4c): hold Shift with a container open and sweep the
@@ -2178,8 +2660,12 @@ fn spawn_ghost(
             GlobalZIndex(50),
         ))
         .with_children(|g| {
-            match icons.item(&art) {
-                Some(image) => g.spawn((
+            match icons.look(
+                &art,
+                stack.skin,
+                crate::ui::skins::tint_of(&core.skins, stack.skin),
+            ) {
+                Some((image, color)) => g.spawn((
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Px(4.0),
@@ -2188,13 +2674,10 @@ fn spawn_ghost(
                         height: Val::Px(SLOT_PX - 10.0),
                         ..default()
                     },
-                    // The skin's tint, as the cell it came out of wears it.
+                    // The skin's look, as the cell it came out of wears it.
                     ImageNode {
                         image,
-                        color: crate::ui::skins::tint_of(&core.skins, stack.skin)
-                            .map_or(super::super::icons::PICTURE, |[r, g, b]| {
-                                Color::srgb(r, g, b)
-                            }),
+                        color,
                         ..default()
                     },
                     Pickable::IGNORE,

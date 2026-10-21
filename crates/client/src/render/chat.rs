@@ -46,6 +46,8 @@ const LINE_PX: f32 = 15.0;
 const SHOWN: usize = 10;
 const MESSAGE_INK: Color = Color::srgba(0.97, 0.97, 0.95, 1.0);
 const AVATAR_BLANK: Color = Color::srgba(0.12, 0.12, 0.13, 0.75);
+/// A clickable line under the pointer while the composer is open.
+const LINE_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
 const SHADOW_A: f32 = 0.85;
 
 /// A channel's colour: the tag and name on a line, and the input bar.
@@ -108,6 +110,12 @@ pub struct ChatFade {
     base: f32,
     bg: bool,
 }
+
+/// A line that opens its speaker's profile card when clicked: only while
+/// the composer is open, which is the only time the pointer is free over
+/// the log (`panels::profile::chat_opens`).
+#[derive(Component)]
+pub struct ChatWho(pub super::panels::profile::ProfileOpen);
 
 /// An avatar still waiting on its picture.
 #[derive(Component)]
@@ -414,7 +422,7 @@ pub fn draw(
     if let Ok(mut text) = hint.single_mut() {
         // The cap is drawn because a cap the player cannot see is a cap
         // that feels like a broken keyboard.
-        text.0 = format!("TAB channel · {}", chat.composer.remaining());
+        text.0 = format!("TAB channel · click a name · {}", chat.composer.remaining());
     }
 
     let Ok(root) = root.single() else {
@@ -430,15 +438,30 @@ pub fn draw(
                 base,
                 bg: false,
             };
-            c.spawn((
+            let mut line = c.spawn((
                 Node {
                     align_items: AlignItems::FlexStart,
                     column_gap: Val::Px(6.0),
+                    padding: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
                 Pickable::IGNORE,
-            ))
-            .with_children(|row| {
+            ));
+            // With the composer open the pointer is free over the log, and a
+            // signed-in speaker's line is a button to their profile card.
+            if let Some((wallet, _)) = l.face.filter(|(a, _)| open && !a.is_guest()) {
+                let rest = Color::NONE;
+                line.insert((
+                    Button,
+                    ChatWho(super::panels::profile::ProfileOpen {
+                        wallet,
+                        name: l.name.clone(),
+                    }),
+                    BackgroundColor(rest),
+                    super::panels::Hover::on(rest).hot(LINE_HOVER),
+                ));
+            }
+            line.with_children(|row| {
                 // The avatar: the speaker's picture once it lands, their
                 // initial on a dark tile until then (or for good, for a
                 // player with no picture).

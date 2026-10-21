@@ -21,9 +21,11 @@
 /// Coefficients past this are refused by [`LPt::fits`]. Z[ζ] is dense in
 /// the plane, so a coefficient is not a distance: it follows the conjugate
 /// image of the build path as well as the path, and a long zig-zag can grow
-/// one well past the metres it covers. 4096 keeps every product in
-/// [`sign_p_q3`] far inside i64 and a coefficient inside 13 bits on a wire.
-pub const LATTICE_MAX_COEF: i32 = 4096;
+/// one well past the metres it covers. 2¹⁴ holds the whole build grid in
+/// one frame at the world origin (cell 2,047's far corner is 12,288 half
+/// metres), keeps every product in [`sign_p_q3`] far inside i64, and a
+/// coefficient inside 16 bits with its sign (`sock::PieceAddr::key`).
+pub const LATTICE_MAX_COEF: i32 = 1 << 14;
 
 /// √3 / 4 — the weight of `b` and `c` in [`LPt::to_xz`].
 const SQRT3_4: f32 = 0.433_012_7;

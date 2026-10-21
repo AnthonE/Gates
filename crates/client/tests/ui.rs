@@ -2270,7 +2270,12 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
         let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
         core.on_stream(&buf[..len]).expect("defs apply");
         if with_wall {
-            let len = encode_event_piece_placed(&wall, &mut buf).expect("encode piece");
+            let len = encode_event_piece_placed(
+                &wall,
+                &sim_core::build::grid_frame(seed, &haven, wall.cx, wall.cz),
+                &mut buf,
+            )
+            .expect("encode piece");
             core.on_stream(&buf[..len]).expect("piece applies");
             assert_eq!(core.pieces.len(), 1, "the core holds the wall");
         }
@@ -5850,12 +5855,14 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
     // The call sits in `build_screen`'s row, ungated: the body, then the
     // pack (Rust's order since the pages split, 2026-09-25), then the
     // container *if* one is open. Matched on the pack call's head: its own
-    // arguments (the belt slot in hand) are not this test's.
+    // arguments (the belt slot in hand) are not this test's. The window is
+    // wide enough for the middle column's head, where the item card sits
+    // over the pack.
     let row = code
         .split("wear_panel(row, core, icons, portrait);")
         .nth(1)
         .expect("`build_screen` must draw the body");
-    let head = &row[..row.len().min(200)];
+    let head = &row[..row.len().min(800)];
     assert!(
         head.contains("own_grid(row, core, icons"),
         "the body is not drawn beside the pack: {head}"
@@ -7284,6 +7291,63 @@ mod research_table {
         let busy = p.prompt(&ItemCatalog::EMPTY);
         assert!(busy.contains("[C] RESEARCHING"), "{busy}");
     }
+}
+
+/// A work's terminal says what its burn does in plain words, and which
+/// items its unlock opens, once each.
+#[test]
+fn the_work_terminal_says_what_it_unlocks() {
+    use client::ui::arc::{boost_line, quota_left, step, times, unlocked_items};
+    use client_core::arc::WorkView;
+    use sim_core::works::{KNOB_GATHER_PCT, KNOB_SMELT_PCT, WORK_LIT, WORK_OPEN, WORK_SEALED};
+    assert_eq!(times(200), "2x");
+    assert_eq!(times(150), "1.5x");
+    assert_eq!(times(125), "1.25x");
+    let mut w = WorkView {
+        boost_knob: protocol::NO_BOOST,
+        boost_pct: 100,
+        ..WorkView::default()
+    };
+    assert_eq!(boost_line(&w), None, "no boost, no line");
+    w.boost_knob = KNOB_SMELT_PCT;
+    w.boost_pct = 200;
+    assert_eq!(boost_line(&w).as_deref(), Some("furnaces smelt 2x as fast"));
+    w.boost_knob = KNOB_GATHER_PCT;
+    w.boost_pct = 150;
+    assert_eq!(
+        boost_line(&w).as_deref(),
+        Some("every swing gathers 1.5x as much")
+    );
+
+    w.state = WORK_SEALED;
+    assert_eq!(step(&w), (0, "BURNING"));
+    w.state = WORK_OPEN;
+    assert_eq!(step(&w).0, 1);
+    w.state = WORK_LIT;
+    w.def.fuel_max = 100;
+    assert_eq!(step(&w), (2, "EMBERS"), "a dry tank");
+    w.fuel = 5;
+    assert_eq!(step(&w), (2, "BURNING"));
+    assert_eq!(quota_left(41_200, 60_000), "18,800 more");
+    assert_eq!(quota_left(60_000, 60_000), "DONE");
+
+    let mut recipes = sim_core::craft::CraftContent::EMPTY;
+    recipes.recipe_count = 3;
+    for (i, (out, unlock)) in [(7u16, 2u8), (8, 0), (7, 2)].into_iter().enumerate() {
+        recipes.recipes[i].output = out;
+        recipes.recipes[i].unlock = unlock;
+    }
+    let mut vend = sim_core::vend::VendContent::EMPTY;
+    vend.count = 2;
+    vend.offers[0].get = 9;
+    vend.offers[0].unlock = 2;
+    vend.offers[1].get = 7;
+    vend.offers[1].unlock = 2;
+    assert_eq!(unlocked_items(2, &recipes, &vend), [7, 9]);
+    assert!(
+        unlocked_items(0, &recipes, &vend).is_empty(),
+        "no unlock opens nothing"
+    );
 }
 
 /// The STANDINGS page's words: a board's score reads as points or kills,

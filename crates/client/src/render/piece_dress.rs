@@ -38,6 +38,11 @@ use super::{
 const T2: f32 = WALL_THICKNESS_M * 0.5;
 /// Half a cell: where a slab's sides are.
 const H: f32 = BUILD_CELL_M * 0.5;
+/// √3.
+const SQRT_3: f32 = 1.732_050_8;
+/// An equilateral piece's apothem: how far its centroid, the drawn root,
+/// stands off each side.
+const K: f32 = H / SQRT_3;
 
 /// Stone course height, metres, counted from the storey base so two walls
 /// side by side run their courses level.
@@ -736,7 +741,7 @@ fn rect(x0: f32, x1: f32, z0: f32, z1: f32) -> Vec<Vec2> {
     ]
 }
 
-/// The square cell's footprint, or the NW half's.
+/// The square cell's footprint, or the triangle's.
 fn footprint(tri: bool) -> Vec<Vec2> {
     if tri {
         tri_xz().to_vec()
@@ -1451,9 +1456,16 @@ fn metal_body(o: &mut Out, lo: Vec3, hi: Vec3, e: Edges, salt: u32) {
 // Slabs: floors, roofs and foundations
 // ---------------------------------------------------------------------------
 
-/// The right triangle a tri piece fills, in `(x, z)` — `tri_prism_into`'s.
+/// The equilateral triangle a tri piece fills, in `(x, z)` about its
+/// centroid — `tri_prism_into`'s: the first side along +x, the apex at +z.
 fn tri_xz() -> [Vec2; 3] {
-    [Vec2::new(-H, -H), Vec2::new(H, -H), Vec2::new(-H, H)]
+    [Vec2::new(-H, -K), Vec2::new(H, -K), Vec2::new(0.0, 2.0 * K)]
+}
+
+/// How far toward the apex the triangle reaches at `x`: its two slanted
+/// sides' `z` there.
+fn tri_reach(x: f32) -> f32 {
+    2.0 * K - x.abs() * SQRT_3
 }
 
 /// A slab of `size` (a cell across, `size.y` deep, centred on its own
@@ -1825,10 +1837,9 @@ fn metal_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool) {
     }
 }
 
-/// The half-cell triangles, dressed as the square slabs are: the same deck,
-/// rim, joists, skirt and corner posts, run round three edges instead of
-/// four — the hypotenuse taking a mitred member, a pole, a coursed face of
-/// its own.
+/// The equilateral triangles, dressed as the square slabs are: the same
+/// deck, rim, joists, skirt and corner posts, run round three sides instead
+/// of four, every corner a sharp one.
 fn tri_slab(o: &mut Out, top: f32, bot: f32, foundation: bool, roof: bool, tier: u8) {
     let tri = footprint(true);
     match tier {
@@ -1857,13 +1868,12 @@ fn twig_tri(o: &mut Out, tri: &[Vec2], top: f32, bot: f32, foundation: bool, roo
     let y = deck_bot - RIM;
     o.rim_poles(tri, y, RIM, 40);
     if !foundation {
-        // Joists under the mat, stopped inside the hypotenuse's rim pole.
-        for (i, x) in [-0.75f32, 0.0].into_iter().enumerate() {
+        // Joists under the mat, stopped inside the slanted sides' rim poles
+        // (a side's normal is half along z, so a rim's width across it is
+        // two along z).
+        for (i, x) in [-0.6f32, 0.0, 0.6].into_iter().enumerate() {
             let r = 0.085;
-            let (z0, z1) = (
-                -H + 2.0 * RIM,
-                -x - RIM * std::f32::consts::SQRT_2 - 1.5 * r,
-            );
+            let (z0, z1) = (-K + 2.0 * RIM, tri_reach(x) - 2.0 * RIM - 1.5 * r);
             if z1 - z0 > 0.3 {
                 o.pole(
                     Vec3::new(x, deck_bot - r, z0),
@@ -1881,10 +1891,12 @@ fn twig_tri(o: &mut Out, tri: &[Vec2], top: f32, bot: f32, foundation: bool, roo
     }
     let r = 0.12;
     for (i, p) in inset(tri, r).into_iter().enumerate() {
+        // The pole's octagon turned to no side of a 60° corner: its
+        // corners, not its flats, must clear both sides.
         o.pole(
             Vec3::new(p.x, bot, p.y),
             Vec3::new(p.x, deck_bot, p.y),
-            r,
+            r * (PI / 8.0).cos(),
             Vec3::X,
             &Look::new(Vec3::Y, 0.98).vary(60 + i as u32, 0.04),
         );
@@ -1927,13 +1939,13 @@ fn framed_tri(
     o.rim_plates(tri, rim_w, rim_bot, deck_bot, member);
     if !foundation {
         let (xs, hw, foot): (&[f32], f32, f32) = if wood {
-            (&[-0.75, 0.0], 0.05, 0.03)
+            (&[-0.6, 0.0, 0.6], 0.05, 0.03)
         } else {
-            (&[-0.75, 0.0], 0.04, 0.04)
+            (&[-0.6, 0.0, 0.6], 0.04, 0.04)
         };
         for &x in xs {
-            let z0 = -H + rim_w;
-            let z1 = -(x + hw) - rim_w * std::f32::consts::SQRT_2 - 0.01;
+            let z0 = -K + rim_w;
+            let z1 = tri_reach(x.abs() + hw) - 2.0 * rim_w - 0.01;
             if z1 - z0 > 0.3 {
                 o.beam(
                     Vec3::new(x - hw, bot + foot, z0),
@@ -1955,17 +1967,11 @@ fn framed_tri(
         sheet(Vec3::Y, 91)
     };
     o.slab(&inset(tri, set), bot, rim_bot, &skirt, [true, false]);
-    // Corner posts: a square one in the right angle, a wedge in each of the
-    // two sharp corners, where a square post would stand out of the cell.
+    // Corner posts: a wedge in each of the three sharp corners, where a
+    // square post would stand out of the triangle.
     let w = if wood { 0.2 } else { 0.18 };
-    o.beam(
-        Vec3::new(-H, bot, -H),
-        Vec3::new(-H + w, rim_bot, -H + w),
-        1,
-        if wood { 0.03 } else { 0.015 },
-        &member(Vec3::Y).across(0.5),
-    );
-    for (v, a, b) in [(tri[1], tri[0], tri[2]), (tri[2], tri[0], tri[1])] {
+    for i in 0..3 {
+        let (v, a, b) = (tri[i], tri[(i + 1) % 3], tri[(i + 2) % 3]);
         let wedge = [
             v,
             v + (a - v).normalize() * w * 1.6,
@@ -1980,32 +1986,40 @@ fn framed_tri(
         );
     }
     if !wood {
-        // Cover straps on the two square sides, as the square footing has.
-        for (nrm, along) in [(Vec3::NEG_X, Vec3::Z), (Vec3::NEG_Z, Vec3::X)] {
+        // Cover straps on every side, as the square footing has: each from
+        // the side's line in to the skirt's face.
+        let c = centroid(tri);
+        for i in 0..3 {
+            let (p, q) = (tri[i], tri[(i + 1) % 3]);
+            let along = (q - p).normalize();
+            let mut inward = Vec2::new(-along.y, along.x);
+            if inward.dot(c - p) < 0.0 {
+                inward = -inward;
+            }
+            let mid = (p + q) * 0.5;
             for t in [-0.5f32, 0.5] {
-                let mid = along * t + nrm * (H - set * 0.5) + Vec3::Y * (bot + rim_bot) * 0.5;
-                let half = along * 0.04 + nrm.abs() * set * 0.5;
-                let hy = Vec3::Y * (rim_bot - bot) * 0.5;
-                o.cuboid(
-                    mid - half - hy,
-                    mid + half + hy,
+                let (a, b) = (mid + along * (t - 0.04), mid + along * (t + 0.04));
+                o.slab(
+                    &[a, b, b + inward * set, a + inward * set],
+                    bot,
+                    rim_bot,
                     &steel(Vec3::Y),
-                    SKIP_PY | SKIP_NY,
+                    [false, false],
                 );
             }
         }
     }
 }
 
-/// Stone: flags on top (or slates on a roof), coursed blocks down the two
-/// square sides and the hypotenuse, the outer corners square.
+/// Stone: flags on top (or slates on a roof), coursed blocks down the three
+/// sides, the stones at every sharp corner square quoins.
 fn stone_tri(o: &mut Out, tri: &[Vec2], top: f32, bot: f32, roof: bool) {
     const FLAG: f32 = 0.75;
     let d = JOINT_M;
     if roof {
         roofing(o, tri, top, top - d - 0.01, MAT_STONE);
     } else {
-        for (r, zw) in joint_lines(-H, H, FLAG, -H, 0).windows(2).enumerate() {
+        for (r, zw) in joint_lines(-K, 2.0 * K, FLAG, -K, 0).windows(2).enumerate() {
             for (c, xw) in joint_lines(-H, H, FLAG, -H, r as i32)
                 .windows(2)
                 .enumerate()
@@ -2033,29 +2047,24 @@ fn stone_tri(o: &mut Out, tri: &[Vec2], top: f32, bot: f32, roof: bool) {
     }
     let lines = stone_courses(top, bot, d);
     let n = lines.len() - 1;
-    let r2 = std::f32::consts::FRAC_1_SQRT_2;
-    let hyp = Vec3::new(r2, 0.0, r2);
-    for (face, (o_pt, nrm, along, u0, u1)) in [
-        (Vec3::NEG_X * H, Vec3::NEG_X, Vec3::Z, -H, H),
-        (Vec3::NEG_Z * H, Vec3::NEG_Z, Vec3::X, -H, H),
-        (
-            Vec3::ZERO,
-            hyp,
-            Vec3::new(r2, 0.0, -r2),
-            -H * std::f32::consts::SQRT_2,
-            H * std::f32::consts::SQRT_2,
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    let c = centroid(tri);
+    for face in 0..3 {
+        // Each side's face about its midpoint, `u` along it from −H to H.
+        let (p, q) = (tri[face], tri[(face + 1) % 3]);
+        let mid = (p + q) * 0.5;
+        let out = (mid - c).normalize();
+        let nrm = Vec3::new(out.x, 0.0, out.y);
+        let along = Vec3::Y.cross(nrm);
+        let o_pt = Vec3::new(mid.x, 0.0, mid.y);
+        let (u0, u1) = (-H, H);
         for (k, w) in lines.windows(2).enumerate() {
             let joints = joint_lines(u0, u1, 1.0, u0 + face as f32 * 0.25, k as i32);
             let m = joints.len() - 1;
             for (j, u) in joints.windows(2).enumerate() {
                 // At a sharp corner a bed joint's chamfer would cut through
-                // the other face: the end stones there are square quoins.
-                let quoin = (j == m - 1) || (face == 2 && j == 0);
+                // the other face: the end stones there are square quoins,
+                // and every corner of the triangle is sharp.
+                let quoin = j == 0 || j == m - 1;
                 o.pillow(
                     o_pt,
                     nrm,
@@ -2211,11 +2220,14 @@ pub fn floor_frame_mesh(tri: bool, tier: u8) -> Mesh {
             for (k, y) in [top - pr, bot + pr].into_iter().enumerate() {
                 o.rim_poles(&fp, y, pr, 300 + k as u32 * 8);
             }
+            // A corner post's octagon has its flats along x and z: in a
+            // triangle's 60° corners its corners must clear the sides.
+            let fit = if tri { (PI / 8.0).cos() } else { 1.0 };
             for (i, p) in inset(&fp, pr).into_iter().enumerate() {
                 o.pole(
                     Vec3::new(p.x, bot, p.y),
                     Vec3::new(p.x, top, p.y),
-                    pr - 0.006,
+                    (pr - 0.006) * fit,
                     Vec3::X,
                     &Look::new(Vec3::Y, 0.98).vary(320 + i as u32, 0.04),
                 );
@@ -2224,7 +2236,7 @@ pub fn floor_frame_mesh(tri: bool, tier: u8) -> Mesh {
                     o.pole(
                         Vec3::new(p.x, y - 0.045, p.y),
                         Vec3::new(p.x, y + 0.045, p.y),
-                        pr - 0.001,
+                        (pr - 0.001) * fit,
                         Vec3::X,
                         &rope,
                     );
@@ -2350,16 +2362,16 @@ pub fn riser_mesh(shape: u8, tier: u8) -> Mesh {
         hi = hi.max(p.y.max(far));
     }
     let mut o = Out::new(lo, hi);
-    let tri = shape == SHAPE_STAIRS_TRI_SPIRAL;
     for (i, p) in patches[..n].iter().enumerate() {
         let seed = (tier as u32) << 12 | (shape as u32) << 4 | i as u32;
+        if shape == SHAPE_STAIRS_TRI_SPIRAL {
+            tri_flight(&mut o, p, tier, seed);
+            continue;
+        }
         let (x0, x1, z0, z1) = (p.x0 - H, p.x1 - H, p.z0 - H, p.z1 - H);
         let (rx, rz) = (p.sx * (p.x1 - p.x0), p.sz * (p.z1 - p.z0));
         if rx == 0.0 && rz == 0.0 {
-            let mut poly = rect(x0, x1, z0, z1);
-            if tri {
-                poly = tidy(&clip_half(&poly, Vec2::ONE, 0.0));
-            }
+            let poly = rect(x0, x1, z0, z1);
             let y = if p.y.abs() < 1e-6 { p.y - SINK_M } else { p.y };
             landing(&mut o, &poly, y, p.y - SLAB_T, tier, seed);
             continue;
@@ -2423,6 +2435,50 @@ pub fn riser_mesh(shape: u8, tier: u8) -> Mesh {
         o.place_since(start, m, off);
     }
     finish(o.b)
+}
+
+/// A flight on a triangle, drawn about the triangle's centroid: its climbing
+/// patch cut into treads, each the patch's slice clipped to the triangle — a
+/// plate with a level top and an underside a slab under the walk. A run's
+/// rectangle would stand out past the slanted sides at both ends, where
+/// the sim's walk ends at the triangle (`circulation::surface`).
+fn tri_flight(o: &mut Out, p: &sim_core::circulation::Patch, tier: u8, seed: u32) {
+    let tri = tri_xz();
+    let (dx, dz) = (p.x1 - p.x0, p.z1 - p.z0);
+    let rise = (p.sx * dx + p.sz * dz).abs();
+    let steps = ((rise / LEVEL_H_M * STAIR_RISERS as f32).ceil() as usize).max(1);
+    let look = match tier {
+        MAT_TWIG => twig_mat(),
+        MAT_WOOD => planks().grain(Vec3::X),
+        MAT_STONE => stone(seed),
+        _ => sheet(Vec3::X, seed),
+    };
+    // Endpoint treads meet the floors at the flight's ends, as a run's do.
+    for step in 0..=steps {
+        let t0 = ((step as f32 - 0.5) / steps as f32).max(0.0);
+        let t1 = ((step as f32 + 0.5) / steps as f32).min(1.0);
+        let slice = if p.sx != 0.0 {
+            rect(p.x0 + dx * t0 - H, p.x0 + dx * t1 - H, p.z0 - K, p.z1 - K)
+        } else {
+            rect(p.x0 - H, p.x1 - H, p.z0 + dz * t0 - K, p.z0 + dz * t1 - K)
+        };
+        let poly = clip_to(&slice, &tri);
+        if poly.len() < 3 {
+            continue;
+        }
+        let t = step as f32 / steps as f32;
+        let mut tread = p.height(p.x0 + dx * t, p.z0 + dz * t);
+        if tread.abs() < 1e-6 {
+            tread -= SINK_M;
+        }
+        o.plate(
+            &poly,
+            |_| tread,
+            |q| p.height(q.x + H, q.y + K) - SLAB_T,
+            &look,
+            [true, true],
+        );
+    }
 }
 
 /// How far a riser's tread or landing that lies ON the storey base sinks

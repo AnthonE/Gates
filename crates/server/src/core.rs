@@ -40,6 +40,7 @@ use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
+use sim_core::frame::Frame;
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::inventory::{
     slots_in, CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD,
@@ -163,6 +164,44 @@ fn rank_d2(slot: usize, d2: i64) -> i64 {
         HELI_RANK_KEY
     } else {
         d2
+    }
+}
+
+/// A gift topic as the talk panel draws it (wire v130): the rows it hands
+/// over, by catalog id, and its price. A plain topic is the default.
+fn topic_offer(
+    t: &content::bake::TopicText,
+    skins: &sim_core::skin::SkinContent,
+) -> protocol::TopicOffer {
+    let Some(set) = t.gift else {
+        return protocol::TopicOffer::default();
+    };
+    let mut o = protocol::TopicOffer {
+        gift: true,
+        ..Default::default()
+    };
+    let n = (skins.count as usize).min(sim_core::limits::MAX_SKINS);
+    for (row, def) in skins.defs[..n].iter().enumerate() {
+        if set.has(row) && (o.n as usize) < sim_core::lore::MAX_GIFT_ROWS {
+            o.catalogs[o.n as usize] = def.catalog;
+            o.n += 1;
+        }
+    }
+    if let Some((item, count)) = t.price {
+        (o.item, o.count) = (item, count);
+    }
+    o
+}
+
+/// What asking a gift topic came to, as `SUB_ARC_TEXT` says it.
+fn gift_wire(g: content::bake::Gift) -> u8 {
+    use content::bake::Gift;
+    match g {
+        Gift::Guest => protocol::ARC_GIFT_GUEST,
+        Gift::Owned => protocol::ARC_GIFT_OWNED,
+        Gift::Given => protocol::ARC_GIFT_GIVEN,
+        Gift::Short => protocol::ARC_GIFT_SHORT,
+        Gift::Waiting => protocol::ARC_GIFT_WAITING,
     }
 }
 
@@ -1257,13 +1296,23 @@ impl ShardCore {
     /// A structure took a hit at build cell `(cx, cz)`: tell the crew of
     /// every base whose claim covers it, once a base per quiet window, and
     /// look up at most two hits a tick.
-    fn note_raid(&mut self, cx: u16, cz: u16) {
+    fn note_raid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
         if !self.companion.on() || self.raid_checks >= 2 {
             return;
         }
+        // A piece the grid cannot name — or a door in its doorway, which
+        // shares its spelled id — is where the piece stands; one a killing
+        // blow already took was alerted on by the blows before it.
+        let (x, z) = if sim_core::build::spelled_id(cx, cz, level, loc).is_some() {
+            match self.world.pieces.find(cx, cz, level, loc) {
+                Some(r) => self.world.pieces.anchor_of(r),
+                None => return,
+            }
+        } else {
+            sim_core::deploy::cell_center(cx, cz)
+        };
         self.raid_checks += 1;
         let tick = self.world.tick;
-        let (x, z) = sim_core::deploy::cell_center(cx, cz);
         for hi in 0..self.world.deploys.hearths().len() {
             let h = self.world.deploys.hearths()[hi];
             if !self.world.deploys.hearth_covers(hi, x, z) {
@@ -1536,6 +1585,10 @@ impl ShardCore {
             (ev.b >> 8) as u8,
         );
         let row = (ev.b & 0xff) as u16;
+        // A lattice placement names its piece by footprint, not by the
+        // address the event spells: matched against the record it made.
+        let made = self.world.pieces.find(at.0, at.1, at.2, at.3).copied();
+        let frame = made.and_then(|r| self.world.pieces.frame(r.bld).copied());
         cmds.iter().find_map(|c| match *c {
             Command::Place {
                 id,
@@ -1546,6 +1599,30 @@ impl ShardCore {
                 loc,
                 ..
             } if (cx, cz, level, loc) == at && r == row => Some((id, Piece::Placed(r))),
+            Command::PlaceAt {
+                id,
+                row: r,
+                bld,
+                level,
+                sock,
+            } if r == row
+                && made.is_some_and(|m| (m.bld, m.level, m.sock) == (bld, level, sock)) =>
+            {
+                Some((id, Piece::Placed(r)))
+            }
+            Command::PlaceFree {
+                id,
+                row: r,
+                x_cm,
+                z_cm,
+                yaw,
+                ..
+            } if r == row
+                && made.is_some_and(|m| m.level == 0)
+                && frame.is_some_and(|f| (f.origin_cm, f.yaw) == ((x_cm, z_cm), yaw)) =>
+            {
+                Some((id, Piece::Placed(r)))
+            }
             Command::Upgrade {
                 id,
                 cx,
@@ -1722,7 +1799,7 @@ impl ShardCore {
             }
         }
         for e in d.entries() {
-            let (x, z) = e.xz();
+            let (x, z) = e.place_xz(self.world.pieces.cols());
             if let (Some(hi), Some(def)) = (covering(x, z), dc.defs.get(e.row as usize)) {
                 value[hi] += rules.worth(def.item, 1);
             }
@@ -2957,6 +3034,34 @@ impl ShardCore {
                         freehand,
                         plate,
                     },
+                    ActionMsg::PlaceAt {
+                        row,
+                        bld,
+                        level,
+                        sock,
+                    } => Command::PlaceAt {
+                        id: c.id,
+                        row,
+                        bld,
+                        level,
+                        sock,
+                    },
+                    ActionMsg::PlaceFree {
+                        row,
+                        x_cm,
+                        z_cm,
+                        yaw,
+                        tri,
+                        plate,
+                    } => Command::PlaceFree {
+                        id: c.id,
+                        row,
+                        x_cm,
+                        z_cm,
+                        yaw,
+                        tri,
+                        plate,
+                    },
                     ActionMsg::Deploy {
                         row,
                         cx,
@@ -3102,6 +3207,7 @@ impl ShardCore {
                         machine,
                         mult,
                     },
+                    ActionMsg::Sit { seat } => Command::Sit { id: c.id, seat },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
                     ActionMsg::Arc {
                         op: sim_core::works::OP_EXTRACT,
@@ -4166,22 +4272,29 @@ impl ShardCore {
                         continue;
                     };
                     let (target, arg) = ((ev.c >> 8) as u8, ev.c as u8);
-                    let composed: Option<(u8, String)> = match ev.b as u8 {
+                    let composed: Option<(u8, u8, String)> = match ev.b as u8 {
                         sim_core::lore::OP_TALK => {
                             let (k, t) = (target as usize, arg as usize);
+                            let line = |g: content::bake::Gift, text: &content::bake::ArcText| {
+                                text.gift_line(k, t, g)
+                                    .map(|l| (gift_wire(g), l.to_string()))
+                            };
                             match (self.arc_text.gift(k, t), self.arc_text.price(k, t)) {
                                 // Priced: the sim takes the price first, and
                                 // `EV_PAID` says the line.
                                 (Some(set), Some(price)) => self
                                     .ask_priced(slot, set, price, ev.c)
-                                    .and_then(|g| self.arc_text.gift_line(k, t, g)),
+                                    .and_then(|g| line(g, &self.arc_text)),
                                 (Some(set), None) => {
                                     let g = self.give_skins(slot, set);
-                                    self.arc_text.gift_line(k, t, g)
+                                    line(g, &self.arc_text)
                                 }
-                                (None, _) => self.arc_text.line(k, t, &self.world.works),
+                                (None, _) => self
+                                    .arc_text
+                                    .line(k, t, &self.world.works)
+                                    .map(|l| (protocol::ARC_GIFT_NONE, l.to_string())),
                             }
-                            .map(|l| (protocol::ARC_SPEAKER, l.to_string()))
+                            .map(|(g, l)| (protocol::ARC_SPEAKER, g, l))
                         }
                         sim_core::lore::OP_READ => self
                             .arc_text
@@ -4191,10 +4304,10 @@ impl ShardCore {
                                 self.world.arc.salt,
                                 self.world.seed,
                             )
-                            .map(|t| (protocol::ARC_INSCRIPTION, t)),
+                            .map(|t| (protocol::ARC_INSCRIPTION, protocol::ARC_GIFT_NONE, t)),
                         _ => None,
                     };
-                    let Some((kind, text)) = composed else {
+                    let Some((kind, gift, text)) = composed else {
                         continue;
                     };
                     let bytes = &text.as_bytes()[..text.len().min(protocol::ARC_TEXT_BYTES)];
@@ -4202,6 +4315,7 @@ impl ShardCore {
                         kind,
                         target,
                         arg,
+                        gift,
                         bytes,
                         &mut self.ev_buf,
                     ) {
@@ -4250,6 +4364,7 @@ impl ShardCore {
                         protocol::ARC_SPEAKER,
                         target,
                         arg,
+                        gift_wire(g),
                         bytes,
                         &mut self.ev_buf,
                     ) {
@@ -4500,7 +4615,13 @@ impl ShardCore {
                         dmg: damage_band(r.hp, piece_hp_max(&self.world.build, r.row)),
                         ..*r
                     };
-                    match encode_event_piece_placed(&rec, &mut self.ev_buf) {
+                    let frame = self
+                        .world
+                        .pieces
+                        .frame(r.bld)
+                        .copied()
+                        .unwrap_or(Frame::ZERO);
+                    match encode_event_piece_placed(&rec, &frame, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 let c = &self.clients[slot];
@@ -4521,12 +4642,11 @@ impl ShardCore {
                                 // everything: the client has no body this
                                 // tick, and its pending walk will cover the
                                 // store from the position it does get.
+                                // The record's cell, not the event's address:
+                                // a piece the grid cannot name is addressed by
+                                // its spelled id, which is no place at all.
                                 if c.piece_anchor_valid
-                                    && !interest::piece_in_interest(
-                                        c.piece_anchor_cm,
-                                        addr.0,
-                                        addr.1,
-                                    )
+                                    && !interest::rec_in_interest(c.piece_anchor_cm, &rec)
                                 {
                                     ShardStats::bump(&stats.piece_events_skipped);
                                     continue;
@@ -4588,7 +4708,8 @@ impl ShardCore {
                         hp: placed.map_or(0, |d| d.hp),
                         ..DeployRec::default()
                     };
-                    let at = interest::cell_cm(rec.cx, rec.cz);
+                    let (acx, acz) = interest::deploy_cell(&rec, &self.world.pieces);
+                    let at = interest::cell_cm(acx, acz);
                     match encode_event_deploy_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -5077,12 +5198,14 @@ impl ShardCore {
                     // player can reach it.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
-                    let owner = self
-                        .world
-                        .deploys
-                        .find(cx, cz, level, loc)
-                        .map_or(0, |d| d.owner);
-                    let at = interest::cell_cm(cx, cz);
+                    // Where the door is: a door in a doorway the grid
+                    // cannot name is addressed by the doorway's spelled id,
+                    // no place at all (`interest::deploy_cell`).
+                    let rec = self.world.deploys.find(cx, cz, level, loc).copied();
+                    let owner = rec.map_or(0, |d| d.owner);
+                    let (acx, acz) =
+                        rec.map_or((cx, cz), |d| interest::deploy_cell(&d, &self.world.pieces));
+                    let at = interest::cell_cm(acx, acz);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     let has_lock = ev.b & 4 != 0;
                     // Which kind of lock, off the store at encode (v120):
@@ -5165,7 +5288,13 @@ impl ShardCore {
                     // on. `NOW.md` §0fan.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
-                    let at = interest::cell_cm(cx, cz);
+                    // `EV_DOOR`'s reading of where the door is.
+                    let (acx, acz) = self
+                        .world
+                        .deploys
+                        .find(cx, cz, level, loc)
+                        .map_or((cx, cz), |d| interest::deploy_cell(d, &self.world.pieces));
+                    let at = interest::cell_cm(acx, acz);
                     match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
@@ -5549,7 +5678,12 @@ impl ShardCore {
                     ShardStats::bump(&stats.struct_hits);
                     // The crew hears of it on the companion, killing blow
                     // included.
-                    self.note_raid((ev.a >> 16) as u16, ev.a as u16);
+                    self.note_raid(
+                        (ev.a >> 16) as u16,
+                        ev.a as u16,
+                        (ev.b >> 16) as u8,
+                        (ev.b >> 8) as u8,
+                    );
                     // A structure still standing after a raid swing: the
                     // address, what it took, what is left. Broadcast like
                     // a placement — the wall is a world fact, and anyone
@@ -6084,8 +6218,16 @@ impl ShardCore {
             my_score: mine.map_or(0, |m| m.1.min(u32::MAX as u64) as u32),
             ..protocol::StandingBoard::EMPTY
         };
-        for (name, score) in &board.top {
-            wire.push(name, (*score).min(u32::MAX as u64) as u32);
+        // Each row with the wallet behind it, so a click opens a profile.
+        // `/standings.json` already names it; a guest or a dev key has none.
+        for (i, (name, score)) in board.top.iter().enumerate() {
+            let wallet = board
+                .top_keys
+                .get(i)
+                .filter(|k| crate::standings::is_wallet(k))
+                .and_then(|k| protocol::Address::from_hex(k.as_bytes()))
+                .unwrap_or(protocol::Address::GUEST);
+            wire.push_wallet(name, (*score).min(u32::MAX as u64) as u32, wallet);
         }
         // The purse: what each place pays, what this wallet would take now,
         // and its minutes against the minimum (`standings::Prizes`). On the
@@ -6705,6 +6847,10 @@ impl ShardCore {
             let r = if at < ns {
                 let sp = &self.arc_text.speakers[at];
                 let titles: Vec<&[u8]> = sp.topics.iter().map(|t| t.title.as_bytes()).collect();
+                let mut offers = [protocol::TopicOffer::default(); sim_core::lore::MAX_TOPICS];
+                for (o, t) in offers.iter_mut().zip(&sp.topics) {
+                    *o = topic_offer(t, &self.world.skins);
+                }
                 protocol::encode_event_arc_place(
                     protocol::ARC_SPEAKER,
                     at as u8,
@@ -6712,6 +6858,7 @@ impl ShardCore {
                     &lc.speakers[at].spot,
                     sp.name.as_bytes(),
                     &titles,
+                    &offers[..titles.len().min(sim_core::lore::MAX_TOPICS)],
                     0,
                     0,
                     &mut self.ev_buf,
@@ -6723,6 +6870,7 @@ impl ShardCore {
                     k as u8,
                     ni as u8,
                     &lc.inscriptions[k].spot,
+                    &[],
                     &[],
                     &[],
                     0,
@@ -6738,6 +6886,7 @@ impl ShardCore {
                     nm as u8,
                     &def.spot,
                     self.arc_text.mech_names[k].as_bytes(),
+                    &[],
                     &[],
                     def.dials,
                     def.values,
@@ -7185,7 +7334,7 @@ impl ShardCore {
             // The band is filled HERE and stored nowhere (`PieceRec::dmg`).
             // A stack copy of the batch, not an allocation — wall 2 counts
             // the tick and this is `PIECE_SYNC_BATCH` records deep.
-            let mut wire = [PieceRec::default(); PIECE_SYNC_BATCH];
+            let mut wire = [(PieceRec::default(), Frame::ZERO); PIECE_SYNC_BATCH];
             let mut n = 0usize;
             let mut scanned = 0usize;
             // Scanned from the TOP of the owed region down, because the
@@ -7197,8 +7346,15 @@ impl ShardCore {
                 if !interest::rec_in_interest(anchor, src) {
                     continue;
                 }
-                wire[n] = *src;
-                wire[n].dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
+                // Every record names a live building (`Pieces`' contract).
+                let frame = self
+                    .world
+                    .pieces
+                    .frame(src.bld)
+                    .copied()
+                    .unwrap_or(Frame::ZERO);
+                wire[n] = (*src, frame);
+                wire[n].0.dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
                 n += 1;
                 if n == PIECE_SYNC_BATCH {
                     break;
@@ -7294,7 +7450,7 @@ impl ShardCore {
             let mut scanned = 0usize;
             for src in deploys[owed - window..owed].iter().rev() {
                 scanned += 1;
-                if !interest::deploy_in_interest(anchor, viewer, src) {
+                if !interest::deploy_in_interest(anchor, viewer, src, &self.world.pieces) {
                     continue;
                 }
                 let dst = &mut wire[n];
@@ -8347,6 +8503,9 @@ impl ShardCore {
             // The stance every sim rule reads (v83), so what is drawn is
             // what a shot is tested against.
             crouched: p.crouched(),
+            // In a casino seat (v130); a sitter is at rest, and the wire
+            // carries the bit only then.
+            seated: p.seat != 0 && p.body.qvy == 0,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
             // A downed body has dropped what it held (wounded v0 — the
@@ -8424,6 +8583,7 @@ impl ShardCore {
                     | sim_core::brain::AiState::Attack
                     | sim_core::brain::AiState::Orbit
             ),
+            seated: false,
             yaw: m.yaw,
             pitch: 0,
             // A pig has no hotbar, so the hand is empty — and `held` would
@@ -9034,19 +9194,23 @@ mod tests {
             let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
             core.world.players[w].skins
         };
-        let ask = |core: &mut ShardCore, id: u32, slot: usize| -> String {
+        // What was said, and what the asking came to (wire v130).
+        let ask = |core: &mut ShardCore, id: u32, slot: usize| -> (String, u8) {
             assert!(core.queue(Command::Arc {
                 id,
                 op: sim_core::lore::OP_TALK,
                 target: 0,
                 arg: 1,
             }));
-            let mut said = String::new();
+            let mut said = (String::new(), u8::MAX);
             for _ in 0..4 {
                 core.tick_bare(&stats, |lane, to, bytes| {
                     if lane == Lane::Event && to == slot {
-                        if let Ok(EventMsg::ArcText { text, len, .. }) = decode_event(bytes) {
-                            said = String::from_utf8_lossy(&text[..len as usize]).into();
+                        if let Ok(EventMsg::ArcText {
+                            text, len, gift, ..
+                        }) = decode_event(bytes)
+                        {
+                            said = (String::from_utf8_lossy(&text[..len as usize]).into(), gift);
                         }
                     }
                     true
@@ -9054,12 +9218,19 @@ mod tests {
             }
             said
         };
+        let said = |text: &str, gift: u8| (text.to_string(), gift);
         carry(&mut core, 256, 60);
-        assert_eq!(ask(&mut core, 256, 0), "you are short");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("you are short", protocol::ARC_GIFT_SHORT)
+        );
         assert_eq!(junk(&core, 256), 60, "nothing taken");
         assert!(owned(&core, 256).is_empty());
         carry(&mut core, 256, 150);
-        assert_eq!(ask(&mut core, 256, 0), "it is yours");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("it is yours", protocol::ARC_GIFT_GIVEN)
+        );
         assert_eq!(junk(&core, 256), 50, "the price, once");
         assert!(
             owned(&core, 256).is_empty(),
@@ -9067,21 +9238,30 @@ mod tests {
         );
         assert_eq!(core.mints.len(), 1);
         assert!(core.gifts.is_empty());
-        assert_eq!(ask(&mut core, 256, 0), "on its way");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("on its way", protocol::ARC_GIFT_WAITING)
+        );
         assert_eq!(junk(&core, 256), 50, "waiting pays nothing");
         // The minter sent it; the platform's read shows the token.
         core.skins_owned(0, 256, rug);
         core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(owned(&core, 256), rug);
         assert!(core.mints.is_empty(), "settled");
-        assert_eq!(ask(&mut core, 256, 0), "you have it");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("you have it", protocol::ARC_GIFT_OWNED)
+        );
         assert_eq!(junk(&core, 256), 50, "an owner pays nothing");
         // Sold on: the next read lacks it, and so does the body.
         core.skins_owned(0, 256, SkinSet::EMPTY);
         core.tick_bare(&stats, |_, _, _| true);
         assert!(owned(&core, 256).is_empty());
         carry(&mut core, 257, 150);
-        assert_eq!(ask(&mut core, 257, 1), "sign in");
+        assert_eq!(
+            ask(&mut core, 257, 1),
+            said("sign in", protocol::ARC_GIFT_GUEST)
+        );
         assert_eq!(junk(&core, 257), 150, "a guest pays nothing");
         assert!(owned(&core, 257).is_empty());
     }

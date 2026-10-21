@@ -239,6 +239,7 @@ pub(super) fn spawn_parts(
             MeshMaterial3d(waxed.clone()),
             Transform::default(),
             Visibility::Hidden,
+            bevy::light::NotShadowCaster,
         ));
     }
     model.spawn((
@@ -247,6 +248,7 @@ pub(super) fn spawn_parts(
         MeshMaterial3d(materials.add(super::heldgen::arrow_material())),
         Transform::default(),
         Visibility::Hidden,
+        bevy::light::NotShadowCaster,
     ));
 }
 

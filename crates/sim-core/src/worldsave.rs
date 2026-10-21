@@ -76,6 +76,7 @@ use crate::gather::{ItemStack, SlotLife};
 use crate::grounditem::GroundItemRec;
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
+use crate::limits::MAX_BUILDINGS;
 use crate::limits::MAX_FIRES;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
@@ -231,7 +232,11 @@ use crate::worldcont::WorldContRec;
 /// (+8), so no older file reads.
 /// **28 — guns v1**: `MAX_MAGS` 8 → 16, so every body's `PlayerSave` grew
 /// eight magazines (+32) and no older file reads.
-pub const WORLD_SAVE_FORMAT: u16 = 28;
+/// **29 — freeform W3**: pieces stand in buildings. A building section
+/// (the id counter, then each live building's frame) comes before the
+/// pieces, and every piece record grew its id, building and lattice
+/// footprint (+16), so no older file reads.
+pub const WORLD_SAVE_FORMAT: u16 = 29;
 /// The one older format [`decode_into`] still reads. None since 27 moved
 /// every body's record: the current format stands in, so the check reads
 /// one format.
@@ -335,8 +340,13 @@ pub const PLAYER_BYTES: usize = PLAYER_SAVE_BYTES + PLAYER_TAIL_BYTES;
 /// encodes — so the next field to join gets a red test rather than a bigger
 /// silent gap.
 ///
-/// 12 → 13 at format 9: the plate (build plate v1).
-pub const PIECE_BYTES: usize = 13 + 8;
+/// 12 → 13 at format 9: the plate (build plate v1). 13 → 29 at format 29:
+/// the id (4), the building (2), the footprint's kind and direction (2) and
+/// its four lattice coefficients (4 × 2).
+pub const PIECE_BYTES: usize = 29 + 8;
+/// One building: its row, its frame's origin (two i32 cm), band (i32) and
+/// yaw (u16).
+pub const BUILDING_BYTES: usize = 2 + 4 + 4 + 4 + 2;
 /// A deploy record plus its `bag_ready` cooldown, which lives in a parallel
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
@@ -405,6 +415,9 @@ pub const STACK_BYTES: usize = 8;
 
 pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_PLAYERS * PLAYER_BYTES
+    + 4
+    + 2
+    + MAX_BUILDINGS * BUILDING_BYTES
     + MAX_PIECES * PIECE_BYTES
     + MAX_DEPLOYS * DEPLOY_BYTES
     + MAX_HEARTHS * HEARTH_BYTES
@@ -513,7 +526,9 @@ impl WorldSaveError {
             Self::DuplicatePlayerId => "two bodies claim the same player id",
             Self::AddressOutOfRange => "a structure stands off the island",
             Self::BadContentRow => "a structure names a content row that does not exist",
-            Self::PieceColumnPlateSplit => "two pieces in one build column stand on two floors",
+            Self::PieceColumnPlateSplit => {
+                "a piece's column plate disagrees with its building's floor"
+            }
             Self::BadItemStack => "an item stack names an impossible item or count",
             Self::BadBackpackId => "a backpack id is zero, duplicated, or past the next id",
             Self::BadCharge => "a charge names an impossible structure",
@@ -691,6 +706,17 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         // replaces it (`World::take_over` clears it at the door).
         o.bytes(&p.skins.to_le_bytes());
     }
+    // The buildings the pieces stand in (format 29), lowest row first, and
+    // the id counter: an id is never reused in a world.
+    o.u32(w.pieces.next_id());
+    o.u16(w.pieces.buildings().live() as u16);
+    for (b, f) in w.pieces.buildings().iter() {
+        o.u16(b);
+        o.i32(f.origin_cm.0);
+        o.i32(f.origin_cm.1);
+        o.i32(f.band);
+        o.u16(f.yaw);
+    }
     for (p, placed) in w.pieces.entries().iter().zip(w.pieces.placed()) {
         o.u16(p.cx);
         o.u16(p.cz);
@@ -704,6 +730,13 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         // base can be stilted over its ground or cut a band into it, and
         // the sign is the difference between a leg and a buried floor.
         o.u8(p.plate as u8);
+        o.u32(p.id);
+        o.u16(p.bld);
+        o.u8(p.sock.foot);
+        o.u8(p.sock.dir);
+        for c in [p.sock.at.a, p.sock.at.b, p.sock.at.c, p.sock.at.d] {
+            o.u16(c as i16 as u16);
+        }
         o.u64(*placed);
     }
     for (d, ready) in w.deploys.entries().iter().zip(w.deploys.bag_ready()) {
@@ -1236,6 +1269,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             assist_target: 0,
             assist_by: 0,
             assist_ticks: 0,
+            // Nor sits: a sleeper stands (`seat.rs`).
+            seat: 0,
             // No `..Player::default()`, and clippy is what pointed it out:
             // every field is named, so the struct-update syntax was a
             // no-op. Left named on purpose now that it is — **a field added
@@ -1257,6 +1292,31 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         }
     }
 
+    // --- buildings (format 29) -------------------------------------------
+    let next_id = r.u32()?;
+    let n_blds = r.count(MAX_BUILDINGS)?;
+    let mut frames = crate::boxed_array::<(u16, crate::frame::Frame), MAX_BUILDINGS>((
+        0,
+        crate::frame::Frame::ZERO,
+    ));
+    for i in 0..n_blds {
+        let b = r.u16()?;
+        let origin = (r.i32()?, r.i32()?);
+        let band = r.i32()?;
+        let yaw = r.u16()?;
+        // A row once, inside the table, on the island.
+        let island_cm = (crate::terrain::ISLAND_SIZE * 100.0) as i32;
+        if b as usize >= MAX_BUILDINGS
+            || frames[..i].iter().any(|f| f.0 == b)
+            || !(0..=island_cm).contains(&origin.0)
+            || !(0..=island_cm).contains(&origin.1)
+            || band.abs() > 1 << 16
+        {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        frames[i] = (b, crate::frame::Frame::new(origin, band, yaw));
+    }
+
     // --- pieces ---------------------------------------------------------
     let mut pieces = crate::boxed_array::<PieceRec, MAX_PIECES>(PieceRec::default());
     let mut placed = crate::boxed_array::<u64, MAX_PIECES>(0);
@@ -1272,13 +1332,42 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let hp = r.u16()?;
         let uh = r.u16()?;
         let plate = r.u8()? as i8;
+        let id = r.u32()?;
+        let bld = r.u16()?;
+        let foot = r.u8()?;
+        let dir = r.u8()?;
+        let mut coef = [0i32; 4];
+        for c in coef.iter_mut() {
+            *c = r.u16()? as i16 as i32;
+        }
         placed[i] = r.u64()?;
-        // One column, one plate — the invariant `plate_for` maintains and
-        // every collision walk reads. Linear over what has been read so far,
-        // bounded by `MAX_PIECES`, on the boot path.
-        if pieces[..i]
-            .iter()
-            .any(|p| p.cx == cx && p.cz == cz && p.plate != plate)
+        let sock = crate::sock::Sock {
+            foot,
+            at: crate::lattice::LPt::new(coef[0], coef[1], coef[2], coef[3]),
+            dir,
+        };
+        // Its building is in the file, its footprint on that building's
+        // lattice, and the grid's name for it (when it has one) is the one
+        // its footprint gives — so the two views cannot disagree.
+        let Some(&(_, frame)) = frames[..n_blds].iter().find(|f| f.0 == bld) else {
+            return Err(WorldSaveError::AddressOutOfRange);
+        };
+        if !crate::support::on_lattice(&sock) || id >= next_id {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        let grid = crate::build::grid_origin(&frame)
+            .and_then(|(ox, oz)| crate::sock::to_grid(ox, oz, &sock));
+        if loc != crate::build::LOC_NONE && grid != Some((cx, cz, loc)) {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        if loc == crate::build::LOC_NONE && level as usize >= MAX_BUILD_SOCKETS {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        // A piece the grid names keeps its column's plate, and the plate is
+        // its building's floor over that column's ground — so the column's
+        // two views of one floor cannot disagree.
+        if loc != crate::build::LOC_NONE
+            && plate as i32 != frame.band - crate::build::terrain_band(w.seed, &w.haven, cx, cz)
         {
             return Err(WorldSaveError::PieceColumnPlateSplit);
         }
@@ -1291,7 +1380,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         {
             return Err(WorldSaveError::AddressOutOfRange);
         }
-        if !build_addr_ok(cx, cz, level) {
+        if loc != crate::build::LOC_NONE && !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
         // The check that keeps the sim from panicking: `bc.pieces[row]` is
@@ -1321,6 +1410,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // correctly the first time it is encoded, off `hp`.
             dmg: 0,
             plate,
+            id,
+            bld,
+            sock,
         };
     }
 
@@ -1929,8 +2021,13 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     *w.arc = arc;
     w.set_blight_salt(blight_salt);
     w.players = players;
-    w.pieces
-        .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
+    w.pieces.restore(
+        &pieces[..n_pieces],
+        &placed[..n_pieces],
+        &w.build,
+        &frames[..n_blds],
+        next_id,
+    );
     w.deploys.restore(
         &deploys[..n_deploys],
         &bag_ready[..n_deploys],
@@ -2062,7 +2159,8 @@ mod tests {
         // re-derive is a constant nobody checks twice.
         let by_hand = 1_520                 // head (format 15: eleven section counts + the 26 B sky/clock; a twelfth at 20; the works' 8 × 161 at 21; the salt and 8 × 16 dials at 22; the blight salt at 25)
             + 100 * 547                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16, the Verdigris at 24, the mask's high word and a third worn stack at 27)
-            + 32_768 * 21                   // pieces + plate + placement tick
+            + 4 + 2 + 4_096 * 16            // the id counter and the buildings (format 29)
+            + 32_768 * 37                   // pieces + plate + placement tick + id, building and footprint (29)
             + 4_096 * 36                    // deploys (+ the pose at 19) + bag_ready + placed
             + 512 * 67                      // hearths (26 with the slot + the crew: 1 + 10*4)
             + 1_024 * 139                   // containers: 13 + 12 eight-byte stacks + the oven's 30
@@ -2116,7 +2214,7 @@ mod tests {
         // here, for `DEPLOY_BYTES`' stated reason.
         // 19 → 21: 20 is what the encoder has written since format 6 (the
         // constant was a byte short — see `PIECE_BYTES`), plus the plate.
-        assert_eq!(PIECE_BYTES, 21);
+        assert_eq!(PIECE_BYTES, 37);
         assert_eq!(DEPLOY_BYTES, 36);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
@@ -2196,8 +2294,11 @@ mod tests {
         // 4_478_302 at format 27: the blueprint mask's high word and the
         // feet's stack, sixteen bytes on 100 bodies. 4_481_502 at format
         // 28: eight more magazines, 32 bytes on 100 bodies (guns v1).
+        // 5_071_332 at format 29: buildings (freeform W3) — the id counter
+        // and a building count (6), 4,096 frames × 16, and 16 more bytes on
+        // each of 32,768 pieces.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 4_481_502,
+            WORLD_SAVE_MAX_BYTES, 5_071_332,
             "the world save ceiling moved"
         );
     }

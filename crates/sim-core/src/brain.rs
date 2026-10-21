@@ -2024,13 +2024,16 @@ mod tests {
         w.mob = MobContent::probe_fixture();
         let bc = BuildContent::probe_fixture();
         let (cx, cz) = flat_cell(&w);
-        w.pieces.insert_for_test(cx, cz, 0, LOC_PLANE, 0, &bc);
-        w.pieces.insert_for_test(cx, cz, 0, LOC_EDGE_XLO, 1, &bc);
-        w.pieces.insert_for_test(cx, cz, 0, LOC_EDGE_ZLO, 1, &bc);
         w.pieces
-            .insert_for_test(cx + 1, cz, 0, LOC_EDGE_XLO, 1, &bc);
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz, 0, LOC_PLANE, 0, &bc);
         w.pieces
-            .insert_for_test(cx, cz + 1, 0, LOC_EDGE_ZLO, 1, &bc);
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz, 0, LOC_EDGE_XLO, 1, &bc);
+        w.pieces
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz, 0, LOC_EDGE_ZLO, 1, &bc);
+        w.pieces
+            .insert_grounded_for_test(w.seed, &w.haven, cx + 1, cz, 0, LOC_EDGE_XLO, 1, &bc);
+        w.pieces
+            .insert_grounded_for_test(w.seed, &w.haven, cx, cz + 1, 0, LOC_EDGE_ZLO, 1, &bc);
         let (px, pz) = (
             (cx as f32 + 0.5) * BUILD_CELL_M,
             (cz as f32 + 0.5) * BUILD_CELL_M,

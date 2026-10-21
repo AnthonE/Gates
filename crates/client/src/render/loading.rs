@@ -175,6 +175,13 @@ pub fn setup(
         .spawn((
             LoadingCam,
             Camera2d,
+            // Off, never Bevy's default 4×. Cameras drawing to one target
+            // share its non-HDR main texture, and a scaled world's
+            // presentation camera (`render_scale`) is that and `Msaa::Off`:
+            // wgpu refuses the pass that pairs this camera's 4-sample depth
+            // with the shared 1-sample colour, and the page panicked on its
+            // first loading frame. A UI layer gains nothing from it anyway.
+            Msaa::Off,
             Camera {
                 // Above the rig, and blended over it rather than replacing
                 // it, so the fade at the end shows the world underneath.

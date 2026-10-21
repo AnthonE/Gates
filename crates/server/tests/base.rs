@@ -222,7 +222,7 @@ fn a_bot_builds_the_whole_starter_base() {
     };
     assert_eq!(arch(cx, cz, 0, LOC_PLANE), Some(ARCH_HEARTH));
     // Two doors between the outside and the cupboard: the front one on the
-    // airlock triangle's west side, the inner one on its north side.
+    // airlock's west side, the inner one on its north side.
     let front = (cx + 1, cz + 1, 0, LOC_EDGE_XLO);
     let inner = (cx + 1, cz + 1, 0, LOC_EDGE_ZLO);
     for (name, (x, z, level, loc)) in [("front", front), ("inner", inner)] {
@@ -365,8 +365,8 @@ fn a_player_gets_in_through_both_doors_and_up_the_stairs() {
         f.w.pieces.cols().plate(cx, cz).expect("the core is built"),
     );
 
-    // The airlock triangle's cell: the front door on its west side, the
-    // inner door on its north side, the long side a diagonal wall.
+    // The airlock's cell: the front door on its west side, the inner door
+    // on its north side.
     let (ax, az) = (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M);
     let front = (cx + 1, cz + 1, 0, LOC_EDGE_XLO);
     let inner = (cx + 1, cz + 1, 0, LOC_EDGE_ZLO);
