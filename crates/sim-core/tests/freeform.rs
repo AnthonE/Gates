@@ -370,11 +370,23 @@ fn a_triangle_spiral_climbs_round_its_body() {
     let frame = *w.pieces.frame(bld).unwrap();
     let floor = band_y(frame.band);
     let cols = w.pieces.cols();
+    let body_row = *cols
+        .hulls()
+        .rows()
+        .iter()
+        .find(|h| h.kind == sim_core::hull::HULL_TRI)
+        .unwrap();
     for (k, (level, f)) in flights.iter().enumerate() {
         let (o, ux, uz) = f.local_axes();
         let (ox, oz) = frame.to_world(o);
         let (ax, az) = frame.axis(ux);
         let (bx, bz) = frame.axis(uz);
+        // Each up its own side of the body, not out past it.
+        let mid = (ox + ax * 1.5 + bx * 0.35, oz + az * 1.5 + bz * 0.35);
+        assert!(
+            body_row.foot_contains(mid.0, mid.1, 0.0),
+            "flight {k} runs outside its triangle"
+        );
         let base = floor + level_y(*level);
         for (t, rise) in [(0.6f32, 0.3f32), (2.4, 1.2)] {
             let (x, z) = (ox + ax * t + bx * 0.35, oz + az * t + bz * 0.35);

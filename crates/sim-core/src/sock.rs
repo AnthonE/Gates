@@ -145,7 +145,9 @@ impl Sock {
     /// A flight's own frame, in the building's lattice: its low corner and
     /// the two directions (local +x, local +z) it is laid out along — the
     /// frame `circulation`'s patches are written in, climbing toward +z.
-    /// A body's frame is the same with its first side as +x.
+    /// A body's frame is the same with its first side as +x; a flight on a
+    /// triangle turned `dir / 4` thirds runs up that many sides further
+    /// round, from the corner that side starts at.
     pub const fn local_axes(&self) -> (LPt, u8, u8) {
         let (ux, uz) = match self.foot {
             FOOT_RISER => ((self.dir + 9) % 12, self.dir),
@@ -155,6 +157,7 @@ impl Sock {
         let o = match self.foot {
             FOOT_EDGE => self.at.sub(along(HALF_SIDE, ux)),
             FOOT_SQUARE | FOOT_RISER => self.at.sub(along(HALF_SIDE, ux)).sub(along(HALF_SIDE, uz)),
+            FOOT_TRI_RISER => self.corners().0[((self.dir / 4) % 3) as usize],
             _ => self.corners().0[0],
         };
         (o, ux, uz)

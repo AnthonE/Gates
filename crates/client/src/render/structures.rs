@@ -1487,6 +1487,53 @@ pub fn post_owner(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Post
     }
 }
 
+/// [`post_owner`] for an edge piece the grid cannot name, asked of its
+/// building's lattice (freeform): at each end, every other edge piece of
+/// its storey in the same building that meets that corner — found by the
+/// twelve lattice directions out of it — and the post goes, as on the
+/// grid, to the tallest; between equals, to a piece the grid names (whose
+/// own rule cannot see this one), then to the lowest id.
+pub fn posed_post_owner(
+    store: &sim_core::build::Pieces,
+    defs: &sim_core::build::BuildContent,
+    rec: &sim_core::build::PieceRec,
+) -> PostOwn {
+    let height = |r: &sim_core::build::PieceRec| {
+        defs.pieces
+            .get(r.row as usize)
+            .map_or(0.0, |d| sim_core::build::wall_height(d.shape))
+    };
+    let mine = height(rec);
+    let (ends, _) = rec.sock.corners();
+    let owns = |corner: sim_core::lattice::LPt| {
+        (0..12u8).all(|dir| {
+            let addr = sim_core::sock::PieceAddr {
+                bld: rec.bld,
+                level: rec.level,
+                sock: sim_core::sock::Sock::edge_from(corner, dir),
+            };
+            let Some(i) = store.find_addr(&addr) else {
+                return true;
+            };
+            let other = store.entries()[i];
+            if other.id == rec.id
+                || !defs
+                    .pieces
+                    .get(other.row as usize)
+                    .is_some_and(|d| is_edge_shape(d.shape))
+            {
+                return true;
+            }
+            let theirs = height(&other);
+            theirs < mine || (theirs == mine && !other.on_grid() && other.id > rec.id)
+        })
+    };
+    PostOwn {
+        low: owns(ends[0]),
+        high: owns(ends[1]),
+    }
+}
+
 /// Which corner posts a standing edge piece draws — [`post_owner`]'s answer,
 /// and `Live`'s redraw key for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -2145,7 +2192,7 @@ fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
             pos.push([p.x + at.x, y + at.y, p.z + at.z]);
             nor.push([0.0, ny, 0.0]);
             col.push([t, t, t, 1.0]);
-            uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + h.z) * PIECE_UV_PER_M]);
+            uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + k) * PIECE_UV_PER_M]);
         }
         if wind {
             idx.extend([base, base + 1, base + 2]);
@@ -2153,10 +2200,8 @@ fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
             idx.extend([base, base + 2, base + 1]);
         }
     }
-    // The two square sides and the hypotenuse. Outward normals: the N side
-    // faces −z, the W side −x, the hypotenuse +x+z. The hypotenuse's normal
-    // is derived from the corners rather than the 45° constant the unit
-    // prism could assume — a non-square cell would tilt it.
+    // The three sides, outward normals derived from the corners: the first
+    // faces −z, the other two out past the apex either way.
     for (p0, p1) in [(a, b), (c, a), (b, c)] {
         let e = p1 - p0;
         let n = Vec3::new(e.z, 0.0, -e.x).normalize();
@@ -2249,14 +2294,15 @@ pub fn posed_transform(
     sock: &sim_core::sock::Sock,
     level: u8,
 ) -> Transform {
-    use sim_core::sock::{FOOT_EDGE, FOOT_RISER, FOOT_TRI_RISER};
+    use sim_core::sock::{FOOT_EDGE, FOOT_RISER};
     const STEP: f32 = std::f32::consts::PI / 6.0;
     let (x, z) = frame.to_world(sock.at);
     let y = sim_core::build::band_y(frame.band) + sim_core::build::level_y(level);
     let (s, c) = frame.sin_cos();
+    // A flight on a triangle turned a third is its first flight turned a
+    // third about the centroid (`Sock::local_axes`).
     let turn = match sock.foot {
         FOOT_EDGE | FOOT_RISER => std::f32::consts::FRAC_PI_2 - sock.dir as f32 * STEP,
-        FOOT_TRI_RISER => -((sock.dir % 4) as f32) * STEP,
         _ => -(sock.dir as f32) * STEP,
     };
     Transform::from_translation(Vec3::new(x, y, z))
@@ -2838,13 +2884,13 @@ pub fn stream(
         // (gap v1), so it is re-read here every pass rather than latched at
         // spawn: the wall that arrived beside this one takes the post they
         // share, and this one must be redrawn without it. Off the grid the
-        // column index knows no neighbours: both posts.
+        // building's lattice says who meets it there.
         let own = if !is_edge_shape(def.shape) {
             0
         } else if rec.on_grid() {
             post_owner(core.pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc).bits()
         } else {
-            PostOwn::BOTH.bits()
+            posed_post_owner(core.pieces.store(), &core.piece_defs, rec).bits()
         };
         let foot_drop = if rec.on_grid() {
             sim_core::collide::edge_foot_drop(
@@ -4375,23 +4421,40 @@ fn clipped_patch(x0: f32, z0: f32, x1: f32, z1: f32, triangle: bool) -> Vec<Vec2
     if !triangle {
         return rectangle.to_vec();
     }
-    let mut out = Vec::with_capacity(5);
-    for i in 0..4 {
-        let a = rectangle[i];
-        let c = rectangle[(i + 1) % 4];
-        let da = BUILD_CELL_M - a.x - a.y;
-        let dc = BUILD_CELL_M - c.x - c.y;
-        if da >= 0.0 {
-            out.push(a);
-        }
-        if (da > 0.0 && dc < 0.0) || (da < 0.0 && dc > 0.0) {
-            out.push(a + (c - a) * (da / (da - dc)));
+    // The equilateral body's three sides, each as the inward distance a
+    // point keeps from it — `sim_core::circulation::surface`'s own test.
+    const H3: f32 = 0.866_025_4;
+    let sides: [fn(Vec2) -> f32; 3] = [
+        |p| p.y,
+        |p| H3 * (BUILD_CELL_M - p.x) - 0.5 * p.y,
+        |p| H3 * p.x - 0.5 * p.y,
+    ];
+    let mut out = rectangle.to_vec();
+    for d in sides {
+        let poly = std::mem::take(&mut out);
+        for i in 0..poly.len() {
+            let a = poly[i];
+            let c = poly[(i + 1) % poly.len()];
+            let (da, dc) = (d(a), d(c));
+            if da >= 0.0 {
+                out.push(a);
+            }
+            if (da > 0.0 && dc < 0.0) || (da < 0.0 && dc > 0.0) {
+                out.push(a + (c - a) * (da / (da - dc)));
+            }
         }
     }
     out
 }
 fn circulation_into(b: &mut Buffers, shape: u8, at: Vec3) {
     let (patches, n) = sim_core::circulation::patches(shape);
+    // A triangle's flight is drawn about the triangle's centroid, as its
+    // body is ([`posed_transform`]).
+    let at = if shape == sim_core::build::SHAPE_STAIRS_TRI_SPIRAL {
+        at + TRI_CENTRE
+    } else {
+        at
+    };
     for patch in &patches[..n] {
         let dx = patch.x1 - patch.x0;
         let dz = patch.z1 - patch.z0;
@@ -4470,19 +4533,34 @@ fn circulation_into(b: &mut Buffers, shape: u8, at: Vec3) {
         }
     }
 }
-fn tri_frame_into(b: &mut Buffers, at: Vec3) {
-    let r = FRAME_RIM_M;
-    let diagonal = BUILD_CELL_M - r * std::f32::consts::SQRT_2 - r;
-    let outer = [
+/// The equilateral body's corners in its own frame — the first side along
+/// +x from the origin, the apex toward +z — as the patch helpers take them.
+fn tri_corners() -> [Vec2; 3] {
+    let h = BUILD_CELL_M * 0.5;
+    [
         Vec2::ZERO,
-        Vec2::new(0.0, BUILD_CELL_M),
+        Vec2::new(h, h * 3f32.sqrt()),
         Vec2::new(BUILD_CELL_M, 0.0),
-    ];
-    let inner = [
-        Vec2::splat(r),
-        Vec2::new(r, diagonal),
-        Vec2::new(diagonal, r),
-    ];
+    ]
+}
+
+/// What carries [`patch_slab`]'s cell-centred output to a triangle's
+/// centroid: the centroid stands an apothem off the first side, not half a
+/// cell.
+const TRI_CENTRE: Vec3 = Vec3::new(
+    0.0,
+    0.0,
+    BUILD_CELL_M * 0.5 - BUILD_CELL_M * 0.5 / 1.732_050_8,
+);
+
+fn tri_frame_into(b: &mut Buffers, at: Vec3) {
+    // The rim: each side's rail [`FRAME_RIM_M`] deep, the inner triangle the
+    // outer drawn in about the centroid by the rim over the apothem.
+    let r = FRAME_RIM_M;
+    let outer = tri_corners();
+    let c = (outer[0] + outer[1] + outer[2]) / 3.0;
+    let apothem = BUILD_CELL_M * 0.5 / 3f32.sqrt();
+    let inner = outer.map(|p| c + (p - c) * (1.0 - r / apothem));
     for i in 0..3 {
         let j = (i + 1) % 3;
         patch_slab(
@@ -4490,7 +4568,7 @@ fn tri_frame_into(b: &mut Buffers, at: Vec3) {
             &[outer[i], outer[j], inner[j], inner[i]],
             |_| 0.0,
             |_| -SLAB_T,
-            at,
+            at + TRI_CENTRE,
         );
     }
 }
