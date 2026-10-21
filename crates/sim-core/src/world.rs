@@ -3354,10 +3354,19 @@ impl World {
         {
             return Err(deploy::REFUSE_D_REACH);
         }
+        // The scatter as the seed draws it (`farm::ground_clear`).
+        let mut occ = crate::occupy::Occupants {
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &crate::occupy::Pristine,
+            cache: &mut self.slot_cache,
+            doors: self.card_door_bits,
+        };
         let (soil, y) = crate::farm::ground_ok(
             fc,
             self.seed,
             &self.haven,
+            &mut occ,
             &self.pieces,
             &self.deploys,
             &self.farm,
@@ -3382,7 +3391,9 @@ impl World {
 
     /// Seeds from eating (Rust's): what eating `item` leaves in the eater's
     /// hand, its row's `leaves_pm` of the time, rolled on the eater and the
-    /// tick. Into the pack, and what will not fit in a bag at the feet.
+    /// tick. Into the pack, sparing the held hotbar slot if the meal emptied
+    /// it (so the next click there eats or does nothing, never sows), and
+    /// what will not fit in a bag at the feet.
     fn leave_seed(&mut self, slot: usize, item: u16) {
         let Some(def) = self.survival.row(item) else {
             return;
@@ -3398,13 +3409,15 @@ impl World {
             return;
         }
         let mut spill = [ItemStack::default(); INV_SLOTS];
-        let added = crate::gather::inv_add_spilling(
+        let held = self.players[slot].frame.sel as usize;
+        let added = crate::gather::inv_add_spilling_sparing(
             &mut self.players[slot].inv,
             &mut spill,
             def.leaves,
             1,
             self.gather.stack_max_of(def.leaves),
             0,
+            held,
         );
         self.events.push(
             EV_GATHER,
@@ -6456,8 +6469,19 @@ impl World {
                             self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER
                         });
                     if planted {
-                        self.events
-                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_NOT_EMPTY, 0);
+                        // Only a hand that could lift it hears it is planted.
+                        let why = deploy::pick_up_hand(
+                            &self.pieces,
+                            &self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                        )
+                        .err()
+                        .unwrap_or(deploy::REFUSE_D_NOT_EMPTY);
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
                     } else if deploy {
                         deploy::pick_up(
                             &self.deploy,

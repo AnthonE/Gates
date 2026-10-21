@@ -669,6 +669,20 @@ fn a_planted_planter_refuses_pickup_and_a_broken_one_uproots() {
     }]);
     assert_eq!(refused(&w), Some(REFUSE_D_NOT_EMPTY));
     assert_eq!(w.deploys.len(), 1, "the planted planter came up");
+    // A hand out of reach is told so, not what is in it.
+    let near = w.players[0].body;
+    let (x, z) = cell_center(cx, cz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x + 12.0, z);
+    w.tick(&[Command::Demolish {
+        id: PLAYER,
+        deploy: true,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(refused(&w), Some(REFUSE_D_REACH));
+    w.players[0].body = near;
 
     let di = (0..w.deploys.len())
         .find(|&i| w.deploys.entries()[i].cx == cx && w.deploys.entries()[i].cz == cz)
@@ -743,6 +757,17 @@ fn a_save_round_trips_the_farm_and_refuses_a_bad_stage() {
     let at = n - sim_core::farm::PLANT_BYTES + 14;
     assert_eq!(buf[at], w.farm.entries()[2].stage);
     buf[at] = 9;
+    let (mut bad, _, _) = farm_world();
+    assert_eq!(
+        bad.load(&buf[..n]),
+        Err(sim_core::worldsave::WorldSaveError::BadPlant)
+    );
+    // Its stage put back and its spot (byte 12) moved onto the second
+    // plant's: two plants in one bed spot.
+    buf[at] = w.farm.entries()[2].stage;
+    let spot = n - sim_core::farm::PLANT_BYTES + 12;
+    assert_eq!(buf[spot], w.farm.entries()[2].spot);
+    buf[spot] = w.farm.entries()[1].spot;
     let (mut bad, _, _) = farm_world();
     assert_eq!(
         bad.load(&buf[..n]),
@@ -1388,8 +1413,30 @@ fn a_clone_pays_seeds_carrying_genes_and_kills_the_plant() {
 /// Whether the open ground at `(x, z)` would take a seed as far as the
 /// terrain and the build say, and what biome it is.
 fn site(w: &World, x: f32, z: f32) -> Result<(f32, sim_core::terrain::Biome), Ground> {
-    let y = ground_site(SEED, hv(SEED), w.pieces.cols(), x, z, || false)?;
+    let y = ground_y(w.pieces.cols(), x, z)?;
     Ok((y, sim_core::terrain::biome_at(SEED, y, x, z)))
+}
+
+/// [`ground_site`] with the island's scatter as the seed draws it, one
+/// cache a thread, as the shard's own `slot_cache` would answer.
+fn ground_y(cols: &sim_core::collide::ColIndex, x: f32, z: f32) -> Result<f32, Ground> {
+    use std::cell::RefCell;
+    thread_local! {
+        static CACHE: RefCell<Box<sim_core::occupy::SlotCache>> =
+            RefCell::new(Box::new(sim_core::occupy::SlotCache::new()));
+    }
+    let table = sim_core::terrain::ScatterTable::alpha_default();
+    CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let mut occ = sim_core::occupy::Occupants {
+            table: &table,
+            haven: hv(SEED),
+            harvested: &sim_core::occupy::Pristine,
+            cache: &mut cache,
+            doors: 0,
+        };
+        ground_site(SEED, hv(SEED), cols, &mut occ, x, z, || false)
+    })
 }
 
 /// The first point, scanned outward in rings of `step` metres from the
@@ -1556,12 +1603,19 @@ fn ground_that_is_not_soft_open_soil_refuses_a_seed() {
     assert_eq!(site(&w, x, z).err(), Some(Ground::Reserved));
     assert_eq!(refuse(&mut w, x, z), Some(REFUSE_D_PLANT_SOIL), "the town");
 
-    // The desert and the Verdigris: open land the soil table leaves out.
-    for (biome, what) in [(Biome::Desert, "the desert"), (Biome::Fel, "the Verdigris")] {
-        let (x, z) = scan(&w, 24.0, 160, |x, z| {
+    // The beach (the spawn zone), the highland, the desert and the
+    // Verdigris: open land that is not soft (`farm::SOFT_SOIL`), refused as
+    // the ground the client's ghost reads, not only by the soil table.
+    for (biome, what) in [
+        (Biome::Beach, "the beach"),
+        (Biome::Highland, "the highland"),
+        (Biome::Desert, "the desert"),
+        (Biome::Fel, "the Verdigris"),
+    ] {
+        let (x, z) = scan(&w, 6.0, 640, |x, z| {
             land(x, z)
                 && biome_at(SEED, sim_core::terrain::ground(SEED, hv(SEED), x, z), x, z) == biome
-                && site(&w, x, z).is_ok()
+                && site(&w, x, z).err() == Some(Ground::Barren(biome))
         });
         assert_eq!(refuse(&mut w, x, z), Some(REFUSE_D_PLANT_SOIL), "{what}");
     }
@@ -1595,6 +1649,61 @@ fn ground_that_is_not_soft_open_soil_refuses_a_seed() {
     w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x + 0.5, z);
     sow(&mut w, SEED_SLOT, x, z);
     assert_eq!(refused(&w), Some(REFUSE_D_PLANT_SOIL), "under a roof");
+    assert!(w.farm.is_empty(), "something sowed");
+}
+
+/// **The island's scatter refuses a seed** (`farm::ground_clear`): soft
+/// open ground inside a tree's trunk or an ore node, or beside a wild
+/// plant, is refused as a spot, felled, mined or picked or not.
+#[test]
+fn a_seed_never_sows_inside_a_trunk_or_a_node_or_on_a_wild_plant() {
+    use sim_core::terrain::{scatter, Occupant, ScatterTable, CELLS_PER_SIDE};
+    let (mut w, _, _) = farm_world();
+    let table = ScatterTable::alpha_default();
+    let find = |w: &World, want: &dyn Fn(Occupant) -> bool, dx: f32, ground: Ground| {
+        (0..CELLS_PER_SIDE * CELLS_PER_SIDE)
+            .map(|k| {
+                scatter(
+                    SEED,
+                    &table,
+                    hv(SEED),
+                    k % CELLS_PER_SIDE,
+                    k / CELLS_PER_SIDE,
+                )
+            })
+            .find(|s| want(s.occupant) && site(w, s.x + dx, s.z).err() == Some(ground))
+            .map(|s| (s.x + dx, s.z))
+            .unwrap_or_else(|| panic!("no {ground:?} fixture on the island"))
+    };
+    for (what, want, dx, ground) in [
+        (
+            "a trunk",
+            &(|o| o == Occupant::Tree) as &dyn Fn(Occupant) -> bool,
+            0.1,
+            Ground::Occupied,
+        ),
+        (
+            "an ore node",
+            &|o| matches!(o, Occupant::StoneNode | Occupant::MetalNode),
+            0.3,
+            Ground::Occupied,
+        ),
+        (
+            "a wild plant",
+            &|o| matches!(o, Occupant::BerryBush | Occupant::Hemp),
+            0.5,
+            Ground::Crowded,
+        ),
+    ] {
+        let (x, z) = find(&w, want, dx, ground);
+        stand_by(&mut w, x, z);
+        sow(&mut w, SEED_SLOT, x, z);
+        assert_eq!(
+            refused(&w),
+            Some(REFUSE_D_PLANT_SPOT),
+            "{what} at ({x}, {z})"
+        );
+    }
     assert!(w.farm.is_empty(), "something sowed");
 }
 
@@ -1937,6 +2046,12 @@ fn watered_meadow_corn_ripens_at_the_soils_pace_and_picks_two() {
     );
     assert_eq!(p.avg_pm(), 550);
     assert_eq!(p.flags & (FL_DRY | sim_core::farm::FL_CROSSED), 0);
+    // Ripe, it drinks no more: a skin is refused, not poured away.
+    assert_eq!(pour(&mut w, id), Some(REFUSE_D_PLANT_STAGE));
+    assert_eq!(
+        w.players[0].inv[HAND].item, SKIN_FULL,
+        "a ripe plant spent the skin"
+    );
     w.tick(&[Command::Tend {
         id: PLAYER,
         plant: id,
@@ -2403,6 +2518,40 @@ fn eating_corn_leaves_one_corn_seed() {
             .iter()
             .any(|s| s.item == SEED_ITEM && s.count == 1 && s.cond == 0),
         "the seed is a blank seed, beside the full stack"
+    );
+}
+
+/// **The last cob in the held slot leaves its seed elsewhere**: the next
+/// click on that slot must not sow what the meal left.
+#[test]
+fn a_seed_from_the_last_meal_in_hand_spares_the_held_slot() {
+    let mut w = eat_world();
+    for (k, s) in w.players[0].inv.iter_mut().enumerate() {
+        if k != SEED_SLOT {
+            *s = ItemStack::default();
+        }
+    }
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    // The first empty slot, held, with the last cob in it.
+    w.players[0].inv[0] = ItemStack {
+        item: CORN,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = 0;
+    let seeds = held(&w, SEED_ITEM);
+    w.tick(&[Command::Consume {
+        id: PLAYER,
+        slot: 0,
+    }]);
+    assert_eq!(held(&w, CORN), 0, "the cob was eaten");
+    assert_eq!(held(&w, SEED_ITEM), seeds + 1, "its seed was left");
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack::default(),
+        "the seed went into the held slot"
     );
 }
 

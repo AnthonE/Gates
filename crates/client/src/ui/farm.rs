@@ -20,8 +20,8 @@ pub enum PlantAim {
     None,
     /// A free spot in a planter's bed.
     Bed,
-    /// Open ground the ghost finds soft. Its soil is content, so whether
-    /// the biome grows anything stays the sim's to say.
+    /// Open ground the ghost finds soft: the sim's own ground rules,
+    /// its soft biomes (`farm::SOFT_SOIL`) and its scatter's included.
     Ground,
     /// Open ground the sim would refuse, and why, in the line's words.
     No(&'static str),
@@ -29,11 +29,18 @@ pub enum PlantAim {
 
 /// How a [`Ground`] refusal reads on the planting line.
 pub fn ground_words(g: Ground) -> &'static str {
+    use sim_core::terrain::Biome;
     match g {
         Ground::Road => "ON THE ROAD",
         Ground::Roofed => "UNDER A ROOF",
         Ground::Water => "TOO WET",
-        Ground::Reserved | Ground::Claimed | Ground::Steep | Ground::Built => "TOO STONY",
+        Ground::Barren(Biome::Beach | Biome::Desert) => "TOO SANDY",
+        Ground::Barren(Biome::Fel) => "TOO SOUR",
+        Ground::Occupied => "IN THE WAY",
+        Ground::Crowded => "TOO CLOSE",
+        Ground::Reserved | Ground::Claimed | Ground::Steep | Ground::Built | Ground::Barren(_) => {
+            "TOO STONY"
+        }
     }
 }
 
@@ -50,20 +57,22 @@ pub struct GroundSpot {
 /// The open ground a seed in hand would go into: the look ray's hit on the
 /// terrain at `hit` (planar), quantized as the wire carries it, with the
 /// verdict — the sim's own ground rules ([`ground_site`]: road, reserve,
-/// slope, roof, what is built there, with no claim, which the wire never
-/// carries) and the spacing to the ground plants in `plants`. `None` past a
-/// hand's reach of `eye`.
+/// slope, the soft biomes, roof, what is built there, the island's scatter
+/// in `occ`, with no claim, which the wire never carries) and the spacing
+/// to the ground plants in `plants`. `None` past a hand's reach of `eye`.
+/// `occ` carries `occupy::Pristine` (the scatter as the seed draws it).
 pub fn ground_target(
     seed: u64,
     haven: &sim_core::terrain::Haven,
     cols: &sim_core::collide::ColIndex,
+    occ: &mut sim_core::occupy::Occupants<'_>,
     eye: (f32, f32, f32),
     hit: (f32, f32),
     plants: &[WirePlant],
 ) -> Option<GroundSpot> {
     let q = (quant_xz(hit.0), quant_xz(hit.1));
     let (x, z) = (q.0 as f32 * POS_XZ_Q, q.1 as f32 * POS_XZ_Q);
-    let site = ground_site(seed, haven, cols, x, z, || false);
+    let site = ground_site(seed, haven, cols, occ, x, z, || false);
     let y = match site {
         Ok(y) => y,
         Err(_) => sim_core::terrain::ground(seed, haven, x, z),
@@ -343,7 +352,16 @@ mod tests {
         let seed = 0x0FEE_0FEE;
         let haven = sim_core::terrain::haven(seed);
         let cols = sim_core::collide::ColIndex::new();
-        let find = |want: &dyn Fn(f32, f32) -> bool| {
+        let table = sim_core::terrain::ScatterTable::alpha_default();
+        let mut cache = Box::new(sim_core::occupy::SlotCache::new());
+        let mut occ = sim_core::occupy::Occupants {
+            table: &table,
+            haven: &haven,
+            harvested: &sim_core::occupy::Pristine,
+            cache: &mut cache,
+            doors: 0,
+        };
+        let find = |want: &mut dyn FnMut(f32, f32) -> bool| {
             (0..40_000)
                 .map(|k| {
                     (
@@ -354,11 +372,12 @@ mod tests {
                 .find(|&(x, z)| want(x, z))
                 .expect("a fixture point")
         };
-        let (x, z) = find(&|x, z| ground_site(seed, &haven, &cols, x, z, || false).is_ok());
+        let (x, z) =
+            find(&mut |x, z| ground_site(seed, &haven, &cols, &mut occ, x, z, || false).is_ok());
         let y = sim_core::terrain::ground(seed, &haven, x, z);
         let eye = (x, y + 1.6, z + 1.0);
         let GroundSpot { q, at, aim } =
-            ground_target(seed, &haven, &cols, eye, (x, z), &[]).expect("in reach");
+            ground_target(seed, &haven, &cols, &mut occ, eye, (x, z), &[]).expect("in reach");
         assert_eq!(q, (quant_xz(x), quant_xz(z)));
         assert!((at.0 - x).abs() < POS_XZ_Q && (at.2 - z).abs() < POS_XZ_Q);
         assert_eq!(aim, PlantAim::Ground);
@@ -367,22 +386,52 @@ mod tests {
             spot: sim_core::farm::SPOT_GROUND,
             ..plant_at(0, x + 0.3, y, z)
         };
-        let got = ground_target(seed, &haven, &cols, eye, (x, z), &[near]).map(|t| t.aim);
+        let got = ground_target(seed, &haven, &cols, &mut occ, eye, (x, z), &[near]).map(|t| t.aim);
         assert_eq!(got, Some(PlantAim::No("TOO CLOSE")));
         let bed = plant_at(0, x + 0.3, y, z);
-        let got = ground_target(seed, &haven, &cols, eye, (x, z), &[bed]).map(|t| t.aim);
+        let got = ground_target(seed, &haven, &cols, &mut occ, eye, (x, z), &[bed]).map(|t| t.aim);
         assert_eq!(got, Some(PlantAim::Ground));
         // Past a hand's reach: no ghost.
         let far = (x, y + 1.6, z + 4.0);
-        assert!(ground_target(seed, &haven, &cols, far, (x, z), &[]).is_none());
+        assert!(ground_target(seed, &haven, &cols, &mut occ, far, (x, z), &[]).is_none());
         // The road says so.
-        let (x, z) = find(&|x, z| {
+        let (x, z) = find(&mut |x, z| {
             sim_core::terrain::ground(seed, &haven, x, z) >= LAND_MIN_H
                 && road_band(seed, &haven, x, z) == RoadBand::Carriageway
         });
         let y = sim_core::terrain::ground(seed, &haven, x, z);
-        let got = ground_target(seed, &haven, &cols, (x, y + 1.6, z + 1.0), (x, z), &[]);
+        let got = ground_target(
+            seed,
+            &haven,
+            &cols,
+            &mut occ,
+            (x, y + 1.6, z + 1.0),
+            (x, z),
+            &[],
+        );
         assert_eq!(got.map(|t| t.aim), Some(PlantAim::No("ON THE ROAD")));
+        // The beach (the spawn zone) is no soft ground, as the sim says.
+        let (x, z) = find(&mut |x, z| {
+            let y = sim_core::terrain::ground(seed, &haven, x, z);
+            y >= LAND_MIN_H
+                && road_band(seed, &haven, x, z) == RoadBand::Off
+                && sim_core::terrain::biome_at(seed, y, x, z) == sim_core::terrain::Biome::Beach
+                && matches!(
+                    ground_site(seed, &haven, &cols, &mut occ, x, z, || false),
+                    Err(Ground::Barren(_))
+                )
+        });
+        let y = sim_core::terrain::ground(seed, &haven, x, z);
+        let got = ground_target(
+            seed,
+            &haven,
+            &cols,
+            &mut occ,
+            (x, y + 1.6, z + 1.0),
+            (x, z),
+            &[],
+        );
+        assert_eq!(got.map(|t| t.aim), Some(PlantAim::No("TOO SANDY")));
     }
 
     /// A bed plant is in sight when its planter is, and never without one;

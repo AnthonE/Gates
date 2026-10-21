@@ -3507,6 +3507,42 @@ pub fn lock_op(
     None
 }
 
+/// Whether `p`'s hand may lift the deployable at the address, before
+/// anything about what is in it: one stands there, it is no world fixture,
+/// it is within build reach, in no one else's claim, and its lock passes
+/// the hand. Its index, or the `REFUSE_D_*` [`pick_up`] would say. Asked
+/// first by every pick-up, so an empty-or-not rule never answers a hand
+/// that could not have lifted it anyway.
+pub fn pick_up_hand(
+    pieces: &Pieces,
+    deploys: &Deploys,
+    p: &Player,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> Result<usize, u32> {
+    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
+        return Err(REFUSE_D_SPOT);
+    };
+    if deploys.entries[i].owner == WORLD_OWNER {
+        return Err(REFUSE_D_OWNER);
+    }
+    let (ax, az) = deploys.entries[i].xz();
+    let (px, pz) = player_xz(p);
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
+        return Err(REFUSE_D_REACH);
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        return Err(REFUSE_D_CLAIM);
+    }
+    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
+        return Err(REFUSE_D_OWNER);
+    }
+    Ok(i)
+}
+
 /// Take a deployable back up and return its item — **pickup v1**
 /// (`reference/BUILDING.md` §7 verb 11, and `DOORS.md` §7 verb 9, which
 /// are the same verb seen from two documents).
@@ -3549,29 +3585,14 @@ pub fn pick_up(
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
 ) {
-    let Some(i) = deploys.find_index(cx, cz, level, loc) else {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
-        return;
+    let i = match pick_up_hand(pieces, deploys, p, cx, cz, level, loc) {
+        Ok(i) => i,
+        Err(why) => {
+            events.push(EV_DEPLOY_REFUSED, p.id, why, 0);
+            return;
+        }
     };
-    if deploys.entries[i].owner == WORLD_OWNER {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
-    }
     let (ax, az) = deploys.entries[i].xz();
-    let (px, pz) = player_xz(p);
-    let (dx, dz) = (ax - px, az - pz);
-    if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
-        return;
-    }
-    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_CLAIM, 0);
-        return;
-    }
-    if !deploys.locks.passes_full(cx, cz, level, loc, p.id) {
-        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
-    }
     let rec = deploys.entries[i];
     let def = dc.defs[rec.row as usize];
     // A vending machine comes up only for the hands it answers to: on open

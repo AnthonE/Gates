@@ -5308,6 +5308,7 @@ fn the_shipped_farm_bakes_to_its_numbers() {
     assert_eq!(fc.crop_of_item(corn.seed), Some(0));
     assert_eq!((fc.good_gene_pm, fc.bad_w_pm), (500, 500));
     assert_eq!((fc.g_pct, fc.y_pct, fc.h_pct, fc.w_pct), (10, 10, 10, 25));
+    assert_eq!(fc.clone_y_per, 2);
     // The open ground: meadow and forest take a seed, nothing else does.
     use sim_core::terrain::Biome;
     let mut soil = [0u16; sim_core::terrain::BIOMES];
@@ -5381,6 +5382,44 @@ fn a_farm_soil_off_the_biomes_or_a_ground_too_small_to_water_is_refused() {
         "ground_water = 1800",
         "ground_water = 800",
         "quarter skin",
+    );
+    // The soil names exactly the sim's soft biomes (`farm::SOFT_SOIL`),
+    // which the client's planting ghost reads: no more, no fewer.
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 550, forest = 450, beach = 100 }",
+        "is not soft ground",
+    );
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 550 }",
+        "forest is soft ground",
+    );
+}
+
+/// A skin pours whole and turns into another item: a full skin and an empty
+/// one are two items and neither stacks, and a clone's Y bonus has a step.
+#[test]
+fn a_farm_skin_that_stacks_or_pours_into_itself_is_refused() {
+    refuses(
+        "cooking.toml",
+        "emptied = \"item.waterskin\"",
+        "emptied = \"item.waterskin_full\"",
+        "would leave the skin full",
+    );
+    refuses(
+        "items.toml",
+        "id = \"item.waterskin_full\"\nname = \"Full Waterskin\"\nstack = 1",
+        "id = \"item.waterskin_full\"\nname = \"Full Waterskin\"\nstack = 5",
+        "not 1",
+    );
+    refuses(
+        "cooking.toml",
+        "clone_y_per = 2",
+        "clone_y_per = 0",
+        "clone_y_per must be above 0",
     );
 }
 

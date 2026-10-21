@@ -2,7 +2,9 @@
 //! crosshair draw a translucent sprout on the free bed spot the click would
 //! plant; with no planter aimed, on the open ground the look ray meets in
 //! reach — green where the ground is soft, red with the reason where the
-//! sim's own ground rules refuse it (`ui::farm::ground_target`). The left
+//! sim's own ground rules refuse it (`ui::farm::ground_target`: the road,
+//! the slope, a roof, a biome that is not soft, a trunk or a wild plant in
+//! the way). The left
 //! click plants it (`ACT_PLANT`, the held slot on the wire). Which spot is
 //! `ui::farm`'s arithmetic; whether it may is the sim's verdict, refused in
 //! words (`ui::refusals`). Nothing is predicted.
@@ -50,6 +52,7 @@ pub fn plant_ghost(
     reports: Option<Res<super::report::Reports>>,
     mut toast: ResMut<Toast>,
     mut said: ResMut<PlantAimed>,
+    mut cache: Local<Box<sim_core::occupy::SlotCache>>,
     mut ghost: Query<
         (
             &mut Transform,
@@ -127,11 +130,21 @@ pub fn plant_ghost(
                 [x, y, z],
                 crate::ui::place::AIM_STEP_M,
             );
+            // The island's scatter as the seed draws it, the sim's own
+            // ground test (`farm::ground_clear`), off this system's cache.
+            let mut occ = sim_core::occupy::Occupants {
+                table: &w.table,
+                haven: &w.haven,
+                harvested: &sim_core::occupy::Pristine,
+                cache: &mut cache,
+                doors: 0,
+            };
             match aim.met {
                 crate::ui::place::Met::Ground => crate::ui::farm::ground_target(
                     w.seed,
                     &w.haven,
                     core.pieces.cols(),
+                    &mut occ,
                     eye,
                     aim.at,
                     core.plants.entries(),

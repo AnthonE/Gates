@@ -921,6 +921,38 @@ pub fn inv_add_spilling_skinned(
     added
 }
 
+/// [`inv_add_spilling`], sparing slot `spare` while it is empty: what tops
+/// up a matching stack does so anywhere, a fresh stack takes the first
+/// other empty slot, and only what still has nowhere to go takes `spare`,
+/// then the spill. For a payout into the hand that just emptied (a seed
+/// left by the last of a meal in the held hotbar slot), so the next click
+/// does not do something else with what it finds there. Deterministic, no
+/// allocation: the spared slot is masked for the first pass and put back.
+pub fn inv_add_spilling_sparing(
+    inv: &mut [ItemStack; INV_SLOTS],
+    spill: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    amount: u16,
+    stack_max: u16,
+    cond: u16,
+    spare: usize,
+) -> u16 {
+    let masked = spare < INV_SLOTS && inv[spare].count == 0;
+    if !masked {
+        return inv_add_spilling(inv, spill, item, amount, stack_max, cond);
+    }
+    let held = inv[spare];
+    // A placeholder no payout tops up: no item has this index.
+    inv[spare] = ItemStack {
+        item: NO_ITEM,
+        count: 1,
+        ..ItemStack::default()
+    };
+    let first = inv_add(inv, item, amount, stack_max, cond);
+    inv[spare] = held;
+    first + inv_add_spilling(inv, spill, item, amount - first, stack_max, cond)
+}
+
 /// How long a respawn held back by a base standing over the slot waits
 /// before asking again: five minutes at 30 Hz.
 pub const RESPAWN_RETRY_TICKS: u64 = 9_000;

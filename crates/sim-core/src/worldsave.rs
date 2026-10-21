@@ -534,7 +534,9 @@ impl WorldSaveError {
             Self::BadExposure => "a body is wetter or colder than a body can be",
             Self::BadSlotLife => "a felled slot claims to be regrowing too",
             Self::BadWork => "a work claims a state past lit, or a dial a notch past ten",
-            Self::BadPlant => "a plant names an impossible crop, stage, spot or id",
+            Self::BadPlant => {
+                "a plant names an impossible crop, stage, spot or id, or a place another holds"
+            }
         }
     }
 }
@@ -1965,7 +1967,20 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let mut b = [0u8; crate::farm::PLANT_BYTES];
         b.copy_from_slice(r.take(crate::farm::PLANT_BYTES)?);
         let p = crate::farm::unpack(&b);
-        if !plant_ok(&p, next_plant) || plants[..k].iter().any(|q| q.id == p.id) {
+        // One plant to an id, and one to a place: a bed spot holds one
+        // plant (`farm::plant_bed` refuses a taken spot), and so does a
+        // ground point (the spacing `farm::ground_ok` keeps).
+        if !plant_ok(&p, next_plant)
+            || plants[..k].iter().any(|q| {
+                q.id == p.id
+                    || (q.host == p.host
+                        && if p.host == crate::farm::HOST_GROUND {
+                            (q.qx, q.qz) == (p.qx, p.qz)
+                        } else {
+                            q.spot == p.spot
+                        })
+            })
+        {
             return Err(WorldSaveError::BadPlant);
         }
         plants[k] = p;

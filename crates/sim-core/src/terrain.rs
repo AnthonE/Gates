@@ -7051,10 +7051,13 @@ pub enum Occupant {
     /// pressed against it (`world::CACTUS_HP`). Drawn from a shrub cell
     /// after the draw is settled, so no other cell moves for it.
     Cactus = 28,
-    /// Wild corn: a shrub by a lake — on its shore or in the meadow or
-    /// forest behind it — that rolled [`WILD_CORN_PERMILLE`] ([`plant_of`]). Picked by hand with `E` for
-    /// corn and a seed (`gather.wild_corn`), so the crop has a wild source
-    /// the way hemp does. Passable.
+    /// Wild corn: a shrub by a lake's fresh water ([`plant_of`]) that
+    /// rolled [`WILD_CORN_PERMILLE`]. A lake's shore lies under
+    /// [`BEACH_MAX_H`], so nearly every one stands on a lake's edge in the
+    /// Beach biome (measured: 59 on three seeds, 58 Beach, one Meadow; 55
+    /// with fresh water the nearest water). Picked by hand with `E` for corn
+    /// and a seed (`gather.wild_corn`), so the crop has a wild source the
+    /// way hemp does. Passable.
     WildCorn = 29,
     /// A wild pumpkin vine, [`WildCorn`]'s neighbour by the water
     /// (`gather.wild_pumpkin`).
@@ -7206,11 +7209,14 @@ fn fresh_water_near<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> bool {
 /// so the roll that put a plant there and the roll that says which plant are
 /// independent, and every cell that held a bush still holds a plant.
 ///
-/// A shrub at (`x`, `z`) by a lake, on its shore (Beach) or in the meadow or
-/// forest behind it, may grow as wild corn or a wild pumpkin instead: the
-/// same hash's high bits, an independent roll, taken only on the scenery
-/// remainder, so no berry bush, hemp or pickup moves for it. The sea's
-/// beaches never qualify: their water is open (`fresh_water_near`).
+/// A Beach, Meadow or Forest shrub at (`x`, `z`) with a lake's fresh water
+/// in reach ([`fresh_water_near`]) may grow as wild corn or a wild pumpkin
+/// instead: the same hash's high bits, an independent roll, taken only on
+/// the scenery remainder, so no berry bush, hemp or pickup moves for it.
+/// Since a lake's shore is Beach and its meadow starts past the reach,
+/// they grow on lake shores; the sea's water is open and never counts, so
+/// a sea beach grows one only where a lake lies within reach of it too
+/// (`tests/wild_crops.rs` pins the census).
 pub fn plant_of(seed: u64, cell_x: i32, cell_z: i32, x: f32, z: f32, b: Biome) -> Occupant {
     plant_in(&mut Direct, seed, cell_x, cell_z, x, z, b)
 }

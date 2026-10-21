@@ -1,7 +1,8 @@
 //! Wild corn and pumpkin (`terrain::Occupant::WildCorn`, `WildPumpkin`):
-//! drawn only out of a shrub with a lake near — on its shore or in the
-//! meadow or forest behind it — so the two crops have a wild source the way
-//! hemp does.
+//! drawn only out of a shrub with a lake's fresh water near, so the two
+//! crops have a wild source the way hemp does. A lake's shore lies under
+//! `BEACH_MAX_H`, so they stand almost all on lake shores in the Beach
+//! biome, never by the sea alone and never in the dry biomes.
 
 use sim_core::terrain::{self, Biome, Occupant, ScatterTable, Slot, CELLS_PER_SIDE, SEA_LEVEL};
 
@@ -76,4 +77,28 @@ fn wild_crops_grow_by_fresh_water_and_nowhere_dry() {
             s.z
         );
     }
+}
+
+/// **The census, pinned**: how many of each grow on seed 42's island, and
+/// where. Measured (2026-10-21, three seeds): a lake's shore lies under
+/// `BEACH_MAX_H`, so nearly every wild crop stands in the Beach biome on a
+/// lake's edge with fresh water the nearest water to it, and the meadow
+/// behind starts past the reach. A change to the rule, the shares or the
+/// lakes moves these numbers; if it was meant, re-measure and re-pin.
+#[test]
+fn the_wild_crop_census_is_pinned() {
+    let found = wild(SEED);
+    let corn = found
+        .iter()
+        .filter(|(s, _)| s.occupant == Occupant::WildCorn)
+        .count();
+    let mut by_biome = [0usize; terrain::BIOMES];
+    for (_, b) in &found {
+        by_biome[*b as usize] += 1;
+    }
+    assert_eq!(
+        (corn, found.len() - corn, by_biome),
+        (15, 8, [23, 0, 0, 0, 0, 0]),
+        "(corn, pumpkin, by biome: beach meadow forest highland desert fel)"
+    );
 }

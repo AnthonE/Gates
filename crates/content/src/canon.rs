@@ -511,6 +511,7 @@ pub fn hash(c: &Content) -> u64 {
         fm.y_pct,
         fm.h_pct,
         fm.w_pct,
+        fm.clone_y_per,
         fm.ground_water,
         fm.ground_rain,
         fm.catcher_water,

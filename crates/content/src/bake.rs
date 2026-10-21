@@ -1618,6 +1618,15 @@ impl Content {
         fc.y_pct = pct(f.y_pct, "y_pct")?;
         fc.h_pct = pct(f.h_pct, "h_pct")?;
         fc.w_pct = pct(f.w_pct, "w_pct")?;
+        fc.clone_y_per = u8::try_from(f.clone_y_per)
+            .ok()
+            .filter(|&v| v > 0)
+            .ok_or_else(|| {
+                format!(
+                    "bake: farm clone_y_per {} is not within 1..=255",
+                    f.clone_y_per
+                )
+            })?;
         fc.ground_cap_wu = ticks(f.ground_water, "ground_water")?;
         fc.ground_rain_wu_s = ticks(f.ground_rain, "ground_rain")?;
         fc.catcher_cap_wu = ticks(f.catcher_water, "catcher_water")?;

@@ -365,6 +365,9 @@ g_pct = 10
 y_pct = 10
 h_pct = 10
 w_pct = 25
+# A clone cut pays its crop's `clones`, and one more seed for every
+# `clone_y_per` Y genes (Rust's two).
+clone_y_per = 2
 # The open ground (Rust's fallback to a planter): a ground plant holds
 # `ground_water` plant-seconds of its own and banks `ground_rain` a second
 # in full rain. Its pace at best is its biome's soil, per mille; a biome

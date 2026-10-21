@@ -2347,9 +2347,27 @@ pub fn structural(c: &Content) -> Result<(), String> {
     let fm = &c.farm;
     let item_of = |id: &str| c.items.iter().find(|i| i.id == id);
     for (what, id) in [("water", &fm.water), ("emptied", &fm.emptied)] {
-        if item_of(id).is_none() {
+        let Some(it) = item_of(id) else {
             return Err(format!("farm: {what} `{id}` is not an item"));
+        };
+        // One skin's water is one skin: a stack of full skins would turn
+        // whole for one skin's pour (a tend, a planter's slot, a catcher's
+        // fill rewrite the stack's item, not one of it).
+        if it.stack != 1 {
+            return Err(format!(
+                "farm: {what} `{id}` stacks to {}, not 1: a pour empties the whole stack",
+                it.stack
+            ));
         }
+    }
+    if fm.water == fm.emptied {
+        return Err(format!(
+            "farm: water and emptied are both `{}`: a pour would leave the skin full",
+            fm.water
+        ));
+    }
+    if fm.clone_y_per == 0 {
+        return Err("farm: clone_y_per must be above 0".to_string());
     }
     if fm.stage_pct.contains(&0) {
         return Err("farm: every stage_pct share must be above 0".to_string());
@@ -2385,6 +2403,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         if *v > 1000 {
             return Err(format!("farm: soil `{biome}` {v} is past 1000 per mille"));
+        }
+    }
+    // The sim refuses a seed outside the soft biomes and the client's
+    // planting ghost reads the same table (`sim_core::farm::SOFT_SOIL`), so
+    // the soil names exactly those, each above 0: a soft biome at 0 would
+    // draw a green ghost the sim refuses, and any other biome could never
+    // be sown.
+    for (b, name) in sim_core::terrain::BIOME_NAMES.iter().enumerate() {
+        let soft = sim_core::farm::SOFT_SOIL[b];
+        let pm = fm.soil.get(*name).copied().unwrap_or(0);
+        if soft != (pm > 0) {
+            return Err(format!(
+                "farm: soil `{name}` is {pm}, but {name} is {}soft ground (sim_core::farm::SOFT_SOIL)",
+                if soft { "" } else { "not " }
+            ));
         }
     }
     // A ground plant that soil takes must be one a skin can water: a pour

@@ -669,6 +669,9 @@ pub struct FarmContent {
     pub y_pct: u8,
     pub h_pct: u8,
     pub w_pct: u8,
+    /// A clone cut pays one more seed for every this many Y genes (Rust's
+    /// two). Never 0 (validate).
+    pub clone_y_per: u8,
     /// The open ground's soil per biome (`terrain::Biome` order), per
     /// mille: a ground plant's pace at best. 0 refuses a seed there.
     pub soil_pm: [u16; crate::terrain::BIOMES],
@@ -711,6 +714,7 @@ impl FarmContent {
         y_pct: 0,
         h_pct: 0,
         w_pct: 0,
+        clone_y_per: 2,
         soil_pm: [0; crate::terrain::BIOMES],
         ground_cap_wu: 0,
         ground_rain_wu_s: 0,
@@ -750,6 +754,7 @@ impl FarmContent {
         f.y_pct = 10;
         f.h_pct = 10;
         f.w_pct = 25;
+        f.clone_y_per = 2;
         f.soil_pm[crate::terrain::Biome::Meadow as usize] = 550;
         f.soil_pm[crate::terrain::Biome::Forest as usize] = 450;
         f.ground_cap_wu = 1800 * hz;
@@ -1222,7 +1227,41 @@ pub enum Ground {
     Roofed,
     /// Something built stands over the point.
     Built,
+    /// The biome's ground is not soft ([`soft_soil`]): beach sand, highland
+    /// granite, desert, the Verdigris's ash.
+    Barren(crate::terrain::Biome),
+    /// Something solid the island scattered stands on the point: a trunk,
+    /// an ore node, a rock or boulder, a cactus, a crate.
+    Occupied,
+    /// A wild plant or a pickup the island scattered stands too close: two
+    /// things to pick where the hand would pick one.
+    Crowded,
 }
+
+/// Whether a biome's open ground is soft enough to take a seed: the meadow
+/// and the forest (Rust's grass and dirt). The sim refuses a seed anywhere
+/// else, and the client's planting ghost reads the same table, so the two
+/// cannot disagree about it. How fast a soft biome grows is content
+/// (`cooking.toml` `[farm] soil`), which names exactly these biomes.
+pub const SOFT_SOIL: [bool; crate::terrain::BIOMES] = {
+    let mut t = [false; crate::terrain::BIOMES];
+    t[crate::terrain::Biome::Meadow as usize] = true;
+    t[crate::terrain::Biome::Forest as usize] = true;
+    t
+};
+
+/// [`SOFT_SOIL`] for one biome.
+pub const fn soft_soil(b: crate::terrain::Biome) -> bool {
+    SOFT_SOIL[b as usize]
+}
+
+/// The volume a sown seed must find clear of the island's solid scatter,
+/// `(radius, height)` metres: a sprout, shorter than a step so a rock
+/// whose top it would stand inside is not stepped over.
+pub const GROUND_SOLID_R_M: f32 = 0.1;
+pub const GROUND_SOLID_H_M: f32 = 0.3;
+const _: () = assert!(GROUND_SOLID_R_M <= crate::collide::CAPSULE_RADIUS_M);
+const _: () = assert!(GROUND_SOLID_H_M < crate::movement::STEP_UP);
 
 /// How far around a point an authored site's reserve refuses a seed, m.
 pub const GROUND_RESERVE_M: f32 = 0.5;
@@ -1246,16 +1285,19 @@ const _: () = {
 
 /// The soil height at `(x, z)` if the ground there could take a seed:
 /// above the land line, off the road, outside every authored site, not in a
-/// claim `foreign` says is someone else's, no steeper than a foundation, and
-/// open to the sky with nothing built over it. Cheapest first; the claim is
-/// asked only of ground the sea, the roads and the sites leave. The sim
-/// ([`ground_ok`]) and the client's planting ghost both ask this, so the
-/// two cannot disagree about the ground; the client has no crew lists and
-/// answers `foreign` with `false`.
+/// claim `foreign` says is someone else's, no steeper than a foundation, in
+/// a soft biome ([`soft_soil`]), open to the sky with nothing built over
+/// it, and clear of the island's scatter ([`ground_clear`]). Cheapest
+/// first; the claim is asked only of ground the sea, the roads and the
+/// sites leave. The sim ([`ground_ok`]) and the client's planting ghost both
+/// ask this, so the two cannot disagree about the ground; the client has no
+/// crew lists and answers `foreign` with `false`. `occ` is the scatter, read
+/// as the seed draws it ([`ground_clear`]).
 pub fn ground_site(
     seed: u64,
     haven: &crate::terrain::Haven,
     cols: &crate::collide::ColIndex,
+    occ: &mut crate::occupy::Occupants<'_>,
     x: f32,
     z: f32,
     foreign: impl FnOnce() -> bool,
@@ -1277,9 +1319,63 @@ pub fn ground_site(
     if terrain::ground_slope(seed, haven, x, z) >= crate::build::FOUNDATION_MAX_SLOPE {
         return Err(Ground::Steep);
     }
+    let biome = terrain::biome_at(seed, y, x, z);
+    if !soft_soil(biome) {
+        return Err(Ground::Barren(biome));
+    }
     ground_cover(seed, haven, cols, x, z, y)?;
+    ground_clear(seed, occ, x, z, y)?;
     Ok(y)
 }
+
+/// Whether the soil at `(x, z)`, height `y`, is clear of what the island
+/// scattered: nothing solid stands on it ([`Ground::Occupied`]: a trunk, a
+/// node, a rock or boulder, a cactus, the collision volumes a body meets,
+/// for a sprout's [`GROUND_SOLID_R_M`] × [`GROUND_SOLID_H_M`]), and no wild
+/// plant or pickup is close enough that its pick volume and the plant's
+/// would overlap, [`GROUND_SPACING_M`] at least ([`Ground::Crowded`]). The
+/// scatter is read as the seed draws it, whatever has been felled, mined or
+/// picked, because a tree regrows, a node respawns and a plant comes back
+/// where it stood: the caller hands `occ` `occupy::Pristine` for its
+/// harvest state, on the shard and on the client alike.
+pub fn ground_clear(
+    seed: u64,
+    occ: &mut crate::occupy::Occupants<'_>,
+    x: f32,
+    z: f32,
+    y: f32,
+) -> Result<(), Ground> {
+    use crate::terrain::{CELL_SIZE, OCCUPANT_PROBE_CELLS};
+    if occ.blocks_volume(seed, x, z, y, GROUND_SOLID_R_M, GROUND_SOLID_H_M) {
+        return Err(Ground::Occupied);
+    }
+    let pcx = crate::fmath::floor_i32(x / CELL_SIZE);
+    let pcz = crate::fmath::floor_i32(z / CELL_SIZE);
+    for dz in -OCCUPANT_PROBE_CELLS..=OCCUPANT_PROBE_CELLS {
+        for dx in -OCCUPANT_PROBE_CELLS..=OCCUPANT_PROBE_CELLS {
+            let s = occ
+                .cache
+                .slot(seed, occ.table, occ.haven, pcx + dx, pcz + dz);
+            if !crate::gather::pickable(s.occupant) {
+                continue;
+            }
+            let (r, _) = crate::melee::slot_swing_volume(&s);
+            let gap = (r * s.scale + PLANT_PICK_R_M).max(GROUND_SPACING_M);
+            let (ddx, ddz) = (s.x - x, s.z - z);
+            if ddx * ddx + ddz * ddz < gap * gap {
+                return Err(Ground::Crowded);
+            }
+        }
+    }
+    Ok(())
+}
+
+// The 3x3 ring holds every pickable a gap can reach: the widest pick
+// volume, scaled, plus a plant's, is far under a cell.
+const _: () = assert!(
+    crate::melee::BUSH_SWING_R_M * crate::terrain::SLOT_SCALE_MAX + PLANT_PICK_R_M
+        < crate::terrain::CELL_SIZE
+);
 
 /// Whether the soil at `(x, z)`, height `y`, is open: no roof over it
 /// ([`Ground::Roofed`]) and nothing built on it ([`Ground::Built`]) — a
@@ -1309,8 +1405,10 @@ pub fn ground_cover(
 }
 
 /// Whether `owner` may sow the open ground at `(x, z)` (`Command::Plant`
-/// on [`HOST_GROUND`]): [`ground_site`] with the hearths' claims, then the
-/// biome's soil (`FarmContent::soil_pm`, 0 refuses), the spacing to the
+/// on [`HOST_GROUND`]): [`ground_site`] with the hearths' claims (the
+/// scatter in the way or too near refuses `REFUSE_D_PLANT_SPOT`, the rest of
+/// the ground `REFUSE_D_PLANT_SOIL`), then the biome's soil
+/// (`FarmContent::soil_pm`, 0 refuses), the spacing to the
 /// nearest ground plant ([`GROUND_SPACING_M`]) and the caps
 /// (`limits::MAX_GROUND_PLANTS`, `MAX_GROUND_PLANTS_PER_OWNER`). Returns the
 /// soil and its height, or a `REFUSE_D_*`. Noise taps run here, on the
@@ -1320,6 +1418,7 @@ pub fn ground_ok(
     fc: &FarmContent,
     seed: u64,
     haven: &crate::terrain::Haven,
+    occ: &mut crate::occupy::Occupants<'_>,
     pieces: &crate::build::Pieces,
     deploys: &Deploys,
     farm: &Farm,
@@ -1329,13 +1428,16 @@ pub fn ground_ok(
 ) -> Result<(u16, f32), u32> {
     use crate::limits::{MAX_GROUND_PLANTS, MAX_GROUND_PLANTS_PER_OWNER};
     use crate::movement::quant_xz;
-    let y = ground_site(seed, haven, pieces.cols(), x, z, || {
+    let y = ground_site(seed, haven, pieces.cols(), occ, x, z, || {
         crate::claim::foreign_claim(pieces, deploys, x, z, owner)
     })
     .map_err(|g| match g {
         Ground::Claimed => crate::deploy::REFUSE_D_CLAIM,
+        Ground::Occupied | Ground::Crowded => REFUSE_D_PLANT_SPOT,
         _ => REFUSE_D_PLANT_SOIL,
     })?;
+    // A soft biome content gave no soil grows nothing (validate refuses
+    // that table, so this is a backstop).
     let biome = crate::terrain::biome_at(seed, y, x, z) as usize;
     let soil = fc.soil_pm.get(biome).copied().unwrap_or(0);
     if soil == 0 {
@@ -1470,8 +1572,9 @@ pub fn tend(
                 return Err(REFUSE_D_PLANT_STAGE);
             }
             // The plant is cut for its clones: each is its seed carrying
-            // its genome, one more for every two Y (Rust's rule).
-            let n = crop.clones as u16 + (count(rec.genes, GENE_Y) / 2) as u16;
+            // its genome, one more for every `clone_y_per` Y (Rust's two).
+            let n = crop.clones as u16
+                + (count(rec.genes, GENE_Y) / fc.clone_y_per.max(1) as u32) as u16;
             let added = crate::gather::inv_add_spilling(
                 &mut p.inv,
                 spill,
@@ -1501,6 +1604,12 @@ pub fn tend(
             let hand = p.inv.get(sel).copied().unwrap_or_default();
             if fc.skin_wu == 0 || hand.count == 0 || hand.item != fc.water_full {
                 return Err(REFUSE_D_PLANT_ITEM);
+            }
+            // A ripe or dying ground plant drinks no more, and its water is
+            // its own: the skin would be poured for nothing. (A bed plant's
+            // water is its planter's, which the others in it drink.)
+            if rec.host == HOST_GROUND && !is_growing(rec.stage) {
+                return Err(REFUSE_D_PLANT_STAGE);
             }
             // A ground plant holds its own water; a bed plant drinks from
             // its planter's tank. Only a planter has one: a planter gone by

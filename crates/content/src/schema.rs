@@ -821,6 +821,9 @@ pub struct FarmSection {
     pub y_pct: u32,
     pub h_pct: u32,
     pub w_pct: u32,
+    /// A clone cut pays its crop's `clones`, and one more for every
+    /// `clone_y_per` Y genes the plant carries (Rust's two). Above 0.
+    pub clone_y_per: u32,
     /// The open ground (Rust's fallback to a planter): what water a ground
     /// plant holds, and what full rain banks in it per second.
     pub ground_water: u32,
