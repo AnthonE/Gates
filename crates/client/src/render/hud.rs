@@ -122,7 +122,7 @@ const SLOT_COND_W: f32 = 3.0;
 /// The notices and chips over the bars are the same width, so the column
 /// is one clean edge on both sides.
 const VITAL_ICON_PX: f32 = VITAL_BAR_H;
-const VITAL_ROW_GAP: f32 = 4.0;
+const VITAL_ROW_GAP: f32 = 6.0;
 const VITAL_ROW_W: f32 = VITAL_ICON_PX + 2.0 + VITAL_BAR_W;
 /// The vitals' own trough and icon square: faint, so the fill is the thing
 /// read and the world shows through the rest.
@@ -1918,7 +1918,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
                     cell.spawn((
                         CellCount(i),
                         Text::new(""),
-                        super::ui::font_bold(15.0),
+                        super::ui::font_bold(14.0),
                         TextColor(SLOT_COUNT),
                         // Over a colour picture, a count needs its shadow.
                         super::ui::TEXT_SHADOW,
