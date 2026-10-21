@@ -116,6 +116,10 @@ pub const PIECE_NEAR_CELLS: i32 = 3;
 const PIECE_SHUFFLE: f32 = 0.35;
 /// The value multiplier's swing between a crack and a ridge, either way.
 const PIECE_HOLLOW_DARK: f32 = 0.3;
+/// Two faces of a piece meeting at a vertex are shaded as one surface while
+/// their normals are within this cosine (~32°); past it the fracture shows
+/// as an edge. Smoothed across every angle the pieces read as dough.
+const PIECE_CREASE: f32 = 0.85;
 
 /// The Verdigris' spires: black glass with green veins
 /// (`assets/models/MANIFEST.md`), each fitted to a unit box standing on its
@@ -969,6 +973,10 @@ pub struct Piece {
     /// How hollow the surface is at each vertex: + in a crack, − on a ridge,
     /// about ±1 at the most.
     hollow: Vec<f32>,
+    /// The triangles round each vertex: vertex `v`'s are
+    /// `ring[ring_at[v]..ring_at[v + 1]]`.
+    ring: Vec<u32>,
+    ring_at: Vec<u32>,
 }
 
 impl Piece {
@@ -1038,11 +1046,26 @@ impl Piece {
             p.x *= k;
             p.z *= k;
         }
+        let mut ring_at = vec![0u32; pos.len() + 1];
+        for &v in &idx {
+            ring_at[v as usize + 1] += 1;
+        }
+        for v in 0..pos.len() {
+            ring_at[v + 1] += ring_at[v];
+        }
+        let mut ring = vec![0u32; idx.len()];
+        let mut fill = ring_at.clone();
+        for (k, &v) in idx.iter().enumerate() {
+            ring[fill[v as usize] as usize] = (k / 3) as u32;
+            fill[v as usize] += 1;
+        }
         Some(Piece {
             pos,
             idx,
             size,
             hollow,
+            ring,
+            ring_at,
         })
     }
 }
@@ -1075,12 +1098,11 @@ pub fn pick_piece(r: &RockShape, pieces: &[Piece]) -> (usize, bool) {
 /// Draw one rock into `soup` as a piece stretched into its box: its base at
 /// `y0`, its top on the box's tilted top, turned as [`pick_piece`] says and
 /// a half more by hash. Its normals are its own, smoothed over the shape it
-/// was stretched into.
+/// was stretched into up to its creases.
 pub fn piece_block(soup: &mut RockSoup, r: &RockShape, pieces: &[Piece]) {
     let (k, quarter) = pick_piece(r, pieces);
     let p = &pieces[k];
     let half = h01(r.key, 0x4a1f) < 0.5;
-    let hgt = (r.y1 - r.y0).max(0.3);
     let world: Vec<Vec3> = p
         .pos
         .iter()
@@ -1096,38 +1118,74 @@ pub fn piece_block(soup: &mut RockSoup, r: &RockShape, pieces: &[Piece]) {
             Vec3::new(wx, r.y0 + u.y * (top - r.y0), wz)
         })
         .collect();
-    let mut nrm = vec![Vec3::ZERO; world.len()];
-    for t in p.idx.chunks_exact(3) {
-        let [a, b, c] = [t[0], t[1], t[2]].map(|k| k as usize);
-        let n = (world[b] - world[a]).cross(world[c] - world[a]);
-        nrm[a] += n;
-        nrm[b] += n;
-        nrm[c] += n;
-    }
-    let base = soup.pos.len() as u32;
+    // Each face's normal, area-weighted, in the shape it was stretched into.
+    let face: Vec<Vec3> = p
+        .idx
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|k| k as usize);
+            (world[b] - world[a]).cross(world[c] - world[a])
+        })
+        .collect();
+    // A vertex is drawn once per surface meeting at it ([`PIECE_CREASE`]):
+    // the faces round it go to the first group they lie within the crease
+    // of, and each corner of each face takes its group's vertex.
+    let mut corner = vec![0u32; p.idx.len()];
+    let mut groups: Vec<(Vec3, Vec3, u32)> = Vec::new();
     for (v, w) in world.iter().enumerate() {
-        let n = nrm[v].normalize_or_zero();
-        let moss = if r.moss > 0.0 {
-            // As `rock_block`'s: patches on what faces up.
-            let m = ((n.y - 0.6) / 0.3).clamp(0.0, 1.0);
-            let patch = (noise3(*w * 0.22, r.key ^ 0x3c) * 1.8 - 0.5).clamp(0.0, 1.0);
-            m * m * (3.0 - 2.0 * m) * patch * 0.85 * r.moss.min(1.0)
-        } else {
-            0.0
-        };
-        let up = ((w.y - r.y0) / hgt).clamp(0.0, 1.0);
-        // Darker in the cracks and lighter on the ridges, and a broad mottle
-        // so no two faces of one rock are one flat grey.
-        let mottle = 0.85 + 0.3 * noise3(*w * (1.0 / 3.5), r.key ^ 0x9e);
-        let value = r.value
-            * (ROCK_FOOT_VALUE + (1.0 - ROCK_FOOT_VALUE) * up)
-            * (1.0 - PIECE_HOLLOW_DARK * p.hollow[v])
-            * mottle;
-        soup.vertex(*w, n, moss, value);
+        groups.clear();
+        for &t in &p.ring[p.ring_at[v] as usize..p.ring_at[v + 1] as usize] {
+            let f = face[t as usize];
+            let fu = f.normalize_or_zero();
+            match groups.iter_mut().find(|g| g.0.dot(fu) >= PIECE_CREASE) {
+                Some(g) => g.1 += f,
+                None => groups.push((fu, f, 0)),
+            }
+        }
+        for g in groups.iter_mut() {
+            g.2 = soup.pos.len() as u32;
+            let n = g.1.normalize_or_zero();
+            soup_vertex(soup, r, p, v, *w, n);
+        }
+        for &t in &p.ring[p.ring_at[v] as usize..p.ring_at[v + 1] as usize] {
+            let fu = face[t as usize].normalize_or_zero();
+            let g = groups
+                .iter()
+                .find(|g| g.0.dot(fu) >= PIECE_CREASE)
+                .map_or(groups[0].2, |g| g.2);
+            let t = t as usize;
+            for k in 0..3 {
+                if p.idx[3 * t + k] as usize == v {
+                    corner[3 * t + k] = g;
+                }
+            }
+        }
     }
-    for t in p.idx.chunks_exact(3) {
-        soup.face(base + t[0], base + t[1], base + t[2]);
+    for t in corner.chunks_exact(3) {
+        soup.face(t[0], t[1], t[2]);
     }
+}
+
+/// One drawn vertex of a piece: moss on what faces up, darker in its cracks
+/// and at its foot.
+fn soup_vertex(soup: &mut RockSoup, r: &RockShape, p: &Piece, v: usize, w: Vec3, n: Vec3) {
+    let moss = if r.moss > 0.0 {
+        // As `rock_block`'s: patches on what faces up.
+        let m = ((n.y - 0.6) / 0.3).clamp(0.0, 1.0);
+        let patch = (noise3(w * 0.22, r.key ^ 0x3c) * 1.8 - 0.5).clamp(0.0, 1.0);
+        m * m * (3.0 - 2.0 * m) * patch * 0.85 * r.moss.min(1.0)
+    } else {
+        0.0
+    };
+    let up = ((w.y - r.y0) / (r.y1 - r.y0).max(0.3)).clamp(0.0, 1.0);
+    // Darker in the cracks and lighter on the ridges, and a broad mottle so
+    // no two faces of one rock are one flat grey.
+    let mottle = 0.85 + 0.3 * noise3(w * (1.0 / 3.5), r.key ^ 0x9e);
+    let value = r.value
+        * (ROCK_FOOT_VALUE + (1.0 - ROCK_FOOT_VALUE) * up)
+        * (1.0 - PIECE_HOLLOW_DARK * p.hollow[v])
+        * mottle;
+    soup.vertex(w, n, moss, value);
 }
 
 #[cfg(test)]
