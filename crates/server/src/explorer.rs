@@ -747,6 +747,9 @@ pub struct SurvivorOpts {
     /// Its doors wait for code locks instead of taking key locks with the
     /// doors: others come in by its code. Always so in a society.
     pub code_doors: bool,
+    /// A bred brain for the fight-or-run call (`jev-bot --tactics ga1:…`,
+    /// `agent::combat::set_tactics`); `None` keeps the sum's.
+    pub tactics: Option<sim_core::genome::Genome>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1154,7 +1157,13 @@ impl Survivor {
             hands: Hands::new(opts.skill),
             route: Route::new(),
             frontier: Frontier::new(),
-            combat: Combat::new(opts.temperament),
+            combat: {
+                let mut c = Combat::new(opts.temperament);
+                c.set_tactics(opts.tactics.map(|g| {
+                    sim_core::genome::Net::build(crate::agent::combat::tactics_shape(), &g)
+                }));
+                c
+            },
             loadout: Loadout::new(),
             dose: None,
             medic: false,
@@ -1345,6 +1354,13 @@ impl Survivor {
     /// The fight reflex.
     pub fn combat(&self) -> &Combat {
         &self.combat
+    }
+
+    /// Give its fights a bred brain, or take it away
+    /// (`Combat::set_tactics`): what `SurvivorOpts::tactics` does at birth,
+    /// for a net that no genome describes (a test's hand-set one).
+    pub fn set_tactics(&mut self, net: Option<sim_core::genome::Net>) {
+        self.combat.set_tactics(net);
     }
 
     /// Its bags, and what waking and recovering have come to.

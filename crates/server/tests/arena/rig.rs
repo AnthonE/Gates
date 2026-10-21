@@ -941,6 +941,23 @@ pub struct Setup {
     pub ambush: bool,
     /// The agent is held where it stands ([`Arena::pin`]).
     pub pinned: bool,
+    /// A bred brain for the agent's fights (`--tactics`), or none: the sum.
+    pub tactics: Option<sim_core::genome::Genome>,
+    /// A hand-set brain that always makes this choice
+    /// (`agent::combat::TACTIC_*`), over `tactics`.
+    pub always: Option<u8>,
+}
+
+/// A tactics net that always makes `choice`: every weight zero but that
+/// output's bias.
+pub fn always(choice: u8) -> sim_core::genome::Net {
+    use server::agent::combat::{tactics_shape, TACTICS_HIDDEN, TACTICS_IN};
+    let mut net = sim_core::genome::Net {
+        shape: tactics_shape(),
+        w: [0.0; sim_core::genome::MAX_WEIGHTS],
+    };
+    net.w[(TACTICS_IN + 1) * TACTICS_HIDDEN + usize::from(choice) * (TACTICS_HIDDEN + 1)] = 1.0;
+    net
 }
 
 impl Setup {
@@ -959,6 +976,8 @@ impl Setup {
             trace: false,
             ambush: false,
             pinned: false,
+            tactics: None,
+            always: None,
         }
     }
 }
@@ -1029,9 +1048,13 @@ pub fn bout(s: Setup) -> (Arena, Record) {
     let opts = SurvivorOpts {
         skill,
         temperament: s.temperament,
+        tactics: s.tactics,
         ..SurvivorOpts::default()
     };
     let mut a = Arena::seated(opts, mind, false, me, arena_ground(), true);
+    if let Some(choice) = s.always {
+        a.bot.set_tactics(Some(always(choice)));
+    }
     a.latency = s.latency;
     assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
     a.stage(me, |p| {

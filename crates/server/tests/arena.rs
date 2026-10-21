@@ -1186,3 +1186,71 @@ fn trace() {
     let (a, r) = rig::bout(s);
     println!("{r:?}\n{}", a.explain());
 }
+
+/// **A bred brain makes the call and stays a person** (`--tactics`,
+/// `agent::combat::set_tactics`). One that always runs runs: it never wins
+/// and it never swings. One that never runs still loses to the aimbot on
+/// the gate's own aimbot bouts, as the sum does. One that wants a hand its
+/// belt has not got fights with the hand it has. Every frame of every one
+/// of them stays inside its hands' turn and off the heap.
+#[test]
+fn a_bred_brain_makes_the_call_and_stays_human() {
+    use server::agent::combat::{TACTIC_FIGHT, TACTIC_MELEE, TACTIC_RUN};
+    let with = |seat, gear, dist, choice, seed| {
+        let mut s = Setup::new(seat, gear, gear, dist, seed);
+        s.always = choice;
+        s
+    };
+    let mut setups = Vec::new();
+    for seed in 0..4 {
+        setups.push((
+            "runs",
+            with(Seat::Rusher, Gear::SPEAR, 8.0, Some(TACTIC_RUN), seed),
+        ));
+        setups.push((
+            "no such hand",
+            with(Seat::Rusher, Gear::BOW, 8.0, Some(TACTIC_MELEE), seed),
+        ));
+    }
+    for gear in [Gear::ROCK, Gear::SPEAR] {
+        for dist in DISTANCES {
+            for seed in 0..2 {
+                setups.push((
+                    "never runs",
+                    with(Seat::Aimbot, gear, dist, Some(TACTIC_FIGHT), seed),
+                ));
+                setups.push(("the sum", with(Seat::Aimbot, gear, dist, None, seed)));
+            }
+        }
+    }
+    let plain: Vec<Setup> = setups.iter().map(|(_, s)| *s).collect();
+    let records = sweep(&plain);
+    let (mut aimbot, mut sum) = (Tally::default(), Tally::default());
+    for ((gate, s), r) in setups.iter().zip(&records) {
+        let what = format!("{gate}: {} seed {}: {r:?}", label(s), s.seed);
+        assert_eq!(r.heap_ops, 0, "the agent's frames touched the heap: {what}");
+        assert!(r.max_turn <= r.turn_cap, "turned past its hands: {what}");
+        match *gate {
+            "runs" => assert!(
+                !r.won && r.attacks == 0,
+                "a body told to run fought: {what}"
+            ),
+            "never runs" => aimbot.add(r),
+            "the sum" => sum.add(r),
+            _ => assert!(r.attacks > 0, "a bow told to swing never shot: {what}"),
+        }
+    }
+    println!("{}", row("never runs v aimbot", &aimbot));
+    println!("{}", row("the sum v aimbot", &sum));
+    // Most of them lost: the ceiling is the hands', and the hands are
+    // untouched. Not the gate's own 75% floor, which is the sum's: a brain
+    // that never runs lost 8 of these 12 where the sum lost 9 — standing up
+    // to a perfect swing instead of showing it a back, a tactic and not a
+    // better hand. A bred genome is held to the full floor before it is
+    // anyone's default (`examples/zoo.rs --agent`'s held-out table).
+    assert!(
+        aimbot.losses * 2 > aimbot.bouts,
+        "a brain that never runs beat the aimbot: {}",
+        row("aimbot", &aimbot)
+    );
+}
