@@ -2416,21 +2416,33 @@ pub fn resolve_plant(
     best
 }
 
-/// Fold a resolved plant into the `E` pick. The plant wins when nothing
-/// else is aimed at, when what is aimed at is the planter (which it stands
-/// in — the pick keeps the planter's address so `E` can still open it), or
-/// when it is nearer. `planter` is the bed's planter off the mirror
-/// (`ui::farm::planter_of`) for a plant whose planter was not the pick.
+/// Fold a plant the eye's ray meets ([`resolve_plant`]) into the `E` pick.
+/// `planter` is the plant's own planter off the mirror
+/// (`ui::farm::planter_of`), `None` for a ground plant; `feet` is the
+/// player's planar position, which every pick's `d2` is measured from.
+///
+/// The plant wins over the planter it stands in, and takes that planter's
+/// address so `E` can still open it. Against anything else, the pick's own
+/// law ([`resolve`]'s): the ray met the plant, so it is aimed at and beats
+/// whatever is merely near; against something else aimed at, the nearer to
+/// the feet wins. A plant in the next planter over is that planter's, so
+/// it carries its own planter's address, never the aimed one's.
 pub fn fold_plant(
     aimed: Pick,
-    plant: Option<(protocol::WirePlant, f32)>,
+    plant: Option<protocol::WirePlant>,
     planter: Option<&DeployRec>,
+    feet: (f32, f32),
 ) -> Pick {
-    let Some((rec, d2)) = plant else {
+    let Some(rec) = plant else {
         return aimed;
     };
-    let over_planter = aimed.arch == sim_core::deploy::ARCH_PLANTER && aimed.handle != 0;
-    if !(aimed.is_none() || over_planter || d2 < aimed.d2) {
+    let own = planter.map(|d| box_key(d.cx, d.cz, d.level, d.loc));
+    let in_own = aimed.arch == sim_core::deploy::ARCH_PLANTER
+        && aimed.handle != 0
+        && own == Some(aimed.handle);
+    let (px, _, pz) = rec.pos();
+    let d2 = (px - feet.0) * (px - feet.0) + (pz - feet.1) * (pz - feet.1);
+    if !(aimed.is_none() || in_own || !aimed.aimed || d2 < aimed.d2) {
         return aimed;
     }
     let mut out = Pick {
@@ -2440,10 +2452,7 @@ pub fn fold_plant(
         aimed: true,
         ..Default::default()
     };
-    if over_planter {
-        (out.arch, out.handle) = (aimed.arch, aimed.handle);
-        (out.cx, out.cz, out.level, out.loc) = (aimed.cx, aimed.cz, aimed.level, aimed.loc);
-    } else if let Some(d) = planter {
+    if let Some(d) = planter {
         out.arch = sim_core::deploy::ARCH_PLANTER;
         out.handle = box_key(d.cx, d.cz, d.level, d.loc);
         (out.cx, out.cz, out.level, out.loc) = (d.cx, d.cz, d.level, d.loc);
@@ -3106,12 +3115,21 @@ mod plant_tests {
         Pick {
             verb: Verb::Planter,
             arch: sim_core::deploy::ARCH_PLANTER,
-            handle: 0x0102_0304,
+            handle: box_key(3, 4, 0, 0),
             cx: 3,
             cz: 4,
             d2: 1.0,
             aimed: true,
             ..Default::default()
+        }
+    }
+
+    /// The planter record [`planter_pick`] picked.
+    fn bed(cx: u16) -> DeployRec {
+        DeployRec {
+            cx,
+            cz: 4,
+            ..DeployRec::default()
         }
     }
 
@@ -3125,21 +3143,52 @@ mod plant_tests {
         // 0.63 m sapling standing on 10.8 m soil.
         let on = corn(STAGE_SAPLING, 100.0, 10.8, 101.5);
         let hit = resolve_plant(&[on], eye, dir, sim_core::gather::PICK_REACH_M);
-        let (i, d2) = hit.expect("the ray crosses the plant");
+        let (i, _) = hit.expect("the ray crosses the plant");
         assert_eq!(i, 0);
-        let p = fold_plant(planter_pick(), Some((on, d2)), None);
+        let feet = (eye.0, eye.2);
+        let p = fold_plant(planter_pick(), Some(on), Some(&bed(3)), feet);
         assert_eq!(
             p.verb,
             Verb::Plant,
             "the plant beats the planter it stands in"
         );
-        assert_eq!(p.handle, 0x0102_0304, "and keeps the planter's address");
+        assert_eq!(
+            p.handle,
+            box_key(3, 4, 0, 0),
+            "and keeps the planter's address"
+        );
         assert_eq!((p.cx, p.cz), (3, 4));
+        // In the next planter over: that planter's address, not the
+        // aimed one's, when it is the nearer of the two to the feet...
+        let far = Pick {
+            d2: 4.0,
+            ..planter_pick()
+        };
+        let p = fold_plant(far, Some(on), Some(&bed(5)), feet);
+        assert_eq!((p.verb, p.handle), (Verb::Plant, box_key(5, 4, 0, 0)));
+        // ...and an aimed planter nearer to the feet keeps the pick.
+        let near = Pick {
+            d2: 0.5,
+            ..planter_pick()
+        };
+        assert_eq!(
+            fold_plant(near, Some(on), Some(&bed(5)), feet).verb,
+            Verb::Planter
+        );
+        // Merely near, it loses to a plant the ray meets, however far.
+        let nearby = Pick {
+            aimed: false,
+            ..near
+        };
+        assert_eq!(
+            fold_plant(nearby, Some(on), Some(&bed(5)), feet).verb,
+            Verb::Plant
+        );
         // 0.4 m beside the ray: outside a 0.3 m pick cylinder.
         let beside = corn(STAGE_SAPLING, 100.4, 10.8, 101.5);
         assert!(resolve_plant(&[beside], eye, dir, sim_core::gather::PICK_REACH_M).is_none());
         assert_eq!(
-            fold_plant(planter_pick(), None, None).verb,
+            fold_plant(planter_pick(), None, None, feet).verb,
             Verb::Planter,
             "no plant leaves the planter's pick alone"
         );
@@ -3166,8 +3215,9 @@ mod plant_tests {
             water_in_hand: water,
             ..fold_plant(
                 planter_pick(),
-                Some((corn(stage, 0.0, 0.0, 0.0), 1.0)),
-                None,
+                Some(corn(stage, 0.0, 0.0, 0.0)),
+                Some(&bed(3)),
+                (0.0, 0.0),
             )
         };
         let cat = ItemCatalog::EMPTY;
@@ -3202,7 +3252,7 @@ mod plant_tests {
             p.spot = sim_core::farm::SPOT_GROUND;
             Pick {
                 water_in_hand: water,
-                ..fold_plant(Pick::default(), Some((p, 1.0)), None)
+                ..fold_plant(Pick::default(), Some(p), None, (0.0, 0.0))
             }
         };
         assert_eq!(

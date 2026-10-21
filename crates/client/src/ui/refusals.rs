@@ -325,6 +325,19 @@ pub fn deploy(code: u8) -> String {
     text(&DEPLOY, code as u32)
 }
 
+/// [`deploy`], told which farm verb the client last sent (`farm_sent`, a
+/// tend's act or `None` for a seed): `REFUSE_D_PLANT_ITEM` answers a pour
+/// without a full skin in hand as well as a seed that is not one, and the
+/// two read differently.
+pub fn deploy_after(code: u8, farm_sent: Option<u8>) -> String {
+    if code as u32 == sim_core::deploy::REFUSE_D_PLANT_ITEM
+        && farm_sent == Some(sim_core::farm::TEND_WATER)
+    {
+        return "no full waterskin in hand".to_string();
+    }
+    deploy(code)
+}
+
 /// Why the eat or the drink did nothing.
 ///
 /// Never called with 0 — a landed consume never enters the refusal ring,
@@ -517,6 +530,17 @@ mod tests {
         assert_eq!(deploy(REFUSE_D_NOT_EMPTY as u8), "empty it first");
         assert_eq!(
             deploy(sim_core::deploy::REFUSE_D_PLANT_ITEM as u8),
+            "not something you can plant"
+        );
+        // The same code after a pour: the skin, not the seed.
+        let item = sim_core::deploy::REFUSE_D_PLANT_ITEM as u8;
+        assert_eq!(
+            deploy_after(item, Some(sim_core::farm::TEND_WATER)),
+            "no full waterskin in hand"
+        );
+        assert_eq!(deploy_after(item, None), "not something you can plant");
+        assert_eq!(
+            deploy_after(item, Some(sim_core::farm::TEND_PICK)),
             "not something you can plant"
         );
         assert_eq!(

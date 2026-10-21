@@ -71,6 +71,8 @@ const MAT_RIPE: usize = 3;
 struct FruitModel {
     mesh: Handle<Mesh>,
     mat: Handle<StandardMaterial>,
+    /// Its material green, for a pumpkin still fruiting.
+    green: Handle<StandardMaterial>,
     centre: Vec3,
     half: Vec3,
 }
@@ -80,6 +82,8 @@ struct FruitModel {
 const DRY_TINT: [f32; 3] = [1.25, 1.0, 0.45];
 const WILT_TINT: [f32; 3] = [0.5, 0.3, 0.12];
 const RIPE_POTATO_TINT: [f32; 3] = [1.55, 1.2, 0.3];
+/// A pumpkin while it fruits, before it is ripe: its orange turned green.
+const UNRIPE_PUMPKIN_TINT: [f32; 3] = [0.3, 1.15, 0.35];
 
 /// The meshes and materials every crop is drawn from, built once at
 /// `Startup`.
@@ -109,6 +113,8 @@ pub struct CropKit {
     /// Pumpkins on the vine, two variants.
     pumpkin: [Handle<Mesh>; 2],
     pumpkin_mat: Handle<StandardMaterial>,
+    /// And green, still fruiting.
+    pumpkin_green: Handle<StandardMaterial>,
     /// A ripe berry bush's berries.
     berries: Handle<Mesh>,
     berry_mat: Handle<StandardMaterial>,
@@ -281,6 +287,8 @@ pub fn build_kit(
     let fruit_mat = solid(&mut materials, Color::linear_rgb(0.62, 0.42, 0.04), 0.55);
     // A pumpkin's skin is in its vertex colours; it has a waxy sheen.
     let pumpkin_mat = solid(&mut materials, Color::WHITE, 0.5);
+    let [r, g, b] = UNRIPE_PUMPKIN_TINT;
+    let pumpkin_green = solid(&mut materials, Color::linear_rgb(r, g, b), 0.5);
     let berry_mat = solid(&mut materials, Color::WHITE, 0.32);
     let wilt_solid = solid(&mut materials, Color::linear_rgb(0.16, 0.10, 0.045), 0.95);
     let ghost = materials.add(StandardMaterial {
@@ -340,6 +348,7 @@ pub fn build_kit(
             meshes.add(plants::pumpkin(1)),
         ],
         pumpkin_mat,
+        pumpkin_green,
         berries: meshes.add(plants::berries(4, true)),
         berry_mat,
         wilt_solid,
@@ -465,6 +474,10 @@ pub fn ready_models(
                 }
                 Some(true) => {
                     let (mesh, mat) = kit.fruit_loading[look].take().expect("checked");
+                    let green = materials
+                        .get(&mat)
+                        .map(|m| tinted(m, UNRIPE_PUMPKIN_TINT))
+                        .map_or_else(|| mat.clone(), |m| materials.add(m));
                     let aabb = meshes
                         .get(&mesh)
                         .and_then(MeshAabb::compute_aabb)
@@ -472,6 +485,7 @@ pub fn ready_models(
                     kit.fruit_model[look] = Some(FruitModel {
                         mesh,
                         mat,
+                        green,
                         centre: Vec3::from(aabb.center),
                         half: Vec3::from(aabb.half_extents),
                     });
@@ -710,8 +724,9 @@ fn spawn_crop(commands: &mut Commands, kit: &CropKit, p: &WirePlant) -> Entity {
                 }
                 if fruiting && p.look == LOOK_PUMPKIN {
                     // Two pumpkins on the ground among the leaves: green
-                    // fruit at six tenths their size, then grown.
-                    let k = if p.stage == STAGE_RIPE { 1.0 } else { 0.6 };
+                    // fruit at six tenths their size, then grown orange.
+                    let ripe = p.stage == STAGE_RIPE;
+                    let k = if ripe { 1.0 } else { 0.6 };
                     for (i, &(x, z, yaw)) in PUMPKIN_AT.iter().enumerate() {
                         let at = Transform::from_xyz(x, 0.0, z)
                             .with_rotation(Quat::from_rotation_y(yaw))
@@ -720,12 +735,19 @@ fn spawn_crop(commands: &mut Commands, kit: &CropKit, p: &WirePlant) -> Entity {
                             // The held pumpkin, set on its foot.
                             Some(f) => c.spawn((
                                 Mesh3d(f.mesh.clone()),
-                                MeshMaterial3d(f.mat.clone()),
+                                MeshMaterial3d(if ripe { &f.mat } else { &f.green }.clone()),
                                 at * Transform::from_translation(Vec3::Y * f.half.y - f.centre),
                             )),
                             None => c.spawn((
                                 Mesh3d(kit.pumpkin[i].clone()),
-                                MeshMaterial3d(kit.pumpkin_mat.clone()),
+                                MeshMaterial3d(
+                                    if ripe {
+                                        &kit.pumpkin_mat
+                                    } else {
+                                        &kit.pumpkin_green
+                                    }
+                                    .clone(),
+                                ),
                                 at,
                             )),
                         };

@@ -3241,7 +3241,7 @@ pub fn feedback(
                 crate::ui::place::RESERVED_LINE.to_string()
             }
             super::feed::Refused::Build => crate::ui::refusals::build(code),
-            super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+            super::feed::Refused::Deploy => crate::ui::refusals::deploy_after(code, net.farm_sent),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Vend => crate::ui::refusals::vend(code),
             super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),

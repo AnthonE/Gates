@@ -107,6 +107,7 @@ fn boot(state: Screen, entries: Vec<Entry>, with_world: bool) -> (App, Replay) {
         session,
         sel: 0,
         light: false,
+        farm_sent: None,
     });
     if with_world {
         // A root with a child, as the world's are: the despawn is recursive.

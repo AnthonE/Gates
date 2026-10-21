@@ -41,7 +41,7 @@ const GHOST_SCALE: f32 = 2.0;
 #[allow(clippy::too_many_arguments)]
 pub fn plant_ghost(
     mut commands: Commands,
-    net: NonSend<Net>,
+    mut net: NonSendMut<Net>,
     look: Res<Look>,
     aimed: Res<Aimed>,
     world: Option<Res<WorldId>>,
@@ -215,11 +215,10 @@ pub fn plant_ghost(
     }
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_plant(net.sel, target, &mut buf) {
-        Ok(len) => {
-            if let Err(e) = net.session.send_action(&buf[..len]) {
-                toast.warn(e.to_string());
-            }
-        }
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => net.farm_sent = None,
+            Err(e) => toast.warn(e.to_string()),
+        },
         Err(_) => toast.warn("that seed cannot be planted from here"),
     }
 }

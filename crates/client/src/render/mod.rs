@@ -347,6 +347,10 @@ pub struct Net {
     /// stack's `cond`. So a torch that runs dry goes dark on both sides
     /// off the same `SUB_INV`, with nothing stored anywhere to disagree.
     pub light: bool,
+    /// The last farm verb this client sent: a tend's act, `None` after a
+    /// seed was planted. `REFUSE_D_PLANT_ITEM` answers both, and the line
+    /// says which hand it was (`ui::refusals::deploy_after`).
+    pub farm_sent: Option<u8>,
 }
 
 /// The world's identity, resolved once from the welcome and then read-only.

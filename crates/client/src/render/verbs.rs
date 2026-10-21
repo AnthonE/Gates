@@ -234,8 +234,8 @@ pub fn resolve(
         interact::Verb::Recycler | interact::Verb::Research | interact::Verb::TechTree
     ) && interact::town_station(&core.haven().town, aimed.0.cx, aimed.0.cz);
     // A crop under the crosshair (farming v2), by its pick cylinder: it
-    // wins over the planter it stands in, and keeps that planter's address
-    // so `E` still opens the tank when there is nothing to tend.
+    // wins over the planter it stands in, and carries its own planter's
+    // address so `E` still opens the tank when there is nothing to tend.
     {
         let plants = core.plants.entries();
         let hit = interact::resolve_plant(
@@ -244,8 +244,8 @@ pub fn resolve(
             (dir[0], dir[1], dir[2]),
             sim_core::gather::PICK_REACH_M,
         )
-        .map(|(i, d2)| (plants[i], d2));
-        let planter = hit.and_then(|(p, _)| {
+        .map(|(i, _)| plants[i]);
+        let planter = hit.and_then(|p| {
             crate::ui::farm::planter_of(
                 &p,
                 core.deploys.entries(),
@@ -256,7 +256,7 @@ pub fn resolve(
         });
         // The shard's hand test, as the deploy pick asks it: a crop behind
         // a wall or a window is not offered, since the tend would be refused.
-        let hit = hit.filter(|(p, _)| {
+        let hit = hit.filter(|p| {
             crate::ui::farm::plant_in_sight(
                 p,
                 planter,
@@ -264,7 +264,7 @@ pub fn resolve(
                 |q| lying(q, [0; 3]),
             )
         });
-        aimed.0 = interact::fold_plant(aimed.0, hit, planter);
+        aimed.0 = interact::fold_plant(aimed.0, hit, planter, (x, z));
         if aimed.0.verb == Verb::Plant {
             let held = core.inv.get(sel as usize).copied().unwrap_or_default();
             aimed.0.water_in_hand = held.count > 0
@@ -1113,9 +1113,11 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         Verb::Plant => {
             if let Some(act) = pick.tend() {
                 let plant = pick.plant.id;
-                send(net, toast, "tend", |buf| {
+                if send(net, toast, "tend", |buf| {
                     protocol::encode_action_tend(plant, act, buf)
-                });
+                }) {
+                    net.farm_sent = Some(act);
+                }
             } else if pick.handle != 0 {
                 let handle = pick.handle;
                 if send(net, toast, "open", |buf| {
