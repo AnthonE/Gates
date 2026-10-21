@@ -164,6 +164,19 @@ pub fn tune(k: &str, d: f32) -> f32 {
         .unwrap_or(d)
 } // TUNE
 
+/// Clear sky added behind the cloud deck, in deck units at full sun: the
+/// air's own colour (`sky::air_chroma`) at this luminance, composited by the
+/// atmosphere like the clouds are (`cloud.wgsl`).
+///
+/// **The one sky term that is not physical, and it is deliberate.** The
+/// atmosphere lights its sky with the same sun the ground gets, so no
+/// exposure, density or tone curve brightens the sky without moving the
+/// ground or tinting the sun. Measured against the Rust frames
+/// (2026-10-21), their open sky reads about rgb(153, 189, 231) and ours
+/// rgb(105, 127, 159), some 2.3× in linear light, with the ground level
+/// between the two.
+pub const SKY_LIFT: f32 = 0.15;
+
 /// Mie, the aerosol term, as Hillaire's model publishes it and as Bevy 0.16
 /// shipped it (`Atmosphere::EARTH`): it mostly scatters. Bevy 0.18's
 /// `ScatteringMedium::earthlike` has the two values swapped, an aerosol that

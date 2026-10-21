@@ -249,6 +249,9 @@ pub struct CloudParams {
     pub march: Vec4,
     pub texel: Vec4,
     pub wind: Vec4,
+    /// xyz the clear sky behind the deck (`rig::SKY_LIFT`), deck units; w
+    /// unused.
+    pub lift: Vec4,
 }
 
 impl CloudParams {
@@ -326,6 +329,14 @@ impl CloudParams {
                 ride.y.rem_euclid(DETAIL_TILE_M),
                 0.0,
             ),
+            // Daylight's, so it fades with the sun and under an overcast,
+            // and none of it blue in the Verdigris.
+            lift: (Vec3::from_array(sky::air_chroma())
+                * super::rig::tune("GATES_TUNE_SKY_LIFT", super::rig::SKY_LIFT) // TUNE
+                * p.light
+                * (1.0 - p.dark)
+                * (1.0 - p.fel))
+                .extend(0.0),
         }
     }
 }

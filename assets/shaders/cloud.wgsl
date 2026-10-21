@@ -62,6 +62,8 @@ struct Cloud {
     // xyz how far the detail noise has moved, m: with the deck downwind,
     // and slowly up, so a cumulus boils; w unused.
     wind: vec4<f32>,
+    // xyz the clear sky behind the deck (`rig::SKY_LIFT`); w unused.
+    lift: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> cl: Cloud;
@@ -298,6 +300,10 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         sky += cl.halo.rgb * k * k;
     }
     let s = max((cm - cl.halo.w) / (1.0 - cl.halo.w), 0.0);
+    // Daylight behind the deck: more of the air's own blue than the
+    // atmosphere's sky carries, laid on through its transmittance as a
+    // cloud is (`deck_hue`), so it arrives the colour it was given.
+    sky += cl.lift.rgb * deck_hue(d.y) * smoothstep(0.0, 0.05, d.y);
 
     let fade = deck_fade(d.y, cl.shape.y, cl.shape.z);
     var pre = vec3(0.0);
