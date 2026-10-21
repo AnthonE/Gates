@@ -9999,6 +9999,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/brain.rs"),
         },
         Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
+        },
+        Module {
             file: "nav.rs",
             src: include_str!("../../sim-core/src/nav.rs"),
         },
