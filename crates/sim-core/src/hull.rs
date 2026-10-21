@@ -45,6 +45,49 @@ pub const HULL_RISER: u8 = 2;
 pub const HULL_EDGE: u8 = 3;
 /// The legacy 4.24 m cell diagonal (`build::LOC_DIAG_*`, in `loc`).
 pub const HULL_DIAG: u8 = 4;
+/// An equilateral triangle body: corners (0, 0), (3, 0) and (1.5, 3√3/2)
+/// in its own frame, the inside on local +z of its first side.
+pub const HULL_TRI: u8 = 5;
+
+/// √3 / 2.
+const H3: f32 = 0.866_025_4;
+
+/// Inward distances from a local point to an equilateral body's three
+/// sides: the first side, then round the triangle. All three are at least
+/// zero exactly inside.
+#[inline]
+fn tri_d(lx: f32, lz: f32) -> (f32, f32, f32) {
+    (lz, H3 * (SIDE_M - lx) - 0.5 * lz, H3 * lx - 0.5 * lz)
+}
+
+/// Squared distance from a local point to an equilateral body (zero
+/// inside): the nearest side, or the nearest corner past a side's ends.
+fn tri_dist2(lx: f32, lz: f32) -> f32 {
+    let (d0, d1, d2) = tri_d(lx, lz);
+    if d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0 {
+        return 0.0;
+    }
+    let corners = [(0.0, 0.0), (SIDE_M, 0.0), (SIDE_M * 0.5, SIDE_M * H3)];
+    let mut best = f32::MAX;
+    for i in 0..3 {
+        let (ax, az) = corners[i];
+        let (bx, bz) = corners[(i + 1) % 3];
+        let (ex, ez) = (bx - ax, bz - az);
+        let t = (((lx - ax) * ex + (lz - az) * ez) / (SIDE_M * SIDE_M)).clamp(0.0, 1.0);
+        let (px, pz) = (ax + t * ex - lx, az + t * ez - lz);
+        best = best.min(px * px + pz * pz);
+    }
+    best
+}
+
+/// Whether a triangle floor frame's rim is under a probe of radius `r`:
+/// within the rim of any side.
+#[inline]
+fn tri_rim_solid(lx: f32, lz: f32, r: f32) -> bool {
+    let (d0, d1, d2) = tri_d(lx, lz);
+    let rim = FRAME_RIM_M + r;
+    d0 <= rim || d1 <= rim || d2 <= rim
+}
 
 /// The side of a square body and the length of a straight edge.
 const SIDE_M: f32 = crate::build::BUILD_CELL_M;
@@ -155,6 +198,24 @@ impl Hull {
     /// The world box the row is filed under: its footprint, and for an
     /// edge half the wall's thickness either side.
     fn aabb(&self) -> (f32, f32, f32, f32) {
+        if self.kind == HULL_TRI {
+            let pts = [
+                (self.ox, self.oz),
+                (self.ox + SIDE_M * self.ux, self.oz + SIDE_M * self.uz),
+                (
+                    self.ox + SIDE_M * 0.5 * self.ux + SIDE_M * H3 * self.vx,
+                    self.oz + SIDE_M * 0.5 * self.uz + SIDE_M * H3 * self.vz,
+                ),
+            ];
+            let (mut x0, mut z0, mut x1, mut z1) = (pts[0].0, pts[0].1, pts[0].0, pts[0].1);
+            for &(x, z) in &pts[1..] {
+                x0 = x0.min(x);
+                z0 = z0.min(z);
+                x1 = x1.max(x);
+                z1 = z1.max(z);
+            }
+            return (x0, z0, x1, z1);
+        }
         let (len, wide, pad) = match self.kind {
             HULL_EDGE => (SIDE_M, 0.0, WALL_THICKNESS_M * 0.5),
             HULL_DIAG => {
@@ -204,8 +265,40 @@ impl Hull {
                 tri_half_has(self.loc, lx, lz)
                     && (!self.open || tri_frame_solid(self.loc, lx, lz, r))
             }
+            HULL_TRI => {
+                let (d0, d1, d2) = tri_d(lx, lz);
+                d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0 && (!self.open || tri_rim_solid(lx, lz, r))
+            }
             _ => false,
         }
+    }
+
+    /// Whether a body's own footprint holds a local point for a point
+    /// query: half-open on a square (the column index's cell membership),
+    /// closed on a triangle.
+    #[inline]
+    fn holds(&self, lx: f32, lz: f32) -> bool {
+        if self.kind == HULL_TRI {
+            let (d0, d1, d2) = tri_d(lx, lz);
+            d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0
+        } else {
+            (0.0..SIDE_M).contains(&lx) && (0.0..SIDE_M).contains(&lz)
+        }
+    }
+
+    /// Squared distance from a local point to the body's footprint.
+    #[inline]
+    fn foot_dist2(&self, lx: f32, lz: f32) -> f32 {
+        if self.kind == HULL_TRI {
+            tri_dist2(lx, lz)
+        } else {
+            Hull::body_dist2(lx, lz)
+        }
+    }
+
+    #[inline]
+    fn is_body(&self) -> bool {
+        matches!(self.kind, HULL_PLANE | HULL_HALF | HULL_RISER | HULL_TRI)
     }
 
     /// Edge or diagonal against a mover (x, z) → (nx, nz) with an extra
@@ -248,8 +341,10 @@ impl Hull {
 
 /// Every built piece as a [`Hull`], filed by world bucket.
 pub struct Hulls {
-    rows: Box<[Hull; MAX_PIECES]>,
-    len: usize,
+    /// Reserved whole at construction and never grown — `add` refuses at
+    /// `MAX_PIECES` — so the tick allocates nothing, and an empty index
+    /// costs no writes to build (tests build one per movement step).
+    rows: Vec<Hull>,
     /// Key → row, open addressing like `build::AddrIndex`.
     keys: Box<[u64; PIECE_ADDR_SLOTS]>,
     vals: Box<[u16; PIECE_ADDR_SLOTS]>,
@@ -273,8 +368,7 @@ fn bucket_range(x0: f32, z0: f32, x1: f32, z1: f32) -> (i32, i32, i32, i32) {
 impl Hulls {
     pub fn new() -> Self {
         Self {
-            rows: crate::boxed_array(Hull::EMPTY),
-            len: 0,
+            rows: Vec::with_capacity(MAX_PIECES),
             keys: crate::boxed_array(0),
             vals: crate::boxed_array(0),
             space: Space::new(),
@@ -282,20 +376,19 @@ impl Hulls {
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        self.rows.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.rows.is_empty()
     }
 
     pub fn rows(&self) -> &[Hull] {
-        &self.rows[..self.len]
+        &self.rows
     }
 
     pub fn clear(&mut self) {
-        self.rows[..self.len].fill(Hull::EMPTY);
-        self.len = 0;
+        self.rows.clear();
         self.keys.fill(0);
         self.vals.fill(0);
         self.space.clear();
@@ -402,16 +495,15 @@ impl Hulls {
             self.rows[i] = h;
             return self.file(i);
         }
-        if self.len >= MAX_PIECES {
+        if self.rows.len() >= MAX_PIECES {
             return false;
         }
-        let i = self.len;
-        self.rows[i] = h;
+        let i = self.rows.len();
+        self.rows.push(h);
         if !self.file(i) {
-            self.rows[i] = Hull::EMPTY;
+            self.rows.pop();
             return false;
         }
-        self.len += 1;
         self.put_key(h.key, i);
         true
     }
@@ -424,22 +516,24 @@ impl Hulls {
         };
         self.unfile(i);
         self.del_key(key);
-        let last = self.len - 1;
+        let last = self.rows.len() - 1;
         if i != last {
             self.unfile(last);
-            self.rows[i] = self.rows[last];
+        }
+        self.rows.swap_remove(i);
+        if i != last {
             self.file(i);
             self.put_key(self.rows[i].key, i);
         }
-        self.rows[last] = Hull::EMPTY;
-        self.len = last;
     }
 
-    /// Open or close the opening of the row with `key`.
+    /// Close (or open) the opening of the row with `key`; `panes` marks a
+    /// closed insert as glass or shutter. Opening clears both, closing
+    /// without `panes` keeps what the row had — the column index's bits.
     pub fn set_shut(&mut self, key: u64, shut: bool, panes: bool) {
         if let Some(i) = self.index_of(key) {
             self.rows[i].shut = shut;
-            self.rows[i].panes = shut && panes;
+            self.rows[i].panes = shut && (panes || self.rows[i].panes);
         }
     }
 
@@ -447,7 +541,7 @@ impl Hulls {
     /// than once; stops when `f` answers true, and answers whether it did.
     #[inline]
     fn near(&self, x0: f32, z0: f32, x1: f32, z1: f32, mut f: impl FnMut(&Hull) -> bool) -> bool {
-        if self.len == 0 {
+        if self.rows.is_empty() {
             return false;
         }
         let (bx0, bz0, bx1, bz1) = bucket_range(x0, z0, x1, z1);
@@ -466,23 +560,23 @@ impl Hulls {
     /// The highest standable top under the point (`x`, `z`) within a step
     /// of `feet_y`: bodies over their own footprint, flights at their
     /// ramp. `collide::piece_ground`'s piece half.
-    pub fn ground(&self, x: f32, z: f32, feet_y: f32) -> f32 {
+    pub fn ground<Y: Fn(&Hull) -> (f32, f32)>(&self, y: &Y, x: f32, z: f32, feet_y: f32) -> f32 {
         let lid = feet_y + STEP_UP;
         let mut best = NO_SURFACE;
         self.near(x, z, x, z, |h| {
             let top = match h.kind {
-                HULL_PLANE | HULL_HALF | HULL_RISER => {
+                HULL_PLANE | HULL_HALF | HULL_RISER | HULL_TRI => {
                     let (lx, lz) = h.local(x, z);
-                    if !(0.0..SIDE_M).contains(&lx) || !(0.0..SIDE_M).contains(&lz) {
+                    if !h.holds(lx, lz) {
                         return false;
                     }
                     if h.kind == HULL_RISER {
                         match crate::circulation::surface(h.shape, h.loc, lx, lz) {
-                            Some(y) => h.floor_y + y,
+                            Some(dy) => y(h).0 + dy,
                             None => return false,
                         }
                     } else if h.body_solid(lx, lz, 0.0) {
-                        h.floor_y
+                        y(h).0
                     } else {
                         return false;
                     }
@@ -500,23 +594,24 @@ impl Hulls {
     /// Every body and flight whose footprint a capsule of radius `r` at
     /// (`x`, `z`) overlaps, as (slab level, top): `collide::any_body_plane`.
     /// Stops when `visit` answers true.
-    pub fn bodies_near(
+    pub fn bodies_near<Y: Fn(&Hull) -> (f32, f32)>(
         &self,
+        y: &Y,
         x: f32,
         z: f32,
         r: f32,
         mut visit: impl FnMut(usize, f32) -> bool,
     ) -> bool {
         self.near(x - r, z - r, x + r, z + r, |h| {
-            if !matches!(h.kind, HULL_PLANE | HULL_HALF | HULL_RISER) {
+            if !h.is_body() {
                 return false;
             }
             let (lx, lz) = h.local(x, z);
-            if Hull::body_dist2(lx, lz) >= r * r {
+            if h.foot_dist2(lx, lz) >= r * r {
                 return false;
             }
             if h.kind == HULL_RISER {
-                let Some(y) = crate::circulation::surface(h.shape, h.loc, lx, lz) else {
+                let Some(dy) = crate::circulation::surface(h.shape, h.loc, lx, lz) else {
                     return false;
                 };
                 let slab = if h.shape == SHAPE_FOUNDATION_STEPS {
@@ -524,10 +619,12 @@ impl Hulls {
                 } else {
                     (h.level as usize).max(1)
                 };
-                return visit(slab, h.floor_y + y);
+                return visit(slab, y(h).0 + dy);
             }
             let here = match h.kind {
                 HULL_PLANE => !h.open || floor_frame_solid(lx, lz, r),
+                // Its true footprint at the radius, the rim too.
+                HULL_TRI => !h.open || tri_rim_solid(lx, lz, r),
                 // The half test at the point, boundary-inclusive both sides
                 // (a NW+SE seam reads the same from either), the rim at
                 // the radius.
@@ -541,27 +638,33 @@ impl Hulls {
                     inside && (!h.open || tri_frame_solid(h.loc, lx, lz, r))
                 }
             };
-            here && visit(h.level as usize, h.floor_y)
+            here && visit(h.level as usize, y(h).0)
         })
     }
 
     /// The floor a body standing at (`x`, `z`) with its feet at `feet_y`
     /// is on: `collide::floor_under`'s piece walk, the lowest socket at
     /// the first of its five probe points that finds one.
-    pub fn floor_under(&self, x: f32, z: f32, feet_y: f32) -> Option<(u16, u16, u8)> {
+    pub fn floor_under<Y: Fn(&Hull) -> (f32, f32)>(
+        &self,
+        yf: &Y,
+        x: f32,
+        z: f32,
+        feet_y: f32,
+    ) -> Option<(u16, u16, u8)> {
         const HAND: f32 = 0.25;
         let r = CAPSULE_RADIUS_M;
         for (px, pz) in [(x, z), (x - r, z), (x + r, z), (x, z - r), (x, z + r)] {
             let mut best: Option<(u8, PieceHit)> = None;
             self.near(px, pz, px, pz, |h| {
-                if !matches!(h.kind, HULL_PLANE | HULL_HALF | HULL_RISER) {
+                if !h.is_body() {
                     return false;
                 }
                 let (lx, lz) = h.local(px, pz);
-                if !(0.0..SIDE_M).contains(&lx) || !(0.0..SIDE_M).contains(&lz) {
+                if !h.holds(lx, lz) {
                     return false;
                 }
-                let y = h.floor_y;
+                let y = yf(h).0;
                 let on = if h.kind == HULL_RISER {
                     feet_y > y - HAND && feet_y < y + LEVEL_H_M + HAND
                 } else {
@@ -581,7 +684,15 @@ impl Hulls {
 
     /// Whether an edge or diagonal stops a capsule moving (x, z) →
     /// (nx, nz) with its feet at `feet_y`: `collide::blocked`'s piece walk.
-    pub fn edges_block(&self, x: f32, z: f32, nx: f32, nz: f32, feet_y: f32) -> bool {
+    pub fn edges_block<Y: Fn(&Hull) -> (f32, f32)>(
+        &self,
+        y: &Y,
+        x: f32,
+        z: f32,
+        nx: f32,
+        nz: f32,
+        feet_y: f32,
+    ) -> bool {
         let reach = CAPSULE_RADIUS_M + WALL_THICKNESS_M * 0.5;
         let (lo, hi) = (feet_y, feet_y + CAPSULE_HEIGHT_M);
         self.near(
@@ -591,14 +702,15 @@ impl Hulls {
             z.max(nz) + reach,
             |h| match h.kind {
                 HULL_EDGE => {
-                    let bottom = h.floor_y;
-                    let foot = h.foot_y;
-                    if feet_y >= bottom + h.height() || feet_y + CAPSULE_HEIGHT_M <= foot {
-                        return false;
-                    }
+                    // The plan test first: it is arithmetic, the heights
+                    // are lookups.
                     let Some(t) = h.meet(x, z, nx, nz, CAPSULE_RADIUS_M) else {
                         return false;
                     };
+                    let (bottom, foot) = y(h);
+                    if feet_y >= bottom + h.height() || feet_y + CAPSULE_HEIGHT_M <= foot {
+                        return false;
+                    }
                     let full = (0.0..=SIDE_M).contains(&t);
                     if (feet_y < bottom && foot < bottom) || h.shut {
                         return full;
@@ -613,13 +725,15 @@ impl Hulls {
                     }
                 }
                 HULL_DIAG => {
-                    let bottom = h.floor_y;
-                    let top = bottom + h.height();
-                    if lo >= top || hi <= bottom {
+                    if !h
+                        .meet(x, z, nx, nz, CAPSULE_RADIUS_M)
+                        .is_some_and(|t| (0.0..=h.span()).contains(&t))
+                    {
                         return false;
                     }
-                    h.meet(x, z, nx, nz, CAPSULE_RADIUS_M)
-                        .is_some_and(|t| (0.0..=h.span()).contains(&t))
+                    let bottom = y(h).0;
+                    let top = bottom + h.height();
+                    lo < top && hi > bottom
                 }
                 _ => false,
             },
@@ -631,8 +745,9 @@ impl Hulls {
     /// in it: `collide::shot_hit`'s edge and diagonal walks. Among several,
     /// the least [`Hull::rank`].
     #[allow(clippy::too_many_arguments)]
-    pub fn shot_edges(
+    pub fn shot_edges<Y: Fn(&Hull) -> (f32, f32)>(
         &self,
+        yf: &Y,
         x: f32,
         z: f32,
         nx: f32,
@@ -649,18 +764,16 @@ impl Hulls {
             z.max(nz) + reach,
             |h| {
                 let got = match h.kind {
-                    HULL_EDGE => shot_edge(h, x, z, nx, nz, y, r),
-                    HULL_DIAG => {
-                        let bottom = h.floor_y;
-                        let top = bottom + h.height();
-                        if y < bottom || y >= top {
-                            None
-                        } else {
-                            h.meet(x, z, nx, nz, r)
-                                .filter(|t| (0.0..=h.span()).contains(t))
-                                .map(|_| false)
-                        }
-                    }
+                    HULL_EDGE => h
+                        .meet(x, z, nx, nz, r)
+                        .and_then(|t| shot_edge(h, yf(h), t, y, r)),
+                    HULL_DIAG => h
+                        .meet(x, z, nx, nz, r)
+                        .filter(|t| (0.0..=h.span()).contains(t))
+                        .and_then(|_| {
+                            let bottom = yf(h).0;
+                            (y >= bottom && y < bottom + h.height()).then_some(false)
+                        }),
                     _ => None,
                 };
                 if let Some(insert) = got {
@@ -677,25 +790,33 @@ impl Hulls {
     /// Which body or flight a shot sample at (`x`, `z`), altitude `y`,
     /// radius `r` stops on: `collide::cell_planes_stop_shot`. The least
     /// [`Hull::rank`] among several.
-    pub fn shot_bodies(&self, x: f32, z: f32, y: f32, r: f32) -> Option<Hull> {
+    pub fn shot_bodies<Y: Fn(&Hull) -> (f32, f32)>(
+        &self,
+        yf: &Y,
+        x: f32,
+        z: f32,
+        y: f32,
+        r: f32,
+    ) -> Option<Hull> {
         let mut best: Option<Hull> = None;
         self.near(x - r, z - r, x + r, z + r, |h| {
-            if !matches!(h.kind, HULL_PLANE | HULL_HALF | HULL_RISER) {
+            if !h.is_body() {
                 return false;
             }
             let (lx, lz) = h.local(x, z);
-            if Hull::body_dist2(lx, lz) >= r * r {
+            if h.foot_dist2(lx, lz) >= r * r {
                 return false;
             }
             let stops = if h.kind == HULL_RISER {
                 crate::circulation::surface(h.shape, h.loc, lx, lz).is_some_and(|dy| {
-                    let top = h.floor_y + dy;
+                    let top = yf(h).0 + dy;
                     y - r < top
                         && (h.shape == SHAPE_FOUNDATION_STEPS || y + r > top - PLANE_THICKNESS_M)
                 })
             } else {
                 let here = match h.kind {
                     HULL_PLANE => !h.open || floor_frame_solid(lx, lz, r),
+                    HULL_TRI => !h.open || tri_rim_solid(lx, lz, r),
                     _ => {
                         let inside = match h.loc {
                             LOC_TRI_XLO_ZLO => lx + lz <= SIDE_M,
@@ -706,7 +827,7 @@ impl Hulls {
                         inside && (!h.open || tri_frame_solid(h.loc, lx, lz, r))
                     }
                 };
-                let floor = h.floor_y;
+                let floor = yf(h).0;
                 here && y - r < floor && (h.level == 0 || y + r > floor - PLANE_THICKNESS_M)
             };
             if stops && best.is_none_or(|b| h.rank() < b.rank()) {
@@ -721,18 +842,30 @@ impl Hulls {
 impl Hulls {
     /// Whether a body's flank stops a capsule standing at (`x`, `z`) with
     /// its feet at `feet_y`: `collide::plane_blocked`'s piece half.
-    pub fn plane_blocked(&self, x: f32, z: f32, feet_y: f32) -> bool {
+    pub fn plane_blocked<Y: Fn(&Hull) -> (f32, f32)>(
+        &self,
+        y: &Y,
+        x: f32,
+        z: f32,
+        feet_y: f32,
+    ) -> bool {
         let head = feet_y + CAPSULE_HEIGHT_M;
-        self.bodies_near(x, z, CAPSULE_RADIUS_M, |level, top| {
+        self.bodies_near(y, x, z, CAPSULE_RADIUS_M, |level, top| {
             feet_y + STEP_UP < top && (level == 0 || head > top - PLANE_THICKNESS_M)
         })
     }
 
     /// The lowest slab underside over a capsule's head: `collide::piece_ceiling`.
-    pub fn ceiling(&self, x: f32, z: f32, feet_y: f32) -> Option<f32> {
+    pub fn ceiling<Y: Fn(&Hull) -> (f32, f32)>(
+        &self,
+        y: &Y,
+        x: f32,
+        z: f32,
+        feet_y: f32,
+    ) -> Option<f32> {
         let head = feet_y + CAPSULE_HEIGHT_M;
         let mut lowest: Option<f32> = None;
-        self.bodies_near(x, z, CAPSULE_RADIUS_M, |level, top| {
+        self.bodies_near(y, x, z, CAPSULE_RADIUS_M, |level, top| {
             let underside = top - PLANE_THICKNESS_M;
             if level > 0 && head <= underside {
                 lowest = Some(lowest.map_or(underside, |old| old.min(underside)));
@@ -744,10 +877,16 @@ impl Hulls {
 
     /// The highest top within a step of `feet_y` a capsule's disc overlaps:
     /// `collide::body_ground`'s piece half.
-    pub fn body_ground(&self, x: f32, z: f32, feet_y: f32) -> f32 {
+    pub fn body_ground<Y: Fn(&Hull) -> (f32, f32)>(
+        &self,
+        y: &Y,
+        x: f32,
+        z: f32,
+        feet_y: f32,
+    ) -> f32 {
         let lid = feet_y + STEP_UP;
         let mut best = NO_SURFACE;
-        self.bodies_near(x, z, CAPSULE_RADIUS_M, |_, top| {
+        self.bodies_near(y, x, z, CAPSULE_RADIUS_M, |_, top| {
             if top <= lid && top > best {
                 best = top;
             }
@@ -760,8 +899,9 @@ impl Hulls {
     /// radius `r` stops on, and whether it was an insert: edges and
     /// diagonals first, then the bodies at the new point.
     #[allow(clippy::too_many_arguments)]
-    pub fn shot_hit(
+    pub fn shot_hit<Y: Fn(&Hull) -> (f32, f32)>(
         &self,
+        yf: &Y,
         x: f32,
         z: f32,
         nx: f32,
@@ -769,20 +909,17 @@ impl Hulls {
         y: f32,
         r: f32,
     ) -> Option<(Hull, bool)> {
-        self.shot_edges(x, z, nx, nz, y, r)
-            .or_else(|| self.shot_bodies(nx, nz, y, r).map(|h| (h, false)))
+        self.shot_edges(yf, x, z, nx, nz, y, r)
+            .or_else(|| self.shot_bodies(yf, nx, nz, y, r).map(|h| (h, false)))
     }
 }
 
-/// A straight edge against a shot sample: `collide::cell_edges_stop_shot`'s
+/// A straight edge a shot sample meets `t` along: `collide::cell_edges_stop_shot`'s
 /// per-level body. Some(insert) when it stops the shot.
-#[allow(clippy::too_many_arguments)]
-fn shot_edge(h: &Hull, x: f32, z: f32, nx: f32, nz: f32, y: f32, r: f32) -> Option<bool> {
-    let bottom = h.floor_y;
-    if y < h.foot_y || y >= bottom + h.height() {
+fn shot_edge(h: &Hull, (bottom, foot): (f32, f32), t: f32, y: f32, r: f32) -> Option<bool> {
+    if y < foot || y >= bottom + h.height() {
         return None;
     }
-    let t = h.meet(x, z, nx, nz, r)?;
     let span = (0.0..=SIDE_M).contains(&t);
     let solid = span
         && (y < bottom
@@ -800,6 +937,70 @@ fn shot_edge(h: &Hull, x: f32, z: f32, nx: f32, nz: f32, y: f32, r: f32) -> Opti
     };
     let insert = !solid && h.shut && crate::deploy::insert_solid_at(arch, t, y - bottom, r);
     (solid || insert).then_some(insert)
+}
+
+/// The hull of a piece at its place in a building: the footprint's own
+/// frame carried into the world by the building's (`sock::Sock::local_axes`,
+/// `Frame::to_world`), its floor the building's band plus the socket's
+/// height. A grid piece in a grid building comes out as [`grid_hull`]
+/// does, to the bit (`tests::a_posed_grid_piece_is_its_grid_hull`).
+pub fn posed_hull(
+    key: u64,
+    hit: PieceHit,
+    frame: &crate::frame::Frame,
+    addr: &crate::sock::PieceAddr,
+    shape: u8,
+) -> Hull {
+    use crate::sock::{FOOT_EDGE, FOOT_RISER, FOOT_SQUARE, FOOT_TRI};
+    let (o, ux, uz) = addr.sock.local_axes();
+    let (ox, oz) = frame.to_world(o);
+    let (uxx, uxz) = frame.axis(ux);
+    let (vx, vz) = frame.axis(uz);
+    let kind = match addr.sock.foot {
+        FOOT_SQUARE => HULL_PLANE,
+        FOOT_TRI => HULL_TRI,
+        FOOT_EDGE => HULL_EDGE,
+        FOOT_RISER => HULL_RISER,
+        _ => HULL_TRI,
+    };
+    let floor_y = crate::build::band_y(frame.band) + crate::build::level_y(addr.level);
+    Hull {
+        key,
+        hit,
+        kind,
+        shape,
+        // A flight's frame is already turned to climb +z.
+        loc: if kind == HULL_RISER {
+            crate::build::LOC_RISER
+        } else {
+            0
+        },
+        level: addr.level,
+        open: matches!(
+            shape,
+            crate::build::SHAPE_FLOOR_FRAME | crate::build::SHAPE_TRI_FLOOR_FRAME
+        ),
+        shut: false,
+        panes: false,
+        floor_y,
+        foot_y: floor_y,
+        ox,
+        oz,
+        ux: uxx,
+        uz: uxz,
+        vx,
+        vz,
+    }
+}
+
+/// The row key of a grid address — `build`'s address key.
+pub const fn grid_key(cx: u16, cz: u16, level: u8, loc: u8) -> u64 {
+    (1 << 63) | (cx as u64) << 32 | (cz as u64) << 16 | (level as u64) << 8 | loc as u64
+}
+
+/// Heights as the row holds them.
+pub fn stored(h: &Hull) -> (f32, f32) {
+    (h.floor_y, h.foot_y)
 }
 
 /// The hull of a grid piece: its cell's frame, and the legacy kind its
@@ -858,6 +1059,7 @@ pub fn grid_hull(
 
 #[cfg(test)]
 mod tests {
+    use super::stored as STORED;
     use super::*;
     use crate::build::{SHAPE_FOUNDATION, SHAPE_WALL};
     use crate::rng::Pcg32;
@@ -906,6 +1108,134 @@ mod tests {
         assert!(hulls.is_empty());
     }
 
+    /// A grid piece placed through a building's frame answers every query
+    /// exactly as the cell-framed row does: frame ∘ lattice reproduces the
+    /// grid, to the bit.
+    #[test]
+    fn a_posed_grid_piece_is_its_grid_hull() {
+        use crate::build::*;
+        use crate::frame::Frame;
+        use crate::sock::{from_grid, PieceAddr};
+        let (ox, oz) = (680u16, 690u16);
+        let frame = Frame::new((ox as i32 * 300, oz as i32 * 300), 41, 0);
+        let mut rng = Pcg32::new(0x9_05ED, 5);
+        let cases = [
+            (LOC_PLANE, SHAPE_FLOOR, 2u8),
+            (LOC_PLANE, SHAPE_FLOOR_FRAME, 3),
+            (LOC_PLANE, SHAPE_FOUNDATION, 0),
+            (LOC_EDGE_XLO, SHAPE_WALL, 0),
+            (LOC_EDGE_ZLO, SHAPE_DOORWAY, 2),
+            (LOC_EDGE_XLO, SHAPE_WINDOW, 9),
+            (LOC_EDGE_ZLO, SHAPE_FRAME, 1),
+            (LOC_RISER, SHAPE_STAIRS, 0),
+            (LOC_RISER_XHI, SHAPE_STAIRS_L, 2),
+            (LOC_RISER_ZLO, SHAPE_STAIRS_U, 1),
+            (LOC_RISER_XLO, SHAPE_STAIRS_SPIRAL, 4),
+            (LOC_RISER_XHI, SHAPE_FOUNDATION_STEPS, 0),
+        ];
+        for (loc, shape, level) in cases {
+            let (cx, cz) = (ox + 2, oz + 1);
+            let sock = from_grid(ox, oz, cx, cz, loc).unwrap();
+            let addr = PieceAddr {
+                bld: 3,
+                level,
+                sock,
+            };
+            let floor = band_y(41) + level_y(level);
+            let mut grid = Hulls::new();
+            grid.add(grid_hull(key(1), cx, cz, level, loc, shape, floor, floor));
+            let mut posed = Hulls::new();
+            let h = posed_hull(key(1), grid.rows()[0].hit, &frame, &addr, shape);
+            assert_eq!(h.floor_y.to_bits(), floor.to_bits());
+            assert_eq!((h.ox, h.oz), {
+                let g = grid.rows()[0];
+                if loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == LOC_PLANE {
+                    (g.ox, g.oz)
+                } else {
+                    (h.ox, h.oz)
+                }
+            });
+            posed.add(h);
+            let (x0, z0) = (cx as f32 * 3.0 - 1.0, cz as f32 * 3.0 - 1.0);
+            for i in 0..4_000 {
+                let u = |rng: &mut Pcg32| rng.next_bounded(1 << 16) as f32 / 65536.0;
+                let (x, z) = (x0 + u(&mut rng) * 5.0, z0 + u(&mut rng) * 5.0);
+                let (nx, nz) = (x + (u(&mut rng) - 0.5) * 0.8, z + (u(&mut rng) - 0.5) * 0.8);
+                let feet = floor + (u(&mut rng) - 0.5) * 6.0;
+                let y = feet + u(&mut rng) * 2.0;
+                let ctx = (loc, shape, i);
+                assert_eq!(
+                    grid.ground(&STORED, x, z, feet).to_bits(),
+                    posed.ground(&STORED, x, z, feet).to_bits(),
+                    "{ctx:?}"
+                );
+                assert_eq!(
+                    grid.body_ground(&STORED, x, z, feet).to_bits(),
+                    posed.body_ground(&STORED, x, z, feet).to_bits(),
+                    "{ctx:?}"
+                );
+                assert_eq!(
+                    grid.plane_blocked(&STORED, x, z, feet),
+                    posed.plane_blocked(&STORED, x, z, feet),
+                    "{ctx:?}"
+                );
+                assert_eq!(
+                    grid.edges_block(&STORED, x, z, nx, nz, feet),
+                    posed.edges_block(&STORED, x, z, nx, nz, feet),
+                    "{ctx:?}"
+                );
+                for r in [0.0, 0.1] {
+                    assert_eq!(
+                        grid.shot_hit(&STORED, x, z, nx, nz, y, r).map(|h| h.1),
+                        posed.shot_hit(&STORED, x, z, nx, nz, y, r).map(|h| h.1),
+                        "{ctx:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An equilateral floor carries a body over its own triangle and not a
+    /// hand's breadth past its sides, and blocks a flank the same.
+    #[test]
+    fn a_triangle_floor_is_its_triangle() {
+        use crate::build::*;
+        use crate::frame::Frame;
+        use crate::lattice::LPt;
+        use crate::sock::{PieceAddr, Sock};
+        let frame = Frame::new((200_000, 200_000), 40, 7_000);
+        let sock = Sock::tri_from(LPt::ZERO, 1);
+        let addr = PieceAddr {
+            bld: 0,
+            level: 2,
+            sock,
+        };
+        let mut hulls = Hulls::new();
+        let h = posed_hull(key(9), PieceHit::default(), &frame, &addr, SHAPE_TRI_FLOOR);
+        hulls.add(h);
+        let floor = h.floor_y;
+        // The centroid is inside, a point 0.1 m past a corner is not.
+        let (cx, cz) = frame.to_world(sock.at);
+        assert_eq!(
+            hulls.ground(&STORED, cx, cz, floor).to_bits(),
+            floor.to_bits()
+        );
+        let (corner, _) = sock.corners();
+        let (kx, kz) = frame.to_world(corner[1]);
+        let (dx, dz) = (kx - cx, kz - cz);
+        let n = (dx * dx + dz * dz).sqrt();
+        let (fx, fz) = (kx + dx / n * 0.1, kz + dz / n * 0.1);
+        assert_eq!(hulls.ground(&STORED, fx, fz, floor), NO_SURFACE);
+        // A body standing there still overlaps it with its disc.
+        assert_eq!(hulls.body_ground(&STORED, fx, fz, floor), floor);
+        // And a body 0.5 m past it does not.
+        let (gx, gz) = (kx + dx / n * 0.5, kz + dz / n * 0.5);
+        assert_eq!(hulls.body_ground(&STORED, gx, gz, floor), NO_SURFACE);
+        // Its slab stops a body walking in below its underside but above a
+        // step.
+        assert!(hulls.plane_blocked(&STORED, cx, cz, floor - 1.0));
+    }
+
     #[test]
     fn a_wall_blocks_a_crossing_and_not_a_pass_beside_it() {
         let mut hulls = Hulls::new();
@@ -922,9 +1252,12 @@ mod tests {
         ));
         let x = cx as f32 * 3.0;
         let z = cz as f32 * 3.0 + 1.5;
-        assert!(hulls.edges_block(x - 0.6, z, x - 0.1, z, 20.0));
-        assert!(!hulls.edges_block(x - 0.6, z + 4.0, x + 0.6, z + 4.0, 20.0));
-        assert!(!hulls.edges_block(x - 0.6, z, x - 0.1, z, 23.5), "above it");
+        assert!(hulls.edges_block(&STORED, x - 0.6, z, x - 0.1, z, 20.0));
+        assert!(!hulls.edges_block(&STORED, x - 0.6, z + 4.0, x + 0.6, z + 4.0, 20.0));
+        assert!(
+            !hulls.edges_block(&STORED, x - 0.6, z, x - 0.1, z, 23.5),
+            "above it"
+        );
     }
 }
 
@@ -932,6 +1265,7 @@ mod tests {
 /// every legacy shape, random bodies and shots, the same answers.
 #[cfg(test)]
 mod shadow {
+    use super::stored as STORED;
     use super::*;
     use crate::build::*;
     use crate::collide::{self, ColIndex};
@@ -953,7 +1287,7 @@ mod shadow {
     }
 
     fn key(cx: u16, cz: u16, level: u8, loc: u8) -> u64 {
-        (1 << 63) | (cx as u64) << 32 | (cz as u64) << 16 | (level as u64) << 8 | loc as u64
+        grid_key(cx, cz, level, loc)
     }
 
     /// One random base: at most one piece per (cell, level, slot), the
@@ -1175,39 +1509,40 @@ mod shadow {
                     + (unit(&mut rng) - 0.4) * 7.0;
                 let ctx = (round, i, x, z, feet);
                 assert_eq!(
-                    collide::piece_ground(s, hv, &b.cols, x, z, feet).to_bits(),
-                    b.hulls.ground(x, z, feet).to_bits(),
+                    crate::cells_oracle::piece_ground(s, hv, &b.cols, x, z, feet).to_bits(),
+                    b.hulls.ground(&STORED, x, z, feet).to_bits(),
                     "ground, {ctx:?}"
                 );
                 assert_eq!(
-                    collide::body_ground(s, hv, &b.cols, x, z, feet).to_bits(),
-                    b.hulls.body_ground(x, z, feet).to_bits(),
+                    crate::cells_oracle::body_ground(s, hv, &b.cols, x, z, feet).to_bits(),
+                    b.hulls.body_ground(&STORED, x, z, feet).to_bits(),
                     "body_ground, {ctx:?}"
                 );
                 assert_eq!(
-                    collide::plane_blocked(s, hv, &b.cols, x, z, feet),
-                    b.hulls.plane_blocked(x, z, feet),
+                    crate::cells_oracle::plane_blocked(s, hv, &b.cols, x, z, feet),
+                    b.hulls.plane_blocked(&STORED, x, z, feet),
                     "plane_blocked, {ctx:?}"
                 );
                 assert_eq!(
-                    collide::piece_ceiling(s, hv, &b.cols, x, z, feet).map(f32::to_bits),
-                    b.hulls.ceiling(x, z, feet).map(f32::to_bits),
+                    crate::cells_oracle::piece_ceiling(s, hv, &b.cols, x, z, feet)
+                        .map(f32::to_bits),
+                    b.hulls.ceiling(&STORED, x, z, feet).map(f32::to_bits),
                     "ceiling, {ctx:?}"
                 );
                 assert_eq!(
-                    collide::floor_under(s, hv, &b.cols, x, z, feet),
-                    b.hulls.floor_under(x, z, feet),
+                    crate::cells_oracle::floor_under(s, hv, &b.cols, x, z, feet),
+                    b.hulls.floor_under(&STORED, x, z, feet),
                     "floor_under, {ctx:?}"
                 );
-                let ob = collide::blocked(s, hv, &b.cols, x, z, nx, nz, feet);
-                if ob != b.hulls.edges_block(x, z, nx, nz, feet) {
+                let ob = crate::cells_oracle::blocked(s, hv, &b.cols, x, z, nx, nz, feet);
+                if ob != b.hulls.edges_block(&STORED, x, z, nx, nz, feet) {
                     // Only a wall's end the old walk never looked at — an
                     // edge or diagonal of neither the origin's cell nor the
                     // destination's — may tell them apart.
                     let seen = cells_view(&b.hulls, x, z, nx, nz);
                     assert_eq!(
                         ob,
-                        seen.edges_block(x, z, nx, nz, feet),
+                        seen.edges_block(&STORED, x, z, nx, nz, feet),
                         "blocked to ({nx}, {nz}), {ctx:?}"
                     );
                     assert!(!ob, "a wall end can only add a block, {ctx:?}");
@@ -1215,12 +1550,12 @@ mod shadow {
                 }
                 let y = feet + unit(&mut rng) * 3.0;
                 let r = [0.0, 0.03, 0.15][rng.next_bounded(3) as usize];
-                let old = collide::shot_hit(s, hv, &b.cols, x, z, nx, nz, y, r);
-                let new = b.hulls.shot_hit(x, z, nx, nz, y, r);
+                let old = crate::cells_oracle::shot_hit(s, hv, &b.cols, x, z, nx, nz, y, r);
+                let new = b.hulls.shot_hit(&STORED, x, z, nx, nz, y, r);
                 let new = if old.is_some() != new.is_some() {
                     assert!(old.is_none(), "a wall end can only add a hit, {ctx:?}");
                     ends += 1;
-                    cells_view(&b.hulls, x, z, nx, nz).shot_hit(x, z, nx, nz, y, r)
+                    cells_view(&b.hulls, x, z, nx, nz).shot_hit(&STORED, x, z, nx, nz, y, r)
                 } else {
                     new
                 };
@@ -1239,7 +1574,7 @@ mod shadow {
                         let k = key(oh.cx, oh.cz, oh.level, oh.loc);
                         one.add(*b.hulls.find(k).expect("old hit has a row"));
                         assert!(
-                            one.shot_hit(x, z, nx, nz, y, r).is_some(),
+                            one.shot_hit(&STORED, x, z, nx, nz, y, r).is_some(),
                             "old pick {oh:?} is not a hit alone, {ctx:?}"
                         );
                     }

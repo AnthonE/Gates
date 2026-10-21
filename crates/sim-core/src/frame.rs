@@ -10,8 +10,10 @@
 use crate::fmath;
 use crate::lattice::LPt;
 
-/// Centimetres in a metre, for the frame's integer origin.
-const CM: f32 = 0.01;
+/// Centimetres in a metre, for the frame's integer origin. A division,
+/// not a multiplication by 0.01: correctly rounded, so an origin on a whole
+/// metre — every grid building's — lands on it exactly.
+const CM: f32 = 100.0;
 
 /// √3 / 2.
 const H3: f32 = 0.866_025_4;
@@ -49,6 +51,15 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Facing +x from the world origin, on band 0: an unused row.
+    pub const ZERO: Frame = Frame {
+        origin_cm: (0, 0),
+        band: 0,
+        yaw: 0,
+        s: 0.0,
+        c: 1.0,
+    };
+
     pub fn new(origin_cm: (i32, i32), band: i32, yaw: u16) -> Self {
         let a = f32::from(yaw) * (core::f32::consts::TAU / 65536.0);
         let (s, c) = fmath::sin_cos(a);
@@ -69,8 +80,8 @@ impl Frame {
     /// A lattice point in world metres, (x, z).
     pub fn to_world(&self, p: LPt) -> (f32, f32) {
         let (lx, lz) = p.to_xz();
-        let ox = self.origin_cm.0 as f32 * CM;
-        let oz = self.origin_cm.1 as f32 * CM;
+        let ox = self.origin_cm.0 as f32 / CM;
+        let oz = self.origin_cm.1 as f32 / CM;
         (
             ox + lx * self.c + lz * self.s,
             oz - lx * self.s + lz * self.c,
@@ -80,8 +91,8 @@ impl Frame {
     /// A world point in the frame's own metres — the inverse of
     /// [`Frame::to_world`], for asking which lattice point an aim is near.
     pub fn to_local(&self, x: f32, z: f32) -> (f32, f32) {
-        let dx = x - self.origin_cm.0 as f32 * CM;
-        let dz = z - self.origin_cm.1 as f32 * CM;
+        let dx = x - self.origin_cm.0 as f32 / CM;
+        let dz = z - self.origin_cm.1 as f32 / CM;
         (dx * self.c - dz * self.s, dx * self.s + dz * self.c)
     }
 

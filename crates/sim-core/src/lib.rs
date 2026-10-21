@@ -12,7 +12,10 @@ pub mod bots;
 pub mod boulder;
 pub mod brain;
 pub mod build;
+pub mod building;
 pub mod casino;
+#[cfg(test)]
+mod cells_oracle;
 pub mod charge;
 pub mod circulation;
 pub mod claim;

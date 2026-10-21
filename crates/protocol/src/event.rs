@@ -9943,6 +9943,22 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/space.rs"),
         },
         Module {
+            file: "building.rs",
+            src: include_str!("../../sim-core/src/building.rs"),
+        },
+        Module {
+            file: "sock.rs",
+            src: include_str!("../../sim-core/src/sock.rs"),
+        },
+        Module {
+            file: "hull.rs",
+            src: include_str!("../../sim-core/src/hull.rs"),
+        },
+        Module {
+            file: "cells_oracle.rs",
+            src: include_str!("../../sim-core/src/cells_oracle.rs"),
+        },
+        Module {
             file: "gather.rs",
             src: include_str!("../../sim-core/src/gather.rs"),
         },

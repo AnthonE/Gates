@@ -132,6 +132,9 @@ fn stepping_off_a_terrace_never_lands_inside_it() {
     let table = ScatterTable::alpha_default();
     let p = z.placed();
     let mut failures = Vec::new();
+    // One empty index for every step: building one is megabytes of zeroed
+    // tables.
+    let cols = ColIndex::new();
     for Edge { start, out, top } in EDGES {
         let (sx, sz) = kit::to_world(&p, start.0, start.1);
         let (ox, oz) = kit::to_world(&p, start.0 + out.0, start.1 + out.1);
@@ -171,7 +174,7 @@ fn stepping_off_a_terrace_never_lands_inside_it() {
                             ..InputFrame::default()
                         }
                     };
-                    movement::step(ZIG_SEED, &h, &ColIndex::new(), &mut occ, &mut b, &f);
+                    movement::step(ZIG_SEED, &h, &cols, &mut occ, &mut b, &f);
                     let (x, wz, y) = pos(&b);
                     if occ.blocks(ZIG_SEED, x, wz, y) {
                         let (lx, lz) = kit::to_local(&p, x, wz);
@@ -204,6 +207,7 @@ fn fumbling_at_a_terrace_edge_never_enters_the_stone() {
     let p = z.placed();
     let mut rng = Lcg(0x2161_6667);
     let mut failures = Vec::new();
+    let cols = ColIndex::new();
     for run in 0..240u32 {
         let Edge { start, out, top } = EDGES[run as usize % EDGES.len()];
         let jitter = (rng.next() % 600) as f32 * 0.01 - 3.0;
@@ -222,7 +226,7 @@ fn fumbling_at_a_terrace_edge_never_enters_the_stone() {
         };
         for t in 0..300u32 {
             let f = random_frame(&mut rng, toward);
-            movement::step(ZIG_SEED, &h, &ColIndex::new(), &mut occ, &mut b, &f);
+            movement::step(ZIG_SEED, &h, &cols, &mut occ, &mut b, &f);
             let (x, wz, y) = pos(&b);
             if occ.blocks(ZIG_SEED, x, wz, y) {
                 let (lx, lz) = kit::to_local(&p, x, wz);
