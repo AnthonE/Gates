@@ -162,6 +162,13 @@ pub enum AdminCmd {
     /// carries (`ActionMsg::Team`), typed. Anyone may. `target` is 0 where
     /// none was given; a leading `#` on the id is the chat's own label.
     Team { op: u8, target: u32 },
+    /// `/lang <code>|off` (wire v135): the language this player's captions
+    /// are translated into (`lang.rs`), 0 for none. Anyone may. `quiet` is
+    /// the client's own `/lang <code> auto` at join, which the server does
+    /// not answer.
+    Lang { lang: u8, quiet: bool },
+    /// Bare `/lang`, or a code not in the list: which language, and the list.
+    LangWhat,
 }
 
 /// Is this line addressed to the server at all? Cheap enough to ask
@@ -240,6 +247,22 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
                 Some(w) => w.strip_prefix('#').unwrap_or(w).parse().ok()?,
             };
             (parts.next().is_none()).then_some(AdminCmd::Team { op, target })
+        }
+        "lang" | "language" => {
+            let lang = match parts.next() {
+                None => return Some(AdminCmd::LangWhat),
+                Some("off" | "none") => 0,
+                Some(code) => match crate::lang_of(code) {
+                    Some(lang) => lang,
+                    None => return Some(AdminCmd::LangWhat),
+                },
+            };
+            let quiet = match parts.next() {
+                None => false,
+                Some("auto") => true,
+                Some(_) => return None,
+            };
+            (parts.next().is_none()).then_some(AdminCmd::Lang { lang, quiet })
         }
         "save" => Some(AdminCmd::SaveNow),
         "brain" => Some(AdminCmd::Brain),
@@ -351,6 +374,35 @@ mod tests {
         for bad in ["/restart", "/restart 61", "/restart soon", "/restart 2 now"] {
             assert_eq!(parse(&text(bad)), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn lang_parses() {
+        let es = crate::lang_of("es").unwrap();
+        assert_eq!(
+            parse(&text("/lang es")),
+            Some(AdminCmd::Lang {
+                lang: es,
+                quiet: false
+            })
+        );
+        assert_eq!(
+            parse(&text("/lang pt-BR auto")),
+            Some(AdminCmd::Lang {
+                lang: crate::lang_of("pt").unwrap(),
+                quiet: true
+            })
+        );
+        assert_eq!(
+            parse(&text("/lang off")),
+            Some(AdminCmd::Lang {
+                lang: 0,
+                quiet: false
+            })
+        );
+        assert_eq!(parse(&text("/lang")), Some(AdminCmd::LangWhat));
+        assert_eq!(parse(&text("/lang klingon")), Some(AdminCmd::LangWhat));
+        assert_eq!(parse(&text("/lang es now")), None);
     }
 
     #[test]

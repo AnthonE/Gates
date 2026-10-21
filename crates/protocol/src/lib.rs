@@ -47,6 +47,7 @@ pub mod bits;
 pub mod chat;
 pub mod event;
 pub mod goldens;
+pub mod lang;
 pub mod version;
 pub mod voice;
 
@@ -57,6 +58,7 @@ pub use auth::{
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, Channel, ChatMsg, ChatText, CHAT_MAX_BYTES};
+pub use event::{caption_key, encode_event_caption, Caption};
 pub use event::{
     decode_event, encode_event_agent, encode_event_assist, encode_event_auth,
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync, encode_event_bags,
@@ -119,6 +121,7 @@ pub use event::{
     DEED_DRAW, DEED_DRINK, DEED_KEYPAD, DEED_MAX, DEED_MEAL, DEED_OPEN_BAG, DEED_OPEN_BOX,
     DEED_RELOAD,
 };
+pub use lang::{lang_code, lang_name, lang_of, LANGS, LANG_BITS, LANG_MAX};
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
 pub use sim_core::shop::ShopAct;
@@ -1281,7 +1284,10 @@ pub use voice::{
 /// building's frame, and its lattice footprint when the grid cannot name it
 /// (a grid bit picks); a piece address may be `LOC_NONE`, its id spelled in
 /// the other fields. `PIECE_SYNC_BATCH` 32 → 11.
-pub const PROTO_VER: u16 = 134;
+/// v135 — captions: `SUB_CAPTION` carries what a nearby player said out
+/// loud as text, or a line translated into the receiver's language
+/// (`lang.rs`).
+pub const PROTO_VER: u16 = 135;
 
 /// This game's slug in the elo catalog.
 ///

@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 184] = [
+const GOLDEN: [&[u8]; 185] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -247,6 +247,7 @@ const GOLDEN: [&[u8]; 184] = [
     include_bytes!("golden/action_sit.bin"),
     include_bytes!("golden/action_place_at.bin"),
     include_bytes!("golden/action_place_free.bin"),
+    include_bytes!("golden/event_caption.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -552,8 +553,10 @@ fn test_protocol_golden() {
     // The lattice placement verbs (v134).
     g!(seen, golden_action, 182);
     g!(seen, golden_action, 183);
+    // Captions (v135).
+    g!(seen, golden_event, 184);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 184, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 185, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1462,6 +1465,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_wheel_paid(staked, paid, &mut buf).unwrap()
+        }
+        "event_caption.bin" => {
+            let c = protocol::goldens::event_caption();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Caption(c),
+                "{name}"
+            );
+            protocol::encode_event_caption(&c, &mut buf).unwrap()
         }
         "event_slots.bin" => {
             let (machine, mult, code, reels, pay) = protocol::goldens::event_slots();

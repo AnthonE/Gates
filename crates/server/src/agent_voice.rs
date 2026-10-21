@@ -33,11 +33,11 @@ use std::time::{Duration, Instant};
 /// The longest utterance sent to be transcribed; a longer one is cut.
 pub const MAX_UTTERANCE_S: f32 = 15.0;
 /// Shorter than this is a cough or a key tap, not speech.
-const MIN_UTTERANCE_S: f32 = 0.35;
+pub(crate) const MIN_UTTERANCE_S: f32 = 0.35;
 /// Quieter than this (RMS) is an open microphone, not speech.
-const MIN_RMS: f32 = 0.006;
+pub(crate) const MIN_RMS: f32 = 0.006;
 /// A talker silent this long has finished, end flag or not.
-const PAUSE: Duration = Duration::from_millis(700);
+pub(crate) const PAUSE: Duration = Duration::from_millis(700);
 /// Talkers listened to at once; past it the one quiet longest is dropped.
 const EARS: usize = 8;
 /// The longest line spoken, in characters.
@@ -48,7 +48,7 @@ const LEAD_FRAMES: u32 = 3;
 /// one goes to be voiced, so it is ready as this one ends.
 const NEXT_AT_FRAMES: usize = 75;
 /// How long a service call may take before the line is given up.
-const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The biggest answer read from a service (30 s of 24 kHz speech).
 const MAX_AUDIO_BYTES: u64 = 2 * 24_000 * 30;
 
@@ -183,14 +183,14 @@ pub struct AgentVoice {
 }
 
 /// A spend ceiling per rolling hour.
-struct Window {
+pub(crate) struct Window {
     start: Instant,
     used: u32,
     cap: u32,
 }
 
 impl Window {
-    fn new(cap: u32) -> Self {
+    pub(crate) fn new(cap: u32) -> Self {
         Self {
             start: Instant::now(),
             used: 0,
@@ -198,7 +198,7 @@ impl Window {
         }
     }
 
-    fn take(&mut self, now: Instant) -> bool {
+    pub(crate) fn take(&mut self, now: Instant) -> bool {
         if now.duration_since(self.start) >= Duration::from_secs(3_600) {
             self.start = now;
             self.used = 0;
@@ -536,7 +536,11 @@ fn wav(pcm: &[f32]) -> Vec<u8> {
 }
 
 /// What was said in `pcm`, as text (one line, at most a few hundred bytes).
-fn transcribe(agent: &ureq::Agent, cfg: &VoiceConfig, pcm: &[f32]) -> Result<String, String> {
+pub(crate) fn transcribe(
+    agent: &ureq::Agent,
+    cfg: &VoiceConfig,
+    pcm: &[f32],
+) -> Result<String, String> {
     let boundary = format!("gates{:016x}", pcm.len() as u64 ^ 0x5eed_f00d_cafe_d00d);
     let mut body = Vec::new();
     let mut field = |name: &str, value: &str| {
@@ -639,7 +643,7 @@ fn synthesize(agent: &ureq::Agent, cfg: &VoiceConfig, text: &str) -> Result<Vec<
     Ok(out)
 }
 
-fn head(text: &str) -> String {
+pub(crate) fn head(text: &str) -> String {
     text.chars().take(200).collect()
 }
 

@@ -165,7 +165,7 @@ impl Composer {
 }
 
 /// One line in the scrollback.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
     pub speaker: u32,
     /// What the speaker is called (`ui::names::label`), settled when the
@@ -181,6 +181,15 @@ pub struct Line {
     pub friend: bool,
     /// When it arrived, seconds on the client's clock. The fade reads it.
     pub at: f64,
+    /// Words said out loud, transcribed by the shard (a caption, v135).
+    pub voice: bool,
+    /// The language the text was translated from, 0 for the words as said
+    /// or typed (`protocol::lang`).
+    pub lang: u8,
+    /// Which caption this line is: the speaker's utterance number for a
+    /// voice line, `protocol::caption_key` of the text for a typed one. A
+    /// translation finds its line by it.
+    pub key: u16,
 }
 
 /// The scrollback: bounded, oldest evicted.
@@ -197,6 +206,41 @@ impl Log {
         self.lines.push(line);
     }
 
+    /// A caption (v135), as a line: `more` continues the speaker's last
+    /// piece of the same caption in the same language. A translation
+    /// replaces the line it translates, the words as said or the line as
+    /// typed, rather than adding a second; one with nothing to replace is
+    /// a line of its own.
+    pub fn caption(&mut self, line: Line, more: bool) {
+        let same = |l: &Line| {
+            l.speaker == line.speaker
+                && l.voice == line.voice
+                && l.key == line.key
+                && (line.voice || l.channel == line.channel)
+        };
+        if more {
+            if let Some(l) = self
+                .lines
+                .iter_mut()
+                .rev()
+                .find(|l| same(l) && l.lang == line.lang)
+            {
+                l.text.push(' ');
+                l.text.push_str(&line.text);
+                l.at = line.at;
+                return;
+            }
+        } else if line.lang != 0 {
+            if let Some(l) = self.lines.iter_mut().rev().find(|l| same(l)) {
+                l.text = line.text;
+                l.lang = line.lang;
+                l.at = line.at;
+                return;
+            }
+        }
+        self.push(line);
+    }
+
     /// The channel tag drawn before a name: Rust's `[Team]`. Local is the
     /// default and goes bare.
     pub fn tag(channel: Channel) -> &'static str {
@@ -209,11 +253,21 @@ impl Log {
 
     /// The coloured half of a line: tag and name, then a colon. The name is
     /// the one the shard told everyone (`EventMsg::Tag`), so two players
-    /// reading the same conversation read the same names.
+    /// reading the same conversation read the same names. Words said out
+    /// loud are `[Voice]`; a translation names the language it came from.
     pub fn head(line: &Line) -> String {
-        match Self::tag(line.channel) {
-            "" => format!("{}: ", line.name),
-            tag => format!("{tag} {}: ", line.name),
+        let tag = if line.voice {
+            "[Voice]"
+        } else {
+            Self::tag(line.channel)
+        };
+        let from = match protocol::lang_code(line.lang) {
+            Some(code) => format!(" [{code}]"),
+            None => String::new(),
+        };
+        match tag {
+            "" => format!("{}{from}: ", line.name),
+            tag => format!("{tag} {}{from}: ", line.name),
         }
     }
 
@@ -346,6 +400,7 @@ mod tests {
                 face: None,
                 friend: false,
                 at: 0.0,
+                ..Line::default()
             });
         }
         assert_eq!(log.lines.len(), LOG_CAP);
@@ -362,6 +417,7 @@ mod tests {
             face: None,
             friend: false,
             at: 0.0,
+            ..Line::default()
         };
         assert_eq!(Log::head(&l), "[Team] Ash: ");
         let l = Line {
@@ -374,6 +430,73 @@ mod tests {
             ..l
         };
         assert_eq!(Log::head(&l), "Ash: ");
+        let l = Line {
+            voice: true,
+            lang: protocol::lang_of("es").unwrap(),
+            ..l
+        };
+        assert_eq!(Log::head(&l), "[Voice] Ash [es]: ");
+    }
+
+    /// A transcript lands, its second piece joins it, and its translation
+    /// replaces it; a typed line's translation replaces that line only.
+    #[test]
+    fn a_translation_replaces_the_words_it_translates() {
+        let es = protocol::lang_of("es").unwrap();
+        let mut log = Log::default();
+        let typed = ChatText::sanitize("hola".as_bytes()).unwrap();
+        let said = |text: &str, lang: u8, at: f64| Line {
+            speaker: 7,
+            name: "Doc".into(),
+            text: text.into(),
+            voice: true,
+            lang,
+            key: 3,
+            at,
+            ..Line::default()
+        };
+        log.push(Line {
+            speaker: 7,
+            text: "hola".into(),
+            key: protocol::caption_key(&typed),
+            ..Line::default()
+        });
+        log.caption(said("sígueme", 0, 1.0), false);
+        log.caption(said("al río", 0, 1.0), true);
+        assert_eq!(log.lines[1].text, "sígueme al río");
+        log.caption(said("follow me", es, 2.0), false);
+        log.caption(said("to the river", es, 2.0), true);
+        assert_eq!(log.lines.len(), 2);
+        assert_eq!(
+            (
+                log.lines[1].text.as_str(),
+                log.lines[1].lang,
+                log.lines[1].at
+            ),
+            ("follow me to the river", es, 2.0)
+        );
+        // The typed line's translation finds it by its key.
+        log.caption(
+            Line {
+                speaker: 7,
+                text: "hello".into(),
+                lang: es,
+                key: protocol::caption_key(&typed),
+                ..Line::default()
+            },
+            false,
+        );
+        assert_eq!(
+            (log.lines[0].text.as_str(), log.lines[0].lang),
+            ("hello", es)
+        );
+        // A translation of something no longer in the log stands alone.
+        let other = Line {
+            key: 9,
+            ..said("bye", es, 3.0)
+        };
+        log.caption(other, false);
+        assert_eq!(log.lines.len(), 3);
     }
 
     /// `Tab` picks where an unprefixed line goes; a typed prefix still wins.

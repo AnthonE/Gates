@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 184] = [
+pub const FIXTURES: [&str; 185] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -330,6 +330,8 @@ pub const FIXTURES: [&str; 184] = [
     // and a foundation placed free.
     "action_place_at.bin",
     "action_place_free.bin",
+    // Captions (v135): a translated transcript's second piece.
+    "event_caption.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -2069,6 +2071,20 @@ pub fn chat() -> (ChatText, crate::Channel) {
 /// the channel code with its high bit set.
 pub fn event_chat() -> (u32, crate::Channel, ChatText) {
     (7, crate::Channel::Team, chat_line())
+}
+
+/// A caption (v135): the second piece of utterance 0xBEEF from player 7,
+/// said out loud and translated from Spanish, so every field is non-zero.
+pub fn event_caption() -> crate::Caption {
+    crate::Caption {
+        from: 7,
+        line: 0xBEEF,
+        voice: true,
+        more: true,
+        channel: crate::Channel::Global,
+        lang: crate::lang_of("es").expect("a listed language"),
+        text: chat_line(),
+    }
 }
 
 /// The talker's last frame of a push (v113): the end flag set and a

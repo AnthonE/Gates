@@ -639,7 +639,11 @@ const SUB_WHEEL_PAID: u32 = 106;
 /// The receiver's pull of a slot machine's lever answered (wire v123,
 /// `EV_SLOTS` / `EV_SLOTS_REFUSED`). See `EventMsg::Slots`.
 const SUB_SLOTS: u32 = 107;
-const SUB_MAX: u32 = SUB_SLOTS;
+/// Words as text, for one receiver (wire v135, `server::scribe`): what a
+/// player near them said out loud, or a line translated into their
+/// language. See [`Caption`].
+const SUB_CAPTION: u32 = 108;
+const SUB_MAX: u32 = SUB_CAPTION;
 /// Widths of the casino's event fields.
 const WHEEL_SEGMENT_BITS: u32 = 5;
 const CASINO_CODE_BITS: u32 = 4;
@@ -2512,6 +2516,8 @@ pub enum EventMsg {
     /// You earned an achievement, or finished a set of them (v119). Own-fact,
     /// sent once, at the unlock: the popup's whole content.
     Achievement(Achieved),
+    /// Words as text (v135): see [`Caption`].
+    Caption(Caption),
     /// You woke up: `on_bag` is true if one of your own sleeping bags
     /// answered, false if the beach ring did. Own-fact, and the one message
     /// that closes the death screen.
@@ -6062,6 +6068,62 @@ pub fn encode_event_slots(
     Ok(w.finish())
 }
 
+/// Words as text, for one receiver (wire v135, `server::scribe`).
+///
+/// - `voice`: what player `from` said out loud near the receiver, as a
+///   transcript. `line` numbers that player's utterances, so a translation
+///   that follows replaces the words as said.
+/// - not `voice`: a chat line `from` typed on `channel`, translated. `line`
+///   is [`caption_key`] of the line as typed, so the client finds the line
+///   it translates.
+///
+/// `lang` is the language the text was translated *from* (`lang.rs`), 0
+/// for the words as said; a translation is always into the receiver's own
+/// language. A transcript longer than one line goes as several, each after
+/// the first with `more` set.
+///
+/// Like chat, a caption is never sim state: the shard makes it from voice
+/// it relays and lines it fans out, and it reaches no world and no WAL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caption {
+    pub from: u32,
+    pub line: u16,
+    pub voice: bool,
+    pub more: bool,
+    pub channel: Channel,
+    pub lang: u8,
+    pub text: ChatText,
+}
+
+/// The key a translated chat line names its original by: FNV-1a of the
+/// line's bytes, folded to 16 bits. Both ends compute it from the same
+/// sanitized text.
+pub fn caption_key(text: &ChatText) -> u16 {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in text.as_bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    (h ^ (h >> 16)) as u16
+}
+
+/// Words as text — see [`Caption`]. A typed line's caption is always a
+/// translation (`lang` set); a language past [`crate::LANG_MAX`] is refused.
+pub fn encode_event_caption(c: &Caption, buf: &mut [u8]) -> Result<usize, WireError> {
+    if c.lang > crate::LANG_MAX || (!c.voice && c.lang == 0) {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CAPTION)?;
+    w.write(c.from, 32)?;
+    w.write(c.line as u32, 16)?;
+    w.write_bit(c.voice)?;
+    w.write_bit(c.more)?;
+    c.channel.write(&mut w)?;
+    w.write(c.lang as u32, crate::LANG_BITS)?;
+    write_text(&mut w, &c.text)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -7743,6 +7805,26 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 reels,
                 pay,
             }
+        }
+        SUB_CAPTION => {
+            let from = r.read(32)?;
+            let line = r.read(16)? as u16;
+            let voice = r.read_bit()?;
+            let more = r.read_bit()?;
+            let channel = Channel::read(&mut r)?;
+            let lang = r.read(crate::LANG_BITS)? as u8;
+            if lang > crate::LANG_MAX || (!voice && lang == 0) {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Caption(Caption {
+                from,
+                line,
+                voice,
+                more,
+                channel,
+                lang,
+                text: read_text(&mut r)?,
+            })
         }
         SUB_ACHIEVEMENT => {
             let set = r.read_bit()?;

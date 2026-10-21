@@ -285,6 +285,8 @@ fn main() {
     let len =
         protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[183], &buf[..len]);
+    let len = protocol::encode_event_caption(&goldens::event_caption(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[184], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
