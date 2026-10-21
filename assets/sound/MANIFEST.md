@@ -31,9 +31,6 @@ file that fails to decode, and `crates/client/tests/sound.rs`
 | `impactGeneric_light` | `BulletStone` | a round on stone |
 | `impactWood_light` | `BulletWood` | a round into wood |
 | `impactMetal_light` | `BulletMetal` | a round on metal |
-| `footstep_wood` | `StepWood` (+remote) | a step on a twig or wooden floor |
-| `footstep_concrete` | `StepConcrete` (+remote) | a step on a stone floor |
-| `impactPlate_light` | `StepMetal` (+remote) | a step on a sheet-metal floor |
 | `impactWood_heavy` | `Knock` | a knock on a door |
 | `ore_glint_0`–`1` | `OreGlint` | cut here from `impactMetal_light_000` / `_002`: whole, sped to 1.65× / 1.80× (pitch and length), faded out over the last 90 / 80 ms, mono (cut 2026-10-11) |
 | `tung_0`–`2` | `Tung` | Triple T's bat. Cut here from `impactWood_heavy_000` / `_002` / `_004`: the strike's first 0.16 s (faded over its last 30 ms) driving two narrow resonators at f and 2.76 f (f = 330 / 300 / 360 Hz, Q 45 / 30) under the dry hit at 0.35, high-passed at 90 Hz, 0.5 s, peak 0.85, mono (cut 2026-10-12) |
@@ -169,6 +166,13 @@ recordings the take is the two layered.
 | `furnace_out_0`–`2`, `snuff_0`–`2` | `FurnaceOut`, `Snuff` | *Igniting gas jets* (as above): the jet cut off at 13.90, 20.70, 17.30 s, from 0.65 s before to 0.45 s after, HP 60 Hz, faded in over 0.2 s and out over 0.3 s. The furnace's lay a door slam (as above, 0.45 s) at 0.70 s, at 0.35 of the peak (cut 2026-10-21) |
 | `furnace_open_0`–`2` | `FurnaceOpen` | *G31-15 Small Metal Door* (as above): the latch and the swing at 2.98, 8.61, 13.78 s, 1.25 s each, HP 120 Hz, faded over the last 0.25 s (cut 2026-10-21) |
 | `dry_fire_0`–`2` | `DryFire` | USC Sunset Editorial, *Cock and fire empty rifle; many takes* (<https://archive.org/details/SSE_Library_GUNS>, CC0): the hammer falling on an empty chamber at 1.545, 4.065, 5.155 s, 0.30 s each from 4 ms before, HP 150 Hz, faded over the last 0.12 s (cut 2026-10-21) |
+| `reload_rifle_0`–`1` | `ReloadRifle` (+remote) | USC Sunset Editorial, *Loading a clip into a rifle* (<https://archive.org/details/SSE_Library_GUNS>, CC0): the magazine out at 0.95–1.45 / 1.88–2.40 s and in at 4.12–4.88 / 5.62–6.10 s; the charging handle from *Cocking a rifle; indoors* (same collection), 0.02–1.32 s, and USC Red Library *R12-26 Guns Cocking* (<https://archive.org/details/Red_Library_Guns_Misc>, CC0), 7.50–8.45 s (LP 7.5 kHz). Laid at 0, 1.05 and 2.05 s; each part HP 150 Hz, faded 4 / 15 ms, its hiss gated 26 dB down under −30 dB of its peak (cut 2026-10-21) |
+| `reload_pistol_0`–`1` | `ReloadPistol` (+remote) | the rifle's magazine out and in (as above, HP 400 / 350 Hz, quieter), then a slide racked from *Slide breech pistol; indoors* (SSE GUNS, CC0) at 1.55–2.15 / 5.18–5.75 s; laid at 0, 0.70 and 1.55 s, cut as the rifle's |
+| `reload_shotgun_0`–`1` | `ReloadShotgun` (+remote) | *Loading shotgun; indoors* (SSE GUNS, CC0): shells into the tube at 1.20–4.30 / 8.00–11.30 s, then the pump from *Rifle being fired & cocked* (SSE GUNS, `SHOTGUN/`, CC0) 2.82–4.30 s at 3.30 s; cut as the rifle's |
+| `reload_bolt_0`–`1` | `ReloadBolt` (+remote) | *Cocking bolt action rifle; indoors* (SSE GUNS, CC0): the bolt up and back 0.12–1.15 s at 0, forward and down 2.30–3.60 s at 2.55 s; between them rounds pushed in from USC Sunset Editorial *Loading cartridges into a rifle* (<https://archive.org/details/SSE_Library_BULLETS>, CC0) 3.82–4.90 / 6.02–7.30 s at 1.20 s; cut as the rifle's |
+| `step_wood_0`–`7` | `StepWood` (+remote) | USC Red Library, *R10-09 Heavy Boots on Wooden Floor* (<https://archive.org/details/Red_Library_Footsteps_1>, CC0): the steps at 2.005, 6.595, 11.19, 15.505, 18.65, 22.41, 27.61, 29.865 s, 0.32 s each from 4 ms before the heel, HP 60 Hz, held 30 ms then decayed over 90 ms, faded over the last third; chosen within 4 dB of the walk's median step (cut 2026-10-21). Replaces Kenney's `footstep_wood`, which had nothing above 300 Hz |
+| `step_concrete_0`–`7` | `StepConcrete` (+remote) | USC Red Library, *R10-50 Footsteps On Hard Stone* (<https://archive.org/details/Red_Library_Footsteps_2>, CC0): the steps at 6.77, 11.04, 11.715, 13.855, 17.91, 28.26, 28.955, 31.05 s, 0.30 s, HP 80 Hz, decayed over 70 ms, cut as the wood |
+| `step_metal_0`–`7` | `StepMetal` (+remote) | USC Red Library, *R10-56 Footsteps on Metal Staircase* (same collection, CC0): the steps at 0.57, 1.21, 2.255, 2.785, 3.325, 3.865, 5.45, 6.04 s, 0.40 s, HP 80 Hz, decayed over 140 ms to keep the ring, cut as the wood. Replaces Kenney's `impactPlate_light`, a plate struck rather than stood on |
 
 The USC library is the same Sunset/Red/Gold editorial collections, digitized
 by Craig Smith, whose Freesound uploads already ship above (`craigsmith`).

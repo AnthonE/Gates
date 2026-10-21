@@ -496,11 +496,26 @@ pub enum Cue {
     /// A trigger pulled on an empty magazine: the gun's dry click, in your
     /// hands. Appended, the enum's append-order rule.
     DryFire,
+    /// Your own reload, by the kind of gun (`render/audio.rs::reload_cue`):
+    /// a box magazine out and in and the charging handle (the rifles and
+    /// SMGs), a pistol's magazine and slide, shells pushed into a pump's
+    /// tube and the pump, a bolt rifle's bolt and rounds. The revolvers keep
+    /// [`Cue::Reload`]'s cylinder. Each fills the gun's reload time.
+    /// Appended, the enum's append-order rule, like the seven after it.
+    ReloadRifle,
+    ReloadPistol,
+    ReloadShotgun,
+    ReloadBolt,
+    /// The four heard at another body, as [`Cue::RemoteReload`].
+    RemoteReloadRifle,
+    RemoteReloadPistol,
+    RemoteReloadShotgun,
+    RemoteReloadBolt,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 122;
+pub const CUE_COUNT: usize = 130;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -631,6 +646,14 @@ impl Cue {
         Cue::Kindle,
         Cue::Snuff,
         Cue::DryFire,
+        Cue::ReloadRifle,
+        Cue::ReloadPistol,
+        Cue::ReloadShotgun,
+        Cue::ReloadBolt,
+        Cue::RemoteReloadRifle,
+        Cue::RemoteReloadPistol,
+        Cue::RemoteReloadShotgun,
+        Cue::RemoteReloadBolt,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -772,7 +795,15 @@ impl Cue {
             | Cue::FurnaceOut
             | Cue::FurnaceOpen
             | Cue::Kindle
-            | Cue::Snuff => 0.07,
+            | Cue::Snuff
+            | Cue::ReloadRifle
+            | Cue::ReloadPistol
+            | Cue::ReloadShotgun
+            | Cue::ReloadBolt
+            | Cue::RemoteReloadRifle
+            | Cue::RemoteReloadPistol
+            | Cue::RemoteReloadShotgun
+            | Cue::RemoteReloadBolt => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -1087,7 +1118,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock
     // Your own hands, so non-positional; the cooldown is what keeps a
     // reload key held down from being a rattle.
-    row(GAME,  0.0, 0.54, 250, 3, false),  // reload
+    RELOAD,                                // reload
     // Your own mouth and your own hands: non-positional, and a meal is a
     // second apart (`survival::CONSUME_TICKS`), so the cooldown is only
     // there for two landing in one frame.
@@ -1146,7 +1177,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // swing, because it is the one a fight turns on — Rust's players listen
     // for exactly that click to push. `limits::ACT_HEAR_CM` is the server's
     // side of the widest of these.
-    row(GAME, 30.0, 0.54,  40, 4, true),   // reload, somebody else's
+    RRELOAD,                               // reload, somebody else's
     row(GAME, 12.0, 0.70,  60, 3, true),   // eat, somebody else's
     row(GAME, 14.0, 0.62, 100, 3, true),   // bandage, somebody else's
     row(GAME, 12.0, 0.45, 100, 3, true),   // drink, somebody else's
@@ -1233,7 +1264,16 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Your own gun, empty: the reload's register, and a cooldown under the
     // fastest cadence so a held trigger clicks once a round it would fire.
     row(GAME,  0.0, 0.55,  80, 4, false),  // dry fire
+    // The guns' own reloads: the revolver's rows, yours then theirs.
+    RELOAD, RELOAD, RELOAD, RELOAD,
+    RRELOAD, RRELOAD, RRELOAD, RRELOAD,
 ];
+
+/// Your own reload, whichever gun (`Cue::Reload` and the four after it).
+const RELOAD: CueDef = row(GAME, 0.0, 0.54, 250, 3, false);
+/// Somebody else's: the one a fight turns on, so it carries furthest of
+/// their hands' sounds and ranks with a remote swing.
+const RRELOAD: CueDef = row(GAME, 30.0, 0.54, 40, 4, true);
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
 /// the second voice of a frame's blows is as loud and as urgent as the first.

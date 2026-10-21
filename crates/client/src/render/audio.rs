@@ -1357,12 +1357,22 @@ pub fn remote_heard(
     let Some(n) = net.as_deref() else {
         return;
     };
+    let core = &n.session.core;
+    let mut rs = client_core::interp::RemoteState::default();
     for &(id, deed, item) in feed.heard() {
         let Some((_, t)) = bodies.iter().find(|(b, _)| b.0 == id) else {
             continue;
         };
         let cue = match deed {
-            protocol::DEED_RELOAD => Cue::RemoteReload,
+            // The deed names no item; the gun is the one in their hands.
+            protocol::DEED_RELOAD => {
+                let held = core
+                    .interp
+                    .sample(id, core.render_tick(), &mut rs)
+                    .then_some(rs.held)
+                    .flatten();
+                reload_cue(&core.catalog, held, true)
+            }
             protocol::DEED_MEAL if dressing(&n.session.core.catalog, item) => Cue::RemoteBandage,
             protocol::DEED_MEAL => Cue::RemoteEat,
             protocol::DEED_DRINK => Cue::RemoteDrink,
@@ -1632,6 +1642,24 @@ pub fn gun_cue(catalog: &protocol::ItemCatalog, held: Option<u16>) -> Option<Cue
     })
 }
 
+/// A reload's cue by the gun in the hand, `remote` at another body: the
+/// families [`gun_cue`] tells apart, and the revolver's cylinder for the
+/// rest.
+pub fn reload_cue(catalog: &protocol::ItemCatalog, held: Option<u16>, remote: bool) -> Cue {
+    let (own, theirs) = match gun_cue(catalog, held) {
+        Some(Cue::ShotRifle | Cue::ShotSmg) => (Cue::ReloadRifle, Cue::RemoteReloadRifle),
+        Some(Cue::ShotPistol) => (Cue::ReloadPistol, Cue::RemoteReloadPistol),
+        Some(Cue::ShotShotgun) => (Cue::ReloadShotgun, Cue::RemoteReloadShotgun),
+        Some(Cue::ShotBolt) => (Cue::ReloadBolt, Cue::RemoteReloadBolt),
+        _ => (Cue::Reload, Cue::RemoteReload),
+    };
+    if remote {
+        theirs
+    } else {
+        own
+    }
+}
+
 /// Past this far the heli's gun is its far layer, metres: where the near
 /// round's falloff and the far one's meet at the same loudness (the two
 /// rows' gains), so the switch is a change of colour and not a step — the
@@ -1783,9 +1811,12 @@ pub fn feed(
     }
     // A magazine seated: your own hands, so an own-fact. (It borrowed the
     // positional `Cue::Place` with no position, which the mixer refuses —
-    // a reload was silent.)
+    // a reload was silent.) As the kind of gun it is.
     if feed.reloaded > 0 {
-        sound.play(Request::own(Cue::Reload));
+        let core = &net.session.core;
+        let s = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
+        let held = (s.count > 0).then_some(s.item);
+        sound.play(Request::own(reload_cue(&core.catalog, held, false)));
     }
     // A drink landed: it was silent.
     if feed.applied & client_core::core::APPLIED_DRANK != 0 {

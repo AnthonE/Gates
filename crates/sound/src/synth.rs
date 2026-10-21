@@ -619,6 +619,13 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::FurnaceOut | Cue::Snuff => render_take(Cue::TorchOut, take),
         Cue::FurnaceOpen => creak(&mut r),
         Cue::DryFire => render_take(Cue::UiClick, take),
+        Cue::ReloadRifle | Cue::ReloadPistol | Cue::ReloadShotgun | Cue::ReloadBolt => {
+            render_take(Cue::Reload, take)
+        }
+        Cue::RemoteReloadRifle => render_take(Cue::ReloadRifle, take),
+        Cue::RemoteReloadPistol => render_take(Cue::ReloadPistol, take),
+        Cue::RemoteReloadShotgun => render_take(Cue::ReloadShotgun, take),
+        Cue::RemoteReloadBolt => render_take(Cue::ReloadBolt, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else
