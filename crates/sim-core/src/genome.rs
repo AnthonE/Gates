@@ -226,11 +226,14 @@ impl Net {
     /// [`Genome::child`] adds, so a child's net is its parent's plus this
     /// one step rather than a rebuild from the base.
     pub fn mutate(&mut self, base: u32, g: usize, m: u16) {
-        let mut u = Draw(mix(base, g as u32, (m & 0x3fff) as u32));
-        let sig = SIGMA[(m >> 14) as usize];
-        for i in 0..self.shape.weights() {
-            self.w[i] += sig * self.shape.scale(i) * noise(&mut u);
-        }
+        let shape = self.shape;
+        perturb(
+            &mut self.w[..shape.weights()],
+            |i| shape.scale(i),
+            base,
+            g,
+            m,
+        );
     }
 
     /// Run the net on `x` (at least `shape.inputs()` long) into `out` (at
@@ -288,6 +291,19 @@ impl Net {
             }
         }
         h
+    }
+}
+
+/// One mutation step over any weights: mutation number `g` (from zero)
+/// with seed `m`, on a genome whose base is `base`, each weight moved by
+/// the seed's step size times `scale(i)` times a fresh draw. What
+/// [`Net::mutate`] does to a net, and what a bred student (`server`'s
+/// `distill.rs`) does to its layers, so both breed by the one recipe.
+pub fn perturb(w: &mut [f32], scale: impl Fn(usize) -> f32, base: u32, g: usize, m: u16) {
+    let mut u = Draw(mix(base, g as u32, (m & 0x3fff) as u32));
+    let sig = SIGMA[(m >> 14) as usize];
+    for (i, wi) in w.iter_mut().enumerate() {
+        *wi += sig * scale(i) * noise(&mut u);
     }
 }
 
