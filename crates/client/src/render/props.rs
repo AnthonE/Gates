@@ -137,6 +137,29 @@ const PINE_MESH_POOL: usize = 4;
 /// A tree card's material per tint (`far_trees`).
 pub type CardMaterials = [Handle<super::far_trees::TreeCardMaterial>; TINT_POOL];
 
+/// The ring cards a tree's far part draws: per variant its mesh and its
+/// bounds (`far_trees::ring_aabb`), and the materials per tint.
+#[derive(Clone)]
+pub struct RingCards {
+    pub meshes: Vec<Handle<Mesh>>,
+    pub bounds: Vec<bevy::camera::primitives::Aabb>,
+    pub materials: CardMaterials,
+}
+
+impl RingCards {
+    /// One variant's mesh and bounds, worn together: the mesh's own box is a
+    /// line (its corners sit on the axis until the vertex stage spreads
+    /// them), so a card left to Bevy's box blinks out at the frame's edge.
+    pub fn card(&self, variant: usize) -> impl Bundle {
+        let v = variant % self.meshes.len();
+        (
+            Mesh3d(self.meshes[v].clone()),
+            self.bounds[v],
+            bevy::camera::visibility::NoAutoAabb,
+        )
+    }
+}
+
 /// Prop meshes and materials, built once and shared so a forest is instances
 /// rather than draw calls (`DESIGN.md` §9).
 #[derive(Resource)]
@@ -159,7 +182,7 @@ pub struct PropAssets {
     /// The far part as a turning card (`far_trees`), per variant, and its
     /// material per tint. `None` in the headless tier, where the lathed hull
     /// above stands in.
-    pub cards: Option<(Vec<Handle<Mesh>>, CardMaterials)>,
+    pub cards: Option<RingCards>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
     stump: Handle<Mesh>,
@@ -2629,7 +2652,11 @@ pub fn stream(
     });
     if a.cards.is_none() {
         if let Some(c) = cards.as_ref() {
-            a.cards = Some((c.ring_meshes.clone(), c.ring_materials.clone()));
+            a.cards = Some(RingCards {
+                meshes: c.ring_meshes.clone(),
+                bounds: c.ring_bounds.clone(),
+                materials: c.ring_materials.clone(),
+            });
         }
     }
     // The near trees and the bush leaves sway (`foliage.rs`): their meshes
@@ -3016,17 +3043,13 @@ pub fn spawn_outer_tree(
     };
     // The card where the client has one — two triangles for the hull's 105,
     // and a tree's own silhouette rather than a lathed cone.
-    if let Some((meshes, mats)) = &a.cards {
+    if let Some(cards) = &a.cards {
         commands.entity(parent).with_child((
             fellable,
             Grow::tree(slot.scale),
-            Mesh3d(meshes[variant % meshes.len()].clone()),
-            MeshMaterial3d(mats[tint_of(key)].clone()),
+            cards.card(variant),
+            MeshMaterial3d(cards.materials[tint_of(key)].clone()),
             transform,
-            // The card's corners sit on its axis until the vertex stage
-            // spreads them, so its bounds are a line: culled by that, a
-            // crown half on screen blinked out at the frame's edge.
-            bevy::camera::visibility::NoFrustumCulling,
         ));
         return;
     }
@@ -3475,17 +3498,15 @@ pub fn spawn_slot(
                 tree::lod_band(&lod.far),
                 transform,
             ));
-        } else if let Some((meshes, mats)) = &a.cards {
+        } else if let Some(cards) = &a.cards {
             e.with_child((
                 fellable(FellPart::Far),
                 Topple { t: -1.0 },
                 Grow::tree(slot.scale),
-                Mesh3d(meshes[variant % meshes.len()].clone()),
-                MeshMaterial3d(mats[tint].clone()),
+                cards.card(variant),
+                MeshMaterial3d(cards.materials[tint].clone()),
                 tree::lod_band(&lod.far),
                 transform,
-                // Bounds of a line (`spawn_outer_tree` says why).
-                bevy::camera::visibility::NoFrustumCulling,
             ));
         } else {
             e.with_child((

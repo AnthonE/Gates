@@ -95,6 +95,7 @@ pub mod hearth;
 pub mod hold;
 pub mod hub;
 pub mod icons;
+pub mod info;
 pub mod interact;
 pub mod keypad;
 pub mod load;
@@ -105,6 +106,7 @@ pub mod nav;
 pub mod notices;
 // Walls between you and a sound: the shot walk, counted.
 pub mod occlusion;
+pub mod offer;
 pub mod oven;
 pub mod place;
 pub mod pointer;

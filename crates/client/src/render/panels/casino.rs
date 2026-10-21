@@ -576,12 +576,18 @@ pub fn build_slots(
             ));
             button(r, SlotsSpin, 110.0, "SPIN", have >= cost);
         });
-        // The pay table at this multiplier, best first.
-        let mut rows: Vec<(usize, u32)> = (0..SLOT_SYMBOLS)
-            .filter(|&s| SLOT_TRIPLE[s] > 0)
-            .map(|s| (s, SLOT_TRIPLE[s]))
-            .collect();
-        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+        // The pay table at this multiplier, best first, the symbols that pay
+        // alike on one row.
+        let mut pays: Vec<u32> = SLOT_TRIPLE.to_vec();
+        pays.sort_unstable_by_key(|&p| std::cmp::Reverse(p));
+        pays.dedup();
+        let rows = pays.into_iter().map(|pay| {
+            let names: Vec<&str> = (0..SLOT_SYMBOLS)
+                .filter(|&s| SLOT_TRIPLE[s] == pay)
+                .map(|s| SYMBOLS[s].1)
+                .collect();
+            (names.join(" / "), pay)
+        });
         p.spawn((
             Node {
                 flex_direction: FlexDirection::Row,
@@ -594,27 +600,18 @@ pub fn build_slots(
             BackgroundColor(HEAD_BG),
         ))
         .with_children(|t| {
-            for (s, pay) in rows {
+            for (names, pay) in rows {
                 t.spawn((
-                    Text::new(format!("3 × {}  {}", SYMBOLS[s].1, pay * mult as u32)),
+                    Text::new(format!("3 × {names}  {}", pay * mult as u32)),
                     font(12.0),
                     TextColor(TEXT),
                 ));
             }
-            t.spawn((
-                Text::new(format!(
-                    "each {}  +{}",
-                    SYMBOLS[casino::SLOT_FACE as usize].1,
-                    casino::SLOT_FACE_PAY * mult as u32
-                )),
-                font(12.0),
-                TextColor(TEXT),
-            ));
         });
         footer(
             p,
             ui,
-            "Three of a kind pays the table times your bet; every low grade showing pays on top.",
+            "Three of a kind pays the table times your bet. Anything else pays nothing.",
         );
     });
 }
@@ -662,17 +659,13 @@ fn reels_now(core: &ClientCore, m: u8) -> ([u8; 3], bool) {
     (out, turning)
 }
 
-/// What a stopped spin paid, in the player's words.
+/// What a stopped spin paid, in the player's words: only a triple pays.
 fn slots_line(r: &client_core::core::SlotsResult) -> String {
-    let [a, b, c] = r.reels.map(|s| s as usize % SLOT_SYMBOLS);
     if r.pay == 0 {
-        return "no luck".into();
+        return "no match — no luck".into();
     }
-    if a == b && b == c {
-        format!("three {} — won {} junk", SYMBOLS[a].1, r.pay)
-    } else {
-        format!("won {} junk", r.pay)
-    }
+    let sym = r.reels[0] as usize % SLOT_SYMBOLS;
+    format!("three {} — won {} junk", SYMBOLS[sym].1, r.pay)
 }
 
 /// Every frame, in place: the wheel's clock and the turning reels; and as a

@@ -62,8 +62,9 @@ pub const GROW_SYNC_BATCH: usize = 32;
 pub const NODE_STAGE_BATCH: usize = 32;
 
 /// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 427 bits with a gun's handling, and six of them would pass
-/// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+/// row is 446 bits with a gun's handling, v131's damage and v132's fifth
+/// oven arch, and six of them would pass `MAX_EVENT_MSG_BYTES` (the assert
+/// at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 5;
 
 /// Skin rows one skin-catalog message carries. A row is at most
@@ -83,6 +84,38 @@ pub const ARC_TEXT_BYTES: usize = 280;
 pub const ARC_SPEAKER: u8 = 0;
 pub const ARC_INSCRIPTION: u8 = 1;
 pub const ARC_MECH: u8 = 2;
+/// What asking a gift topic came to (`SUB_ARC_TEXT`, wire v130): none for
+/// a plain answer, else one of `content::bake::Gift`'s outcomes.
+pub const ARC_GIFT_NONE: u8 = 0;
+pub const ARC_GIFT_GUEST: u8 = 1;
+pub const ARC_GIFT_OWNED: u8 = 2;
+pub const ARC_GIFT_GIVEN: u8 = 3;
+pub const ARC_GIFT_SHORT: u8 = 4;
+pub const ARC_GIFT_WAITING: u8 = 5;
+
+/// A gift topic (`content/arc.toml` `gift`, wire v130): the skins asking
+/// it hands over, by catalog id, and what it costs, `count` 0 being free.
+/// A plain topic is the default, `gift: false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TopicOffer {
+    pub gift: bool,
+    pub n: u8,
+    pub catalogs: [u16; sim_core::lore::MAX_GIFT_ROWS],
+    /// The price's item row and count.
+    pub item: u16,
+    pub count: u16,
+}
+
+impl TopicOffer {
+    pub fn catalogs(&self) -> &[u16] {
+        &self.catalogs[..(self.n as usize).min(sim_core::lore::MAX_GIFT_ROWS)]
+    }
+
+    /// Asking takes a price from the pack.
+    pub fn priced(&self) -> bool {
+        self.gift && self.count > 0
+    }
+}
 /// Longest unlock name on the wire.
 pub const UNLOCK_NAME_BYTES: usize = 16;
 
@@ -107,7 +140,7 @@ pub const VENDOR_NAME_BYTES: usize = 16;
 /// items v0).
 pub const GITEM_SYNC_BATCH: usize = 13;
 
-/// Plants one sync message carries (wire v130, farming v2). A record is
+/// Plants one sync message carries (wire v132, farming v2). A record is
 /// [`PLANT_REC_BITS`] = 111 bits, so sixteen are ~225 B, inside
 /// `MAX_EVENT_MSG_BYTES`; the assert at `PLANT_SYNC_COUNT_BITS` holds it.
 /// Overflow policy: the next message continues the walk.
@@ -537,7 +570,7 @@ const SUB_ALPHABET: u32 = 88;
 /// `cond`. Sent to everyone when it changes and in full to a joiner, one
 /// per tick (`SUB_TAG`'s drip).
 const SUB_WORN: u32 = 89;
-/// One plant (wire v130, farming v2, sim `EV_PLANT` / `EV_PLANT_GONE`): a
+/// One plant (wire v132, farming v2, sim `EV_PLANT` / `EV_PLANT_GONE`): a
 /// gone bit, then a [`WirePlant`], or the id and why it left. An upsert is
 /// aimed at the clients whose interest holds the plant; a removal is
 /// broadcast, so it never leaves a ghost. Code 90 was crops v1's planter
@@ -609,7 +642,7 @@ const SUB_WHEEL_PAID: u32 = 106;
 /// The receiver's pull of a slot machine's lever answered (wire v123,
 /// `EV_SLOTS` / `EV_SLOTS_REFUSED`). See `EventMsg::Slots`.
 const SUB_SLOTS: u32 = 107;
-/// One batch of the plant walk (wire v130, farming v2): a reset bit, a
+/// One batch of the plant walk (wire v132, farming v2): a reset bit, a
 /// count and up to [`PLANT_SYNC_BATCH`] records, at join and after a
 /// resync or a piece-anchor re-arm.
 const SUB_PLANT_SYNC: u32 = 108;
@@ -924,7 +957,7 @@ const INV_COUNT_BITS: u32 = 5;
 const INV_SLOT_BITS: u32 = 5;
 const SYNC_COUNT_BITS: u32 = 7;
 /// A catalog total or first index: 0..=`MAX_ITEM_DEFS` (160) in eight bits
-/// (seven until v131, when the catalog outgrew 127 rows).
+/// (seven until v132, when the catalog outgrew 127 rows).
 const CATALOG_TOTAL_BITS: u32 = 8;
 const _: () = assert!(MAX_ITEM_DEFS < (1 << CATALOG_TOTAL_BITS));
 const CATALOG_COUNT_BITS: u32 = 4;
@@ -1090,7 +1123,7 @@ const _: () = assert!(
         + GITEM_SYNC_BATCH * GITEM_REC_MAX_BITS
         <= MAX_EVENT_MSG_BYTES * 8
 );
-/// A plant record's fields (wire v130, farming v2): the look, the stage, the
+/// A plant record's fields (wire v132, farming v2): the look, the stage, the
 /// spot (0..6 in a bed, `farm::SPOT_GROUND` on the ground), the genome
 /// (base 5, six slots), the health band (0..=10) and the plant-sync batch
 /// count. Each is tied to its sim-core bound by an assert here.
@@ -1243,6 +1276,13 @@ pub struct ItemRow {
     /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
     /// also what a row past the drip watermark reads as.
     pub class: u8,
+    /// What one hit of it takes off a body (v131): the ranged row's
+    /// `damage` for a gun or a bow (per pellet — a shotgun's card multiplies
+    /// by [`GunRow::pellets`]), else the melee swing's, else a throwable's;
+    /// 0 for anything that does not hit. The client draws it on the item
+    /// card (Rust's DAMAGE) and decides nothing with it. Full width, the
+    /// sim's own `u16`.
+    pub damage: u16,
     /// How a gun handles (v126, `combat::Gun`), for the client to kick its
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
@@ -1318,6 +1358,7 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + OVEN_ROLE_BITS as usize
     + 2
     + ITEM_CLASS_BITS as usize
+    + 16
     + 1
     + GUN_ROW_BITS;
 // A full batch of the widest rows fits one message. v102's class nibble is
@@ -1344,6 +1385,7 @@ impl ItemRow {
         holster: false,
         revive: false,
         class: CLASS_OTHER,
+        damage: 0,
         gun: None,
     };
 
@@ -2044,7 +2086,7 @@ pub enum EventMsg {
         by: u32,
     },
     /// A plant was planted or changed stage, dryness or health band (wire
-    /// v130, farming v2): the whole record, absolute.
+    /// v132, farming v2): the whole record, absolute.
     Plant(WirePlant),
     /// Plant `id` left the island (broadcast): `reason` is a
     /// `sim_core::farm::GONE_*`.
@@ -2197,8 +2239,8 @@ pub enum EventMsg {
     /// Your arc verb was refused (`sim_core::works::REFUSE_A_*`).
     ArcRefused { code: u8, op: u8, target: u8 },
     /// Arc object `index` of `total` of `kind` (`ARC_SPEAKER`…, wire v96):
-    /// where it stands, its name, a speaker's topic titles, a mechanism's
-    /// dials and notches.
+    /// where it stands, its name, a speaker's topic titles and which of
+    /// them are gifts (v130), a mechanism's dials and notches.
     ArcPlace {
         kind: u8,
         index: u8,
@@ -2209,14 +2251,17 @@ pub enum EventMsg {
         n_topics: u8,
         topics: [[u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
         topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+        offers: [TopicOffer; sim_core::lore::MAX_TOPICS],
         dials: u8,
         values: u8,
     },
-    /// What speaker `index` said on `topic`, or inscription `index`'s text.
+    /// What speaker `index` said on `topic`, or inscription `index`'s text,
+    /// and what asking a gift topic came to (`ARC_GIFT_*`, v130).
     ArcText {
         kind: u8,
         index: u8,
         topic: u8,
+        gift: u8,
         text: [u8; ARC_TEXT_BYTES],
         len: u16,
     },
@@ -2937,6 +2982,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.revive)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
+        // The damage a hit does (v131), full width.
+        w.write(row.damage as u32, 16)?;
         // A gun's handling (v126), behind a presence bit.
         w.write_bit(row.gun.is_some())?;
         if let Some(g) = row.gun {
@@ -3442,7 +3489,7 @@ pub fn encode_event_piece_defs(
 /// One placed-deployable record on the wire (`DEPLOY_REC_BITS`), shared by
 /// the placed broadcast and the sync batches — the address, the row, the
 /// state bits, the damage band, since v102 the exact hp (v100's planter
-/// beds left at v130: plants ride `SUB_PLANT`), and since wire v89 the **pose** (free
+/// beds left at v132: plants ride `SUB_PLANT`), and since wire v89 the **pose** (free
 /// placement): the offset from the cell centre and the facing, a byte each,
 /// so the client draws and collides the deployable where the sim placed it. Every width is exact, so only
 /// sim-impossible addresses need refusing at encode. The trailing three
@@ -4362,7 +4409,9 @@ pub fn encode_event_arc_refused(
 }
 
 /// Arc object `index` of `total` of `kind`: where it stands and what it is
-/// called; `topics` for a speaker, `(dials, values)` for a mechanism.
+/// called; `topics` for a speaker, with `offers` saying which are gifts (a
+/// topic past the end of `offers` is plain), `(dials, values)` for a
+/// mechanism.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_event_arc_place(
     kind: u8,
@@ -4371,6 +4420,7 @@ pub fn encode_event_arc_place(
     spot: &sim_core::spot::Spot,
     name: &[u8],
     topics: &[&[u8]],
+    offers: &[TopicOffer],
     dials: u8,
     values: u8,
     buf: &mut [u8],
@@ -4382,6 +4432,10 @@ pub fn encode_event_arc_place(
         || name.len() > ARC_NAME_BYTES
         || topics.len() > sim_core::lore::MAX_TOPICS
         || topics.iter().any(|t| t.len() > ARC_NAME_BYTES)
+        || offers.len() > topics.len()
+        || offers.iter().any(|o| {
+            o.n as usize > sim_core::lore::MAX_GIFT_ROWS || (!o.gift && *o != TopicOffer::default())
+        })
         || dials as usize > sim_core::limits::MAX_DIALS
         || values > sim_core::mech::MAX_VALUES
     {
@@ -4403,10 +4457,22 @@ pub fn encode_event_arc_place(
     match kind {
         ARC_SPEAKER => {
             w.write(topics.len() as u32, 3)?;
-            for t in topics {
+            for (i, t) in topics.iter().enumerate() {
                 w.write(t.len() as u32, 5)?;
                 for &b in *t {
                     w.write(b as u32, 8)?;
+                }
+                let o = offers.get(i).copied().unwrap_or_default();
+                w.write(o.gift as u32, 1)?;
+                if o.gift {
+                    w.write(o.n as u32, 3)?;
+                    for &c in o.catalogs() {
+                        w.write(c as u32, 16)?;
+                    }
+                    w.write(o.count as u32, 16)?;
+                    if o.count > 0 {
+                        w.write(o.item as u32, 16)?;
+                    }
                 }
             }
         }
@@ -4419,21 +4485,29 @@ pub fn encode_event_arc_place(
     Ok(w.finish())
 }
 
-/// What a speaker said, or what a stone holds — to the one who asked.
+/// What a speaker said, or what a stone holds — to the one who asked; and
+/// what asking a gift topic came to (`ARC_GIFT_*`).
 pub fn encode_event_arc_text(
     kind: u8,
     index: u8,
     topic: u8,
+    gift: u8,
     text: &[u8],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if kind > ARC_MECH || index >= 32 || topic >= 8 || text.len() > ARC_TEXT_BYTES {
+    if kind > ARC_MECH
+        || index >= 32
+        || topic >= 8
+        || gift > ARC_GIFT_WAITING
+        || text.len() > ARC_TEXT_BYTES
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_ARC_TEXT)?;
     w.write(kind as u32, 2)?;
     w.write(index as u32, 5)?;
     w.write(topic as u32, 3)?;
+    w.write(gift as u32, 3)?;
     w.write(text.len() as u32, 9)?;
     for &b in text {
         w.write(b as u32, 8)?;
@@ -4717,7 +4791,7 @@ impl WireGItem {
     }
 }
 
-/// One plant on the wire (wire v130, farming v2, `sim_core::farm::PlantRec`):
+/// One plant on the wire (wire v132, farming v2, `sim_core::farm::PlantRec`):
 /// what a client draws and what its prompt reads — the look, the stage,
 /// the spot, the genome (Rust's look-at readout, so every looker sees it),
 /// the health band, whether it is dry, and the soil point.
@@ -6239,6 +6313,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
+                    damage: r.read(16)? as u16,
                     gun: if r.read_bit()? {
                         let rate_ticks = r.read(8)? as u8;
                         let reload_ticks = r.read(GUN_RELOAD_BITS)? as u16;
@@ -7131,6 +7206,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut topics = [[0u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS];
             let mut topic_lens = [0u8; sim_core::lore::MAX_TOPICS];
+            let mut offers = [TopicOffer::default(); sim_core::lore::MAX_TOPICS];
             let (mut n_topics, mut dials, mut values) = (0u8, 0u8, 0u8);
             match kind {
                 ARC_SPEAKER => {
@@ -7138,9 +7214,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     if n_topics as usize > sim_core::lore::MAX_TOPICS {
                         return Err(WireError::Malformed);
                     }
-                    for (t, len) in topics
+                    for ((t, len), o) in topics
                         .iter_mut()
                         .zip(topic_lens.iter_mut())
+                        .zip(offers.iter_mut())
                         .take(n_topics as usize)
                     {
                         let l = r.read(5)? as usize;
@@ -7151,6 +7228,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                             *b = r.read(8)? as u8;
                         }
                         *len = l as u8;
+                        if r.read(1)? == 1 {
+                            o.gift = true;
+                            o.n = r.read(3)? as u8;
+                            if o.n as usize > sim_core::lore::MAX_GIFT_ROWS {
+                                return Err(WireError::Malformed);
+                            }
+                            for c in o.catalogs.iter_mut().take(o.n as usize) {
+                                *c = r.read(16)? as u16;
+                            }
+                            o.count = r.read(16)? as u16;
+                            if o.count > 0 {
+                                o.item = r.read(16)? as u16;
+                            }
+                        }
                     }
                 }
                 ARC_MECH => {
@@ -7174,6 +7265,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 n_topics,
                 topics,
                 topic_lens,
+                offers,
                 dials,
                 values,
             }
@@ -7182,8 +7274,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let kind = r.read(2)? as u8;
             let index = r.read(5)? as u8;
             let topic = r.read(3)? as u8;
+            let gift = r.read(3)? as u8;
             let len = r.read(9)? as usize;
-            if kind > ARC_MECH || len > ARC_TEXT_BYTES {
+            if kind > ARC_MECH || gift > ARC_GIFT_WAITING || len > ARC_TEXT_BYTES {
                 return Err(WireError::Malformed);
             }
             let mut text = [0u8; ARC_TEXT_BYTES];
@@ -7194,6 +7287,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 kind,
                 index,
                 topic,
+                gift,
                 text,
                 len: len as u16,
             }
@@ -8338,6 +8432,74 @@ mod tests {
         );
     }
 
+    /// The widest speaker — every name full and every topic a priced gift
+    /// of the most rows — fits one message, and a plain topic stays plain.
+    #[test]
+    fn a_speaker_of_priced_gifts_fits_one_message() {
+        use sim_core::lore::{MAX_GIFT_ROWS, MAX_TOPICS};
+        let name = [b'N'; ARC_NAME_BYTES];
+        let title = [b'T'; ARC_NAME_BYTES];
+        let topics = [&title[..]; MAX_TOPICS];
+        let mut offers = [TopicOffer {
+            gift: true,
+            n: MAX_GIFT_ROWS as u8,
+            catalogs: [u16::MAX; MAX_GIFT_ROWS],
+            item: u16::MAX,
+            count: u16::MAX,
+        }; MAX_TOPICS];
+        offers[0] = TopicOffer::default();
+        let spot = sim_core::spot::Spot {
+            site: sim_core::spot::SITE_MAX,
+            nth: u8::MAX,
+            x_cm: i16::MIN,
+            y_cm: i16::MAX,
+            z_cm: -1,
+        };
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_arc_place(
+            ARC_SPEAKER,
+            31,
+            32,
+            &spot,
+            &name,
+            &topics,
+            &offers,
+            0,
+            0,
+            &mut buf,
+        )
+        .unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ArcPlace {
+                n_topics,
+                offers: o,
+                ..
+            } => {
+                assert_eq!(n_topics as usize, MAX_TOPICS);
+                assert_eq!(o, offers);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // A plain topic carrying a price is not a thing the wire can say.
+        let bad = [TopicOffer {
+            count: 5,
+            ..TopicOffer::default()
+        }];
+        assert!(encode_event_arc_place(
+            ARC_SPEAKER,
+            0,
+            1,
+            &spot,
+            &name,
+            &topics[..1],
+            &bad,
+            0,
+            0,
+            &mut buf
+        )
+        .is_err());
+    }
+
     /// The skin drip's worst case — every row priced (the widest coin
     /// arm) with a full-width name — fits the message cap, walks the whole
     /// table, and round-trips row for row.
@@ -8512,6 +8674,8 @@ mod tests {
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
+                // The damage (v131) at the width's corner, distinct per row.
+                damage: u16::MAX - 5 * i as u16,
                 gun: None,
             };
             cat.set(i, &name, row).unwrap();
@@ -10195,6 +10359,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/brain.rs"),
         },
         Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
+        },
+        Module {
             file: "nav.rs",
             src: include_str!("../../sim-core/src/nav.rs"),
         },
@@ -10460,7 +10628,7 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 26,
             bits: REFUSE_D_BITS,
-            // 19 -> 25 at v130: farming v2's six.
+            // 19 -> 25 at v132: farming v2's six.
             live_max: 25,
         },
         Domain {
@@ -10544,7 +10712,7 @@ mod wire_domains {
             exempt: &[],
             // 17 → 18 at wire v99: `ARCH_PLANTER`; 19 at v103: `ARCH_TURRET`;
             // 20 at v118: `ARCH_VENDING`; 22 at v123: the barbed barricade and
-            // the floor spikes; 23 at v126: the rug; 24 at v131: the water
+            // the floor spikes; 23 at v126: the rug; 24 at v132: the water
             // catcher.
             min_members: 24,
             bits: ARCH_BITS,
@@ -11084,7 +11252,7 @@ mod wire_domains {
             "GITEM_SYNC_COUNT_BITS",
             // The lodged-arrow batch (wire v94), the loose stacks' twin.
             "LODGED_SYNC_COUNT_BITS",
-            // A plant record (wire v130): the look, stage, spot, genome,
+            // A plant record (wire v132): the look, stage, spot, genome,
             // band and gone reason, each bounded by a sim-core count or
             // last value (`farm::LOOK_COUNT`, `STAGE_DYING`, `SPOT_GROUND`,
             // `GENOME_VALUES`, `GONE_UPROOTED`) through a compile-time

@@ -105,17 +105,6 @@ every item either way, because the painted ones are derived works of it.
 | `satchel_charge.png` | `delapouite/dynamite` |
 | `semi_automatic_body.png` | `skoll/mp5` |
 | `sewing_kit.png` | `delapouite/yarn` |
-| `shape_doorway.png` | `delapouite/door` |
-| `shape_floor.png` | `delapouite/floor-hatch` |
-| `shape_foundation.png` | `delapouite/flat-platform` |
-| `shape_roof.png` | `delapouite/great-pyramid` |
-| `shape_stairs.png` | `delapouite/3d-stairs` |
-| `shape_tri_floor.png` | `delapouite/sail` |
-| `shape_tri_foundation.png` | `delapouite/corner-flag` |
-| `shape_tri_roof.png` | `delapouite/tipi` |
-| `shape_wall.png` | `delapouite/brick-wall` |
-| `shape_wall_frame.png` | `delapouite/gate` |
-| `shape_window.png` | `delapouite/window` |
 | `sheet_metal.png` | `delapouite/metal-plate` |
 | `sleeping_bag.png` | `delapouite/sleeping-bag` |
 | `small_box.png` | `delapouite/wooden-crate` |
@@ -173,15 +162,27 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | `green_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `map_player.png` | `ci/icons/map_player.svg` (ours) |
 | `red_keycard.png` | `ci/icons/keycards.py` (ours) |
+| `shape_doorway.png` | `ci/icons/shape_doorway.svg` (ours) |
+| `shape_floor.png` | `ci/icons/shape_floor.svg` (ours) |
+| `shape_floor_frame.png` | `ci/icons/shape_floor_frame.svg` (ours) |
+| `shape_foundation.png` | `ci/icons/shape_foundation.svg` (ours) |
 | `shape_foundation_steps.png` | `ci/icons/shape_foundation_steps.svg` (ours) |
 | `shape_half_wall.png` | `ci/icons/shape_half_wall.svg` (ours) |
 | `shape_low_wall.png` | `ci/icons/shape_low_wall.svg` (ours) |
 | `shape_ramp.png` | `ci/icons/shape_ramp.svg` (ours) |
+| `shape_roof.png` | `ci/icons/shape_roof.svg` (ours) |
+| `shape_stairs.png` | `ci/icons/shape_stairs.svg` (ours) |
 | `shape_stairs_l.png` | `ci/icons/shape_stairs_l.svg` (ours) |
 | `shape_stairs_spiral.png` | `ci/icons/shape_stairs_spiral.svg` (ours) |
 | `shape_stairs_tri_spiral.png` | `ci/icons/shape_stairs_tri_spiral.svg` (ours) |
 | `shape_stairs_u.png` | `ci/icons/shape_stairs_u.svg` (ours) |
+| `shape_tri_floor.png` | `ci/icons/shape_tri_floor.svg` (ours) |
 | `shape_tri_floor_frame.png` | `ci/icons/shape_tri_floor_frame.svg` (ours) |
+| `shape_tri_foundation.png` | `ci/icons/shape_tri_foundation.svg` (ours) |
+| `shape_tri_roof.png` | `ci/icons/shape_tri_roof.svg` (ours) |
+| `shape_wall.png` | `ci/icons/shape_wall.svg` (ours) |
+| `shape_wall_frame.png` | `ci/icons/shape_wall_frame.svg` (ours) |
+| `shape_window.png` | `ci/icons/shape_window.svg` (ours) |
 | `water_catcher.png` | `ci/icons/water_catcher.py` (ours) |
 | `potato.png` | `ci/icons/crops.py` (ours) |
 | `potato_seed.png` | `ci/icons/crops.py` (ours) |

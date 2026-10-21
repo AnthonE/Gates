@@ -477,11 +477,95 @@ pub enum Cue {
     ShotBolt,
     /// and a rocket leaving its tube: the launch's whoosh and thump.
     ShotRocket,
+    /// A lit furnace, as a bed: its fire shut in an iron box, a low roar
+    /// with the wood ticking in it. `render/audio.rs` turns it up and pans it
+    /// toward the nearest lit furnace; a campfire keeps its crackle. Appended,
+    /// the enum's append-order rule, like the five after it.
+    BedFurnace,
+    /// A furnace lit, at the furnace: the flame catching inside with a
+    /// whoomp, and the iron door swung to.
+    FurnaceLight,
+    /// A furnace switched off or burned dry: the roar cut short, and the door.
+    FurnaceOut,
+    /// A furnace opened under your hands: the iron door's latch and swing.
+    FurnaceOpen,
+    /// A campfire lit, at the fire: the flame catching.
+    Kindle,
+    /// A campfire switched off or burned dry: its roar cut short.
+    Snuff,
+    /// A trigger pulled on an empty magazine: the gun's dry click, in your
+    /// hands. Appended, the enum's append-order rule.
+    DryFire,
+    /// Your own reload, by the kind of gun (`render/audio.rs::reload_cue`):
+    /// a box magazine out and in and the charging handle (the rifles and
+    /// SMGs), a pistol's magazine and slide, shells pushed into a pump's
+    /// tube and the pump, a bolt rifle's bolt and rounds. The revolvers keep
+    /// [`Cue::Reload`]'s cylinder. Each fills the gun's reload time.
+    /// Appended, the enum's append-order rule, like the seven after it.
+    ReloadRifle,
+    ReloadPistol,
+    ReloadShotgun,
+    ReloadBolt,
+    /// The four heard at another body, as [`Cue::RemoteReload`].
+    RemoteReloadRifle,
+    RemoteReloadPistol,
+    RemoteReloadShotgun,
+    RemoteReloadBolt,
+    /// The guns' far layers (`render/audio.rs::far_layer`): each family's
+    /// report from a long way off, its crack and the land's echo of it, so a
+    /// fight across the valley is still read by ear. [`Cue::ShotGunFar`]
+    /// stays the revolver's, and every shot the shard reports from past the
+    /// interest set (`SUB_REPORT` names no gun). Appended, the enum's
+    /// append-order rule.
+    ShotRifleFar,
+    ShotSmgFar,
+    ShotPistolFar,
+    ShotShotgunFar,
+    ShotBoltFar,
+    /// A sheet-metal door swinging open, at the leaf: the latch, then the
+    /// leaf to its stop. [`Cue::DoorOpen`] stays the wooden door's creak.
+    /// Appended, the enum's append-order rule, like the three after it.
+    DoorMetalOpen,
+    /// A sheet-metal door slammed into its frame.
+    DoorMetalClose,
+    /// A garage door rolling up its track.
+    GarageOpen,
+    /// A garage door rolling down and its bottom rail landing.
+    GarageClose,
+    /// A piece or a deployable mended (`R`, the hammer): a hammer on wood,
+    /// at what was mended, whoever mended it. Appended, the enum's
+    /// append-order rule.
+    Repair,
+    /// An animal's pain when a blow lands on it, by species
+    /// (`sound::voice::hurt_of`): a wolf's yelp, a boar's squeal, a stag's
+    /// bleat. Appended, the enum's append-order rule, like the five after it.
+    WolfHurt,
+    BoarHurt,
+    StagHurt,
+    /// …and its last cry, where it fell (`sound::voice::death_of`).
+    WolfDeath,
+    BoarDeath,
+    StagDeath,
+    /// A piece upgraded to stone: a block seating, at the piece. Until this
+    /// it played [`Cue::ImpactStone`], a pick on rock. Appended, the enum's
+    /// append-order rule, like the one after it.
+    PlaceStone,
+    /// A piece upgraded to sheet metal: two blows as a sheet goes on.
+    PlaceMetal,
+    /// A recycler switched on: its engine catching, at the machine. Its
+    /// running loop is [`Cue::BedTown`]. Appended, the enum's append-order
+    /// rule, like the two after it.
+    RecyclerStart,
+    /// …and switched off: the engine running down.
+    RecyclerStop,
+    /// A knock on a sheet-metal or garage door: a blow on metal, where
+    /// [`Cue::Knock`] is a fist on wood.
+    KnockMetal,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 115;
+pub const CUE_COUNT: usize = 151;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -605,6 +689,42 @@ impl Cue {
         Cue::ShotShotgun,
         Cue::ShotBolt,
         Cue::ShotRocket,
+        Cue::BedFurnace,
+        Cue::FurnaceLight,
+        Cue::FurnaceOut,
+        Cue::FurnaceOpen,
+        Cue::Kindle,
+        Cue::Snuff,
+        Cue::DryFire,
+        Cue::ReloadRifle,
+        Cue::ReloadPistol,
+        Cue::ReloadShotgun,
+        Cue::ReloadBolt,
+        Cue::RemoteReloadRifle,
+        Cue::RemoteReloadPistol,
+        Cue::RemoteReloadShotgun,
+        Cue::RemoteReloadBolt,
+        Cue::ShotRifleFar,
+        Cue::ShotSmgFar,
+        Cue::ShotPistolFar,
+        Cue::ShotShotgunFar,
+        Cue::ShotBoltFar,
+        Cue::DoorMetalOpen,
+        Cue::DoorMetalClose,
+        Cue::GarageOpen,
+        Cue::GarageClose,
+        Cue::Repair,
+        Cue::WolfHurt,
+        Cue::BoarHurt,
+        Cue::StagHurt,
+        Cue::WolfDeath,
+        Cue::BoarDeath,
+        Cue::StagDeath,
+        Cue::PlaceStone,
+        Cue::PlaceMetal,
+        Cue::RecyclerStart,
+        Cue::RecyclerStop,
+        Cue::KnockMetal,
     ];
 
     /// May the mixer start this cue? False for the beds, which are voices
@@ -633,6 +753,7 @@ impl Cue {
                 | Cue::BedTown
                 | Cue::BedNight
                 | Cue::BedRotorFar
+                | Cue::BedFurnace
         )
     }
 
@@ -740,7 +861,36 @@ impl Cue {
             | Cue::RemoteBowDraw
             | Cue::OreCrumble
             | Cue::OreBreak
-            | Cue::Tung => 0.07,
+            | Cue::Tung
+            | Cue::FurnaceLight
+            | Cue::FurnaceOut
+            | Cue::FurnaceOpen
+            | Cue::Kindle
+            | Cue::Snuff
+            | Cue::ReloadRifle
+            | Cue::ReloadPistol
+            | Cue::ReloadShotgun
+            | Cue::ReloadBolt
+            | Cue::RemoteReloadRifle
+            | Cue::RemoteReloadPistol
+            | Cue::RemoteReloadShotgun
+            | Cue::RemoteReloadBolt
+            | Cue::DoorMetalOpen
+            | Cue::DoorMetalClose
+            | Cue::GarageOpen
+            | Cue::GarageClose
+            | Cue::Repair
+            | Cue::WolfHurt
+            | Cue::BoarHurt
+            | Cue::StagHurt
+            | Cue::WolfDeath
+            | Cue::BoarDeath
+            | Cue::StagDeath
+            | Cue::PlaceStone
+            | Cue::PlaceMetal
+            | Cue::RecyclerStart
+            | Cue::RecyclerStop
+            | Cue::KnockMetal => 0.07,
             // Your own hands in your own pack: a nudge, like the equip, so a
             // row of moves is not one sound stamped out.
             Cue::InvOpen | Cue::InvClose | Cue::ItemMove | Cue::ItemDrop | Cue::CraftStart => 0.05,
@@ -762,6 +912,8 @@ impl Cue {
             Cue::Geiger => 0.05,
             // Heard once a fight at most; a nudge so two are never one take.
             Cue::Headshot => 0.04,
+            // A mechanism with a fixed spring: a nudge, like the shots.
+            Cue::DryFire => 0.03,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -785,7 +937,12 @@ impl Cue {
             | Cue::ShotPistol
             | Cue::ShotShotgun
             | Cue::ShotBolt
-            | Cue::ShotRocket => 0.05,
+            | Cue::ShotRocket
+            | Cue::ShotRifleFar
+            | Cue::ShotSmgFar
+            | Cue::ShotPistolFar
+            | Cue::ShotShotgunFar
+            | Cue::ShotBoltFar => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -824,7 +981,8 @@ impl Cue {
             | Cue::BedRotor
             | Cue::BedTown
             | Cue::BedNight
-            | Cue::BedRotorFar => 0.0,
+            | Cue::BedRotorFar
+            | Cue::BedFurnace => 0.0,
         }
     }
 }
@@ -1052,7 +1210,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 24.0, 0.60, 120, 4, true),   // knock
     // Your own hands, so non-positional; the cooldown is what keeps a
     // reload key held down from being a rattle.
-    row(GAME,  0.0, 0.54, 250, 3, false),  // reload
+    RELOAD,                                // reload
     // Your own mouth and your own hands: non-positional, and a meal is a
     // second apart (`survival::CONSUME_TICKS`), so the cooldown is only
     // there for two landing in one frame.
@@ -1111,7 +1269,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // swing, because it is the one a fight turns on — Rust's players listen
     // for exactly that click to push. `limits::ACT_HEAR_CM` is the server's
     // side of the widest of these.
-    row(GAME, 30.0, 0.54,  40, 4, true),   // reload, somebody else's
+    RRELOAD,                               // reload, somebody else's
     row(GAME, 12.0, 0.70,  60, 3, true),   // eat, somebody else's
     row(GAME, 14.0, 0.62, 100, 3, true),   // bandage, somebody else's
     row(GAME, 12.0, 0.45, 100, 3, true),   // drink, somebody else's
@@ -1186,7 +1344,62 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 100.0, 0.95,  60, 6, true),  // shotgun
     row(GAME, 100.0, 0.95,  60, 6, true),  // bolt
     row(GAME,  80.0, 0.90, 150, 6, true),  // rocket launch
+    // The furnace: its roar is scenery like the recycler's motor, its level
+    // and side `render/audio.rs`'s; lighting, putting out and opening one
+    // are hands at it, a door's reach. The campfire's two the same, quieter.
+    row(AMB,   0.0, 0.40,   0, 0, false),  // furnace roar
+    row(GAME, 24.0, 0.70, 200, 3, true),   // furnace lit
+    row(GAME, 24.0, 0.60, 200, 3, true),   // furnace out
+    row(GAME,  0.0, 0.55, 200, 3, false),  // furnace opened
+    row(GAME, 20.0, 0.60, 200, 3, true),   // campfire lit
+    row(GAME, 20.0, 0.50, 200, 3, true),   // campfire out
+    // Your own gun, empty: the reload's register, and a cooldown under the
+    // fastest cadence so a held trigger clicks once a round it would fire.
+    row(GAME,  0.0, 0.55,  80, 4, false),  // dry fire
+    // The guns' own reloads: the revolver's rows, yours then theirs.
+    RELOAD, RELOAD, RELOAD, RELOAD,
+    RRELOAD, RRELOAD, RRELOAD, RRELOAD,
+    // The guns' far layers: the reference's reach for each (a pistol 400 m,
+    // a rifle 500, a heavy gun 600), and each gain meets its near row's
+    // level at the switch (45 m), as the revolver's far row does:
+    // g_near·(1 − 45/100)² = g_far·(1 − 45/R)².
+    row(GAME, 500.0, 0.31,  60, 6, true),  // rifle, far
+    row(GAME, 400.0, 0.31,  60, 6, true),  // smg, far
+    row(GAME, 400.0, 0.31,  60, 6, true),  // pistol, far
+    row(GAME, 400.0, 0.36,  60, 6, true),  // shotgun, far
+    row(GAME, 600.0, 0.34,  60, 6, true),  // bolt, far
+    // The metal doors: the wooden door's reach, a little louder for the
+    // metal, and the garage's roll a little further for its size.
+    row(GAME, 24.0, 0.60,  60, 4, true),   // metal door open
+    row(GAME, 24.0, 0.65,  60, 4, true),   // metal door close
+    row(GAME, 30.0, 0.60, 200, 4, true),   // garage door open
+    row(GAME, 30.0, 0.65, 200, 4, true),   // garage door close
+    // The hammer: a blow's reach and register, at the mended piece.
+    row(GAME, 32.0, 0.65, 100, 4, true),   // repair
+    // The animals hurt and dying: the snort's bus and a growl's urgency, a
+    // little further than a blow carries; a death further still.
+    row(GAME, 44.0, 0.62, 150, 5, true),   // wolf hurt
+    row(GAME, 44.0, 0.62, 150, 5, true),   // boar hurt
+    row(GAME, 44.0, 0.62, 150, 5, true),   // stag hurt
+    row(GAME, 56.0, 0.70, 300, 5, true),   // wolf death
+    row(GAME, 56.0, 0.70, 300, 5, true),   // boar death
+    row(GAME, 56.0, 0.70, 300, 5, true),   // stag death
+    // The upgrades: the place row's reach and rank, the block and the sheet
+    // a little louder than a plank.
+    row(GAME, 32.0, 0.65,  30, 4, true),   // upgraded to stone
+    row(GAME, 32.0, 0.65,  30, 4, true),   // upgraded to metal
+    // The recycler's engine catching and running down: a little past its
+    // running loop's reach (`render/audio.rs`, 16 m).
+    row(GAME, 24.0, 0.55, 300, 3, true),   // recycler on
+    row(GAME, 24.0, 0.50, 300, 3, true),   // recycler off
+    row(GAME, 24.0, 0.60, 120, 4, true),   // knock, metal
 ];
+
+/// Your own reload, whichever gun (`Cue::Reload` and the four after it).
+const RELOAD: CueDef = row(GAME, 0.0, 0.54, 250, 3, false);
+/// Somebody else's: the one a fight turns on, so it carries furthest of
+/// their hands' sounds and ranks with a remote swing.
+const RRELOAD: CueDef = row(GAME, 30.0, 0.54, 40, 4, true);
 
 /// Being hurt. Named so [`Cue::HurtAgain`]'s row reads its numbers off it:
 /// the second voice of a frame's blows is as loud and as urgent as the first.
@@ -1428,7 +1641,8 @@ pub struct SnapshotDef {
     pub rain: f32,
     /// The heli's rotor: the game bus's level, because it is a threat.
     pub rotor: f32,
-    /// THE GATE's yard: scenery, gone below water like the wind.
+    /// The machines' beds, the recycler's motor and the furnace's roar:
+    /// scenery, gone below water like the wind.
     pub town: f32,
     /// The night's crickets: scenery, gone below water like the wind.
     pub night: f32,
@@ -1558,7 +1772,7 @@ impl SnapshotDef {
             Cue::BedUnder => self.under,
             Cue::BedRain => self.rain,
             Cue::BedRotor | Cue::BedRotorFar => self.rotor,
-            Cue::BedTown => self.town,
+            Cue::BedTown | Cue::BedFurnace => self.town,
             Cue::BedNight => self.night,
             _ => 0.0,
         }

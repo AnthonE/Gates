@@ -27,7 +27,18 @@
 //! no arm): the check for a new row's grip and scale.
 //!
 //! `--look <out_dir> <file.glb…>` photographs any files under `assets/` the
-//! icon's way — a generator's rolls, before one becomes a row.
+//! icon's way — a generator's rolls, before one becomes a row. `--look-gun`
+//! frames them as a gun's icon is, side on.
+//!
+//! `--skins <out_dir> [catalog…]` photographs every skin with a model of its
+//! own (`ui::hold::SKIN_MODELS`), framed as its item's icon is, under its
+//! catalog id — the store's and the inventory's picture of it
+//! (`SkinModelDef::icon`):
+//!
+//! ```text
+//! cargo run -p client --features render --bin iconbake -- --skins ci/icons/skin_renders
+//! python3 ci/finish_icons.py --only-renders --renders ci/icons/skin_renders --out assets/icons/skins
+//! ```
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -299,7 +310,7 @@ const SUBJECTS: &[Subject] = &[
     s("wooden_door", "models/deploy/door.glb", [90.0, 0.0, 0.0]),
     s(
         "metal_door",
-        "models/deploy/door_locked.glb",
+        "models/deploy/door_metal.glb",
         [90.0, 0.0, 0.0],
     ),
     // The prop kit: long things on the diagonal…
@@ -335,8 +346,8 @@ const SUBJECTS: &[Subject] = &[
     kit("sheet_metal", [0.0, 0.0, 0.0]),
     kit("road_signs", [30.0, 0.0, 0.0]),
     kit("tech_trash", [30.0, 30.0, 0.0]),
-    kit("key_lock", [30.0, 0.0, 0.0]),
-    kit("code_lock", [30.0, 0.0, 0.0]),
+    s("key_lock", "models/held/key_lock.glb", [30.0, 0.0, 0.0]),
+    s("code_lock", "models/held/code_lock.glb", [30.0, 0.0, 0.0]),
     kit("pistol_round", [30.0, 0.0, 0.0]),
     kit("corn_seed", [0.0, 0.0, 0.0]),
     kit("hemp_seed", [0.0, 0.0, 0.0]),
@@ -491,7 +502,7 @@ fn hand_queue(only: &[&String]) -> Vec<Subject> {
 /// `--look`'s subjects: files, by their path under `assets/`, each shot
 /// under its own file stem. Leaked: a subject's names are `'static` because
 /// every other subject is a table row, and this is a one-shot process.
-fn look_queue(files: &[&String]) -> Vec<Subject> {
+fn look_queue(files: &[&String], gun: bool) -> Vec<Subject> {
     let root = std::env::current_dir().unwrap_or_default().join("assets");
     files
         .iter()
@@ -506,10 +517,49 @@ fn look_queue(files: &[&String]) -> Vec<Subject> {
             Subject {
                 stem: Box::leak(stem.to_owned().into_boxed_str()),
                 src: Src::Glb(Box::leak(p.to_string_lossy().into_owned().into_boxed_str())),
-                turn: [0.0; 3],
-                roll: 0.0,
+                turn: if gun { GUN_TURN } else { [0.0; 3] },
+                roll: if gun { GUN_ROLL } else { 0.0 },
                 girth: 1.0,
             }
+        })
+        .rev()
+        .collect()
+}
+
+/// A gun's framing, which `SUBJECTS` has no row for (the guns' own pictures
+/// were shot outside it): stood barrel-up with its top to +Z (`ui::hold`'s guns),
+/// turned side on and laid muzzle right, nudged up at the muzzle as the
+/// gun bodies are.
+const GUN_TURN: [f32; 3] = [-90.0, 0.0, 0.0];
+const GUN_ROLL: f32 = -72.0;
+
+/// `--skins`' subjects: every skin model, or the ones whose catalog id is in
+/// `only`, each framed as its row's icon is.
+fn skin_queue(only: &[&String]) -> Vec<Subject> {
+    use client::ui::hold::{Stroke, HELD_MODELS, SKIN_MODELS};
+    SKIN_MODELS
+        .iter()
+        .filter_map(|m| {
+            let name = m.catalog.to_string();
+            if !only.is_empty() && !only.contains(&&name) {
+                return None;
+            }
+            let row = HELD_MODELS.iter().find(|r| r.key == m.key)?;
+            // A gun skin is a Meshy gun, whatever its item's icon was shot
+            // from (the revolver's is the prop kit's).
+            let base = SUBJECTS.iter().find(|s| s.stem == m.key);
+            let (turn, roll, girth) = match base {
+                _ if row.stroke == Stroke::Shot => (GUN_TURN, GUN_ROLL, 1.0),
+                Some(b) => (b.turn, b.roll, b.girth),
+                None => ([0.0; 3], -45.0, 1.9),
+            };
+            Some(Subject {
+                stem: Box::leak(name.into_boxed_str()),
+                src: Src::Glb(m.path),
+                turn,
+                roll,
+                girth,
+            })
         })
         .rev()
         .collect()
@@ -531,8 +581,10 @@ fn hand_place(key: &str) -> Transform {
 fn main() -> AppExit {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let hand = args.first().is_some_and(|a| a == "--hand");
-    let look = args.first().is_some_and(|a| a == "--look");
-    if hand || look {
+    let look_gun = args.first().is_some_and(|a| a == "--look-gun");
+    let look = look_gun || args.first().is_some_and(|a| a == "--look");
+    let skins = args.first().is_some_and(|a| a == "--skins");
+    if hand || look || skins {
         args.remove(0);
     }
     let Some(out) = args.first().cloned() else {
@@ -546,7 +598,9 @@ fn main() -> AppExit {
     let queue: Vec<Subject> = if hand {
         hand_queue(&only)
     } else if look {
-        look_queue(&only)
+        look_queue(&only, look_gun)
+    } else if skins {
+        skin_queue(&only)
     } else {
         SUBJECTS
             .iter()

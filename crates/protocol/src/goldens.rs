@@ -275,7 +275,7 @@ pub const FIXTURES: [&str; 186] = [
     "event_worn.bin",
     // A syringe on a downed body (v99).
     "action_treat.bin",
-    // One plant (v130; this slot held v100's planter beds, the same
+    // One plant (v132; this slot held v100's planter beds, the same
     // subtype code, so the positional list keeps its shape).
     "event_plant.bin",
     // A grubbed stump (v101).
@@ -325,7 +325,7 @@ pub const FIXTURES: [&str; 186] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
-    // Farming v2 (v130): a plant leaving, the join walk, the plant verb
+    // Farming v2 (v132): a plant leaving, the join walk, the plant verb
     // both ways, and the tend verb.
     "event_plant_gone.bin",
     "event_plant_sync.bin",
@@ -403,14 +403,17 @@ pub fn event_arc_refused() -> (u8, u8, u8) {
     )
 }
 
-/// Speaker 3 of 5 at the third stone ring, with two topics (wire v96).
+/// Speaker 3 of 5 at the third stone ring, with three topics (wire v96):
+/// small talk, a free gift of two skins and a priced one (v130).
+#[allow(clippy::type_complexity)]
 pub fn event_arc_place() -> (
     u8,
     u8,
     u8,
     sim_core::spot::Spot,
     &'static [u8],
-    [&'static [u8]; 2],
+    [&'static [u8]; 3],
+    [crate::TopicOffer; 3],
 ) {
     (
         protocol_arc_speaker(),
@@ -424,7 +427,24 @@ pub fn event_arc_place() -> (
             z_cm: 1200,
         },
         b"THE GATEKEEPER",
-        [b"WHO ARE YOU", b"THE ISLAND"],
+        [b"WHO ARE YOU", b"THE FOUNDER'S GIFT", b"THE ABYSS RUG"],
+        [
+            crate::TopicOffer::default(),
+            crate::TopicOffer {
+                gift: true,
+                n: 2,
+                catalogs: [7, 8, 0, 0],
+                item: 0,
+                count: 0,
+            },
+            crate::TopicOffer {
+                gift: true,
+                n: 1,
+                catalogs: [10, 0, 0, 0],
+                item: 41,
+                count: 100,
+            },
+        ],
     )
 }
 
@@ -433,8 +453,14 @@ fn protocol_arc_speaker() -> u8 {
 }
 
 /// Inscription 7's text.
-pub fn event_arc_text() -> (u8, u8, u8, &'static [u8]) {
-    (crate::ARC_INSCRIPTION, 7, 0, b"TURN THE THREE TO 5 2 7")
+pub fn event_arc_text() -> (u8, u8, u8, u8, &'static [u8]) {
+    (
+        crate::ARC_INSCRIPTION,
+        7,
+        0,
+        crate::ARC_GIFT_NONE,
+        b"TURN THE THREE TO 5 2 7",
+    )
 }
 
 /// Mechanism 2's three dials, resting.
@@ -1306,13 +1332,15 @@ pub fn event_catalog() -> ItemCatalog {
                 ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
-        // The draw columns' coverage (v82), at the byte's corner.
+        // The draw columns' coverage (v82), at the byte's corner, and the
+        // damage column's (v131) at its own.
         (
             b"Hunting Bow",
             ItemRow {
                 draw_ticks: u8::MAX,
                 nock_ticks: u8::MAX - 1,
                 class: CLASS_WEAPONS,
+                damage: u16::MAX,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
@@ -2544,7 +2572,7 @@ pub fn event_charge_placed_deploy() -> (bool, u16, u16, u8, u8, u8, u16) {
 /// `(cx, cz, level, lit, by)`.
 /// The slot (wire v89) is 5, distinct from the level beside it so a swap
 /// of the two shows.
-/// A ripe pumpkin in bed spot 4 (wire v130): every field nonzero and
+/// A ripe pumpkin in bed spot 4 (wire v132): every field nonzero and
 /// distinct from its neighbours, the genome GGYHWX, dry, at band 8.
 pub fn event_plant() -> WirePlant {
     WirePlant {
@@ -2561,7 +2589,7 @@ pub fn event_plant() -> WirePlant {
     }
 }
 
-/// Plant 0x0BAD_F00D withered away (wire v130).
+/// Plant 0x0BAD_F00D withered away (wire v132).
 pub fn event_plant_gone() -> (u32, u8) {
     (0x0BAD_F00D, sim_core::farm::GONE_WITHERED)
 }
@@ -2590,7 +2618,7 @@ pub fn event_plant_sync() -> (bool, [WirePlant; PLANT_SYNC_BATCH]) {
 }
 
 /// Plant from inventory slot 13 into bed spot 5 of the planter at box key
-/// 0x0012_3456 (wire v130).
+/// 0x0012_3456 (wire v132).
 pub fn action_plant_bed() -> (u8, PlantTarget) {
     (
         13,
@@ -2601,12 +2629,12 @@ pub fn action_plant_bed() -> (u8, PlantTarget) {
     )
 }
 
-/// Plant from slot 29 on the ground at (200_001, 3) (wire v130).
+/// Plant from slot 29 on the ground at (200_001, 3) (wire v132).
 pub fn action_plant_ground() -> (u8, PlantTarget) {
     (29, PlantTarget::Ground { qx: 200_001, qz: 3 })
 }
 
-/// Water plant 0x00C0_FFEE (wire v130): `TEND_WATER`, the widest verb.
+/// Water plant 0x00C0_FFEE (wire v132): `TEND_WATER`, the widest verb.
 pub fn action_tend() -> (u32, u8) {
     (0x00C0_FFEE, sim_core::farm::TEND_WATER)
 }

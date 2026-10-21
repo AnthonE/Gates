@@ -92,8 +92,10 @@ pub use event::{encode_event_achievement, Achieved};
 pub use event::{
     encode_event_alphabet, encode_event_arc_dials, encode_event_arc_place,
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
-    encode_event_work, encode_event_work_def, encode_event_work_state, ARC_INSCRIPTION, ARC_MECH,
-    ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
+    encode_event_work, encode_event_work_def, encode_event_work_state, TopicOffer, ARC_GIFT_GIVEN,
+    ARC_GIFT_GUEST, ARC_GIFT_NONE, ARC_GIFT_OWNED, ARC_GIFT_SHORT, ARC_GIFT_WAITING,
+    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES,
+    WORK_NAME_BYTES,
 };
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
@@ -1266,23 +1268,32 @@ pub use voice::{
 /// a craft may be refused `REFUSE_CR_OWNED`.
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
-/// v130 — farming v2 (`sim_core::farm`): a deploy refusal admits 20..=25
-/// (`REFUSE_D_PLANT_*`, `REFUSE_D_PLANTS_FULL`). The deploy record loses
-/// v100's `grow` byte and `SUB_PLANTER` is gone: `SUB_PLANT` (90) carries
-/// one plant or its removal and `SUB_PLANT_SYNC` (108) the join walk.
-/// `ACT_PLANT` (39) plants a seed from an inventory slot in a bed spot (or
-/// on the ground) and `ACT_TEND` (40) picks, clones, clears or waters one.
-/// v131 — catalog headroom and the water catcher: `MAX_ITEM_DEFS` is 160, so
-/// the held field (`HELD_BITS`) and the catalog's total and first ride 8
-/// bits (`HELD_NONE` is 255); a deploy archetype admits 23 (`ARCH_CATCHER`);
-/// and a catalog row's oven roles carry five arches (`OVEN_ROLE_BITS` 15).
-/// A record with no baseline to be a delta of (a zero-state snapshot, an
-/// overflow datagram) no longer spends the is_delta bit, which keeps the
-/// zero-state cap of 64 moving bodies inside `DATAGRAM_BUDGET_BYTES`.
-/// v132 — wild corn/pumpkin occupants: both ends must scatter the same.
-/// `terrain::Occupant::WildCorn` (29) and `WildPumpkin` (30) grow out of a
-/// shrub by a lake, and the client draws its scatter itself, so a client
-/// that does not plant them stands a shrub where the server picks a crop.
+/// v130 — a speaker's offers: `SUB_ARC_PLACE` says per topic whether it is a
+/// gift, the skins it hands over and its price (`TopicOffer`), and
+/// `SUB_ARC_TEXT` says what asking one came to (`ARC_GIFT_*`, 3 bits after
+/// the topic), so the talk panel draws an offer as a card with a button.
+/// v131 — a catalog row carries `damage` (16 bits after `class`): what one
+/// hit of the item takes off a body, for the inventory's item card.
+/// v132 — farming v2 (`sim_core::farm`), the water catcher and the wild
+/// crops, which counted 130..=132 on their own branch before main took 130
+/// and 131:
+/// - a deploy refusal admits 20..=25 (`REFUSE_D_PLANT_*`,
+///   `REFUSE_D_PLANTS_FULL`). The deploy record loses v100's `grow` byte and
+///   `SUB_PLANTER` is gone: `SUB_PLANT` (90) carries one plant or its removal
+///   and `SUB_PLANT_SYNC` (108) the join walk. `ACT_PLANT` (39) plants a seed
+///   from an inventory slot in a bed spot (or on the ground) and `ACT_TEND`
+///   (40) picks, clones, clears or waters one.
+/// - catalog headroom and the water catcher: `MAX_ITEM_DEFS` is 160, so the
+///   held field (`HELD_BITS`) and the catalog's total and first ride 8 bits
+///   (`HELD_NONE` is 255); a deploy archetype admits 23 (`ARCH_CATCHER`); and
+///   a catalog row's oven roles carry five arches (`OVEN_ROLE_BITS` 15). A
+///   record with no baseline to be a delta of (a zero-state snapshot, an
+///   overflow datagram) no longer spends the is_delta bit, which keeps the
+///   zero-state cap of 64 moving bodies inside `DATAGRAM_BUDGET_BYTES`.
+/// - wild corn/pumpkin occupants: both ends must scatter the same.
+///   `terrain::Occupant::WildCorn` (29) and `WildPumpkin` (30) grow out of a
+///   shrub by a lake, and the client draws its scatter itself, so a client
+///   that does not plant them stands a shrub where the server picks a crop.
 pub const PROTO_VER: u16 = 132;
 
 /// This game's slug in the elo catalog.
@@ -1387,7 +1398,7 @@ const _: () = assert!(sim_core::heli::Y_CEIL_Q < (1 << POS_Y_BITS) - POS_Y_BIAS)
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
 
-/// Width of the held-item field on an entity record (v56; 8 bits since v131).
+/// Width of the held-item field on an entity record (v56; 8 bits since v132).
 ///
 /// Eight bits because seven do not fit the sentinel: `MAX_ITEM_DEFS` is
 /// 160, past the 127 ids seven bits hold beside "empty hand", which needs
@@ -2182,10 +2193,10 @@ const ACT_WHEEL: u32 = 37;
 /// Pull slot machine `machine`'s lever at ×`mult` (wire v123,
 /// `Command::Slots`).
 const ACT_SLOTS: u32 = 38;
-/// Plant one seed from inventory slot `slot` (wire v130, farming v2,
+/// Plant one seed from inventory slot `slot` (wire v132, farming v2,
 /// `Command::Plant`): in a bed spot of a planter, or on the ground.
 const ACT_PLANT: u32 = 39;
-/// Tend plant `plant` (wire v130, `Command::Tend`): `farm::TEND_*`.
+/// Tend plant `plant` (wire v132, `Command::Tend`): `farm::TEND_*`.
 const ACT_TEND: u32 = 40;
 /// Width of `ActionMsg::Plant`'s bed spot and `ActionMsg::Tend`'s verb.
 const PLANT_SPOT_BITS: u32 = 3;
@@ -2592,11 +2603,11 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
-    /// Plant one seed from inventory slot `slot` (wire v130, farming v2).
+    /// Plant one seed from inventory slot `slot` (wire v132, farming v2).
     /// The slot rides the wire, so the seed planted is the one the click
     /// named; the item, the spot, reach and room are the sim's verdict.
     Plant { slot: u8, target: PlantTarget },
-    /// Tend plant `plant` with `act` (`sim_core::farm::TEND_*`, wire v130).
+    /// Tend plant `plant` with `act` (`sim_core::farm::TEND_*`, wire v132).
     /// Stage, reach and the held skin are the sim's verdict.
     Tend { plant: u32, act: u8 },
     /// Pick the plant at cell key `cell` (wire v91). `Container`'s
@@ -4684,7 +4695,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     fn encode_absolute(&mut self, e: &EntityState) -> Result<(), WireError> {
         // is_delta, only where a delta could stand: a zero-state snapshot
         // and an overflow datagram have no baseline, so every record is
-        // absolute and the bit says nothing (v131: the bit the 8-bit held
+        // absolute and the bit says nothing (v132: the bit the 8-bit held
         // field needed back to keep the zero-state cap inside the budget).
         if self.has_baseline {
             self.w.write_bit(false)?;
@@ -5099,7 +5110,7 @@ mod tests {
     /// A snapshot overflow datagram (v121) at its worst — 64 moving bodies,
     /// every record absolute — still fits one datagram, round-trips, and the
     /// decoder refuses what it can never mean: part 0, a delta record, and
-    /// the snapshot's own kind. (Since v131 a record here spends no
+    /// the snapshot's own kind. (Since v132 a record here spends no
     /// is_delta bit, which is what paid for the held field's eighth.)
     #[test]
     fn a_full_overflow_datagram_fits_and_round_trips() {
@@ -5341,7 +5352,7 @@ mod tests {
             })
             .collect();
         let hands = encode(&moved);
-        // Ten bits a record since v131: the eight-bit id, the flame, and
+        // Ten bits a record since v132: the eight-bit id, the flame, and
         // the skin's presence bit (none of these hands is skinned). Eight
         // records are 80 bits, so exactly ten bytes.
         assert_eq!(
@@ -5741,7 +5752,7 @@ mod tests {
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, and farming v2's plant
-        // and tend (v130) 39 and 40.
+        // and tend (v132) 39 and 40.
         assert_eq!(ACT_MAX, ACT_TEND);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,

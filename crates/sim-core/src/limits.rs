@@ -364,7 +364,7 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// Item definitions the sim preallocates for (CONTENT.md §2). The content
 /// bake refuses a set past this. 160 leaves farming v2's rows headroom
 /// (127 filled the old 7-bit held field); the wire's held field is 8 bits
-/// since v131, so anything up to 255 fits beside its empty-hand code
+/// since v132, so anything up to 255 fits beside its empty-hand code
 /// (`protocol::HELD_NONE`). Every per-item table in `World` grows with it.
 pub const MAX_ITEM_DEFS: usize = 160;
 

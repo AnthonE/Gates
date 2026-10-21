@@ -54,9 +54,9 @@ const _: () = assert!(
 );
 
 /// A plant part's fade as the component it carries — `tree::lod_band`'s
-/// shape: the `VisibilityRange` on the desktop, and nothing in a browser,
-/// whose WebGL2 cannot bind the table it dithers by.
-#[cfg(not(target_arch = "wasm32"))]
+/// shape: the dithered `VisibilityRange` wherever the view can bind the table
+/// it dithers by.
+#[cfg(not(webgl2))]
 pub fn fade_band() -> bevy::camera::visibility::VisibilityRange {
     bevy::camera::visibility::VisibilityRange {
         start_margin: 0.0..0.0,
@@ -67,18 +67,22 @@ pub fn fade_band() -> bevy::camera::visibility::VisibilityRange {
     }
 }
 
-/// See the desktop half above.
-#[cfg(target_arch = "wasm32")]
-pub fn fade_band() {}
+/// WebGL2 cannot bind that table (the pipeline that reads it is refused), so
+/// its plants stop ABRUPTLY at the band's middle instead. An abrupt range has
+/// no crossfade, so no pipeline is keyed to dither and none reads the table,
+/// while Bevy still culls on the CPU what is past it — before this, a WebGL2
+/// page drew every plant part in the whole near ring, out to 180 m.
+#[cfg(webgl2)]
+pub fn fade_band() -> bevy::camera::visibility::VisibilityRange {
+    bevy::camera::visibility::VisibilityRange::abrupt(
+        0.0,
+        (PLANT_FADE_M.start + PLANT_FADE_M.end) * 0.5,
+    )
+}
 
-/// Give a plant part spawned on its own its [`fade_band`] — nothing in a
-/// browser. A function rather than an `insert(fade_band())` at each site,
-/// which in a browser would be inserting `()`.
+/// Give a plant part spawned on its own its [`fade_band`].
 pub fn fade(e: &mut EntityCommands) {
-    #[cfg(not(target_arch = "wasm32"))]
     e.insert(fade_band());
-    #[cfg(target_arch = "wasm32")]
-    let _ = e;
 }
 
 /// How much bigger than its mesh a scenery bush draws. **(knob)**

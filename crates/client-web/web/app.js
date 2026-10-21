@@ -974,19 +974,23 @@ function counted(res) {
   if (!res.ok) throw new Error(`the game module answered HTTP ${res.status}`);
   if (!dl.want && !res.headers.get("content-encoding"))
     dl.want = Number(res.headers.get("content-length")) || 0;
-  if (!res.body || typeof TransformStream !== "function") return res;
+  if (!res.body) return res;
+  /* The bar counts a CLONE, and the compiler gets the response `fetch`
+     returned. A `new Response(stream)` has no URL, and V8 keys its wasm code
+     cache to the response's URL and HTTP cache entry, so a module handed over
+     that way was compiled from nothing on every visit. */
+  const reader = res.clone().body.getReader();
   let last = 0;
-  const body = res.body.pipeThrough(new TransformStream({
-    transform(chunk, ctl) {
-      dl.got += chunk.byteLength;
+  (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      dl.got += value.byteLength;
       const now = performance.now();
       if (now - last > 120) { last = now; paintDownload(); }
-      ctl.enqueue(chunk);
-    },
-  }));
-  /* the bytes are already decoded, so only the type travels: it is what lets
-     `instantiateStreaming` compile while the rest is still arriving */
-  return new Response(body, { status: 200, headers: { "Content-Type": "application/wasm" } });
+    }
+  })().catch(() => { /* the compile owns the error */ });
+  return res;
 }
 
 /* ── which module ──────────────────────────────────────────────────────────
@@ -1149,8 +1153,11 @@ async function load(gfx, sizes) {
      names), so both are asked for by the pair's own hash: a cached glue from
      the last publish cannot meet this publish's module. */
   const v = sizes && sizes.sha256 ? "?v=" + String(sizes.sha256).slice(0, 12) : "";
+  /* The module's fetch goes out before the glue's import rather than after
+     it: the two are independent requests, and the module is the long one. */
+  const res = fetch(new URL(m.wasm + v, import.meta.url), { priority: "high" }).then(counted);
+  res.catch(() => { /* awaited below; this only keeps a failed import from leaving it unhandled */ });
   const mod = await import(m.js + v);
-  const res = fetch(new URL(m.wasm + v, import.meta.url)).then(counted);
   /* The module's exports, kept on the window for a person with the console
      open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
      the number to read when a tab dies with no message (an out-of-memory
@@ -1890,10 +1897,21 @@ for (const t of document.querySelectorAll(".tab[data-shelf]")) {
   t.addEventListener("click", () => { shelf = t.dataset.shelf; renderStore(); });
 }
 
-/* The item's own icon under the skin's tint, multiplied — which is what the
-   tint IS in the game (`content/skins.toml`: an sRGB multiply over the
-   item's colours). The icon file is the item's name, snake-cased. */
+/* A skin with a model of its own is sold as a picture of it,
+   `assets/icons/skins/<catalog>.png` (`ui::hold::SkinModelDef::icon`), as
+   the game's store draws it. Any other skin, or one whose picture is not
+   there: the item's own icon under the skin's tint, multiplied — which is
+   what the tint IS in the game (`content/skins.toml`: an sRGB multiply over
+   the item's colours). The icon file is the item's name, snake-cased. */
 function skinArt(s, art) {
+  const own = document.createElement("img");
+  own.alt = "";
+  own.src = "assets/icons/skins/" + Number(s.catalog_id) + ".png";
+  own.addEventListener("error", () => { own.remove(); tintedArt(s, art); });
+  art.append(own);
+}
+
+function tintedArt(s, art) {
   const tint = /^#[0-9a-f]{6}$/i.test(String(s.tint)) ? s.tint : "#ffffff";
   const icon = "assets/icons/" + String(s.covers || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") + ".png";
   art.style.setProperty("--tint", tint);
@@ -1904,7 +1922,9 @@ function skinArt(s, art) {
   layer.className = "tint";
   layer.style.setProperty("--icon", `url("${icon}")`);
   img.addEventListener("error", () => { img.remove(); layer.remove(); });
-  art.append(img, layer);
+  // Ahead of anything already on the card (its OWNED tag): this runs late
+  // when a skin's own picture failed.
+  art.prepend(img, layer);
 }
 
 const CART = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h2l1.6 8h7.4l1.5-5.5H4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="6.5" cy="13" r="1.2" fill="currentColor"/><circle cx="11.5" cy="13" r="1.2" fill="currentColor"/></svg>';
@@ -2461,6 +2481,10 @@ if (typeof PerformanceObserver !== "undefined") {
       const heap = performance.memory ? ` · js heap ${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)} MB` : "";
       console.info(`page: long tasks ${longTasks} (longest ${longestMs.toFixed(0)} ms)${heap}`);
       longTasks = 0; longestMs = 0;
+      /* Bevy's wasm logger marks and measures every log line on the
+         performance timeline, and nothing ever clears those entries. */
+      performance.clearMarks();
+      performance.clearMeasures();
     }, 5000);
   } catch (err) { /* no longtask entry type here */ }
 }

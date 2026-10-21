@@ -143,17 +143,22 @@ pub const MIPPED_DIRS: [&str; 2] = ["textures/", "models/"];
 /// for the readers that meant exactly that.
 pub const MIPPED_DIR: &str = MIPPED_DIRS[0];
 
-/// How many images are given a chain per frame.
+/// How many level-0 texels are given a chain per frame — and always at least
+/// one image, whatever its size.
 ///
 /// **Budgeted rather than done at once**, for the reason `CLAUDE.md` gives
 /// about stream-in: the whole set can finish loading on one frame, and
 /// filtering 100 MB of texels in a single system call is a stall measured in
-/// hundreds of milliseconds. At two per frame the set drains in under twenty
-/// frames of a loading screen that is already streaming the world in, which
-/// is invisible; done eagerly it is a visible hitch on the bar.
+/// hundreds of milliseconds. Done eagerly it is a visible hitch on the bar.
+///
+/// **Texels, not images.** It was two images a frame, and a browser's queue
+/// is ~300 model maps at 512² or 256² beside the photographs at 1024²: two
+/// of those are sixteen times the work of two 256² maps, so the frame a
+/// photograph landed on was the long one. One 1024² image's worth is two
+/// 512² frames' worth of the old budget.
 ///
 /// Proposed default, not spoken.
-pub const PER_FRAME: usize = 2;
+pub const TEXELS_PER_FRAME: u64 = 1024 * 1024;
 
 /// How a level is reduced from the one above it. See the module header — the
 /// three cases are different arithmetic and the sRGB one is the one a naive
@@ -306,10 +311,46 @@ fn decode_table() -> [f32; 256] {
     t
 }
 
+/// linear → sRGB, rounded to the nearest byte: exactly [`encode_exact`]'s
+/// answer, read as how many of its 255 steps lie at or below `c`.
+///
+/// **A search, because this is the inner loop of every chain** — three
+/// channels per output texel, ~260,000 calls for one 512² image — and on
+/// wasm32 `powf` is a software routine on the page's one thread, at two
+/// images a frame through the first minutes of play. Eight compares against
+/// a table built once give the same byte (`tests::encode_reads_the_steps`).
+fn encode(c: f32) -> u8 {
+    encode_steps().partition_point(|&t| t <= c) as u8
+}
+
+/// The smallest linear value [`encode_exact`] maps to each code 1..=255, in
+/// order. Bisected on the float's bits, which order like the floats do for
+/// the non-negative half the search stays in.
+fn encode_steps() -> &'static [f32; 255] {
+    static STEPS: std::sync::OnceLock<[f32; 255]> = std::sync::OnceLock::new();
+    STEPS.get_or_init(|| {
+        let mut steps = [0.0f32; 255];
+        for (i, step) in steps.iter_mut().enumerate() {
+            let code = i as u8 + 1;
+            let (mut lo, mut hi) = (0u32, 1.0f32.to_bits());
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if encode_exact(f32::from_bits(mid)) >= code {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            *step = f32::from_bits(lo);
+        }
+        steps
+    })
+}
+
 /// linear → sRGB, rounded to the nearest byte. The IEC 61966-2-1 transfer
 /// function, and `round` rather than truncate because a truncating encode
 /// loses half a code on every level and eleven levels of that is visible.
-fn encode(c: f32) -> u8 {
+fn encode_exact(c: f32) -> u8 {
     let c = c.clamp(0.0, 1.0);
     let s = if c <= 0.003_130_8 {
         12.92 * c
@@ -532,19 +573,27 @@ pub fn enqueue(
         if !MIPPED_DIRS.iter().any(|d| path.starts_with(d)) {
             continue;
         }
-        pending.0.push(*id);
+        // The photographs go to the end the drain pops from, and a model's
+        // maps to the other: on a browser ~300 model images arrive with the
+        // ground's 20, and `textures::stack_ground` cannot build the ground
+        // until all 20 have their chain.
+        if path.starts_with(MIPPED_DIR) {
+            pending.0.push(*id);
+        } else {
+            pending.0.insert(0, *id);
+        }
     }
 }
 
 /// Images that got their chain THIS frame, for [`retouch`].
 ///
 /// Cleared by `retouch` once the materials over them have been touched, so
-/// the vector never grows past one frame's `PER_FRAME`; the buffer itself is
+/// the vector never grows past one frame's budget; the buffer itself is
 /// kept, which is what makes the pair allocation-free after the first frame.
 #[derive(Resource, Default)]
 pub struct Chained(pub Vec<AssetId<Image>>);
 
-/// Give up to [`PER_FRAME`] pending images their chain.
+/// Give pending images their chain, [`TEXELS_PER_FRAME`] of level 0 a frame.
 ///
 /// Popping from the back rather than draining from the front: the order is
 /// arbitrary (they are all wanted before the player sees the world) and a
@@ -555,7 +604,8 @@ pub fn drain(
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
 ) {
-    for _ in 0..PER_FRAME {
+    let mut budget = TEXELS_PER_FRAME;
+    while budget > 0 {
         let Some(id) = pending.0.pop() else {
             return;
         };
@@ -591,6 +641,7 @@ pub fn drain(
         image.texture_descriptor.mip_level_count = levels(w, h);
         image.data = Some(data);
         chained.0.push(id);
+        budget = budget.saturating_sub(u64::from(w) * u64::from(h));
     }
 }
 
@@ -677,4 +728,25 @@ pub fn retouch(
         let _ = monuments.get_mut(*mat_id);
     }
     chained.0.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table search answers what the transfer function answers: over a
+    /// dense sweep of [0, 1], at and either side of every step, and for the
+    /// inputs a clamp has to catch.
+    #[test]
+    fn encode_reads_the_steps() {
+        let mut probes: Vec<f32> = (0..=1_000_000).map(|i| i as f32 / 1_000_000.0).collect();
+        for &t in encode_steps() {
+            let b = t.to_bits();
+            probes.extend((b.saturating_sub(3)..=b + 3).map(f32::from_bits));
+        }
+        probes.extend([-1.0, -0.0, 1.5, f32::INFINITY, f32::NEG_INFINITY, f32::NAN]);
+        for c in probes {
+            assert_eq!(encode(c), encode_exact(c), "encode({c:e})");
+        }
+    }
 }

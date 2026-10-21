@@ -1,4 +1,4 @@
-//! Farming v2 on the wire (v130), through the shard and `ClientCore`: a
+//! Farming v2 on the wire (v132), through the shard and `ClientCore`: a
 //! seed planted by its action bytes reaches a near client as `SUB_PLANT`,
 //! and a client that joins afterwards gets it from the plant walk
 //! (`SUB_PLANT_SYNC`). Run with `RUST_MIN_STACK=16777216`.

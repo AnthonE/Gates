@@ -25,7 +25,7 @@
 #![cfg(feature = "render")]
 
 use client::render::structures::{
-    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, METAL_DOOR_ASSET,
+    deploy_size, BAG_ASSET, BAG_SIZE, DEPLOY_ASSET, LOCK_ASSET, LOCK_BACK_M, METAL_DOOR_ASSET,
 };
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
@@ -33,6 +33,16 @@ use client::render::structures::{
 /// makes for the baked icons.
 fn asset_path(rel: &str) -> std::path::PathBuf {
     std::path::Path::new("../../assets").join(rel)
+}
+
+/// Every deployable model, by archetype: the table's rows and the metal
+/// door, which draws its own model on the door's row.
+fn models() -> impl Iterator<Item = (usize, &'static str)> {
+    DEPLOY_ASSET
+        .iter()
+        .enumerate()
+        .filter_map(|(arch, path)| path.map(|rel| (arch, rel)))
+        .chain([(sim_core::deploy::ARCH_DOOR as usize, METAL_DOOR_ASSET)])
 }
 
 /// The JSON chunk of a GLB, parsed enough to count parts and bound vertices.
@@ -90,8 +100,7 @@ impl Glb {
 
 #[test]
 fn every_declared_model_ships() {
-    for (arch, path) in DEPLOY_ASSET.iter().enumerate() {
-        let Some(rel) = path else { continue };
+    for (arch, rel) in models() {
         let p = asset_path(rel);
         assert!(
             p.exists(),
@@ -103,8 +112,7 @@ fn every_declared_model_ships() {
 
 #[test]
 fn each_model_is_the_single_primitive_build_kit_loads() {
-    for (arch, path) in DEPLOY_ASSET.iter().enumerate() {
-        let Some(rel) = path else { continue };
+    for (arch, rel) in models() {
         let g = Glb::open(&asset_path(rel));
         let n = g.primitives().len();
         assert_eq!(
@@ -124,8 +132,7 @@ fn each_model_is_the_single_primitive_build_kit_loads() {
 
 #[test]
 fn each_model_fits_the_row_that_sizes_its_ghost() {
-    for (arch, path) in DEPLOY_ASSET.iter().enumerate() {
-        let Some(rel) = path else { continue };
+    for (arch, rel) in models() {
         let g = Glb::open(&asset_path(rel));
         let got = g.extent();
         let want = deploy_size(arch);
@@ -164,8 +171,7 @@ const MAY_GLOW: [u8; 1] = [sim_core::deploy::ARCH_FIRE];
 
 #[test]
 fn only_a_fire_glows() {
-    for (arch, path) in DEPLOY_ASSET.iter().enumerate() {
-        let Some(rel) = path else { continue };
+    for (arch, rel) in models() {
         let g = Glb::open(&asset_path(rel));
         let lit = g.json["materials"]
             .as_array()
@@ -192,8 +198,7 @@ fn only_a_fire_glows() {
 
 #[test]
 fn every_model_stands_on_the_ground() {
-    for (arch, path) in DEPLOY_ASSET.iter().enumerate() {
-        let Some(rel) = path else { continue };
+    for (arch, rel) in models() {
         let y = Glb::open(&asset_path(rel)).min_y();
         // `spawn_deploy` places these by their own origin, so a model centred
         // on its middle sinks half of itself into the terrain. `origin_at:
@@ -207,39 +212,22 @@ fn every_model_stands_on_the_ground() {
     }
 }
 
-/// The accessor a primitive's attribute points at.
-fn attr<'a>(g: &'a Glb, name: &str) -> &'a serde_json::Value {
-    let p = g.primitives()[0];
-    &g.json["accessors"][p["attributes"][name].as_u64().unwrap() as usize]
-}
-
 #[test]
-fn the_metal_door_shares_the_doors_unwrap() {
-    // `build_kit` lays `door_locked.glb`'s MATERIAL onto `door.glb`'s MESH,
-    // which is only right while the two are one geometry under one unwrap —
-    // `ci/prop_kit.py` builds both from `_door`, and this notices if one is
-    // regenerated without the other.
-    let door = DEPLOY_ASSET[sim_core::deploy::ARCH_DOOR as usize].expect("the door has a model");
-    let (a, b) = (
-        Glb::open(&asset_path(door)),
-        Glb::open(&asset_path(METAL_DOOR_ASSET)),
-    );
-    for name in ["POSITION", "TEXCOORD_0"] {
-        let (x, y) = (attr(&a, name), attr(&b, name));
-        assert_eq!(x["count"], y["count"], "{name} count differs");
-    }
-    let index_count = |g: &Glb| {
-        let i = g.primitives()[0]["indices"].as_u64().unwrap() as usize;
-        g.json["accessors"][i]["count"].clone()
-    };
-    assert_eq!(index_count(&a), index_count(&b), "index count differs");
-    // POSITION is the one accessor glTF requires bounds on.
-    let (x, y) = (attr(&a, "POSITION"), attr(&b, "POSITION"));
-    for k in ["min", "max"] {
-        for i in 0..3 {
-            let (p, q) = (x[k][i].as_f64().unwrap(), y[k][i].as_f64().unwrap());
-            assert!((p - q).abs() < 1e-5, "POSITION {k}[{i}]: {p} vs {q}");
-        }
+fn each_locks_back_is_where_spawn_lock_puts_the_face() {
+    // `spawn_lock` pushes a lock out by `LOCK_BACK_M` so its back meets the
+    // door; a regenerated lock that is deeper than the number would sink
+    // into the door, a shallower one would float off it.
+    for (rel, back) in LOCK_ASSET.iter().zip(LOCK_BACK_M) {
+        let g = Glb::open(&asset_path(rel));
+        let p = g.primitives()[0]["attributes"]["POSITION"]
+            .as_u64()
+            .unwrap() as usize;
+        let min_z = g.json["accessors"][p]["min"][2].as_f64().unwrap() as f32;
+        assert!(
+            (min_z + back).abs() < 5e-4,
+            "{rel}: its back is at z {min_z:+.4} and LOCK_BACK_M says {:+.4}",
+            -back
+        );
     }
 }
 

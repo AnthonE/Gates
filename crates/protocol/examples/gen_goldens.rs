@@ -147,13 +147,14 @@ fn main() {
     let len = protocol::encode_action_arc(op, target, arg, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[142], &buf[..len]);
     // Speakers, stones and locks (v96).
-    let (kind, index, total, spot, name, topics) = goldens::event_arc_place();
-    let len =
-        protocol::encode_event_arc_place(kind, index, total, &spot, name, &topics, 0, 0, &mut buf)
-            .unwrap();
+    let (kind, index, total, spot, name, topics, offers) = goldens::event_arc_place();
+    let len = protocol::encode_event_arc_place(
+        kind, index, total, &spot, name, &topics, &offers, 0, 0, &mut buf,
+    )
+    .unwrap();
     write_fixture(goldens::FIXTURES[143], &buf[..len]);
-    let (kind, index, topic, text) = goldens::event_arc_text();
-    let len = protocol::encode_event_arc_text(kind, index, topic, text, &mut buf).unwrap();
+    let (kind, index, topic, gift, text) = goldens::event_arc_text();
+    let len = protocol::encode_event_arc_text(kind, index, topic, gift, text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[144], &buf[..len]);
     let (mech, dials, resting) = goldens::event_arc_dials();
     let len = protocol::encode_event_arc_dials(mech, &dials, resting, &mut buf).unwrap();
@@ -180,7 +181,7 @@ fn main() {
     let (slot, target) = goldens::action_treat();
     let len = protocol::encode_action_treat(slot, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[152], &buf[..len]);
-    // One plant (v130), in v100's planter-beds slot.
+    // One plant (v132), in v100's planter-beds slot.
     let len = protocol::encode_event_plant(&goldens::event_plant(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[153], &buf[..len]);
     // A grubbed stump (v101).
@@ -273,7 +274,7 @@ fn main() {
     let (machine, mult, code, reels, pay) = goldens::event_slots();
     let len = protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[180], &buf[..len]);
-    // Farming v2 (v130).
+    // Farming v2 (v132).
     let (id, reason) = goldens::event_plant_gone();
     let len = protocol::encode_event_plant_gone(id, reason, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[181], &buf[..len]);

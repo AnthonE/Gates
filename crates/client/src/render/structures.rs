@@ -715,13 +715,15 @@ pub struct Kit {
     tier: [[[Handle<StandardMaterial>; PIECE_LOOKS]; DMG_BANDS as usize]; N_TIERS],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
-    /// The metal door's surfaces, laid on `door.glb`'s mesh
-    /// ([`METAL_DOOR_ASSET`]).
+    /// The metal door: a model of its own ([`METAL_DOOR_ASSET`]), not the
+    /// wooden door's planks under a metal material.
+    door_metal_mesh: Handle<Mesh>,
     door_metal: Handle<StandardMaterial>,
     /// A bolted-on lock, drawn ([`spawn_lock`]): the code lock's keypad
-    /// and the key lock's padlock, in the prop kit's one material.
+    /// and the key lock's hasp and padlock, the same models the hand holds
+    /// ([`LOCK_ASSET`]).
     lock_mesh: [Handle<Mesh>; 2],
-    lock_mat: Handle<StandardMaterial>,
+    lock_mat: [Handle<StandardMaterial>; 2],
     /// The code lock's light: green open, red locked.
     led_mesh: Handle<Mesh>,
     led_mat: [Handle<StandardMaterial>; 2],
@@ -2302,8 +2304,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/fire.glb"),      // 3 fire
     Some("models/deploy/furnace.glb"),   // 4 furnace
     Some("models/deploy/workbench.glb"), // 5 workbench
-    // 6 door — a metal one wears [`METAL_DOOR_ASSET`]'s material, baked
-    // onto the same unwrap.
+    // 6 door — a metal one draws [`METAL_DOOR_ASSET`] instead.
     Some("models/deploy/door.glb"),
     None,                                     // 7 lock — never drawn
     Some("models/deploy/recycler.glb"),       // 8 recycler
@@ -2358,12 +2359,21 @@ pub fn piece_look(addr: Addr) -> usize {
     (h.wrapping_mul(0x2C1B_3C6D) >> 28) as usize % PIECE_LOOKS
 }
 
-/// The metal door: `door.glb`'s geometry built under sheet-metal surfaces
-/// by `ci/prop_kit.py`, which unwraps identical geometry identically, so its
-/// material lays onto `door.glb`'s mesh. Only the material is loaded. (A
-/// locked wooden door used to wear it too, which drew every lock as a
-/// change of door; the lock is drawn now, [`spawn_lock`].)
-pub const METAL_DOOR_ASSET: &str = "models/deploy/door_locked.glb";
+/// The metal door: riveted scrap sheet over an angle-iron frame, generated
+/// (`assets/models/MANIFEST.md`) and fitted to the door's [`DEPLOY`] row
+/// with the hinge at −Z like `door.glb`, so it swings the same way.
+pub const METAL_DOOR_ASSET: &str = "models/deploy/door_metal.glb";
+
+/// The two locks' models, code then key: generated, and the held items' own
+/// (`ui::hold`), so the lock on a door is the one in the hand. Authored
+/// facing +Z and centred on z like every held item (the fist grips the
+/// model's own axis), so their backs sit [`LOCK_BACK_M`] behind it.
+pub const LOCK_ASSET: [&str; 2] = ["models/held/code_lock.glb", "models/held/key_lock.glb"];
+
+/// How far behind its origin each [`LOCK_ASSET`]'s flat back is, metres:
+/// half the keypad's depth, and half the hasp's with its padlock hanging
+/// forward. `tests/deploy_assets.rs` holds these to the files.
+pub const LOCK_BACK_M: [f32; 2] = [0.02875, 0.04654];
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
 pub fn build_kit(
@@ -2575,6 +2585,13 @@ pub fn build_kit(
         tier,
         deploy_mesh,
         deploy_mat,
+        door_metal_mesh: assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(METAL_DOOR_ASSET),
+        ),
         door_metal: assets.load(
             GltfAssetLabel::Material {
                 index: 0,
@@ -2582,14 +2599,24 @@ pub fn build_kit(
             }
             .from_asset(METAL_DOOR_ASSET),
         ),
-        lock_mesh: ["code_lock", "key_lock"].map(|name| {
-            meshes.add(
-                super::heldkit::baked(name).unwrap_or_else(|| Cuboid::new(0.1, 0.15, 0.04).into()),
+        lock_mesh: LOCK_ASSET.map(|path| {
+            assets.load(
+                GltfAssetLabel::Primitive {
+                    mesh: 0,
+                    primitive: 0,
+                }
+                .from_asset(path),
             )
         }),
-        // The kit's textures are fixed handles `viewmodel::load_models`
-        // fills at startup, so this material resolves once they land.
-        lock_mat: materials.add(super::heldkit::material()),
+        lock_mat: LOCK_ASSET.map(|path| {
+            assets.load(
+                GltfAssetLabel::Material {
+                    index: 0,
+                    is_scale_inverted: false,
+                }
+                .from_asset(path),
+            )
+        }),
         led_mesh: meshes.add(Sphere::new(LED_R_M).mesh().ico(1).unwrap()),
         led_mat: [LED_OPEN, LED_LOCKED].map(|c: Color| {
             materials.add(StandardMaterial {
@@ -2898,11 +2925,7 @@ pub fn stream(
                 // (the mirror is predicted), anyone else's on the event.
                 if let Some(sound) = sound.as_deref_mut().filter(|_| live.row == rec.row) {
                     let leaf = deploy_transform(seed, haven, key, arch, rec.open, plate);
-                    let cue = if rec.open {
-                        crate::sound::Cue::DoorOpen
-                    } else {
-                        crate::sound::Cue::DoorClose
-                    };
+                    let cue = door_cue(arch, matter, rec.open);
                     let at = leaf.translation + Vec3::Y * 1.0;
                     sound.play(crate::sound::mixer::Request::at(cue, at.to_array()));
                 }
@@ -3628,6 +3651,20 @@ pub struct RecyclerHum {
     pub loc: u8,
 }
 
+/// The swing of a door-like deployable, by what it is: a garage door rolls,
+/// a sheet-metal door clanks, and a wooden door or a shutter creaks.
+pub fn door_cue(arch: u8, matter: u8, open: bool) -> crate::sound::Cue {
+    use crate::sound::Cue;
+    match (arch, matter == sim_core::deploy::MATTER_METAL, open) {
+        (ARCH_GARAGE_DOOR, _, true) => Cue::GarageOpen,
+        (ARCH_GARAGE_DOOR, _, false) => Cue::GarageClose,
+        (_, true, true) => Cue::DoorMetalOpen,
+        (_, true, false) => Cue::DoorMetalClose,
+        (_, false, true) => Cue::DoorOpen,
+        (_, false, false) => Cue::DoorClose,
+    }
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -3671,7 +3708,8 @@ pub fn spawn_deploy(
         transform
     };
 
-    let mat = if arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL {
+    let metal_door = arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL;
+    let mat = if metal_door {
         kit.door_metal.clone()
     } else {
         kit.deploy_mat[idx].clone()
@@ -3681,6 +3719,8 @@ pub fn spawn_deploy(
         super::WorldEntity,
         Mesh3d(if arch == ARCH_WINDOW_SHUTTER && rec.open {
             kit.shutters_open.clone()
+        } else if metal_door {
+            kit.door_metal_mesh.clone()
         } else {
             kit.deploy_mesh[idx].clone()
         }),
@@ -3703,7 +3743,7 @@ pub fn spawn_deploy(
     // A bolted-on lock is drawn where a hand would find it. A garage door
     // rolled up into its header has nowhere to show one.
     if rec.has_lock && !(arch == ARCH_GARAGE_DOOR && rec.open) {
-        let (mounts, n) = lock_mounts(arch);
+        let (mounts, n) = lock_mounts(arch, metal_door);
         for &(at, out) in &mounts[..n] {
             spawn_lock(&mut e, kit, at, out, rec.keyed, rec.locked);
         }
@@ -3721,6 +3761,7 @@ pub fn spawn_deploy(
                 cz: rec.cz,
                 level: rec.level,
                 loc: rec.loc,
+                furnace: arch == ARCH_FURNACE,
             },
             PointLight {
                 color: FIRE_COLOR,
@@ -3747,12 +3788,13 @@ pub fn spawn_deploy(
 }
 
 /// How much bigger a lock is drawn on a door or a box than in the hand, so
-/// it reads across a room: the keypad, the padlock.
-const LOCK_SCALE: [f32; 2] = [1.25, 1.5];
-/// The code lock's light, in the prop kit's frame: over the baked LED
-/// (`heldkit::code_lock`), a hair proud of it so it is the one seen.
-const LED_AT: Vec3 = Vec3::new(0.042, 0.145, 0.024);
-const LED_R_M: f32 = 0.0085;
+/// it reads across a room: the keypad, the hasp and padlock.
+const LOCK_SCALE: [f32; 2] = [1.25, 1.2];
+/// The code lock's light, in [`LOCK_ASSET`]'s frame: centred in the domed
+/// lens at the keypad's top left (measured off the model), poking a
+/// couple of millimetres through it so it is the one seen.
+const LED_AT: Vec3 = Vec3::new(-0.0225, 0.1495, 0.0218);
+const LED_R_M: f32 = 0.0065;
 const LED_OPEN: Color = Color::srgb(0.35, 1.0, 0.45);
 const LED_LOCKED: Color = Color::srgb(1.0, 0.18, 0.12);
 /// `door.glb`'s half thickness: the leaf's faces, where its lock sits.
@@ -3761,6 +3803,14 @@ const DOOR_FACE_M: f32 = 0.056;
 /// (the hinge is the leaf's −Z end, `deploy_transform`), at hand height.
 const DOOR_LOCK_Y_M: f32 = 1.08;
 const DOOR_LOCK_IN_M: f32 = 0.16;
+/// The metal door's leaf is one thin sheet off-centre in its frame:
+/// its front face (−X, the bar handle's side) and its back (+X, behind
+/// the angle iron), measured through the sheet at the lock's spot.
+const METAL_DOOR_FACE_M: [f32; 2] = [-0.0135, -0.0055];
+/// Beside the bar handle (z 0.43–0.46, 0.81–1.31 m up) rather than over
+/// it, and above the back's crossbar (1.05–1.15 m).
+const METAL_DOOR_LOCK_Y_M: f32 = 1.17;
+const METAL_DOOR_LOCK_IN_M: f32 = 0.30;
 
 /// A deployable's lock as one redraw key: bolted on, armed, keyed.
 fn lock_bits(rec: &DeployRec) -> u8 {
@@ -3771,7 +3821,8 @@ fn lock_bits(rec: &DeployRec) -> u8 {
 /// the lock's feet on the face, and the face's outward normal. A door shows
 /// its lock on both faces, so whoever stands at it sees it; a box and a
 /// hearth on their fronts (+Z, the authored front, `footprint::Pose`).
-pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
+/// `metal_door` picks the metal door's model over the wooden one's.
+pub fn lock_mounts(arch: u8, metal_door: bool) -> ([(Vec3, Vec3); 2], usize) {
     let none = (Vec3::ZERO, Vec3::Z);
     let both = |at: Vec3, face: f32| {
         (
@@ -3783,6 +3834,17 @@ pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
         )
     };
     match arch {
+        ARCH_DOOR if metal_door => {
+            let d = deploy_size(ARCH_DOOR as usize).z;
+            let (y, z) = (METAL_DOOR_LOCK_Y_M, d * 0.5 - METAL_DOOR_LOCK_IN_M);
+            (
+                [
+                    (Vec3::new(METAL_DOOR_FACE_M[0], y, z), Vec3::NEG_X),
+                    (Vec3::new(METAL_DOOR_FACE_M[1], y, z), Vec3::X),
+                ],
+                2,
+            )
+        }
         ARCH_DOOR => {
             let d = deploy_size(ARCH_DOOR as usize).z;
             both(
@@ -3811,18 +3873,19 @@ pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
 
 /// Hang one drawn lock on a deployable: the keypad (with its light, green
 /// open and red locked — the client knows the lock bit and never who the
-/// lock remembers) or the padlock, its feet at `at`, facing `out`.
+/// lock remembers) or the hasp and padlock, its feet at `at`, facing `out`.
 fn spawn_lock(e: &mut EntityCommands, kit: &Kit, at: Vec3, out: Vec3, keyed: bool, locked: bool) {
     let k = keyed as usize;
     let scale = LOCK_SCALE[k];
-    // The kit authors a lock facing +Z, its body centred on its plane.
+    // Its back on the face, and a millimetre proud of it so the two never
+    // fight over a pixel.
     let turn = Quat::from_rotation_arc(Vec3::Z, out);
-    let t = Transform::from_translation(at + out * (0.02 * scale))
+    let t = Transform::from_translation(at + out * (LOCK_BACK_M[k] * scale + 0.001))
         .with_rotation(turn)
         .with_scale(Vec3::splat(scale));
     let mut lock = e.commands_mut().spawn((
         Mesh3d(kit.lock_mesh[k].clone()),
-        MeshMaterial3d(kit.lock_mat.clone()),
+        MeshMaterial3d(kit.lock_mat[k].clone()),
         t,
     ));
     if !keyed {
@@ -3936,6 +3999,9 @@ pub struct FireLight {
     pub level: u8,
     /// The fire's body slot — two fires can share a cell (free placement).
     pub loc: u8,
+    /// A furnace rather than an open fire: it roars in its box where a
+    /// campfire crackles (`audio::fires`, `audio::bed`).
+    pub furnace: bool,
 }
 
 /// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries
