@@ -241,6 +241,19 @@ pub enum Goal {
     /// Walk up to its founder and hand over the wood, stone and ore the
     /// pack carries for the base (`agent::society`).
     HandOver,
+    /// Hand every stack of the named item it carries to its friend
+    /// (`--friend`) or the teammate in hand reach: the give a player makes
+    /// with `B` (`TRUST_GIVE`). Offered, one per item in the
+    /// pack, to the sources `Go` is offered to, while one of them stands in
+    /// hand reach.
+    Give(Name),
+    /// Join the crew of its team's cupboard, Rust's tool-cupboard
+    /// authorization: in through the team's doors to it, then the team's
+    /// code at its lock (the code is the invitation, `deploy::hearth_admits`)
+    /// or, at a bare one, the crew's join (`ACCESS_OP_CREW_JOIN`), the keys a
+    /// player presses there. Offered while it knows the team's cupboard and
+    /// is not on its crew.
+    Authorize,
     /// Walk to the named public place (THE GATE, a work, a lock: the names
     /// `places` gives them) and stop there. Offered only to a source that
     /// is sent `places` (an external one); an agent asked for a plain trip
@@ -309,7 +322,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 40] = [
+    pub const FIXED: [Goal; 41] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -350,6 +363,7 @@ impl Goal {
         Goal::Patrol,
         Goal::KeepShop,
         Goal::HandOver,
+        Goal::Authorize,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -398,6 +412,8 @@ impl Goal {
             Goal::Patrol => "patrol",
             Goal::KeepShop => "keep_shop",
             Goal::HandOver => "hand_over",
+            Goal::Give(_) => "give",
+            Goal::Authorize => "authorize",
             Goal::Go(_) => "go",
             Goal::Walk(_) => "walk",
         }
@@ -412,7 +428,12 @@ impl Goal {
             len += n;
         };
         put(self.key().as_bytes());
-        if let Goal::Craft(name) | Goal::Buy(name) | Goal::Sell(name) | Goal::Go(name) = self {
+        if let Goal::Craft(name)
+        | Goal::Buy(name)
+        | Goal::Sell(name)
+        | Goal::Go(name)
+        | Goal::Give(name) = self
+        {
             put(b":");
             put(name.as_bytes());
         }
@@ -461,6 +482,7 @@ impl Goal {
             "buy" => Some(Goal::Buy(name)),
             "sell" => Some(Goal::Sell(name)),
             "go" => Some(Goal::Go(name)),
+            "give" => Some(Goal::Give(name)),
             _ => None,
         }
     }
@@ -528,6 +550,15 @@ impl Goal {
             Goal::Patrol => "Walk a ring round home; fight whoever comes in armed or fighting.".into(),
             Goal::KeepShop => "Stock the crew's vending machine, set its prices, take its junk.".into(),
             Goal::HandOver => "Give your founder the wood, stone and ore you carry.".into(),
+            Goal::Give(name) => format!(
+                "Hand all the {} you carry to your friend, or the teammate beside you.",
+                name.as_str()
+            ),
+            Goal::Authorize => {
+                "Get on your team's cupboard: walk in to it and enter the team's code at its \
+                 lock (or join a bare one), so you may build and sleep in the base."
+                    .into()
+            }
             Goal::Go(name) => format!("Walk to {} and stop there.", name.as_str()),
             Goal::Walk(w) if w == Walk::ANY => format!(
                 "Walk anywhere and stop: fill in a bearing from where you face ({}) and \
@@ -1494,9 +1525,14 @@ pub const SCRIPTED_FOLLOW_M: f32 = 25.0;
 pub const GO_PLACES: usize = 1 + sim_core::limits::MAX_WORKS + sim_core::limits::MAX_MECHS;
 
 /// The most goals one request can offer: the fixed set, every craft and
-/// trade, the trips, and the one walk anywhere (`Walk::ANY`).
-pub const MAX_OPTIONS: usize =
-    Goal::FIXED.len() + SUMMARY_CRAFTS + crate::agent::gate::TRADE_ROWS + GO_PLACES + 1;
+/// trade, the trips, the one walk anywhere (`Walk::ANY`), and a give for
+/// each item the pack lists.
+pub const MAX_OPTIONS: usize = Goal::FIXED.len()
+    + SUMMARY_CRAFTS
+    + crate::agent::gate::TRADE_ROWS
+    + GO_PLACES
+    + 1
+    + SUMMARY_ITEMS;
 
 /// Everything a decision source may know, as a fixed-size value. Built only
 /// from this client's received state (`explorer::observe`); it carries no
@@ -3143,6 +3179,12 @@ impl Scripted {
             }
             _ => {}
         }
+        // On its friend's team, the team's code given it and the team's
+        // cupboard known: onto the cupboard's crew. Conservative on purpose:
+        // nothing else makes the scripted policy reach for a cupboard.
+        if s.friend.on_team && s.team.code && s.offers(Goal::Authorize) {
+            return (Goal::Authorize, "scripted: onto my friend's cupboard");
+        }
         // The plan its mind left for the turns it plays alone: the first
         // step not yet done, while it is on offer.
         if let Some(goal) = self.plan.next(s) {
@@ -3583,6 +3625,87 @@ mod tests {
         assert_eq!(Goal::parse("gather_wood", &[Goal::Explore]), None);
         assert!(Name::new(b"").is_none() && Name::new(b"bad\nname").is_none());
         assert!(Name::new(&[b'x'; MAX_ITEM_NAME_BYTES + 1]).is_none());
+    }
+
+    /// The social verbs' labels: `give:<item>` names the item as a craft
+    /// does, `authorize` stands alone, and both parse only when offered.
+    #[test]
+    fn give_and_authorize_labels_parse_only_as_offered() {
+        let wood = Goal::Give(name("Wood"));
+        assert_eq!(wood.label().as_str(), "give:Wood");
+        assert_eq!(wood.key(), "give");
+        assert_eq!(Goal::Authorize.label().as_str(), "authorize");
+        assert_eq!(Goal::named("give:Wood"), Some(wood));
+        assert_eq!(Goal::named("authorize"), Some(Goal::Authorize));
+        assert_eq!(Goal::named("give:"), None, "a give names an item");
+        assert!(Goal::FIXED.contains(&Goal::Authorize));
+        assert!(!wood.describe().is_empty() && wood.describe().contains("Wood"));
+        assert!(!Goal::Authorize.describe().is_empty());
+
+        let mut s = Summary::EMPTY;
+        assert_eq!(Goal::parse("give:Wood", s.options()), None);
+        assert_eq!(Goal::parse("authorize", s.options()), None);
+        s.offer(wood);
+        s.offer(Goal::Authorize);
+        assert_eq!(Goal::parse("give:Wood", s.options()), Some(wood));
+        assert_eq!(Goal::parse("authorize", s.options()), Some(Goal::Authorize));
+        assert_eq!(
+            Goal::parse("give:Stone", s.options()),
+            None,
+            "only an item the pack was offered for"
+        );
+        assert_eq!(Goal::parse("give", s.options()), None);
+
+        // Every fixed goal, every item given and every other templated
+        // offer fit in one request at once.
+        let mut full = Summary::EMPTY;
+        for g in Goal::FIXED {
+            full.offer(g);
+        }
+        for i in 0..SUMMARY_ITEMS {
+            full.offer(Goal::Give(name(&format!("Item {i}"))));
+        }
+        assert_eq!(
+            full.options().len(),
+            Goal::FIXED.len() + SUMMARY_ITEMS,
+            "a give per pack item has its own room in MAX_OPTIONS"
+        );
+    }
+
+    /// The scripted policy authorizes conservatively: only on its friend's
+    /// team, with the team's code given it, and only when it is offered.
+    #[test]
+    fn the_scripted_policy_authorizes_only_on_its_friends_team_with_the_code() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food_max, s.water_max, s.food, s.water) = (100, 100, 100, 100);
+        s.free_slots = 20;
+        s.offer(Goal::Explore);
+        s.offer(Goal::Authorize);
+        assert_ne!(scripted.decide(&s).unwrap().goal, Goal::Authorize, "alone");
+        s.friend = FriendSense {
+            set: true,
+            online: true,
+            on_team: true,
+            ..FriendSense::NONE
+        };
+        assert_ne!(
+            scripted.decide(&s).unwrap().goal,
+            Goal::Authorize,
+            "no code given"
+        );
+        s.team.code = true;
+        assert_eq!(scripted.decide(&s).unwrap().goal, Goal::Authorize);
+        s.withdraw(Goal::Authorize);
+        assert_ne!(
+            scripted.decide(&s).unwrap().goal,
+            Goal::Authorize,
+            "not on offer (on the crew already, or no cupboard known)"
+        );
+        // A give is an external mind's: the scripted policy never hands
+        // its pack away on its own.
+        s.offer(Goal::Give(name("Wood")));
+        assert!(!matches!(scripted.decide(&s).unwrap().goal, Goal::Give(_)));
     }
 
     #[test]

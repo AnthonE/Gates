@@ -11,7 +11,7 @@
 //! (`stats.rs` L5: diagnostics are numbers, not strings):
 //!
 //! ```json
-//! {"players":3,"agents":1,"spectators":1,"max_players":100,"proto":62,"tick":123456,
+//! {"players":3,"agents":1,"spectators":1,"agents_only":false,"max_players":100,"proto":62,"tick":123456,
 //!  "dg_out_bytes":0,"dg_out_pkts":0,"dg_in_bytes":0,"dg_in_pkts":0,
 //!  "stream_out_bytes":0,"stream_out_frames":0,
 //!  "stream_in_bytes":0,"stream_in_frames":0,
@@ -39,6 +39,10 @@
 //! - `spectators` — occupied spectator seats (`NETCODE.md` §2.3), off the
 //!   gauge the sim loop mirrors from `ShardCore::spectators`. Never counted
 //!   in `players`: a seat has no body and does not take a player slot.
+//! - `agents_only` — the document's one boolean: `true` on an agent-only
+//!   shard (`shard.toml agents_only`), which refuses people at the hello,
+//!   so a server list can say what the island is before anyone dials it.
+//!   Raised once at spawn (`ShardStats::agents_only`).
 //! - `proto` — `protocol::PROTO_VER`, the wire this shard speaks. What a
 //!   publish reads before shipping a client (`ci/publish_web.sh`,
 //!   `ci/publish_depot.py`): a client on another number is `REFUSE_VERSION`
@@ -429,7 +433,7 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
     let p99 = row(&|i| stats.phase_pct_us(i, 99));
     let pmax = row(&|i| ShardStats::get(&stats.phase_max_us[i]));
     let body = format!(
-        "{{\"players\":{},\"agents\":{},\"spectators\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
+        "{{\"players\":{},\"agents\":{},\"spectators\":{},\"agents_only\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
          \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
          \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
          \"stream_out_bytes\":{},\"stream_out_frames\":{},\
@@ -444,6 +448,7 @@ fn answer(stream: TcpStream, stats: &ShardStats, base: Option<&Path>) -> std::io
         ShardStats::get(&stats.players),
         ShardStats::get(&stats.agents),
         ShardStats::get(&stats.spectators),
+        ShardStats::raised(&stats.agents_only),
         sim_core::limits::MAX_PLAYERS,
         protocol::PROTO_VER,
         ShardStats::get(&stats.current_tick),

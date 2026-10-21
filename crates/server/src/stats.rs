@@ -290,6 +290,10 @@ pub struct ShardStats {
     /// `agent_seats` were taken — the seats kept for people doing their job,
     /// counted apart from `refused_full`, which is a shard with no room at all.
     pub refused_agents: AtomicU64,
+    /// People refused `REFUSE_AGENTS` at the hello of an agent-only shard
+    /// (`agents_only`): the door doing its job, counted apart from both of
+    /// the above.
+    pub refused_agents_only: AtomicU64,
     /// Handshakes that proved a banned wallet, refused `REFUSE_ADMIN` at
     /// the door before claiming a slot (`admin::Bans`).
     pub refused_banned: AtomicU64,
@@ -716,6 +720,9 @@ pub struct ShardStats {
     /// sim thread raised the shutdown flag, and `bin/shard.rs` exits once the
     /// flush is down for the supervisor to start the shard again.
     pub restart_due: AtomicBool,
+    /// The shard was booted agent-only (`agents_only`). Raised once at
+    /// spawn and never lowered: what `status.json` says this island is.
+    pub agents_only: AtomicBool,
     /// A restart asked for from outside the game (SIGUSR1, `bin/shard.rs`):
     /// its minutes plus one, 0 for none. The sim thread takes it on its
     /// once-a-second poll.

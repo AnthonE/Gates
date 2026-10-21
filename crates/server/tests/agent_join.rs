@@ -16,7 +16,9 @@
 //!    self-signed shard is refused at the transport, its own pin admits it,
 //!    and a wrong pin is refused;
 //! 6. `agent_seats` refuses the agent past the cap (`REFUSE_FULL`) and still
-//!    seats a person.
+//!    seats a person;
+//! 7. an agent-only world (`agents_only`) refuses a person (`REFUSE_AGENTS`)
+//!    and seats an agent and a spectator.
 
 use server::botclient::{agent_endpoint, run_agent_bot, AgentIdentity, BotDriver, BotReport};
 use server::config::ShardConfig;
@@ -284,6 +286,74 @@ async fn agent_seats_refuse_the_agent_past_the_cap_and_seat_a_person() {
         .await
         .expect("a person still gets a seat");
     assert_ne!(person.welcome.player_id, first.welcome.player_id);
+    h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **Claim 7.** An agent-only world (`agents_only`): a person is refused at
+/// the hello with `REFUSE_AGENTS`, guest or signed, and counted; an agent
+/// plays; a spectator watches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_only_world_refuses_a_person_and_seats_an_agent_and_a_watcher() {
+    let mut cfg = ShardConfig::ephemeral(20_261_021);
+    cfg.agents_only = true;
+    cfg.spectate = server::config::Spectate::on();
+    let h = spawn_shard(
+        cfg,
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("boots");
+    assert!(ShardStats::raised(&h.stats.agents_only));
+    let server = h.local_addr.to_string();
+    let ep = client::client_endpoint(&server, None).expect("endpoint");
+
+    // A person: a guest, then one who signs. Neither gets past the hello.
+    let guest = Session::connect(&ep, &server, protocol::Address::GUEST, |_, _, _| None).await;
+    assert!(
+        matches!(guest, Err(JoinError::Refused(c)) if c == protocol::REFUSE_AGENTS),
+        "a person must be refused at an agent-only world"
+    );
+    let person = key(9);
+    let signed = Session::connect_as(&ep, &server, person.address(), &Join::PLAYER, |d, n, i| {
+        person.sign_proof_hex(d, n, i)
+    })
+    .await;
+    assert!(
+        matches!(signed, Err(JoinError::Refused(c)) if c == protocol::REFUSE_AGENTS),
+        "a signature does not make a person an agent"
+    );
+    assert_eq!(ShardStats::get(&h.stats.refused_agents_only), 2);
+    assert_eq!(ShardStats::get(&h.stats.refused_auth), 0);
+
+    // An agent plays, on both paths: the client Session and jev-bot's dial.
+    let k = key(10);
+    let mut agent = Session::connect_agent(&ep, &server, &k, protocol::Name::new("a").unwrap())
+        .await
+        .expect("an agent is seated");
+    assert_ne!(agent.welcome.player_id, 0);
+    let report = bot(&h, &key(11)).await.expect("jev-bot's dial is seated");
+    assert!(report.welcome.is_some());
+
+    // A watcher takes a seat on the agent.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !agent.core.predict.started {
+            agent.pump(1000.0 / 60.0);
+            tokio::time::sleep(Duration::from_millis(8)).await;
+        }
+    })
+    .await
+    .expect("the agent is placed");
+    let watcher = Session::watch(&ep, &server, k.address())
+        .await
+        .expect("a spectator watches an agent-only world");
+    assert_eq!(watcher.welcome.player_id, agent.welcome.player_id);
+    assert_eq!(
+        ShardStats::get(&h.stats.refused_agents_only),
+        2,
+        "neither the agent nor the watcher was counted as a person"
+    );
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
