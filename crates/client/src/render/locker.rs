@@ -361,15 +361,23 @@ fn card(g: &mut ChildSpawnerCommands, skin: &StoreSkin, owned: u32, icons: Optio
     });
 }
 
-/// The item's own picture in the skin's colours: the tint IS a multiply over
-/// the item's colours in the game (`content/skins.toml`), and an image
-/// node's colour is a multiply. No picture for the item draws its name.
+/// The skin as the store sells it: a render of its own model where it has
+/// one (Rust's store shows the skinned item), else the item's own picture in
+/// the skin's colours — the tint IS a multiply over the item's colours in
+/// the game (`content/skins.toml`), and an image node's colour is a
+/// multiply. No picture for the item draws its name.
 fn picture(parent: &mut ChildSpawnerCommands, skin: &StoreSkin, icons: Option<&Icons>, px: f32) {
-    match icons.and_then(|i| i.item(&skin.covers)) {
-        Some(h) => {
-            let [r, g, b] = skin.tint;
+    let catalog = u16::try_from(skin.catalog).unwrap_or(0);
+    let [r, g, b] = skin.tint;
+    let look = icons.and_then(|i| {
+        i.skin(catalog)
+            .map(|h| (h, Color::WHITE))
+            .or_else(|| i.item(&skin.covers).map(|h| (h, Color::srgb_u8(r, g, b))))
+    });
+    match look {
+        Some((h, colour)) => {
             parent.spawn((
-                ImageNode::new(h).with_color(Color::srgb_u8(r, g, b)),
+                ImageNode::new(h).with_color(colour),
                 Node {
                     width: Val::Px(px),
                     height: Val::Px(px),

@@ -248,8 +248,21 @@ impl Target {
         rec: &crate::deploy::DeployRec,
         eye_xz: (f32, f32),
     ) -> Self {
-        let (ax, az) = crate::build::anchor(rec.cx, rec.cz, rec.loc);
         let side = |d: f32| if d < 0.0 { -DOOR_SIDE_M } else { DOOR_SIDE_M };
+        // An edge the grid cannot name (freeform W4): out along its own
+        // normal, on the eye's side, from its own middle and floor.
+        if let Some(at) = crate::deploy::posed_insert(cols, rec.cx, rec.cz, rec.level, rec.loc) {
+            let (nx, nz) = at.normal;
+            let s = side((eye_xz.0 - at.x) * nx + (eye_xz.1 - at.z) * nz);
+            return Self {
+                x: at.x + nx * s,
+                z: at.z + nz * s,
+                base_y: at.floor_y,
+                mid: DOOR_MID_M,
+                storey: true,
+            };
+        }
+        let (ax, az) = crate::build::anchor(rec.cx, rec.cz, rec.loc);
         let (x, z) = if rec.loc == crate::build::LOC_EDGE_XLO {
             (ax + side(eye_xz.0 - ax), az)
         } else {

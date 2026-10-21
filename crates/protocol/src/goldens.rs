@@ -20,8 +20,7 @@ use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, WireToss, BAG_SYNC_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS,
-    PLATE_BITS, SLOT_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
@@ -32,6 +31,7 @@ use sim_core::craft::{
     STATION_WORKBENCH3,
 };
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
+use sim_core::frame::Frame;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 181] = [
+pub const FIXTURES: [&str; 184] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -324,6 +324,12 @@ pub const FIXTURES: [&str; 181] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
+    // The casino's seats (v130): a seat past 8 bits' half.
+    "action_sit.bin",
+    // The lattice placement verbs (v134): a site on a standing building,
+    // and a foundation placed free.
+    "action_place_at.bin",
+    "action_place_free.bin",
 ];
 
 /// Work 1 of 2 (wire v95): at the second anvil rock, a negative offset in
@@ -366,6 +372,13 @@ pub fn event_work_def() -> (
             sim_core::works::WorkInput::default(),
         ],
     };
+    // Its ceiling runs the furnaces at 200% (wire v132).
+    wc.effects[wc.n_effects as usize] = sim_core::works::ArcEffect {
+        unlock: 32,
+        knob: sim_core::works::KNOB_SMELT_PCT,
+        pct: 200,
+    };
+    wc.n_effects += 1;
     (wc, b"THE CRUCIBLE", b"GUNPOWDER", b"SMELTING")
 }
 
@@ -395,14 +408,17 @@ pub fn event_arc_refused() -> (u8, u8, u8) {
     )
 }
 
-/// Speaker 3 of 5 at the third stone ring, with two topics (wire v96).
+/// Speaker 3 of 5 at the third stone ring, with three topics (wire v96):
+/// small talk, a free gift of two skins and a priced one (v130).
+#[allow(clippy::type_complexity)]
 pub fn event_arc_place() -> (
     u8,
     u8,
     u8,
     sim_core::spot::Spot,
     &'static [u8],
-    [&'static [u8]; 2],
+    [&'static [u8]; 3],
+    [crate::TopicOffer; 3],
 ) {
     (
         protocol_arc_speaker(),
@@ -416,7 +432,24 @@ pub fn event_arc_place() -> (
             z_cm: 1200,
         },
         b"THE GATEKEEPER",
-        [b"WHO ARE YOU", b"THE ISLAND"],
+        [b"WHO ARE YOU", b"THE FOUNDER'S GIFT", b"THE ABYSS RUG"],
+        [
+            crate::TopicOffer::default(),
+            crate::TopicOffer {
+                gift: true,
+                n: 2,
+                catalogs: [7, 8, 0, 0],
+                item: 0,
+                count: 0,
+            },
+            crate::TopicOffer {
+                gift: true,
+                n: 1,
+                catalogs: [10, 0, 0, 0],
+                item: 41,
+                count: 100,
+            },
+        ],
     )
 }
 
@@ -425,8 +458,14 @@ fn protocol_arc_speaker() -> u8 {
 }
 
 /// Inscription 7's text.
-pub fn event_arc_text() -> (u8, u8, u8, &'static [u8]) {
-    (crate::ARC_INSCRIPTION, 7, 0, b"TURN THE THREE TO 5 2 7")
+pub fn event_arc_text() -> (u8, u8, u8, u8, &'static [u8]) {
+    (
+        crate::ARC_INSCRIPTION,
+        7,
+        0,
+        crate::ARC_GIFT_NONE,
+        b"TURN THE THREE TO 5 2 7",
+    )
 }
 
 /// Mechanism 2's three dials, resting.
@@ -659,6 +698,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         wounded: false,
         // Upright, from no `rng` call, for the same reason (crouch, v83).
         crouched: false,
+        // Standing, from no `rng` call, for the same reason (seats, v130).
+        seated: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
         // Empty-handed and unlit, from no `rng` call, for the reason
@@ -784,6 +825,13 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // **true** — on the at-rest body, a third entity, so no two state bits
     // share a record and a swap between any pair cannot pass.
     entities[1].crouched = true;
+    // One sitter (v130), so the absolute encoder's `seated` bit is pinned at
+    // **true** — a fourth entity, drawn after the other three so none of
+    // their fields reshuffle, no state bit beside it, and at rest, where
+    // the absolute record carries the bit.
+    entities[3] = rng_entity(&mut rng, 103);
+    entities[3].qvy = 0;
+    entities[3].seated = true;
     // Two hands on the absolute path, and they are two different pins.
     // id 101 carries an item id with the flame OFF and id 100 an id with
     // the flame ON, so neither the field nor the bit can be read as the
@@ -812,7 +860,7 @@ pub fn snapshot_keyframe() -> SnapshotCase {
         baseline: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
         baseline_len: 0,
         entities,
-        entity_len: 3,
+        entity_len: 4,
     }
 }
 
@@ -896,6 +944,12 @@ pub fn snapshot_delta() -> SnapshotCase {
     baseline[4] = rng_entity(&mut rng, 6);
     entities[5] = baseline[4];
     entities[5].crouched = true;
+    // id 7: sat down this snapshot (v130) — the delta encoder's `seated` bit
+    // at **true** as a transition, on a body carrying no other state bit.
+    baseline[5] = rng_entity(&mut rng, 7);
+    baseline[5].qvy = 0;
+    entities[6] = baseline[5];
+    entities[6].seated = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 3_000,
@@ -908,9 +962,9 @@ pub fn snapshot_delta() -> SnapshotCase {
         },
         removed: &[90, 91],
         baseline,
-        baseline_len: 5,
+        baseline_len: 6,
         entities,
-        entity_len: 6,
+        entity_len: 7,
     }
 }
 
@@ -1214,8 +1268,9 @@ pub fn action_fasttrack() -> (u16, u16) {
     (3, 41)
 }
 
-/// THE WORKS in wipe 7 (wire v104): two rows, the receiver third of 41,
-/// a three-place ORBS purse, 90 of 120 minutes played.
+/// THE WORKS in wipe 7 (wire v104): two rows, the first with its wallet
+/// (v132), the receiver third of 41, a three-place ORBS purse, 90 of 120
+/// minutes played.
 pub fn event_standing() -> crate::StandingBoard {
     let mut b = crate::StandingBoard {
         board: 1,
@@ -1225,7 +1280,11 @@ pub fn event_standing() -> crate::StandingBoard {
         my_score: 1_240,
         ..crate::StandingBoard::EMPTY
     };
-    b.push("ALICE", 98_765);
+    // ALICE's wallet rides with her row (wire v132); a guest's row has none.
+    let mut alice = [0u8; crate::ADDRESS_BYTES];
+    alice[0] = 0xA1;
+    alice[19] = 0xCE;
+    b.push_wallet("ALICE", 98_765, crate::Address(alice));
     b.push("0x12ab..cdef", 4_321);
     b.set_purse("ORBS", &[500, 300, 100]);
     b.my_prize = 100;
@@ -1298,13 +1357,15 @@ pub fn event_catalog() -> ItemCatalog {
                 ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
-        // The draw columns' coverage (v82), at the byte's corner.
+        // The draw columns' coverage (v82), at the byte's corner, and the
+        // damage column's (v131) at its own.
         (
             b"Hunting Bow",
             ItemRow {
                 draw_ticks: u8::MAX,
                 nock_ticks: u8::MAX - 1,
                 class: CLASS_WEAPONS,
+                damage: u16::MAX,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
@@ -1595,9 +1656,11 @@ pub fn action_place() -> (u16, u16, u16, u8, u8, bool, i8) {
     (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO, true, -2)
 }
 
-/// The piece record behind the placed broadcast.
-pub fn event_piece_placed() -> PieceRec {
-    PieceRec {
+/// The piece record behind the placed broadcast, and its building's frame:
+/// a grid building, whose origin is a cell's corner and which faces +x.
+pub fn event_piece_placed() -> (PieceRec, Frame) {
+    let frame = Frame::new((300 * 330, 300 * 677), -37, 0);
+    let rec = PieceRec {
         cx: 341,
         cz: 682,
         level: 1,
@@ -1617,49 +1680,109 @@ pub fn event_piece_placed() -> PieceRec {
         // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
         // encoder that never wrote the field would match.
         hp: 0x9C35,
+        // Every bit-field of v134's own nonzero: the id, the building.
+        id: 0x2A_5A5A,
+        bld: 0xA5C,
+        sock: sim_core::sock::from_grid(330, 677, 341, 682, sim_core::build::LOC_EDGE_ZLO)
+            .expect("a grid footprint"),
         ..PieceRec::default()
-    }
+    };
+    (rec, frame)
 }
 
+/// The piece locs the sync batch walks round: every grid address the store
+/// holds since freeform W3 (squares, edges and the four flights), and
+/// `LOC_NONE` — a piece only a footprint names.
+pub const PIECE_SYNC_LOCS: [u8; 8] = [
+    sim_core::build::LOC_PLANE,
+    sim_core::build::LOC_RISER,
+    sim_core::build::LOC_EDGE_XLO,
+    sim_core::build::LOC_EDGE_ZLO,
+    sim_core::build::LOC_RISER_XHI,
+    sim_core::build::LOC_RISER_ZLO,
+    sim_core::build::LOC_RISER_XLO,
+    sim_core::build::LOC_NONE,
+];
+
 /// A full piece-sync batch with the reset bit set — the join-sync first
-/// message at its cap.
-pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
+/// message at its cap. Records walk [`PIECE_SYNC_LOCS`] off the index; the
+/// ones the grid names stand in grid buildings, the rest in buildings
+/// turned off it, as triangles.
+pub fn event_piece_sync() -> (bool, [(PieceRec, Frame); PIECE_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 18);
-    let recs = core::array::from_fn(|i| PieceRec {
-        cx: rng.next_bounded(1024) as u16,
-        cz: rng.next_bounded(1024) as u16,
-        level: rng.next_bounded(sim_core::limits::MAX_BUILD_SOCKETS as u32) as u8,
-        // Cover every stair direction as well as planes, edges and halves.
-        loc: rng.next_bounded(sim_core::build::LOC_RISER_XLO as u32 + 1) as u8,
-        row: rng.next_bounded(32) as u8,
-        facing: rng.next_bounded(2) as u8,
-        // The whole FIELD, both signs — the batch is where a width is pinned
-        // across many records, so it covers the range rather than a value
-        // (`event_piece_placed` pins the single deliberate one).
-        //
-        // **The wire's range, not the sim's knobs.** `PLATE_BITS` is
-        // deliberately wider than `build::PLATE_RISE_MAX_BANDS` and
-        // `PLATE_SINK_MAX_BANDS`, and its own doc says why: those two are
-        // balance knobs, and a wire field sized to today's knob is a
-        // `PROTO_VER` bump for every balance pass. A fixture cycled off the
-        // knobs has the same defect one layer up, and it fired the day it was
-        // written — adopting the reference's ±half-a-wall offset moved every
-        // byte of this golden for a reason that has nothing to do with the
-        // wire. The field's own width pins what the LAYOUT can carry, which
-        // is what a wire golden is for, and it stays put while balance moves.
-        //
-        // **Cycled off the index, deliberately NOT drawn from `rng`.** Every
-        // field above shares one stream, so an extra draw per record shifts
-        // every later one — and the first version of this line did draw,
-        // which slid the `loc` sequence far enough that one of the ten
-        // addresses stopped appearing in the batch at all.
-        // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
-        // that gate's whole reason for existing.
-        plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
-        // The hp (v102) down the field from its top, off the index for the
-        // plate's reason: a draw here would shift every later record.
-        hp: u16::MAX - i as u16 * 2047,
-        ..PieceRec::default()
+    // The plate's whole FIELD, both ends and both signs — the wire's range,
+    // not the sim's knobs (`PLATE_BITS` says why it is wider), and off the
+    // index rather than `rng` so a draw added later shifts nothing.
+    const PLATES: [i8; 11] = [-8, 7, -1, 0, 1, -7, 6, 3, -4, 5, -2];
+    let recs = core::array::from_fn(|i| {
+        let loc = PIECE_SYNC_LOCS[i % PIECE_SYNC_LOCS.len()];
+        let level = rng.next_bounded(sim_core::limits::MAX_BUILD_SOCKETS as u32) as u8;
+        let row = rng.next_bounded(32) as u8;
+        let facing = rng.next_bounded(2) as u8;
+        let id = rng.next_u32() >> 6;
+        let bld = rng.next_bounded(sim_core::limits::MAX_BUILDINGS as u32) as u16;
+        let (rec, frame) = if loc == sim_core::build::LOC_NONE {
+            let frame = Frame::new(
+                (
+                    rng.next_bounded(409_600) as i32,
+                    rng.next_bounded(409_600) as i32,
+                ),
+                rng.next_bounded(400) as i32 - 200,
+                rng.next_u32() as u16,
+            );
+            let at = sim_core::lattice::LPt::new(
+                6 * (rng.next_bounded(200) as i32 - 100),
+                6 * (rng.next_bounded(200) as i32 - 100),
+                6 * (rng.next_bounded(200) as i32 - 100),
+                6 * (rng.next_bounded(200) as i32 - 100),
+            );
+            let sock = sim_core::sock::Sock::tri_from(at, rng.next_bounded(4) as u8);
+            let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+            (
+                PieceRec {
+                    cx,
+                    cz,
+                    loc,
+                    sock,
+                    ..PieceRec::default()
+                },
+                frame,
+            )
+        } else {
+            let (ox, oz) = (rng.next_bounded(1024) as u16, rng.next_bounded(1024) as u16);
+            let (cx, cz) = (
+                ox + rng.next_bounded(64) as u16,
+                oz + rng.next_bounded(64) as u16,
+            );
+            let frame = Frame::new(
+                (300 * ox as i32, 300 * oz as i32),
+                rng.next_bounded(400) as i32 - 200,
+                0,
+            );
+            (
+                PieceRec {
+                    cx,
+                    cz,
+                    loc,
+                    sock: sim_core::sock::from_grid(ox, oz, cx, cz, loc).expect("a grid footprint"),
+                    ..PieceRec::default()
+                },
+                frame,
+            )
+        };
+        let rec = PieceRec {
+            level,
+            row,
+            facing,
+            id,
+            bld,
+            plate: PLATES[i],
+            // The hp (v102) down the field from its top, off the index for
+            // the plate's reason.
+            hp: u16::MAX - i as u16 * 2047,
+            ..rec
+        };
+        (rec, frame)
     });
     (true, recs)
 }
@@ -1784,7 +1907,8 @@ pub fn event_deploy_placed() -> DeployRec {
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     // The loc walks the store's whole four-bit domain (wire v89: two edges
-    // and fourteen body slots), so every value reaches the bytes.
+    // and fourteen body slots; v134: slot 13 an edge the grid cannot name),
+    // so every value reaches the bytes.
     let recs = core::array::from_fn(|i| {
         let mut rec = DeployRec {
             cx: rng.next_bounded(1024) as u16,
@@ -2054,6 +2178,11 @@ pub fn action_wheel() -> (u8, u16) {
 /// A lever (v123): the last machine at the top multiplier.
 pub fn action_slots() -> (u8, u8) {
     (3, sim_core::casino::SLOT_MULT_MAX)
+}
+
+/// A seat (v130): the last one, so a narrowed field drops a bit.
+pub fn action_sit() -> u8 {
+    (sim_core::town::SEATS.len() - 1) as u8
 }
 
 /// The wheel turns (v123): a round past 16 bits, the last segment.
@@ -3006,4 +3135,25 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
 /// as the same drag succeeding and failing.
 pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
     (9, 0, 19, 4, 0)
+}
+
+/// A lattice placement (v134): a triangle flight on the top storey of a
+/// building past the first byte of ids, its centre's coefficients mixed in
+/// sign so a lost bias or a swapped pair moves the bytes, and a turn that
+/// needs every direction bit.
+pub fn action_place_at() -> (u16, u16, u8, sim_core::sock::Sock) {
+    let body = sim_core::sock::Sock::tri_from(sim_core::lattice::LPt::new(-42, 18, 6, -30), 3);
+    (
+        13,
+        3_001,
+        (sim_core::limits::MAX_BUILD_SOCKETS - 1) as u8,
+        sim_core::sock::Sock::tri_riser(body.at, 3 + 4 * 2),
+    )
+}
+
+/// A free foundation (v134): the triangle, its origin west and north of
+/// the world's zero so both signs are live, a yaw past 32 768 and an asked
+/// band negative and nonzero (`action_place`'s reasons).
+pub fn action_place_free() -> (u16, i32, i32, u16, bool, i8) {
+    (13, -123_457, 98_765, 40_961, true, -2)
 }

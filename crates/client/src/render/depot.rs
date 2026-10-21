@@ -385,7 +385,7 @@ fn uv(v: Vec3, n: Vec3, surface: Surface) -> [f32; 2] {
     [u * surface.tiles(), w * surface.tiles()]
 }
 
-fn quad(
+pub(super) fn quad(
     s: &mut [Soup; SURFACES.len()],
     surface: Surface,
     q: [Vec3; 4],

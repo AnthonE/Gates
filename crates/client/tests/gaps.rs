@@ -23,11 +23,11 @@
 use bevy::prelude::*;
 use client::render::structures::{
     apron_parts, base_transform, corner_posts, foundation_part, is_edge_shape, parts_for,
-    post_owner, post_w, Part, PostOwn, APRON_DEPTH_M, DIAG_DROP_M, EDGE_DROP_M,
+    post_owner, Part, PostOwn, APRON_DEPTH_M, EDGE_DROP_M,
 };
 use sim_core::build::{
-    place, BuildContent, PieceRec, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B,
-    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_WALL,
+    place, BuildContent, PieceRec, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO,
+    LOC_PLANE, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_WALL,
 };
 use sim_core::collide::{ColIndex, WALL_THICKNESS_M};
 use sim_core::deploy::Deploys;
@@ -43,9 +43,6 @@ const ROW_FOUNDATION: u16 = 0;
 const ROW_WALL: u16 = 1;
 const ROW_FLOOR: u16 = 2;
 const ROW_DOORWAY: u16 = 3;
-/// A twig triangle foundation, past the probe fixture's own rows
-/// ([`Rig::new`]): the SE cell's halves, which the diagonal stands on.
-const ROW_TRI_FOUNDATION: u16 = 7;
 
 fn hv() -> &'static terrain::Haven {
     use std::sync::OnceLock;
@@ -61,14 +58,8 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        let mut bc = BuildContent::probe_fixture();
-        bc.pieces[ROW_TRI_FOUNDATION as usize] = sim_core::build::PieceDef {
-            shape: sim_core::build::SHAPE_TRI_FOUNDATION,
-            ..bc.pieces[ROW_FOUNDATION as usize]
-        };
-        bc.piece_count = bc.piece_count.max(ROW_TRI_FOUNDATION + 1);
         Self {
-            bc,
+            bc: BuildContent::probe_fixture(),
             pieces: Pieces::new(),
             deploys: Deploys::new(),
         }
@@ -123,18 +114,14 @@ impl Rig {
 
 /// A base with every join this file is about: a 2×2 of foundations, walls all
 /// round and one down the middle, a doorway in the ring, floors over two
-/// cells, walls stacked on the storey above, and a diagonal in a corner —
-/// over the SE cell's two triangles, the only thing a diagonal stands on.
+/// cells and walls stacked on the storey above. (The cell diagonal and the
+/// half-cell triangles it stood on are gone with the lattice: Rust's
+/// triangle is equilateral, and `lattice_geom` holds its joins.)
 fn base() -> Rig {
     let mut r = Rig::new();
-    for (dx, dz) in [(0, 0), (1, 0), (0, 1)] {
+    for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
         r.place(ROW_FOUNDATION, CX + dx, CZ + dz, 0, LOC_PLANE)
             .expect("foundation");
-    }
-    let (t1, t2) = sim_core::build::diag_pair(LOC_DIAG_A);
-    for half in [t1, t2] {
-        r.place(ROW_TRI_FOUNDATION, CX + 1, CZ + 1, 0, half)
-            .expect("triangle");
     }
     // The ring: west and east edges of both rows, north and south of both
     // columns; the east edge of the north row is a doorway.
@@ -168,15 +155,12 @@ fn base() -> Rig {
         .expect("upper west 2");
     r.place(ROW_WALL, CX, CZ, 1, LOC_EDGE_ZLO)
         .expect("upper north");
-    // The SE cell's triangles' shared hypotenuse.
-    r.place(ROW_WALL, CX + 1, CZ + 1, 0, LOC_DIAG_A)
-        .expect("diagonal");
     r
 }
 
 /// One drawn box in world space — every straight piece's parts are
 /// axis-aligned under `base_transform`'s quarter-turns, so a box is its two
-/// corners. Diagonals are not boxes and are handled apart.
+/// corners.
 #[derive(Clone, Copy, Debug)]
 struct Aabb {
     lo: Vec3,
@@ -225,47 +209,20 @@ impl Aabb {
 /// What the standing pieces of `r` draw, as the parts `spawn_piece` would
 /// spawn them: the foundations' footing, every straight edge piece's body,
 /// the posts [`post_owner`] gives it and — on the ground storey — its apron
-/// (part index 10 and up), and every other shape's own parts. Returns the
-/// boxes and, separately, the diagonals' (top, root).
-fn drawn(r: &Rig) -> (Vec<Aabb>, Vec<(f32, Transform)>) {
+/// (part index 10 and up), and every other shape's own parts.
+fn drawn(r: &Rig) -> Vec<Aabb> {
     let mut boxes = Vec::new();
-    let mut diagonals = Vec::new();
-    // A box cannot draw half a cell: a pair of triangles is the one slab
-    // they cover together, counted once.
-    let mut tri_cells = Vec::new();
     for rec in r.pieces.entries() {
         let shape = r.bc.pieces[rec.row as usize].shape;
         let addr = (rec.cx, rec.cz, rec.level, rec.loc);
         let root = base_transform(SEED, hv(), addr, rec.plate);
-        if matches!(
-            shape,
-            SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
-        ) {
-            if shape == sim_core::build::SHAPE_TRI_FOUNDATION {
-                if tri_cells.contains(&(rec.cx, rec.cz)) {
-                    continue;
-                }
-                tri_cells.push((rec.cx, rec.cz));
-            }
-            let part = foundation_part(
-                SEED,
-                hv(),
-                rec.cx,
-                rec.cz,
-                shape == sim_core::build::SHAPE_TRI_FOUNDATION,
-                rec.plate,
-            );
+        if shape == SHAPE_FOUNDATION {
+            let part = foundation_part(SEED, hv(), rec.cx, rec.cz, false, rec.plate);
             boxes.push(Aabb::of(
                 &part,
                 &root,
                 (rec.cx, rec.cz, rec.level, rec.loc, 0),
             ));
-            continue;
-        }
-        if shape == SHAPE_WALL && matches!(rec.loc, LOC_DIAG_A | LOC_DIAG_B) {
-            let (parts, _) = parts_for(shape, rec.loc);
-            let top = root.translation.y + parts[0].offset.y + parts[0].size.y * 0.5;
-            diagonals.push((top, root));
             continue;
         }
         let own = if is_edge_shape(shape) {
@@ -296,7 +253,7 @@ fn drawn(r: &Rig) -> (Vec<Aabb>, Vec<(f32, Transform)>) {
             }
         }
     }
-    (boxes, diagonals)
+    boxes
 }
 
 fn edge_recs(r: &Rig) -> Vec<PieceRec> {
@@ -334,7 +291,7 @@ fn edge_line(rec: &PieceRec) -> (Vec3, Vec3) {
 #[test]
 fn every_edge_line_is_drawn_end_to_end() {
     let r = base();
-    let (boxes, _) = drawn(&r);
+    let boxes = drawn(&r);
     let mut checked = 0;
     for rec in edge_recs(&r) {
         let (a, b) = edge_line(&rec);
@@ -523,7 +480,7 @@ fn first_fight(boxes: &[Aabb]) -> Option<String> {
 #[test]
 fn no_two_visible_faces_share_a_plane() {
     let r = base();
-    let (boxes, _) = drawn(&r);
+    let boxes = drawn(&r);
     assert!(
         boxes.len() > 30,
         "the base draws only {} boxes",
@@ -549,7 +506,7 @@ fn no_two_visible_faces_share_a_plane() {
 #[test]
 fn an_edge_pieces_head_and_foot_are_inside_the_slabs() {
     let r = base();
-    let (boxes, _) = drawn(&r);
+    let boxes = drawn(&r);
     let slab_of = |cx: u16, cz: u16, level: u8| -> Option<Aabb> {
         boxes.iter().copied().find(|b| {
             b.tag.0 == cx
@@ -609,7 +566,7 @@ fn an_edge_pieces_head_and_foot_are_inside_the_slabs() {
 #[test]
 fn a_stacked_wall_meets_the_one_under_it() {
     let r = base();
-    let (boxes, _) = drawn(&r);
+    let boxes = drawn(&r);
     let mut checked = 0;
     for rec in edge_recs(&r) {
         if rec.level == 0 {
@@ -635,36 +592,6 @@ fn a_stacked_wall_meets_the_one_under_it() {
         checked += 1;
     }
     assert!(checked >= 2, "only {checked} stacked walls were checked");
-}
-
-/// The diagonal's head sits under every post's head (its end is inside the
-/// post a straight wall owns at that corner), and its foot is the edge drop
-/// like everyone else's.
-#[test]
-fn a_diagonal_keeps_its_head_under_the_posts() {
-    let r = base();
-    let (boxes, diagonals) = drawn(&r);
-    assert!(!diagonals.is_empty(), "the base has no diagonal");
-    let [lo_post, _] = corner_posts();
-    let post_head = lo_post.offset.y + lo_post.size.y * 0.5;
-    for (top, root) in diagonals {
-        let expected = root.translation.y + post_head - DIAG_DROP_M;
-        assert!(
-            (top - expected).abs() < 1e-4,
-            "diagonal head at {top:.4}, expected {expected:.4}"
-        );
-        // ...and below every post drawn at its storey.
-        for b in boxes.iter().filter(|b| {
-            (b.hi.y - (root.translation.y + post_head)).abs() < 1e-4
-                && (b.hi.x - b.lo.x - post_w()).abs() < 1e-4
-        }) {
-            assert!(
-                top < b.hi.y - 1e-4,
-                "the diagonal's head reaches a post's at {:?}",
-                b.tag
-            );
-        }
-    }
 }
 
 /// The apron closes the undercut: under a ground-storey wall's outer half,
@@ -715,7 +642,7 @@ fn the_apron_closes_the_undercut() {
     // And on the base, under every ground-storey edge piece the drawn solid
     // continues without a break from the wall's head to the footing's depth.
     let r = base();
-    let (boxes, _) = drawn(&r);
+    let boxes = drawn(&r);
     let mut checked = 0;
     for rec in edge_recs(&r).into_iter().filter(|rec| rec.level == 0) {
         let (a, b) = edge_line(&rec);

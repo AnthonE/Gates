@@ -147,13 +147,14 @@ fn main() {
     let len = protocol::encode_action_arc(op, target, arg, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[142], &buf[..len]);
     // Speakers, stones and locks (v96).
-    let (kind, index, total, spot, name, topics) = goldens::event_arc_place();
-    let len =
-        protocol::encode_event_arc_place(kind, index, total, &spot, name, &topics, 0, 0, &mut buf)
-            .unwrap();
+    let (kind, index, total, spot, name, topics, offers) = goldens::event_arc_place();
+    let len = protocol::encode_event_arc_place(
+        kind, index, total, &spot, name, &topics, &offers, 0, 0, &mut buf,
+    )
+    .unwrap();
     write_fixture(goldens::FIXTURES[143], &buf[..len]);
-    let (kind, index, topic, text) = goldens::event_arc_text();
-    let len = protocol::encode_event_arc_text(kind, index, topic, text, &mut buf).unwrap();
+    let (kind, index, topic, gift, text) = goldens::event_arc_text();
+    let len = protocol::encode_event_arc_text(kind, index, topic, gift, text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[144], &buf[..len]);
     let (mech, dials, resting) = goldens::event_arc_dials();
     let len = protocol::encode_event_arc_dials(mech, &dials, resting, &mut buf).unwrap();
@@ -274,6 +275,16 @@ fn main() {
     let (machine, mult, code, reels, pay) = goldens::event_slots();
     let len = protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[180], &buf[..len]);
+    let len = protocol::encode_action_sit(goldens::action_sit(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[181], &buf[..len]);
+    // The lattice placement verbs (v134).
+    let (row, bld, level, sock) = goldens::action_place_at();
+    let len = protocol::encode_action_place_at(row, bld, level, &sock, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[182], &buf[..len]);
+    let (row, x_cm, z_cm, yaw, tri, plate) = goldens::action_place_free();
+    let len =
+        protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[183], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -336,7 +347,8 @@ fn main() {
     let len = encode_action_place(row, cx, cz, level, loc, freehand, plate, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[21], &buf[..len]);
 
-    let len = encode_event_piece_placed(&goldens::event_piece_placed(), &mut buf).unwrap();
+    let (rec, frame) = goldens::event_piece_placed();
+    let len = encode_event_piece_placed(&rec, &frame, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[22], &buf[..len]);
 
     let (reset, recs) = goldens::event_piece_sync();

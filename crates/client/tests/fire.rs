@@ -72,6 +72,7 @@ fn a_fire_lights_only_when_the_sim_says_it_is_lit() {
             cz: CZ,
             level: LEVEL,
             loc: 0,
+            furnace: false,
         },
         PointLight {
             intensity: 0.0,

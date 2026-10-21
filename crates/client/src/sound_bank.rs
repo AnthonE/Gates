@@ -22,31 +22,61 @@
 
 use sound::{synth, Cue, SAMPLE_RATE};
 
-/// Five takes of one group from Kenney's *Impact Sounds*, compiled in.
+/// One recording, as [`Rec`] holds it on this target: a path under
+/// `assets/sound/`, compiled in natively and named for the page to fetch on
+/// wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! rec {
+    ($path:expr) => {
+        include_bytes!(concat!("../../../assets/sound/", $path))
+    };
+}
+#[cfg(target_arch = "wasm32")]
+macro_rules! rec {
+    ($path:expr) => {
+        concat!("sound/", $path)
+    };
+}
+
+/// One recording as this build holds it. Natively, its bytes, compiled in.
+///
+/// **In a browser, its path under `assets/`, and the bytes are fetched**
+/// (`render::audio`, [`landed`]). 304 OGGs are 4.56 MB that do not compress,
+/// which compiled in were a third of the gzipped module and more of the
+/// brotli one — every byte of it on the download a player waits through
+/// before the first frame, for a bank that is filled a cue a frame after it
+/// anyway.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Rec = &'static [u8];
+/// See the native half above.
+#[cfg(target_arch = "wasm32")]
+pub type Rec = &'static str;
+
+/// Five takes of one group from Kenney's *Impact Sounds*, as [`Rec`]s.
 macro_rules! five {
     ($name:literal) => {
         &[
-            include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_000.ogg")),
-            include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_001.ogg")),
-            include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_002.ogg")),
-            include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_003.ogg")),
-            include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_004.ogg")),
+            rec!(concat!("kenney/", $name, "_000.ogg")),
+            rec!(concat!("kenney/", $name, "_001.ogg")),
+            rec!(concat!("kenney/", $name, "_002.ogg")),
+            rec!(concat!("kenney/", $name, "_003.ogg")),
+            rec!(concat!("kenney/", $name, "_004.ogg")),
         ]
     };
 }
 
-/// Numbered takes of one recorded group, compiled in:
+/// Numbered takes of one recorded group, as [`Rec`]s:
 /// `takes!("freesound", "howl", 0 1)` is `freesound/howl_0.ogg` and
 /// `howl_1.ogg`.
 macro_rules! takes {
     ($dir:literal, $name:literal, $($n:literal)+) => {
-        &[$(include_bytes!(concat!("../../../assets/sound/", $dir, "/", $name, "_", $n, ".ogg"))),+]
+        &[$(rec!(concat!($dir, "/", $name, "_", $n, ".ogg"))),+]
     };
 }
 
 /// Which recording plays which cue. One row per cue; `MANIFEST.md` lists the
 /// files.
-static RECORDED: &[(Cue, &[&[u8]])] = &[
+static RECORDED: &[(Cue, &[Rec])] = &[
     (
         Cue::StepSand,
         takes!("freesound", "step_sand", 0 1 2 3 4 5 6 7),
@@ -64,9 +94,12 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
         takes!("freesound", "step_rock", 0 1 2 3 4 5 6 7),
     ),
     (Cue::StepWater, takes!("freesound", "step_water", 0 1 2 3 4)),
-    (Cue::StepWood, five!("footstep_wood")),
-    (Cue::StepConcrete, five!("footstep_concrete")),
-    (Cue::StepMetal, five!("impactPlate_light")),
+    (Cue::StepWood, takes!("pd", "step_wood", 0 1 2 3 4 5 6 7)),
+    (
+        Cue::StepConcrete,
+        takes!("pd", "step_concrete", 0 1 2 3 4 5 6 7),
+    ),
+    (Cue::StepMetal, takes!("pd", "step_metal", 0 1 2 3 4 5 6 7)),
     (Cue::Howl, takes!("freesound", "howl", 0 1 2 3)),
     (Cue::Growl, takes!("freesound", "growl", 0 1 2 3 4 5)),
     (Cue::Hurt, takes!("freesound", "hurt", 0 1 2 3 4 5)),
@@ -74,7 +107,7 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (Cue::FleshHit, takes!("freesound", "flesh", 0 1 2 3 4 5)),
     (Cue::ImpactStone, five!("impactMining")),
     (Cue::ImpactWood, takes!("pd", "chop", 0 1 2 3 4)),
-    (Cue::ImpactMetal, five!("impactMetal_heavy")),
+    (Cue::ImpactMetal, takes!("pd", "impact_metal", 0 1 2 3 4)),
     (Cue::Place, five!("impactPlank_medium")),
     (Cue::BulletSoil, five!("impactSoft_medium")),
     (Cue::BulletStone, five!("impactGeneric_light")),
@@ -149,6 +182,37 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
         Cue::FireCrackle,
         takes!("freesound", "fire_crackle", 0 1 2 3 4 5 6 7),
     ),
+    (Cue::BedFurnace, takes!("pd", "bed_furnace", 0)),
+    (Cue::FurnaceLight, takes!("pd", "furnace_light", 0 1 2)),
+    (Cue::FurnaceOut, takes!("pd", "furnace_out", 0 1 2)),
+    (Cue::FurnaceOpen, takes!("pd", "furnace_open", 0 1 2)),
+    (Cue::Kindle, takes!("pd", "kindle", 0 1 2)),
+    (Cue::Snuff, takes!("pd", "snuff", 0 1 2)),
+    (Cue::DryFire, takes!("pd", "dry_fire", 0 1 2)),
+    (Cue::ReloadRifle, takes!("pd", "reload_rifle", 0 1)),
+    (Cue::ReloadPistol, takes!("pd", "reload_pistol", 0 1)),
+    (Cue::ReloadShotgun, takes!("pd", "reload_shotgun", 0 1)),
+    (Cue::ReloadBolt, takes!("pd", "reload_bolt", 0 1)),
+    (Cue::ShotRifleFar, takes!("pd", "shot_rifle_far", 0 1 2)),
+    (Cue::ShotSmgFar, takes!("pd", "shot_smg_far", 0 1 2)),
+    (Cue::ShotPistolFar, takes!("pd", "shot_pistol_far", 0 1 2)),
+    (Cue::ShotShotgunFar, takes!("pd", "shot_shotgun_far", 0 1 2)),
+    (Cue::ShotBoltFar, takes!("pd", "shot_bolt_far", 0 1 2)),
+    (Cue::DoorMetalOpen, takes!("pd", "door_metal_open", 0 1 2)),
+    (Cue::DoorMetalClose, takes!("pd", "door_metal_close", 0 1 2)),
+    (Cue::GarageOpen, takes!("pd", "garage_open", 0)),
+    (Cue::GarageClose, takes!("pd", "garage_close", 0)),
+    (Cue::Repair, takes!("pd", "repair", 0 1 2 3)),
+    (Cue::WolfHurt, takes!("pd", "wolf_hurt", 0 1 2 3)),
+    (Cue::BoarHurt, takes!("pd", "boar_hurt", 0 1 2)),
+    (Cue::StagHurt, takes!("pd", "stag_hurt", 0 1 2)),
+    (Cue::WolfDeath, takes!("pd", "wolf_death", 0 1)),
+    (Cue::BoarDeath, takes!("pd", "boar_death", 0 1)),
+    (Cue::StagDeath, takes!("pd", "stag_death", 0 1)),
+    (Cue::PlaceStone, takes!("pd", "place_stone", 0 1 2 3)),
+    (Cue::PlaceMetal, takes!("pd", "place_metal", 0 1 2)),
+    (Cue::RecyclerStart, takes!("pd", "recycler_start", 0)),
+    (Cue::RecyclerStop, takes!("pd", "recycler_stop", 0)),
     (Cue::Swing, takes!("freesound", "swing", 0 1 2 3)),
     (Cue::Gather, takes!("kenney", "gather", 0 1 2)),
     (Cue::Eat, takes!("freesound", "eat", 0 1 2)),
@@ -162,18 +226,18 @@ static RECORDED: &[(Cue, &[&[u8]])] = &[
     (
         Cue::Bird,
         &[
-            include_bytes!("../../../assets/sound/freesound/bird_0.ogg"),
-            include_bytes!("../../../assets/sound/freesound/bird_1.ogg"),
-            include_bytes!("../../../assets/sound/freesound/bird_2.ogg"),
-            include_bytes!("../../../assets/sound/freesound/bird_3.ogg"),
-            include_bytes!("../../../assets/sound/freesound/bird_4.ogg"),
-            include_bytes!("../../../assets/sound/freesound/bird_5.ogg"),
-            include_bytes!("../../../assets/sound/pd/bird_6.ogg"),
-            include_bytes!("../../../assets/sound/pd/bird_7.ogg"),
-            include_bytes!("../../../assets/sound/pd/bird_8.ogg"),
-            include_bytes!("../../../assets/sound/pd/bird_9.ogg"),
-            include_bytes!("../../../assets/sound/pd/bird_10.ogg"),
-            include_bytes!("../../../assets/sound/pd/bird_11.ogg"),
+            rec!("freesound/bird_0.ogg"),
+            rec!("freesound/bird_1.ogg"),
+            rec!("freesound/bird_2.ogg"),
+            rec!("freesound/bird_3.ogg"),
+            rec!("freesound/bird_4.ogg"),
+            rec!("freesound/bird_5.ogg"),
+            rec!("pd/bird_6.ogg"),
+            rec!("pd/bird_7.ogg"),
+            rec!("pd/bird_8.ogg"),
+            rec!("pd/bird_9.ogg"),
+            rec!("pd/bird_10.ogg"),
+            rec!("pd/bird_11.ogg"),
         ],
     ),
 ];
@@ -193,6 +257,10 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteStepMetal => Cue::StepMetal,
         Cue::RemoteSwing => Cue::Swing,
         Cue::RemoteReload => Cue::Reload,
+        Cue::RemoteReloadRifle => Cue::ReloadRifle,
+        Cue::RemoteReloadPistol => Cue::ReloadPistol,
+        Cue::RemoteReloadShotgun => Cue::ReloadShotgun,
+        Cue::RemoteReloadBolt => Cue::ReloadBolt,
         Cue::RemoteEat => Cue::Eat,
         Cue::RemoteBandage => Cue::Bandage,
         Cue::RemoteDrink => Cue::Drink,
@@ -204,6 +272,7 @@ pub fn source(cue: Cue) -> Cue {
         Cue::RemoteBrush => Cue::Brush,
         Cue::HurtAgain => Cue::Hurt,
         Cue::OreBreak => Cue::Collapse,
+        Cue::KnockMetal => Cue::ImpactMetal,
         c => c,
     }
 }
@@ -211,6 +280,76 @@ pub fn source(cue: Cue) -> Cue {
 /// Is this cue played from a recording?
 pub fn recorded(cue: Cue) -> bool {
     RECORDED.iter().any(|(c, _)| *c == source(cue))
+}
+
+/// The files a cue's recording is made of, empty for a synthesized one.
+pub fn files(cue: Cue) -> &'static [Rec] {
+    let src = source(cue);
+    RECORDED
+        .iter()
+        .find(|(c, _)| *c == src)
+        .map_or(&[], |(_, f)| f)
+}
+
+/// Every file in the bank, once, in the order `order` lists cues: the order
+/// a page fetches them in.
+pub fn all_files(order: &[Cue]) -> Vec<Rec> {
+    let mut out: Vec<Rec> = Vec::new();
+    for cue in order {
+        for f in files(*cue) {
+            if !out.contains(f) {
+                out.push(*f);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The page's fetched recordings: `None` for a file that failed for good,
+    /// whose cue then falls back to the synthesizer as a bad file does.
+    static FETCHED: std::cell::RefCell<std::collections::HashMap<Rec, Option<Vec<u8>>>> =
+        Default::default();
+}
+
+/// A fetched file has arrived (`Some`), or will not (`None`).
+#[cfg(target_arch = "wasm32")]
+pub fn landed(file: Rec, bytes: Option<Vec<u8>>) {
+    FETCHED.with(|f| f.borrow_mut().insert(file, bytes));
+}
+
+/// Whether every file `cue` needs is here, or has failed for good. Always,
+/// natively, where they are compiled in.
+pub fn ready(cue: Cue) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    {
+        FETCHED.with(|f| {
+            let f = f.borrow();
+            files(cue).iter().all(|r| f.contains_key(r))
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = cue;
+        true
+    }
+}
+
+/// Run `with` over a lookup from a [`Rec`] to its bytes: the bytes
+/// themselves natively, the fetched ones in a browser.
+fn read_with<T>(with: impl for<'b> FnOnce(&'b dyn Fn(Rec) -> Option<&'b [u8]>) -> T) -> T {
+    #[cfg(target_arch = "wasm32")]
+    {
+        FETCHED.with(|f| {
+            let f = f.borrow();
+            with(&|r| f.get(r).and_then(|b| b.as_deref()))
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        with(&|r| Some(r))
+    }
 }
 
 /// Is this cue one whole file rather than takes: a looping bed, which may not
@@ -264,13 +403,22 @@ pub fn pcm(cue: Cue) -> (Box<[i16]>, u8) {
 /// it has none or any of its files fails to decode.
 pub fn recording(cue: Cue) -> Option<(Box<[i16]>, u8)> {
     let src = source(cue);
-    let (_, files) = RECORDED.iter().find(|(c, _)| *c == src)?;
-    if whole(src) {
-        return Some((decode_whole(files.first()?)?, 1));
+    let files = files(src);
+    if files.is_empty() {
+        return None;
     }
-    let takes: Vec<Box<[i16]>> = files.iter().filter_map(|f| decode(f)).collect();
-    (takes.len() == files.len() && !takes.is_empty())
-        .then(|| (synth::join_takes(&takes), takes.len() as u8))
+    read_with(|bytes| {
+        if whole(src) {
+            return Some((decode_whole(bytes(files[0])?)?, 1));
+        }
+        let takes: Vec<Box<[i16]>> = files
+            .iter()
+            .copied()
+            .filter_map(|f| bytes(f).and_then(decode))
+            .collect();
+        (takes.len() == files.len() && !takes.is_empty())
+            .then(|| (synth::join_takes(&takes), takes.len() as u8))
+    })
 }
 
 /// Silence under this fraction of the peak is trimmed off both ends.

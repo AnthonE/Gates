@@ -73,7 +73,6 @@ fn all_flights_walk_in_both_directions_after_every_quarter_turn() {
         SHAPE_STAIRS_L,
         SHAPE_STAIRS_U,
         SHAPE_STAIRS_SPIRAL,
-        SHAPE_STAIRS_TRI_SPIRAL,
     ] {
         for loc in STAIR_LOCS {
             for level in [0, 8, 2] {
@@ -157,7 +156,9 @@ fn stacked_spirals_save_collapse_and_refuse_a_loaded_rotation() {
         world::{EventQueue, Player, World},
         worldsave,
     };
-    for shape in [SHAPE_STAIRS_SPIRAL, SHAPE_STAIRS_TRI_SPIRAL] {
+    // The triangle's spiral stands on an equilateral body, which the grid
+    // cannot name: `tests/freeform.rs` stacks it.
+    for shape in [SHAPE_STAIRS_SPIRAL] {
         let mut w = Box::new(World::new(SEED));
         w.build.piece_count = 21;
         for row in 0..21 {

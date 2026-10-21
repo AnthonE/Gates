@@ -472,8 +472,26 @@ mod tests {
         assert!(shard.stats.input_dg_ok.load(Ordering::Relaxed) > 0);
     }
 
-    #[tokio::test]
-    async fn observer_failure_closes_a_real_session_and_stops_both_output_lanes() {
+    // A local shard and a client session on one current-thread runtime
+    // outgrew a debug test thread's 2 MiB too (2026-10-21, main's red `gates`
+    // run), so this runs on `continuous_runs_…`'s stack below.
+    #[test]
+    fn observer_failure_closes_a_real_session_and_stops_both_output_lanes() {
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(observer_failure_body())
+            })
+            .expect("spawn")
+            .join()
+            .expect("the test thread");
+    }
+
+    async fn observer_failure_body() {
         let shard = crate::agent_demo::spawn_local().await.unwrap();
         let server = shard.local_addr.to_string();
         let endpoint = client::client_endpoint(&server, Some(&shard.cert_hash)).unwrap();
