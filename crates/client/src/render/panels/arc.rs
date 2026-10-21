@@ -508,7 +508,7 @@ pub fn build_island(
     friends: Option<&crate::friends::FriendSet>,
 ) {
     let arc = &core.arc;
-    kit::screen(commands, ISLAND_W, |p| {
+    kit::page(commands, ui, ISLAND_W, |p| {
         kit::header(
             p,
             "THE ISLAND",

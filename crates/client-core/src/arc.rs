@@ -182,8 +182,9 @@ impl<T: Copy + Default, const N: usize> Ring<T, N> {
     }
 }
 
-/// One speaker: where they stand, their name and topic titles, and the last
-/// thing they said to this player (`topic`, the words).
+/// One speaker: where they stand, their name and topic titles, which topics
+/// are gifts (wire v130), and the last thing they said to this player
+/// (`topic`, the words, what asking a gift came to).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpeakerView {
     pub known: bool,
@@ -193,9 +194,16 @@ pub struct SpeakerView {
     pub n_topics: u8,
     pub topics: [[u8; protocol::ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
     pub topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+    pub offers: [protocol::TopicOffer; sim_core::lore::MAX_TOPICS],
     pub said_topic: u8,
     pub said: [u8; protocol::ARC_TEXT_BYTES],
     pub said_len: u16,
+    /// `protocol::ARC_GIFT_*`: what the last answer's asking came to.
+    pub said_gift: u8,
+    /// Bit `t`: topic `t` was paid for and its token is still on the way to
+    /// the wallet (`server/src/mints.rs`). Kept until another answer on it
+    /// says otherwise; the panel reads owning the rows first.
+    pub minting: u8,
 }
 
 /// One inscription: where it stands, and its text once this player read it.
@@ -230,9 +238,12 @@ impl Default for SpeakerView {
             n_topics: 0,
             topics: [[0; protocol::ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
             topic_lens: [0; sim_core::lore::MAX_TOPICS],
+            offers: [protocol::TopicOffer::default(); sim_core::lore::MAX_TOPICS],
             said_topic: 0,
             said: [0; protocol::ARC_TEXT_BYTES],
             said_len: 0,
+            said_gift: protocol::ARC_GIFT_NONE,
+            minting: 0,
         }
     }
 }
@@ -264,6 +275,28 @@ impl SpeakerView {
     }
     pub fn said(&self) -> &str {
         utf8(&self.said[..self.said_len as usize])
+    }
+    /// Topic `t`'s offer; the default (not a gift) past the end.
+    pub fn offer(&self, t: usize) -> protocol::TopicOffer {
+        self.offers.get(t).copied().unwrap_or_default()
+    }
+    /// The topic `E` greets with: the first that is not a gift, so walking
+    /// up to someone never takes a price or a gift unasked.
+    pub fn greeting(&self) -> Option<u8> {
+        (0..self.n_topics).find(|&t| !self.offer(t as usize).gift)
+    }
+    /// An answer arrived on topic `t`: what it came to, and whether a paid
+    /// offer is now on its way to the wallet.
+    pub fn heard(&mut self, t: u8, gift: u8) {
+        self.said_gift = gift;
+        let bit = 1u8.checked_shl(t as u32).unwrap_or(0);
+        let paid = gift == protocol::ARC_GIFT_WAITING
+            || (gift == protocol::ARC_GIFT_GIVEN && self.offer(t as usize).priced());
+        if paid {
+            self.minting |= bit;
+        } else if gift != protocol::ARC_GIFT_NONE {
+            self.minting &= !bit;
+        }
     }
 }
 

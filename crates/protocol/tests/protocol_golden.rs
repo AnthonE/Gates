@@ -2395,7 +2395,8 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_work_state(index, &work, n, mine, unlocks, &mut buf).unwrap()
         }
         "event_arc_place.bin" => {
-            let (kind, index, total, spot, name, topics) = protocol::goldens::event_arc_place();
+            let (kind, index, total, spot, name, topics, offers) =
+                protocol::goldens::event_arc_place();
             match decode_event(fixture).unwrap() {
                 EventMsg::ArcPlace {
                     kind: k,
@@ -2407,38 +2408,41 @@ fn golden_event(fixture: &[u8], name: &str) {
                     n_topics,
                     topics: tt,
                     topic_lens,
+                    offers: oo,
                     ..
                 } => {
                     assert_eq!((k, i, t, sp), (kind, index, total, spot));
                     assert_eq!(&n[..name_len as usize], name);
-                    assert_eq!(n_topics, 2);
-                    for j in 0..2 {
+                    assert_eq!(n_topics, 3);
+                    for j in 0..3 {
                         assert_eq!(&tt[j][..topic_lens[j] as usize], topics[j]);
+                        assert_eq!(oo[j], offers[j]);
                     }
                 }
                 other => panic!("arc place: decoded {other:?}"),
             }
             protocol::encode_event_arc_place(
-                kind, index, total, &spot, name, &topics, 0, 0, &mut buf,
+                kind, index, total, &spot, name, &topics, &offers, 0, 0, &mut buf,
             )
             .unwrap()
         }
         "event_arc_text.bin" => {
-            let (kind, index, topic, text) = protocol::goldens::event_arc_text();
+            let (kind, index, topic, gift, text) = protocol::goldens::event_arc_text();
             match decode_event(fixture).unwrap() {
                 EventMsg::ArcText {
                     kind: k,
                     index: i,
                     topic: t,
+                    gift: g,
                     text: x,
                     len,
                 } => {
-                    assert_eq!((k, i, t), (kind, index, topic));
+                    assert_eq!((k, i, t, g), (kind, index, topic, gift));
                     assert_eq!(&x[..len as usize], text);
                 }
                 other => panic!("arc text: decoded {other:?}"),
             }
-            protocol::encode_event_arc_text(kind, index, topic, text, &mut buf).unwrap()
+            protocol::encode_event_arc_text(kind, index, topic, gift, text, &mut buf).unwrap()
         }
         "event_arc_dials.bin" => {
             let (mech, dials, resting) = protocol::goldens::event_arc_dials();

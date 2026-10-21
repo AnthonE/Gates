@@ -762,8 +762,6 @@ pub const NAMES: &[&str] = &[
     "tech_trash",
     "electric_fuse",
     "blueprint",
-    "key_lock",
-    "code_lock",
     "pistol_round",
     "medical_syringe",
     "corn_seed",
@@ -807,8 +805,6 @@ fn parts(name: &str) -> Option<Vec<Part>> {
         "tech_trash" => tech_trash(),
         "electric_fuse" => fuse(),
         "blueprint" => blueprint(),
-        "key_lock" => padlock(),
-        "code_lock" => code_lock(),
         "pistol_round" => rounds(),
         "medical_syringe" => syringe(),
         "corn_seed" => seeds(KERNEL, 0.012, 21),
@@ -1368,64 +1364,6 @@ fn blueprint() -> Vec<Part> {
             xf([0.04, 0.0, 0.0], [0.0, 0.0, 90.0]),
         ),
     ]
-}
-
-fn padlock() -> Vec<Part> {
-    vec![
-        p(
-            cuboid(0.11, 0.09, 0.04),
-            BRASS,
-            xf([0.0, 0.045, 0.0], [0.0; 3]),
-        ),
-        p(
-            tube(
-                &arc(Vec3::new(0.0, 0.09, 0.0), 0.036, 0.0, PI, 20),
-                |_| 0.01,
-                10,
-            ),
-            STEEL,
-            Transform::IDENTITY,
-        ),
-        p(
-            cyl(0.01, 0.006),
-            HOLE,
-            xf([0.0, 0.055, 0.021], [90.0, 0.0, 0.0]),
-        ),
-        p(
-            cuboid(0.006, 0.02, 0.006),
-            HOLE,
-            xf([0.0, 0.04, 0.021], [0.0; 3]),
-        ),
-    ]
-}
-
-fn code_lock() -> Vec<Part> {
-    let mut out = vec![
-        p(
-            cuboid(0.12, 0.17, 0.04),
-            DARK_STEEL,
-            xf([0.0, 0.085, 0.0], [0.0; 3]),
-        ),
-        p(
-            cuboid(0.08, 0.026, 0.006),
-            GLASS,
-            xf([0.0, 0.145, 0.021], [0.0; 3]),
-        ),
-        p(sphere(0.007), LED_RED, xf([0.042, 0.145, 0.022], [0.0; 3])),
-    ];
-    for r in 0..4 {
-        for c in 0..3 {
-            out.push(p(
-                cuboid(0.022, 0.018, 0.008),
-                GUNMETAL,
-                xf(
-                    [-0.028 + c as f32 * 0.028, 0.105 - r as f32 * 0.025, 0.022],
-                    [0.0; 3],
-                ),
-            ));
-        }
-    }
-    out
 }
 
 fn rounds() -> Vec<Part> {
