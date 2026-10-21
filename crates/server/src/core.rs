@@ -3102,6 +3102,7 @@ impl ShardCore {
                         machine,
                         mult,
                     },
+                    ActionMsg::Sit { seat } => Command::Sit { id: c.id, seat },
                     ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
                     ActionMsg::Arc {
                         op: sim_core::works::OP_EXTRACT,
@@ -8347,6 +8348,9 @@ impl ShardCore {
             // The stance every sim rule reads (v83), so what is drawn is
             // what a shot is tested against.
             crouched: p.crouched(),
+            // In a casino seat (v130); a sitter is at rest, and the wire
+            // carries the bit only then.
+            seated: p.seat != 0 && p.body.qvy == 0,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
             // A downed body has dropped what it held (wounded v0 — the
@@ -8424,6 +8428,7 @@ impl ShardCore {
                     | sim_core::brain::AiState::Attack
                     | sim_core::brain::AiState::Orbit
             ),
+            seated: false,
             yaw: m.yaw,
             pitch: 0,
             // A pig has no hotbar, so the hand is empty — and `held` would
