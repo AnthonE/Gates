@@ -1832,8 +1832,14 @@ impl Plugin for GatesRenderPlugin {
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
-                    // The compass's words, then its death marker.
-                    (hud::prompt, hud::death_mark),
+                    // The centre prompt, the compass tape, then the marks
+                    // riding under it.
+                    (
+                        hud::prompt,
+                        hud::compass,
+                        hud::compass_pins,
+                        hud::death_mark,
+                    ),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.

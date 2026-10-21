@@ -34,8 +34,8 @@ pub fn setup(mut commands: Commands) {
             ArcBanner,
             Node {
                 position_type: PositionType::Absolute,
-                // Under the compass, which sits under its marker row.
-                top: Val::Px(44.0),
+                // Under the compass and the marker row under it.
+                top: Val::Px(super::hud::COMPASS_BOTTOM_PX + 4.0),
                 width: Val::Percent(100.0),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
