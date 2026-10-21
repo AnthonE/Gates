@@ -1544,30 +1544,77 @@ impl Content {
                     CookStation::Fire => ARCH_FIRE,
                     CookStation::Furnace => ARCH_FURNACE,
                     CookStation::Recycler => ARCH_RECYCLER,
-                    CookStation::Planter => sim_core::deploy::ARCH_PLANTER,
                 },
             };
         }
         cc.row_count = self.cooks.len() as u16;
-        let w = &self.planter;
-        cc.water_full = self
-            .item_index(&w.item)
-            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.item))?;
-        cc.water_empty = self
-            .item_index(&w.emptied)
-            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.emptied))?;
-        cc.water_ticks = w
-            .seconds
-            .checked_mul(TICK_HZ)
-            .and_then(|t| u16::try_from(t).ok())
-            .ok_or_else(|| {
-                format!(
-                    "bake: planter water {} s does not fit a u16 of ticks",
-                    w.seconds
-                )
-            })?;
-        cc.rain_pct = w.rain_pct;
+        cc.farm = self.bake_farm()?;
         Ok(cc)
+    }
+
+    /// The farm (`cooking.toml` `[farm]` and `[[crop]]`, `sim_core::farm`), for
+    /// [`Self::bake_cooking`]:
+    /// seconds to ticks, plant-seconds to water units (× `TICK_HZ`), the
+    /// stage shares made cumulative, and each crop's look resolved. Refuses a
+    /// value past its integer and a table past `MAX_CROPS`.
+    fn bake_farm(&self) -> Result<sim_core::farm::FarmContent, String> {
+        use sim_core::farm::{CropDef, FarmContent, LOOK_NAMES};
+        let mut fc = FarmContent::EMPTY;
+        let f = &self.farm;
+        let item = |id: &str, what: &str| {
+            self.item_index(id)
+                .ok_or_else(|| format!("bake: farm {what} `{id}` names no item"))
+        };
+        let ticks = |v: u32, what: &str| {
+            v.checked_mul(TICK_HZ)
+                .ok_or_else(|| format!("bake: farm {what} {v} overflows a u32 of ticks"))
+        };
+        fc.water_full = item(&f.water, "water")?;
+        fc.water_empty = item(&f.emptied, "emptied")?;
+        fc.skin_wu = ticks(f.skin_water, "skin_water")?;
+        fc.planter_cap_wu = ticks(f.planter_water, "planter_water")?;
+        fc.rain_wu_s = ticks(f.rain_water, "rain_water")?;
+        fc.ripe_ticks = ticks(f.ripe_seconds, "ripe_seconds")?;
+        fc.dying_ticks = ticks(f.dying_seconds, "dying_seconds")?;
+        let mut sum = 0u32;
+        for (k, pct) in f.stage_pct.iter().enumerate() {
+            sum += *pct as u32;
+            fc.stage_end_pct[k] = u8::try_from(sum)
+                .map_err(|_| format!("bake: farm stage_pct sums past 255 ({sum})"))?;
+        }
+        if self.crops.len() > sim_core::limits::MAX_CROPS {
+            return Err(format!(
+                "bake: {} crops exceed the sim's {}-row table",
+                self.crops.len(),
+                sim_core::limits::MAX_CROPS
+            ));
+        }
+        for (k, c) in self.crops.iter().enumerate() {
+            let look = LOOK_NAMES
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(&c.look))
+                .ok_or_else(|| format!("bake: crop `{}` has no look `{}`", c.id, c.look))?;
+            let grow_ticks = ticks(c.seconds, "crop seconds")?;
+            if grow_ticks.checked_mul(1000).is_none() {
+                return Err(format!(
+                    "bake: crop `{}` grows {} s, past a u32 of milli-ticks",
+                    c.id, c.seconds
+                ));
+            }
+            fc.crops[k] = CropDef {
+                look: look as u8,
+                seed: item(&c.seed, "crop seed")?,
+                yield_item: item(&c.yield_item, "crop yield")?,
+                count: u16::try_from(c.count).map_err(|_| {
+                    format!("bake: crop `{}` pays {} units, past a u16", c.id, c.count)
+                })?,
+                grow_ticks,
+                clones: u8::try_from(c.clones)
+                    .map_err(|_| format!("bake: crop `{}` clones {} past a u8", c.id, c.clones))?,
+            };
+        }
+        fc.crop_count = self.crops.len() as u8;
+        Ok(fc)
     }
 
     /// The research table: what may be learned, what it unlocks, and what

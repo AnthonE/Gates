@@ -93,7 +93,7 @@ use core::ops::Range;
 use crate::deploy::{Deploys, ARCH_FIRE, ARCH_FURNACE, ARCH_PLANTER, ARCH_RECYCLER};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{BOX_SLOTS, MAX_COOK_ROWS};
-use crate::world::{EventQueue, EV_GROW, EV_OVEN};
+use crate::world::{EventQueue, EV_OVEN};
 
 /// What an item is to a converter: which of its sections take it. Bits,
 /// because one item can be two things — cooked meat is what a fire makes
@@ -157,17 +157,14 @@ pub const FIRE_LAYOUT: OvenLayout = OvenLayout {
 
 const _: () = assert!(FIRE_LAYOUT.slots() <= BOX_SLOTS);
 
-/// A planter box: a water slot, four beds that grow, and the rest of the
-/// box for what they yield. A bed with several seeds in it grows them one
-/// after another — one plant to a bed at a time, so beds are what make a
-/// planter worth more than one. Crops v1 (`NOW.md` §5 item 7): the beds
-/// grow only by daylight under open sky, and only while the planter has
-/// water — a full waterskin in slot 0 is drunk and left there empty
-/// ([`CookContent::water_full`]).
+/// A planter box (farming v2): one water slot and nothing else. Its six
+/// beds hold plants in `farm.rs`, not stacks; a full waterskin in slot 0 is
+/// poured into the tank (`OvenState::water`) once a plant thirsts and left
+/// there empty ([`crate::farm::FarmContent::water_full`]).
 pub const PLANTER_LAYOUT: OvenLayout = OvenLayout {
     fuel: 1,
-    input: 4,
-    output: 7,
+    input: 0,
+    output: 0,
 };
 
 const _: () = assert!(PLANTER_LAYOUT.slots() <= BOX_SLOTS);
@@ -280,16 +277,9 @@ pub struct CookContent {
     pub byproduct_pct: u16,
     pub rows: [CookRow; MAX_COOK_ROWS],
     pub row_count: u16,
-    /// What waters a planter (crops v1): a `water_full` in its water slot
-    /// is turned into `water_empty` in place and buys `water_ticks` of
-    /// growth. `water_ticks == 0` ⇒ a planter needs no water.
-    pub water_full: u16,
-    pub water_empty: u16,
-    pub water_ticks: u16,
-    /// Rain on an unroofed planter banks water (`NOW.md` §5 item 7): per
-    /// step under full rain, this per cent of the step, scaled by the rain's
-    /// per mille and capped at `water_ticks`. Zero ⇒ rain waters nothing.
-    pub rain_pct: u16,
+    /// The farm (`farm.rs`, `cooking.toml` `[farm]` and `[[crop]]`): inline
+    /// here so `SimTables` and its installers stay as they are.
+    pub farm: crate::farm::FarmContent,
 }
 
 impl CookContent {
@@ -302,10 +292,7 @@ impl CookContent {
         byproduct_pct: 0,
         rows: [CookRow::INERT; MAX_COOK_ROWS],
         row_count: 0,
-        water_full: 0,
-        water_empty: 0,
-        water_ticks: 0,
-        rain_pct: 0,
+        farm: crate::farm::FarmContent::EMPTY,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -390,17 +377,25 @@ impl CookContent {
         if burns && self.fuel_ticks > 0 && item == self.fuel_item {
             roles |= ROLE_FUEL;
         }
-        if arch == ARCH_PLANTER && self.water_ticks > 0 && item == self.water_full {
+        let farm = &self.farm;
+        let waters = arch == ARCH_PLANTER && farm.skin_wu > 0;
+        if waters && item == farm.water_full {
             roles |= ROLE_FUEL;
         }
         if self.row_for(arch, item).is_some() {
+            roles |= ROLE_INPUT;
+        }
+        // A seed is a planter's input as a client hint only: the planter has
+        // no input slots, so the move verb still refuses it, and the client
+        // reads this off the catalog to offer planting.
+        if arch == ARCH_PLANTER && farm.crop_of_item(item).is_some() {
             roles |= ROLE_INPUT;
         }
         // What the container itself made stays where it landed: an output
         // that could not be moved back out through its own door would be
         // trapped by the rule meant to keep junk out.
         if (burns && self.byproduct_pct > 0 && item == self.byproduct)
-            || (arch == ARCH_PLANTER && self.water_ticks > 0 && item == self.water_empty)
+            || (waters && item == farm.water_empty)
             || self.rows[..self.row_count as usize]
                 .iter()
                 .any(|r| r.ticks > 0 && r.arch == arch && r.output == item)
@@ -452,6 +447,9 @@ pub struct OvenState {
     /// kinder reading and the one that cannot lose a player's food to a
     /// misclick.
     pub cook: [u16; BOX_SLOTS],
+    /// A planter's water tank, in water units (`farm.rs`: 1 wu is one plant
+    /// drinking for one tick). Zero for everything else.
+    pub water: u32,
 }
 
 impl OvenState {
@@ -555,29 +553,6 @@ fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16) -> bo
 /// (research table v1): a running research is "lit" on the wire, so the
 /// client's lit set and the one event it already decodes carry the table's
 /// state with nothing new to learn.
-/// A planter's beds as they are drawn: two bits a bed, bed 0 lowest. 0 is
-/// an empty bed (or one holding nothing that grows), 1 a sprout, 2 half
-/// grown, 3 nearly ripe — thirds of the row's `ticks`.
-pub fn planter_stages(
-    cc: &CookContent,
-    items: &[ItemStack; BOX_SLOTS],
-    cook: &[u16; BOX_SLOTS],
-) -> u8 {
-    let mut out = 0u8;
-    for (k, s) in PLANTER_LAYOUT.input_slots().enumerate() {
-        let st = items[s];
-        let Some(row) = cc.row_for(ARCH_PLANTER, st.item) else {
-            continue;
-        };
-        if st.count == 0 || row.ticks == 0 {
-            continue;
-        }
-        let third = (cook[s] as u32 * 3 / row.ticks).min(2) as u8;
-        out |= (1 + third) << (2 * k);
-    }
-    out
-}
-
 pub(crate) fn announce(
     cx: u16,
     cz: u16,
@@ -671,23 +646,13 @@ pub fn toggle(
 /// and is the reference's: an oven that runs dry this step does not also
 /// cook this step.
 ///
-/// `open_sky` answers for a planter: is it unroofed (crops v1)? It grows
-/// only by day under open sky, and a planter in the dark, or dry, holds its
-/// beds where they are. `crop_pm` is how fast the air there lets it grow,
-/// per mille (`climate::crop_pm`): a frost or a scorch holds the beds and
-/// drinks nothing. `rain_pm` is the rain falling now (`weather::Wx`): on an
-/// open planter it banks water ([`CookContent::rain_pct`]).
-#[allow(clippy::too_many_arguments)]
+/// A planter is skipped: its plants grow on `farm::step`, right after.
 pub fn sweep(
     cc: &CookContent,
     gather: &GatherContent,
     deploys: &mut Deploys,
     tick: u64,
     smelt_pct: u32,
-    open_sky: &dyn Fn(&crate::deploy::BoxRec) -> bool,
-    crop_pm: &dyn Fn(&crate::deploy::BoxRec) -> u16,
-    night: bool,
-    rain_pm: u16,
     events: &mut EventQueue,
 ) {
     let period = OVEN_PERIOD_TICKS;
@@ -698,22 +663,8 @@ pub fn sweep(
             continue;
         }
         let arch = ovens[i].arch;
-        // What the beds look like, as of the last step and any hand since
-        // (crops v1): announced on a change, kept on `bank` (a planter
-        // banks no byproduct), and asked before the gates below so a seed
-        // planted at night still shows.
         if arch == ARCH_PLANTER {
-            let st = planter_stages(cc, &boxes[i].items, &ovens[i].cook);
-            if u16::from(st) != ovens[i].bank {
-                ovens[i].bank = u16::from(st);
-                let b = boxes[i];
-                events.push(
-                    EV_GROW,
-                    crate::gather::cell_key(b.cx, b.cz),
-                    ((b.level as u32) << 16) | ((b.loc as u32) << 8) | st as u32,
-                    0,
-                );
-            }
+            continue;
         }
         let step = period as u16;
         // The fire's sections (`layout`); the whole box for the rest.
@@ -760,53 +711,6 @@ pub fn sweep(
             }
         }
 
-        // 1b. A planter grows by daylight and on water (crops v1). Asked
-        //     only while a bed holds something that grows, so an idle
-        //     planter drinks nothing; a dark or dry one freezes its beds
-        //     (`cook` is kept, as a snuffed fire's is). The air sets the
-        //     pace (climate v0), and a frost or a scorch stops it.
-        let mut crop = 1000u16;
-        if arch == ARCH_PLANTER {
-            let growing = input.clone().any(|s| {
-                let st = boxes[i].items[s];
-                st.count > 0 && cc.row_for(arch, st.item).is_some()
-            });
-            // Rain fills the water clock of an open planter, day or night,
-            // growing or idle — the reference's rain-fed beds. The roof is
-            // asked once, and only when it rains or the beds could grow.
-            let rains = rain_pm > 0 && cc.rain_pct > 0 && cc.water_ticks > 0;
-            if !rains && (!growing || night) {
-                continue;
-            }
-            let open = open_sky(&boxes[i]);
-            if rains && open {
-                let gain =
-                    u32::from(step) * u32::from(cc.rain_pct) * u32::from(rain_pm) / (100 * 1000);
-                ovens[i].burn =
-                    (u32::from(ovens[i].burn) + gain).min(u32::from(cc.water_ticks)) as u16;
-            }
-            if !growing || night || !open {
-                continue;
-            }
-            crop = crop_pm(&boxes[i]).min(1000);
-            if u32::from(step) * u32::from(crop) < 1000 {
-                continue;
-            }
-            if cc.water_ticks > 0 {
-                if ovens[i].burn == 0 {
-                    let Some(w) = boxes[i].items[fuel.clone()]
-                        .iter_mut()
-                        .find(|st| st.count > 0 && st.item == cc.water_full)
-                    else {
-                        continue;
-                    };
-                    w.item = cc.water_empty;
-                    ovens[i].burn = cc.water_ticks;
-                }
-                ovens[i].burn = ovens[i].burn.saturating_sub(step);
-            }
-        }
-
         // 2. Convert. Every input slot at once — the fire's one grill slot,
         //    a recycler's whole hopper. Nothing else cooks: what came off
         //    the grill sits in the output and stays as it came off.
@@ -828,8 +732,6 @@ pub fn sweep(
             // knob (`works::KNOB_SMELT_PCT`); everything else at its own pace.
             let cook_step = if arch == crate::deploy::ARCH_FURNACE {
                 (step as u32 * smelt_pct / 100).min(u16::MAX as u32) as u16
-            } else if arch == ARCH_PLANTER {
-                (step as u32 * crop as u32 / 1000) as u16
             } else {
                 step
             };

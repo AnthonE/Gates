@@ -1262,7 +1262,9 @@ pub use voice::{
 /// a craft may be refused `REFUSE_CR_OWNED`.
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
-pub const PROTO_VER: u16 = 129;
+/// v130 — farming v2 (`sim_core::farm`): a deploy refusal admits 20..=25
+/// (`REFUSE_D_PLANT_*`, `REFUSE_D_PLANTS_FULL`).
+pub const PROTO_VER: u16 = 130;
 
 /// This game's slug in the elo catalog.
 ///

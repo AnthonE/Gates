@@ -859,6 +859,17 @@ pub const HAND_SIGHT_TESTS_MAX: usize = 8;
 /// never placed. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOXES: usize = 1_024;
 
+/// Living plants on the island at once, in planter beds and (later) on the
+/// ground (`farm.rs`). One fixed store; a farm period visits at most
+/// `ceil(MAX_PLANTS / 15)` of them. Overflow policy: **refuse** the
+/// planting with `REFUSE_D_PLANTS_FULL` — the seed stays in the hand.
+pub const MAX_PLANTS: usize = 4_096;
+
+/// Crop rows the sim preallocates for (`content/cooking.toml` `[[crop]]`).
+/// Structural cap like [`MAX_COOK_ROWS`]: the bake refuses a set past it.
+/// A plant stores its crop as this table's index.
+pub const MAX_CROPS: usize = 8;
+
 /// Authored world containers that have ever been opened at once
 /// (`worldcont.rs`: the haven pad's crates, a waystation's caches). Not a
 /// budget for how many terrain places — `terrain::scatter` decides that,

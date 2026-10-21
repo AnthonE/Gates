@@ -475,9 +475,31 @@ pub fn hash(c: &Content) -> u64 {
     h.u(c.fuel.seconds);
     h.s(&c.fuel.byproduct);
     h.u(c.fuel.byproduct_pct);
-    h.s(&c.planter.item);
-    h.s(&c.planter.emptied);
-    h.u(c.planter.seconds);
+    // The farm, whole (every field reaches `bake_farm`), and the crops in
+    // file order: a plant stores its crop as an index, so the order is the
+    // layout (`layout_hash`) and the rows are state.
+    let fm = &c.farm;
+    h.s("farm");
+    h.s(&fm.water);
+    h.s(&fm.emptied);
+    h.u(fm.skin_water);
+    h.u(fm.planter_water);
+    h.u(fm.rain_water);
+    for p in fm.stage_pct {
+        h.u(p as u32);
+    }
+    h.u(fm.ripe_seconds);
+    h.u(fm.dying_seconds);
+    h.u(c.crops.len() as u32);
+    for k in &c.crops {
+        h.s(&k.id);
+        h.s(&k.look);
+        h.s(&k.seed);
+        h.s(&k.yield_item);
+        h.u(k.count);
+        h.u(k.seconds);
+        h.u(k.clones);
+    }
     h.u(c.cooks.len() as u32);
     let mut cooks: Vec<&Cook> = c.cooks.iter().collect();
     cooks.sort_by_key(|k| format!("{}\u{0}{}", k.station as u32, k.input));
@@ -721,5 +743,10 @@ pub fn layout_hash(c: &Content) -> u64 {
     }
     h.s("glyphs");
     h.s(&c.glyphs.alphabet);
+    // A plant saves its crop as an index into this order.
+    h.s("crops");
+    for k in &c.crops {
+        h.s(&k.id);
+    }
     h.0.digest()
 }

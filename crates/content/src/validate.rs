@@ -2240,7 +2240,6 @@ pub fn structural(c: &Content) -> Result<(), String> {
             CookStation::Fire => DeployArchetype::Fire,
             CookStation::Furnace => DeployArchetype::Furnace,
             CookStation::Recycler => DeployArchetype::Recycler,
-            CookStation::Planter => DeployArchetype::Planter,
         };
         if !c.deployables.iter().any(|d| d.archetype == arch) {
             return Err(format!(
@@ -2308,6 +2307,83 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!(
                 "cook: two rows pay `{}` for `{}` at the same station",
                 k.output, k.input
+            ));
+        }
+    }
+
+    // The farm (`content/cooking.toml` `[farm]` and `[[crop]]`, farming v2).
+    // Each rule refuses a farm that would plant and never pay, or pay and
+    // never water.
+    let fm = &c.farm;
+    let item_of = |id: &str| c.items.iter().find(|i| i.id == id);
+    for (what, id) in [("water", &fm.water), ("emptied", &fm.emptied)] {
+        if item_of(id).is_none() {
+            return Err(format!("farm: {what} `{id}` is not an item"));
+        }
+    }
+    if fm.stage_pct.contains(&0) {
+        return Err("farm: every stage_pct share must be above 0".to_string());
+    }
+    let pct: u32 = fm.stage_pct.iter().map(|&p| p as u32).sum();
+    if pct != 100 {
+        return Err(format!("farm: stage_pct sums to {pct}, not 100"));
+    }
+    if fm.ripe_seconds == 0 || fm.dying_seconds == 0 {
+        return Err("farm: ripe_seconds and dying_seconds must be above 0".to_string());
+    }
+    if fm.skin_water == 0 || fm.skin_water > fm.planter_water {
+        return Err(format!(
+            "farm: a skin ({}) must hold water and fit a planter ({})",
+            fm.skin_water, fm.planter_water
+        ));
+    }
+    if !c
+        .deployables
+        .iter()
+        .any(|d| d.archetype == DeployArchetype::Planter)
+        && !c.crops.is_empty()
+    {
+        return Err("farm: crops with no planter to grow them in".to_string());
+    }
+    let mut crop_ids = BTreeSet::new();
+    let mut crop_seeds = BTreeSet::new();
+    for k in &c.crops {
+        if !crop_ids.insert(k.id.as_str()) {
+            return Err(format!("crop: `{}` appears twice", k.id));
+        }
+        if !sim_core::farm::LOOK_NAMES
+            .iter()
+            .any(|n| n.eq_ignore_ascii_case(&k.look))
+        {
+            return Err(format!("crop: `{}` has no look `{}`", k.id, k.look));
+        }
+        let Some(seed) = item_of(&k.seed) else {
+            return Err(format!("crop: `{}` seed `{}` is not an item", k.id, k.seed));
+        };
+        if item_of(&k.yield_item).is_none() {
+            return Err(format!(
+                "crop: `{}` yield `{}` is not an item",
+                k.id, k.yield_item
+            ));
+        }
+        if !crop_seeds.insert(k.seed.as_str()) {
+            return Err(format!("crop: `{}` is the seed of two crops", k.seed));
+        }
+        // A seed stacks, and carries no condition: a plant's genes ride its
+        // clone's `cond`, and a wearing seed would rewrite them.
+        if seed.stack <= 1 || seed.condition_max != 0 {
+            return Err(format!(
+                "crop: seed `{}` must stack past 1 with condition_max 0",
+                k.seed
+            ));
+        }
+        if k.count == 0 || k.seconds == 0 {
+            return Err(format!("crop: `{}` pays nothing or grows in 0 s", k.id));
+        }
+        if (k.seconds as u64) * (sim_core::limits::TICK_HZ as u64) * 1000 > u32::MAX as u64 {
+            return Err(format!(
+                "crop: `{}` grows {} s, past what a plant can count",
+                k.id, k.seconds
             ));
         }
     }

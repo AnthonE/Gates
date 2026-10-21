@@ -901,7 +901,7 @@ class = "food"
 description = "Grown in a planter. Good food, and seeds for the next crop."
 
 # Crops v0 (`NOW.md` §5): seeds grow in a planter box (`deployables.toml`,
-# `cooking.toml`'s `planter` rows). Corn seed comes out of a corn cob
+# `cooking.toml`'s `[[crop]]` rows). Corn seed comes out of a corn cob
 # (`recipes.toml`), the cob out of a food box; hemp seed off a picked hemp
 # plant.
 [[item]]
@@ -912,7 +912,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
-description = "Plant it in a planter box to grow corn."
+description = "Hold it and plant one in a planter box."
 
 [[item]]
 id = "item.hemp_seed"
@@ -922,7 +922,7 @@ tier = 0
 rarity = "common"
 slot = "none"
 class = "resources"
-description = "Plant it in a planter box to grow cloth."
+description = "Hold it and plant one in a planter box."
 
 [[item]]
 id = "item.planter"
@@ -932,7 +932,7 @@ tier = 0
 rarity = "common"
 slot = "hand"
 class = "items"
-description = "Grows seeds by daylight under open sky, on water or rain."
+description = "Six beds. Grows by daylight under open sky, on water or rain."
 
 [[item]]
 id = "item.autoturret"

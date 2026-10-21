@@ -762,19 +762,43 @@ pub struct Fuel {
     pub byproduct_pct: u32,
 }
 
-/// What waters a planter (crops v1, `sim_core::oven::CookContent::water_full`):
-/// a full `item` in the water slot is left there as `emptied` and buys
-/// `seconds` of growth for every bed.
+/// The farm (`content/cooking.toml` `[farm]`, `sim_core::farm::FarmContent`).
+/// Water is stated in plant-seconds — one plant drinking for one second —
+/// and the bake multiplies by `TICK_HZ` into the sim's water units.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlanterWater {
-    pub item: String,
+pub struct FarmSection {
+    /// A full waterskin, and what it is left as once poured.
+    pub water: String,
     pub emptied: String,
+    /// One skin's water, a planter's tank, and what full rain banks in an
+    /// open planter per second.
+    pub skin_water: u32,
+    pub planter_water: u32,
+    pub rain_water: u32,
+    /// Each growing stage's share of the grow, per cent: seed, seedling,
+    /// sapling, crossbreed, mature, fruiting. Sums to 100.
+    pub stage_pct: [u8; 6],
+    /// How long a ripe plant stays ripe, and how long a dying one stands.
+    pub ripe_seconds: u32,
+    pub dying_seconds: u32,
+}
+
+/// One crop (`content/cooking.toml` `[[crop]]`): what plants it, what a
+/// pick pays at full health, and how long it takes to ripen.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CropRow {
+    pub id: String,
+    /// How it is drawn (`sim_core::farm::LOOK_NAMES`, lower case).
+    pub look: String,
+    pub seed: String,
+    #[serde(rename = "yield")]
+    pub yield_item: String,
+    pub count: u32,
     pub seconds: u32,
-    /// Rain on an unroofed planter banks water: per cent of the elapsed time
-    /// under full rain, up to `seconds` (`CookContent::rain_pct`).
-    #[serde(default)]
-    pub rain_pct: u16,
+    /// Clones a take pays.
+    pub clones: u32,
 }
 
 /// Which container runs a cook row. The archetype names of
@@ -788,8 +812,6 @@ pub enum CookStation {
     /// Converts without burning (recycler v0). The station that makes this
     /// table the economy's arming point: a row here is a faucet.
     Recycler,
-    /// Grows (crops v0): a seed in a planter's bed becomes a crop.
-    Planter,
 }
 
 /// One transformation a container performs: one unit in, `count` units of

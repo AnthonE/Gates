@@ -9919,6 +9919,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/face.rs"),
         },
         Module {
+            file: "farm.rs",
+            src: include_str!("../../sim-core/src/farm.rs"),
+        },
+        Module {
             file: "fire.rs",
             src: include_str!("../../sim-core/src/fire.rs"),
         },
@@ -9945,6 +9949,10 @@ mod wire_domains {
         Module {
             file: "gather.rs",
             src: include_str!("../../sim-core/src/gather.rs"),
+        },
+        Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
         },
         Module {
             file: "heli.rs",
@@ -10262,9 +10270,10 @@ mod wire_domains {
             prefix: "pub const REFUSE_D_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 20,
+            min_members: 26,
             bits: REFUSE_D_BITS,
-            live_max: 19,
+            // 19 -> 25 at v130: farming v2's six.
+            live_max: 25,
         },
         Domain {
             what: "container kind",

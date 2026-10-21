@@ -542,8 +542,21 @@ pub const REFUSE_D_AUTH_FULL: u32 = 18;
 /// inventory that could not hold them would be the worst kind of loss —
 /// silent, and caused by the player's own verb.
 pub const REFUSE_D_NOT_EMPTY: u32 = 19;
+/// Farming v2 (`farm.rs`): the stack named is not a seed this island grows,
+/// or the hand holds no full waterskin for a water.
+pub const REFUSE_D_PLANT_ITEM: u32 = 20;
+/// The bed spot is past the planter's six, or already holds a plant.
+pub const REFUSE_D_PLANT_SPOT: u32 = 21;
+/// Nothing grows here (the ground, until ground planting lands).
+pub const REFUSE_D_PLANT_SOIL: u32 = 22;
+/// The island's plant store is full (`limits::MAX_PLANTS`).
+pub const REFUSE_D_PLANTS_FULL: u32 = 23;
+/// The plant is not at the stage the verb needs (a pick before it is ripe).
+pub const REFUSE_D_PLANT_STAGE: u32 = 24;
+/// The planter's tank has no room for a skin.
+pub const REFUSE_D_PLANT_WATER: u32 = 25;
 /// The highest deploy refusal; both ends of the wire refuse anything past it.
-pub const REFUSE_D_MAX: u32 = REFUSE_D_NOT_EMPTY;
+pub const REFUSE_D_MAX: u32 = REFUSE_D_PLANT_WATER;
 // Hearth crew v1 adds **no reason codes**, and that is deliberate. A crew
 // op at an address holding no hearth is `REFUSE_D_HEARTH`, which the feed
 // verb already says in those words; a crew op from a hand the hearth does
@@ -923,10 +936,8 @@ pub struct DeployRec {
     /// deliberately does not maintain this and why it is absent from
     /// `state_hash`. Read it on a client, never on a shard.
     pub dmg: u8,
-    /// A planter's beds as they are drawn (crops v1, wire v100): two bits a
-    /// bed, `oven::planter_stages`. Wire-only and filled at encode, `dmg`'s
-    /// posture — the sim keeps it on the planter's `OvenState::bank` and
-    /// announces a change with `EV_GROW`. Zero for everything else.
+    /// Crops v1's planter beds (wire v100). Farming v2 keeps its plants in
+    /// `farm.rs`, so this is always 0 until the wire drops it.
     pub grow: u8,
     /// The lock bolted on is a key lock, not a code lock (wire v120), so
     /// the client draws a padlock and offers no keypad. Wire-only and

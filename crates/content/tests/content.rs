@@ -3865,6 +3865,12 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
                 grew |= have.insert(k.output.as_str());
             }
         }
+        // A planted seed pays its crop's yield.
+        for k in &c.crops {
+            if have.contains(k.seed.as_str()) {
+                grew |= have.insert(k.yield_item.as_str());
+            }
+        }
         for r in &c.recipes {
             let station_ok = match r.station {
                 content::schema::Station::None => true,
@@ -5138,4 +5144,56 @@ fn a_bred_brain_bakes_onto_the_wolf_and_nowhere_else() {
         with("mob.wolf", "genome = \"qg2:776t3gEAAkADgATA__8\""),
         "does not read as a bred wolf brain",
     );
+}
+
+/// Farming v2 (`cooking.toml` `[farm]`): the stage shares must make one
+/// whole grow, and a seed plants one crop.
+#[test]
+fn a_farm_whose_stages_do_not_make_a_whole_grow_is_refused() {
+    refuses(
+        "cooking.toml",
+        "stage_pct = [5, 15, 20, 5, 25, 30]",
+        "stage_pct = [5, 15, 20, 5, 25, 25]",
+        "stage_pct sums to 95",
+    );
+    refuses(
+        "cooking.toml",
+        "stage_pct = [5, 15, 20, 5, 25, 30]",
+        "stage_pct = [0, 20, 20, 5, 25, 30]",
+        "above 0",
+    );
+    refuses(
+        "cooking.toml",
+        "seed = \"item.hemp_seed\"",
+        "seed = \"item.corn_seed\"",
+        "seed of two crops",
+    );
+    refuses(
+        "cooking.toml",
+        "look = \"hemp\"",
+        "look = \"cactus\"",
+        "no look",
+    );
+}
+
+/// The shipped farm reaches the sim at its stated numbers: seconds and
+/// plant-seconds × 30, the stage shares made cumulative.
+#[test]
+fn the_shipped_farm_bakes_to_its_numbers() {
+    let c = build(&sources()).expect("shipped content");
+    let fc = c.bake_cooking().expect("bake").farm;
+    assert_eq!(fc.crop_count, 2);
+    let corn = fc.crops[0];
+    assert_eq!(corn.look, sim_core::farm::LOOK_CORN);
+    assert_eq!(corn.seed, c.item_index("item.corn_seed").unwrap());
+    assert_eq!(corn.yield_item, c.item_index("item.corn").unwrap());
+    assert_eq!((corn.count, corn.grow_ticks, corn.clones), (4, 900 * 30, 2));
+    assert_eq!(fc.crops[1].look, sim_core::farm::LOOK_HEMP);
+    assert_eq!(fc.stage_end_pct, [5, 20, 40, 45, 70, 100]);
+    assert_eq!(
+        (fc.skin_wu, fc.planter_cap_wu, fc.rain_wu_s),
+        (3600 * 30, 7200 * 30, 6 * 30)
+    );
+    assert_eq!((fc.ripe_ticks, fc.dying_ticks), (10_800 * 30, 1800 * 30));
+    assert_eq!(fc.crop_of_item(corn.seed), Some(0));
 }

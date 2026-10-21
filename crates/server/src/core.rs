@@ -67,9 +67,9 @@ use sim_core::world::{
     EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 use sim_core::world::{
-    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_GROW, EV_MECH_SOLVED, EV_NODE_STAGE,
-    EV_PAID, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID, EV_WHEEL_REFUSED,
-    EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
+    EV_ARC_DID, EV_ARC_REFUSED, EV_EXTRACTED, EV_GAVE, EV_MECH_SOLVED, EV_NODE_STAGE, EV_PAID,
+    EV_PLANT, EV_PLANT_GONE, EV_SLOTS, EV_SLOTS_REFUSED, EV_WHEEL_BET, EV_WHEEL_PAID,
+    EV_WHEEL_REFUSED, EV_WHEEL_SPIN, EV_WORK, PAID_DONE, PAID_SHORT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -5215,57 +5215,9 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
-                EV_GROW => {
-                    // A planter's beds (crops v1): aimed like `EV_DOOR`, for
-                    // its reason — the walk record carries the beds byte,
-                    // so a client that missed a stage reads it back before
-                    // it is near enough to see the planter.
-                    let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
-                    let level = (ev.b >> 16) as u8;
-                    let loc = (ev.b >> 8) as u8;
-                    let stages = ev.b as u8;
-                    let owner = self
-                        .world
-                        .deploys
-                        .find(cx, cz, level, loc)
-                        .map_or(0, |d| d.owner);
-                    let at = interest::cell_cm(cx, cz);
-                    match protocol::encode_event_planter(
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        stages,
-                        &mut self.ev_buf,
-                    ) {
-                        Ok(len) => {
-                            for slot in 0..MAX_PLAYERS {
-                                let c = &self.clients[slot];
-                                if !c.connected {
-                                    continue;
-                                }
-                                if c.piece_anchor_valid
-                                    && !interest::owned_in_interest(
-                                        c.piece_anchor_cm,
-                                        c.id,
-                                        owner,
-                                        at,
-                                    )
-                                {
-                                    ShardStats::bump(&stats.deploy_events_skipped);
-                                    continue;
-                                }
-                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                                    ShardStats::bump(&stats.ev_sent);
-                                } else {
-                                    self.clients[slot].ev_resync();
-                                    ShardStats::bump(&stats.ev_resyncs);
-                                }
-                            }
-                        }
-                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
-                    }
-                }
+                // Farming v2's plant events reach clients with the plant
+                // wire record (the next slice); nothing is sent for them yet.
+                EV_PLANT | EV_PLANT_GONE => {}
                 EV_SHOT => {
                     // Broadcast **to the interest set**, `EV_SWING`'s
                     // posture and — after this was checked rather than
@@ -7312,10 +7264,8 @@ impl ShardCore {
                         src.cx, src.cz, src.level, src.loc,
                     ))
                     .map(|i| self.world.deploys.oven_states()[i]);
-                // A planter's beds (crops v1), off the oven row's mirror.
-                dst.grow = oven
-                    .filter(|o| o.arch == sim_core::deploy::ARCH_PLANTER)
-                    .map_or(0, |o| o.bank as u8);
+                // Crops v1's beds byte; farming v2 sends plants on their own.
+                dst.grow = 0;
                 lit[n] = oven.is_some_and(|o| o.is_converter() && o.lit);
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {

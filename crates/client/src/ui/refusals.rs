@@ -117,7 +117,7 @@ pub const BUILD: [&str; 16] = [
 /// words, but not all of them: `REFUSE_D_COST` is an item you are not
 /// carrying where `REFUSE_B_COST` is materials you cannot afford. The two
 /// tables are separate for that reason and no check ties them together.
-pub const DEPLOY: [&str; 20] = [
+pub const DEPLOY: [&str; 26] = [
     "no such deployable",
     "spot taken",
     "needs support",
@@ -144,6 +144,13 @@ pub const DEPLOY: [&str; 20] = [
     "keypad locked out",
     "that lock remembers too many already",
     "empty it first",
+    // Farming v2 (`sim_core::farm`).
+    "that is not a seed",
+    "that spot is taken",
+    "nothing grows there",
+    "the island has too many plants",
+    "not ready for that yet",
+    "the planter is full of water",
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
