@@ -1946,7 +1946,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
                             width: Val::Px(SLOT_COND_W),
                             ..default()
                         },
-                        BackgroundColor(VITAL_TROUGH),
+                        BackgroundColor(super::panels::PIP_TROUGH),
                         Visibility::Hidden,
                         Pickable::IGNORE,
                     ))
@@ -1961,7 +1961,7 @@ pub fn setup(mut commands: Commands, server: Res<AssetServer>) {
                                 height: Val::Percent(0.0),
                                 ..default()
                             },
-                            BackgroundColor(Vital::Hp.fill()),
+                            BackgroundColor(super::panels::PIP_FILL),
                             Pickable::IGNORE,
                         ));
                     });
