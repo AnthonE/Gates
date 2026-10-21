@@ -240,12 +240,14 @@ impl Listing {
     /// label and value. A field the shard never said is left out, never
     /// drawn as a zero.
     pub fn details(&self, now_unix: u64) -> Vec<(&'static str, String)> {
-        let mut out = vec![("ADDRESS", self.addr.clone())];
+        // Streamer mode: no address, and no map, which names the seed.
+        let streamer = super::streamer::on();
+        let mut out = vec![("ADDRESS", super::streamer::hide_if(streamer, &self.addr))];
         if self.agents_only() {
             out.push(("WHO PLAYS", AGENTS_ONLY.to_string()));
         }
         if let Some(m) = &self.map {
-            out.push(("MAP", m.clone()));
+            out.push(("MAP", super::streamer::hide_if(streamer, m)));
         }
         out.push(("PLAYERS", self.crowd().unwrap_or_else(|| self.population())));
         if let Some(n) = self.live.spectators {

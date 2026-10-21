@@ -461,7 +461,8 @@ pub fn inventory(
             (Read::Failed(why), _) => format!("{why}."),
             (Read::Got(_), Some(a)) => {
                 let hex = a.to_hex();
-                format!("Wallet {}", core::str::from_utf8(&hex).unwrap_or(""))
+                let w = core::str::from_utf8(&hex).unwrap_or("");
+                format!("Wallet {}", crate::ui::streamer::hide(w))
             }
             (Read::Idle, _) => String::new(),
         };

@@ -99,7 +99,9 @@ impl Pics {
     /// The picture for (`address`, `pic`), if it has landed. Asks for it the
     /// first time; `None` while it is on its way, or if it has none.
     pub fn want(&mut self, address: Address, pic: u32) -> Option<Handle<Image>> {
-        if pic == 0 || address.is_guest() {
+        // Streamer mode draws no one's picture (`ui::streamer`): a face is as
+        // good as a name to a viewer.
+        if pic == 0 || address.is_guest() || crate::ui::streamer::on() {
             return None;
         }
         self.clock += 1;
@@ -382,7 +384,7 @@ fn nametag(
     };
     let handle = who.and_then(|(_, t)| t.and_then(|t| pics.want(t.address, t.pic)));
     let next = who.map(|(id, t)| {
-        let label = names::label(t.as_ref(), core.is_agent(id), id);
+        let label = names::shown_if(crate::ui::streamer::on(), t.as_ref(), core.is_agent(id), id);
         let friend = t
             .zip(friends.as_deref())
             .is_some_and(|(t, f)| f.set.has(&t.address));

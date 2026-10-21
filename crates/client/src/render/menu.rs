@@ -745,6 +745,9 @@ const HERO_H_PX: f32 = 300.0;
 /// The name the account corner and PLAYING AS show: your platform name, or
 /// the wallet, or GUEST.
 fn shown_name(who: &Who, my: &MyFace) -> String {
+    if crate::ui::streamer::on() {
+        return "STREAMER MODE".to_string();
+    }
     if let Some(n) = &my.name {
         return n.clone();
     }
@@ -767,10 +770,10 @@ fn face(parent: &mut ChildSpawnerCommands, who: &Who, my: &MyFace, px: f32) {
         ..default()
     };
     match &my.handle {
-        Some(h) => {
+        Some(h) if !crate::ui::streamer::on() => {
             parent.spawn((ImageNode::new(h.clone()), node, BorderColor::all(ui::RULE)));
         }
-        None => {
+        _ => {
             let initial = shown_name(who, my)
                 .chars()
                 .next()
@@ -881,6 +884,9 @@ fn friend_ids(friends: &Friends) -> Vec<String> {
 /// One short line on who is playing and how we know: the page's address
 /// under the name. `Player::line` says the same at length for the log.
 fn who_line(who: &Who) -> String {
+    if crate::ui::streamer::on() {
+        return "wallet and name hidden".to_string();
+    }
     let short = |a: &str| {
         if a.len() > 12 {
             format!("{}...{}", &a[..6], &a[a.len() - 4..])
@@ -1121,8 +1127,10 @@ fn server_row(
                     n.spawn(ui::strong("SERVER UPDATING", 11.0, ui::DIM));
                 }
             });
-            let mut at = listing.addr.clone();
-            if let Some(m) = &listing.map {
+            // Streamer mode drops the address and the map, which names the
+            // seed (`ui::streamer`); the server's name stays, to pick by.
+            let mut at = crate::ui::streamer::hide(&listing.addr);
+            if let Some(m) = listing.map.as_ref().filter(|_| !crate::ui::streamer::on()) {
                 at.push_str("  ·  ");
                 at.push_str(m);
             }
@@ -2025,7 +2033,10 @@ pub fn connecting_screen(mut commands: Commands, connecting: NonSend<Connecting>
             ui::wordmark(),
             (
                 ui::strong(
-                    format!("connecting to {}...", connecting.addr),
+                    format!(
+                        "connecting to {}...",
+                        crate::ui::streamer::server(&connecting.addr)
+                    ),
                     20.0,
                     ui::TEXT
                 ),
@@ -2076,7 +2087,7 @@ pub fn poll_connect(
         // enough, because nothing reads it outside this state and the task
         // ends on its own send failure.
         connecting.rx = None;
-        menu.status = format!("{}: {why}", connecting.addr);
+        menu.status = format!("{}: {why}", crate::ui::streamer::server(&connecting.addr));
         next.set(Screen::Menu);
         return;
     }
@@ -2122,8 +2133,11 @@ pub fn poll_connect(
         }
         Err(why) => {
             menu.status = match crate::elo::take_refusal() {
-                Some(launcher) => format!("{}: {why} ({launcher})", connecting.addr),
-                None => format!("{}: {why}", connecting.addr),
+                Some(launcher) => format!(
+                    "{}: {why} ({launcher})",
+                    crate::ui::streamer::server(&connecting.addr)
+                ),
+                None => format!("{}: {why}", crate::ui::streamer::server(&connecting.addr)),
             };
             next.set(Screen::Menu);
         }

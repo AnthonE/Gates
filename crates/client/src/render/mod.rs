@@ -1239,6 +1239,7 @@ impl Plugin for GatesRenderPlugin {
                     settings::follow_browser_fullscreen,
                     settings::follow_focus,
                     settings::save_on_change,
+                    settings::mirror_streamer,
                     // The graphics tier, and it belongs beside the other two
                     // appliers rather than in the world schedule: a player
                     // can move it from the intro screen, so it must run

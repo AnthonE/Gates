@@ -380,10 +380,11 @@ pub fn drain(
 }
 
 /// Redraw the log and the composer when either changed.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn draw(
     mut commands: Commands,
     mut chat: ResMut<Chat>,
+    mut drawn_streamer: Local<Option<bool>>,
     root: Query<Entity, With<LogRoot>>,
     mut bar: Query<(&mut Visibility, &mut BackgroundColor), With<ComposerBar>>,
     mut label: Query<(&mut Text, &mut TextColor), With<ComposerChannel>>,
@@ -397,9 +398,12 @@ pub fn draw(
         ),
     >,
 ) {
-    if !chat.dirty {
+    // Streamer mode renames every speaker, so flipping it redraws the log.
+    let streamer = crate::ui::streamer::on();
+    if !chat.dirty && *drawn_streamer == Some(streamer) {
         return;
     }
+    *drawn_streamer = Some(streamer);
     chat.dirty = false;
 
     let open = chat.composer.open;
@@ -455,7 +459,7 @@ pub fn draw(
                     Button,
                     ChatWho(super::panels::profile::ProfileOpen {
                         wallet,
-                        name: l.name.clone(),
+                        name: crate::ui::chat::shown_name(&l),
                     }),
                     BackgroundColor(rest),
                     super::panels::Hover::on(rest).hot(LINE_HOVER),
@@ -482,11 +486,13 @@ pub fn draw(
                     },
                     Pickable::IGNORE,
                 ));
-                if let Some((address, pic)) = l.face.filter(|&(_, pic)| pic != 0) {
+                if let Some((address, pic)) = l
+                    .face
+                    .filter(|&(_, pic)| pic != 0 && !crate::ui::streamer::on())
+                {
                     avatar.insert(ChatPic { address, pic });
                 }
-                let initial: String = l
-                    .name
+                let initial: String = crate::ui::chat::shown_name(&l)
                     .chars()
                     .find(|c| c.is_alphanumeric())
                     .map(|c| c.to_uppercase().collect())

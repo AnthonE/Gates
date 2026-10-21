@@ -1244,7 +1244,7 @@ pub fn mates(
     }
     for (name, mut text) in &mut names {
         let want = shown(name.0)
-            .map(|m| crate::ui::names::of(core, m.id))
+            .map(|m| crate::ui::names::shown(core, m.id))
             .unwrap_or_default();
         if text.0 != want {
             text.0 = want;
