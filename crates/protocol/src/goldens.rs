@@ -395,14 +395,17 @@ pub fn event_arc_refused() -> (u8, u8, u8) {
     )
 }
 
-/// Speaker 3 of 5 at the third stone ring, with two topics (wire v96).
+/// Speaker 3 of 5 at the third stone ring, with three topics (wire v96):
+/// small talk, a free gift of two skins and a priced one (v130).
+#[allow(clippy::type_complexity)]
 pub fn event_arc_place() -> (
     u8,
     u8,
     u8,
     sim_core::spot::Spot,
     &'static [u8],
-    [&'static [u8]; 2],
+    [&'static [u8]; 3],
+    [crate::TopicOffer; 3],
 ) {
     (
         protocol_arc_speaker(),
@@ -416,7 +419,24 @@ pub fn event_arc_place() -> (
             z_cm: 1200,
         },
         b"THE GATEKEEPER",
-        [b"WHO ARE YOU", b"THE ISLAND"],
+        [b"WHO ARE YOU", b"THE FOUNDER'S GIFT", b"THE ABYSS RUG"],
+        [
+            crate::TopicOffer::default(),
+            crate::TopicOffer {
+                gift: true,
+                n: 2,
+                catalogs: [7, 8, 0, 0],
+                item: 0,
+                count: 0,
+            },
+            crate::TopicOffer {
+                gift: true,
+                n: 1,
+                catalogs: [10, 0, 0, 0],
+                item: 41,
+                count: 100,
+            },
+        ],
     )
 }
 
@@ -425,8 +445,14 @@ fn protocol_arc_speaker() -> u8 {
 }
 
 /// Inscription 7's text.
-pub fn event_arc_text() -> (u8, u8, u8, &'static [u8]) {
-    (crate::ARC_INSCRIPTION, 7, 0, b"TURN THE THREE TO 5 2 7")
+pub fn event_arc_text() -> (u8, u8, u8, u8, &'static [u8]) {
+    (
+        crate::ARC_INSCRIPTION,
+        7,
+        0,
+        crate::ARC_GIFT_NONE,
+        b"TURN THE THREE TO 5 2 7",
+    )
 }
 
 /// Mechanism 2's three dials, resting.

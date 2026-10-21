@@ -1394,6 +1394,7 @@ pub fn rebuild(
     near: Res<super::verbs::Near>,
     portrait: Option<Res<super::portrait::Portrait>>,
     hearth: Option<Res<super::verbs::HearthView>>,
+    who: Option<Res<super::screen::Who>>,
 ) {
     let core = &net.session.core;
 
@@ -1453,7 +1454,17 @@ pub fn rebuild(
         }
         Panel::Work => arc::build_work(&mut commands, &ui, core),
         Panel::Island => arc::build_island(&mut commands, &ui, core),
-        Panel::Talk => lore::build_talk(&mut commands, &ui, core),
+        Panel::Talk => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            // Signed out: the launcher has no wallet for this player.
+            let guest = who.is_some_and(|w| {
+                w.0.address()
+                    .and_then(|a| protocol::Address::from_hex(a.as_bytes()))
+                    .is_none_or(|a| a.is_guest())
+            });
+            lore::build_talk(&mut commands, &ui, core, icons, guest)
+        }
         Panel::Read => lore::build_read(&mut commands, &ui, core),
         Panel::Team => team::build_team(&mut commands, &ui, core),
         Panel::Shop => {

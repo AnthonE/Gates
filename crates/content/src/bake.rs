@@ -2403,6 +2403,12 @@ impl Content {
                 set.insert(i);
             }
         }
+        if set.count() as usize > sim_core::lore::MAX_GIFT_ROWS {
+            return Err(format!(
+                "gift `{season}`: more than {} rows",
+                sim_core::lore::MAX_GIFT_ROWS
+            ));
+        }
         // An empty gift is legal: whoever asks already holds all of it.
         Ok(set)
     }
