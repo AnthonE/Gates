@@ -95,11 +95,18 @@ pub fn alias(key: &str) -> String {
 pub fn alias_with(salt: u64, key: &str) -> String {
     // FNV-1a over the salt and the key: no dependency, and good enough to
     // spread 2^16 names. Not a secret on its own; the salt is.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ salt;
+    // The salt is hashed once, as bytes. (It was also XORed into the start,
+    // and the first byte then cancelled it: salts 7 and 8 named alike.)
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in salt.to_le_bytes().iter().chain(key.as_bytes()) {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    // FNV's low bits are its weakest and the words are picked from them:
+    // one avalanche round (murmur3's finaliser) spreads every input bit.
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 33;
     let a = FIRST[(h & 31) as usize];
     let b = SECOND[((h >> 5) & 31) as usize];
     format!("{a} {b} {}", (h >> 10) % 100)
@@ -163,6 +170,13 @@ mod tests {
             "the next session's name is another"
         );
         assert!(a.split(' ').count() == 3 && a.is_ascii(), "{a}");
+        // Every salt moves a name, small ones included, and names spread.
+        let moved = (1..=64u64).filter(|s| alias_with(*s, "0xabc") != a).count();
+        assert!(moved >= 60, "only {moved} of 64 salts renamed a player");
+        let names: std::collections::BTreeSet<String> = (0..200)
+            .map(|i| alias_with(7, &format!("0x{i:040x}")))
+            .collect();
+        assert!(names.len() >= 195, "{} names for 200 players", names.len());
     }
 
     #[test]
