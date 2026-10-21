@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 186] = [
+const GOLDEN: [&[u8]; 189] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -244,6 +244,9 @@ const GOLDEN: [&[u8]; 186] = [
     include_bytes!("golden/event_wheel_bet.bin"),
     include_bytes!("golden/event_wheel_paid.bin"),
     include_bytes!("golden/event_slots.bin"),
+    include_bytes!("golden/action_sit.bin"),
+    include_bytes!("golden/action_place_at.bin"),
+    include_bytes!("golden/action_place_free.bin"),
     include_bytes!("golden/event_plant_gone.bin"),
     include_bytes!("golden/event_plant_sync.bin"),
     include_bytes!("golden/action_plant_bed.bin"),
@@ -503,7 +506,7 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 151);
     // A syringe on a downed body (v99).
     g!(seen, golden_action, 152);
-    // One plant (v132), in v100's planter-beds slot.
+    // One plant (v135), in v100's planter-beds slot.
     g!(seen, golden_event, 153);
     // A grubbed stump (v101).
     g!(seen, golden_event, 154);
@@ -549,14 +552,19 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 178);
     g!(seen, golden_event, 179);
     g!(seen, golden_event, 180);
-    // Farming v2 (v132).
-    g!(seen, golden_event, 181);
-    g!(seen, golden_event, 182);
+    // The casino's seats (v130).
+    g!(seen, golden_action, 181);
+    // The lattice placement verbs (v134).
+    g!(seen, golden_action, 182);
     g!(seen, golden_action, 183);
-    g!(seen, golden_action, 184);
-    g!(seen, golden_action, 185);
+    // Farming v2 (v135).
+    g!(seen, golden_event, 184);
+    g!(seen, golden_event, 185);
+    g!(seen, golden_action, 186);
+    g!(seen, golden_action, 187);
+    g!(seen, golden_action, 188);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 186, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 189, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -706,6 +714,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_slots(machine, mult, &mut buf).unwrap()
+        }
+        "action_sit.bin" => {
+            let seat = protocol::goldens::action_sit();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Sit { seat },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_sit(seat, &mut buf).unwrap()
         }
         "action_shop.bin" => {
             let (key, act) = protocol::goldens::action_shop();
@@ -1140,6 +1157,36 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_action_research(slot, &mut buf).unwrap()
+        }
+        "action_place_at.bin" => {
+            let (row, bld, level, sock) = protocol::goldens::action_place_at();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::PlaceAt {
+                    row,
+                    bld,
+                    level,
+                    sock
+                },
+                "{name}"
+            );
+            protocol::encode_action_place_at(row, bld, level, &sock, &mut buf).unwrap()
+        }
+        "action_place_free.bin" => {
+            let (row, x_cm, z_cm, yaw, tri, plate) = protocol::goldens::action_place_free();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::PlaceFree {
+                    row,
+                    x_cm,
+                    z_cm,
+                    yaw,
+                    tri,
+                    plate
+                },
+                "{name}"
+            );
+            protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap()
         }
         other => panic!("unknown action fixture {other}"),
     };
@@ -1687,13 +1734,13 @@ fn golden_event(fixture: &[u8], name: &str) {
             len
         }
         "event_piece_placed.bin" => {
-            let rec = event_piece_placed();
+            let (rec, frame) = event_piece_placed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::PiecePlaced { rec },
+                EventMsg::PiecePlaced { rec, frame },
                 "{name}: decode mismatch"
             );
-            encode_event_piece_placed(&rec, &mut buf).unwrap()
+            encode_event_piece_placed(&rec, &frame, &mut buf).unwrap()
         }
         "event_piece_sync.bin" => {
             let (reset, recs) = event_piece_sync();
@@ -1701,11 +1748,14 @@ fn golden_event(fixture: &[u8], name: &str) {
                 EventMsg::PieceSync {
                     reset: got_r,
                     recs: got,
+                    frames,
                     count,
                 } => {
                     assert_eq!(got_r, reset, "{name}: reset mismatch");
                     assert_eq!(count as usize, PIECE_SYNC_BATCH);
-                    assert_eq!(got, recs, "{name}: decode mismatch");
+                    for (i, want) in recs.iter().enumerate() {
+                        assert_eq!((got[i], frames[i]), *want, "{name}: record {i} mismatch");
+                    }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
             }
@@ -2397,12 +2447,19 @@ fn golden_event(fixture: &[u8], name: &str) {
                     floor_len,
                     ceiling_name,
                     ceiling_len,
+                    boost_knob,
+                    boost_pct,
                 } => {
                     assert_eq!((total, index), (2, 1), "{name:?}: index");
                     assert_eq!(def, wc.defs[1], "work def: decode mismatch");
                     assert_eq!(&n[..name_len as usize], name);
                     assert_eq!(&floor_name[..floor_len as usize], floor);
                     assert_eq!(&ceiling_name[..ceiling_len as usize], ceiling);
+                    assert_eq!(
+                        (boost_knob, boost_pct),
+                        (sim_core::works::KNOB_SMELT_PCT, 200),
+                        "work def: its ceiling's boost"
+                    );
                 }
                 other => panic!("work def: decoded {other:?}"),
             }
@@ -3305,7 +3362,7 @@ fn the_piece_goldens_carry_a_live_plate() {
     match decode_event(GOLDEN[fixture_index("event_piece_placed.bin")])
         .expect("piece placed decodes")
     {
-        EventMsg::PiecePlaced { rec } => assert!(
+        EventMsg::PiecePlaced { rec, .. } => assert!(
             rec.plate < 0,
             "the placed golden carries plate {}, so its bytes cannot tell a              dropped sign from a correct one",
             rec.plate
@@ -3326,10 +3383,12 @@ fn the_piece_goldens_carry_a_live_plate() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for (i, hit) in seen.iter().enumerate() {
-        let band = i as i32 - protocol::PLATE_BIAS;
+    // Both ends of the field and both signs (v134's batch of eleven holds
+    // fewer records than the field has values): a width one short loses an
+    // end, a lost bias a sign.
+    for band in [-protocol::PLATE_BIAS, protocol::PLATE_BIAS - 1, -1, 1] {
         assert!(
-            hit,
+            seen[(band + protocol::PLATE_BIAS) as usize],
             "no piece in the sync golden carries plate {band}, so that value's \
              bytes are pinned by nothing — the field is {width} values wide"
         );
@@ -3344,7 +3403,8 @@ fn the_piece_goldens_carry_a_live_plate() {
 
 #[test]
 fn the_loc_fuzz_covers_each_stores_whole_domain() {
-    use sim_core::build::{LOC_EDGE_ZLO, LOC_RISER_XLO};
+    use protocol::goldens::PIECE_SYNC_LOCS;
+    use sim_core::build::LOC_EDGE_ZLO;
 
     let mut seen = [false; 16];
     match decode_event(GOLDEN[fixture_index("event_piece_sync.bin")]).expect("piece sync decodes") {
@@ -3355,18 +3415,15 @@ fn the_loc_fuzz_covers_each_stores_whole_domain() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for loc in 0..=LOC_RISER_XLO {
-        assert!(
-            seen[loc as usize],
-            "no piece in the sync golden sits at loc {loc}, so its bytes are \
-             pinned by nothing — the piece store addresses 0..={LOC_RISER_XLO}"
-        );
-    }
-    for (loc, hit) in seen.iter().enumerate().skip(LOC_RISER_XLO as usize + 1) {
-        assert!(
-            !*hit,
-            "the piece-sync golden carries loc {loc}, which no store can \
-             address — the fixture is pinning a forgery as if it were legal"
+    // Since freeform W3 the piece store holds squares, edges and the four
+    // flights on the grid, and `LOC_NONE` for what only a footprint names.
+    for (loc, hit) in seen.iter().enumerate() {
+        let legal = PIECE_SYNC_LOCS.contains(&(loc as u8));
+        assert_eq!(
+            *hit, legal,
+            "loc {loc}: the piece-sync golden must carry exactly the locs the \
+             store holds — one missing is pinned by nothing, one extra is a \
+             forgery pinned as if it were legal"
         );
     }
 

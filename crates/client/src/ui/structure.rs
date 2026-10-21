@@ -143,14 +143,18 @@ pub fn nearest(
             continue;
         }
         best_d2 = d2;
-        best = Some(piece_target(rec, piece_defs, piece_have, at));
+        best = Some(piece_target(None, rec, piece_defs, piece_have, at));
     }
 
     for rec in deploys {
         // The deploy store's own anchor: a door's doorway middle, a
         // free-placed deployable's own centre (`deploy::rec_anchor`, what
         // the sim's repair measures to).
-        let (ax, az) = sim_core::deploy::rec_anchor(rec);
+        let (ax, az) = if sim_core::deploy::is_edge_loc(rec.loc) {
+            anchor(rec.cx, rec.cz, rec.loc)
+        } else {
+            rec.xz()
+        };
         let (dx, dz) = (ax - at.0, az - at.1);
         let d2 = dx * dx + dz * dz;
         // `<=` rather than `<`: a tie goes to the deployable. See the header.
@@ -196,7 +200,7 @@ pub fn seen_deploy(
         let Some(rect) = rec.rect(arch) else {
             continue;
         };
-        let (ax, az) = sim_core::deploy::rec_anchor(rec);
+        let (ax, az) = sim_core::deploy::rec_anchor(cols, rec);
         let (dx, dz) = (ax - at.0, az - at.1);
         if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
             continue;
@@ -264,7 +268,7 @@ pub const AIM_REACH_M: f32 = BUILD_REACH_M + sim_core::build::BUILD_CELL_M;
 pub fn struck(
     hit: sim_core::ranged::Struck,
     at: (f32, f32),
-    pieces: &[PieceRec],
+    pieces: &sim_core::build::Pieces,
     piece_defs: &BuildContent,
     piece_have: u16,
     deploys: &[DeployRec],
@@ -278,20 +282,25 @@ pub fn struck(
         let rec = deploys.iter().find(|r| same(r.cx, r.cz, r.level, r.loc))?;
         (
             deploy_target(rec, deploy_defs, deploy_have),
-            sim_core::deploy::rec_anchor(rec),
+            sim_core::deploy::rec_anchor(pieces.cols(), rec),
         )
     } else {
-        let rec = pieces.iter().find(|r| same(r.cx, r.cz, r.level, r.loc))?;
+        // The address a hit names is the one the store answers to — a
+        // spelled id for a piece the grid cannot name (freeform W2).
+        let rec = pieces.find(a.cx, a.cz, a.level, a.loc)?;
         (
-            piece_target(rec, piece_defs, piece_have, at),
-            anchor(rec.cx, rec.cz, rec.loc),
+            piece_target(Some(pieces), rec, piece_defs, piece_have, at),
+            pieces.anchor_of(rec),
         )
     };
     let (dx, dz) = (ax - at.0, az - at.1);
     (dx * dx + dz * dz <= BUILD_REACH_M * BUILD_REACH_M).then_some(target)
 }
 
+/// `pieces` reads a posed edge's soft side in its building's frame; the
+/// grid's own rule answers without it.
 fn piece_target(
+    pieces: Option<&sim_core::build::Pieces>,
     rec: &PieceRec,
     piece_defs: &BuildContent,
     piece_have: u16,
@@ -299,12 +308,13 @@ fn piece_target(
 ) -> Target {
     let sided = (rec.row as u16) < piece_have
         && shape_has_facing(piece_defs.pieces[rec.row as usize].shape);
+    let (cx, cz, level, loc) = rec.target();
     Target {
         store: Store::Piece,
-        cx: rec.cx,
-        cz: rec.cz,
-        level: rec.level,
-        loc: rec.loc,
+        cx,
+        cz,
+        level,
+        loc,
         row: rec.row,
         dmg: rec.dmg,
         hp: rec.hp,
@@ -313,7 +323,10 @@ fn piece_target(
         } else {
             0
         },
-        side: sided.then(|| soft_side(rec, at.0, at.1)),
+        side: sided.then(|| match pieces {
+            Some(p) => p.soft_side_of(rec, at.0, at.1),
+            None => soft_side(rec, at.0, at.1),
+        }),
     }
 }
 
@@ -421,6 +434,7 @@ mod tests {
             uh: 0,
             dmg: damage_band(hp, 500),
             plate: 0,
+            ..PieceRec::default()
         }
     }
 

@@ -27,6 +27,7 @@ use sim_core::build::{
     anchor, build_cell_of, BUILD_CELL_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
     SHAPE_DOORWAY, SHAPE_FRAME,
 };
+use sim_core::collide::ColIndex;
 use sim_core::deploy::{
     ARCH_DOOR, ARCH_GARAGE_DOOR, REFUSE_D_AUTH_FULL, REFUSE_D_LOCKOUT, REFUSE_D_OWNER,
 };
@@ -127,14 +128,26 @@ struct Hop {
     left: bool,
 }
 
+/// A door's doorway: its middle, and the normal its two sides are told
+/// apart by — a grid edge's anchor and axis, or, for a doorway the grid
+/// cannot name (the door's address spells its id, freeform W4), its own
+/// collision row's.
+fn doorway(cols: &ColIndex, at: OpAddr) -> ([f32; 2], [f32; 2]) {
+    if let Some(p) = sim_core::deploy::posed_insert(cols, at.cx, at.cz, at.level, at.loc) {
+        return ([p.x, p.z], [p.normal.0, p.normal.1]);
+    }
+    let (ax, az) = anchor(at.cx, at.cz, at.loc);
+    let n = if at.loc == LOC_EDGE_XLO {
+        [1.0, 0.0]
+    } else {
+        [0.0, 1.0]
+    };
+    ([ax, az], n)
+}
+
 impl Hop {
-    fn new(at: OpAddr, x: f32, z: f32, tick: u32) -> Self {
-        let (ax, az) = anchor(at.cx, at.cz, at.loc);
-        let n = if at.loc == LOC_EDGE_XLO {
-            [1.0, 0.0]
-        } else {
-            [0.0, 1.0]
-        };
+    fn new(at: OpAddr, cols: &ColIndex, x: f32, z: f32, tick: u32) -> Self {
+        let ([ax, az], n) = doorway(cols, at);
         let side = if (x - ax) * n[0] + (z - az) * n[1] >= 0.0 {
             1.0
         } else {
@@ -235,8 +248,8 @@ impl Doors {
     }
 
     /// Through `door` next, from this side.
-    pub fn begin(&mut self, door: OpAddr, x: f32, z: f32, tick: u32) {
-        self.hop = Some(Hop::new(door, x, z, tick));
+    pub fn begin(&mut self, door: OpAddr, cols: &ColIndex, x: f32, z: f32, tick: u32) {
+        self.hop = Some(Hop::new(door, cols, x, z, tick));
     }
 
     /// [`Doors::begin`] for a door on the way to `goal`: worked from the
@@ -244,10 +257,10 @@ impl Doors {
     /// side that is: arriving from behind a base, a body is on the inner
     /// side of its far wall's plane while it is still outside, and a door
     /// worked from there is walked at through the wall.
-    pub fn begin_toward(&mut self, door: OpAddr, goal: [f32; 2], tick: u32) {
-        let (ax, az) = anchor(door.cx, door.cz, door.loc);
+    pub fn begin_toward(&mut self, door: OpAddr, cols: &ColIndex, goal: [f32; 2], tick: u32) {
+        let ([ax, az], _) = doorway(cols, door);
         // The goal reflected through the doorway: a point on its far side.
-        self.begin(door, 2.0 * ax - goal[0], 2.0 * az - goal[1], tick);
+        self.begin(door, cols, 2.0 * ax - goal[0], 2.0 * az - goal[1], tick);
     }
 
     /// The lock at `at` refused it: the code goes in there next.
@@ -508,8 +521,8 @@ pub fn nearest_door(
                 core.deploy_defs.defs[usize::from(d.row)].arch,
                 ARCH_DOOR | ARCH_GARAGE_DOOR
             )
-            || !matches!(d.loc, LOC_EDGE_XLO | LOC_EDGE_ZLO)
-            || d.level != level
+            || !sim_core::deploy::is_edge_loc(d.loc)
+            || door_level(core, d) != Some(level)
         {
             continue;
         }
@@ -519,7 +532,7 @@ pub fn nearest_door(
             level: d.level,
             loc: d.loc,
         };
-        let (ax, az) = anchor(d.cx, d.cz, d.loc);
+        let ([ax, az], _) = doorway(core.pieces.cols(), at);
         if skip.contains(&Some(at)) || (ax - around[0]).hypot(az - around[1]) > within {
             continue;
         }
@@ -529,6 +542,19 @@ pub fn nearest_door(
         }
     }
     best.map(|b| b.1)
+}
+
+/// The storey a door hangs on: its address's, or for a doorway the grid
+/// cannot name, the doorway piece's — the address spells its id, level bits
+/// and all. `None` for a door whose doorway the mirror does not hold.
+fn door_level(core: &ClientCore, d: &sim_core::deploy::DeployRec) -> Option<u8> {
+    if d.loc == sim_core::build::LOC_NONE {
+        core.pieces
+            .find(d.cx, d.cz, d.level, d.loc)
+            .map(|r| r.level)
+    } else {
+        Some(d.level)
+    }
 }
 
 /// A wall, or a doorway with its door shut, stands across the ground-floor
@@ -553,6 +579,19 @@ pub fn walled_between(core: &ClientCore, a: [f32; 2], b: [f32; 2]) -> bool {
             LOC_EDGE_ZLO => ([x0, z0], [x0 + s, z0]),
             LOC_DIAG_A => ([x0, z0], [x0 + s, z0 + s]),
             LOC_DIAG_B => ([x0 + s, z0], [x0, z0 + s]),
+            // An edge the grid cannot name lies along its collision row.
+            sim_core::build::LOC_NONE => {
+                let Some(h) = core
+                    .pieces
+                    .cols()
+                    .hulls()
+                    .find(sim_core::build::hull_key(r.id))
+                    .filter(|h| h.kind == sim_core::hull::HULL_EDGE)
+                else {
+                    return false;
+                };
+                ([h.ox, h.oz], [h.ox + h.ux * s, h.oz + h.uz * s])
+            }
             _ => return false,
         };
         if !crosses(a, b, p, q) {
@@ -560,12 +599,8 @@ pub fn walled_between(core: &ClientCore, a: [f32; 2], b: [f32; 2]) -> bool {
         }
         let shape = core.piece_defs.pieces[usize::from(r.row)].shape;
         if matches!(shape, SHAPE_DOORWAY | SHAPE_FRAME) {
-            let addr = OpAddr {
-                cx: r.cx,
-                cz: r.cz,
-                level: r.level,
-                loc: r.loc,
-            };
+            let (cx, cz, level, loc) = r.target();
+            let addr = OpAddr { cx, cz, level, loc };
             door_open(core, addr) == Some(false)
         } else {
             true
@@ -648,7 +683,7 @@ impl Leave {
         }
         match nearest_door(core, [x, z], within, 0, &self.passed, x, z) {
             Some(door) => {
-                self.doors.begin(door, x, z, tick);
+                self.doors.begin(door, core.pieces.cols(), x, z, tick);
                 true
             }
             None => false,
@@ -669,7 +704,7 @@ impl Leave {
             .map(|(door, _)| door)];
         match nearest_door(core, [x, z], within, 0, &skip, x, z) {
             Some(door) => {
-                self.doors.begin(door, x, z, tick);
+                self.doors.begin(door, core.pieces.cols(), x, z, tick);
                 true
             }
             None => false,

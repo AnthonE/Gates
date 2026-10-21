@@ -80,7 +80,8 @@ pub fn walk_line(shape: u8) -> &'static [(f32, f32)] {
         SHAPE_STAIRS_L => &[(0.5, 0.1), (0.5, 2.5), (2.9, 2.5)],
         SHAPE_STAIRS_U => &[(0.5, 0.1), (0.5, 2.5), (2.5, 2.5), (2.5, 0.1)],
         SHAPE_STAIRS_SPIRAL => &[(0.5, 1.5), (0.5, 2.5), (2.5, 2.5), (2.5, 1.5)],
-        SHAPE_STAIRS_TRI_SPIRAL => &[(0.5, 2.45), (0.5, 0.5), (2.45, 0.5)],
+        // Up the triangle's first side, a hand inside it.
+        SHAPE_STAIRS_TRI_SPIRAL => &[(0.6, 0.35), (2.4, 0.35)],
         _ => &[(1.5, 0.1), (1.5, 2.9)],
     }
 }
@@ -129,16 +130,12 @@ pub fn patches(shape: u8) -> ([Patch; MAX_PATCHES], usize) {
             ],
             5,
         ),
-        SHAPE_STAIRS_TRI_SPIRAL => (
-            [
-                p(0.0, 2.0, 1.0, 3.0, 0.0, 0.0, 0.0),
-                p(0.0, 1.0, 1.0, 2.0, 0.5, 0.0, -0.5),
-                p(0.0, 0.0, 1.0, 1.0, 0.5, 0.0, 0.0),
-                p(1.0, 0.0, 2.0, 1.0, 0.5, 0.5, 0.0),
-                p(2.0, 0.0, 3.0, 1.0, 1.0, 0.0, 0.0),
-            ],
-            5,
-        ),
+        // An equilateral body's flight: one ramp along its first side,
+        // half a storey from the first corner to the second, a quarter of
+        // the side deep. The flight stacked on it turns a third (`dir + 4`)
+        // and starts where this one ends, so three climb a storey and a
+        // half round the triangle.
+        SHAPE_STAIRS_TRI_SPIRAL => ([p(0.0, 0.0, 3.0, 0.75, 0.0, 1.0 / 3.0, 0.0), e, e, e, e], 1),
         _ => {
             let bottom = if shape == SHAPE_FOUNDATION_STEPS {
                 -h
@@ -168,7 +165,12 @@ pub fn patches(shape: u8) -> ([Patch; MAX_PATCHES], usize) {
 }
 pub fn surface(shape: u8, loc: u8, x: f32, z: f32) -> Option<f32> {
     let (x, z) = local(loc, x, z);
-    if shape == SHAPE_STAIRS_TRI_SPIRAL && x + z > BUILD_CELL_M {
+    // The triangle's flight is inside its equilateral body: above its first
+    // side and inside the other two (`hull`'s triangle test).
+    const H3: f32 = 0.866_025_4;
+    if shape == SHAPE_STAIRS_TRI_SPIRAL
+        && (z < 0.0 || H3 * (BUILD_CELL_M - x) - 0.5 * z < 0.0 || H3 * x - 0.5 * z < 0.0)
+    {
         return None;
     }
     let (patches, n) = patches(shape);

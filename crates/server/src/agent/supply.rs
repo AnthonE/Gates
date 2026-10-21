@@ -1005,7 +1005,8 @@ impl HomeJob {
                         }
                         match door {
                             Some(door) => {
-                                self.doors.begin_toward(door, goal, tick);
+                                self.doors
+                                    .begin_toward(door, core.pieces.cols(), goal, tick);
                                 Deliver::IDLE
                             }
                             None => self.fail(Why::Stuck),
@@ -1024,7 +1025,7 @@ impl HomeJob {
                 };
                 match self.passed[top] {
                     Some(door) => {
-                        self.doors.begin(door, x, z, tick);
+                        self.doors.begin(door, core.pieces.cols(), x, z, tick);
                         Deliver::IDLE
                     }
                     None => Deliver::Fail(Why::Stuck),

@@ -1237,10 +1237,10 @@ fn addrs(recs: &[sim_core::build::PieceRec]) -> Vec<(u16, u16, u8, u8, u8)> {
 /// (`reference/NETWORK.md` §9.2.1). The walk goes downward now, so the
 /// entry that moves is always one already sent and the cursor survives.
 ///
-/// The fixture is a 196-piece base whose upkeep clocks are staggered an
-/// hour apart, so decay takes it down over eight consecutive ticks —
-/// peaking at a tick that removes a whole sync batch, which is the
-/// condition that makes the amplifier bite — instead of in one cliff. It
+/// The fixture is an 86-piece base whose upkeep clocks are staggered an
+/// hour apart, so decay takes it down over consecutive ticks — peaking at
+/// a tick that removes a whole sync batch, which is the condition that
+/// makes the amplifier bite — instead of in one cliff. It
 /// stops with pieces still standing, so the convergence asserted at the
 /// end is convergence on a world with something in it.
 ///
@@ -1312,8 +1312,10 @@ fn a_removal_storm_leaves_every_walk_standing() {
     for _ in 0..64 {
         place(&mut core, 0);
     }
+    // Two an hour after it (v134's batch of eleven is a smaller walk step,
+    // so the storm has to outlast a walk with fewer pieces behind it).
     for hour in 1..=11u64 {
-        for _ in 0..12 {
+        for _ in 0..2 {
             place(&mut core, hour);
         }
     }
@@ -1479,10 +1481,12 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
     const HOURS: u64 = 3;
     /// The half that rots, all of it due in hour 0 so the sweep meets a
     /// whole tick's worth of overdue entries at once.
-    const DOOMED: usize = 4 * PIECE_SYNC_BATCH;
+    /// Two sweeps' worth (`UPKEEP_SWEEP_PER_TICK`), so the removals span
+    /// the joins below.
+    const DOOMED: usize = 128;
     /// The half that does not, and the reason the agreement at the end is
     /// not the agreement of two empty sets.
-    const STANDING: usize = 2 * PIECE_SYNC_BATCH;
+    const STANDING: usize = 64;
 
     // Laid before anyone connects, by `build::place` against a spare world
     // record for the sibling test's reason: 192 placements through the
@@ -1994,4 +1998,150 @@ fn a_late_joiner_sees_a_fire_burning() {
         clients[1].1.ovens().is_lit(d.cx, d.cz, d.level, d.loc),
         "late joiner sees the burning fire cold"
     );
+}
+
+/// Encode an action as a client does, and hand the server what it decodes:
+/// the wire's half of a verb, which `act` alone skips.
+fn act_wire(
+    core: &mut ShardCore,
+    slot: usize,
+    enc: impl FnOnce(&mut [u8]) -> Result<usize, protocol::WireError>,
+) {
+    let mut buf = [0u8; 256];
+    let n = enc(&mut buf).expect("the action encodes");
+    act(
+        core,
+        slot,
+        protocol::decode_action(&buf[..n]).expect("and decodes"),
+    );
+}
+
+/// A door hung in a doorway the grid cannot name — a turned base's — works
+/// across the wire end to end (freeform W4): the foundation, the doorway
+/// and the door placed by the lattice verbs, the bystander's use encoded as
+/// a client encodes it, its swing heard by both clients beside it, and both
+/// predictors sealed and unsealed with it.
+#[test]
+fn a_posed_door_swings_across_the_wire() {
+    use sim_core::build::LOC_NONE;
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = DeployContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 200,
+        cond: 0,
+        skin: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: 4,
+        count: 2,
+        cond: 0,
+        skin: 0,
+    };
+
+    // A square foundation turned off the grid, its middle three metres off.
+    let yaw = 13_000u16;
+    let probe = sim_core::frame::Frame::new((0, 0), 0, yaw);
+    let (ox, oz) =
+        probe.to_world(sim_core::sock::Sock::square_from(sim_core::lattice::LPt::ZERO, 0).at);
+    let (mx, mz) = (SPAWN.0 + 3.0, SPAWN.1);
+    let (x_cm, z_cm) = (((mx - ox) * 100.0) as i32, ((mz - oz) * 100.0) as i32);
+    act_wire(&mut core, 0, |b| {
+        protocol::encode_action_place_free(0, x_cm, z_cm, yaw, false, 0, b)
+    });
+    pump(&mut core, &stats, &mut clients);
+    let base = *core.world.pieces.entries().first().expect("the foundation");
+    assert!(!base.on_grid(), "a turned foundation is posed");
+
+    // A doorway on its side nearest the spawn.
+    let frame = *core.world.pieces.frame(base.bld).unwrap();
+    let (sides, n) = base.sock.sides();
+    let d2 = |s: &sim_core::sock::Sock| {
+        let (x, z) = frame.to_world(s.at);
+        (x - SPAWN.0) * (x - SPAWN.0) + (z - SPAWN.1) * (z - SPAWN.1)
+    };
+    let side = *sides[..n]
+        .iter()
+        .min_by(|a, b| d2(a).total_cmp(&d2(b)))
+        .unwrap();
+    act_wire(&mut core, 0, |b| {
+        protocol::encode_action_place_at(3, base.bld, 0, &side, b)
+    });
+    pump(&mut core, &stats, &mut clients);
+    let doorway = *core
+        .world
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.sock == side)
+        .expect("the doorway");
+    let (cx, cz, level, loc) = doorway.target();
+    assert_eq!(loc, LOC_NONE);
+
+    // The door, at the doorway's spelled address.
+    act_wire(&mut core, 0, |b| {
+        protocol::encode_action_deploy(2, cx, cz, level, loc, sim_core::footprint::Pose::CENTRE, b)
+    });
+    for _ in 0..3 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert!(
+        core.world
+            .deploys
+            .find(cx, cz, level, loc)
+            .is_some_and(|d| !d.open),
+        "the door hangs shut"
+    );
+    let shut = |c: &ClientCore| {
+        c.pieces
+            .cols()
+            .hulls()
+            .find(sim_core::build::hull_key(doorway.id))
+            .is_some_and(|h| h.shut)
+    };
+    let open_in = |c: &ClientCore| {
+        c.deploys
+            .entries()
+            .iter()
+            .find(|d| (d.cx, d.cz, d.level, d.loc) == (cx, cz, level, loc))
+            .map(|d| d.open)
+    };
+    for (slot, c) in &clients {
+        assert_eq!(open_in(c), Some(false), "client {slot} holds the shut door");
+        assert!(shut(c), "client {slot}'s predictor walks into it");
+    }
+
+    // The bystander swings it, and swings it back.
+    for want in [true, false] {
+        act_wire(&mut core, 1, |b| {
+            protocol::encode_action_use(cx, cz, level, loc, b)
+        });
+        for _ in 0..2 {
+            pump(&mut core, &stats, &mut clients);
+        }
+        assert_eq!(
+            core.world.deploys.find(cx, cz, level, loc).map(|d| d.open),
+            Some(want),
+            "the sim swung it"
+        );
+        for (slot, c) in &clients {
+            assert_eq!(open_in(c), Some(want), "client {slot} heard the swing");
+            assert_eq!(shut(c), !want, "client {slot}'s predictor followed it");
+        }
+    }
 }

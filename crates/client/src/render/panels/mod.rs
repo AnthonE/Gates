@@ -49,11 +49,13 @@ use sim_core::gather::ItemStack;
 
 pub mod arc;
 pub mod casino;
+pub mod contacts;
 pub mod craft;
 pub mod hearth;
 pub mod inv;
 pub mod kit;
 pub mod lore;
+pub mod profile;
 pub mod ring;
 pub mod shop;
 pub mod team;
@@ -107,6 +109,12 @@ pub enum Panel {
     BigWheel,
     /// One of THE GATE's slot machines (`E` at one, `casino.rs`).
     Slots,
+    /// A player's profile card (`profile.rs`): a click on a name in the
+    /// standings or the chat. Escape goes back to where the click was.
+    Profile,
+    /// The players you have met (`contacts.rs`, Rust's CONTACTS): the third
+    /// button in the strip across the inventory and crafting pages.
+    Contacts,
 }
 
 impl Panel {
@@ -125,6 +133,7 @@ impl Panel {
             Panel::Inventory => Page::Inventory,
             Panel::Craft => Page::Crafting,
             Panel::Island => Page::Island,
+            Panel::Contacts => Page::Contacts,
             Panel::Team => Page::Team,
             Panel::Wheel
             | Panel::Hammer
@@ -135,7 +144,8 @@ impl Panel {
             | Panel::Read
             | Panel::Shop
             | Panel::BigWheel
-            | Panel::Slots => Page::Other,
+            | Panel::Slots
+            | Panel::Profile => Page::Other,
         }
     }
 
@@ -148,6 +158,7 @@ impl Panel {
             Page::Inventory => Some(Panel::Inventory),
             Page::Crafting => Some(Panel::Craft),
             Page::Island => Some(Panel::Island),
+            Page::Contacts => Some(Panel::Contacts),
             Page::Team => Some(Panel::Team),
             Page::Other => None,
         }
@@ -240,6 +251,23 @@ pub struct Ui {
     pub read: u8,
     /// The island page's tab: 0 the works, 1 the journal.
     pub island_tab: u8,
+    /// The panel Escape goes back to from a profile card: the island, when
+    /// the card was opened from its standings.
+    pub profile_back: Panel,
+    /// The card was opened from the chat composer, which had already let the
+    /// pointer go: take it back when the last panel shuts, as closing chat
+    /// does (`profile::relock`).
+    pub profile_relock: bool,
+    /// The contacts page: which ones it lists, the one picked (a wallet),
+    /// and which page of cards.
+    pub contacts_filter: crate::contacts::Filter,
+    pub contacts_sel: Option<String>,
+    pub contacts_page: usize,
+    /// The note being written on a contact, `(wallet, draft)`: while it is
+    /// `Some` the note box has the keyboard, the search box's rule. Enter
+    /// sets `note_save`, which `contacts::clicks` writes to the book.
+    pub contact_note: Option<(String, String)>,
+    pub note_save: bool,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -346,6 +374,11 @@ pub(crate) struct Seen {
     pub shop_gen: u32,
     /// `ClientCore::casino_gen` at the last redraw.
     pub casino_gen: u32,
+    /// The profile card's and the friends list's generations at the last
+    /// redraw: a read landing, or a friends op answering.
+    pub profile_gen: (u64, u64),
+    /// `render::contacts::Contacts::gen` at the last redraw.
+    pub contacts_gen: u64,
     /// The latched hearth stock ack — address, live rows, rows — so the
     /// hearth's column redraws when a feed, a take or the decay moves it.
     pub stock: StockSeen,
@@ -383,6 +416,13 @@ impl Default for Ui {
             talk: 0,
             read: 0,
             island_tab: 0,
+            profile_back: Panel::None,
+            profile_relock: false,
+            contacts_filter: crate::contacts::Filter::All,
+            contacts_sel: None,
+            contacts_page: 0,
+            contact_note: None,
+            note_save: false,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -1001,7 +1041,18 @@ pub fn register(app: &mut App) {
                 tech::clicks,
                 tech::scroll,
                 (vendor::clicks, shop::clicks, shop::follow, casino::clicks).chain(),
-                (arc::clicks, team::clicks),
+                (
+                    arc::clicks,
+                    team::clicks,
+                    (
+                        profile::opens,
+                        profile::chat_opens,
+                        profile::clicks,
+                        contacts::clicks,
+                        profile::relock,
+                    )
+                        .chain(),
+                ),
                 arc::tabs,
                 lore::clicks,
                 wheel::track,
@@ -1238,7 +1289,9 @@ pub fn keys(
     // and only `Tab` and `Esc` could close anything. The box takes the
     // keyboard only while it is clicked into (`Ui::search_focus`, Rust's
     // amber field), and while it does, `Q` and `I` are letters.
-    let typing = ui.panel == Panel::Craft && ui.search_focus;
+    // A contact's note box takes the keyboard the same way (`contacts.rs`).
+    let noting = ui.panel == Panel::Contacts && ui.contact_note.is_some();
+    let typing = (ui.panel == Panel::Craft && ui.search_focus) || noting;
     // While the search box has the keyboard only binds that type nothing
     // (Tab, by default) still work: a letter there is a letter.
     let pressed = |a: Action| {
@@ -1307,6 +1360,13 @@ pub fn keys(
         // a second one shuts the page.
         if ui.search_focus {
             ui.search_focus = false;
+        } else if noting {
+            // Out of the note without keeping it.
+            ui.contact_note = None;
+        } else if ui.panel == Panel::Profile {
+            ui.panel = ui.profile_back;
+            ui.profile_back = Panel::None;
+            ui.status.clear();
         } else {
             ui.panel = Panel::None;
             ui.drag = None;
@@ -1365,6 +1425,8 @@ pub fn keys(
             | Panel::Shop
             | Panel::BigWheel
             | Panel::Slots
+            | Panel::Profile
+            | Panel::Contacts
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1436,6 +1498,38 @@ pub fn keys(
         }
         if changed {
             ui.browser_scroll = 0.0;
+            ui.dirty = true;
+        }
+    } else if noting {
+        let (mut save, mut changed) = (false, false);
+        if let Some((_, draft)) = ui.contact_note.as_mut() {
+            for ev in chars.read() {
+                if !ev.state.is_pressed() {
+                    continue;
+                }
+                use bevy::input::keyboard::Key;
+                changed = true;
+                match &ev.logical_key {
+                    Key::Backspace => {
+                        draft.pop();
+                    }
+                    Key::Enter => save = true,
+                    Key::Space => draft.push(' '),
+                    Key::Character(s) => draft.extend(s.chars().filter(|c| !c.is_control())),
+                    _ => changed = false,
+                }
+            }
+            // Capped as it is typed, so the box never shows what will not
+            // be kept.
+            if draft.chars().count() > crate::contacts::MAX_NOTE_CHARS {
+                *draft = draft
+                    .chars()
+                    .take(crate::contacts::MAX_NOTE_CHARS)
+                    .collect();
+            }
+        }
+        ui.note_save |= save;
+        if changed {
             ui.dirty = true;
         }
     } else {
@@ -1529,7 +1623,7 @@ pub fn sync_refusals(
 /// changes when a player clicks or a sync lands, so the simple shape is also
 /// the cheap one. What is NOT cheap is rebuilding a still screen, which is
 /// what `Seen` exists to prevent.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn rebuild(
     mut commands: Commands,
     mut ui: ResMut<Ui>,
@@ -1543,10 +1637,17 @@ pub fn rebuild(
     portrait: Option<Res<super::portrait::Portrait>>,
     hearth: Option<Res<super::verbs::HearthView>>,
     who: Option<Res<super::screen::Who>>,
+    (card, friends, book): (
+        Option<Res<super::profile::Profile>>,
+        Option<Res<super::friends::Friends>>,
+        Option<Res<super::contacts::Contacts>>,
+    ),
 ) {
     let core = &net.session.core;
 
     detect_changes(&mut ui, core, near.0);
+    profile::watch(&mut ui, card.as_deref(), friends.as_deref());
+    contacts::watch(&mut ui, book.as_deref());
     if hearth.as_ref().is_some_and(|h| h.is_changed()) && ui.panel != Panel::None {
         ui.dirty = true;
     }
@@ -1600,8 +1701,24 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             vendor::build_screen(&mut commands, &ui, core, icons)
         }
-        Panel::Work => arc::build_work(&mut commands, &ui, core),
-        Panel::Island => arc::build_island(&mut commands, &ui, core),
+        Panel::Work => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            arc::build_work(&mut commands, &ui, core, icons)
+        }
+        Panel::Profile => profile::build(
+            &mut commands,
+            &ui,
+            core,
+            card.as_deref(),
+            friends.as_deref(),
+        ),
+        Panel::Contacts => {
+            contacts::build_screen(&mut commands, &ui, book.as_deref(), friends.as_deref())
+        }
+        Panel::Island => {
+            arc::build_island(&mut commands, &ui, core, friends.as_deref().map(|f| &f.set))
+        }
         Panel::Talk => {
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);

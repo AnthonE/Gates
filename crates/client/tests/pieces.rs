@@ -242,11 +242,15 @@ fn a_part_mesh_tiles_by_the_metre() {
             };
             let span = uv.iter().fold(0.0f32, |acc, p| acc.max(p[0].max(p[1])));
             // The part's longest EDGE decides its widest face, and for the
-            // prism that edge is the hypotenuse rather than a side — the one
-            // place a box's max-extent shortcut would quietly under-predict.
+            // prism that is a slanted side — corner to apex — rather than an
+            // extent, the one place a box's max-extent shortcut would quietly
+            // mispredict.
             let longest = match kind {
                 PartKind::Box => size.max_element(),
-                PartKind::Tri => size.y.max(size.x.hypot(size.z)),
+                PartKind::Tri => size
+                    .y
+                    .max(size.x)
+                    .max((size.x * 0.5).hypot(size.z * 3f32.sqrt() * 0.5)),
                 PartKind::Stairs | PartKind::Circulation(_) | PartKind::TriFrame => {
                     unreachable!("this test covers boxes and prisms")
                 }
@@ -726,6 +730,16 @@ fn holds(name: &str, m: &Mesh, budget: usize, inside: impl Fn(Vec3) -> bool) -> 
     tris
 }
 
+/// How far (x, z), about a triangle piece's centroid, stands inside the
+/// equilateral triangle it fills — the nearest side's distance, negative
+/// outside: the first side along +x an apothem below, the apex at +z.
+fn tri_depth(x: f32, z: f32) -> f32 {
+    let h = sim_core::build::BUILD_CELL_M * 0.5;
+    let k = h / 3f32.sqrt();
+    let slant = (2.0 * k - z - x.abs() * 3f32.sqrt()) * 0.5;
+    (z + k).min(slant)
+}
+
 fn in_part(p: Vec3, part: &Part) -> bool {
     let lo = part.offset - part.size * 0.5 - Vec3::splat(1e-4);
     let hi = part.offset + part.size * 0.5 + Vec3::splat(1e-4);
@@ -786,9 +800,9 @@ fn a_dressed_edge_piece_stays_inside_its_parts() {
     }
 }
 
-/// Every floor, roof and footing slab, square and half, in every tier and at
-/// every skirt depth the kit caches, stays inside its slab — its top the walk
-/// surface, its sides the cell, a half's hypotenuse the diagonal.
+/// Every floor, roof and footing slab, square and triangle, in every tier and
+/// at every skirt depth the kit caches, stays inside its slab — its top the
+/// walk surface, its sides the cell's or the equilateral triangle's.
 #[test]
 fn a_dressed_slab_stays_inside_its_slab() {
     let h = sim_core::build::BUILD_CELL_M * 0.5;
@@ -803,10 +817,12 @@ fn a_dressed_slab_stays_inside_its_slab() {
                 let m = dress::slab_mesh(size, tri, foundation, tier);
                 let name = format!("tier {tier} depth {depth} tri {tri} foundation {foundation}");
                 let tris = holds(&name, &m, 3000, |p| {
-                    p.x.abs() <= h + 1e-4
-                        && p.z.abs() <= h + 1e-4
-                        && p.y.abs() <= depth * 0.5 + 1e-4
-                        && (!tri || p.x + p.z <= 1e-4)
+                    p.y.abs() <= depth * 0.5 + 1e-4
+                        && if tri {
+                            tri_depth(p.x, p.z) >= -1e-4
+                        } else {
+                            p.x.abs() <= h + 1e-4 && p.z.abs() <= h + 1e-4
+                        }
                 });
                 if depth == SLAB_T || depth >= SKIRT_MAX_M {
                     println!("{name}: {tris} tris");
@@ -826,10 +842,12 @@ fn a_dressed_roof_stays_inside_its_slab() {
             let m = dress::roof_mesh(tri, tier);
             let name = format!("tier {tier} roof tri {tri}");
             let tris = holds(&name, &m, 3000, |p| {
-                p.x.abs() <= h + 1e-4
-                    && p.z.abs() <= h + 1e-4
-                    && p.y.abs() <= SLAB_T * 0.5 + 1e-4
-                    && (!tri || p.x + p.z <= 1e-4)
+                p.y.abs() <= SLAB_T * 0.5 + 1e-4
+                    && if tri {
+                        tri_depth(p.x, p.z) >= -1e-4
+                    } else {
+                        p.x.abs() <= h + 1e-4 && p.z.abs() <= h + 1e-4
+                    }
             });
             println!("{name}: {tris} tris");
         }
@@ -837,13 +855,12 @@ fn a_dressed_roof_stays_inside_its_slab() {
 }
 
 /// The floor frames keep to their rails: the square one to the four rail
-/// parts the table emits, the half one to the sim's own rim test.
+/// parts the table emits, the triangle one to its rim.
 #[test]
 fn a_dressed_floor_frame_stays_inside_its_rails() {
     use client::render::structures::shape_parts;
-    use sim_core::build::{BUILD_CELL_M, LOC_TRI_XLO_ZLO, SHAPE_FLOOR_FRAME};
-    use sim_core::collide::tri_frame_solid;
-    let h = BUILD_CELL_M * 0.5;
+    use sim_core::build::SHAPE_FLOOR_FRAME;
+    use sim_core::collide::FRAME_RIM_M;
     let (parts, n) = shape_parts(SHAPE_FLOOR_FRAME);
     for tier in 0..N_TIERS as u8 {
         let name = format!("tier {tier} floor frame");
@@ -852,13 +869,11 @@ fn a_dressed_floor_frame_stays_inside_its_rails() {
         });
         println!("{name}: {tris} tris");
         let name = format!("tier {tier} tri floor frame");
+        // On the rim: inside the triangle and within the rim's width of
+        // its nearest side (`hull`'s triangle frame test).
         let tris = holds(&name, &dress::floor_frame_mesh(true, tier), 2400, |p| {
-            p.y <= 1e-4
-                && p.y >= -SLAB_T - 1e-4
-                && p.x >= -h - 1e-4
-                && p.z >= -h - 1e-4
-                && p.x + p.z <= 1e-4
-                && tri_frame_solid(LOC_TRI_XLO_ZLO, p.x + h, p.z + h, 1e-4)
+            let d = tri_depth(p.x, p.z);
+            (-SLAB_T - 1e-4..=1e-4).contains(&p.y) && (-1e-4..=FRAME_RIM_M + 1e-4).contains(&d)
         });
         println!("{name}: {tris} tris");
     }
@@ -924,13 +939,16 @@ fn a_dressed_riser_stays_inside_its_walk_slab() {
                 rise / steps * 0.5
             }
         };
+        // A flight on a triangle is drawn about the triangle's centroid,
+        // an apothem off its first side, where its patches start.
         let tri = shape == SHAPE_STAIRS_TRI_SPIRAL;
+        let k = if tri { h / 3f32.sqrt() } else { h };
         for tier in 0..N_TIERS as u8 {
             let m = dress::riser_mesh(shape, tier);
             let name = format!("tier {tier} riser {shape}");
             let tris = holds(&name, &m, 2400, |p| {
-                let (x, z, e) = (p.x + h, p.z + h, 1e-4);
-                if p.y > head + e || (tri && x + z > BUILD_CELL_M + e) {
+                let (x, z, e) = (p.x + h, p.z + k, 1e-4);
+                if p.y > head + e || (tri && tri_depth(p.x, p.z) < -e) {
                     return false;
                 }
                 patches.iter().any(|q| {
@@ -955,7 +973,7 @@ fn a_dressed_riser_stays_inside_its_walk_slab() {
                     for j in 0..12 {
                         let x = q.x0 + (q.x1 - q.x0) * (i as f32 + 0.5) / 12.0;
                         let z = q.z0 + (q.z1 - q.z0) * (j as f32 + 0.5) / 12.0;
-                        if tri && x + z > BUILD_CELL_M - 0.05 {
+                        if tri && tri_depth(x - h, z - k) < 0.05 {
                             continue;
                         }
                         // The half-depth treads at a flight's two ends lie
@@ -971,7 +989,7 @@ fn a_dressed_riser_stays_inside_its_walk_slab() {
                             continue;
                         }
                         let s = q.height(x, z);
-                        let drawn = top_at(&m, x - h, z - h);
+                        let drawn = top_at(&m, x - h, z - k);
                         assert!(
                             drawn >= s - half(q) - 0.15,
                             "{name}: nothing to stand on at {x}, {z} — walk {s}, drawn {drawn}"

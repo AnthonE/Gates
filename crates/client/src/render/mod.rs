@@ -100,6 +100,8 @@ pub mod guards;
 pub mod keepers;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
+/// Contacts (Rust's): the players met, their mugshots, friendly or enemy.
+pub mod contacts;
 pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
@@ -108,6 +110,8 @@ pub mod faces;
 pub mod friends;
 /// Painted skins (wire v110): fetched by hash, drawn on their canvas.
 pub mod paint;
+/// A player's profile card, read when a name is clicked.
+pub mod profile;
 pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
@@ -424,7 +428,11 @@ pub struct Eye {
     /// is short: the camera must not stay high while the shot already
     /// leaves low.
     pub crouch: f32,
-    /// The eye's height above the feet this frame, metres, after both
+    /// **How seated the camera is**, 0 standing to 1 in a casino seat
+    /// (v130), eased by `input::place_eye` toward `ClientCore::seated` at
+    /// [`SEAT_EASE_S`]: a picture, like `down` — a seat is in the safe zone.
+    pub seat: f32,
+    /// The eye's height above the feet this frame, metres, after the
     /// eases. `pos.y - height` is the feet; nothing may assume
     /// [`EYE_HEIGHT`] for that, because a crouched or downed eye is lower.
     pub height: f32,
@@ -443,6 +451,13 @@ pub const CROUCH_EYE_M: f32 = sim_core::ranged::CROUCH_EYE_MM as f32 / 1000.0;
 /// The crouch ease's time constant, seconds: short, so the camera reaches
 /// the eye the sim already fires from within a few frames.
 pub const CROUCH_EASE_S: f32 = 0.06;
+
+/// A seated eye above the feet, metres: `Sitting_Idle_Loop`'s head top,
+/// lifted onto its seat (`anim::SIT_LIFT_M`), less the standing eye's
+/// 0.32 m under the head's top.
+pub const SEAT_EYE_M: f32 = 1.28;
+/// The seat ease's time constant, seconds: sitting down takes a moment.
+pub const SEAT_EASE_S: f32 = 0.18;
 
 /// The system set the world-streaming systems run in, after the eye has been
 /// placed for the frame.
@@ -2256,6 +2271,8 @@ impl Plugin for GatesRenderPlugin {
             voice::register(app);
             faces::register(app);
             friends::register(app);
+            profile::register(app);
+            contacts::register(app);
             paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------

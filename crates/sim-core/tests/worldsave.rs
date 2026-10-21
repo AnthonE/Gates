@@ -31,8 +31,16 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 use sim_core::worldsave::{
-    self, WorldSaveError, HEAD_BYTES, PIECE_BYTES, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES,
+    self, WorldSaveError, BUILDING_BYTES, HEAD_BYTES, PIECE_BYTES, PLAYER_BYTES,
+    WORLD_SAVE_MAX_BYTES,
 };
+
+/// Where the first piece record starts: after the head, the players, and
+/// the building section (format 29: the id counter, the count, and each
+/// building's frame).
+fn pieces_at(w: &World, players: usize) -> usize {
+    HEAD_BYTES + players * PLAYER_BYTES + 4 + 2 + w.pieces.buildings().live() * BUILDING_BYTES
+}
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
 /// to know where the carve is.
@@ -660,7 +668,7 @@ fn a_corrupt_world_is_refused_by_reason() {
     // A piece naming a content row that does not exist. The first piece
     // record's `row` byte sits after the player section.
     let players = w.players.iter().filter(|p| p.active).count();
-    let piece0 = HEAD_BYTES + players * PLAYER_BYTES;
+    let piece0 = pieces_at(&w, players);
     assert_eq!(
         bent(&|b| b[piece0 + 6] = 200),
         Err(WorldSaveError::BadContentRow),
@@ -713,7 +721,7 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     // 8 KiB short at the piece cap. This reads the constant now, which is
     // what `PLAYER_BYTES`' own doc says a byte-poking test must do.
     let players = w.players.iter().filter(|p| p.active).count();
-    let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * PIECE_BYTES;
+    let deploy0 = pieces_at(&w, players) + w.pieces.len() * PIECE_BYTES;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
         let at = deploy0 + i * 28;
@@ -1017,7 +1025,7 @@ fn a_column_with_two_plates_is_refused() {
     let n = w.save_world(&mut blob).expect("encodes");
     blob.truncate(n);
     let players = w.players.iter().filter(|p| p.active).count();
-    let piece0 = HEAD_BYTES + players * PLAYER_BYTES;
+    let piece0 = pieces_at(&w, players);
 
     // Anchor on the record's own address before bending anything — a wrong
     // stride would forge noise (the byte-poking discipline one test up).

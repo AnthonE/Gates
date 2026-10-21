@@ -164,6 +164,9 @@ pub enum Verb {
     /// One of THE GATE's slot machines: `handle` is the machine. By
     /// nearness.
     Slots,
+    /// A casino seat (`sim_core::seat`): `handle` is the seat, or
+    /// `seat::SEAT_NONE` to stand up. By nearness ([`resolve_seat`]).
+    Sit,
 }
 
 impl Verb {
@@ -212,17 +215,18 @@ impl Verb {
             Verb::Pick => 14,
             // Unreachable for `Take`'s reason: a plant is folded in by its
             // own resolver, never scored against a deployable.
-            Verb::Plant => 24,
+            Verb::Plant => 25,
             Verb::Work => 15,
             Verb::Talk => 16,
             Verb::Read => 17,
             Verb::Turn => 18,
             Verb::Planter => 19,
-            Verb::Catcher => 25,
+            Verb::Catcher => 26,
             Verb::Sleeper => 20,
             Verb::Shop => 21,
             Verb::Wheel => 22,
             Verb::Slots => 23,
+            Verb::Sit => 24,
         }
     }
 
@@ -260,6 +264,7 @@ impl Verb {
             Verb::Shop => "VENDING MACHINE",
             Verb::Wheel => "BIG WHEEL",
             Verb::Slots => "SLOT MACHINE",
+            Verb::Sit => "SEAT",
         }
     }
 }
@@ -592,6 +597,10 @@ impl Pick {
             Verb::Shop => "[E] SHOP".to_string(),
             Verb::Wheel => "[E] BET ON THE WHEEL".to_string(),
             Verb::Slots => "[E] PLAY SLOTS".to_string(),
+            Verb::Sit if self.handle == sim_core::seat::SEAT_NONE as u32 => {
+                "[E] STAND UP".to_string()
+            }
+            Verb::Sit => "[E] SIT".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
             Verb::Talk => match self.offers {
                 0 => "[E] TALK".to_string(),
@@ -746,6 +755,53 @@ pub fn resolve_casino(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
     match best {
         Some((verb, k, d2)) => Pick {
             verb,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The seat `E` would sit in, or a `None` pick: the nearest free one within
+/// the sim's own `SEAT_REACH_M` — or, `seated`, the one to stand up from.
+/// `taken` says whether somebody else sits in seat `k`. The stools at the
+/// machines are left to [`resolve_casino`]: a player sits on one by playing.
+pub fn resolve_seat(
+    x: f32,
+    z: f32,
+    town: &sim_core::town::Town,
+    seated: bool,
+    taken: impl Fn(usize) -> bool,
+) -> Pick {
+    use sim_core::town::{self, SeatKind, SEATS};
+    if !town.live {
+        return Pick::default();
+    }
+    if seated {
+        return Pick {
+            verb: Verb::Sit,
+            handle: sim_core::seat::SEAT_NONE as u32,
+            ..Pick::default()
+        };
+    }
+    let reach = sim_core::seat::SEAT_REACH_M;
+    let mut best: Option<(usize, f32)> = None;
+    for (k, seat) in SEATS.iter().enumerate() {
+        if seat.kind == SeatKind::Stool || taken(k) {
+            continue;
+        }
+        let Some((sx, sz)) = town::seat_world(town, k) else {
+            continue;
+        };
+        let d2 = (sx - x) * (sx - x) + (sz - z) * (sz - z);
+        if d2 <= reach * reach && best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Sit,
             handle: k as u32,
             d2,
             ..Pick::default()
@@ -1061,6 +1117,9 @@ pub struct Aim<'a> {
     /// The eye's own ray, when the caller has one: a deployable placed
     /// freely is then picked only when the crosshair is ON it ([`Sight`]).
     pub sight: Option<Sight<'a>>,
+    /// The collision index, when the caller has one: where a door hung in
+    /// an edge the grid cannot name is (`deploy::posed_insert`).
+    pub cols: Option<&'a sim_core::collide::ColIndex>,
 }
 
 impl Aim<'_> {
@@ -1074,6 +1133,7 @@ impl Aim<'_> {
             reach: REACH_M,
             radius: AIM_RADIUS_M,
             sight: None,
+            cols: None,
         }
     }
 }
@@ -1157,10 +1217,25 @@ pub fn sight_hit(s: &Sight<'_>, rect: &Rect, bottom: f32, top: f32) -> Option<f3
 }
 
 /// The doorway a door hangs in, on the ground: its cell's low-x or low-z
-/// edge, a wall's thickness deep.
-fn doorway_rect(rec: &DeployRec) -> Rect {
+/// edge, a wall's thickness deep — or, for a doorway the grid cannot name
+/// (its address spells the doorway's id, freeform W4), the strip along that
+/// doorway's own run about its middle.
+fn doorway_rect(rec: &DeployRec, cols: Option<&sim_core::collide::ColIndex>) -> Rect {
     let c = sim_core::build::BUILD_CELL_M;
     let t = sim_core::collide::WALL_THICKNESS_M * 0.5;
+    if let Some(at) =
+        cols.and_then(|k| sim_core::deploy::posed_insert(k, rec.cx, rec.cz, rec.level, rec.loc))
+    {
+        // Local +x, `(c, −s)`, along the run.
+        return Rect {
+            x: at.x,
+            z: at.z,
+            hw: c * 0.5,
+            hd: t,
+            s: -at.run.1,
+            c: at.run.0,
+        };
+    }
     let (x0, z0) = (rec.cx as f32 * c, rec.cz as f32 * c);
     if rec.loc == sim_core::build::LOC_EDGE_XLO {
         Rect::aligned(x0 - t, z0, x0 + t, z0 + c)
@@ -1316,7 +1391,10 @@ pub fn resolve(
             {
                 continue;
             }
-            let (hx, hz) = rec.hand_xz();
+            let (hx, hz) = match aim.cols {
+                Some(cols) => rec.hand_xz(cols),
+                None => sim_core::build::anchor(rec.cx, rec.cz, rec.loc),
+            };
             let r = aim.reach.min(LOOT_REACH_M);
             if (hx - aim.x) * (hx - aim.x) + (hz - aim.z) * (hz - aim.z) > r * r {
                 continue;
@@ -1334,7 +1412,7 @@ pub fn resolve(
         if verb == Verb::Door {
             if let Some(s) = aim.sight.as_ref() {
                 let (bottom, top) = (s.span)(rec, arch);
-                if sight_hit(s, &doorway_rect(rec), bottom, top).is_none() {
+                if sight_hit(s, &doorway_rect(rec, aim.cols), bottom, top).is_none() {
                     continue;
                 }
                 seen = true;

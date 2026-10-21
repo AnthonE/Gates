@@ -252,6 +252,8 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Loot => "loot",
         ActionMsg::Pickup { .. } => "pickup",
         ActionMsg::Place { .. } => "place",
+        ActionMsg::PlaceAt { .. } => "place_at",
+        ActionMsg::PlaceFree { .. } => "place_free",
         ActionMsg::Deploy { .. } => "deploy",
         ActionMsg::Feed { .. } => "feed",
         ActionMsg::TakeStock { .. } => "take_stock",
@@ -266,6 +268,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Shop { .. } => "shop",
         ActionMsg::Wheel { .. } => "wheel",
         ActionMsg::Slots { .. } => "slots",
+        ActionMsg::Sit { .. } => "sit",
         ActionMsg::Swipe { .. } => "swipe",
         ActionMsg::Pick { .. } => "pick",
         ActionMsg::Plant { .. } => "plant",
@@ -1603,11 +1606,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
             );
         }
         // Roofed over the core and the stairwell, and the airlock.
-        let tri = sim_core::build::LOC_TRI_XLO_ZLO;
         for (x, z, level, loc) in [
             (cx, cz, 2, LOC_PLANE),
             (cx + 1, cz, 2, LOC_PLANE),
-            (cx + 1, cz + 1, 1, tri),
+            (cx + 1, cz + 1, 1, LOC_PLANE),
         ] {
             assert!(
                 w.pieces.find(x, z, level, loc).is_some(),
@@ -2976,10 +2978,10 @@ fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
 /// Returns the plot cell; the puppet is left in the core.
 fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
     use server::population::base_rows;
-    use sim_core::bots::{BasePlan, STARTER_FOOTPRINT, STARTER_STAND_M};
+    use sim_core::bots::{BasePlan, INNER_STAND_M, STARTER_FOOTPRINT, STARTER_STAND_M};
     use sim_core::build::{
-        anchor, build_cell_of, foundation_terrain_ok, terrain_band, BUILD_CELL_M, LOC_DIAG_B,
-        LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_TRI_XLO_ZLO,
+        anchor, build_cell_of, foundation_terrain_ok, terrain_band, BUILD_CELL_M, LOC_EDGE_XLO,
+        LOC_EDGE_ZLO, LOC_PLANE,
     };
 
     let haven = h.shard.world.haven;
@@ -3030,6 +3032,7 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
     h.until(2, |_| false);
     let (x0, z0) = (f32::from(bx) * BUILD_CELL_M, f32::from(bz) * BUILD_CELL_M);
     let stand = (x0 + STARTER_STAND_M.0, z0 + STARTER_STAND_M.1);
+    let inner = (x0 + INNER_STAND_M.0, z0 + INNER_STAND_M.1);
     let pocket = [
         stack("item.wood", 1000),
         stack("item.wood", 1000),
@@ -3076,16 +3079,38 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
         (bx + 2, bz, LOC_EDGE_XLO, rows.wall),
         (bx + 1, bz + 1, LOC_EDGE_ZLO, rows.doorway),
         (bx + 1, bz + 1, LOC_EDGE_XLO, rows.doorway),
-        (bx + 1, bz + 1, LOC_DIAG_B, rows.wall),
+        (bx + 2, bz + 1, LOC_EDGE_XLO, rows.wall),
+        (bx + 1, bz + 2, LOC_EDGE_ZLO, rows.wall),
     ];
     let mut acts = vec![
         place(rows.foundation, bx, bz, LOC_PLANE),
         deploy(rows.hearth, bx, bz, LOC_PLANE),
         place(rows.foundation, bx + 1, bz, LOC_PLANE),
-        place(rows.tri_foundation, bx + 1, bz + 1, LOC_TRI_XLO_ZLO),
+        place(rows.foundation, bx + 1, bz + 1, LOC_PLANE),
     ];
-    for &(cx, cz, loc, row) in &shell {
+    // The airlock's outer walls are past reach from the core: laid from
+    // the room (`bots::stand_m`).
+    let (core_shell, outer) = shell.split_at(shell.len() - 2);
+    for &(cx, cz, loc, row) in core_shell {
         acts.push(place(row, cx, cz, loc));
+    }
+    for a in acts.drain(..) {
+        h.puppet_act(a);
+    }
+    for (spot, walls) in [(inner, outer), (stand, &[][..])] {
+        for core in [&mut h.shard, &mut h.replay] {
+            let haven = core.world.haven;
+            let p = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == PUPPET)
+                .unwrap();
+            p.body = sim_core::movement::Body::at(SEED, &haven, spot.0, spot.1);
+        }
+        for &(cx, cz, loc, row) in walls {
+            h.puppet_act(place(row, cx, cz, loc));
+        }
     }
     acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_XLO));
     acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_ZLO));

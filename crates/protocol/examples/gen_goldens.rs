@@ -181,7 +181,7 @@ fn main() {
     let (slot, target) = goldens::action_treat();
     let len = protocol::encode_action_treat(slot, target, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[152], &buf[..len]);
-    // One plant (v132), in v100's planter-beds slot.
+    // One plant (v135), in v100's planter-beds slot.
     let len = protocol::encode_event_plant(&goldens::event_plant(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[153], &buf[..len]);
     // A grubbed stump (v101).
@@ -274,22 +274,32 @@ fn main() {
     let (machine, mult, code, reels, pay) = goldens::event_slots();
     let len = protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[180], &buf[..len]);
-    // Farming v2 (v132).
+    let len = protocol::encode_action_sit(goldens::action_sit(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[181], &buf[..len]);
+    // The lattice placement verbs (v134).
+    let (row, bld, level, sock) = goldens::action_place_at();
+    let len = protocol::encode_action_place_at(row, bld, level, &sock, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[182], &buf[..len]);
+    let (row, x_cm, z_cm, yaw, tri, plate) = goldens::action_place_free();
+    let len =
+        protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, plate, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[183], &buf[..len]);
+    // Farming v2 (v135).
     let (id, reason) = goldens::event_plant_gone();
     let len = protocol::encode_event_plant_gone(id, reason, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[181], &buf[..len]);
+    write_fixture(goldens::FIXTURES[184], &buf[..len]);
     let (reset, recs) = goldens::event_plant_sync();
     let len = protocol::encode_event_plant_sync(reset, &recs, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[182], &buf[..len]);
+    write_fixture(goldens::FIXTURES[185], &buf[..len]);
     let (slot, target) = goldens::action_plant_bed();
     let len = protocol::encode_action_plant(slot, target, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[183], &buf[..len]);
+    write_fixture(goldens::FIXTURES[186], &buf[..len]);
     let (slot, target) = goldens::action_plant_ground();
     let len = protocol::encode_action_plant(slot, target, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[184], &buf[..len]);
+    write_fixture(goldens::FIXTURES[187], &buf[..len]);
     let (plant, act) = goldens::action_tend();
     let len = protocol::encode_action_tend(plant, act, &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[185], &buf[..len]);
+    write_fixture(goldens::FIXTURES[188], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -352,7 +362,8 @@ fn main() {
     let len = encode_action_place(row, cx, cz, level, loc, freehand, plate, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[21], &buf[..len]);
 
-    let len = encode_event_piece_placed(&goldens::event_piece_placed(), &mut buf).unwrap();
+    let (rec, frame) = goldens::event_piece_placed();
+    let len = encode_event_piece_placed(&rec, &frame, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[22], &buf[..len]);
 
     let (reset, recs) = goldens::event_piece_sync();

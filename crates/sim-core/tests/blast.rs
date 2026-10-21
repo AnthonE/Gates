@@ -572,3 +572,93 @@ fn a_rocket_takes_its_whole_structure_off_the_wall_it_strikes() {
 }
 
 const NO_ITEM16: u16 = sim_core::gather::NO_ITEM;
+
+/// A satchel planted on a wall the grid cannot name (freeform W2) — on a
+/// triangle's side, named by its spelled id — blows at that wall's middle
+/// and takes the wall's whole structure number; the triangle under it takes
+/// the falloff's share.
+#[test]
+fn a_satchel_on_a_triangles_wall_blows_where_the_wall_is() {
+    use sim_core::build::{spell_id, PieceDef, SHAPE_TRI_FOUNDATION};
+    use sim_core::sock::{beside, PieceAddr};
+    let (mut w, cx, cz) = raid_world();
+    // A triangle row beside the probe table's, as tall as its foundation.
+    let tri_row = w.build.piece_count;
+    w.build.pieces[tri_row as usize] = PieceDef {
+        shape: SHAPE_TRI_FOUNDATION,
+        ..w.build.pieces[0]
+    };
+    w.build.piece_count += 1;
+    // A triangle on the foundation's side nearest +x, and a wall on its
+    // outer side: footprints only the lattice names.
+    let core = *w
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.loc == LOC_PLANE)
+        .unwrap();
+    let frame = *w.pieces.frame(core.bld).unwrap();
+    let (sides, n) = core.sock.sides();
+    let east = *sides[..n]
+        .iter()
+        .max_by(|a, b| frame.to_world(a.at).0.total_cmp(&frame.to_world(b.at).0))
+        .unwrap();
+    let (_, tri) = beside(&east, -east.side_of(core.sock.at));
+    w.tick(&[Command::PlaceAt {
+        id: RAIDER,
+        row: tri_row,
+        bld: core.bld,
+        level: 0,
+        sock: tri,
+    }]);
+    let t = *w
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.sock == tri)
+        .expect("the triangle");
+    assert!(!t.on_grid());
+    let (ts, k) = tri.sides();
+    let outer = *ts[..k].iter().find(|e| **e != east).expect("an outer side");
+    let free = |w: &World| {
+        w.pieces
+            .find_addr(&PieceAddr {
+                bld: core.bld,
+                level: 0,
+                sock: outer,
+            })
+            .is_none()
+    };
+    assert!(free(&w));
+    w.tick(&[Command::PlaceAt {
+        id: RAIDER,
+        row: 1,
+        bld: core.bld,
+        level: 0,
+        sock: outer,
+    }]);
+    let wall = *w
+        .pieces
+        .entries()
+        .iter()
+        .find(|r| r.sock == outer)
+        .expect("the wall");
+    let (wx, wz, _, wloc) = spell_id(wall.id);
+    // Within a satchel's reach of the wall's middle, on the triangle.
+    let (mx, mz) = frame.to_world(outer.at);
+    let (tx, tz) = frame.to_world(tri.at);
+    w.players[0].body = Body::at(SEED, hv(SEED), (mx + tx) * 0.5, (mz + tz) * 0.5);
+    plant(&mut w, wx, wz, wloc);
+    let (x, z) = cell_center(cx, cz);
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 30.0, z);
+    wait_out(&mut w);
+    let after = w.pieces.find(wx, wz, 0, wloc).map(|r| r.hp);
+    assert_eq!(
+        after,
+        Some(wall.hp - 125),
+        "the wall takes the whole structure number"
+    );
+    let tri_after = w.pieces.entries()[w.pieces.find_id(t.id).unwrap()].hp;
+    assert!(tri_after < t.hp, "the triangle under it takes a share");
+    assert!(t.hp - tri_after < 125, "and only a share");
+}

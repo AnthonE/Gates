@@ -14,7 +14,7 @@ use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
     WireGItem, WireLodged, WirePlant,
 };
-use sim_core::build::{BuildContent, PieceRec};
+use sim_core::build::{BuildContent, PieceRec, Pieces};
 use sim_core::collide::{ColIndex, Part};
 use sim_core::craft::CraftContent;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
@@ -23,7 +23,7 @@ use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_GROUND_ITEMS, MAX_PIECES, MAX_PLANTS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
+    MAX_GROUND_ITEMS, MAX_PLANTS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -126,6 +126,9 @@ pub struct Removed {
     /// Where in its cell a deployable stood (free placement); the centre
     /// for a piece.
     pub pose: sim_core::footprint::Pose,
+    /// Where a piece the grid could not name stood (freeform W2): its
+    /// building's frame and its footprint — its address only spelled its id.
+    pub lattice: Option<(sim_core::frame::Frame, sim_core::sock::Sock)>,
 }
 
 /// Buffered swings — one entry is one body's arm starting to move
@@ -848,23 +851,23 @@ impl Harvested for HarvestedSet {
     }
 }
 
-/// The client's mirror of the placed-piece set, keyed by grid address —
-/// bounded like the server's store (`MAX_PIECES`). Insertion is
-/// idempotent (a piece can arrive by broadcast AND by the sync walk); an
-/// insert past capacity is dropped, the same bounded posture as the
-/// harvested set (the server refuses placements there too, so a full
-/// client store only desyncs against a server bug, and the next resync
-/// walk retries).
+/// The client's mirror of the placed-piece set: the server's own store
+/// (`build::Pieces`), filled through its mirror half (freeform W2) — keyed
+/// by piece id, each record in the frame of the building it stands in —
+/// so the predictor collides with exactly the rows the sim files, and the
+/// ghost asks the sim's own placement rules of it. Bounded like the
+/// server's store (`MAX_PIECES`). Insertion is idempotent (a piece can
+/// arrive by broadcast AND by the sync walk); an insert past capacity is
+/// dropped, the same bounded posture as the harvested set (the server
+/// refuses placements there too, so a full client store only desyncs
+/// against a server bug, and the next resync walk retries).
 ///
-/// The mirror also keeps the predictor's collision index (`ColIndex`,
-/// collide.rs) in lockstep. A record's collision shape comes from its
-/// baked row, which drips separately (`PieceDefs`): rows not received
-/// yet contribute no collision, and the defs-arrival handler rebuilds
-/// the index — bounded staleness the next reconcile absorbs.
+/// A record's collision shape comes from its baked row, which drips
+/// separately (`PieceDefs`): rows not received yet contribute no
+/// collision, and the defs-arrival handler refiles the index — bounded
+/// staleness the next reconcile absorbs.
 pub struct PieceSet {
-    recs: Box<[PieceRec]>,
-    len: usize,
-    cols: Box<ColIndex>,
+    store: Box<Pieces>,
 }
 
 /// The collision shape of piece row `row`, if that row has dripped in.
@@ -881,33 +884,48 @@ fn shape_of(defs: &BuildContent, have: u16, row: u8) -> Option<u8> {
 impl PieceSet {
     fn new() -> Self {
         Self {
-            recs: vec![PieceRec::default(); MAX_PIECES].into_boxed_slice(),
-            len: 0,
-            cols: Box::new(ColIndex::new()),
+            store: Box::new(Pieces::new()),
         }
     }
 
     pub fn len(&self) -> usize {
-        self.len
+        self.store.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.store.is_empty()
     }
 
     pub fn entries(&self) -> &[PieceRec] {
-        &self.recs[..self.len]
+        self.store.entries()
+    }
+
+    /// The mirror as the sim's store: what `build::check_site` and the
+    /// support rules read.
+    pub fn store(&self) -> &Pieces {
+        &self.store
+    }
+
+    /// The piece an address names: a grid address, or a spelled id
+    /// (`build::spell_id`).
+    pub fn find(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
+        self.store.find(cx, cz, level, loc)
+    }
+
+    /// A building's frame, while the mirror holds a piece of it.
+    pub fn frame(&self, bld: u16) -> Option<&sim_core::frame::Frame> {
+        self.store.frame(bld)
     }
 
     /// The predictor's collision view (movement::step's `cols`).
     pub fn cols(&self) -> &ColIndex {
-        &self.cols
+        self.store.cols()
     }
 
     /// Memoize the terrain band of any column the mirror opened since the
     /// last call — the sim's `Pieces::fill_bands`, for the predictor's walks.
     fn fill_bands(&mut self, seed: u64, haven: &Haven) {
-        self.cols.fill_bands(seed, haven);
+        self.store.fill_bands(seed, haven);
     }
 
     /// Set or clear a closed-door bit in the predictor's index. Doors
@@ -916,15 +934,7 @@ impl PieceSet {
     /// stores' views of a doorway in step (the sim does the same).
     #[allow(clippy::too_many_arguments)]
     fn set_insert(&mut self, cx: u16, cz: u16, level: u8, loc: u8, arch: u8, shut: bool) {
-        if arch == sim_core::deploy::ARCH_DOOR {
-            self.set_door(cx, cz, level, loc, shut);
-        } else {
-            self.cols.set_insert(cx, cz, level, loc, arch, shut);
-        }
-    }
-
-    fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
-        self.cols.set_door(cx, cz, level, loc, shut);
+        self.store.set_insert(cx, cz, level, loc, arch, shut);
     }
 
     /// `set_door`'s twin for the blocking deployables (deploy collision
@@ -932,11 +942,11 @@ impl PieceSet {
     /// the same index rows the sim's own lockstep writes — where it stands,
     /// since free placement, and not just which cell.
     fn add_solid(&mut self, solid: sim_core::collide::SolidPose) {
-        self.cols.add_solid(solid);
+        self.store.add_solid(solid);
     }
 
     fn del_solid(&mut self, cx: u16, cz: u16, level: u8, loc: u8) {
-        self.cols.del_solid(cx, cz, level, loc);
+        self.store.del_solid(cx, cz, level, loc);
     }
 
     /// Re-state the piece at an address, if one stands there: its exact hp
@@ -957,52 +967,24 @@ impl PieceSet {
     /// store's — the band always could — which is why the hammer words its
     /// repair quote as a floor, `client::ui::hammer::repair_line`.)
     fn set_hp(&mut self, cx: u16, cz: u16, level: u8, loc: u8, hp: u16, dmg: u8) {
-        for r in self.recs[..self.len].iter_mut() {
-            if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
-                r.hp = hp;
-                r.dmg = dmg;
-                return;
-            }
-        }
+        self.store.mirror_hp(cx, cz, level, loc, hp, dmg);
     }
 
-    /// True if the set changed (a known address with the same row is a
-    /// duplicate, not a change).
-    fn insert(&mut self, rec: PieceRec, defs: &BuildContent, have: u16) -> bool {
-        for r in self.recs[..self.len].iter_mut() {
-            if r.cx == rec.cx && r.cz == rec.cz && r.level == rec.level && r.loc == rec.loc {
-                if *r == rec {
-                    return false;
-                }
-                let old_row = r.row;
-                *r = rec;
-                if old_row != rec.row {
-                    if let Some(shape) = shape_of(defs, have, old_row) {
-                        self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
-                    }
-                    if let Some(shape) = shape_of(defs, have, rec.row) {
-                        self.cols
-                            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
-                    }
-                }
-                return true;
-            }
-        }
-        if self.len == self.recs.len() {
-            return false;
-        }
-        self.recs[self.len] = rec;
-        self.len += 1;
-        if let Some(shape) = shape_of(defs, have, rec.row) {
-            self.cols
-                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
-        }
-        true
+    /// True if the set changed (a record already held as it is, in the
+    /// same frame, is a duplicate, not a change).
+    fn insert(
+        &mut self,
+        rec: PieceRec,
+        frame: sim_core::frame::Frame,
+        defs: &BuildContent,
+        have: u16,
+    ) -> bool {
+        self.store
+            .mirror_put(rec, frame, |row| shape_of(defs, have, row))
     }
 
     fn clear(&mut self) {
-        self.len = 0;
-        self.cols.clear();
+        self.store.clear();
     }
 
     fn remove(
@@ -1014,31 +996,15 @@ impl PieceSet {
         defs: &BuildContent,
         have: u16,
     ) -> bool {
-        if let Some(i) = self.recs[..self.len]
-            .iter()
-            .position(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
-        {
-            if let Some(shape) = shape_of(defs, have, self.recs[i].row) {
-                self.cols.del(cx, cz, level, loc, shape);
-            }
-            self.len -= 1;
-            self.recs[i] = self.recs[self.len];
-            true
-        } else {
-            false
-        }
+        self.store
+            .mirror_take(cx, cz, level, loc, |row| shape_of(defs, have, row))
     }
 
-    /// Rebuild the collision index from the records — the defs-arrival
+    /// Refile the collision index from the records — the defs-arrival
     /// path, where rows that were unknown at insert time gain shapes.
     /// Event-lane cadence, never the render loop.
     fn rebuild_cols(&mut self, defs: &BuildContent, have: u16) {
-        self.cols.clear();
-        for r in self.recs[..self.len].iter() {
-            if let Some(shape) = shape_of(defs, have, r.row) {
-                self.cols.add(r.cx, r.cz, r.level, r.loc, shape, r.plate);
-            }
-        }
+        self.store.mirror_refile(|row| shape_of(defs, have, row));
     }
 }
 
@@ -3062,6 +3028,8 @@ impl ClientCore {
                 floor_len,
                 ceiling_name,
                 ceiling_len,
+                boost_knob,
+                boost_pct,
             } => {
                 self.arc.count = total.min(sim_core::limits::MAX_WORKS as u8);
                 if let Some(w) = self.arc.works.get_mut(index as usize) {
@@ -3073,6 +3041,8 @@ impl ClientCore {
                     w.floor_len = floor_len;
                     w.ceiling_name = ceiling_name;
                     w.ceiling_len = ceiling_len;
+                    w.boost_knob = boost_knob;
+                    w.boost_pct = boost_pct;
                 }
                 self.arc.gen = self.arc.gen.wrapping_add(1);
             }
@@ -3427,12 +3397,13 @@ impl ClientCore {
                 // spell the same redraw.
                 flags |= APPLIED_RECIPES;
             }
-            EventMsg::PiecePlaced { rec } => {
+            EventMsg::PiecePlaced { rec, frame } => {
                 self.settle_pending_piece(rec.cx, rec.cz, rec.level, rec.loc);
                 if self
                     .pieces
-                    .insert(rec, &self.piece_defs, self.piece_defs_have)
+                    .insert(rec, frame, &self.piece_defs, self.piece_defs_have)
                 {
+                    self.reseal_at(rec.target());
                     self.push_piece_change(rec);
                     // A broadcast is a placement HAPPENING; only it rings
                     // (see `placed`). The walk's tail batch carrying the
@@ -3441,16 +3412,24 @@ impl ClientCore {
                     flags |= APPLIED_PIECES;
                 }
             }
-            EventMsg::PieceSync { reset, recs, count } => {
+            EventMsg::PieceSync {
+                reset,
+                recs,
+                frames,
+                count,
+            } => {
                 if reset {
                     self.pieces.clear();
                     flags |= APPLIED_PIECE_RESET;
                 }
-                for &rec in recs.iter().take(count as usize) {
+                for (&rec, &frame) in recs.iter().zip(frames.iter()).take(count as usize) {
                     if self
                         .pieces
-                        .insert(rec, &self.piece_defs, self.piece_defs_have)
+                        .insert(rec, frame, &self.piece_defs, self.piece_defs_have)
                     {
+                        if !reset {
+                            self.reseal_at(rec.target());
+                        }
                         self.push_piece_change(rec);
                         flags |= APPLIED_PIECES;
                     }
@@ -3757,9 +3736,7 @@ impl ClientCore {
                         .map(|r| self.deploy_defs.defs[r.row as usize].hp)
                 } else {
                     self.pieces
-                        .entries()
-                        .iter()
-                        .find(|r| addressed(&(r.cx, r.cz, r.level, r.loc)))
+                        .find(cx, cz, level, loc)
                         .filter(|r| (r.row as u16) < self.piece_defs_have)
                         .map(|r| self.piece_defs.pieces[r.row as usize].hp)
                 };
@@ -3834,18 +3811,18 @@ impl ClientCore {
                 self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
-                let was = self
-                    .pieces
-                    .entries()
-                    .iter()
-                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
-                    .map(|r| (r.row, r.plate));
+                let was = self.pieces.find(cx, cz, level, loc).map(|r| {
+                    let lattice = (!r.on_grid())
+                        .then(|| self.pieces.frame(r.bld).map(|f| (*f, r.sock)))
+                        .flatten();
+                    (r.row, r.plate, lattice)
+                });
                 if self
                     .pieces
                     .remove(cx, cz, level, loc, &self.piece_defs, self.piece_defs_have)
                 {
                     self.removed_addr = (cx, cz, level, loc);
-                    let (row, plate) = was.unwrap_or((0, 0));
+                    let (row, plate, lattice) = was.unwrap_or((0, 0, None));
                     self.push_removed(Removed {
                         cx,
                         cz,
@@ -3855,6 +3832,7 @@ impl ClientCore {
                         row,
                         plate,
                         pose: sim_core::footprint::Pose::CENTRE,
+                        lattice,
                     });
                     flags |= APPLIED_PIECE_REMOVED;
                 }
@@ -3887,6 +3865,7 @@ impl ClientCore {
                         row: gone.row,
                         plate: self.pieces.cols().plate(cx, cz).unwrap_or(0),
                         pose: gone.pose,
+                        lattice: None,
                     });
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
@@ -4584,6 +4563,22 @@ impl ClientCore {
             {
                 self.pieces.add_solid(solid);
             }
+        }
+    }
+
+    /// Re-seal the door or insert hung at a piece's address, if one is: a
+    /// re-filed piece's collision row is filed open (an upgrade, a flip, a
+    /// later sync batch), and a door that arrived before its doorway had
+    /// nothing to seal. Bounded by the deploy mirror, event lane only.
+    fn reseal_at(&mut self, at: (u16, u16, u8, u8)) {
+        if let Some(d) = self
+            .deploys
+            .entries()
+            .iter()
+            .find(|d| (d.cx, d.cz, d.level, d.loc) == at)
+            .copied()
+        {
+            self.seal_for(d);
         }
     }
 
@@ -5361,6 +5356,20 @@ impl ClientCore {
             && !self.dead
     }
 
+    /// Is the body this client looks through sitting in a casino seat (wire
+    /// v130)? The server's word off this body's own record, while the
+    /// predicted body still stands where that record put it: the first step
+    /// stands a sitter up (`sim_core::seat`), and the eye need not wait a
+    /// round trip to hear so.
+    pub fn seated(&self) -> bool {
+        if self.spectating {
+            return self.spectate_view().is_some_and(|v| v.seated);
+        }
+        self.view.get(self.player_id).is_some_and(|e| {
+            e.seated && e.qx == self.predict.body.qx && e.qz == self.predict.body.qz
+        })
+    }
+
     /// Advance real time: run the fixed client ticks that elapsed, each
     /// generating one input frame and stepping prediction. Returns steps.
     ///
@@ -5735,7 +5744,9 @@ mod tests {
         c.predict_place(at(1)); // the same address again replaces, not stacks
         assert_eq!(c.pending_pieces(), &[at(2), at(1)]);
         let gen = c.pending_pieces_gen();
-        let len = protocol::encode_event_piece_placed(&at(1), &mut buf).unwrap();
+        let len =
+            protocol::encode_event_piece_placed(&at(1), &sim_core::frame::Frame::ZERO, &mut buf)
+                .unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert_eq!(c.pending_pieces(), &[at(2)]);
         assert_ne!(c.pending_pieces_gen(), gen, "a settle must redraw");
@@ -6504,6 +6515,86 @@ mod tests {
         assert!(!c.fire_warms(fx, fz, fy), "a zero reach warms nothing");
     }
 
+    /// The collision row the walks read keeps a shut door through every way
+    /// its doorway is filed again: a re-sent record (an upgrade, a hammer
+    /// flip) re-files it open, and a doorway that arrives after its door —
+    /// the deploy walk and the piece walk race on a join — has nothing
+    /// sealed it yet. The door at its address seals it each time.
+    #[test]
+    fn a_refiled_doorway_keeps_its_shut_door() {
+        use protocol::{
+            encode_event_deploy_defs, encode_event_deploy_placed, encode_event_piece_defs,
+            encode_event_piece_placed,
+        };
+        use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO};
+        use sim_core::deploy::DeployContent;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let (len, _) =
+            encode_event_piece_defs(&BuildContent::probe_fixture(), 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let (len, _) =
+            encode_event_deploy_defs(&DeployContent::probe_fixture(), 0, 0, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let (ox, oz) = (340u16, 680u16);
+        let frame = sim_core::frame::Frame::new((ox as i32 * 300, oz as i32 * 300), 0, 0);
+        // Probe fixtures: piece row 3 is the doorway, deploy row 2 the door.
+        let doorway = |id: u32, cx: u16| PieceRec {
+            id,
+            cx,
+            cz: 682,
+            loc: LOC_EDGE_XLO,
+            row: 3,
+            hp: 1,
+            sock: sim_core::sock::from_grid(ox, oz, cx, 682, LOC_EDGE_XLO).unwrap(),
+            ..PieceRec::default()
+        };
+        let door = |cx: u16| DeployRec {
+            cx,
+            cz: 682,
+            loc: LOC_EDGE_XLO,
+            row: 2,
+            ..DeployRec::default()
+        };
+        let row_shut = |c: &ClientCore, id: u32| {
+            c.pieces
+                .cols()
+                .hulls()
+                .find(sim_core::build::hull_key(id))
+                .is_some_and(|h| h.shut)
+        };
+        let piece = |c: &mut ClientCore, rec: PieceRec| {
+            let mut b = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_piece_placed(&rec, &frame, &mut b).unwrap();
+            c.on_stream(&b[..len]).unwrap();
+        };
+        let deploy = |c: &mut ClientCore, rec: DeployRec| {
+            let mut b = [0u8; MAX_EVENT_MSG_BYTES];
+            let len = encode_event_deploy_placed(&rec, &mut b).unwrap();
+            c.on_stream(&b[..len]).unwrap();
+        };
+
+        // Doorway, then its door: sealed.
+        piece(&mut c, doorway(5, 341));
+        deploy(&mut c, door(341));
+        assert!(row_shut(&c, 5), "a placed door seals its doorway's row");
+        // The doorway's record again, its soft side flipped: still sealed.
+        piece(
+            &mut c,
+            PieceRec {
+                facing: 1,
+                ..doorway(5, 341)
+            },
+        );
+        assert!(row_shut(&c, 5), "a re-filed doorway keeps its shut door");
+
+        // A door before its doorway: sealed when the doorway lands.
+        deploy(&mut c, door(343));
+        piece(&mut c, doorway(6, 343));
+        assert!(row_shut(&c, 6), "a doorway after its door is sealed");
+    }
+
     /// The predictor collides against the same closed doors the sim does,
     /// and the shut bit survives every path that rebuilds the derived
     /// index. A door the client renders shut but predicts through is the
@@ -6540,7 +6631,8 @@ mod tests {
             row: 3,
             ..PieceRec::default()
         };
-        let len = encode_event_piece_placed(&doorway, &mut buf).unwrap();
+        let len =
+            encode_event_piece_placed(&doorway, &sim_core::frame::Frame::ZERO, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert_eq!(c.piece_defs.pieces[3].shape, SHAPE_DOORWAY);
         assert!(!shut(&c), "an empty doorway is not sealed");
@@ -6829,10 +6921,27 @@ mod tests {
             }
         }
         let (cx, cz, y) = site.expect("seed 7 has an open flat patch near the centre");
-        for k in -4i32..=4 {
-            c.pieces
-                .cols
-                .add(cx, (cz as i32 + k) as u16, 0, LOC_EDGE_XLO, SHAPE_WALL, 0);
+        // Nine walls, each on its own ground (a grid building of one), as
+        // the server would send them.
+        c.piece_defs = BuildContent::probe_fixture();
+        c.piece_defs_have = c.piece_defs.piece_count;
+        assert_eq!(c.piece_defs.pieces[1].shape, SHAPE_WALL);
+        for k in 0..9u16 {
+            let wz = cz + k - 4;
+            let frame = build::grid_frame(SEED, &c.haven, cx, wz);
+            let rec = PieceRec {
+                cx,
+                cz: wz,
+                loc: LOC_EDGE_XLO,
+                row: 1,
+                id: 10 + k as u32,
+                bld: k,
+                sock: sim_core::sock::from_grid(cx, wz, cx, wz, LOC_EDGE_XLO).unwrap(),
+                ..PieceRec::default()
+            };
+            assert!(c
+                .pieces
+                .insert(rec, frame, &c.piece_defs, c.piece_defs_have));
         }
         let wall_x = cx as f32 * BUILD_CELL_M;
         let z = (cz as f32 + 0.5) * BUILD_CELL_M;

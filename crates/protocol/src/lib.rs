@@ -94,8 +94,8 @@ pub use event::{
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
     encode_event_work, encode_event_work_def, encode_event_work_state, TopicOffer, ARC_GIFT_GIVEN,
     ARC_GIFT_GUEST, ARC_GIFT_NONE, ARC_GIFT_OWNED, ARC_GIFT_SHORT, ARC_GIFT_WAITING,
-    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES,
-    WORK_NAME_BYTES,
+    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, NO_BOOST,
+    UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
@@ -1274,15 +1274,26 @@ pub use voice::{
 /// the topic), so the talk panel draws an offer as a card with a button.
 /// v131 — a catalog row carries `damage` (16 bits after `class`): what one
 /// hit of the item takes off a body, for the inventory's item card.
-/// v132 — farming v2 (`sim_core::farm`), the water catcher and the wild
-/// crops, which counted 130..=132 on their own branch before main took 130
-/// and 131:
+/// v132 — names you can click: a standings row carries its wallet (a bit,
+/// then 20 bytes when set), and a work's definition what its ceiling does
+/// while it burns (a bit, then the knob in 3 bits and its per cent in 11).
+/// v133 — the casino's seats (`sim_core::seat`): `ACT_SIT` sits in a seat
+/// or stands up, and `EntityState` gains `seated`: a bit after `crouched` in
+/// a delta record, and after the at-rest flag in an absolute one, only when
+/// at rest, so the full snapshot still fits its datagram.
+/// v134 — freeform W2: a piece record carries its id, its building and that
+/// building's frame, and its lattice footprint when the grid cannot name it
+/// (a grid bit picks); a piece address may be `LOC_NONE`, its id spelled in
+/// the other fields. `PIECE_SYNC_BATCH` 32 → 11.
+/// v135 — farming v2 (`sim_core::farm`), the water catcher and the wild
+/// crops, which counted 130..=132 on their own branch before main took
+/// 130..=134:
 /// - a deploy refusal admits 20..=25 (`REFUSE_D_PLANT_*`,
 ///   `REFUSE_D_PLANTS_FULL`). The deploy record loses v100's `grow` byte and
 ///   `SUB_PLANTER` is gone: `SUB_PLANT` (90) carries one plant or its removal
-///   and `SUB_PLANT_SYNC` (108) the join walk. `ACT_PLANT` (39) plants a seed
+///   and `SUB_PLANT_SYNC` (108) the join walk. `ACT_PLANT` (41) plants a seed
 ///   from an inventory slot in a bed spot (or on the ground) and `ACT_TEND`
-///   (40) picks, clones, clears or waters one.
+///   (42) picks, clones, clears or waters one.
 /// - catalog headroom and the water catcher: `MAX_ITEM_DEFS` is 160, so the
 ///   held field (`HELD_BITS`) and the catalog's total and first ride 8 bits
 ///   (`HELD_NONE` is 255); a deploy archetype admits 23 (`ARCH_CATCHER`); and
@@ -1294,7 +1305,7 @@ pub use voice::{
 ///   `terrain::Occupant::WildCorn` (29) and `WildPumpkin` (30) grow out of a
 ///   shrub by a lake, and the client draws its scatter itself, so a client
 ///   that does not plant them stands a shrub where the server picks a crop.
-pub const PROTO_VER: u16 = 132;
+pub const PROTO_VER: u16 = 135;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1398,7 +1409,7 @@ const _: () = assert!(sim_core::heli::Y_CEIL_Q < (1 << POS_Y_BITS) - POS_Y_BIAS)
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
 
-/// Width of the held-item field on an entity record (v56; 8 bits since v132).
+/// Width of the held-item field on an entity record (v56; 8 bits since v135).
 ///
 /// Eight bits because seven do not fit the sentinel: `MAX_ITEM_DEFS` is
 /// 160, past the 127 ids seven bits hold beside "empty hand", which needs
@@ -2193,11 +2204,20 @@ const ACT_WHEEL: u32 = 37;
 /// Pull slot machine `machine`'s lever at ×`mult` (wire v123,
 /// `Command::Slots`).
 const ACT_SLOTS: u32 = 38;
-/// Plant one seed from inventory slot `slot` (wire v132, farming v2,
+/// Sit in a casino seat, or stand up for `seat::SEAT_NONE` (wire v130,
+/// `Command::Sit`). Reach and a free seat are the sim's verdict.
+const ACT_SIT: u32 = 39;
+const SEAT_BITS: u32 = 8;
+const _: () = assert!(sim_core::town::SEATS.len() < sim_core::seat::SEAT_NONE as usize);
+/// Place a piece on a building's lattice, or start a building with a
+/// foundation placed free (wire v134, freeform W2): a leading bit picks
+/// (`Command::PlaceAt` / `Command::PlaceFree`).
+const ACT_LATTICE: u32 = 40;
+/// Plant one seed from inventory slot `slot` (wire v135, farming v2,
 /// `Command::Plant`): in a bed spot of a planter, or on the ground.
-const ACT_PLANT: u32 = 39;
-/// Tend plant `plant` (wire v132, `Command::Tend`): `farm::TEND_*`.
-const ACT_TEND: u32 = 40;
+const ACT_PLANT: u32 = 41;
+/// Tend plant `plant` (wire v135, `Command::Tend`): `farm::TEND_*`.
+const ACT_TEND: u32 = 42;
 /// Width of `ActionMsg::Plant`'s bed spot and `ActionMsg::Tend`'s verb.
 const PLANT_SPOT_BITS: u32 = 3;
 const TEND_ACT_BITS: u32 = 2;
@@ -2312,13 +2332,17 @@ pub(crate) const BUILD_LOC_BITS: u32 = 4;
 /// One function rather than ten scattered comparisons, because a store-bit
 /// message bounds its loc BY the bit and a site that picked the wrong
 /// constant would admit a forged address into the other store's range.
+///
+/// A piece address may be `LOC_NONE` since v134: a piece the grid cannot
+/// name, its id spelled in the other fields (`sim_core::build::spell_id`).
 pub(crate) fn loc_max(deploy: bool) -> u8 {
     if deploy {
         (1 << BUILD_LOC_BITS) - 1
     } else {
-        sim_core::build::LOC_RISER_XLO
+        sim_core::build::LOC_NONE
     }
 }
+const _: () = assert!(sim_core::build::LOC_NONE < 1 << BUILD_LOC_BITS);
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
 /// Deployable rows cross in 5 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
@@ -2387,6 +2411,8 @@ pub enum ActionMsg {
     Wheel { colour: u8, stake: u16 },
     /// Pull slot machine `machine`'s lever at ×`mult` (v123).
     Slots { machine: u8, mult: u8 },
+    /// Sit in casino seat `seat`, or stand up for `seat::SEAT_NONE` (v130).
+    Sit { seat: u8 },
     /// Enqueue `count` crafts of recipe row `recipe`, minted wearing skin
     /// `skin` (a catalog id; 0 for the item's own look).
     Craft { recipe: u16, count: u16, skin: u16 },
@@ -2434,6 +2460,28 @@ pub enum ActionMsg {
         /// sim's refusal rather than the decoder's truncation. Cannot be
         /// re-derived for the freehand bit's reason: how high the player
         /// WANTED the floor is a fact only the client holds.
+        plate: i8,
+    },
+    /// Place baked piece row `row` on standing building `bld`'s lattice at
+    /// footprint `sock`, socket `level` (v134, freeform W2): what the grid
+    /// cannot name. The wire refuses a footprint the lattice cannot hold;
+    /// everything else is the sim's verdict.
+    PlaceAt {
+        row: u16,
+        bld: u16,
+        level: u8,
+        sock: sim_core::sock::Sock,
+    },
+    /// Start a building with a foundation placed free (v134): its frame's
+    /// origin on the foundation's first corner at world (`x_cm`, `z_cm`),
+    /// turned `yaw`, the triangle when `tri`, `plate` the asked band
+    /// (`Place`'s).
+    PlaceFree {
+        row: u16,
+        x_cm: i32,
+        z_cm: i32,
+        yaw: u16,
+        tri: bool,
         plate: i8,
     },
     /// Place baked deployable row `row` at the grid address. Same
@@ -2603,11 +2651,11 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
-    /// Plant one seed from inventory slot `slot` (wire v132, farming v2).
+    /// Plant one seed from inventory slot `slot` (wire v135, farming v2).
     /// The slot rides the wire, so the seed planted is the one the click
     /// named; the item, the spot, reach and room are the sim's verdict.
     Plant { slot: u8, target: PlantTarget },
-    /// Tend plant `plant` with `act` (`sim_core::farm::TEND_*`, wire v132).
+    /// Tend plant `plant` with `act` (`sim_core::farm::TEND_*`, wire v135).
     /// Stage, reach and the held skin are the sim's verdict.
     Tend { plant: u32, act: u8 },
     /// Pick the plant at cell key `cell` (wire v91). `Container`'s
@@ -3050,6 +3098,22 @@ pub fn encode_action_slots(machine: u8, mult: u8, buf: &mut [u8]) -> Result<usiz
     Ok(w.finish())
 }
 
+/// A seat — see [`ActionMsg::Sit`]. Refuses a seat past the town's.
+pub fn encode_action_sit(seat: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !sit_ok(seat) {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_SIT, ACTION_SUB_BITS)?;
+    w.write(seat as u32, SEAT_BITS)?;
+    Ok(w.finish())
+}
+
+fn sit_ok(seat: u8) -> bool {
+    seat == sim_core::seat::SEAT_NONE || (seat as usize) < sim_core::town::SEATS.len()
+}
+
 fn slots_ok(machine: u8, mult: u8) -> bool {
     (machine as usize) < sim_core::town::SLOT_SPOTS.len()
         && mult > 0
@@ -3261,6 +3325,61 @@ pub fn encode_action_place(
     Ok(w.finish())
 }
 
+/// A lattice placement (`ActionMsg::PlaceAt`).
+pub fn encode_action_place_at(
+    row: u16,
+    bld: u16,
+    level: u8,
+    sock: &sim_core::sock::Sock,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if row as usize >= sim_core::limits::MAX_PIECE_DEFS
+        || bld as usize >= sim_core::limits::MAX_BUILDINGS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_LATTICE, ACTION_SUB_BITS)?;
+    w.write_bit(false)?;
+    w.write(row as u32, PIECE_ROW_BITS)?;
+    w.write(bld as u32, event::BUILDING_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    event::write_sock(&mut w, sock)?;
+    Ok(w.finish())
+}
+
+/// A free foundation (`ActionMsg::PlaceFree`).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_action_place_free(
+    row: u16,
+    x_cm: i32,
+    z_cm: i32,
+    yaw: u16,
+    tri: bool,
+    plate: i8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if row as usize >= sim_core::limits::MAX_PIECE_DEFS
+        || (plate as i32) < -PLATE_BIAS
+        || (plate as i32) >= PLATE_BIAS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_LATTICE, ACTION_SUB_BITS)?;
+    w.write_bit(true)?;
+    w.write(row as u32, PIECE_ROW_BITS)?;
+    event::write_signed(&mut w, x_cm, event::ORIGIN_CM_BITS)?;
+    event::write_signed(&mut w, z_cm, event::ORIGIN_CM_BITS)?;
+    w.write(yaw as u32, 16)?;
+    w.write_bit(tri)?;
+    w.write((plate as i32 + PLATE_BIAS) as u32, PLATE_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_deploy(
     row: u16,
     cx: u16,
@@ -3348,8 +3467,10 @@ pub fn encode_action_use(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        // The deploy store's whole range, as the decoder reads it: a body
+        // slot, a doorway's edge, or a doorway the grid cannot name.
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(true)
     {
         return Err(WireError::Range);
     }
@@ -3463,7 +3584,7 @@ pub fn encode_action_access(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(true)
         || op > sim_core::deploy::ACCESS_OP_MAX
     {
         return Err(WireError::Range);
@@ -3675,6 +3796,40 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 loc,
                 freehand,
                 plate,
+            }
+        }
+        ACT_LATTICE => {
+            let free = r.read_bit()?;
+            let row = r.read(PIECE_ROW_BITS)? as u16;
+            if row as usize >= sim_core::limits::MAX_PIECE_DEFS {
+                return Err(WireError::Malformed);
+            }
+            if free {
+                let x_cm = event::read_signed(&mut r, event::ORIGIN_CM_BITS)?;
+                let z_cm = event::read_signed(&mut r, event::ORIGIN_CM_BITS)?;
+                let yaw = r.read(16)? as u16;
+                let tri = r.read_bit()?;
+                let plate = (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8;
+                ActionMsg::PlaceFree {
+                    row,
+                    x_cm,
+                    z_cm,
+                    yaw,
+                    tri,
+                    plate,
+                }
+            } else {
+                // The building and level widths are exact; the footprint is
+                // refused where the lattice cannot hold it.
+                let bld = r.read(event::BUILDING_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                let sock = event::read_sock(&mut r)?;
+                ActionMsg::PlaceAt {
+                    row,
+                    bld,
+                    level,
+                    sock,
+                }
             }
         }
         ACT_DEPLOY => {
@@ -3951,6 +4106,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Slots { machine, mult }
+        }
+        ACT_SIT => {
+            let seat = r.read(SEAT_BITS)? as u8;
+            if !sit_ok(seat) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Sit { seat }
         }
         ACT_TEAM => {
             let op = r.read(TEAM_OP_BITS)? as u8;
@@ -4324,6 +4486,12 @@ pub struct EntityState {
     /// voices a hunting animal differently from a grazing one
     /// (`sound::voice`). A widened meaning, so the version turned.
     pub crouched: bool,
+    /// **This body sits in a casino seat** (wire v130,
+    /// `sim_core::world::Player::seat`): the client draws it sitting, facing
+    /// the seat it is on, which is the seat at its feet. Carried for
+    /// [`Self::crouched`]'s reason; a sitter is at rest (`qvy == 0`), and an
+    /// absolute record spends the bit only then.
+    pub seated: bool,
     pub yaw: u16,
     pub pitch: u8,
     /// **What this body is holding**, as the content item id in its
@@ -4394,6 +4562,7 @@ impl EntityState {
         dead: false,
         wounded: false,
         crouched: false,
+        seated: false,
         yaw: 0,
         pitch: 0,
         held: None,
@@ -4671,6 +4840,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(e.dead)?;
         self.w.write_bit(e.wounded)?;
         self.w.write_bit(e.crouched)?;
+        self.w.write_bit(e.seated)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -4695,7 +4865,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     fn encode_absolute(&mut self, e: &EntityState) -> Result<(), WireError> {
         // is_delta, only where a delta could stand: a zero-state snapshot
         // and an overflow datagram have no baseline, so every record is
-        // absolute and the bit says nothing (v132: the bit the 8-bit held
+        // absolute and the bit says nothing (v135: the bit the 8-bit held
         // field needed back to keep the zero-state cap inside the budget).
         if self.has_baseline {
             self.w.write_bit(false)?;
@@ -4709,6 +4879,11 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(e.wounded)?;
         self.w.write_bit(e.crouched)?;
         self.write_vel(e.qvy)?;
+        // A sitter is at rest (`check_ranges`), so the bit rides behind the
+        // at-rest flag and a moving body's record costs what it always did.
+        if e.qvy == 0 {
+            self.w.write_bit(e.seated)?;
+        }
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
         self.write_hand(e)?;
@@ -4769,6 +4944,10 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
     // — it is a value the sim cannot mean, and the decoder refuses the
     // same band, so the two ends agree about what is representable.
     if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
+        return Err(WireError::Range);
+    }
+    // A sitter is at rest: the absolute record carries `seated` only then.
+    if e.seated && e.qvy != 0 {
         return Err(WireError::Range);
     }
     Ok(())
@@ -4833,7 +5012,7 @@ impl SnapshotMore {
 }
 
 /// Decode a snapshot overflow datagram. Total like [`decode_snapshot`];
-/// every record is absolute and spends no `is_delta` bit (v132), since
+/// every record is absolute and spends no `is_delta` bit (v135), since
 /// there is no baseline to read a delta against.
 pub fn decode_snapshot_more(buf: &[u8]) -> Result<SnapshotMore, WireError> {
     let mut r = BitReader::new(buf);
@@ -4934,6 +5113,7 @@ fn decode_entity(
         let wounded = r.read_bit()?;
         let crouched = r.read_bit()?;
         let qvy = read_vel(r)?;
+        let seated = if qvy == 0 { r.read_bit()? } else { false };
         return Ok(EntityState {
             id,
             qx,
@@ -4945,6 +5125,7 @@ fn decode_entity(
             dead,
             wounded,
             crouched,
+            seated,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
             held: read_held(r)?,
@@ -4967,6 +5148,7 @@ fn decode_entity(
     e.dead = r.read_bit()?;
     e.wounded = r.read_bit()?;
     e.crouched = r.read_bit()?;
+    e.seated = r.read_bit()?;
     if pos_changed {
         // wrapping: baseline values are the decoder's own prior state, but
         // totality on arbitrary bytes must hold regardless.
@@ -5066,6 +5248,7 @@ mod tests {
             dead: false,
             wounded: false,
             crouched: false,
+            seated: false,
             yaw: 0x1234,
             pitch: 7,
             held: None,
@@ -5108,7 +5291,7 @@ mod tests {
     /// A snapshot overflow datagram (v121) of 64 moving bodies, every
     /// record absolute and no skin in hand, still fits one datagram,
     /// round-trips, and the decoder refuses what it can never mean: part 0
-    /// and the snapshot's own kind. (Since v132 a record here spends no
+    /// and the snapshot's own kind. (Since v135 a record here spends no
     /// is_delta bit, so it cannot be a delta at all; that bit is what paid
     /// for the held field's eighth.)
     #[test]
@@ -5227,19 +5410,20 @@ mod tests {
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
             // Identical to its baseline record: a found delta writes the id
-            // plus ten flag bits and nothing else — six until v48 added
+            // plus eleven flag bits and nothing else — six until v48 added
             // `dead` beside `sleeping`, seven until v56 added
             // `hand_changed` beside `look_changed`, eight until v63 added
-            // `wounded` beside `dead`, nine until v83 added `crouched`.
+            // `wounded` beside `dead`, nine until v83 added `crouched`, ten
+            // until v130 added `seated`.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 10 delta bits) plus the header. An
-        // at-rest absolute record is 32 + 88 (1 is_delta + 17 + 14 + 17 +
-        // 5 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
-        // missed lookup adds 78 bits and this bound catches it.
+        // 64 entities × (32 id bits + 11 delta bits) plus the header. An
+        // at-rest absolute record is 32 + 89 (1 is_delta + 17 + 14 + 17 +
+        // 5 flags + 1 at-rest + 1 seated + 16 + 8 + `HELD_BITS` + 1 lit), so
+        // a single missed lookup adds 78 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 42).div_ceil(8);
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 43).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \
@@ -5351,7 +5535,7 @@ mod tests {
             })
             .collect();
         let hands = encode(&moved);
-        // Ten bits a record since v132: the eight-bit id, the flame, and
+        // Ten bits a record since v135: the eight-bit id, the flame, and
         // the skin's presence bit (none of these hands is skinned). Eight
         // records are 80 bits, so exactly ten bytes.
         assert_eq!(
@@ -5362,12 +5546,13 @@ mod tests {
              flag doing anything at all",
             hands - still
         );
-        // …and the floor itself: an unchanged record is 40 bits, 32 id +
-        // 8 flags. If it is 47 the hand is not gated and every still body
-        // pays for it on every snapshot.
-        let one = encode(&want[..1]);
-        let two = encode(&want[..2]);
-        assert_eq!((two - one) * 8, 40, "the unchanged floor moved");
+        // …and the floor itself: an unchanged record is 43 bits, the 32-bit
+        // id and eleven flags (`seated` the eleventh, v130). If it is 50 the
+        // hand is not gated and every still body pays for it on every
+        // snapshot. Eight records are whole bytes, so they are measured
+        // against none.
+        let none = encode(&[]);
+        assert_eq!(still - none, 43, "the unchanged floor moved");
     }
 
     /// **The encoder refuses an item id the sim cannot mean**, up front,
@@ -5750,14 +5935,54 @@ mod tests {
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
-        // casino's wheel and slots (v123) 37 and 38, and farming v2's plant
-        // and tend (v132) 39 and 40.
+        // casino's wheel and slots (v123) 37 and 38, its seats (v133) 39,
+        // freeform building's lattice placement (v134) 40, and farming v2's
+        // plant and tend (v135) 41 and 42.
         assert_eq!(ACT_MAX, ACT_TEND);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            23,
+            21,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    /// A lattice placement round-trips both ways it can be made, and a
+    /// footprint the lattice cannot hold is refused at decode (v134).
+    #[test]
+    fn the_lattice_placements_round_trip() {
+        use sim_core::lattice::LPt;
+        use sim_core::sock::Sock;
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let sock = Sock::tri_from(LPt::new(-6 * 40, 6 * 3, 0, 6 * 900), 3);
+        let n = encode_action_place_at(17, 4_095, 6, &sock, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::PlaceAt {
+                row: 17,
+                bld: 4_095,
+                level: 6,
+                sock
+            })
+        );
+        let n = encode_action_place_free(3, -2_000, 409_000, 0xC0DE, true, -3, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::PlaceFree {
+                row: 3,
+                x_cm: -2_000,
+                z_cm: 409_000,
+                yaw: 0xC0DE,
+                tri: true,
+                plate: -3
+            })
+        );
+        // Half a side off the lattice: a forged footprint.
+        let off = Sock {
+            at: LPt::new(3, 0, 0, 0),
+            ..Sock::square_from(LPt::ZERO, 0)
+        };
+        let n = encode_action_place_at(17, 0, 0, &off, &mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
     }
 
     #[test]
