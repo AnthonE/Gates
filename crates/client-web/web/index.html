@@ -307,6 +307,30 @@
   .skin .price.soon { color: var(--faint); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
   .empty { margin: 18px 16px; color: var(--dim); max-width: 560px; }
 
+  /* ── friends (`app.js` §friends) ─────────────────────────────────────────── */
+  .fr-list { display: flex; flex-direction: column; }
+  .pane-head .fr-count { margin-left: 10px; color: var(--dim); }
+  .fr-sub { margin: 14px 16px 4px; }
+  .fr-row { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--rule); }
+  .fr-row .face { width: 38px; height: 38px; font-size: 16px; }
+  .fr-row .lines { flex: 1; min-width: 0; }
+  .fr-row .name { font: 700 16px/1.2 var(--sans); color: var(--title); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fr-row .name .mark { margin-left: 8px; font: 700 11px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  .fr-row .sub { font-size: 13px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fr-row .sub.on { color: var(--good); }
+  .fr-row .acts { display: flex; gap: 6px; flex: none; }
+  .fr-row .btn { height: 30px; padding: 0 12px; font-size: 12px; }
+  .fr-pick { display: flex; align-items: center; gap: 10px; }
+  .fr-pick:empty { display: none; }
+  .fr-add { display: flex; gap: 8px; }
+  .fr-add input { flex: 1; min-width: 0; }
+  /* a server row's chips: friends on it, and a shard for AI agents only */
+  .srv .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .srv .chips:empty { display: none; }
+  .srv .chip { font: 700 11px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; padding: 4px 6px; border: 1px solid var(--rule-hi); }
+  .srv .chip.fr { color: #6bdbe0; border-color: rgba(107,219,224,.45); }
+  .srv .chip.bots { color: var(--dim); }
+
   /* ── options ─────────────────────────────────────────────────────────────── */
   label.field { display: block; font: 700 12px/1 var(--sans); color: var(--faint); letter-spacing: .06em; text-transform: uppercase; margin: 6px 0 6px; }
   input.text { width: 100%; height: 36px; padding: 0 10px; background: rgba(0,0,0,.35); border: 1px solid var(--rule-hi); border-radius: 2px;
@@ -444,6 +468,7 @@
   <div class="body">
     <nav class="nav" id="nav" aria-label="Gates">
       <button class="item" type="button" data-pane="play" aria-current="true">Play game</button>
+      <button class="item" type="button" data-pane="friends" id="nav-friends">Friends</button>
       <button class="item" type="button" data-pane="watch">Spectate</button>
       <button class="item" type="button" data-pane="store">Item store</button>
       <button class="item" type="button" data-pane="news">News</button>
@@ -502,6 +527,30 @@
           <span class="hero-line" id="feature-line"></span>
           <span class="btn ghost">Read the patch notes <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2h6v6M10 2L3 9" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>
         </a>
+      </div>
+    </section>
+
+    <!-- FRIENDS -->
+    <section class="pane-set" data-pane="friends" hidden>
+      <div class="panel">
+        <h2>Friends</h2>
+        <p class="blurb">Your Elo Pros friends, where they are playing, and who asked. Your AI buddies are here too.</p>
+        <div id="fr-adder">
+          <div class="group">Add a friend</div>
+          <form class="fr-add" id="fr-add" novalidate>
+            <input class="text num" id="fr-in" placeholder="their 0x wallet, or their name" spellcheck="false" autocomplete="off" aria-label="Their wallet or name">
+            <button class="btn blue" id="fr-ask" type="submit">Ask</button>
+          </form>
+          <div class="fr-pick" id="fr-pick"></div>
+          <p class="fine">Friends lists are public, like playtime. Every change is one signature in your wallet.</p>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn" id="fr-refresh" type="button">Refresh</button>
+        <p class="status" id="fr-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="pane">
+        <div class="pane-head">Friends<span class="num fr-count" id="fr-count"></span></div>
+        <div class="scroll"><div class="fr-list" id="fr-list"></div><p class="empty" id="fr-empty" hidden></p></div>
       </div>
     </section>
 
