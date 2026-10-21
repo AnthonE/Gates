@@ -459,21 +459,18 @@ fn broadleaf_settings() -> TreeMeshSettings {
     }
 }
 
-/// The palm's parameters: one trunk, generated at full length so limbs and
-/// cards keep real sizes, and a single level of fronds from its top tenth.
+/// The palm's parameters: the trunk alone. Its crown is not the generator's
+/// (needle sprigs on limbs read as a lollipop, never a palm) but long fronds
+/// of the cycad's card arching off the top ([`palm_crown`]); the one leaf
+/// asked for here is thrown away, there because an empty canopy mesh has no
+/// tangents to generate.
 ///
-/// - `start` 0.78: the fronds leave the top fifth of the trunk, layered
-///   into a full head rather than a flat disc, and the trunk below is bare — a palm's whole silhouette.
-/// - `angle` 104°: past horizontal, so the fronds arch out and droop. Droop
-///   is the ANGLE's job, never the force's (see [`conifer_settings`]).
-/// - Long thin limbs (`radius_factor` 0.05) carry the leaflet cards; the
-///   cards stand on most of each frond and leave its base bare.
 /// - `taper` 0.25: a near column, so the trunk reads thick up to the crown.
 fn palm_settings() -> TreeMeshSettings {
     TreeMeshSettings {
         tree_type: TreeType::Evergreen,
         branch: BranchParams {
-            levels: BranchRecursionLevel::One,
+            levels: BranchRecursionLevel::Zero,
             angle: [0.0, 104.0, 0.0, 0.0],
             children: [34, 0, 0],
             force: BranchForce {
@@ -487,7 +484,9 @@ fn palm_settings() -> TreeMeshSettings {
             // 22 % that is 0–6.6 m, the long fronds lowest and the short new
             // ones upright at the crown.
             length: [PALM_H, 30.0, 0.0, 0.0],
-            trunk_base_radius: 0.24,
+            // Under the sim's cylinder: the crown no longer counts in the
+            // fit to height, so the trunk comes out a hair wider than it did.
+            trunk_base_radius: 0.236,
             radius_factor: [1.0, 0.05, 0.0, 0.0],
             sections: [12, 6, 0, 0],
             segments: [7, 3, 0, 0],
@@ -499,14 +498,107 @@ fn palm_settings() -> TreeMeshSettings {
             twist: [0.0, 0.0, 0.0, 0.0],
         },
         leaves: LeafParams {
-            leaf_billboard: LeafBillboard::Double,
+            leaf_billboard: LeafBillboard::Single,
             angle: 70.0,
-            count: 22,
-            start: 0.15,
-            size: 1.25,
-            size_variance: 0.3,
+            count: 1,
+            start: 0.9,
+            size: 0.1,
+            size_variance: 0.0,
         },
     }
+}
+
+/// How far a palm's crown leans off its root at most, metres: the reference
+/// game's palms bow, they do not stand like poles. **(knob)**
+pub const PALM_LEAN_M: f32 = 2.4;
+
+/// A palm frond's length and width at full size, metres. **(knob)**
+pub const PALM_FROND_M: f32 = 5.4;
+const PALM_FROND_W: f32 = 1.2;
+
+/// What the frond card is multiplied by on a palm: the cycad's dark green
+/// lifted to the reference palms' sunlit yellow-green.
+const PALM_FROND_TINT: [f32; 3] = [1.45, 1.35, 0.95];
+/// …and on a dead frond hanging under the crown: straw-brown.
+const PALM_DEAD_TINT: [f32; 3] = [2.2, 1.45, 0.75];
+
+/// Bow a palm's trunk: each vertex pushed off the axis by the square of its
+/// height, so the foot stands on the sim's cylinder and the top leans out.
+/// Returns where the crown sits.
+fn lean_palm(bark: &mut Mesh, variant: usize) -> Vec3 {
+    let seed = hash2(0x9a1e_77a0, variant as u32);
+    let a = hash01(seed, 1) * std::f32::consts::TAU;
+    let lean = PALM_LEAN_M * (0.35 + 0.65 * hash01(seed, 2));
+    let dir = Vec3::new(a.sin(), 0.0, a.cos());
+    let (h, _) = bounds(&[&*bark]);
+    let h = h.max(1.0);
+    if let Some(p) = positions_mut(bark) {
+        for v in p.iter_mut() {
+            let t = (v[1] / h).clamp(0.0, 1.0);
+            let off = lean * t * t;
+            v[0] += dir.x * off;
+            v[2] += dir.z * off;
+        }
+    }
+    dir * lean + Vec3::Y * h
+}
+
+/// A palm's crown: thirty-odd long fronds of the cycad's card
+/// (`plants::frond`) arching off `top`, the young ones upright at the heart
+/// and the old ones drooping under them, a few of the oldest dead and hanging
+/// straw-brown against the trunk. Its colour is its own, in the card and
+/// these vertices, so [`grow`] leaves it out of the canopy's bands.
+fn palm_crown(variant: usize, top: Vec3) -> Mesh {
+    let seed = hash2(0x9a1e_c400, variant as u32);
+    let mut s = Soup::default();
+    let dome = top - Vec3::Y * PALM_FROND_M;
+    let n = 30 + (hash01(seed, 1) * 9.0) as u32;
+    let yaw0 = hash01(seed, 2) * std::f32::consts::TAU;
+    const SEGS: usize = 10;
+    for k in 0..n {
+        // 0 the youngest frond at the heart, 1 the oldest under the crown.
+        let age = k as f32 / (n - 1) as f32;
+        let a = yaw0 + k as f32 * 2.399_963 + (hash01(seed, 10 + k) - 0.5) * 0.3;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let side = Vec3::new(out.z, 0.0, -out.x);
+        let dead = age > 0.82 && hash01(seed, 20 + k) < 0.55;
+        let len = PALM_FROND_M
+            * (0.62 + 0.38 * age.min(0.8) / 0.8)
+            * (0.88 + 0.24 * hash01(seed, 30 + k));
+        let (rise, droop) = if dead {
+            (-1.15, 0.2)
+        } else {
+            (
+                1.15 - 1.25 * age + (hash01(seed, 40 + k) - 0.5) * 0.3,
+                0.6 + 0.9 * age + (hash01(seed, 50 + k) - 0.5) * 0.3,
+            )
+        };
+        let base = top + out * 0.18 - Vec3::Y * (0.9 * age);
+        let mut spine = [base; SEGS + 1];
+        for i in 1..=SEGS {
+            let t = (i as f32 - 0.5) / SEGS as f32;
+            let e = rise - droop * t * t;
+            spine[i] = spine[i - 1] + (out * e.cos() + Vec3::Y * e.sin()) * (len / SEGS as f32);
+        }
+        let tint = if dead {
+            PALM_DEAD_TINT
+        } else {
+            PALM_FROND_TINT
+        };
+        let value = 0.85 + 0.25 * hash01(seed, 60 + k) - 0.2 * age;
+        let col = move |p: Vec3| {
+            // Darker toward the heart, where the crown shades itself.
+            let r = (p - top).length() / PALM_FROND_M;
+            let k = value * (0.6 + 0.4 * (r * 1.5).min(1.0));
+            [tint[0] * k, tint[1] * k, tint[2] * k, 1.0]
+        };
+        let fold = 0.4 + 0.25 * hash01(seed, 70 + k);
+        let width = PALM_FROND_W * if dead { 0.7 } else { 1.0 };
+        // The leaflets' tips hang off the arch.
+        let tip = -0.75 - 0.35 * hash01(seed, 80 + k);
+        super::plants::frond(&mut s, &spine, side, width, fold, Some(tip), col, dome, 0.6);
+    }
+    s.mesh()
 }
 
 /// The parameter block for a species index. Public so `examples/tree_sweep.rs`
@@ -1219,6 +1311,10 @@ pub fn grow(species: usize, variant: usize, s: &TreeMeshSettings) -> (Mesh, Mesh
     };
 
     fit_to_bounds(&mut bark, &mut needles, sp.height_m);
+    if species == PALM {
+        let top = lean_palm(&mut bark, variant);
+        needles = palm_crown(variant, top);
+    }
     let lobe_of = match sp.tree_type {
         // A palm's crown is its fronds as they grew: no cone to fit.
         TreeType::Evergreen if species == PALM => None,
@@ -1251,16 +1347,20 @@ pub fn grow(species: usize, variant: usize, s: &TreeMeshSettings) -> (Mesh, Mesh
         sp.height_m * BARK_BAND_TOP_FRAC,
         true,
     );
-    band(
-        &mut needles,
-        sp.leaf_lo,
-        sp.leaf_hi,
-        sp.height_m * LEAF_BAND_BASE_FRAC,
-        sp.height_m,
-        false,
-    );
-    occlude_canopy(&mut needles, lobes.as_ref());
-    blend_canopy_normals(&mut needles, lobes.as_ref());
+    // A palm's crown carries its own colour and normals (`palm_crown`), and
+    // its lean puts it off the axis these passes shade around.
+    if species != PALM {
+        band(
+            &mut needles,
+            sp.leaf_lo,
+            sp.leaf_hi,
+            sp.height_m * LEAF_BAND_BASE_FRAC,
+            sp.height_m,
+            false,
+        );
+        occlude_canopy(&mut needles, lobes.as_ref());
+        blend_canopy_normals(&mut needles, lobes.as_ref());
+    }
     (bark, needles)
 }
 

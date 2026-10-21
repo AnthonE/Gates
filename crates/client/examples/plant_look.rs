@@ -26,8 +26,8 @@ use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
 use client::render::clutter::FERN_ATLAS;
 use client::render::plants::{
-    berries, berry_leaves, berry_wood, dead_scrub, fern, hemp, hemp_leaf_image, juniper,
-    shrub_leaves, shrub_wood, wildflowers, PLANT_POOL,
+    berries, berry_leaves, berry_wood, cycad, dead_scrub, fern, frond_image, hemp, hemp_leaf_image,
+    juniper, shrub_leaves, shrub_wood, wildflowers, PLANT_POOL,
 };
 use client::render::props::BUSH_CARD_ATLAS;
 
@@ -37,6 +37,7 @@ const MEADOW: Vec3 = Vec3::new(0.0, 0.0, -200.0);
 const SCENERY_Z: f32 = -4.0;
 const FOREST: Vec3 = Vec3::new(220.0, 0.0, -200.0);
 const RIDGE: Vec3 = Vec3::new(-220.0, 0.0, -200.0);
+const DESERT: Vec3 = Vec3::new(0.0, 0.0, -420.0);
 const SETTLE_FRAMES: u32 = 14;
 const TAIL_FRAMES: u32 = 24;
 
@@ -131,6 +132,16 @@ fn poses() -> Vec<(String, Vec3, Vec3)> {
             "ridge_eye".to_string(),
             RIDGE + Vec3::new(0.0, 1.6, 18.0),
             RIDGE + Vec3::new(0.0, 0.4, -10.0),
+        ),
+        (
+            "cycad_close".to_string(),
+            DESERT + Vec3::new(2.2, 1.7, 3.6),
+            DESERT + Vec3::new(0.0, 0.5, 0.0),
+        ),
+        (
+            "desert_eye".to_string(),
+            DESERT + Vec3::new(0.0, 1.6, 20.0),
+            DESERT + Vec3::new(0.0, 0.4, -10.0),
         ),
     ];
     if let Ok(only) = std::env::var("PLANT_LOOK_ONLY") {
@@ -417,10 +428,33 @@ fn stage(
                 .collect(),
         );
     }
+    let frond_leaf = materials.add(StandardMaterial {
+        base_color_texture: Some(images.add(frond_image())),
+        alpha_mode: AlphaMode::Mask(0.5),
+        cull_mode: None,
+        double_sided: true,
+        perceptual_roughness: 0.8,
+        specular_tint: Color::linear_rgb(0.3, 0.3, 0.3),
+        ..default()
+    });
+    kinds.push(
+        (0..PLANT_POOL as u32)
+            .map(|v| {
+                let (w, l) = cycad(v);
+                (
+                    meshes.add(w),
+                    wood.clone(),
+                    Some((meshes.add(l), frond_leaf.clone())),
+                    None,
+                )
+            })
+            .collect(),
+    );
     const FERN: usize = 5;
     const PINE: usize = 6;
     const DEAD: usize = 7;
     const FLOWERS: usize = 8;
+    let cycad_kind = kinds.len() - 1;
     let spawn = |commands: &mut Commands, kind: usize, v: usize, at: Transform| {
         let (w, wm, l, f) = &kinds[kind][v % PLANT_POOL];
         commands.spawn((Mesh3d(w.clone()), MeshMaterial3d(wm.clone()), at));
@@ -471,6 +505,35 @@ fn stage(
                 t,
             );
         }
+    }
+
+    // The desert: sago palms and dead scrub on sand, one cycad up close.
+    let sand = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.74, 0.65, 0.5),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(120.0, 120.0))),
+        MeshMaterial3d(sand),
+        Transform::from_translation(DESERT + Vec3::Y * 0.01),
+    ));
+    spawn(
+        &mut commands,
+        cycad_kind,
+        0,
+        Transform::from_translation(DESERT),
+    );
+    let mut rng = fastrand::Rng::with_seed(31);
+    for _ in 0..60 {
+        let at = DESERT + Vec3::new(rng.f32() * 60.0 - 30.0, 0.0, rng.f32() * -50.0 - 3.0);
+        let t = Transform {
+            translation: at,
+            rotation: Quat::from_rotation_y(rng.f32() * std::f32::consts::TAU),
+            scale: Vec3::splat(0.9 + 0.2 * rng.f32()),
+        };
+        let kind = if rng.f32() < 0.6 { cycad_kind } else { DEAD };
+        spawn(&mut commands, kind, rng.usize(0..PLANT_POOL), t);
     }
 
     // The meadow: the sim's Meadow shares, roughly — mostly scenery.

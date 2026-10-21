@@ -408,8 +408,19 @@ fn the_scenery_is_the_biomes() {
     for b in [Biome::Beach, Biome::Meadow, Biome::Forest, Biome::Highland] {
         assert!(count(b, Scenery::Shrub) > 400, "{b:?} grows no leafy shrub");
     }
-    // The desert's shrubs are dry scrub, and nothing leafy; its cacti are
-    // the sim's (`terrain::Occupant::Cactus`), not a scenery roll.
-    assert!(count(Biome::Desert, Scenery::DeadScrub) > 3000);
+    // The desert's shrubs are sago palms and dry scrub, and nothing leafy;
+    // its cacti are the sim's (`terrain::Occupant::Cactus`), not a scenery
+    // roll.
+    assert!(count(Biome::Desert, Scenery::Cycad) > 2000);
+    assert!(count(Biome::Desert, Scenery::DeadScrub) > 1000);
     assert_eq!(count(Biome::Desert, Scenery::Shrub), 0);
+    for b in [
+        Biome::Beach,
+        Biome::Meadow,
+        Biome::Forest,
+        Biome::Highland,
+        Biome::Fel,
+    ] {
+        assert_eq!(count(b, Scenery::Cycad), 0, "{b:?} grows a sago palm");
+    }
 }

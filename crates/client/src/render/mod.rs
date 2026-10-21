@@ -1788,7 +1788,10 @@ impl Plugin for GatesRenderPlugin {
                     // After `harvest`, which owns the discrete transition and
                     // arms the topple this integrates. Reversed, a tree would
                     // spend one frame at the pose the previous chop left it.
-                    props::fall.after(props::harvest).after(props::harvest_new),
+                    (
+                        props::fall.after(props::harvest).after(props::harvest_new),
+                        props::desert_twins,
+                    ),
                     clutter::stream,
                     // Reconciles the whole piece/deploy/bag mirror, which is
                     // the right shape and the wrong cadence: it now runs only
