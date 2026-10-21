@@ -690,9 +690,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x5CC0_ADCF_F6BF_2C03;
 /// (2026-10-20), with the final hash.
 /// **Moved → `0xE06B_9175_7ECB_60ED` at the casino's seats** (2026-10-21), with the final
 /// hash.
-/// **Moved → `0xA2AC_DF36_56A7_48D8` at the water pass** (2026-10-21), with the final
+/// **Moved → `0x1D20_50E2_3399_DA27` at the water pass** (2026-10-21), with the final
 /// hash and for its reason.
-const GOLDEN_TRACE_HASH: u64 = 0xA2AC_DF36_56A7_48D8;
+const GOLDEN_TRACE_HASH: u64 = 0x1D20_50E2_3399_DA27;
 
 /// Fold a stamped trace into one number.
 ///
