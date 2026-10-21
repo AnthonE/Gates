@@ -41,6 +41,8 @@ pub mod music_out;
 pub mod audio_web;
 pub mod bodies;
 pub mod casino;
+// Your own body, in the sun's shadow map and no camera.
+pub mod own_shadow;
 // The Verdigris as drawn: this wipe's outbreaks and the spread at the arc's
 // tick, read once a frame for the ground, the weather and the map.
 pub mod blight;
@@ -1799,7 +1801,7 @@ impl Plugin for GatesRenderPlugin {
                     // was drained on, so a body that streams before the
                     // drain reads last frame's swings and misses this
                     // frame's — a dropped arc nothing would report.
-                    bodies::stream.after(feed::drain),
+                    (bodies::stream, own_shadow::stream).after(feed::drain),
                     // The heli is the roster's last slot and the town's
                     // sentries the four below it, which `mobs::stream`
                     // leaves to `heli::stream` and `sentry::stream`.
