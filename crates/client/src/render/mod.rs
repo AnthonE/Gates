@@ -116,6 +116,8 @@ pub mod disconnected;
 // (`F0 = 0.16 * r^2`) and not a 0..1 slider.
 pub mod fresnel;
 // The build ghost: the cell being aimed at, and the click that commits it.
+/// Farming v2's planting ghost and left click.
+pub mod farm_ghost;
 pub mod ghost;
 pub mod gunfeel;
 // The blue wash over the piece a hammer is aimed at.
@@ -224,6 +226,8 @@ pub mod render_scale;
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod presence;
 // The plants the bush column grows: shrubs, berry bushes and hemp.
+/// Farming v2's plants, drawn off the plant mirror.
+pub mod crops;
 pub mod plants;
 pub mod props;
 pub mod rig;
@@ -664,6 +668,8 @@ impl Plugin for GatesRenderPlugin {
         app.init_resource::<boulders::RockRing>();
         app.init_resource::<cliffs::CliffRing>();
         app.add_systems(Startup, far_trees::init);
+        // The crops' meshes and materials (farming v2), once.
+        app.add_systems(Startup, crops::build_kit);
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
@@ -705,6 +711,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<props::PropRing>()
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
+            .init_resource::<crops::CropRing>()
             .init_resource::<bodies::Bodies>()
             .insert_resource(bodies::DrawWatched(filming))
             .init_resource::<mobs::Herd>()
@@ -1652,6 +1659,7 @@ impl Plugin for GatesRenderPlugin {
         // The sea's caches are one island's depths; the next island's would
         // be read off them until the eye happened to cross a snap cell.
         .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        .add_systems(OnEnter(Screen::Menu), crops::teardown.after(world_teardown))
         .add_systems(
             OnEnter(Screen::Menu),
             far_trees::teardown.after(world_teardown),
@@ -1737,6 +1745,8 @@ impl Plugin for GatesRenderPlugin {
                 ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
+                // A seed in hand: the bed spot the click plants, and the click.
+                farm_ghost::plant_ghost,
                 // After `verbs::resolve` has answered what is aimed at, and
                 // before the click that acts on it.
                 highlight::track,
@@ -1833,7 +1843,7 @@ impl Plugin for GatesRenderPlugin {
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
                     // The compass's words, then its death marker.
-                    (hud::prompt, hud::death_mark),
+                    (hud::prompt, hud::death_mark, hud::plant_info),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
@@ -1863,7 +1873,6 @@ impl Plugin for GatesRenderPlugin {
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     (
                         structures::fire_lights,
-                        structures::planter_beds,
                         // Another player's torch, under the same night eye.
                         bodies::light_flames.after(bodies::stream),
                         town::dress,
@@ -1906,13 +1915,31 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_placed)
                 .run_if(world_running),
         )
+        // The crops (farming v2): noted on every frame the plant set moved,
+        // drawn on the next one the world is placed for.
+        .add_systems(
+            Update,
+            crops::note_plants.after(feed::drain).run_if(world_running),
+        )
+        .add_systems(
+            Update,
+            crops::stream_crops
+                .run_if(crops::crops_changed)
+                .after(crops::note_plants)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
         // Foliage: the swap after the streamers that spawn trees, bushes and
         // grass, so a new plant never draws a frame without its sway; the
         // wind and trails after the weather they read.
         .add_systems(
             Update,
             (
-                foliage::swap.after(props::stream).after(clutter::stream),
+                foliage::swap
+                    .after(props::stream)
+                    .after(clutter::stream)
+                    .after(crops::stream_crops),
                 foliage::update.after(weather::update),
             )
                 .in_set(Stream)

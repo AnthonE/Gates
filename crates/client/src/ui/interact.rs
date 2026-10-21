@@ -135,6 +135,11 @@ pub enum Verb {
     /// [`resolve_pick`], beside `Crate`'s [`resolve_open`], and folded into
     /// the pick the same way.
     Pick,
+    /// A crop (farming v2): `plant` is its wire record. Resolved by
+    /// [`resolve_plant`] against the plants' pick cylinders and folded in by
+    /// [`fold_plant`]: it wins over the planter it stands in, which keeps
+    /// the planter's address on the pick so `E` can still open it.
+    Plant,
     /// A work's terminal (`sim_core::works`, `ARC.md` F1): `handle` is the
     /// work. Resolved by nearness from the work's own spot (`sim_core::spot`),
     /// like `Trade` — the terminal is a place you walk up to.
@@ -202,6 +207,9 @@ impl Verb {
             Verb::Trade => 12,
             Verb::Swipe => 13,
             Verb::Pick => 14,
+            // Unreachable for `Take`'s reason: a plant is folded in by its
+            // own resolver, never scored against a deployable.
+            Verb::Plant => 24,
             Verb::Work => 15,
             Verb::Talk => 16,
             Verb::Read => 17,
@@ -237,6 +245,7 @@ impl Verb {
             Verb::Trade => "VENDOR",
             Verb::Swipe => "CARD READER",
             Verb::Pick => "PLANT",
+            Verb::Plant => "CROP",
             Verb::Work => "WORK",
             Verb::Talk => "SPEAKER",
             Verb::Read => "INSCRIPTION",
@@ -288,6 +297,11 @@ pub struct Pick {
     /// What a `Verb::Pick` is picking — the terrain occupant ordinal, so the
     /// prompt can say berries or hemp. Zero for every other verb.
     pub occupant: u8,
+    /// A `Verb::Plant`'s crop, as the wire stated it (farming v2).
+    pub plant: protocol::WirePlant,
+    /// The hand holds a full waterskin, so `E` on a growing bed plant
+    /// waters its planter. Stamped by the caller, as `lit` is.
+    pub water_in_hand: bool,
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
@@ -350,6 +364,67 @@ impl Pick {
                 )
             })
             .flatten();
+    }
+
+    /// The crop a `Verb::Plant` names: `farm::LOOK_NAMES`.
+    fn crop_name(&self) -> &'static str {
+        sim_core::farm::LOOK_NAMES
+            .get(self.plant.look as usize)
+            .copied()
+            .unwrap_or("CROP")
+    }
+
+    /// What `E` tends a `Verb::Plant` with (`farm::TEND_*`), or `None` when
+    /// it opens the planter instead: pick a ripe plant, clear a dead one,
+    /// water a growing bed plant from a full skin in hand.
+    pub fn tend(&self) -> Option<u8> {
+        if self.verb != Verb::Plant {
+            return None;
+        }
+        let p = &self.plant;
+        match p.stage {
+            sim_core::farm::STAGE_RIPE => Some(sim_core::farm::TEND_PICK),
+            sim_core::farm::STAGE_DYING => Some(sim_core::farm::TEND_CLEAR),
+            s if sim_core::farm::is_growing(s) && self.water_in_hand && p.in_bed() => {
+                Some(sim_core::farm::TEND_WATER)
+            }
+            _ => None,
+        }
+    }
+
+    /// A `Verb::Plant`'s readout under the prompt: crop, stage, health and
+    /// genome, and whether it thirsts — `CORN SAPLING · 80% · GGYHWX`. Empty
+    /// for every other verb.
+    pub fn info(&self) -> String {
+        if self.verb != Verb::Plant {
+            return String::new();
+        }
+        let p = &self.plant;
+        let genes = sim_core::farm::letters(p.genes);
+        format!(
+            "{}{}{}",
+            self.info_head(),
+            core::str::from_utf8(&genes).unwrap_or(""),
+            if p.dry { " · NEEDS WATER" } else { "" }
+        )
+    }
+
+    /// [`Self::info`] up to the genes, which the HUD draws in colour.
+    pub fn info_head(&self) -> String {
+        if self.verb != Verb::Plant {
+            return String::new();
+        }
+        let p = &self.plant;
+        let stage = sim_core::farm::STAGE_NAMES
+            .get(p.stage as usize)
+            .copied()
+            .unwrap_or("");
+        format!(
+            "{} {} · {}% · ",
+            self.crop_name(),
+            stage,
+            p.band as u32 * 10
+        )
     }
 
     /// The lock's half of a door's or a box's line: nothing bare, the
@@ -471,6 +546,19 @@ impl Pick {
                 _ => "[E] PICK BERRIES",
             }
             .to_string(),
+            // What `E` does to a crop (farming v2), in the order the sim
+            // takes it: a ripe one is picked, a dead one cleared, a growing
+            // bed plant watered from a full skin in hand, and otherwise its
+            // planter opens. The crop's own line is [`Self::info`].
+            Verb::Plant => match self.tend() {
+                Some(sim_core::farm::TEND_PICK) => format!("[E] PICK {}", self.crop_name()),
+                Some(sim_core::farm::TEND_CLEAR) => {
+                    format!("[E] CLEAR DEAD {}", self.crop_name())
+                }
+                Some(_) => format!("[E] WATER {}", self.crop_name()),
+                None if self.handle != 0 => "[E] OPEN PLANTER".to_string(),
+                None => String::new(),
+            },
             Verb::Trade => "[E] TRADE".to_string(),
             Verb::Sleeper => "[E] LOOT SLEEPER".to_string(),
             Verb::Shop => "[E] SHOP".to_string(),
@@ -1300,7 +1388,6 @@ mod tests {
             locked: false,
             has_lock: false,
             dmg: 0,
-            grow: 0,
             keyed: false,
         }
     }
@@ -2229,6 +2316,95 @@ pub fn resolve_pick(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
     }
 }
 
+/// The plant the eye's ray meets first within `reach`, by its pick cylinder
+/// (`farm::pick_volume`, the sim's own reach volume): `(index into plants,
+/// squared distance along the ray)`. A ray that starts inside a cylinder
+/// meets it at once.
+pub fn resolve_plant(
+    plants: &[protocol::WirePlant],
+    eye: (f32, f32, f32),
+    dir: (f32, f32, f32),
+    reach: f32,
+) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, p) in plants.iter().enumerate() {
+        let (r, h) = sim_core::farm::pick_volume(p.look, p.stage);
+        let (cx, cy, cz) = p.pos();
+        // The span of `t` the ray is inside the circle, in xz.
+        let (ox, oz) = (eye.0 - cx, eye.2 - cz);
+        let a = dir.0 * dir.0 + dir.2 * dir.2;
+        let b = 2.0 * (ox * dir.0 + oz * dir.2);
+        let c = ox * ox + oz * oz - r * r;
+        let (t0, t1) = if a < 1e-9 {
+            if c > 0.0 {
+                continue;
+            }
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            let disc = b * b - 4.0 * a * c;
+            if disc < 0.0 {
+                continue;
+            }
+            let q = disc.sqrt();
+            ((-b - q) / (2.0 * a), (-b + q) / (2.0 * a))
+        };
+        // And inside the slab `cy ..= cy + h`.
+        let (y0, y1) = if dir.1.abs() < 1e-9 {
+            if eye.1 < cy || eye.1 > cy + h {
+                continue;
+            }
+            (f32::NEG_INFINITY, f32::INFINITY)
+        } else {
+            let (ta, tb) = ((cy - eye.1) / dir.1, (cy + h - eye.1) / dir.1);
+            (ta.min(tb), ta.max(tb))
+        };
+        let (enter, leave) = (t0.max(y0).max(0.0), t1.min(y1));
+        if enter > leave || enter > reach {
+            continue;
+        }
+        let d2 = enter * enter;
+        if best.is_none_or(|(_, bd)| d2 < bd) {
+            best = Some((i, d2));
+        }
+    }
+    best
+}
+
+/// Fold a resolved plant into the `E` pick. The plant wins when nothing
+/// else is aimed at, when what is aimed at is the planter (which it stands
+/// in — the pick keeps the planter's address so `E` can still open it), or
+/// when it is nearer. `planter` is the bed's planter off the mirror
+/// (`ui::farm::planter_of`) for a plant whose planter was not the pick.
+pub fn fold_plant(
+    aimed: Pick,
+    plant: Option<(protocol::WirePlant, f32)>,
+    planter: Option<&DeployRec>,
+) -> Pick {
+    let Some((rec, d2)) = plant else {
+        return aimed;
+    };
+    let over_planter = aimed.arch == sim_core::deploy::ARCH_PLANTER && aimed.handle != 0;
+    if !(aimed.is_none() || over_planter || d2 < aimed.d2) {
+        return aimed;
+    }
+    let mut out = Pick {
+        verb: Verb::Plant,
+        plant: rec,
+        d2,
+        aimed: true,
+        ..Default::default()
+    };
+    if over_planter {
+        (out.arch, out.handle) = (aimed.arch, aimed.handle);
+        (out.cx, out.cz, out.level, out.loc) = (aimed.cx, aimed.cz, aimed.level, aimed.loc);
+    } else if let Some(d) = planter {
+        out.arch = sim_core::deploy::ARCH_PLANTER;
+        out.handle = box_key(d.cx, d.cz, d.level, d.loc);
+        (out.cx, out.cz, out.level, out.loc) = (d.cx, d.cz, d.level, d.loc);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // The weak spot.
 //
@@ -2853,5 +3029,102 @@ mod assist_tests {
         h.step(true, true, Some(p), 0.0);
         let more = GivePick { count: 5, ..p };
         assert_eq!(h.step(false, true, Some(more), 1.0), None);
+    }
+}
+
+#[cfg(test)]
+mod plant_tests {
+    use super::*;
+    use protocol::WirePlant;
+    use sim_core::farm::{LOOK_CORN, STAGE_DYING, STAGE_RIPE, STAGE_SAPLING};
+    use sim_core::movement::{quant_xz, quant_y};
+
+    fn corn(stage: u8, x: f32, y: f32, z: f32) -> WirePlant {
+        WirePlant {
+            id: 7,
+            look: LOOK_CORN,
+            stage,
+            spot: 1,
+            genes: 0,
+            band: 8,
+            dry: false,
+            qx: quant_xz(x),
+            qy: quant_y(y),
+            qz: quant_xz(z),
+        }
+    }
+
+    /// A planter body picked at 1 m, the ray from 1.6 m up looking along +z
+    /// and a little down.
+    fn planter_pick() -> Pick {
+        Pick {
+            verb: Verb::Planter,
+            arch: sim_core::deploy::ARCH_PLANTER,
+            handle: 0x0102_0304,
+            cx: 3,
+            cz: 4,
+            d2: 1.0,
+            aimed: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_plant_on_the_ray_beats_its_planter_and_one_beside_it_does_not() {
+        let eye = (100.0, 11.6, 100.0);
+        let n = (0.0f32, -0.3f32, 1.0f32);
+        let l = (n.0 * n.0 + n.1 * n.1 + n.2 * n.2).sqrt();
+        let dir = (n.0 / l, n.1 / l, n.2 / l);
+        // On the ray, 1.5 m out: the ray is at 11.15 m there, inside a
+        // 0.63 m sapling standing on 10.8 m soil.
+        let on = corn(STAGE_SAPLING, 100.0, 10.8, 101.5);
+        let hit = resolve_plant(&[on], eye, dir, sim_core::gather::PICK_REACH_M);
+        let (i, d2) = hit.expect("the ray crosses the plant");
+        assert_eq!(i, 0);
+        let p = fold_plant(planter_pick(), Some((on, d2)), None);
+        assert_eq!(
+            p.verb,
+            Verb::Plant,
+            "the plant beats the planter it stands in"
+        );
+        assert_eq!(p.handle, 0x0102_0304, "and keeps the planter's address");
+        assert_eq!((p.cx, p.cz), (3, 4));
+        // 0.4 m beside the ray: outside a 0.3 m pick cylinder.
+        let beside = corn(STAGE_SAPLING, 100.4, 10.8, 101.5);
+        assert!(resolve_plant(&[beside], eye, dir, sim_core::gather::PICK_REACH_M).is_none());
+        assert_eq!(
+            fold_plant(planter_pick(), None, None).verb,
+            Verb::Planter,
+            "no plant leaves the planter's pick alone"
+        );
+        // Past reach: nothing.
+        let far = corn(STAGE_SAPLING, 100.0, 10.8, 104.0);
+        assert!(resolve_plant(&[far], eye, dir, sim_core::gather::PICK_REACH_M).is_none());
+    }
+
+    #[test]
+    fn a_crop_says_what_e_does_to_it() {
+        let at = |stage: u8, water: bool| Pick {
+            plant: corn(stage, 0.0, 0.0, 0.0),
+            water_in_hand: water,
+            ..fold_plant(
+                planter_pick(),
+                Some((corn(stage, 0.0, 0.0, 0.0), 1.0)),
+                None,
+            )
+        };
+        let cat = ItemCatalog::EMPTY;
+        assert_eq!(at(STAGE_RIPE, false).prompt(&cat), "[E] PICK CORN");
+        assert_eq!(at(STAGE_DYING, false).prompt(&cat), "[E] CLEAR DEAD CORN");
+        assert_eq!(at(STAGE_SAPLING, true).prompt(&cat), "[E] WATER CORN");
+        let sapling = at(STAGE_SAPLING, false);
+        assert_eq!(sapling.prompt(&cat), "[E] OPEN PLANTER");
+        assert_eq!(sapling.info(), "CORN SAPLING · 80% · XXXXXX");
+        let mut dry = sapling;
+        dry.plant.dry = true;
+        dry.plant.genes = 2 + 2 * 5 + 3 * 25 + 4 * 125 + 625;
+        assert_eq!(dry.info(), "CORN SAPLING · 80% · GGYHWX · NEEDS WATER");
+        assert_eq!(sapling.tend(), None);
+        assert_eq!(at(STAGE_RIPE, true).tend(), Some(sim_core::farm::TEND_PICK));
     }
 }

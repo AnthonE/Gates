@@ -3119,6 +3119,30 @@ impl ShardCore {
                         arg,
                     },
                     ActionMsg::Pick { cell } => Command::Pick { id: c.id, cell },
+                    ActionMsg::Plant { slot, target } => {
+                        let (host, spot, qx, qz) = match target {
+                            protocol::PlantTarget::Bed { host, spot } => (host, spot, 0, 0),
+                            protocol::PlantTarget::Ground { qx, qz } => (
+                                sim_core::farm::HOST_GROUND,
+                                sim_core::farm::SPOT_GROUND,
+                                qx,
+                                qz,
+                            ),
+                        };
+                        Command::Plant {
+                            id: c.id,
+                            slot,
+                            host,
+                            spot,
+                            qx,
+                            qz,
+                        }
+                    }
+                    ActionMsg::Tend { plant, act } => Command::Tend {
+                        id: c.id,
+                        plant,
+                        act,
+                    },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
@@ -5215,9 +5239,74 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
-                // Farming v2's plant events reach clients with the plant
-                // wire record (the next slice); nothing is sent for them yet.
-                EV_PLANT | EV_PLANT_GONE => {}
+                EV_PLANT => {
+                    // Farming v2: the record as it stands at drain, found
+                    // by the index hint (verified by id) or by a scan. A
+                    // plant gone again this tick has its own EV_PLANT_GONE.
+                    let entries = self.world.farm.entries();
+                    let rec = match entries.get(ev.c as usize) {
+                        Some(r) if r.id == ev.a => Some(*r),
+                        _ => self.world.farm.index_of_id(ev.a).map(|i| entries[i]),
+                    };
+                    let Some(rec) = rec else {
+                        continue;
+                    };
+                    let wp = protocol::WirePlant::of(&rec, &self.world.cook.farm);
+                    let at = interest::body_cm(rec.qx, rec.qz);
+                    match protocol::encode_event_plant(&wp, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                // The plant walk's predicate (owner
+                                // exempt), against the same anchor: a
+                                // stage turned after a client's walk can
+                                // only reach it here.
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        rec.owner,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    // The plant walk re-derives it.
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_PLANT_GONE => {
+                    // Broadcast, so a removal never leaves a ghost on a
+                    // client the upsert was filtered from.
+                    match protocol::encode_event_plant_gone(ev.a, ev.b as u8, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_SHOT => {
                     // Broadcast **to the interest set**, `EV_SWING`'s
                     // posture and — after this was checked rather than
@@ -7118,6 +7207,7 @@ impl ShardCore {
                 c.piece_sync_cursor = len;
                 c.deploy_sync_cursor = self.world.deploys.len();
                 c.bag_sync_cursor = self.world.backpacks.len();
+                c.plant_sync_cursor = self.world.farm.len();
                 ShardStats::bump(&stats.piece_walk_rearms);
             }
         }
@@ -7264,8 +7354,6 @@ impl ShardCore {
                         src.cx, src.cz, src.level, src.loc,
                     ))
                     .map(|i| self.world.deploys.oven_states()[i]);
-                // Crops v1's beds byte; farming v2 sends plants on their own.
-                dst.grow = 0;
                 lit[n] = oven.is_some_and(|o| o.is_converter() && o.lit);
                 n += 1;
                 if n == DEPLOY_SYNC_BATCH {
@@ -7427,6 +7515,64 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Plant walk (farming v2, wire v130): the deployable walk's shape
+        // over `world.farm` — tail-down, aimed from the same anchor, the
+        // planter exempt. Tail-down is what makes the store's swap-remove
+        // harmless: a record moved below the cursor is sent again (the
+        // client upserts by id), and one moved above it was already sent.
+        // A plant planted after the walk began arrives as its EV_PLANT.
+        let c = &self.clients[slot];
+        let plants = self.world.farm.entries();
+        let owed = if c.plant_sync_reset {
+            plants.len()
+        } else {
+            c.plant_sync_cursor.min(plants.len())
+        };
+        if c.piece_anchor_valid && (c.plant_sync_reset || owed > 0) {
+            let window = PIECE_SCAN_BATCH.min(owed);
+            let mut batch = [protocol::WirePlant::default(); protocol::PLANT_SYNC_BATCH];
+            let mut n = 0usize;
+            let mut scanned = 0usize;
+            for p in plants[owed - window..owed].iter().rev() {
+                scanned += 1;
+                let at = interest::body_cm(p.qx, p.qz);
+                if !interest::owned_in_interest(anchor, viewer, p.owner, at) {
+                    continue;
+                }
+                batch[n] = protocol::WirePlant::of(p, &self.world.cook.farm);
+                n += 1;
+                if n == protocol::PLANT_SYNC_BATCH {
+                    break;
+                }
+            }
+            batch[..n].reverse();
+            let rest = owed - scanned;
+            let done = |c: &mut ClientNetState| {
+                c.plant_sync_reset = false;
+                c.plant_sync_cursor = rest;
+                ShardStats::add(&stats.deploy_sync_skipped, (scanned - n) as u64);
+            };
+            if n > 0 || c.plant_sync_reset {
+                match protocol::encode_event_plant_sync(
+                    c.plant_sync_reset,
+                    &batch[..n],
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            done(&mut self.clients[slot]);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                done(&mut self.clients[slot]);
             }
         }
 

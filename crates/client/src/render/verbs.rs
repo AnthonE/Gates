@@ -235,6 +235,37 @@ pub fn resolve(
         aimed.0.verb,
         interact::Verb::Recycler | interact::Verb::Research | interact::Verb::TechTree
     ) && interact::town_station(&core.haven().town, aimed.0.cx, aimed.0.cz);
+    // A crop under the crosshair (farming v2), by its pick cylinder: it
+    // wins over the planter it stands in, and keeps that planter's address
+    // so `E` still opens the tank when there is nothing to tend.
+    {
+        let plants = core.plants.entries();
+        let hit = interact::resolve_plant(
+            plants,
+            (eye[0], eye[1], eye[2]),
+            (dir[0], dir[1], dir[2]),
+            sim_core::gather::PICK_REACH_M,
+        )
+        .map(|(i, d2)| (plants[i], d2));
+        let planter = hit.and_then(|(p, _)| {
+            crate::ui::farm::planter_of(
+                &p,
+                core.deploys.entries(),
+                &core.deploy_defs,
+                core.deploy_defs_have,
+            )
+        });
+        aimed.0 = interact::fold_plant(aimed.0, hit, planter);
+        if aimed.0.verb == Verb::Plant {
+            let held = core.inv.get(sel as usize).copied().unwrap_or_default();
+            aimed.0.water_in_hand = held.count > 0
+                && crate::ui::farm::is_water(crate::ui::oven::roles_of(
+                    &core.catalog,
+                    sim_core::deploy::ARCH_PLANTER,
+                    held.item,
+                ));
+        }
+    }
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
     let (mark_cell, mark8) = (core.mark_cell, core.mark8);
@@ -1056,9 +1087,26 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 }
             }
         }
+        // A crop (farming v2): pick it ripe, clear it dead, water a growing
+        // bed plant from the skin in hand; otherwise open its planter.
+        Verb::Plant => {
+            if let Some(act) = pick.tend() {
+                let plant = pick.plant.id;
+                send(net, toast, "tend", |buf| {
+                    protocol::encode_action_tend(plant, act, buf)
+                });
+            } else if pick.handle != 0 {
+                let handle = pick.handle;
+                if send(net, toast, "open", |buf| {
+                    protocol::encode_action_container(CONT_BOX, handle, buf)
+                }) {
+                    open_panel(ui);
+                }
+            }
+        }
         Verb::Planter => {
-            // A planter is a box that grows: `E` opens it and the panel is
-            // where the seeds go in and the harvest comes out.
+            // A planter's one slot is its water tank (farming v2): `E` opens
+            // it; seeds go in the soil by hand.
             let handle = pick.handle;
             if send(net, toast, "open", |buf| {
                 protocol::encode_action_container(CONT_BOX, handle, buf)

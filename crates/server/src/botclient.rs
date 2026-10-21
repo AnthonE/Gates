@@ -513,6 +513,22 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             protocol::encode_action_respawn_at(cx, cz, level, buf)
         }
         Command::Pick { cell, .. } => encode_action_pick(cell, buf),
+        Command::Plant {
+            slot,
+            host,
+            spot,
+            qx,
+            qz,
+            ..
+        } => {
+            let target = if host == sim_core::farm::HOST_GROUND {
+                protocol::PlantTarget::Ground { qx, qz }
+            } else {
+                protocol::PlantTarget::Bed { host, spot }
+            };
+            protocol::encode_action_plant(slot, target, buf)
+        }
+        Command::Tend { plant, act, .. } => protocol::encode_action_tend(plant, act, buf),
         // Not a raid step — the reload lane's, and here because this is the
         // one table in this file that turns a `Command` into the bytes a
         // real client writes. Payloadless on the wire on purpose: the sim

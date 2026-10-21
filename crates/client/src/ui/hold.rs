@@ -138,6 +138,10 @@ pub enum Click {
     /// A blueprint: read it (`ACT_RESEARCH`), as `J` and the pack's
     /// right-click already do (`ui::research::use_as`).
     Read,
+    /// A seed (farming v2): plant one in the bed spot under the crosshair
+    /// (`ACT_PLANT`, `render::farm_ghost`). A seed is what a planter's
+    /// catalog roles call an input.
+    Plant,
 }
 
 impl Click {
@@ -176,11 +180,21 @@ pub fn click_of(
         Click::Read
     } else if catalog.row(stack.item as usize).eats() {
         Click::Eat
+    } else if is_seed(catalog, stack) {
+        Click::Plant
     } else if crate::ui::structure::row_for_item(deploys, deploys_have, stack).is_some() {
         Click::Deploy
     } else {
         Click::Swing
     }
+}
+
+/// A stack a planter would grow: its catalog roles at `ARCH_PLANTER`
+/// include `ROLE_INPUT` (farming v2's client hint, `CookContent::roles`).
+pub fn is_seed(catalog: &ItemCatalog, stack: ItemStack) -> bool {
+    stack.count > 0
+        && crate::ui::oven::roles_of(catalog, sim_core::deploy::ARCH_PLANTER, stack.item)
+            .is_some_and(|r| r & sim_core::oven::ROLE_INPUT != 0)
 }
 
 /// The HUD's bottom-left line for a hand that places nothing: what the left
@@ -253,6 +267,7 @@ pub fn hand_hint(
                 format!("{}{left}   (F: light)", name())
             }
         }
+        Click::Plant => format!("[LMB] PLANT {}", name()),
         Click::Build | Click::Deploy => String::new(),
     }
 }
@@ -1947,6 +1962,28 @@ mod tests {
         assert_eq!(
             click_of(&b.catalog, &b.research, &b.deploys, 0, one(BOX)),
             Click::Swing
+        );
+    }
+
+    /// A seed in hand plants (farming v2): the planter's catalog roles call
+    /// it an input, and the hint names the click.
+    #[test]
+    fn a_seed_in_hand_plants() {
+        let mut c = catalog_with(&["Wood", "Corn Seed"]);
+        let k = sim_core::oven::ROLE_ARCHES
+            .iter()
+            .position(|&a| a == sim_core::deploy::ARCH_PLANTER)
+            .unwrap();
+        c.rows[1].oven = (sim_core::oven::ROLE_INPUT as u16) << (3 * k);
+        let r = sim_core::research::ResearchContent::EMPTY;
+        let d = sim_core::deploy::DeployContent::EMPTY;
+        let seed = one(1);
+        assert_eq!(click_of(&c, &r, &d, 0, seed), Click::Plant);
+        assert!(!Click::Plant.swings(), "a seed is not swung at a tree");
+        assert_eq!(click_of(&c, &r, &d, 0, one(0)), Click::Swing);
+        assert_eq!(
+            hand_hint(&c, &r, Click::Plant, seed, false),
+            "[LMB] PLANT CORN SEED"
         );
     }
 

@@ -75,6 +75,10 @@ pub fn plugin(app: &mut App) {
         )
         .add_systems(
             OnEnter(Screen::Disconnected),
+            super::crops::teardown.after(world_teardown),
+        )
+        .add_systems(
+            OnEnter(Screen::Disconnected),
             (map::forget, viewmodel::forget, impact::forget, fx::forget),
         )
         .add_systems(OnExit(Screen::Disconnected), ui::despawn_all::<Root>)

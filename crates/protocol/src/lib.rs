@@ -72,8 +72,8 @@ pub use event::{
     encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
     encode_event_move_refused, encode_event_moved, encode_event_node_stage, encode_event_oven,
     encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_planter, encode_event_recipes, encode_event_recovered,
-    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
+    encode_event_reload_refused, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_sentry_lock, encode_event_shot, encode_event_skins, encode_event_skins_owned,
     encode_event_slot_change, encode_event_slot_grow_sync, encode_event_slot_respawned,
@@ -100,6 +100,10 @@ pub use event::{
 };
 pub use event::{encode_event_bank, BankView, BANK_NO_WORK};
 pub use event::{encode_event_item_desc, ItemDescs, MAX_ITEM_DESC_BYTES};
+pub use event::{
+    encode_event_plant, encode_event_plant_gone, encode_event_plant_sync, WirePlant,
+    PLANT_REC_BITS, PLANT_SYNC_BATCH,
+};
 pub use event::{encode_event_report, REPORT_BLAST, REPORT_GUN, REPORT_MAX};
 pub use event::{encode_event_shop, encode_event_shop_result, ShopRow, ShopView};
 pub use event::{
@@ -1263,7 +1267,11 @@ pub use voice::{
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
 /// v130 — farming v2 (`sim_core::farm`): a deploy refusal admits 20..=25
-/// (`REFUSE_D_PLANT_*`, `REFUSE_D_PLANTS_FULL`).
+/// (`REFUSE_D_PLANT_*`, `REFUSE_D_PLANTS_FULL`). The deploy record loses
+/// v100's `grow` byte and `SUB_PLANTER` is gone: `SUB_PLANT` (90) carries
+/// one plant or its removal and `SUB_PLANT_SYNC` (108) the join walk.
+/// `ACT_PLANT` (39) plants a seed from an inventory slot in a bed spot (or
+/// on the ground) and `ACT_TEND` (40) picks, clones, clears or waters one.
 pub const PROTO_VER: u16 = 130;
 
 /// This game's slug in the elo catalog.
@@ -2163,6 +2171,16 @@ const ACT_WHEEL: u32 = 37;
 /// Pull slot machine `machine`'s lever at ×`mult` (wire v123,
 /// `Command::Slots`).
 const ACT_SLOTS: u32 = 38;
+/// Plant one seed from inventory slot `slot` (wire v130, farming v2,
+/// `Command::Plant`): in a bed spot of a planter, or on the ground.
+const ACT_PLANT: u32 = 39;
+/// Tend plant `plant` (wire v130, `Command::Tend`): `farm::TEND_*`.
+const ACT_TEND: u32 = 40;
+/// Width of `ActionMsg::Plant`'s bed spot and `ActionMsg::Tend`'s verb.
+const PLANT_SPOT_BITS: u32 = 3;
+const TEND_ACT_BITS: u32 = 2;
+const _: () = assert!((sim_core::farm::PLANTER_SPOTS as u32) <= 1 << PLANT_SPOT_BITS);
+const _: () = assert!((sim_core::farm::TEND_WATER as u32) < 1 << TEND_ACT_BITS);
 /// Widths of the casino's fields.
 const WHEEL_COLOUR_BITS: u32 = 3;
 const WHEEL_STAKE_BITS: u32 = 7;
@@ -2200,7 +2218,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_SLOTS;
+const ACT_MAX: u32 = ACT_TEND;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2563,6 +2581,13 @@ pub enum ActionMsg {
     /// Swipe at ziggurat door `door` (wire v87); reach and card are the
     /// sim's verdict.
     Swipe { door: u8 },
+    /// Plant one seed from inventory slot `slot` (wire v130, farming v2).
+    /// The slot rides the wire, so the seed planted is the one the click
+    /// named; the item, the spot, reach and room are the sim's verdict.
+    Plant { slot: u8, target: PlantTarget },
+    /// Tend plant `plant` with `act` (`sim_core::farm::TEND_*`, wire v130).
+    /// Stage, reach and the held skin are the sim's verdict.
+    Tend { plant: u32, act: u8 },
     /// Pick the plant at cell key `cell` (wire v91). `Container`'s
     /// `CONT_WORLD` posture: the cell is a claim, and what stands there and
     /// whether it is in reach are the sim's verdict.
@@ -2673,6 +2698,64 @@ pub enum ActionMsg {
     /// yielding them. Nothing here reaches the sim, nothing here enters
     /// the WAL, and `World::state_hash` never sees it.
     Container { kind: u8, cont: u32 },
+}
+
+/// Where `ActionMsg::Plant` puts the seed: a spot in the bed of the planter
+/// whose box key is `host`, or the ground at position quanta `(qx, qz)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlantTarget {
+    Bed { host: u32, spot: u8 },
+    Ground { qx: i32, qz: i32 },
+}
+
+/// The plant verb — see `ActionMsg::Plant`. A bed spot past the planter's
+/// six, a host that is the ground's own marker, or a ground point off the
+/// position window is refused here, as the decoder refuses it.
+pub fn encode_action_plant(
+    slot: u8,
+    target: PlantTarget,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PLANT, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    match target {
+        PlantTarget::Bed { host, spot } => {
+            if host == sim_core::farm::HOST_GROUND || spot >= sim_core::farm::PLANTER_SPOTS {
+                return Err(WireError::Range);
+            }
+            w.write_bit(false)?;
+            w.write(host, 32)?;
+            w.write(spot as u32, PLANT_SPOT_BITS)?;
+        }
+        PlantTarget::Ground { qx, qz } => {
+            let window = 0..(1i64 << POS_XZ_BITS);
+            if !window.contains(&(qx as i64)) || !window.contains(&(qz as i64)) {
+                return Err(WireError::Range);
+            }
+            w.write_bit(true)?;
+            w.write(qx as u32, POS_XZ_BITS)?;
+            w.write(qz as u32, POS_XZ_BITS)?;
+        }
+    }
+    Ok(w.finish())
+}
+
+/// The tend verb — see `ActionMsg::Tend`. Plant 0 is no plant.
+pub fn encode_action_tend(plant: u32, act: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if plant == 0 || act > sim_core::farm::TEND_WATER {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_TEND, ACTION_SUB_BITS)?;
+    w.write(plant, 32)?;
+    w.write(act as u32, TEND_ACT_BITS)?;
+    Ok(w.finish())
 }
 
 /// The container verb — see `ActionMsg::Container`. A kind past
@@ -3506,6 +3589,34 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Swipe { door }
         }
         ACT_PICK => ActionMsg::Pick { cell: r.read(32)? },
+        ACT_PLANT => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            let target = if r.read_bit()? {
+                PlantTarget::Ground {
+                    qx: r.read(POS_XZ_BITS)? as i32,
+                    qz: r.read(POS_XZ_BITS)? as i32,
+                }
+            } else {
+                let host = r.read(32)?;
+                let spot = r.read(PLANT_SPOT_BITS)? as u8;
+                if host == sim_core::farm::HOST_GROUND || spot >= sim_core::farm::PLANTER_SPOTS {
+                    return Err(WireError::Malformed);
+                }
+                PlantTarget::Bed { host, spot }
+            };
+            ActionMsg::Plant { slot, target }
+        }
+        ACT_TEND => {
+            let plant = r.read(32)?;
+            let act = r.read(TEND_ACT_BITS)? as u8;
+            if plant == 0 {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Tend { plant, act }
+        }
         ACT_RESPAWN_GATE => ActionMsg::RespawnGate,
         ACT_ARC => ActionMsg::Arc {
             op: r.read(ARC_OP_BITS)? as u8,
@@ -5610,13 +5721,86 @@ mod tests {
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
-        // casino's wheel and slots (v123) 37 and 38.
-        assert_eq!(ACT_MAX, ACT_SLOTS);
+        // casino's wheel and slots (v123) 37 and 38, and farming v2's plant
+        // and tend (v130) 39 and 40.
+        assert_eq!(ACT_MAX, ACT_TEND);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            25,
+            23,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    #[test]
+    fn plant_and_tend_round_trip_and_refuse_what_no_sim_takes() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        for (slot, target) in [
+            (0, PlantTarget::Bed { host: 1, spot: 0 }),
+            (
+                29,
+                PlantTarget::Bed {
+                    host: 0x00AB_CDEF,
+                    spot: 5,
+                },
+            ),
+            (
+                7,
+                PlantTarget::Ground {
+                    qx: 0,
+                    qz: (1 << POS_XZ_BITS) - 1,
+                },
+            ),
+        ] {
+            let n = encode_action_plant(slot, target, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..n]),
+                Ok(ActionMsg::Plant { slot, target })
+            );
+        }
+        for (slot, target) in [
+            (30, PlantTarget::Bed { host: 1, spot: 0 }),
+            (0, PlantTarget::Bed { host: 1, spot: 6 }),
+            (
+                0,
+                PlantTarget::Bed {
+                    host: sim_core::farm::HOST_GROUND,
+                    spot: 0,
+                },
+            ),
+            (0, PlantTarget::Ground { qx: -1, qz: 0 }),
+            (
+                0,
+                PlantTarget::Ground {
+                    qx: 0,
+                    qz: 1 << POS_XZ_BITS,
+                },
+            ),
+        ] {
+            assert_eq!(
+                encode_action_plant(slot, target, &mut buf),
+                Err(WireError::Range)
+            );
+        }
+        // A seventh bed spot, written past the encoder.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_ACTION, KIND_BITS).unwrap();
+        w.write(ACT_PLANT, ACTION_SUB_BITS).unwrap();
+        w.write(3, ACTION_SLOT_BITS).unwrap();
+        w.write_bit(false).unwrap();
+        w.write(5, 32).unwrap();
+        w.write(6, PLANT_SPOT_BITS).unwrap();
+        let n = w.finish();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+
+        for act in 0..=sim_core::farm::TEND_WATER {
+            let n = encode_action_tend(42, act, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..n]),
+                Ok(ActionMsg::Tend { plant: 42, act })
+            );
+        }
+        assert_eq!(encode_action_tend(0, 0, &mut buf), Err(WireError::Range));
+        assert_eq!(encode_action_tend(1, 4, &mut buf), Err(WireError::Range));
     }
 
     #[test]

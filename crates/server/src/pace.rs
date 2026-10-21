@@ -92,7 +92,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
             Kind::Build
         }
         ActionMsg::Demolish { .. } => Kind::Demolish,
-        ActionMsg::Deploy { .. } => Kind::Deploy,
+        // A seed in the soil churns a joiner's plant walk like a deploy.
+        ActionMsg::Deploy { .. } | ActionMsg::Plant { .. } => Kind::Deploy,
         // Taking stock back out moves a pack's worth, like a trade; so does
         // handing a stack to someone.
         ActionMsg::Move { .. }
@@ -102,7 +103,8 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Container { .. }
         | ActionMsg::Loot
         | ActionMsg::Pickup { .. }
-        | ActionMsg::Pick { .. } => Kind::Take,
+        | ActionMsg::Pick { .. }
+        | ActionMsg::Tend { .. } => Kind::Take,
         ActionMsg::Craft { .. }
         | ActionMsg::CraftCancel { .. }
         | ActionMsg::CraftFastTrack { .. }

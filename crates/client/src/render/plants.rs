@@ -1469,3 +1469,126 @@ fn flower_head(s: &mut Soup, c: Vec3, face: Vec3, r: f32, petal: [f32; 3], spin:
         s.tri(eye, e1, e0, |_| ec, Some(sky), 0.9);
     }
 }
+
+// ---------------------------------------------------------------- crops
+
+/// Corn's stalk and leaves, linear.
+const CORN_ROOT: [f32; 3] = [0.07, 0.10, 0.03];
+const CORN_TIP: [f32; 3] = [0.16, 0.22, 0.06];
+const CORN_LEAF: [f32; 3] = [0.06, 0.15, 0.025];
+const CORN_LEAF_TIP: [f32; 3] = [0.13, 0.21, 0.05];
+const CORN_TASSEL: [f32; 3] = [0.34, 0.26, 0.10];
+
+/// A corn plant grown (farming v2, `render::crops`): a tapered stalk, eight
+/// strap leaves arching out and drooping, alternate sides up the stalk, and
+/// a tassel at the top — ground-rooted at y = 0, `farm::LOOK_H_M` tall.
+/// `(stalk and tassel, leaves)`, both opaque and vertex-coloured; the leaves
+/// shade toward a dome under the ground, hemp's reason.
+pub fn corn_stalk(variant: u32) -> (Mesh, Mesh) {
+    let seed = seed_of(0xc0e2_5000, variant);
+    let h = sim_core::farm::LOOK_H_M[sim_core::farm::LOOK_CORN as usize]
+        * (0.94 + 0.12 * hash01(seed, 1));
+    let bow = Vec3::new(hash01(seed, 2) - 0.5, 0.0, hash01(seed, 3) - 0.5) * 0.08;
+    let at = |t: f32| Vec3::Y * (t * h) + bow * (t * PI).sin();
+    let r = |t: f32| 0.024 * (1.0 - t) + 0.007 * t;
+
+    let mut stalk = Soup::default();
+    const SEGS: usize = 7;
+    for i in 0..SEGS {
+        let (t0, t1) = (i as f32 / SEGS as f32, (i + 1) as f32 / SEGS as f32);
+        let (t0, t1) = (t0 * 0.92, t1 * 0.92);
+        let col = lerp3(CORN_ROOT, CORN_TIP, smooth01(t0 * 1.2));
+        let a = if i == 0 {
+            at(t0) - Vec3::Y * 0.05
+        } else {
+            at(t0)
+        };
+        twig(&mut stalk, a, at(t1), r(t0), r(t1), col);
+    }
+    // The tassel: a spray of thin spikes off the top.
+    let top = at(0.92);
+    for k in 0..6u32 {
+        let a = hash01(seed, 40 + k) * TAU;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let tip = top + Vec3::Y * (0.1 + 0.08 * hash01(seed, 50 + k)) + out * 0.07;
+        twig(&mut stalk, top, tip, 0.004, 0.0015, CORN_TASSEL);
+    }
+
+    let mut leaves = Soup::default();
+    let dome = Vec3::new(0.0, -h, 0.0);
+    let yaw0 = hash01(seed, 4) * TAU;
+    for k in 0..8u32 {
+        let f = k as f32 / 7.0;
+        let t = 0.12 + 0.62 * f;
+        let base = at(t);
+        let yaw = yaw0 + k as f32 * PI + (hash01(seed, 10 + k) - 0.5) * 0.7;
+        let out = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+        let side = Vec3::new(-out.z, 0.0, out.x);
+        // Longest in the middle of the stalk, as corn's are.
+        let len =
+            h * (0.3 + 0.16 * (1.0 - (2.0 * f - 1.0).abs())) * (0.9 + 0.2 * hash01(seed, 20 + k));
+        let lift = 0.5 + 0.25 * hash01(seed, 30 + k);
+        let w0 = 0.075;
+        const N: usize = 6;
+        let point =
+            |s: f32| base + out * (len * s * 0.85) + Vec3::Y * (len * (lift * s - 0.75 * s * s));
+        let width = |s: f32| w0 * (1.0 - s).powf(0.7) + 0.004;
+        for i in 0..N {
+            let (s0, s1) = (i as f32 / N as f32, (i + 1) as f32 / N as f32);
+            let (p0, p1) = (point(s0), point(s1));
+            let (h0, h1) = (side * (width(s0) * 0.5), side * (width(s1) * 0.5));
+            let c0 = lerp3(CORN_LEAF, CORN_LEAF_TIP, s0);
+            let c1 = lerp3(CORN_LEAF, CORN_LEAF_TIP, s1);
+            let col = move |v: Vec3| {
+                let k = ((v - p0).length() / (p1 - p0).length().max(1e-3)).min(1.0);
+                let c = lerp3(c0, c1, k);
+                [c[0], c[1], c[2], 1.0]
+            };
+            leaves.tri(p0 - h0, p0 + h0, p1 + h1, col, Some(dome), 0.5);
+            leaves.tri(p0 - h0, p1 + h1, p1 - h1, col, Some(dome), 0.5);
+        }
+    }
+    (stalk.mesh(), leaves.mesh())
+}
+
+/// A seedling (farming v2): a short stem and two small leaves, ground-rooted
+/// at y = 0, about 12 cm tall at its own scale. One opaque vertex-coloured
+/// mesh.
+pub fn sprout(variant: u32) -> Mesh {
+    let seed = seed_of(0x5b20_0700, variant);
+    let mut s = Soup::default();
+    let h = 0.08;
+    twig(
+        &mut s,
+        Vec3::Y * -0.01,
+        Vec3::Y * h,
+        0.004,
+        0.003,
+        STALK_TIP,
+    );
+    let dome = Vec3::new(0.0, -0.3, 0.0);
+    let yaw0 = hash01(seed, 1) * TAU;
+    for k in 0..2u32 {
+        let a = yaw0 + k as f32 * PI;
+        let out = Vec3::new(a.sin(), 0.0, a.cos());
+        let side = Vec3::new(-out.z, 0.0, out.x);
+        let base = Vec3::Y * h;
+        let tip = base + out * 0.07 + Vec3::Y * 0.03;
+        let mid = (base + tip) * 0.5 + Vec3::Y * 0.01;
+        let w = side * 0.022;
+        let col = |_: Vec3| [CORN_LEAF_TIP[0], CORN_LEAF_TIP[1], CORN_LEAF_TIP[2], 1.0];
+        s.tri(base, mid - w, tip, col, Some(dome), 0.5);
+        s.tri(base, tip, mid + w, col, Some(dome), 0.5);
+    }
+    s.mesh()
+}
+
+/// A planted seed's patch of turned soil (farming v2): a disc 12 cm across
+/// the radius and a centimetre tall, standing on y = 0.
+pub fn soil_disc() -> Mesh {
+    Cylinder::new(0.12, 0.01)
+        .mesh()
+        .resolution(14)
+        .build()
+        .translated_by(Vec3::Y * 0.005)
+}

@@ -160,10 +160,10 @@ pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 /// Rust's wooden barricade: a free-standing wall of sharpened logs that
 /// blocks a body (wire v97 widened `ARCH_BITS` to five for it).
 pub const ARCH_BARRICADE: u8 = 16;
-/// A planter box (crops v0, `NOW.md` §5): a container that **grows**. Seeds
-/// in its beds become a crop over minutes on the ovens' own sweep
-/// (`oven.rs`), with no fuel and no switch — a planter is always growing,
-/// and what grows into what is rows in `content/cooking.toml`.
+/// A planter box (farming v2, `farm.rs`): six bed spots whose plants live in
+/// the farm store, and one box slot that is its water tank. A seed goes in
+/// the soil by hand (`Command::Plant`); what grows into what is the
+/// `[[crop]]` rows in `content/cooking.toml`.
 pub const ARCH_PLANTER: u8 = 17;
 /// A player's auto turret (`turret.rs`, `NOW.md` §0aa 1): a container whose
 /// rounds a gun on top spends on anybody who is not its owner or the crew
@@ -936,9 +936,6 @@ pub struct DeployRec {
     /// deliberately does not maintain this and why it is absent from
     /// `state_hash`. Read it on a client, never on a shard.
     pub dmg: u8,
-    /// Crops v1's planter beds (wire v100). Farming v2 keeps its plants in
-    /// `farm.rs`, so this is always 0 until the wire drops it.
-    pub grow: u8,
     /// The lock bolted on is a key lock, not a code lock (wire v120), so
     /// the client draws a padlock and offers no keypad. Wire-only and
     /// filled at encode from the lock store, `dmg`'s posture: not hashed,
@@ -2745,7 +2742,6 @@ pub fn stand_authored(
         has_lock: false,
         locked: false,
         dmg: 0,
-        grow: 0,
         keyed: false,
     };
     if !deploys.insert(rec, tick) {
@@ -2997,7 +2993,6 @@ pub fn place_deploy(
         locked: false,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
-        grow: 0,
         keyed: false,
     };
     if !deploys.insert(rec, tick) {
@@ -5801,7 +5796,6 @@ mod tests {
                 has_lock: false,
                 locked: false,
                 dmg: 0,
-                grow: 0,
                 keyed: false,
             },
             0,

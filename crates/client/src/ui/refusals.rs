@@ -145,12 +145,12 @@ pub const DEPLOY: [&str; 26] = [
     "that lock remembers too many already",
     "empty it first",
     // Farming v2 (`sim_core::farm`).
-    "that is not a seed",
-    "that spot is taken",
-    "nothing grows there",
-    "the island has too many plants",
-    "not ready for that yet",
-    "the planter is full of water",
+    "not something you can plant",
+    "something is already growing there",
+    "nothing will grow here",
+    "too many plants",
+    "not ready",
+    "already watered",
 ];
 
 /// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
@@ -515,6 +515,30 @@ mod tests {
             "that lock remembers too many already"
         );
         assert_eq!(deploy(REFUSE_D_NOT_EMPTY as u8), "empty it first");
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_ITEM as u8),
+            "not something you can plant"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_SPOT as u8),
+            "something is already growing there"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_SOIL as u8),
+            "nothing will grow here"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANTS_FULL as u8),
+            "too many plants"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_STAGE as u8),
+            "not ready"
+        );
+        assert_eq!(
+            deploy(sim_core::deploy::REFUSE_D_PLANT_WATER as u8),
+            "already watered"
+        );
 
         assert_eq!(
             build(REFUSE_B_WINDOW as u8),
