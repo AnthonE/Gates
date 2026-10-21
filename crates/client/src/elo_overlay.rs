@@ -319,7 +319,6 @@ use json::{Field, Value};
 /// `day` is UTC `YYYY-MM-DD`; pass `None` for today. It is a parameter because
 /// a round that straddles midnight should sign the day it started, and a
 /// client that cannot express that would silently sign the wrong one.
-/// The exact text a wallet signs for one game action.
 ///
 /// ⚠ The subject is the WALLET, and it was the vow_id until 2026-08-12: the
 /// signature recovers the signer, so a player does not swear a vow to act. The
@@ -397,7 +396,7 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// The SWORN name — in the locked index, and it cost SCRY to change.
+    /// The SWORN name — in the locked index, and it costs ELO to change.
     pub fn handle(&self) -> Option<String> {
         self.raw.opt_str("handle")
     }
