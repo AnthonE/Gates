@@ -4851,17 +4851,23 @@ impl ShardCore {
                     }
                 }
                 EV_DOOR => {
-                    // A door's state is a world fact: broadcast, not
-                    // AOI'd — though the placement that put it there is
-                    // now (`NOW.md` §0n1 item 2). A client keeps every
-                    // record it was ever told about (nothing un-subscribes
-                    // it), so one that walked away still holds this door
-                    // and must hear it swing. Aiming this needs the re-arm
-                    // argument, and it is `NOW.md` §0fan's. A client that
-                    // misses one re-derives it from the deploy walk — the
-                    // sync record carries the bit.
+                    // Aimed like the placement that put the door there
+                    // (`EV_DEPLOY_PLACED`'s predicate, owner exempt). A
+                    // client that walked away keeps its stale record, and
+                    // that is safe by the re-arm argument: to come back
+                    // inside `AOI_ENTER` it must move past the re-arm
+                    // distance, the re-arm re-walks everything in range,
+                    // and a walk record overwrites the door's open and lock
+                    // bits (`DeploySet::insert`, `seal_for`) before the
+                    // player can reach it.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let owner = self
+                        .world
+                        .deploys
+                        .find(cx, cz, level, loc)
+                        .map_or(0, |d| d.owner);
+                    let at = interest::cell_cm(cx, cz);
                     let (open, locked) = (ev.b & 1 != 0, ev.b & 2 != 0);
                     let has_lock = ev.b & 4 != 0;
                     // Which kind of lock, off the store at encode (v120):
@@ -4880,7 +4886,19 @@ impl ShardCore {
                     ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        owner,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -4983,13 +5001,20 @@ impl ShardCore {
                     }
                 }
                 EV_GROW => {
-                    // A planter's beds (crops v1): broadcast, `EV_OVEN`'s
-                    // posture. A client that misses one reads the byte off
-                    // the deploy walk on its resync.
+                    // A planter's beds (crops v1): aimed like `EV_DOOR`, for
+                    // its reason — the walk record carries the beds byte,
+                    // so a client that missed a stage reads it back before
+                    // it is near enough to see the planter.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let level = (ev.b >> 16) as u8;
                     let loc = (ev.b >> 8) as u8;
                     let stages = ev.b as u8;
+                    let owner = self
+                        .world
+                        .deploys
+                        .find(cx, cz, level, loc)
+                        .map_or(0, |d| d.owner);
+                    let at = interest::cell_cm(cx, cz);
                     match protocol::encode_event_planter(
                         cx,
                         cz,
@@ -5000,7 +5025,19 @@ impl ShardCore {
                     ) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                if c.piece_anchor_valid
+                                    && !interest::owned_in_interest(
+                                        c.piece_anchor_cm,
+                                        c.id,
+                                        owner,
+                                        at,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.deploy_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -5729,8 +5766,14 @@ impl ShardCore {
         }
     }
 
-    /// Resolve which connection slot player `id` belongs to.
+    /// Resolve which connection slot player `id` belongs to. The shard mints
+    /// ids with the connection slot in the low byte (`net.rs`), so that slot
+    /// is asked first; anything else (a test's arbitrary id) takes the scan.
     fn client_slot_of(&self, id: u32) -> Option<usize> {
+        let guess = (id & 0xFF) as usize;
+        if guess < MAX_PLAYERS && self.clients[guess].connected && self.clients[guess].id == id {
+            return Some(guess);
+        }
         (0..MAX_PLAYERS).find(|&s| self.clients[s].connected && self.clients[s].id == id)
     }
 

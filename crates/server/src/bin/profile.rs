@@ -274,6 +274,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     let id = core.world.players[w].id;
     let mut cmds: Vec<Command> = Vec::with_capacity(MAX_COMMANDS_PER_TICK);
     let mut placed = 0usize;
+    let mut refused = [0u32; 16];
     // A solid block of foundations on the build grid (`BUILD_CELL_M`), one
     // per cell. The builder teleports to each address because `place`
     // checks reach and this is not a walk simulator.
@@ -289,8 +290,14 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
             // player, and paying for 2,000 foundations honestly would be a
             // gather benchmark rather than a server one.
             let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
-            core.world.players[w].body.qx = (ax / 0.03) as i32;
-            core.world.players[w].body.qz = (az / 0.03) as i32;
+            // Stood on the ground there, and kept alive: set by x and z
+            // alone the builder fell or sank on every hop, and once dead its
+            // placements were dropped without a word.
+            let (seed, haven) = (core.world.seed, core.world.haven);
+            let hp = core.world.combat.player_hp;
+            let b = &mut core.world.players[w];
+            b.body = sim_core::movement::Body::at(seed, &haven, ax, az);
+            b.hp = hp;
             for &(item, units) in cost.costs.iter().take(cost.n_costs as usize) {
                 core.world.players[w].inv[0] = ItemStack {
                     item,
@@ -306,17 +313,29 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
-                freehand: false,
+                // Each on its own ground: latched into one block, the whole
+                // sweep is one plate and the hills refuse nearly all of it
+                // (194 of 16 000 landed).
+                freehand: true,
                 plate: 0,
             });
             let before = core.world.pieces.len();
             core.world.tick(&cmds);
             cmds.clear();
             placed += core.world.pieces.len() - before;
+            for ev in core.world.events.entries() {
+                if ev.code == sim_core::world::EV_BUILD_REFUSED && ev.a == id {
+                    refused[(ev.b as usize).min(refused.len() - 1)] += 1;
+                }
+            }
         }
     }
     // The fixture leaves; its body must not sit in the cluster's AOI.
     core.world.tick(&[Command::Leave { id }]);
+    // Said, so a store that came up short is never mistaken for a full one.
+    if placed < want {
+        eprintln!("profile: {placed} of {want} pieces landed; refusals by code {refused:?}");
+    }
     core.world.pieces.len()
 }
 

@@ -42,7 +42,7 @@ use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
 use crate::fmath::floor_i32;
 use crate::limits::{
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_BUILD_SOCKETS, MAX_COLLAPSE_PIECES, MAX_DEPLOY_COSTS,
-    MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
+    MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, PIECE_ADDR_SLOTS, SUPPORT_SWEEP_PER_TICK,
 };
 use crate::terrain;
 use crate::world::{
@@ -875,6 +875,11 @@ pub struct Pieces {
     entries: Box<[PieceRec; MAX_PIECES]>,
     len: usize,
     cols: Box<crate::collide::ColIndex>,
+    /// Address → index into `entries`, so `find` is a probe rather than a
+    /// scan of the whole store (a raid's every hit asks it). Derived state
+    /// like `cols`: kept in lockstep by `insert`, `remove_at`,
+    /// `set_rotation` and `restore`, never hashed, never saved.
+    addr: AddrIndex,
     /// Bumped by every insert, removal, upgrade and restore — the stamp
     /// `claim::ClaimCache` compares to know whether the base shapes (and,
     /// since upkeep v2, the graded counts) it cached can have changed. **Derived-cache plumbing, not state**: it
@@ -895,6 +900,7 @@ impl Pieces {
             entries: crate::boxed_array(PieceRec::default()),
             len: 0,
             cols: Box::new(crate::collide::ColIndex::new()),
+            addr: AddrIndex::new(),
             gen: 0,
         }
     }
@@ -947,18 +953,15 @@ impl Pieces {
     }
 
     pub fn find(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<&PieceRec> {
-        self.entries[..self.len]
-            .iter()
-            .find(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
+        self.find_index(cx, cz, level, loc)
+            .map(|i| &self.entries[i])
     }
 
     /// The store index of the piece at an address — what a write needs
     /// (`find` hands out a reference the borrow checker won't let a
     /// mutation follow).
     pub(crate) fn find_index(&self, cx: u16, cz: u16, level: u8, loc: u8) -> Option<usize> {
-        self.entries[..self.len]
-            .iter()
-            .position(|p| p.cx == cx && p.cz == cz && p.level == level && p.loc == loc)
+        self.addr.get(addr_key(cx, cz, level, loc))
     }
 
     /// Re-row entry `i` in place (the upgrade verb's write). The address
@@ -984,6 +987,8 @@ impl Pieces {
             self.entries[i].facing ^= 1;
         } else {
             self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.addr.del(addr_key(rec.cx, rec.cz, rec.level, rec.loc));
+            self.addr.put(addr_key(rec.cx, rec.cz, rec.level, loc), i);
             self.entries[i].loc = loc;
             self.cols
                 .add(rec.cx, rec.cz, rec.level, loc, shape, rec.plate);
@@ -1035,6 +1040,8 @@ impl Pieces {
         }
         self.entries[self.len] = rec;
         self.placed[self.len] = tick;
+        self.addr
+            .put(addr_key(rec.cx, rec.cz, rec.level, rec.loc), self.len);
         self.len += 1;
         self.cols
             .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
@@ -1046,8 +1053,14 @@ impl Pieces {
     pub(crate) fn remove_at(&mut self, i: usize, shape: u8) {
         let rec = self.entries[i];
         self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        self.addr.del(addr_key(rec.cx, rec.cz, rec.level, rec.loc));
         self.len -= 1;
         self.entries[i] = self.entries[self.len];
+        if i < self.len {
+            let moved = self.entries[i];
+            self.addr
+                .put(addr_key(moved.cx, moved.cz, moved.level, moved.loc), i);
+        }
         // Both halves move together, which is the whole contract of a
         // parallel array (`placed`'s own doc).
         self.placed[i] = self.placed[self.len];
@@ -1122,6 +1135,7 @@ impl Pieces {
         debug_assert_eq!(recs.len(), placed.len(), "placed must be index-aligned");
         self.gen += 1;
         self.cols.clear();
+        self.addr.clear();
         self.len = recs.len().min(MAX_PIECES);
         self.entries[..self.len].copy_from_slice(&recs[..self.len]);
         self.placed[..self.len].copy_from_slice(&placed[..self.len]);
@@ -1132,6 +1146,106 @@ impl Pieces {
             let shape = bc.pieces[rec.row as usize].shape;
             self.cols
                 .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
+        }
+        // The first record at an address wins, as the scan `find` replaced
+        // would have answered.
+        for (i, rec) in self.entries[..self.len].iter().enumerate() {
+            let key = addr_key(rec.cx, rec.cz, rec.level, rec.loc);
+            if self.addr.get(key).is_none() {
+                self.addr.put(key, i);
+            }
+        }
+    }
+}
+
+/// A piece address as one key for [`AddrIndex`]; the top bit marks a used
+/// slot, so a zero key is an empty one.
+fn addr_key(cx: u16, cz: u16, level: u8, loc: u8) -> u64 {
+    (1 << 63) | (cx as u64) << 32 | (cz as u64) << 16 | (level as u64) << 8 | loc as u64
+}
+
+/// The address → index table behind `Pieces::find`: `collide::ColIndex`'s
+/// open addressing (Fibonacci home slot, linear probe, Knuth 6.4 R
+/// backward-shift delete, so no tombstones), keyed by [`addr_key`].
+struct AddrIndex {
+    keys: Box<[u64; PIECE_ADDR_SLOTS]>,
+    vals: Box<[u16; PIECE_ADDR_SLOTS]>,
+}
+
+impl AddrIndex {
+    fn new() -> Self {
+        Self {
+            keys: crate::boxed_array(0),
+            vals: crate::boxed_array(0),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.keys.fill(0);
+        self.vals.fill(0);
+    }
+
+    #[inline]
+    fn home(key: u64) -> usize {
+        (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - PIECE_ADDR_SLOTS.trailing_zeros()))
+            as usize
+            & (PIECE_ADDR_SLOTS - 1)
+    }
+
+    fn get(&self, key: u64) -> Option<usize> {
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == key {
+                return Some(self.vals[i] as usize);
+            }
+            if k == 0 {
+                return None;
+            }
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+    }
+
+    /// Insert or re-point. The store holds at most `MAX_PIECES` records, so
+    /// the table never passes half load and a free slot always exists.
+    fn put(&mut self, key: u64, idx: usize) {
+        let mut i = Self::home(key);
+        while self.keys[i] != 0 && self.keys[i] != key {
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+        self.keys[i] = key;
+        self.vals[i] = idx as u16;
+    }
+
+    fn del(&mut self, key: u64) {
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == 0 {
+                return;
+            }
+            if k == key {
+                break;
+            }
+            i = (i + 1) & (PIECE_ADDR_SLOTS - 1);
+        }
+        self.keys[i] = 0;
+        let mut j = i;
+        loop {
+            j = (j + 1) & (PIECE_ADDR_SLOTS - 1);
+            let k = self.keys[j];
+            if k == 0 {
+                return;
+            }
+            let h = Self::home(k);
+            if j.wrapping_sub(h) & (PIECE_ADDR_SLOTS - 1)
+                >= j.wrapping_sub(i) & (PIECE_ADDR_SLOTS - 1)
+            {
+                self.keys[i] = k;
+                self.vals[i] = self.vals[j];
+                self.keys[j] = 0;
+                i = j;
+            }
         }
     }
 }
@@ -5495,6 +5609,49 @@ mod tests {
                     "the returned count disagrees with the store it left"
                 );
             }
+        }
+    }
+
+    /// `find` probes an address table now, not the store: through inserts
+    /// and swap-removes in a random order it must answer exactly what the
+    /// scan it replaced would — every live address at its own index, every
+    /// gone one absent.
+    #[test]
+    fn address_index_churn_matches_a_scan() {
+        let mut rng = crate::rng::Pcg32::new(0x0ADD_2E55, 3);
+        let mut pieces = Pieces::new();
+        let scan = |p: &Pieces, cx: u16, cz: u16, level: u8, loc: u8| {
+            p.entries()
+                .iter()
+                .position(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+        };
+        for _ in 0..20_000 {
+            let cx = CX + rng.next_bounded(24) as u16;
+            let cz = CZ + rng.next_bounded(24) as u16;
+            let level = rng.next_bounded(4) as u8;
+            let loc = rng.next_bounded(LOC_RISER_XLO as u32 + 1) as u8;
+            if rng.next_bounded(3) == 0 && !pieces.is_empty() {
+                let i = rng.next_bounded(pieces.len() as u32) as usize;
+                let shape = pieces.entries()[i].row;
+                pieces.remove_at(i, shape);
+            } else if scan(&pieces, cx, cz, level, loc).is_none() {
+                let rec = PieceRec {
+                    cx,
+                    cz,
+                    level,
+                    loc,
+                    row: SHAPE_FOUNDATION,
+                    ..PieceRec::default()
+                };
+                assert!(pieces.insert(rec, SHAPE_FOUNDATION, 0));
+            }
+            assert_eq!(
+                pieces.find_index(cx, cz, level, loc),
+                scan(&pieces, cx, cz, level, loc)
+            );
+        }
+        for (i, r) in pieces.entries().iter().enumerate() {
+            assert_eq!(pieces.find_index(r.cx, r.cz, r.level, r.loc), Some(i));
         }
     }
 
