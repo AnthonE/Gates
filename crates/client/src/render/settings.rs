@@ -1123,6 +1123,12 @@ fn target_note(s: &Settings) -> String {
     if got.clouds != want.clouds {
         notes.push("flat clouds - no atmosphere to march them in".to_string());
     }
+    let cap = super::render_scale::web_cap();
+    if cap < want.render_scale {
+        notes.push(format!(
+            "world drawn at {cap}% - a browser draws a 1080p frame's worth"
+        ));
+    }
     if notes.is_empty() {
         "everything above is what the renderer gets".to_string()
     } else {

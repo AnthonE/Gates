@@ -41,14 +41,14 @@
 //! DECISIONS.md §open ("piece collision v0" row).
 
 use crate::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
-    LOC_RISER, LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
-    LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FLOOR_FRAME,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_ROOF, SHAPE_STAIRS,
-    SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_RISER,
+    LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
+    LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FRAME,
+    SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR,
+    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
-use crate::fmath::fabs;
 use crate::footprint::{Pose, Rect, SOLID_REACH_M};
+use crate::hull::Hull;
 use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, SOLID_SLOTS};
 use crate::movement::STEP_UP;
 
@@ -713,6 +713,20 @@ pub struct ColIndex {
     solid_keys: Box<[u32; SOLID_SLOTS]>,
     solids: Box<[SolidPose; SOLID_SLOTS]>,
     solid_len: u32,
+    /// Every piece as a posed row (freeform W1): what the body, ground and
+    /// shot walks read. The masks above stay for occupancy — the build
+    /// rules, claim, upkeep and the deploy checks — until those read the
+    /// lattice.
+    hulls: crate::hull::Hulls,
+}
+
+/// Named, not dumped: the index is tens of thousands of rows, and what a
+/// debug print of a borrower (`client::ui::interact::Aim`) wants is that
+/// one is there.
+impl core::fmt::Debug for ColIndex {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ColIndex")
+    }
 }
 
 const OCCUPIED: u32 = 1 << 31;
@@ -794,7 +808,13 @@ impl ColIndex {
             solid_keys: crate::boxed_array(0),
             solids: crate::boxed_array(SolidPose::EMPTY),
             solid_len: 0,
+            hulls: crate::hull::Hulls::new(),
         }
+    }
+
+    /// The posed rows the collision walks read.
+    pub fn hulls(&self) -> &crate::hull::Hulls {
+        &self.hulls
     }
 
     pub fn len(&self) -> usize {
@@ -817,6 +837,7 @@ impl ColIndex {
         self.solid_keys.fill(0);
         self.solids.fill(SolidPose::EMPTY);
         self.solid_len = 0;
+        self.hulls.clear();
     }
 
     #[inline]
@@ -951,8 +972,45 @@ impl ColIndex {
     /// rule would make the rebuilt index depend on record order, which is the
     /// one thing a derived-state rebuild must never do.
     pub fn add(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shape: u8, plate: i8) {
-        if self.len as usize >= COL_INDEX_SLOTS - 1 {
+        if !self.add_masks(cx, cz, level, loc, shape, plate) {
             return;
+        }
+        let mut h = crate::hull::grid_hull(
+            crate::hull::grid_key(cx, cz, level, loc),
+            cx,
+            cz,
+            level,
+            loc,
+            shape,
+            f32::NAN,
+            f32::NAN,
+        );
+        // A door or insert heard before its opening keeps its state.
+        let m = self.get(cx, cz);
+        let (shut, panes) = match loc {
+            LOC_EDGE_XLO => (m.shut_xlo, m.panes_xlo),
+            LOC_EDGE_ZLO => (m.shut_zlo, m.panes_zlo),
+            _ => (0, 0),
+        };
+        h.shut = shut & (1 << level) != 0;
+        h.panes = panes & (1 << level) != 0;
+        self.hulls.add(h);
+    }
+
+    /// [`ColIndex::add`]'s occupancy half alone: the masks, and no row for
+    /// the walks — what a store that files its own posed rows
+    /// (`build::Pieces`) keeps the masks with. True when a mask took it.
+    pub fn add_masks(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        shape: u8,
+        plate: i8,
+    ) -> bool {
+        if self.len as usize >= COL_INDEX_SLOTS - 1 {
+            return false;
         }
         let key = Self::key(cx, cz);
         let mut i = Self::home(key);
@@ -987,10 +1045,19 @@ impl ColIndex {
         }
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m |= 1 << level;
-        } else if self.masks[i].is_empty() {
-            // A no-footprint shape opened this slot: take it back.
-            self.remove_slot(i);
+            true
+        } else {
+            if self.masks[i].is_empty() {
+                // A no-footprint shape opened this slot: take it back.
+                self.remove_slot(i);
+            }
+            false
         }
+    }
+
+    /// The posed rows, for a store that files its own.
+    pub fn hulls_mut(&mut self) -> &mut crate::hull::Hulls {
+        &mut self.hulls
     }
 
     /// The plate of a column that holds a **piece**, or `None`.
@@ -1098,6 +1165,7 @@ impl ColIndex {
         }
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m &= !(1 << level);
+            self.hulls.del(crate::hull::grid_key(cx, cz, level, loc));
         }
         if self.masks[i].is_empty() {
             self.remove_slot(i);
@@ -1132,6 +1200,8 @@ impl ColIndex {
                 } else {
                     self.masks[i].panes_zlo |= 1 << level;
                 }
+                self.hulls
+                    .set_shut(crate::hull::grid_key(cx, cz, level, loc), true, true);
                 return;
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
@@ -1142,6 +1212,8 @@ impl ColIndex {
         if loc != LOC_EDGE_XLO && loc != LOC_EDGE_ZLO {
             return;
         }
+        self.hulls
+            .set_shut(crate::hull::grid_key(cx, cz, level, loc), shut, false);
         if !shut {
             // Clear: reuse the del-style walk; absent column means clear.
             let key = Self::key(cx, cz);
@@ -1290,6 +1362,26 @@ fn col_band(
 /// How far an edge's solid foot continues to the lower adjoining floor.
 /// Its head and opening sockets stay on the column lattice. Only an actual
 /// supporting plane counts; bare terrain and a triangle's opposite edge do not.
+/// A row's floor and foot: its own, or as the column index derives them —
+/// the column's floor at the row's socket, and how far an edge reaches
+/// below it.
+fn hull_y(seed: u64, haven: &crate::terrain::Haven, cols: &ColIndex, h: &Hull) -> (f32, f32) {
+    // A row posed from its building (`build::Pieces`) carries its heights;
+    // a grid row a mirror filed (`ColIndex::add`) derives them here.
+    if !h.floor_y.is_nan() {
+        return (h.floor_y, h.foot_y);
+    }
+    let (cx, cz) = (h.hit.cx, h.hit.cz);
+    let floor = col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(h.level);
+    if h.kind == crate::hull::HULL_EDGE {
+        let plate = cols.get(cx, cz).plate;
+        let drop = edge_foot_drop(seed, haven, cols, cx, cz, h.level, h.loc, plate);
+        (floor, floor - drop)
+    } else {
+        (floor, floor)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn edge_foot_drop(
     seed: u64,
@@ -1336,37 +1428,8 @@ pub fn floor_under(
     z: f32,
     feet_y: f32,
 ) -> Option<(u16, u16, u8)> {
-    // A hand, and a little over: another body's feet are an interpolated
-    // transform, not the predictor's.
-    const HAND: f32 = 0.25;
-    let r = CAPSULE_RADIUS_M;
-    for (px, pz) in [(x, z), (x - r, z), (x + r, z), (x, z - r), (x, z + r)] {
-        let bx = crate::build::build_cell_of(px);
-        let bz = crate::build::build_cell_of(pz);
-        if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-            continue;
-        }
-        let m = cols.get(bx as u16, bz as u16);
-        let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-        let flats = m.planes | m.floor_frames | tris;
-        let stairs = m.stairs | m.stairs_xhi | m.stairs_zlo | m.stairs_xlo;
-        if flats | stairs == 0 {
-            continue;
-        }
-        let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-        for level in 0..MAX_BUILD_SOCKETS {
-            let bit = 1u16 << level;
-            let y = base + crate::build::level_y(level as u8);
-            let on_flat = flats & bit != 0 && fabs(y - feet_y) <= HAND;
-            let on_stairs = stairs & bit != 0
-                && feet_y > y - HAND
-                && feet_y < y + crate::build::LEVEL_H_M + HAND;
-            if on_flat || on_stairs {
-                return Some((bx as u16, bz as u16, level as u8));
-            }
-        }
-    }
-    None
+    let y = |h: &Hull| hull_y(seed, haven, cols, h);
+    cols.hulls.floor_under(&y, x, z, feet_y)
 }
 
 /// The highest built surface under the POINT (x, z) that something with its
@@ -1406,62 +1469,8 @@ pub fn piece_ground(
         }
         false
     });
-    let m = cols.get(bx as u16, bz as u16);
-    let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-    if m.planes | m.floor_frames | m.stairs | m.stairs_xhi | m.stairs_zlo | m.stairs_xlo | tris == 0
-    {
-        return best;
-    }
-    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-    // A triangle plane is ground over its own half of the cell and air
-    // over the other (triangles v0) — [`tri_half_has`].
-    let dx = x - bx as f32 * BUILD_CELL_M;
-    let dz = z - bz as f32 * BUILD_CELL_M;
-    let in_half = |loc: u8| tri_half_has(loc, dx, dz);
-    for level in 0..MAX_BUILD_SOCKETS {
-        let bit = 1u16 << level;
-        let floor = base + crate::build::level_y(level as u8);
-        if (m.planes & bit != 0 || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, 0.0)))
-            && floor <= lid
-            && floor > best
-        {
-            best = floor;
-        }
-        if tris & bit != 0 && floor <= lid && floor > best {
-            let on = (m.tri_xlo_zlo & bit != 0
-                && in_half(LOC_TRI_XLO_ZLO)
-                && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZLO)
-                    || tri_frame_solid(LOC_TRI_XLO_ZLO, dx, dz, 0.0)))
-                || (m.tri_xhi_zlo & bit != 0
-                    && in_half(LOC_TRI_XHI_ZLO)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZLO)
-                        || tri_frame_solid(LOC_TRI_XHI_ZLO, dx, dz, 0.0)))
-                || (m.tri_xlo_zhi & bit != 0
-                    && in_half(LOC_TRI_XLO_ZHI)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZHI)
-                        || tri_frame_solid(LOC_TRI_XLO_ZHI, dx, dz, 0.0)))
-                || (m.tri_xhi_zhi & bit != 0
-                    && in_half(LOC_TRI_XHI_ZHI)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZHI)
-                        || tri_frame_solid(LOC_TRI_XHI_ZHI, dx, dz, 0.0)));
-            if on {
-                best = floor;
-            }
-        }
-        for (mask, loc) in m.stair_masks().into_iter().zip(crate::build::STAIR_LOCS) {
-            if mask & bit != 0 {
-                if let Some(y) =
-                    crate::circulation::surface(m.riser_shape(level as u8), loc, dx, dz)
-                {
-                    let ramp = floor + y;
-                    if ramp <= lid && ramp > best {
-                        best = ramp;
-                    }
-                }
-            }
-        }
-    }
-    best
+    let y = |h: &Hull| hull_y(seed, haven, cols, h);
+    best.max(cols.hulls.ground(&y, x, z, feet_y))
 }
 
 /// [`piece_ground`] for a **body**: the highest built top within a step of
@@ -1490,16 +1499,8 @@ pub fn body_ground(
     feet_y: f32,
 ) -> f32 {
     let lid = feet_y + STEP_UP;
-    let mut best = NO_SURFACE;
-    // Planes, frames, triangles and stair ramps: the walk `plane_blocked` and
-    // `piece_ceiling` take, so a top is ground exactly where its flank and
-    // its underside would be solid.
-    any_body_plane(seed, haven, cols, x, z, |_, top| {
-        if top <= lid && top > best {
-            best = top;
-        }
-        false
-    });
+    let y = |h: &Hull| hull_y(seed, haven, cols, h);
+    let mut best = cols.hulls.body_ground(&y, x, z, feet_y);
     // Solid-deploy tops at `deploy_blocked`'s footprint, closed where that
     // one is open, over the same walk.
     let r2 = CAPSULE_RADIUS_M * CAPSULE_RADIUS_M;
@@ -1578,14 +1579,8 @@ pub fn solid_bottom(
     p: &SolidPose,
     rect: &Rect,
 ) -> f32 {
-    let m = cols.get(p.cx, p.cz);
-    let dx = rect.x - p.cx as f32 * BUILD_CELL_M;
-    let dz = rect.z - p.cz as f32 * BUILD_CELL_M;
-    if p.level > 0 || m.plane_covers(0, dx, dz) {
-        col_base_y(seed, haven, cols, p.cx, p.cz) + crate::build::level_y(p.level)
-    } else {
-        p.ground_y
-    }
+    crate::deploy::built_floor(seed, haven, cols, p.cx, p.cz, p.level, rect.x, rect.z)
+        .unwrap_or(p.ground_y)
 }
 
 /// Whether a solid deployable stops a capsule standing at (`x`, `z`) with
@@ -1727,10 +1722,8 @@ pub fn plane_blocked(
     z: f32,
     feet_y: f32,
 ) -> bool {
-    let head = feet_y + CAPSULE_HEIGHT_M;
-    any_body_plane(seed, haven, cols, x, z, |level, top| {
-        feet_y + STEP_UP < top && (level == 0 || head > top - PLANE_THICKNESS_M)
-    })
+    let y = |h: &Hull| hull_y(seed, haven, cols, h);
+    cols.hulls.plane_blocked(&y, x, z, feet_y)
 }
 
 /// Is there a roof over a body standing here — a floor, roof or stair
@@ -1764,351 +1757,8 @@ pub(crate) fn piece_ceiling(
     z: f32,
     feet_y: f32,
 ) -> Option<f32> {
-    let head = feet_y + CAPSULE_HEIGHT_M;
-    let mut lowest: Option<f32> = None;
-    any_body_plane(seed, haven, cols, x, z, |level, top| {
-        let underside = top - PLANE_THICKNESS_M;
-        if level > 0 && head <= underside {
-            lowest = Some(lowest.map_or(underside, |old| old.min(underside)));
-        }
-        false
-    });
-    lowest
-}
-
-/// Visit at most four columns and eight levels, without allocating. Keeping
-/// the footprint here makes a slab's flank and underside agree at cell edges
-/// and at the four triangular half tests.
-fn any_body_plane(
-    seed: u64,
-    haven: &crate::terrain::Haven,
-    cols: &ColIndex,
-    x: f32,
-    z: f32,
-    mut visit: impl FnMut(usize, f32) -> bool,
-) -> bool {
-    let r = CAPSULE_RADIUS_M;
-    // **Up to FOUR cells, not one, and that is the difference from
-    // [`deploy_blocked`].** That function is complete over the candidate's own
-    // cell because `deploy::DEPLOY_VOL`'s const block proves no volume,
-    // inflated by the capsule, reaches past the half-cell. A plane IS the
-    // cell, so inflated by the capsule it reaches past every boundary — the
-    // first draft looked only at `build_cell_of(x, z)` and let a body stand a
-    // finger's width from a stilted plate, because the point was in the empty
-    // cell NEXT to it. A 3 m cell against a 0.4 m radius means the reach is at
-    // most one cell each way, so the corners `x ± r` and `z ± r` name every
-    // cell that can matter and the pair collapses to one when the point is
-    // not near a boundary.
-    let (x0, x1) = (
-        crate::build::build_cell_of(x - r),
-        crate::build::build_cell_of(x + r),
-    );
-    let (z0, z1) = (
-        crate::build::build_cell_of(z - r),
-        crate::build::build_cell_of(z + r),
-    );
-    let half = BUILD_CELL_M * 0.5;
-    for bx in x0..=x1 {
-        for bz in z0..=z1 {
-            if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-                continue;
-            }
-            let m = cols.get(bx as u16, bz as u16);
-            let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-            if m.planes
-                | m.floor_frames
-                | tris
-                | m.stairs
-                | m.stairs_xhi
-                | m.stairs_zlo
-                | m.stairs_xlo
-                == 0
-            {
-                continue;
-            }
-            // The cell, at the capsule's radius: the clamp-to-rectangle circle
-            // distance [`deploy_blocked`] uses, for its reason — growing the
-            // rectangle by the radius rounds the corners the wrong way.
-            let (cxm, czm) = (
-                bx as f32 * BUILD_CELL_M + half,
-                bz as f32 * BUILD_CELL_M + half,
-            );
-            let ex = x - cxm - (x - cxm).clamp(-half, half);
-            let ez = z - czm - (z - czm).clamp(-half, half);
-            if ex * ex + ez * ez >= r * r {
-                continue;
-            }
-            let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-            let dx = x - bx as f32 * BUILD_CELL_M;
-            let dz = z - bz as f32 * BUILD_CELL_M;
-            // `piece_ground`'s own half tests, boundary-inclusive on both
-            // sides for its reason: the seam of a NW+SE pair must read the
-            // same from either.
-            let in_half = |loc: u8| match loc {
-                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
-                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
-                LOC_TRI_XHI_ZLO => dz <= dx,
-                _ => dz >= dx,
-            };
-            for level in 0..MAX_BUILD_SOCKETS {
-                let bit = 1u16 << level;
-                let here = m.planes & bit != 0
-                    || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
-                    || (m.tri_xlo_zlo & bit != 0
-                        && in_half(LOC_TRI_XLO_ZLO)
-                        && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZLO)
-                            || tri_frame_solid(LOC_TRI_XLO_ZLO, dx, dz, r)))
-                    || (m.tri_xhi_zlo & bit != 0
-                        && in_half(LOC_TRI_XHI_ZLO)
-                        && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZLO)
-                            || tri_frame_solid(LOC_TRI_XHI_ZLO, dx, dz, r)))
-                    || (m.tri_xlo_zhi & bit != 0
-                        && in_half(LOC_TRI_XLO_ZHI)
-                        && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZHI)
-                            || tri_frame_solid(LOC_TRI_XLO_ZHI, dx, dz, r)))
-                    || (m.tri_xhi_zhi & bit != 0
-                        && in_half(LOC_TRI_XHI_ZHI)
-                        && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZHI)
-                            || tri_frame_solid(LOC_TRI_XHI_ZHI, dx, dz, r)));
-                let floor = base + crate::build::level_y(level as u8);
-                if here && visit(level, floor) {
-                    return true;
-                }
-                for (mask, loc) in m.stair_masks().into_iter().zip(crate::build::STAIR_LOCS) {
-                    if mask & bit == 0 {
-                        continue;
-                    }
-                    let shape = m.riser_shape(level as u8);
-                    if let Some(y) = crate::circulation::surface(shape, loc, dx, dz) {
-                        let slab_level = if shape == crate::build::SHAPE_FOUNDATION_STEPS {
-                            0
-                        } else {
-                            level.max(1)
-                        };
-                        if visit(slab_level, floor + y) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Whether a built **plane** stops a shot sample at (`x`, `z`) at altitude
-/// `y` with radius `r` — [`plane_blocked`]'s slab set with a projectile's
-/// profile instead of a body's, and the answer to the question that
-/// function's own doc deferred until now.
-///
-/// **The defect it closes: an arrow fired down inside a base reached the
-/// dirt.** [`shot_blocked`] walked edges and diagonals and nothing else, so
-/// every floor, roof and foundation in the world was transparent to a
-/// projectile — a shot through six storeys stopped on `SURF_GROUND` under
-/// the base, and a roof was cover you could see through. The body walk has
-/// read these bits since piece flanks v0; only the shot walk had not.
-///
-/// Three differences from the body twin, each the same one [`shot_blocked`]
-/// lists against [`blocked`]:
-///
-/// - the mover is a point at `y`, not a capsule spanning `feet_y..head`;
-/// - the footprint is inflated by `r` (the arrowhead), not
-///   [`CAPSULE_RADIUS_M`], through the identical clamp-to-rectangle circle
-///   distance — so the two walks are one algorithm with two radii rather
-///   than two footprints that can drift;
-/// - there is **no [`STEP_UP`]**. A body may climb a slab that low; an
-///   arrow meets it. That short circuit is the whole of what keeps a base
-///   walkable and it has no meaning for a projectile.
-///
-/// **Stairs are absent here because they are absent from the body twin**,
-/// not by a separate judgement: [`plane_blocked`] reads `planes` and the
-/// triangles and never `stairs` — a ramp is something you stand on
-/// ([`piece_ground`]), never something that stops you. Keeping the two sets
-/// equal is what lets the pair be read as one law; a stair that stops an
-/// arrow is a change to *both* walks and its own item (`NOW.md` §0mk).
-///
-/// **Point sampling is honest at this thickness.** `ranged.rs` taps its
-/// segment every `limits::ARROW_STEP_MM` (170 mm), and the vertical
-/// spacing of those taps is at most that — so a slab whose band is
-/// [`PLANE_THICKNESS_M`] + 2·`r` deep always takes at least two samples,
-/// which is the same argument `ARROW_STEP_MM`'s own doc makes about a
-/// trunk's diameter.
-fn cell_planes_stop_shot(
-    seed: u64,
-    haven: &crate::terrain::Haven,
-    cols: &ColIndex,
-    x: f32,
-    z: f32,
-    y: f32,
-    r: f32,
-) -> Option<PieceHit> {
-    // The same four-cell reach [`plane_blocked`] takes, and for its reason:
-    // a plane IS the cell, so inflated by the mover's radius it can reach
-    // past a boundary. The arrowhead is 0.05 m against a 3 m cell, so the
-    // pair collapses to one except within a head's width of a seam.
-    let (x0, x1) = (
-        crate::build::build_cell_of(x - r),
-        crate::build::build_cell_of(x + r),
-    );
-    let (z0, z1) = (
-        crate::build::build_cell_of(z - r),
-        crate::build::build_cell_of(z + r),
-    );
-    let half = BUILD_CELL_M * 0.5;
-    for bx in x0..=x1 {
-        for bz in z0..=z1 {
-            if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-                continue;
-            }
-            let m = cols.get(bx as u16, bz as u16);
-            let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-            if m.planes
-                | m.floor_frames
-                | tris
-                | m.stairs
-                | m.stairs_xhi
-                | m.stairs_zlo
-                | m.stairs_xlo
-                == 0
-            {
-                continue;
-            }
-            let (cxm, czm) = (
-                bx as f32 * BUILD_CELL_M + half,
-                bz as f32 * BUILD_CELL_M + half,
-            );
-            let ex = x - cxm - (x - cxm).clamp(-half, half);
-            let ez = z - czm - (z - czm).clamp(-half, half);
-            if ex * ex + ez * ez >= r * r {
-                continue;
-            }
-            let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-            let dx = x - bx as f32 * BUILD_CELL_M;
-            let dz = z - bz as f32 * BUILD_CELL_M;
-            // `piece_ground`'s own half tests, boundary-inclusive on both
-            // sides for its reason: the seam of a NW+SE pair must read the
-            // same from either.
-            let in_half = |loc: u8| match loc {
-                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
-                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
-                LOC_TRI_XHI_ZLO => dz <= dx,
-                _ => dz >= dx,
-            };
-            for level in 0..MAX_BUILD_SOCKETS {
-                let bit = 1u16 << level;
-                // Which slab, not just whether one — the address is what
-                // `ranged.rs` charges structure damage against, and the OR
-                // this replaced could not say.
-                //
-                // **The order is a real tie-break and not just insurance.**
-                // A plane and a triangle cannot share a (cell, level) —
-                // `build::body_overlaps` refuses that pair — but two
-                // COMPLEMENTARY triangles can, and are meant to: NW+SE and
-                // NE+SW are how two halves make a cell. Their `in_half`
-                // tests are boundary-inclusive on both sides on purpose
-                // (the comment above says why: the seam must read the same
-                // from either), so a sample landing exactly on `dx + dz ==
-                // BUILD_CELL_M` satisfies both halves and the first arm
-                // wins. That is a whole answer either way — both halves are
-                // real pieces standing at that point, and a raider on the
-                // seam of a split floor has no claim about which one the
-                // arrow found. What the sim does require is that the pick
-                // be a rule rather than an accident, which an `||` chain
-                // read for its address would not have been.
-                let here = if m.planes & bit != 0
-                    || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
-                {
-                    Some(LOC_PLANE)
-                } else if m.tri_xlo_zlo & bit != 0
-                    && in_half(LOC_TRI_XLO_ZLO)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZLO)
-                        || tri_frame_solid(LOC_TRI_XLO_ZLO, dx, dz, r))
-                {
-                    Some(LOC_TRI_XLO_ZLO)
-                } else if m.tri_xhi_zlo & bit != 0
-                    && in_half(LOC_TRI_XHI_ZLO)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZLO)
-                        || tri_frame_solid(LOC_TRI_XHI_ZLO, dx, dz, r))
-                {
-                    Some(LOC_TRI_XHI_ZLO)
-                } else if m.tri_xlo_zhi & bit != 0
-                    && in_half(LOC_TRI_XLO_ZHI)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZHI)
-                        || tri_frame_solid(LOC_TRI_XLO_ZHI, dx, dz, r))
-                {
-                    Some(LOC_TRI_XLO_ZHI)
-                } else if m.tri_xhi_zhi & bit != 0
-                    && in_half(LOC_TRI_XHI_ZHI)
-                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZHI)
-                        || tri_frame_solid(LOC_TRI_XHI_ZHI, dx, dz, r))
-                {
-                    Some(LOC_TRI_XHI_ZHI)
-                } else {
-                    None
-                };
-                let floor = base + crate::build::level_y(level as u8);
-                if let Some(loc) = here {
-                    if y - r < floor && (level == 0 || y + r > floor - PLANE_THICKNESS_M) {
-                        return Some(PieceHit {
-                            cx: bx as u16,
-                            cz: bz as u16,
-                            level: level as u8,
-                            loc,
-                        });
-                    }
-                }
-                for (mask, loc) in m.stair_masks().into_iter().zip(crate::build::STAIR_LOCS) {
-                    if mask & bit == 0 {
-                        continue;
-                    }
-                    let shape = m.riser_shape(level as u8);
-                    if let Some(dy) = crate::circulation::surface(shape, loc, dx, dz) {
-                        let top = floor + dy;
-                        if y - r < top
-                            && (shape == crate::build::SHAPE_FOUNDATION_STEPS
-                                || y + r > top - PLANE_THICKNESS_M)
-                        {
-                            return Some(PieceHit {
-                                cx: bx as u16,
-                                cz: bz as u16,
-                                level: level as u8,
-                                loc,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Where the move `a0`→`a1` meets the edge plane at `px`, if it does: the
-/// along-edge metre of the meeting, measured from `s0`. Coordinates are
-/// pre-swapped by the caller so the math is written once for both edge
-/// axes. `r_extra` inflates the slab by the mover's own radius — the
-/// capsule's for a body ([`cell_edges_block`]), the arrowhead's for a shot
-/// ([`shot_blocked`]), which is the radius parameter `ranged.rs`'s module
-/// doc spent a paragraph owing. What is solid at the returned metre is the
-/// caller's per-shape question ([`doorway_solid_at`] and family).
-///
-/// **The plane belongs to the high side**, `build::build_cell_of`'s floor:
-/// a mover exactly on it is in the cell above it, so leaving it downward is a
-/// crossing. Both sides were open until 2026-10-02 and the plane itself was
-/// neither, so a body standing ON a wall's plane — and creeping off a roof's
-/// high edge one quantum puts it exactly there, falling down the wall below —
-/// walked through that wall to either side: into a sealed room under the
-/// roof it had just been standing on.
-fn edge_meet(px: f32, s0: f32, a0: f32, a1: f32, along: f32, r_extra: f32) -> Option<f32> {
-    let r = WALL_THICKNESS_M * 0.5 + r_extra;
-    let d0 = a0 - px;
-    let d1 = a1 - px;
-    let crosses = (d0 < 0.0) != (d1 < 0.0);
-    let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
-    if !crosses && !pushes_in {
-        return None;
-    }
-    Some(along - s0)
+    let y = |h: &Hull| hull_y(seed, haven, cols, h);
+    cols.hulls.ceiling(&y, x, z, feet_y)
 }
 
 /// Is a doorway SOLID at `t` metres along its edge? The two posts block; the
@@ -2151,234 +1801,6 @@ pub fn frame_solid_at(t: f32, y: f32) -> bool {
         || y >= LEVEL_H_M - FRAME_RIM_M
 }
 
-/// All blocking edges of one cell against the move. The four edges are
-/// the cell's canonical low-x/low-z plus the neighbors' (build.rs edge
-/// canonicalization); each tests only if its storey overlaps the capsule.
-#[allow(clippy::too_many_arguments)]
-fn cell_edges_block(
-    seed: u64,
-    haven: &crate::terrain::Haven,
-    cols: &ColIndex,
-    bx: i32,
-    bz: i32,
-    x: f32,
-    z: f32,
-    nx: f32,
-    nz: f32,
-    feet_y: f32,
-) -> bool {
-    // (column cx, cz, x-plane?) — the four boundaries of cell (bx, bz).
-    let edges = [
-        (bx, bz, true),
-        (bx + 1, bz, true),
-        (bx, bz, false),
-        (bx, bz + 1, false),
-    ];
-    for (ecx, ecz, x_plane) in edges {
-        if ecx < 0 || ecz < 0 || ecx >= MAX_BUILD_COORD as i32 || ecz >= MAX_BUILD_COORD as i32 {
-            continue;
-        }
-        let m = cols.get(ecx as u16, ecz as u16);
-        // Windows ride the wall mask here on purpose: to a moving body a
-        // window IS a wall (the aperture is above a capsule's reach and
-        // under its head — `WINDOW_SILL_M`'s doc). A frame blocks only its
-        // thin rim jambs, and its top beam not at all — the lintel
-        // precedent: nothing at capsule height until a jump exists. The
-        // shot walk (`shot_blocked`) is where the shapes fully diverge.
-        let (walls, doors, frames, shuts) = if x_plane {
-            (
-                m.walls_xlo | m.half_xlo | m.low_xlo | m.wins_xlo,
-                m.doors_xlo,
-                m.frames_xlo,
-                m.shut_xlo,
-            )
-        } else {
-            (
-                m.walls_zlo | m.half_zlo | m.low_zlo | m.wins_zlo,
-                m.doors_zlo,
-                m.frames_zlo,
-                m.shut_zlo,
-            )
-        };
-        if walls | doors | frames == 0 {
-            continue;
-        }
-        let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
-        for level in 0..MAX_BUILD_SOCKETS {
-            let bit = 1u16 << level;
-            let has_wall = walls & bit != 0;
-            let has_door = doors & bit != 0;
-            let has_frame = frames & bit != 0;
-            if !has_wall && !has_door && !has_frame {
-                continue;
-            }
-            let bottom = base + crate::build::level_y(level as u8);
-            let foot = bottom
-                - edge_foot_drop(
-                    seed,
-                    haven,
-                    cols,
-                    ecx as u16,
-                    ecz as u16,
-                    level as u8,
-                    if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
-                    m.plate,
-                );
-            if feet_y
-                >= bottom
-                    + m.edge_height(
-                        if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
-                        level as u8,
-                    )
-                || feet_y + CAPSULE_HEIGHT_M <= foot
-            {
-                continue; // that storey is above the head or below the feet
-            }
-            let meet = if x_plane {
-                // x-plane at ecx·3, spanning z from ecz·3.
-                let px = ecx as f32 * BUILD_CELL_M;
-                let s0 = ecz as f32 * BUILD_CELL_M;
-                edge_meet(px, s0, x, nx, nz, CAPSULE_RADIUS_M)
-            } else {
-                // z-plane at ecz·3, spanning x from ecx·3.
-                let pz = ecz as f32 * BUILD_CELL_M;
-                let s0 = ecx as f32 * BUILD_CELL_M;
-                edge_meet(pz, s0, z, nz, nx, CAPSULE_RADIUS_M)
-            };
-            let Some(t) = meet else { continue };
-            let hit = if has_wall || (feet_y < bottom && foot < bottom) || shuts & bit != 0 {
-                (0.0..=BUILD_CELL_M).contains(&t)
-            } else if has_door {
-                // A closed door seals the doorway: full span, like a wall.
-                if shuts & bit != 0 {
-                    (0.0..=BUILD_CELL_M).contains(&t)
-                } else {
-                    doorway_solid_at(t)
-                }
-            } else {
-                // The frame's jambs, at any capsule height in the storey.
-                (0.0..=FRAME_RIM_M).contains(&t)
-                    || (BUILD_CELL_M - FRAME_RIM_M..=BUILD_CELL_M).contains(&t)
-            };
-            if hit {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// 1/√2 and the diagonal's length — the two constants the rotated-frame
-/// arithmetic below needs, written as literals because wall 1 has no
-/// sqrt-at-runtime to spend on a compile-time number.
-const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
-const DIAG_LEN_M: f32 = BUILD_CELL_M * std::f32::consts::SQRT_2;
-
-/// Where the move `a`→`b` meets one diagonal of cell (bx, bz), if it
-/// does: the along-diagonal metre of the meeting in `0..DIAG_LEN_M`.
-/// [`edge_meet`]'s exact algebra in a frame turned 45° — the signed
-/// distance to the line and the coordinate along it are one rotation,
-/// all multiplies (triangles v0).
-#[allow(clippy::too_many_arguments)]
-fn diag_meet(
-    bx: i32,
-    bz: i32,
-    diag_b: bool,
-    x: f32,
-    z: f32,
-    nx: f32,
-    nz: f32,
-    r_extra: f32,
-) -> Option<f32> {
-    let x0 = bx as f32 * BUILD_CELL_M;
-    let z0 = bz as f32 * BUILD_CELL_M;
-    let (d0, d1, along) = if diag_b {
-        // Line dx + dz = cell: distance grows toward SE.
-        let d = |px: f32, pz: f32| ((px - x0) + (pz - z0) - BUILD_CELL_M) * INV_SQRT2;
-        let s = ((nx - x0) - (nz - z0) + BUILD_CELL_M) * INV_SQRT2;
-        (d(x, z), d(nx, nz), s)
-    } else {
-        // Line dz = dx: distance grows toward SW.
-        let d = |px: f32, pz: f32| ((pz - z0) - (px - x0)) * INV_SQRT2;
-        let s = ((nx - x0) + (nz - z0)) * INV_SQRT2;
-        (d(x, z), d(nx, nz), s)
-    };
-    let r = WALL_THICKNESS_M * 0.5 + r_extra;
-    // Half-open, [`edge_meet`]'s rule and reason: on the line is one side.
-    let crosses = (d0 < 0.0) != (d1 < 0.0);
-    let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
-    if !crosses && !pushes_in {
-        return None;
-    }
-    Some(along)
-}
-
-/// The diagonal walls of one cell against a mover — the interior twin of
-/// the boundary walks, called for both endpoint cells by [`blocked`] and
-/// [`shot_blocked`]. The vertical test matches each caller's own: a
-/// capsule OVERLAPS a storey (`point` false, `lo_y..hi_y` the body), a
-/// shot is CONTAINED in one (`point` true, both bounds the altitude).
-#[allow(clippy::too_many_arguments)]
-fn cell_diags_block(
-    seed: u64,
-    haven: &crate::terrain::Haven,
-    cols: &ColIndex,
-    bx: i32,
-    bz: i32,
-    x: f32,
-    z: f32,
-    nx: f32,
-    nz: f32,
-    lo_y: f32,
-    hi_y: f32,
-    point: bool,
-    r_extra: f32,
-) -> Option<PieceHit> {
-    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-        return None;
-    }
-    let m = cols.get(bx as u16, bz as u16);
-    if m.diag_a | m.diag_b | m.half_diag_a | m.half_diag_b | m.low_diag_a | m.low_diag_b == 0 {
-        return None;
-    }
-    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-    for level in 0..MAX_BUILD_SOCKETS {
-        let bit = 1u16 << level;
-        if (m.diag_a | m.diag_b | m.half_diag_a | m.half_diag_b | m.low_diag_a | m.low_diag_b) & bit
-            == 0
-        {
-            continue;
-        }
-        let bottom = base + crate::build::level_y(level as u8);
-        for (mask, diag_b) in [
-            (m.diag_a | m.half_diag_a | m.low_diag_a, false),
-            (m.diag_b | m.half_diag_b | m.low_diag_b, true),
-        ] {
-            let top =
-                bottom + m.edge_height(if diag_b { LOC_DIAG_B } else { LOC_DIAG_A }, level as u8);
-            let outside = if point {
-                lo_y < bottom || lo_y >= top
-            } else {
-                lo_y >= top || hi_y <= bottom
-            };
-            if mask & bit == 0 || outside {
-                continue;
-            }
-            if let Some(t) = diag_meet(bx, bz, diag_b, x, z, nx, nz, r_extra) {
-                if (0.0..=DIAG_LEN_M).contains(&t) {
-                    return Some(PieceHit {
-                        cx: bx as u16,
-                        cz: bz as u16,
-                        level: level as u8,
-                        loc: if diag_b { LOC_DIAG_B } else { LOC_DIAG_A },
-                    });
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Whether a wall, doorway post, window, frame rim or diagonal wall stops
 /// the horizontal move (x,z)→(nx,nz) at `feet_y`. Movement steps are
 /// ≤ 0.19 m, so testing the endpoint's z against the edge span (instead
@@ -2402,66 +1824,8 @@ pub fn blocked(
     nz: f32,
     feet_y: f32,
 ) -> bool {
-    let (bx0, bz0) = (
-        crate::build::build_cell_of(x),
-        crate::build::build_cell_of(z),
-    );
-    let (bx1, bz1) = (
-        crate::build::build_cell_of(nx),
-        crate::build::build_cell_of(nz),
-    );
-    if cell_edges_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, feet_y) {
-        return true;
-    }
-    if (bx0 != bx1 || bz0 != bz1)
-        && cell_edges_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, feet_y)
-    {
-        return true;
-    }
-    let (lo, hi) = (feet_y, feet_y + CAPSULE_HEIGHT_M);
-    // `.is_some()`: the body walk asks only whether it is stopped. The
-    // address the diagonal now names is the shot walk's business
-    // ([`shot_stop`]) — a mover that cannot damage a wall has no use for it.
-    if cell_diags_block(
-        seed,
-        haven,
-        cols,
-        bx1,
-        bz1,
-        x,
-        z,
-        nx,
-        nz,
-        lo,
-        hi,
-        false,
-        CAPSULE_RADIUS_M,
-    )
-    .is_some()
-    {
-        return true;
-    }
-    if (bx0 != bx1 || bz0 != bz1)
-        && cell_diags_block(
-            seed,
-            haven,
-            cols,
-            bx0,
-            bz0,
-            x,
-            z,
-            nx,
-            nz,
-            lo,
-            hi,
-            false,
-            CAPSULE_RADIUS_M,
-        )
-        .is_some()
-    {
-        return true;
-    }
-    false
+    let y = |h: &Hull| hull_y(seed, haven, cols, h);
+    cols.hulls.edges_block(&y, x, z, nx, nz, feet_y)
 }
 
 /// Which built piece a shot walk stopped on — the address, never a store
@@ -2537,45 +1901,10 @@ pub fn shot_hit(
     y: f32,
     r: f32,
 ) -> Option<(PieceHit, bool)> {
-    let (bx0, bz0) = (
-        crate::build::build_cell_of(x),
-        crate::build::build_cell_of(z),
-    );
-    let (bx1, bz1) = (
-        crate::build::build_cell_of(nx),
-        crate::build::build_cell_of(nz),
-    );
-    let hit = cell_edges_stop_shot(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, r);
-    if hit.is_some() {
-        return hit;
-    }
-    if bx0 != bx1 || bz0 != bz1 {
-        let hit = cell_edges_stop_shot(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, r);
-        if hit.is_some() {
-            return hit;
-        }
-    }
-    // The diagonals, with the point's own band: containment of `y`, not a
-    // capsule's overlap.
-    let hit = cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r);
-    if hit.is_some() {
-        return hit.map(|at| (at, false));
-    }
-    if bx0 != bx1 || bz0 != bz1 {
-        let hit = cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r);
-        if hit.is_some() {
-            return hit.map(|at| (at, false));
-        }
-    }
-    // The planes, at the sample's own point rather than over the sweep.
-    // **A point, deliberately, where the edges above are swept**: an edge is
-    // crossed horizontally and a plane is crossed vertically, and the
-    // vertical step between two taps is at most `ARROW_STEP_MM` — under the
-    // band a slab presents, so the sweep an edge needs a plane does not
-    // ([`cell_planes_stop_shot`]'s doc carries the arithmetic). It reads the
-    // destination `(nx, nz)`, which is the sample `ranged::world_stop` is
-    // asking about and the same point it hands `Occupants::blocks_volume`.
-    cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r).map(|at| (at, false))
+    let yf = |h: &Hull| hull_y(seed, haven, cols, h);
+    cols.hulls
+        .shot_hit(&yf, x, z, nx, nz, y, r)
+        .map(|(h, insert)| (h.hit, insert))
 }
 
 /// Whether anything built stops the shot — [`shot_stop`] with the address
@@ -2598,136 +1927,6 @@ pub fn shot_blocked(
     shot_stop(seed, haven, cols, x, z, nx, nz, y, r).is_some()
 }
 
-/// [`cell_edges_block`] with the shot profile — the four boundaries of one
-/// cell against a point sample. Kept beside its body twin so the two walks
-/// read as one algorithm with two movers, which they are.
-#[allow(clippy::too_many_arguments)]
-fn cell_edges_stop_shot(
-    seed: u64,
-    haven: &crate::terrain::Haven,
-    cols: &ColIndex,
-    bx: i32,
-    bz: i32,
-    x: f32,
-    z: f32,
-    nx: f32,
-    nz: f32,
-    y: f32,
-    r: f32,
-) -> Option<(PieceHit, bool)> {
-    let edges = [
-        (bx, bz, true),
-        (bx + 1, bz, true),
-        (bx, bz, false),
-        (bx, bz + 1, false),
-    ];
-    for (ecx, ecz, x_plane) in edges {
-        if ecx < 0 || ecz < 0 || ecx >= MAX_BUILD_COORD as i32 || ecz >= MAX_BUILD_COORD as i32 {
-            continue;
-        }
-        let m = cols.get(ecx as u16, ecz as u16);
-        let (walls, doors, wins, frames, shuts) = if x_plane {
-            (
-                m.walls_xlo | m.half_xlo | m.low_xlo,
-                m.doors_xlo,
-                m.wins_xlo,
-                m.frames_xlo,
-                m.shut_xlo,
-            )
-        } else {
-            (
-                m.walls_zlo | m.half_zlo | m.low_zlo,
-                m.doors_zlo,
-                m.wins_zlo,
-                m.frames_zlo,
-                m.shut_zlo,
-            )
-        };
-        if walls | doors | wins | frames == 0 {
-            continue;
-        }
-        let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
-        for level in 0..MAX_BUILD_SOCKETS {
-            let bit = 1u16 << level;
-            if (walls | doors | wins | frames) & bit == 0 {
-                continue;
-            }
-            let bottom = base + crate::build::level_y(level as u8);
-            // A point is inside exactly one storey; half-open so the
-            // boundary altitude resolves the same on both targets.
-            let foot = bottom
-                - edge_foot_drop(
-                    seed,
-                    haven,
-                    cols,
-                    ecx as u16,
-                    ecz as u16,
-                    level as u8,
-                    if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
-                    m.plate,
-                );
-            if y < foot
-                || y >= bottom
-                    + m.edge_height(
-                        if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
-                        level as u8,
-                    )
-            {
-                continue;
-            }
-            let meet = if x_plane {
-                let px = ecx as f32 * BUILD_CELL_M;
-                let s0 = ecz as f32 * BUILD_CELL_M;
-                edge_meet(px, s0, x, nx, nz, r)
-            } else {
-                let pz = ecz as f32 * BUILD_CELL_M;
-                let s0 = ecx as f32 * BUILD_CELL_M;
-                edge_meet(pz, s0, z, nz, nx, r)
-            };
-            let Some(t) = meet else { continue };
-            let span = (0.0..=BUILD_CELL_M).contains(&t);
-            let solid = span
-                && (y < bottom
-                    || if walls & bit != 0 {
-                        true
-                    } else if doors & bit != 0 {
-                        doorway_solid_at(t) || y - bottom >= DOOR_HEAD_M
-                    } else if wins & bit != 0 {
-                        window_solid_at(t, y - bottom)
-                    } else {
-                        frame_solid_at(t, y - bottom)
-                    });
-            let arch = if doors & bit != 0 {
-                crate::deploy::ARCH_DOOR
-            } else if wins & bit != 0 {
-                let panes = if x_plane { m.panes_xlo } else { m.panes_zlo };
-                if panes & bit != 0 {
-                    crate::deploy::ARCH_WINDOW_GLASS
-                } else {
-                    crate::deploy::ARCH_WINDOW_BARS
-                }
-            } else {
-                crate::deploy::ARCH_GARAGE_DOOR
-            };
-            let insert = !solid
-                && shuts & bit != 0
-                && crate::deploy::insert_solid_at(arch, t, y - bottom, r);
-            if solid || insert {
-                return Some((
-                    PieceHit {
-                        cx: ecx as u16,
-                        cz: ecz as u16,
-                        level: level as u8,
-                        loc: if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
-                    },
-                    insert,
-                ));
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2736,6 +1935,7 @@ mod tests {
         SHAPE_STAIRS,
     };
     use crate::deploy::Deploys;
+    use crate::fmath::fabs;
     use crate::input::InputFrame;
     use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
     use crate::rng::Pcg32;
@@ -3317,106 +2517,6 @@ mod tests {
         assert_eq!(at(x, z, base + 1.5), None, "a jump over it is not on it");
         assert_eq!(at(x, z, base - 1.0), None, "under it is not on it");
         assert_eq!(at(x + 3.0 * BUILD_CELL_M, z, base), None, "off its cell");
-    }
-
-    /// Triangles v0's collision contract: a tri foundation is ground over
-    /// its own half and terrain over the other, and a diagonal wall stops
-    /// a walk and a shot across its line while the open half-cell passes.
-    #[test]
-    fn tri_ground_holds_its_half_and_the_diagonal_blocks_the_cross() {
-        let mut occ = crate::occupy::Scratch::barren();
-        let bc = free_table();
-        let mut pieces = Pieces::new();
-        // The NW half (dx + dz <= 3) and its hypotenuse wall on B.
-        put(
-            &bc,
-            &mut pieces,
-            CX,
-            CZ,
-            0,
-            crate::build::LOC_TRI_XLO_ZLO,
-            7,
-        );
-        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
-        let x0 = CX as f32 * BUILD_CELL_M;
-        let z0 = CZ as f32 * BUILD_CELL_M;
-
-        // Ground on the NW side of the split; terrain on the SE side.
-        let on = piece_ground(SEED, hv(), pieces.cols(), x0 + 0.7, z0 + 0.7, base + 0.05);
-        assert!(
-            fabs(on - base) < 1e-4,
-            "the half's own ground reads the slab: {on} vs {base}"
-        );
-        let off = piece_ground(SEED, hv(), pieces.cols(), x0 + 2.5, z0 + 2.5, base + 0.05);
-        assert_eq!(off, NO_SURFACE, "the other half is not this piece");
-
-        // The diagonal wall across B: a walk from the NW half toward SE
-        // stops at the line; with no wall it passes.
-        let mut b = body_at(x0 + 1.0, z0 + 1.0);
-        for _ in 0..160 {
-            movement::step(
-                SEED,
-                hv(),
-                pieces.cols(),
-                &mut occ.occupants(),
-                &mut b,
-                &walk(90, 90),
-            );
-        }
-        assert!(
-            pos(&b).0 > x0 + 2.5 && pos(&b).2 > z0 + 2.5,
-            "with no diagonal wall the cross passes: ({}, {})",
-            pos(&b).0,
-            pos(&b).2
-        );
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_DIAG_B, 1);
-        let mut b = body_at(x0 + 1.0, z0 + 1.0);
-        for _ in 0..160 {
-            movement::step(
-                SEED,
-                hv(),
-                pieces.cols(),
-                &mut occ.occupants(),
-                &mut b,
-                &walk(90, 90),
-            );
-        }
-        let (bx, _, bz) = pos(&b);
-        assert!(
-            (bx - x0) + (bz - z0) < BUILD_CELL_M,
-            "the diagonal wall must hold the walker on its own side: ({bx}, {bz})"
-        );
-
-        // The shot walk agrees: across the line stops, along the open
-        // half passes.
-        assert!(
-            shot_blocked(
-                SEED,
-                hv(),
-                pieces.cols(),
-                x0 + 1.0,
-                z0 + 1.0,
-                x0 + 2.2,
-                z0 + 2.2,
-                base + 1.5,
-                0.05
-            ),
-            "an arrow across the diagonal stops"
-        );
-        assert!(
-            !shot_blocked(
-                SEED,
-                hv(),
-                pieces.cols(),
-                x0 + 0.3,
-                z0 + 1.0,
-                x0 + 1.0,
-                z0 + 0.3,
-                base + 1.5,
-                0.05
-            ),
-            "an arrow inside the NW half never meets the line"
-        );
     }
 
     #[test]

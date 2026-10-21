@@ -224,6 +224,7 @@ fn guards_walk_clear_of_the_town() {
                     .iter()
                     .chain(town::MACHINES.iter())
                     .chain(town::CASINO.iter())
+                    .chain(town::CASINO_ROOF.iter())
                     .chain(town::KEEPERS.iter())
                 {
                     if p.flags & kit::DECOR == 0 && solid(p.b) {
@@ -246,6 +247,13 @@ fn guards_walk_clear_of_the_town() {
                     assert!(
                         d > 1.5,
                         "beat {n} at ({x:.1}, {z:.1}) walks through a shopper"
+                    );
+                }
+                for seat in town::SEATS {
+                    let d = ((x - seat.x) * (x - seat.x) + (z - seat.z) * (z - seat.z)).sqrt();
+                    assert!(
+                        d > 1.2,
+                        "beat {n} at ({x:.1}, {z:.1}) walks through a sitter"
                     );
                 }
             }

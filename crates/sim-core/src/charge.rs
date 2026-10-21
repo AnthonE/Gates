@@ -275,9 +275,9 @@ pub fn place(
     // answer. Content sets the arm's length; the sim sets the ceiling.
     let reach_m = (def.reach_cm as f32 * 0.01).min(BUILD_REACH_M);
     let (ax, az) = if deploy {
-        crate::deploy::rec_anchor(&deploys.entries()[i])
+        crate::deploy::rec_anchor(pieces.cols(), &deploys.entries()[i])
     } else {
-        anchor(cx, cz, loc)
+        pieces.anchor_of(&pieces.entries()[i])
     };
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
@@ -516,12 +516,17 @@ pub fn tick_fuses(
             i += 1;
             continue;
         }
+        // A charge on a piece the grid cannot name knows where it is only
+        // through the piece (freeform W2): one whose piece is gone before
+        // the fuse ran out goes with it.
+        if posed_gone(pieces, &c) {
+            charges.remove_at(i);
+            continue;
+        }
         if let Some(item) = dud(seed, cc, &c) {
             // Out, not blown: it falls from where it was stuck.
-            let (x, z) = epicentre(deploys, &c);
-            let y = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
-                + crate::build::level_y(c.level)
-                + 0.8;
+            let (x, z) = epicentre(pieces, deploys, &c);
+            let y = floor_y(seed, haven, pieces, deploys, &c) + 0.8;
             duds.push(item, x, y, z);
             charges.remove_at(i);
             continue;
@@ -539,15 +544,86 @@ pub fn tick_fuses(
 /// Where a charge's blast centres: the anchor of what it was planted on — a
 /// free-placed deployable's own centre (`deploy::rec_anchor`), read off the
 /// record while it stands, and its cell's centre once an earlier blast took
-/// it. A charge on a piece, or on a door, is at `build::anchor` as before.
-pub fn epicentre(deploys: &Deploys, c: &ChargeRec) -> (f32, f32) {
+/// it. A charge on a piece, or on a door, is at `build::anchor` as before —
+/// or, on a piece the grid cannot name, at the piece's own middle
+/// (`Pieces::anchor_of`), and on a door in one's doorway at the doorway's
+/// (`deploy::posed_insert`).
+pub fn epicentre(pieces: &Pieces, deploys: &Deploys, c: &ChargeRec) -> (f32, f32) {
     if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
         return match deploys.find(c.cx, c.cz, c.level, c.loc) {
             Some(rec) => rec.xz(),
             None => crate::deploy::cell_center(c.cx, c.cz),
         };
     }
-    anchor(c.cx, c.cz, c.loc)
+    if let Some(at) = posed_door(pieces, c) {
+        return (at.x, at.z);
+    }
+    match posed(pieces, c) {
+        Some(rec) => pieces.anchor_of(rec),
+        None => anchor(c.cx, c.cz, c.loc),
+    }
+}
+
+/// The posed piece a charge is planted on, while it stands.
+fn posed<'a>(pieces: &'a Pieces, c: &ChargeRec) -> Option<&'a crate::build::PieceRec> {
+    if c.deploy || crate::build::spelled_id(c.cx, c.cz, c.level, c.loc).is_none() {
+        return None;
+    }
+    pieces.find(c.cx, c.cz, c.level, c.loc)
+}
+
+/// Where the door a charge is planted on hangs, when its doorway is one the
+/// grid cannot name and still stands — its address spells the doorway.
+fn posed_door(pieces: &Pieces, c: &ChargeRec) -> Option<crate::deploy::InsertAt> {
+    if !c.deploy {
+        return None;
+    }
+    crate::deploy::posed_insert(pieces.cols(), c.cx, c.cz, c.level, c.loc)
+}
+
+/// Whether a charge was planted on something the grid cannot name — a
+/// posed piece, or a door in a posed doorway — that is gone: it knew where
+/// it was only through that.
+fn posed_gone(pieces: &Pieces, c: &ChargeRec) -> bool {
+    if crate::build::spelled_id(c.cx, c.cz, c.level, c.loc).is_none() {
+        return false;
+    }
+    if c.deploy {
+        posed_door(pieces, c).is_none()
+    } else {
+        posed(pieces, c).is_none()
+    }
+}
+
+/// The floor under a charge's storey: its column's, or its posed piece's
+/// building's, or its posed doorway's — and on a body deployable, the floor
+/// it stands on (`deploy::built_floor`, a slab the grid cannot name too).
+fn floor_y(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    pieces: &Pieces,
+    deploys: &Deploys,
+    c: &ChargeRec,
+) -> f32 {
+    if let Some(at) = posed_door(pieces, c) {
+        return at.floor_y;
+    }
+    if c.deploy && !crate::deploy::is_edge_loc(c.loc) {
+        let on = deploys.find(c.cx, c.cz, c.level, c.loc).and_then(|r| {
+            let (x, z) = r.xz();
+            crate::deploy::built_floor(seed, haven, pieces.cols(), r.cx, r.cz, r.level, x, z)
+        });
+        if let Some(y) = on {
+            return y;
+        }
+    }
+    match posed(pieces, c).and_then(|r| pieces.frame(r.bld).map(|f| (f.band, r.level))) {
+        Some((band, level)) => crate::build::band_y(band) + crate::build::level_y(level),
+        None => {
+            crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
+                + crate::build::level_y(c.level)
+        }
+    }
 }
 
 /// The candidate structural targets one blast can touch, collected before
@@ -573,12 +649,18 @@ fn detonate(
     hit_mobs: &mut BlastMobs,
     events: &mut EventQueue,
 ) {
-    let (ax, az) = epicentre(deploys, c);
-    let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
-        + crate::build::level_y(c.level);
+    let (ax, az) = epicentre(pieces, deploys, c);
+    let ay = floor_y(seed, haven, pieces, deploys, c);
+    let cell = |v: f32| {
+        crate::build::build_cell_of(v).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1) as u16
+    };
     let b = Blast {
         at: (ax, ay, az),
-        cell: (c.cx, c.cz),
+        cell: if crate::build::spelled_id(c.cx, c.cz, c.level, c.loc).is_some() {
+            (cell(ax), cell(az))
+        } else {
+            (c.cx, c.cz)
+        },
         struck: None,
         structure: c.structure,
         damage: c.damage,
@@ -713,6 +795,46 @@ pub fn blast(
         }
         dz += 1;
     }
+    // Pieces the grid cannot name (freeform W2): each one whose box meets
+    // the blast's, measured to its own middle on its own floor, named by
+    // its spelled id. The box query can answer a piece twice; the target
+    // list says it once.
+    let reach_m = blast as f32 * 0.01;
+    crate::build::pieces_near(
+        pieces,
+        ax - reach_m,
+        az - reach_m,
+        ax + reach_m,
+        az + reach_m,
+        |i| {
+            let rec = pieces.entries()[i];
+            if rec.on_grid() || n >= BLAST_TARGET_CAP {
+                return false;
+            }
+            let (cx, cz, level, loc) = rec.target();
+            if targets[..n]
+                .iter()
+                .any(|t| (t.0, t.1, t.2, t.3, t.4) == (cx, cz, level, loc, false))
+            {
+                return false;
+            }
+            let Some(frame) = pieces.frame(rec.bld) else {
+                return false;
+            };
+            let (tx, tz) = pieces.anchor_of(&rec);
+            let ty = crate::build::band_y(frame.band) + crate::build::level_y(rec.level);
+            let scaled = if c.struck == Some((cx, cz, level, loc, false)) {
+                c.structure
+            } else {
+                falloff(c.structure, dist_cm(tx, ty, tz), blast)
+            };
+            if scaled > 0 {
+                targets[n] = (cx, cz, level, loc, false, scaled);
+                n += 1;
+            }
+            false
+        },
+    );
     // Deployables: one pass over the store, addresses only — the same
     // full scan `combat::raid` used to make per swing (a swing is a ray now
     // and asks the column index instead; a blast still has no direction).
@@ -720,7 +842,7 @@ pub fn blast(
         if n >= BLAST_TARGET_CAP {
             break;
         }
-        let (tx, tz) = crate::deploy::rec_anchor(rec);
+        let (tx, tz) = crate::deploy::rec_anchor(pieces.cols(), rec);
         let ly = match dc.defs.get(rec.row as usize) {
             Some(def) => crate::deploy::body_base_y(seed, haven, pieces.cols(), rec, def.arch),
             None => {

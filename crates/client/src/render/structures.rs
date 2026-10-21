@@ -657,6 +657,9 @@ struct Live {
     /// Redraw state for the reason `plate` is: the floor under it can arrive
     /// after it does, and the height is read off what is under it now.
     base_y: f32,
+    /// The footprint a piece was drawn at: a flight the grid cannot name
+    /// turns by its footprint alone, keeping address, row and facing.
+    sock: sim_core::sock::Sock,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -712,13 +715,15 @@ pub struct Kit {
     tier: [[[Handle<StandardMaterial>; PIECE_LOOKS]; DMG_BANDS as usize]; N_TIERS],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
-    /// The metal door's surfaces, laid on `door.glb`'s mesh
-    /// ([`METAL_DOOR_ASSET`]).
+    /// The metal door: a model of its own ([`METAL_DOOR_ASSET`]), not the
+    /// wooden door's planks under a metal material.
+    door_metal_mesh: Handle<Mesh>,
     door_metal: Handle<StandardMaterial>,
     /// A bolted-on lock, drawn ([`spawn_lock`]): the code lock's keypad
-    /// and the key lock's padlock, in the prop kit's one material.
+    /// and the key lock's hasp and padlock, the same models the hand holds
+    /// ([`LOCK_ASSET`]).
     lock_mesh: [Handle<Mesh>; 2],
-    lock_mat: Handle<StandardMaterial>,
+    lock_mat: [Handle<StandardMaterial>; 2],
     /// The code lock's light: green open, red locked.
     led_mesh: Handle<Mesh>,
     led_mat: [Handle<StandardMaterial>; 2],
@@ -1142,9 +1147,11 @@ pub enum PartRole {
 pub enum PartKind {
     #[default]
     Box,
-    /// A right triangular prism over the NW half of the unit cell —
-    /// hypotenuse from (+x, −z) to (−x, +z) in part-local space — scaled
-    /// by `size`. [`tri_prism_unit`] is the one mesh.
+    /// An equilateral triangular prism (freeform W3), `size.x` a side,
+    /// its centroid at the part's origin and its first side along +x on
+    /// the −z side — the lattice's triangle at direction 0
+    /// (`sock::Sock::tri_from`), which [`posed_transform`] turns into
+    /// place. `size.z` scales a unit mesh like `size.x` does.
     Tri,
     /// Treads and risers in the smooth ramp's local frame. Keeping that
     /// frame lets the existing placement checks still compare the ramp
@@ -1339,9 +1346,8 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
         ),
         SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => (
             [
-                // One NW prism; the other three halves are this part under
-                // the root's quarter-turns (`base_transform`), the way the
-                // north edge is the west edge turned.
+                // One equilateral prism; every triangle the lattice holds is
+                // this part under its own turn (`posed_transform`).
                 Part {
                     size: Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M),
                     offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
@@ -1483,6 +1489,53 @@ pub fn post_owner(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Post
     PostOwn {
         low: owns(low, low_rank),
         high: owns(high, high_rank),
+    }
+}
+
+/// [`post_owner`] for an edge piece the grid cannot name, asked of its
+/// building's lattice (freeform): at each end, every other edge piece of
+/// its storey in the same building that meets that corner — found by the
+/// twelve lattice directions out of it — and the post goes, as on the
+/// grid, to the tallest; between equals, to a piece the grid names (whose
+/// own rule cannot see this one), then to the lowest id.
+pub fn posed_post_owner(
+    store: &sim_core::build::Pieces,
+    defs: &sim_core::build::BuildContent,
+    rec: &sim_core::build::PieceRec,
+) -> PostOwn {
+    let height = |r: &sim_core::build::PieceRec| {
+        defs.pieces
+            .get(r.row as usize)
+            .map_or(0.0, |d| sim_core::build::wall_height(d.shape))
+    };
+    let mine = height(rec);
+    let (ends, _) = rec.sock.corners();
+    let owns = |corner: sim_core::lattice::LPt| {
+        (0..12u8).all(|dir| {
+            let addr = sim_core::sock::PieceAddr {
+                bld: rec.bld,
+                level: rec.level,
+                sock: sim_core::sock::Sock::edge_from(corner, dir),
+            };
+            let Some(i) = store.find_addr(&addr) else {
+                return true;
+            };
+            let other = store.entries()[i];
+            if other.id == rec.id
+                || !defs
+                    .pieces
+                    .get(other.row as usize)
+                    .is_some_and(|d| is_edge_shape(d.shape))
+            {
+                return true;
+            }
+            let theirs = height(&other);
+            theirs < mine || (theirs == mine && !other.on_grid() && other.id > rec.id)
+        })
+    };
+    PostOwn {
+        low: owns(ends[0]),
+        high: owns(ends[1]),
     }
 }
 
@@ -1633,7 +1686,29 @@ pub fn foundation_part(
     tri: bool,
     plate: i8,
 ) -> Part {
-    let (_, depth) = footing_of(seed, haven, cx, cz, plate);
+    footing_part(footing_of(seed, haven, cx, cz, plate).1, tri)
+}
+
+/// [`footing_of`] for a foundation the grid cannot name (freeform): its own
+/// corners' and middle's ground against its building's floor.
+pub fn posed_footing(
+    seed: u64,
+    haven: &terrain::Haven,
+    frame: &sim_core::frame::Frame,
+    sock: &sim_core::sock::Sock,
+) -> (usize, f32) {
+    let base = sim_core::build::band_y(frame.band);
+    let (corners, n) = sock.body().corners();
+    let mut lo = f32::MAX;
+    for p in corners[..n].iter().chain([&sock.at]) {
+        let (x, z) = frame.to_world(*p);
+        lo = lo.min(terrain::ground(seed, haven, x, z));
+    }
+    skirt_step((base - lo + SKIRT_SINK_M).clamp(SLAB_T, SKIRT_MAX_M))
+}
+
+/// A foundation's one drawn part for a footing `depth` deep.
+pub fn footing_part(depth: f32, tri: bool) -> Part {
     Part {
         size: Vec3::new(BUILD_CELL_M, depth, BUILD_CELL_M),
         offset: Vec3::new(0.0, -depth * 0.5, 0.0),
@@ -2125,13 +2200,16 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
 /// shape for the other filling.
 fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
     let h = size * 0.5;
-    // The three cross-section corners, CCW seen from +y (bevy's up).
-    let a = Vec3::new(-h.x, 0.0, -h.z); // right angle (NW corner)
-    let b = Vec3::new(h.x, 0.0, -h.z); // N-E corner
-    let c = Vec3::new(-h.x, 0.0, h.z); // S-W corner
-                                       // The two triangular caps. They are emitted by hand rather than through
-                                       // `quad` — a triangle is not a quad, and its UV is the cross-section's
-                                       // own x/z in metres so the cap's grain matches the sides'.
+    // The three cross-section corners round the centroid, the first side
+    // along +x, in the same turning sense the half-cell prism used: a side
+    // of `size.x`, the apothem a third of the height.
+    let k = size.z * (3.0f32.sqrt() / 6.0);
+    let a = Vec3::new(-h.x, 0.0, -k);
+    let b = Vec3::new(h.x, 0.0, -k);
+    let c = Vec3::new(0.0, 0.0, 2.0 * k);
+    // The two triangular caps. They are emitted by hand rather than through
+    // `quad` — a triangle is not a quad, and its UV is the cross-section's
+    // own x/z in metres so the cap's grain matches the sides'.
     for (ny, y, wind) in [(1.0f32, h.y, false), (-1.0, -h.y, true)] {
         let (pos, nor, col, uv, idx) = &mut *buf;
         let base = pos.len() as u32;
@@ -2141,7 +2219,7 @@ fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
             pos.push([p.x + at.x, y + at.y, p.z + at.z]);
             nor.push([0.0, ny, 0.0]);
             col.push([t, t, t, 1.0]);
-            uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + h.z) * PIECE_UV_PER_M]);
+            uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + k) * PIECE_UV_PER_M]);
         }
         if wind {
             idx.extend([base, base + 1, base + 2]);
@@ -2149,10 +2227,8 @@ fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
             idx.extend([base, base + 2, base + 1]);
         }
     }
-    // The two square sides and the hypotenuse. Outward normals: the N side
-    // faces −z, the W side −x, the hypotenuse +x+z. The hypotenuse's normal
-    // is derived from the corners rather than the 45° constant the unit
-    // prism could assume — a non-square cell would tilt it.
+    // The three sides, outward normals derived from the corners: the first
+    // faces −z, the other two out past the apex either way.
     for (p0, p1) in [(a, b), (c, a), (b, c)] {
         let e = p1 - p0;
         let n = Vec3::new(e.z, 0.0, -e.x).normalize();
@@ -2233,6 +2309,77 @@ pub fn base_transform(
         .with_scale(scale)
 }
 
+/// The world transform of a footprint on a building's lattice (freeform
+/// W2): its middle on the building's floor at socket `level`, turned so the
+/// drawn object's own axes lie along the footprint's — a body's first side
+/// along local +x (the triangle prism's and the square slab's), an edge's
+/// run and a flight's climb along local +z, as the grid's `LOC_EDGE_XLO`
+/// and `LOC_RISER` are drawn. A grid footprint lands where
+/// [`base_transform`] puts its address.
+pub fn posed_transform(
+    frame: &sim_core::frame::Frame,
+    sock: &sim_core::sock::Sock,
+    level: u8,
+) -> Transform {
+    use sim_core::sock::{FOOT_EDGE, FOOT_RISER};
+    const STEP: f32 = std::f32::consts::PI / 6.0;
+    let (x, z) = frame.to_world(sock.at);
+    let y = sim_core::build::band_y(frame.band) + sim_core::build::level_y(level);
+    let (s, c) = frame.sin_cos();
+    // A flight on a triangle turned a third is its first flight turned a
+    // third about the centroid (`Sock::local_axes`).
+    let turn = match sock.foot {
+        FOOT_EDGE | FOOT_RISER => std::f32::consts::FRAC_PI_2 - sock.dir as f32 * STEP,
+        _ => -(sock.dir as f32) * STEP,
+    };
+    Transform::from_translation(Vec3::new(x, y, z))
+        .with_rotation(Quat::from_rotation_y(s.atan2(c) + turn))
+}
+
+/// Where a piece record is drawn from: [`base_transform`] for one the grid
+/// names, [`posed_transform`] in its building's frame for one it cannot.
+pub fn piece_root(
+    seed: u64,
+    haven: &terrain::Haven,
+    store: &sim_core::build::Pieces,
+    rec: &sim_core::build::PieceRec,
+) -> Transform {
+    match store.frame(rec.bld) {
+        Some(frame) if !rec.on_grid() => posed_transform(frame, &rec.sock, rec.level),
+        _ => base_transform(seed, haven, (rec.cx, rec.cz, rec.level, rec.loc), rec.plate),
+    }
+}
+
+/// [`piece_root`] for an address an event names: a spelled id
+/// (`build::spell_id`) is looked up in the mirror; a grid address is drawn
+/// from with the plate it is given.
+pub fn addr_root(
+    seed: u64,
+    haven: &terrain::Haven,
+    store: &sim_core::build::Pieces,
+    addr: Addr,
+    plate: i8,
+) -> Transform {
+    match store.find(addr.0, addr.1, addr.2, addr.3) {
+        Some(rec) if !rec.on_grid() => piece_root(seed, haven, store, rec),
+        _ => base_transform(seed, haven, addr, plate),
+    }
+}
+
+/// Is a posed edge's soft face on its drawn +x side? The record's facing
+/// is the lattice's (1: soft toward the edge's anticlockwise normal,
+/// `build::check_site`), resolved through the root actually drawn.
+pub fn posed_soft_positive_x(
+    frame: &sim_core::frame::Frame,
+    sock: &sim_core::sock::Sock,
+    facing: u8,
+    root: &Transform,
+) -> bool {
+    let x = root.rotation * Vec3::X;
+    let (nx, nz) = frame.axis((sock.dir + 3) % 12);
+    (x.x * nx + x.z * nz > 0.0) == (facing == 1)
+}
+
 /// The insert's exact solids, centered for `deploy_transform`.
 /// Built once by both the standing pool and the translucent preview pool.
 pub fn insert_mesh(arch: u8) -> Mesh {
@@ -2303,8 +2450,7 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/fire.glb"),      // 3 fire
     Some("models/deploy/furnace.glb"),   // 4 furnace
     Some("models/deploy/workbench.glb"), // 5 workbench
-    // 6 door — a metal one wears [`METAL_DOOR_ASSET`]'s material, baked
-    // onto the same unwrap.
+    // 6 door — a metal one draws [`METAL_DOOR_ASSET`] instead.
     Some("models/deploy/door.glb"),
     None,                                       // 7 lock — never drawn
     Some("models/deploy/recycler.glb"),         // 8 recycler
@@ -2356,12 +2502,21 @@ pub fn piece_look(addr: Addr) -> usize {
     (h.wrapping_mul(0x2C1B_3C6D) >> 28) as usize % PIECE_LOOKS
 }
 
-/// The metal door: `door.glb`'s geometry built under sheet-metal surfaces
-/// by `ci/prop_kit.py`, which unwraps identical geometry identically, so its
-/// material lays onto `door.glb`'s mesh. Only the material is loaded. (A
-/// locked wooden door used to wear it too, which drew every lock as a
-/// change of door; the lock is drawn now, [`spawn_lock`].)
-pub const METAL_DOOR_ASSET: &str = "models/deploy/door_locked.glb";
+/// The metal door: riveted scrap sheet over an angle-iron frame, generated
+/// (`assets/models/MANIFEST.md`) and fitted to the door's [`DEPLOY`] row
+/// with the hinge at −Z like `door.glb`, so it swings the same way.
+pub const METAL_DOOR_ASSET: &str = "models/deploy/door_metal.glb";
+
+/// The two locks' models, code then key: generated, and the held items' own
+/// (`ui::hold`), so the lock on a door is the one in the hand. Authored
+/// facing +Z and centred on z like every held item (the fist grips the
+/// model's own axis), so their backs sit [`LOCK_BACK_M`] behind it.
+pub const LOCK_ASSET: [&str; 2] = ["models/held/code_lock.glb", "models/held/key_lock.glb"];
+
+/// How far behind its origin each [`LOCK_ASSET`]'s flat back is, metres:
+/// half the keypad's depth, and half the hasp's with its padlock hanging
+/// forward. `tests/deploy_assets.rs` holds these to the files.
+pub const LOCK_BACK_M: [f32; 2] = [0.02875, 0.04654];
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
 pub fn build_kit(
@@ -2579,6 +2734,13 @@ pub fn build_kit(
         tier,
         deploy_mesh,
         deploy_mat,
+        door_metal_mesh: assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(METAL_DOOR_ASSET),
+        ),
         door_metal: assets.load(
             GltfAssetLabel::Material {
                 index: 0,
@@ -2586,14 +2748,24 @@ pub fn build_kit(
             }
             .from_asset(METAL_DOOR_ASSET),
         ),
-        lock_mesh: ["code_lock", "key_lock"].map(|name| {
-            meshes.add(
-                super::heldkit::baked(name).unwrap_or_else(|| Cuboid::new(0.1, 0.15, 0.04).into()),
+        lock_mesh: LOCK_ASSET.map(|path| {
+            assets.load(
+                GltfAssetLabel::Primitive {
+                    mesh: 0,
+                    primitive: 0,
+                }
+                .from_asset(path),
             )
         }),
-        // The kit's textures are fixed handles `viewmodel::load_models`
-        // fills at startup, so this material resolves once they land.
-        lock_mat: materials.add(super::heldkit::material()),
+        lock_mat: LOCK_ASSET.map(|path| {
+            assets.load(
+                GltfAssetLabel::Material {
+                    index: 0,
+                    is_scale_inverted: false,
+                }
+                .from_asset(path),
+            )
+        }),
         led_mesh: meshes.add(Sphere::new(LED_R_M).mesh().ico(1).unwrap()),
         led_mat: [LED_OPEN, LED_LOCKED].map(|c: Color| {
             materials.add(StandardMaterial {
@@ -2749,30 +2921,43 @@ pub fn stream(
         if (rec.row as u16) >= have {
             continue;
         }
-        let key = (rec.cx, rec.cz, rec.level, rec.loc);
+        // The address the piece answers to: its grid address, or its id
+        // spelled (`build::spell_id`) — what removals and hits name it by.
+        let key = rec.target();
         if ahead && ring.pieces.get(&key).is_some_and(|l| l.seen == gen) {
+            continue;
+        }
+        // A pending lattice placement has no id yet to file it under.
+        if ahead && !rec.on_grid() {
             continue;
         }
         let def = core.piece_defs.pieces[rec.row as usize];
         // Which corner posts this piece draws is a fact about its NEIGHBOURS
         // (gap v1), so it is re-read here every pass rather than latched at
         // spawn: the wall that arrived beside this one takes the post they
-        // share, and this one must be redrawn without it.
-        let own = if is_edge_shape(def.shape) {
+        // share, and this one must be redrawn without it. Off the grid the
+        // building's lattice says who meets it there.
+        let own = if !is_edge_shape(def.shape) {
+            0
+        } else if rec.on_grid() {
             post_owner(core.pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc).bits()
         } else {
-            0
+            posed_post_owner(core.pieces.store(), &core.piece_defs, rec).bits()
         };
-        let foot_drop = sim_core::collide::edge_foot_drop(
-            seed,
-            haven,
-            core.pieces.cols(),
-            rec.cx,
-            rec.cz,
-            rec.level,
-            rec.loc,
-            rec.plate,
-        );
+        let foot_drop = if rec.on_grid() {
+            sim_core::collide::edge_foot_drop(
+                seed,
+                haven,
+                core.pieces.cols(),
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+                rec.plate,
+            )
+        } else {
+            0.0
+        };
         if let Some(live) = ring.pieces.get_mut(&key) {
             live.seen = gen;
             // An upgrade keeps the address and changes the row; a raid keeps
@@ -2785,6 +2970,7 @@ pub fn stream(
                 && live.own == own
                 && live.facing == rec.facing
                 && live.foot_drop == foot_drop
+                && live.sock == rec.sock
             {
                 continue;
             }
@@ -2792,7 +2978,7 @@ pub fn stream(
             // on what is stone now) go with the old face.
             if live.row != rec.row {
                 if let Some(m) = marks.as_deref_mut() {
-                    let tf = base_transform(seed, haven, key, live.plate);
+                    let tf = addr_root(seed, haven, core.pieces.store(), key, live.plate);
                     let up = if is_edge_shape(def.shape) {
                         LEVEL_H_M * 0.5
                     } else {
@@ -2804,17 +2990,26 @@ pub fn stream(
             commands.entity(live.entity).despawn();
             ring.pieces.remove(&key);
         }
+        let root = piece_root(seed, haven, core.pieces.store(), rec);
+        let soft = match core.pieces.frame(rec.bld) {
+            Some(frame) if !rec.on_grid() => {
+                posed_soft_positive_x(frame, &rec.sock, rec.facing, &root)
+            }
+            _ => soft_face_positive_x(key, rec.facing, &root),
+        };
+        let footing = match core.pieces.frame(rec.bld) {
+            Some(frame) if !rec.on_grid() => posed_footing(seed, haven, frame, &rec.sock),
+            _ => footing_of(seed, haven, rec.cx, rec.cz, rec.plate),
+        };
         let entity = spawn_piece(
             &mut commands,
             kit,
-            seed,
-            haven,
-            key,
+            rec,
+            footing,
+            root,
+            soft,
             def.shape,
             def.material,
-            rec.dmg,
-            rec.plate,
-            rec.facing,
             PostOwn::from_bits(own),
             foot_drop,
         );
@@ -2832,6 +3027,7 @@ pub fn stream(
                 facing: rec.facing,
                 foot_drop,
                 base_y: 0.0,
+                sock: rec.sock,
             },
         );
     }
@@ -2847,6 +3043,22 @@ pub fn stream(
     let dhave = core.deploy_defs_have.min(core.deploy_defs.def_count);
     for rec in core.deploys.entries() {
         if (rec.row as u16) >= dhave {
+            continue;
+        }
+        // A door in a doorway the grid cannot name hangs in that doorway or
+        // is not drawn: its address spells the doorway's id, no place, and
+        // one that streamed in before its doorway waits for it (unseen, so
+        // the sweep below takes any earlier draw).
+        if rec.loc == sim_core::build::LOC_NONE
+            && sim_core::deploy::posed_insert(
+                core.pieces.cols(),
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+            )
+            .is_none()
+        {
             continue;
         }
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
@@ -2895,18 +3107,30 @@ pub fn stream(
             if live.open != rec.open {
                 if let Some(m) = marks.as_deref_mut() {
                     let arch = core.deploy_defs.defs[live.row as usize].arch;
-                    let was = deploy_transform(seed, haven, key, arch, live.open, live.plate);
+                    let was = deploy_transform(
+                        seed,
+                        haven,
+                        core.pieces.cols(),
+                        key,
+                        arch,
+                        live.open,
+                        live.plate,
+                    );
                     m.forget_later(was.translation, DOOR_FORGET_R_M);
                 }
                 // The swing is heard at the leaf — your own on the press
                 // (the mirror is predicted), anyone else's on the event.
                 if let Some(sound) = sound.as_deref_mut().filter(|_| live.row == rec.row) {
-                    let leaf = deploy_transform(seed, haven, key, arch, rec.open, plate);
-                    let cue = if rec.open {
-                        crate::sound::Cue::DoorOpen
-                    } else {
-                        crate::sound::Cue::DoorClose
-                    };
+                    let leaf = deploy_transform(
+                        seed,
+                        haven,
+                        core.pieces.cols(),
+                        key,
+                        arch,
+                        rec.open,
+                        plate,
+                    );
+                    let cue = door_cue(arch, matter, rec.open);
                     let at = leaf.translation + Vec3::Y * 1.0;
                     sound.play(crate::sound::mixer::Request::at(cue, at.to_array()));
                 }
@@ -2939,6 +3163,7 @@ pub fn stream(
                 facing: 0,
                 foot_drop: 0.0,
                 base_y,
+                sock: Default::default(),
             },
         );
     }
@@ -3021,6 +3246,7 @@ pub fn stream(
                     facing: 0,
                     foot_drop: 0.0,
                     base_y: 0.0,
+                    sock: Default::default(),
                 },
             );
             continue;
@@ -3097,6 +3323,7 @@ pub fn stream(
                 facing: 0,
                 foot_drop: 0.0,
                 base_y: 0.0,
+                sock: Default::default(),
             },
         );
     }
@@ -3362,14 +3589,12 @@ fn planted_transform(position: Vec3, id: u32) -> Transform {
 fn spawn_piece(
     commands: &mut Commands,
     kit: &Kit,
-    seed: u64,
-    haven: &terrain::Haven,
-    addr: Addr,
+    rec: &sim_core::build::PieceRec,
+    footing: (usize, f32),
+    root: Transform,
+    soft_side: bool,
     shape: u8,
     material: u8,
-    dmg: u8,
-    plate: i8,
-    facing: u8,
     own: PostOwn,
     foot_drop: f32,
 ) -> Entity {
@@ -3377,14 +3602,20 @@ fn spawn_piece(
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
     // material the sim gained without a row here — which is a red test long
     // before it is a wrong wall.
-    let mat = kit.piece_material(material, dmg, addr);
+    let mat = kit.piece_material(material, rec.dmg, rec.target());
     // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
-    // build ghost are the same object in the same pose.
-    let root = base_transform(seed, haven, addr, plate);
-    let (cx, cz, _, loc) = addr;
-    let soft_side = usize::from(soft_face_positive_x(addr, facing, &root));
+    // build ghost are the same object in the same pose. A piece the grid
+    // cannot name stands where its footprint is (`posed_transform`) and is
+    // drawn as the grid's west edge or plane would be.
+    let loc = if rec.on_grid() {
+        rec.loc
+    } else if is_edge_shape(shape) {
+        LOC_EDGE_XLO
+    } else {
+        sim_core::build::LOC_PLANE
+    };
 
     // **Every piece is ONE entity with its mesh on it.** Not a style choice:
     // the hammer highlight reads `Transform` + `Mesh3d` off the entity
@@ -3400,17 +3631,16 @@ fn spawn_piece(
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
         // The footing is per address — the terrain-following skirt
-        // (`foundation_part`, the shared emit the ghost also draws) — picked
-        // by the same call that sized it, already true-size, so the transform
-        // carries no scale and the skirt wears a metre-scaled texture.
-        let tri = shape == SHAPE_TRI_FOUNDATION;
-        let part = foundation_part(seed, haven, cx, cz, tri, plate);
-        step = footing_of(seed, haven, cx, cz, plate).0;
+        // (`footing_of`, or `posed_footing` off the grid, the shared sizing
+        // the ghost also draws) — already true-size, so the transform carries
+        // no scale and the skirt wears a metre-scaled texture.
+        let part = footing_part(footing.1, shape == SHAPE_TRI_FOUNDATION);
+        step = footing.0;
         root * part.transform()
     } else {
         root * piece_local(shape)
     };
-    let mesh = kit.piece_mesh(shape, material, loc, own, soft_side != 0, step);
+    let mesh = kit.piece_mesh(shape, material, loc, own, soft_side, step);
     let mut piece = commands.spawn((
         super::WorldEntity,
         Mesh3d(mesh),
@@ -3422,7 +3652,7 @@ fn spawn_piece(
     // material, owned like its posts. The root keeps the mesh the highlight
     // reads; a child is exactly what the one-entity contract allows.
     if is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
-        if let Some(apron) = edge_apron_transform(addr.2, foot_drop) {
+        if let Some(apron) = edge_apron_transform(rec.level, foot_drop) {
             piece.with_child((
                 Mesh3d(kit.apron_mesh(material, own)),
                 MeshMaterial3d(mat),
@@ -3468,6 +3698,7 @@ const DOOR_FORGET_R_M: f32 = 1.8;
 pub fn deploy_transform(
     seed: u64,
     haven: &terrain::Haven,
+    cols: &ColIndex,
     addr: Addr,
     arch: u8,
     open: bool,
@@ -3476,6 +3707,13 @@ pub fn deploy_transform(
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let [w, h, d] = DEPLOY[idx].0;
     let (cx, cz, level, loc) = addr;
+    // Hung in an edge the grid cannot name (freeform W4): the grid's west
+    // edge's layout, in that edge's own frame off its collision row.
+    if let Some(at) = sim_core::deploy::posed_insert(cols, cx, cz, level, loc) {
+        let root = Transform::from_xyz(at.x, at.floor_y, at.z)
+            .with_rotation(Quat::from_rotation_y(at.run.0.atan2(at.run.1)));
+        return root * edge_insert_local(arch, open, w, h, d);
+    }
     let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
@@ -3522,6 +3760,34 @@ pub fn deploy_transform(
         (LOC_EDGE_ZLO, true) => Transform::from_xyz(x0 + hinge, y, z0 + d * 0.5),
         _ => Transform::from_xyz(cxm, y, czm),
     }
+}
+
+/// An edge insert under its doorway's root, the root's local +z the edge's
+/// run and +x the side an open door lies on: [`deploy_transform`]'s grid
+/// west-edge arm, for an edge the grid cannot name.
+fn edge_insert_local(arch: u8, open: bool, w: f32, h: f32, d: f32) -> Transform {
+    let lift = h * 0.5
+        + if matches!(
+            arch,
+            ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+        ) {
+            WINDOW_SILL_M
+        } else {
+            0.0
+        };
+    if arch == ARCH_GARAGE_DOOR && open {
+        return Transform::from_xyz(0.0, LEVEL_H_M - FRAME_RIM_M * 0.5, 0.0).with_scale(Vec3::new(
+            1.0,
+            FRAME_RIM_M / h,
+            1.0,
+        ));
+    }
+    if arch == ARCH_DOOR && open {
+        let hinge = BUILD_CELL_M * 0.5 - d * 0.5 + w * 0.5;
+        return Transform::from_xyz(d * 0.5, lift, hinge - BUILD_CELL_M * 0.5)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    }
+    Transform::from_xyz(0.0, lift, 0.0)
 }
 
 /// How far a standing deployable sits below [`deploy_transform`]'s box
@@ -3632,6 +3898,20 @@ pub struct RecyclerHum {
     pub loc: u8,
 }
 
+/// The swing of a door-like deployable, by what it is: a garage door rolls,
+/// a sheet-metal door clanks, and a wooden door or a shutter creaks.
+pub fn door_cue(arch: u8, matter: u8, open: bool) -> crate::sound::Cue {
+    use crate::sound::Cue;
+    match (arch, matter == sim_core::deploy::MATTER_METAL, open) {
+        (ARCH_GARAGE_DOOR, _, true) => Cue::GarageOpen,
+        (ARCH_GARAGE_DOOR, _, false) => Cue::GarageClose,
+        (_, true, true) => Cue::DoorMetalOpen,
+        (_, true, false) => Cue::DoorMetalClose,
+        (_, false, true) => Cue::DoorOpen,
+        (_, false, false) => Cue::DoorClose,
+    }
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -3656,6 +3936,7 @@ pub fn spawn_deploy(
         let mut t = deploy_transform(
             seed,
             haven,
+            cols,
             (rec.cx, rec.cz, rec.level, rec.loc),
             arch,
             rec.open,
@@ -3675,7 +3956,8 @@ pub fn spawn_deploy(
         transform
     };
 
-    let mat = if arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL {
+    let metal_door = arch == ARCH_DOOR && matter == sim_core::deploy::MATTER_METAL;
+    let mat = if metal_door {
         kit.door_metal.clone()
     } else {
         kit.deploy_mat[idx].clone()
@@ -3685,6 +3967,8 @@ pub fn spawn_deploy(
         super::WorldEntity,
         Mesh3d(if arch == ARCH_WINDOW_SHUTTER && rec.open {
             kit.shutters_open.clone()
+        } else if metal_door {
+            kit.door_metal_mesh.clone()
         } else {
             kit.deploy_mesh[idx].clone()
         }),
@@ -3707,7 +3991,7 @@ pub fn spawn_deploy(
     // A bolted-on lock is drawn where a hand would find it. A garage door
     // rolled up into its header has nowhere to show one.
     if rec.has_lock && !(arch == ARCH_GARAGE_DOOR && rec.open) {
-        let (mounts, n) = lock_mounts(arch);
+        let (mounts, n) = lock_mounts(arch, metal_door);
         for &(at, out) in &mounts[..n] {
             spawn_lock(&mut e, kit, at, out, rec.keyed, rec.locked);
         }
@@ -3749,6 +4033,7 @@ pub fn spawn_deploy(
                 cz: rec.cz,
                 level: rec.level,
                 loc: rec.loc,
+                furnace: arch == ARCH_FURNACE,
             },
             PointLight {
                 color: FIRE_COLOR,
@@ -3775,12 +4060,13 @@ pub fn spawn_deploy(
 }
 
 /// How much bigger a lock is drawn on a door or a box than in the hand, so
-/// it reads across a room: the keypad, the padlock.
-const LOCK_SCALE: [f32; 2] = [1.25, 1.5];
-/// The code lock's light, in the prop kit's frame: over the baked LED
-/// (`heldkit::code_lock`), a hair proud of it so it is the one seen.
-const LED_AT: Vec3 = Vec3::new(0.042, 0.145, 0.024);
-const LED_R_M: f32 = 0.0085;
+/// it reads across a room: the keypad, the hasp and padlock.
+const LOCK_SCALE: [f32; 2] = [1.25, 1.2];
+/// The code lock's light, in [`LOCK_ASSET`]'s frame: centred in the domed
+/// lens at the keypad's top left (measured off the model), poking a
+/// couple of millimetres through it so it is the one seen.
+const LED_AT: Vec3 = Vec3::new(-0.0225, 0.1495, 0.0218);
+const LED_R_M: f32 = 0.0065;
 const LED_OPEN: Color = Color::srgb(0.35, 1.0, 0.45);
 const LED_LOCKED: Color = Color::srgb(1.0, 0.18, 0.12);
 /// `door.glb`'s half thickness: the leaf's faces, where its lock sits.
@@ -3789,6 +4075,14 @@ const DOOR_FACE_M: f32 = 0.056;
 /// (the hinge is the leaf's −Z end, `deploy_transform`), at hand height.
 const DOOR_LOCK_Y_M: f32 = 1.08;
 const DOOR_LOCK_IN_M: f32 = 0.16;
+/// The metal door's leaf is one thin sheet off-centre in its frame:
+/// its front face (−X, the bar handle's side) and its back (+X, behind
+/// the angle iron), measured through the sheet at the lock's spot.
+const METAL_DOOR_FACE_M: [f32; 2] = [-0.0135, -0.0055];
+/// Beside the bar handle (z 0.43–0.46, 0.81–1.31 m up) rather than over
+/// it, and above the back's crossbar (1.05–1.15 m).
+const METAL_DOOR_LOCK_Y_M: f32 = 1.17;
+const METAL_DOOR_LOCK_IN_M: f32 = 0.30;
 
 /// A deployable's lock as one redraw key: bolted on, armed, keyed.
 fn lock_bits(rec: &DeployRec) -> u8 {
@@ -3799,7 +4093,8 @@ fn lock_bits(rec: &DeployRec) -> u8 {
 /// the lock's feet on the face, and the face's outward normal. A door shows
 /// its lock on both faces, so whoever stands at it sees it; a box and a
 /// hearth on their fronts (+Z, the authored front, `footprint::Pose`).
-pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
+/// `metal_door` picks the metal door's model over the wooden one's.
+pub fn lock_mounts(arch: u8, metal_door: bool) -> ([(Vec3, Vec3); 2], usize) {
     let none = (Vec3::ZERO, Vec3::Z);
     let both = |at: Vec3, face: f32| {
         (
@@ -3811,6 +4106,17 @@ pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
         )
     };
     match arch {
+        ARCH_DOOR if metal_door => {
+            let d = deploy_size(ARCH_DOOR as usize).z;
+            let (y, z) = (METAL_DOOR_LOCK_Y_M, d * 0.5 - METAL_DOOR_LOCK_IN_M);
+            (
+                [
+                    (Vec3::new(METAL_DOOR_FACE_M[0], y, z), Vec3::NEG_X),
+                    (Vec3::new(METAL_DOOR_FACE_M[1], y, z), Vec3::X),
+                ],
+                2,
+            )
+        }
         ARCH_DOOR => {
             let d = deploy_size(ARCH_DOOR as usize).z;
             both(
@@ -3839,18 +4145,19 @@ pub fn lock_mounts(arch: u8) -> ([(Vec3, Vec3); 2], usize) {
 
 /// Hang one drawn lock on a deployable: the keypad (with its light, green
 /// open and red locked — the client knows the lock bit and never who the
-/// lock remembers) or the padlock, its feet at `at`, facing `out`.
+/// lock remembers) or the hasp and padlock, its feet at `at`, facing `out`.
 fn spawn_lock(e: &mut EntityCommands, kit: &Kit, at: Vec3, out: Vec3, keyed: bool, locked: bool) {
     let k = keyed as usize;
     let scale = LOCK_SCALE[k];
-    // The kit authors a lock facing +Z, its body centred on its plane.
+    // Its back on the face, and a millimetre proud of it so the two never
+    // fight over a pixel.
     let turn = Quat::from_rotation_arc(Vec3::Z, out);
-    let t = Transform::from_translation(at + out * (0.02 * scale))
+    let t = Transform::from_translation(at + out * (LOCK_BACK_M[k] * scale + 0.001))
         .with_rotation(turn)
         .with_scale(Vec3::splat(scale));
     let mut lock = e.commands_mut().spawn((
         Mesh3d(kit.lock_mesh[k].clone()),
-        MeshMaterial3d(kit.lock_mat.clone()),
+        MeshMaterial3d(kit.lock_mat[k].clone()),
         t,
     ));
     if !keyed {
@@ -3964,6 +4271,9 @@ pub struct FireLight {
     pub level: u8,
     /// The fire's body slot — two fires can share a cell (free placement).
     pub loc: u8,
+    /// A furnace rather than an open fire: it roars in its box where a
+    /// campfire crackles (`audio::fires`, `audio::bed`).
+    pub furnace: bool,
 }
 
 /// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries
@@ -4223,23 +4533,40 @@ fn clipped_patch(x0: f32, z0: f32, x1: f32, z1: f32, triangle: bool) -> Vec<Vec2
     if !triangle {
         return rectangle.to_vec();
     }
-    let mut out = Vec::with_capacity(5);
-    for i in 0..4 {
-        let a = rectangle[i];
-        let c = rectangle[(i + 1) % 4];
-        let da = BUILD_CELL_M - a.x - a.y;
-        let dc = BUILD_CELL_M - c.x - c.y;
-        if da >= 0.0 {
-            out.push(a);
-        }
-        if (da > 0.0 && dc < 0.0) || (da < 0.0 && dc > 0.0) {
-            out.push(a + (c - a) * (da / (da - dc)));
+    // The equilateral body's three sides, each as the inward distance a
+    // point keeps from it — `sim_core::circulation::surface`'s own test.
+    const H3: f32 = 0.866_025_4;
+    let sides: [fn(Vec2) -> f32; 3] = [
+        |p| p.y,
+        |p| H3 * (BUILD_CELL_M - p.x) - 0.5 * p.y,
+        |p| H3 * p.x - 0.5 * p.y,
+    ];
+    let mut out = rectangle.to_vec();
+    for d in sides {
+        let poly = std::mem::take(&mut out);
+        for i in 0..poly.len() {
+            let a = poly[i];
+            let c = poly[(i + 1) % poly.len()];
+            let (da, dc) = (d(a), d(c));
+            if da >= 0.0 {
+                out.push(a);
+            }
+            if (da > 0.0 && dc < 0.0) || (da < 0.0 && dc > 0.0) {
+                out.push(a + (c - a) * (da / (da - dc)));
+            }
         }
     }
     out
 }
 fn circulation_into(b: &mut Buffers, shape: u8, at: Vec3) {
     let (patches, n) = sim_core::circulation::patches(shape);
+    // A triangle's flight is drawn about the triangle's centroid, as its
+    // body is ([`posed_transform`]).
+    let at = if shape == sim_core::build::SHAPE_STAIRS_TRI_SPIRAL {
+        at + TRI_CENTRE
+    } else {
+        at
+    };
     for patch in &patches[..n] {
         let dx = patch.x1 - patch.x0;
         let dz = patch.z1 - patch.z0;
@@ -4318,19 +4645,34 @@ fn circulation_into(b: &mut Buffers, shape: u8, at: Vec3) {
         }
     }
 }
-fn tri_frame_into(b: &mut Buffers, at: Vec3) {
-    let r = FRAME_RIM_M;
-    let diagonal = BUILD_CELL_M - r * std::f32::consts::SQRT_2 - r;
-    let outer = [
+/// The equilateral body's corners in its own frame — the first side along
+/// +x from the origin, the apex toward +z — as the patch helpers take them.
+fn tri_corners() -> [Vec2; 3] {
+    let h = BUILD_CELL_M * 0.5;
+    [
         Vec2::ZERO,
-        Vec2::new(0.0, BUILD_CELL_M),
+        Vec2::new(h, h * 3f32.sqrt()),
         Vec2::new(BUILD_CELL_M, 0.0),
-    ];
-    let inner = [
-        Vec2::splat(r),
-        Vec2::new(r, diagonal),
-        Vec2::new(diagonal, r),
-    ];
+    ]
+}
+
+/// What carries [`patch_slab`]'s cell-centred output to a triangle's
+/// centroid: the centroid stands an apothem off the first side, not half a
+/// cell.
+const TRI_CENTRE: Vec3 = Vec3::new(
+    0.0,
+    0.0,
+    BUILD_CELL_M * 0.5 - BUILD_CELL_M * 0.5 / 1.732_050_8,
+);
+
+fn tri_frame_into(b: &mut Buffers, at: Vec3) {
+    // The rim: each side's rail [`FRAME_RIM_M`] deep, the inner triangle the
+    // outer drawn in about the centroid by the rim over the apothem.
+    let r = FRAME_RIM_M;
+    let outer = tri_corners();
+    let c = (outer[0] + outer[1] + outer[2]) / 3.0;
+    let apothem = BUILD_CELL_M * 0.5 / 3f32.sqrt();
+    let inner = outer.map(|p| c + (p - c) * (1.0 - r / apothem));
     for i in 0..3 {
         let j = (i + 1) % 3;
         patch_slab(
@@ -4338,7 +4680,7 @@ fn tri_frame_into(b: &mut Buffers, at: Vec3) {
             &[outer[i], outer[j], inner[j], inner[i]],
             |_| 0.0,
             |_| -SLAB_T,
-            at,
+            at + TRI_CENTRE,
         );
     }
 }

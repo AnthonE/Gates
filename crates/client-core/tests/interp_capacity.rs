@@ -52,6 +52,7 @@ fn ent(id: u32) -> EntityState {
         dead: false,
         wounded: false,
         crouched: false,
+        seated: false,
         yaw: 0,
         pitch: 0,
         // Empty hand: this suite is about the interpolator's table, and a

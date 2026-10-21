@@ -557,7 +557,12 @@ fn detail_body(
             BorderColor::all(LINE),
         ))
         .with_children(|tile| {
-            if let Some(image) = icons.item(&name) {
+            let look = icons.look(
+                &name,
+                ui.skin,
+                crate::ui::skins::tint_of(&core.skins, ui.skin),
+            );
+            if let Some((image, color)) = look {
                 tile.spawn((
                     Node {
                         position_type: PositionType::Absolute,
@@ -571,11 +576,7 @@ fn detail_body(
                     // picture follows the SKINS pick.
                     ImageNode {
                         image,
-                        color: match crate::ui::skins::tint_of(&core.skins, ui.skin) {
-                            _ if locked => PICTURE_DIM,
-                            Some([r, g, b]) => Color::srgb(r, g, b),
-                            None => PICTURE,
-                        },
+                        color: if locked { PICTURE_DIM } else { color },
                         ..default()
                     },
                 ));
@@ -1031,8 +1032,14 @@ fn skin_tile(
     } else {
         tile.insert((SkinStore(t.catalog), Hover::on(rest)));
     }
+    // A skin with a model of its own is its own picture, untinted.
+    let own = icons.skin(t.catalog);
+    let (picture, tint) = match own {
+        Some(h) => (Some(h), None),
+        None => (picture, t.tint),
+    };
     tile.with_children(|c| {
-        let [r, g, b] = t.tint.unwrap_or([1.0, 1.0, 1.0]);
+        let [r, g, b] = tint.unwrap_or([1.0, 1.0, 1.0]);
         // A skin you do not own is the look, dimmed: seen, not offered.
         let colour = if t.owned {
             Color::srgb(r, g, b)
@@ -1281,17 +1288,16 @@ pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(10.0)),
                 row_gap: Val::Px(6.0),
-                border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(PANEL_BG),
-            BorderColor::all(LINE),
+            BackgroundColor(super::REGION_BG),
         ))
         .with_children(|col| {
             col.spawn((
                 Text::new("QUICK CRAFT".to_string()),
-                font_bold(15.0),
+                font_bold(17.0),
                 TextColor(TEXT),
+                crate::render::ui::TEXT_SHADOW,
             ));
             if all.is_empty() {
                 col.spawn((

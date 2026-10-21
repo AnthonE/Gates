@@ -9,7 +9,6 @@
 //! which still read as a line along the coast, over [`POLE_FADE_M`].
 
 use bevy::asset::RenderAssetUsages;
-#[cfg(not(webgl2))]
 use bevy::camera::visibility::VisibilityRange;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
@@ -40,9 +39,8 @@ const WIRE_FADE_M: std::ops::Range<f32> = 260.0..340.0;
 const POLE_FADE_M: std::ops::Range<f32> = 900.0..1100.0;
 
 /// A run's fade as the component it carries — `tree::lod_band`'s shape: the
-/// `VisibilityRange` on the desktop, and nothing under WebGL2, which cannot
-/// bind the table it dithers by (the pipeline panics at creation). A browser
-/// draws the poles and wires unfaded.
+/// dithered `VisibilityRange` wherever the view can bind the table it
+/// dithers by, which WebGL2 cannot (the pipeline panics at creation).
 #[cfg(not(webgl2))]
 fn fade_band(end_margin: std::ops::Range<f32>) -> VisibilityRange {
     VisibilityRange {
@@ -52,9 +50,13 @@ fn fade_band(end_margin: std::ops::Range<f32>) -> VisibilityRange {
     }
 }
 
-/// See the desktop half above.
+/// See the desktop half above: under WebGL2 the run stops abruptly at the
+/// band's middle, which keys no dither (`plants::fade_band` has why) and
+/// still culls past it on the CPU.
 #[cfg(webgl2)]
-fn fade_band(_end_margin: std::ops::Range<f32>) {}
+fn fade_band(end_margin: std::ops::Range<f32>) -> VisibilityRange {
+    VisibilityRange::abrupt(0.0, (end_margin.start + end_margin.end) * 0.5)
+}
 
 const WOOD: [f32; 4] = [0.6, 0.53, 0.45, 1.0];
 const HARDWARE: [f32; 4] = [0.36, 0.37, 0.38, 1.0];

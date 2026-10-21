@@ -381,7 +381,12 @@ mod tests {
             ..PieceRec::default()
         };
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
-        let n = protocol::event::encode_event_piece_sync(true, &[rec], &mut buf).unwrap();
+        let n = protocol::event::encode_event_piece_sync(
+            true,
+            &[(rec, sim_core::build::grid_frame(SEED, &haven, cx, cz))],
+            &mut buf,
+        )
+        .unwrap();
         core.on_stream(&buf[..n]).unwrap();
         let eye = [
             x,

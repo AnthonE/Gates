@@ -403,7 +403,7 @@ impl EventTally {
                 .fetch_add(*took as u64, Ordering::Relaxed);
             return;
         }
-        if let EventMsg::PiecePlaced { rec } = ev {
+        if let EventMsg::PiecePlaced { rec, .. } = ev {
             let storey = rec.level % MAX_BUILD_LEVELS as u8;
             self.top_storey.fetch_max(storey as u64, Ordering::Relaxed);
         }

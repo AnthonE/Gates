@@ -508,8 +508,15 @@ def main():
             else:
                 renders = pathlib.Path(args[i + 1])
             del args[i : i + 2]
+    # `--only-renders`: just the stems the renders directory has, which is
+    # how the skins' pictures are made (`iconbake --skins`): no item's
+    # painted silhouette belongs in `assets/icons/skins/`.
+    only_renders = "--only-renders" in args
+    if only_renders:
+        args.remove("--only-renders")
     only = set(args)
-    stems = sorted(set(PAINT) | {p.stem for p in renders.glob("*.png")} | set(RENDER_OF))
+    rendered = {p.stem for p in renders.glob("*.png")}
+    stems = sorted(rendered if only_renders else set(PAINT) | rendered | set(RENDER_OF))
     todo = [s for s in stems if not only or s in only]
     missing = sorted(only - set(stems))
     if missing:

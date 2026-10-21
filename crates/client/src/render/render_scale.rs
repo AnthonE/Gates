@@ -23,6 +23,37 @@ pub const RENDER_SCALE_STEP: u8 = 5;
 /// Identity: every existing preset and settings file keeps its resolution.
 pub const RENDER_SCALE_MAX: u8 = 100;
 
+/// The most world pixels a browser draws: a 1080p frame's worth.
+///
+/// A page's canvas is the viewport in DEVICE pixels, so a retina laptop asks
+/// the WebGPU module for 2880×1800 and a 4K monitor for 3840×2160 — two and
+/// four times a 1080p frame — on the integrated GPU most pages run on, under
+/// the desktop's whole frame. Past this budget the world is drawn smaller and
+/// stretched, the same path the RENDER SCALE row takes (the HUD stays at the
+/// window's size), and the row below it says so ([`web_cap`]).
+pub const WEB_PIXEL_BUDGET: u64 = 1920 * 1080;
+
+/// The render scale a browser's world is held to in a `window`-pixel canvas:
+/// the largest whole [`RENDER_SCALE_STEP`] that keeps the world image inside
+/// [`WEB_PIXEL_BUDGET`], never under [`RENDER_SCALE_MIN`].
+pub fn budget_percent(window: UVec2) -> u8 {
+    let px = u64::from(window.x) * u64::from(window.y);
+    if px <= WEB_PIXEL_BUDGET {
+        return RENDER_SCALE_MAX;
+    }
+    let fit = ((WEB_PIXEL_BUDGET as f64 / px as f64).sqrt() * 100.0) as u8;
+    (fit / RENDER_SCALE_STEP * RENDER_SCALE_STEP).clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX)
+}
+
+/// What [`apply`] last held a browser's world to, for the settings screen.
+static WEB_CAP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(RENDER_SCALE_MAX);
+
+/// The browser's current ceiling on the RENDER SCALE row ([`budget_percent`]
+/// of the canvas); 100 natively, where the row is the only say.
+pub fn web_cap() -> u8 {
+    WEB_CAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Physical pixels, including a high-DPI window's device scale. Zero-sized
 /// windows are deferred by the caller; even a one-pixel viewport stays valid.
 pub fn extent(window: UVec2, percent: u8) -> UVec2 {
@@ -88,10 +119,15 @@ pub fn apply(
     if window_size.x == 0 || window_size.y == 0 {
         return;
     }
-    let percent = settings
+    let mut percent = settings
         .gfx
         .render_scale
         .clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX);
+    if cfg!(target_arch = "wasm32") {
+        let cap = budget_percent(window_size);
+        WEB_CAP.store(cap, std::sync::atomic::Ordering::Relaxed);
+        percent = percent.min(cap);
+    }
     for (eye, mut camera, mut target, surface) in &mut eyes {
         if percent == RENDER_SCALE_MAX {
             if let Some(surface) = surface {

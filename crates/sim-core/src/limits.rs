@@ -620,6 +620,13 @@ pub const MAX_PIECE_COSTS: usize = 2;
 /// DECISIONS.md §open (build grid row).
 pub const MAX_PIECES: usize = 32_768;
 
+/// Buildings per shard (freeform W3): each is a frame, minted by a
+/// foundation placed free and freed with its last piece. A building has at
+/// least one piece, so this caps nothing a full piece store would not —
+/// except a world of single foundations, which it refuses past 4,096 with
+/// `REFUSE_B_FULL`. Structural, not a knob.
+pub const MAX_BUILDINGS: usize = 4_096;
+
 /// Build-grid coordinate ceiling: cells index 0..MAX_BUILD_COORD on each
 /// axis, matching the wire's 11-bit cell fields (the 4,096 m island spans
 /// ~1,366 3 m cells; foundations further out die on the terrain rule first).

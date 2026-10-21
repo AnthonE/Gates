@@ -1,7 +1,9 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 152 kB — fixed-capacity by design (wall 4), and
-# (125 kB until clothing v1 took the item tables from 127 rows to 255;
+# `World` is 153 kB — fixed-capacity by design (wall 4), and
+# (152 kB until main's casino seats and freeform buildings met clothing v1
+# in one merge; 125 kB until clothing v1 took the item tables from 127 rows
+# to 255;
 # 124 kB until an unlock flag put a byte on every skin row;
 # 114 kB until guns v1 put sixteen magazines and a gun's cone on each
 # player and a rocket's landing ring on the arrows;
@@ -109,9 +111,20 @@
 # feature is off is itself a build error, and `getrandom` is not in the
 # no-render graph at all — so it belongs in the commit that puts Bevy on the
 # web, next to the feature that makes it legal.
+#
+# **`+simd128`: 128-bit SIMD, on every wasm32 build.** Every browser with
+# WebTransport runs it (Chrome 91, Firefox 89, Safari 16.4), and node runs it
+# for the parity gate. It is what turns on glam's SIMD `Vec3A`/`Vec4`/`Mat4`/
+# `Quat` (Bevy's transforms, culling and batching) and lets LLVM vectorize
+# the loops over pixels and vertices. It does not move a sim digest: without
+# fast-math LLVM vectorizes only lane-wise IEEE operations, never a reordered
+# reduction, and sim-core uses no glam — the parity gate runs with this set,
+# which is the check.
 [target.wasm32-unknown-unknown]
 rustflags = [
     "-C",
     "link-arg=-zstack-size=4194304",
     "--cfg=web_sys_unstable_apis",
+    "-C",
+    "target-feature=+simd128",
 ]

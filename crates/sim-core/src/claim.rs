@@ -106,6 +106,9 @@ fn built(pieces: &Pieces, cx: u16, cz: u16) -> bool {
         | m.diag_a
         | m.diag_b
         != 0
+        // A triangle, or anything in a building off the grid, stands in the
+        // cell its middle does (freeform W2).
+        || pieces.posed_in(cx, cz)
 }
 
 /// The walk's scratch: one fixed array used as both the queue and the

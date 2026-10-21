@@ -59,11 +59,21 @@ carry. It is not in apt; fetch the release tarball from GitHub and point
 `KTX_BIN`/`LD_LIBRARY_PATH` at it. That is the same class as the three
 `-dev` packages `ci/gates.sh` names — install it, do not skip the step.
 
+**Or `basisu`, where GitHub's release downloads are blocked** (a cloud box,
+2026-10-21). npm's `basis_universal` package carries a Linux `basisu` 1.16
+built with Zstandard (`npm pack basis_universal`, `package/bin/basisu`); point
+`BASISU_BIN` at it and it is used whenever `ktx` is absent. Its KTX2 is the
+same file in every field Bevy reads, compared against a shipped map: UASTC
+(DFD model 166, RGB channel), zstd 18, the full mip chain, transfer 2 on
+colour and 1 on data. The round trip below runs on its output too, decoded
+through its own transcoder to BC7.
+
 Usage:  ci/ktx_pack.py <in.glb> <out.glb> [--size 1024]
 """
 import io
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -74,6 +84,7 @@ from PIL import Image
 
 KTX = os.environ.get("KTX_BIN", os.path.expanduser("~/ktx/bin/ktx"))
 LIB = os.path.expanduser("~/ktx/lib")
+BASISU = os.environ.get("BASISU_BIN") or shutil.which("basisu")
 
 # glTF images that must be treated as colour rather than as data. Everything
 # else — normal, metallic-roughness, occlusion — is linear.
@@ -160,7 +171,6 @@ def ktx(args, env):
 def encode(png_bytes, size, is_srgb, tmp, label="", is_normal=False):
     src = os.path.join(tmp, "in.png")
     dst = os.path.join(tmp, "out.ktx2")
-    back = os.path.join(tmp, "back.png")
     im = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
     if im.size != (size, size):
         im = im.resize((size, size), Image.LANCZOS)
@@ -169,6 +179,41 @@ def encode(png_bytes, size, is_srgb, tmp, label="", is_normal=False):
     im.save(src)
     fmt = "R8G8B8A8_SRGB" if is_srgb else "R8G8B8A8_UNORM"
     tf = "srgb" if is_srgb else "linear"
+    if not os.path.exists(KTX) and BASISU:
+        back = encode_basisu(src, dst, is_srgb, tmp)
+    else:
+        back = encode_ktx(src, dst, fmt, tf, tmp)
+    # Round trip: decode level 0 back and compare channel means with what
+    # went in. This is the check that would have caught the linearisation
+    # on 2026-08-11 — the packed normal map's X and Y read 0.21 against a
+    # source of 0.50 — and it catches any transfer function applied by a
+    # default nobody read, in either direction.
+    want = np.asarray(im, dtype=np.float64).reshape(-1, 4).mean(0) / 255.0
+    got = np.asarray(Image.open(back).convert("RGBA"), dtype=np.float64).reshape(-1, 4).mean(0) / 255.0
+    if np.abs(want - got).max() > ROUNDTRIP_TOL:
+        raise SystemExit(
+            f"{label or 'map'} ({fmt}): packed channel means {np.round(got, 3).tolist()} "
+            f"against source {np.round(want, 3).tolist()} — a transfer function was applied "
+            f"that the source did not carry. Refusing to ship a bent map.")
+    return open(dst, "rb").read()
+
+
+def encode_basisu(src, dst, is_srgb, tmp):
+    """`src` to `dst` with `basisu`; returns level 0 decoded back, as a PNG.
+    `-linear` is the data maps' `--assign-tf linear`: linear metrics and
+    linear mip filtering, no curve applied to the pixels."""
+    run = lambda args: subprocess.run([BASISU] + args, check=True, capture_output=True, cwd=tmp)
+    run(["-ktx2", "-uastc", "-ktx2_zstandard_level", "18", "-mipmap"]
+        + ([] if is_srgb else ["-linear"]) + ["-file", src, "-output_file", dst])
+    # Format 6 is BC7_RGBA, what a desktop GPU is handed.
+    run(["-unpack", "-no_ktx", "-format_only", "6", "-file", dst])
+    stem = os.path.splitext(os.path.basename(dst))[0]
+    return os.path.join(tmp, f"{stem}_unpacked_rgba_BC7_RGBA_0_0000.png")
+
+
+def encode_ktx(src, dst, fmt, tf, tmp):
+    """`src` to `dst` with KTX-Software's `ktx`; returns level 0 decoded back."""
+    back = os.path.join(tmp, "back.png")
     env = dict(os.environ, LD_LIBRARY_PATH=LIB + ":" + os.environ.get("LD_LIBRARY_PATH", ""))
     # `--assign-tf` tells the tool what the pixels ARE, so its implicit
     # conversion (see the header) has nothing to convert. Older releases
@@ -182,20 +227,8 @@ def encode(png_bytes, size, is_srgb, tmp, label="", is_normal=False):
         if b"assign-tf" not in e.stderr and b"unrecognized" not in e.stderr.lower():
             raise
         ktx(create + ["--assign-oetf", tf, src, dst], env)
-    # Round trip: decode level 0 back and compare channel means with what
-    # went in. This is the check that would have caught the linearisation
-    # on 2026-08-11 — the packed normal map's X and Y read 0.21 against a
-    # source of 0.50 — and it catches any transfer function applied by a
-    # default nobody read, in either direction.
     ktx(["extract", "--transcode", "rgba8", "--level", "0", dst, back], env)
-    want = np.asarray(im, dtype=np.float64).reshape(-1, 4).mean(0) / 255.0
-    got = np.asarray(Image.open(back).convert("RGBA"), dtype=np.float64).reshape(-1, 4).mean(0) / 255.0
-    if np.abs(want - got).max() > ROUNDTRIP_TOL:
-        raise SystemExit(
-            f"{label or 'map'} ({fmt}): packed channel means {np.round(got, 3).tolist()} "
-            f"against source {np.round(want, 3).tolist()} — a transfer function was applied "
-            f"that the source did not carry. Refusing to ship a bent map.")
-    return open(dst, "rb").read()
+    return back
 
 
 def main():

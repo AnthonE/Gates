@@ -130,9 +130,13 @@ pub fn built(
                 core.deploy_defs_have,
                 r,
             ),
-            None => {
-                structures::base_transform(world.seed, &world.haven, (cx, cz, level, loc), plate)
-            }
+            None => structures::addr_root(
+                world.seed,
+                &world.haven,
+                core.pieces.store(),
+                (cx, cz, level, loc),
+                plate,
+            ),
         };
         let k = lod(tf.translation.distance(eye.pos));
         if k <= 0.0 {
@@ -142,9 +146,7 @@ pub fn built(
             rec.map_or(Matter::Wood, |r| deploy_matter(core, r.row))
         } else {
             core.pieces
-                .entries()
-                .iter()
-                .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                .find(cx, cz, level, loc)
                 .map_or(Matter::Wood, |r| piece_matter(core, r.row))
         };
         let depth = rec
@@ -187,12 +189,15 @@ pub fn built(
                 },
                 core.deploy_defs.defs[r.row as usize].arch,
             ),
-            None => structures::base_transform(
-                world.seed,
-                &world.haven,
-                (r.cx, r.cz, r.level, r.loc),
-                r.plate,
-            ),
+            None => match r.lattice {
+                Some((frame, sock)) => structures::posed_transform(&frame, &sock, r.level),
+                None => structures::base_transform(
+                    world.seed,
+                    &world.haven,
+                    (r.cx, r.cz, r.level, r.loc),
+                    r.plate,
+                ),
+            },
         };
         let wall = !r.deploy && is_wall(r.loc);
         let middle = tf.translation + Vec3::Y * if wall { LEVEL_H_M * 0.5 } else { 0.3 };

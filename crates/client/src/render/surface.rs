@@ -257,10 +257,7 @@ pub fn built_matter(world: &WorldId, core: &ClientCore, at: Vec3, n: Vec3) -> Ma
 }
 
 fn piece_matter(core: &ClientCore, hit: PieceHit) -> Option<Matter> {
-    let r =
-        core.pieces.entries().iter().find(|r| {
-            r.cx == hit.cx && r.cz == hit.cz && r.level == hit.level && r.loc == hit.loc
-        })?;
+    let r = core.pieces.find(hit.cx, hit.cz, hit.level, hit.loc)?;
     ((r.row as u16) < core.piece_defs_have)
         .then(|| Matter::of_piece(core.piece_defs.pieces[r.row as usize].material))
 }

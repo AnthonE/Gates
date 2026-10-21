@@ -560,9 +560,11 @@ const TICKS: u64 = 900;
 /// than the LUTs' 1.4° steps, so the fixture gun's rounds land elsewhere.
 /// **Moved → `0xF5EC_8D2C_AC0F_ACE9` at bigger barrels and solid cactus
 /// arms** (2026-10-20).
-/// **Moved → `0x144D_B92D_D188_C6B8` at clothing v1** (2026-10-21, wipe):
-/// `state_hash` reads seven worn stacks.
-const GOLDEN_FINAL_HASH: u64 = 0x144D_B92D_D188_C6B8;
+/// **Moved → `0x7A45_8D13_0403_3749` at the casino's seats** (2026-10-21):
+/// `state_hash` reads `Player::seat`.
+/// **Moved → `0xFA05_5DE6_716C_390E` at clothing v1** (2026-10-21, wipe): `state_hash`
+/// reads seven worn stacks.
+const GOLDEN_FINAL_HASH: u64 = 0xFA05_5DE6_716C_390E;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -684,9 +686,11 @@ const GOLDEN_FINAL_HASH: u64 = 0x144D_B92D_D188_C6B8;
 /// final hash.
 /// **Moved → `0xD2DC_F376_72B4_9018` at bigger barrels and solid cactus arms**
 /// (2026-10-20), with the final hash.
-/// **Moved → `0xE41C_AD18_D6C0_0061` at clothing v1** (2026-10-21, wipe), with the final
-/// hash: every stamped hash reads seven worn stacks.
-const GOLDEN_TRACE_HASH: u64 = 0xE41C_AD18_D6C0_0061;
+/// **Moved → `0xE06B_9175_7ECB_60ED` at the casino's seats** (2026-10-21), with the final
+/// hash.
+/// **Moved → `0xA088_702D_4A17_5C45` at clothing v1** (2026-10-21, wipe), with the final
+/// hash.
+const GOLDEN_TRACE_HASH: u64 = 0xA088_702D_4A17_5C45;
 
 /// Fold a stamped trace into one number.
 ///
