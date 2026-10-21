@@ -6008,11 +6008,13 @@ mod tests {
     fn the_compass_walks_the_sims_bearing() {
         // Yaw 0 is +Z is north. Yaw turns the view LEFT (`look.rs`'s header),
         // and east is `-X`, so a quarter turn lands on WEST.
+        // The tick nearest the middle: the wire's yaw is coarser than a
+        // degree, so the heading is rarely a whole one.
         let middle = |yaw: f32| {
             let facing = crate::look::bearing_deg(yaw);
             (0..COMPASS_TICKS)
                 .map(|k| tape_tick(facing, k))
-                .find(|(_, off)| off.abs() < 0.5)
+                .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
                 .and_then(|(b, _)| tape_label(b))
         };
         assert_eq!(middle(0.0).as_deref(), Some("N"));

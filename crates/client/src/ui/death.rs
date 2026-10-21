@@ -909,7 +909,10 @@ mod tests {
         assert!(back.off_row && back.across.abs() > 0.99, "{back:?}");
         // Across the 0/360 seam: facing 350, a mark at 10 is just right.
         let seam = at(350.0, (here.0 - 1.763, here.1 + 10.0));
-        assert!(seam.across > 0.0 && seam.across < 0.3, "{seam:?}");
+        assert!(
+            seam.across > 0.0 && seam.across < 30.0 / COMPASS_HALF_SPAN_DEG,
+            "{seam:?}"
+        );
     }
 
     #[test]
