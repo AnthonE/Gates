@@ -1890,10 +1890,21 @@ for (const t of document.querySelectorAll(".tab[data-shelf]")) {
   t.addEventListener("click", () => { shelf = t.dataset.shelf; renderStore(); });
 }
 
-/* The item's own icon under the skin's tint, multiplied — which is what the
-   tint IS in the game (`content/skins.toml`: an sRGB multiply over the
-   item's colours). The icon file is the item's name, snake-cased. */
+/* A skin with a model of its own is sold as a picture of it,
+   `assets/icons/skins/<catalog>.png` (`ui::hold::SkinModelDef::icon`), as
+   the game's store draws it. Any other skin, or one whose picture is not
+   there: the item's own icon under the skin's tint, multiplied — which is
+   what the tint IS in the game (`content/skins.toml`: an sRGB multiply over
+   the item's colours). The icon file is the item's name, snake-cased. */
 function skinArt(s, art) {
+  const own = document.createElement("img");
+  own.alt = "";
+  own.src = "assets/icons/skins/" + Number(s.catalog_id) + ".png";
+  own.addEventListener("error", () => { own.remove(); tintedArt(s, art); });
+  art.append(own);
+}
+
+function tintedArt(s, art) {
   const tint = /^#[0-9a-f]{6}$/i.test(String(s.tint)) ? s.tint : "#ffffff";
   const icon = "assets/icons/" + String(s.covers || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") + ".png";
   art.style.setProperty("--tint", tint);
@@ -1904,7 +1915,9 @@ function skinArt(s, art) {
   layer.className = "tint";
   layer.style.setProperty("--icon", `url("${icon}")`);
   img.addEventListener("error", () => { img.remove(); layer.remove(); });
-  art.append(img, layer);
+  // Ahead of anything already on the card (its OWNED tag): this runs late
+  // when a skin's own picture failed.
+  art.prepend(img, layer);
 }
 
 const CART = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2h2l1.6 8h7.4l1.5-5.5H4.3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="6.5" cy="13" r="1.2" fill="currentColor"/><circle cx="11.5" cy="13" r="1.2" fill="currentColor"/></svg>';
