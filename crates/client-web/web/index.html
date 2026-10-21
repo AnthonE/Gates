@@ -59,6 +59,12 @@
     --go-hi: #98cc42;
     --go-ink: #0f1509;
     --elo: #b8ff38;
+    /* the store's cards and price chips, and a sunken well: `ui::CARD`,
+       `ui::PRICE`, `ui::WELL` in the desktop client */
+    --card: rgba(50, 67, 34, .92);
+    --card-hi: rgba(63, 84, 42, .96);
+    --price: #5c7c26;
+    --well: rgba(0, 0, 0, .25);
     --bad: #e3896a;
     --good: #a6cf6d;
     --sans: "Gates Sans", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
@@ -291,20 +297,52 @@
   .card p { margin: 0; color: var(--dim); font-size: 13.5px; }
   .card .meta { font-size: 12px; color: var(--faint); display: flex; gap: 8px; }
   .card .meta .src { color: var(--mark); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-  .skins { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
-  .skin { padding: 0; overflow: hidden; }
-  .skin .art { position: relative; height: 150px; display: grid; place-items: center;
-               background: radial-gradient(circle at 50% 45%, rgba(255,255,255,.09), rgba(0,0,0,.2) 70%), #211e1a; }
-  .skin .art img, .skin .art .tint { width: 108px; height: 108px; }
+  /* The reference's store card: the item on green, its name and what it
+     fits in capitals, the price chip at the foot. */
+  .skins { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .skin { padding: 0; overflow: hidden; background: var(--card); border-color: var(--rule); cursor: pointer; }
+  a.skin:hover { background: var(--card-hi); border-color: var(--rule-hi); }
+  .skin .art { position: relative; height: 150px; display: grid; place-items: center; }
+  .skin .art img, .skin .art .tint { width: 112px; height: 112px; }
   .skin .art .tint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--tint);
                      mix-blend-mode: multiply; -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }
-  .skin .art .sw { position: absolute; left: 10px; top: 10px; width: 12px; height: 12px; background: var(--tint); border: 1px solid rgba(255,255,255,.3); }
-  .skin .art .owned { position: absolute; right: 8px; top: 8px; font: 700 10.5px/1 var(--sans); letter-spacing: .1em; padding: 4px 6px;
-                      background: var(--accent); color: #fff; }
-  .skin .txt { padding: 10px 12px 12px; border-top: 1px solid var(--rule); }
-  .skin .txt h3 { margin: 0 0 2px; font-size: 16px; }
-  .skin .price { margin-top: 8px; font: 700 14px/1 var(--sans); color: var(--elo); }
-  .skin .price.soon { color: var(--faint); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  .owned { position: absolute; right: 8px; top: 8px; font: 700 10.5px/1 var(--sans); letter-spacing: .1em; padding: 4px 6px;
+           background: var(--accent); color: #fff; }
+  .skin .txt { padding: 10px 10px 10px 12px; background: rgba(0,0,0,.18); display: flex; flex-direction: column; gap: 3px; }
+  .skin .txt h3 { margin: 0; font: 700 15px/1.2 var(--sans); color: var(--title); text-transform: uppercase; }
+  .skin .txt .fits { font: 700 11px/1.2 var(--sans); color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  .skin .price { align-self: flex-end; margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
+                 background: var(--price); font: 700 13px/1 var(--sans); color: var(--title); }
+  .skin .price svg { width: 14px; height: 14px; }
+  .skin .price.soon { background: var(--row); color: var(--faint); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  .pane.solo { border-left: 1px solid var(--rule); }
+  .shelf-bar { height: 48px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-bottom: 1px solid var(--rule); }
+  .tabs { display: flex; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tab { all: unset; box-sizing: border-box; cursor: pointer; height: 34px; padding: 0 16px; display: inline-flex; align-items: center; gap: 8px;
+         font: 700 13px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
+  .tab:hover { background: var(--row-hi); color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--accent); color: var(--title); }
+  .tab .n { opacity: .8; }
+  .tab:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: -2px; }
+  .btn.cart { background: var(--go); border-color: transparent; color: var(--go-ink); }
+  .btn.cart:hover { background: var(--go-hi); }
+  .pane-foot { flex: none; padding: 10px 16px; border-top: 1px solid var(--rule); }
+
+  /* the inventory: the reference's WOOD / METAL / CLOTH strip, and tiles */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); margin: 8px 0; }
+  .stats div { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .stats b { font: 700 30px/1 var(--sans); color: var(--title); }
+  .stats span { font: 700 11px/1 var(--sans); color: var(--faint); letter-spacing: .08em; text-transform: uppercase; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 14px 12px; padding: 16px; }
+  .tile { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+  .tile .art { position: relative; width: 100%; aspect-ratio: 1; display: grid; place-items: center;
+               background: var(--well); border: 1px solid var(--rule); }
+  .tile .art img, .tile .art .tint { width: 72%; height: 72%; }
+  .tile .art .tint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--tint);
+                     mix-blend-mode: multiply; -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }
+  .tile .art .x { position: absolute; left: 6px; top: 4px; font: 700 12px/1.2 var(--sans); color: var(--text); }
+  .tile .art .id { font: 700 14px/1 var(--sans); color: var(--dim); }
+  .tile .nm { font: 700 12px/1.25 var(--sans); color: var(--text); text-align: center; overflow-wrap: anywhere; }
   .empty { margin: 18px 16px; color: var(--dim); max-width: 560px; }
 
   /* ── options ─────────────────────────────────────────────────────────────── */
@@ -443,10 +481,16 @@
 
   <div class="body">
     <nav class="nav" id="nav" aria-label="Gates">
+      <!-- The desktop menu's nav in the same order (`client::render::menu`,
+           `Nav::ALL`), which is the reference's: play, the platform's
+           sections, options, the way out. -->
       <button class="item" type="button" data-pane="play" aria-current="true">Play game</button>
       <button class="item" type="button" data-pane="watch">Spectate</button>
-      <button class="item" type="button" data-pane="store">Item store</button>
+      <div class="gap"></div>
       <button class="item" type="button" data-pane="news">News</button>
+      <button class="item" type="button" data-pane="inventory">Inventory</button>
+      <button class="item" type="button" data-pane="store">Item store</button>
+      <div class="gap"></div>
       <button class="item" type="button" data-pane="options">Options</button>
       <div class="gap"></div>
       <a class="item small" data-site="/gates.html">Back to Elo Pros</a>
@@ -531,20 +575,45 @@
       </div>
     </section>
 
-    <!-- ITEM STORE -->
-    <section class="pane-set" data-pane="store" hidden>
+    <!-- INVENTORY: the reference's counts panel beside a grid of what the
+         wallet holds (`client::render::locker::inventory`). -->
+    <section class="pane-set" data-pane="inventory" hidden>
       <div class="panel">
-        <h2>Item store</h2>
-        <p class="blurb">Skins change how an item looks and nothing else. You own them on chain, and every server reads them from your wallet.</p>
-        <div class="group">Yours</div>
-        <p class="fine" id="store-owned">Sign in to see which skins you own.</p>
+        <h2>Inventory</h2>
+        <div class="stats">
+          <div><b class="num" id="inv-skins">0</b><span>Skins</span></div>
+          <div><b class="num" id="inv-items">0</b><span>Items</span></div>
+          <div><b class="num" id="inv-store">0</b><span>In store</span></div>
+        </div>
+        <p class="blurb">Skins your wallet owns on Elo Pros. They follow the wallet onto every server and change how an item looks, never what it does. In game, press <kbd>P</kbd> over an item at a workbench to wear one.</p>
         <div class="spacer"></div>
-        <a class="btn blue" data-site="/game.html?slug=gates#items" target="_blank" rel="noopener">Open the item store
-          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2h6v6M10 2L3 9" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></a>
-        <p class="fine">Buying happens on Elo Pros, from your own wallet. In game, press <kbd>P</kbd> over an item at a workbench to wear a skin.</p>
+        <button class="btn" id="inv-refresh" type="button">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          Refresh inventory</button>
+        <p class="fine" id="inv-line">Sign in to see the skins you own.</p>
       </div>
       <div class="pane">
+        <div class="pane-head">Your skins</div>
+        <div class="scroll"><div class="tiles" id="inv-tiles"></div><p class="empty" id="inv-empty" hidden></p></div>
+      </div>
+    </section>
+
+    <!-- ITEM STORE: the reference's — tabs across the top with the cart's
+         place at the right, and the cards are the page
+         (`client::render::locker::store`). Buying happens on Elo Pros. -->
+    <section class="pane-set" data-pane="store" hidden>
+      <div class="pane solo">
+        <div class="shelf-bar">
+          <div class="tabs" role="tablist" aria-label="Skins">
+            <button class="tab" type="button" role="tab" data-shelf="all" aria-selected="true">All skins <span class="n num"></span></button>
+            <button class="tab" type="button" role="tab" data-shelf="sale" aria-selected="false">On sale <span class="n num"></span></button>
+            <button class="tab" type="button" role="tab" data-shelf="owned" aria-selected="false">Owned <span class="n num"></span></button>
+          </div>
+          <a class="btn cart" data-site="/game.html?slug=gates#items" target="_blank" rel="noopener">Open store
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2h6v6M10 2L3 9" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></a>
+        </div>
         <div class="scroll"><div class="cards skins" id="skins"></div><p class="empty" id="skins-empty" hidden></p></div>
+        <p class="fine pane-foot"><span id="store-owned">Sign in to see which skins you own.</span> Buying happens on Elo Pros, from your own wallet.</p>
       </div>
     </section>
 

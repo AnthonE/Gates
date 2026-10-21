@@ -194,12 +194,31 @@ pub const RULE: Color = Color::srgba(0.75, 0.72, 0.62, 0.28);
 /// list, which is the reference's own arrangement. With no backdrop present
 /// they composite over `BG`, a shade they are within a hair of anyway, so the
 /// no-asset case looks exactly as it did before footage existed.
-pub const PANEL_BG: Color = Color::srgba(0.145, 0.133, 0.118, 0.90);
+///
+/// **The front end's two are the browser page's** (`--panel`, `--pane` in
+/// `client-web/web/index.html`, 2026-10-21): the operator called the page
+/// the better-looking of the two, so the desktop menu took its values rather
+/// than the other way round. `PANE_BG` stays heavier for settings over a live
+/// world, where the type has a moving scene behind it.
+pub const PANEL_BG: Color = Color::srgba(0.118, 0.106, 0.094, 0.84);
+pub const STAGE_BG: Color = Color::srgba(0.078, 0.071, 0.063, 0.68);
 pub const PANE_BG: Color = Color::srgba(0.086, 0.078, 0.070, 0.86);
 /// The front screen's one saturated colour, `#86b834`: the Gates sigil's
 /// green, the browser page's PLAY button (`--go`), and the health bar's
 /// family. It was Rust's red.
 pub const MARK: Color = Color::srgb(0.525, 0.722, 0.204);
+/// The PLAY button: `--go-hi`, `--go-ink` and `.go.wait` on the page.
+pub const GO_HOVER: Color = Color::srgb(0.596, 0.800, 0.259);
+pub const GO_INK: Color = Color::srgb(0.059, 0.082, 0.035);
+pub const GO_WAIT: Color = Color::srgb(0.298, 0.365, 0.165);
+/// A store card's ground and its price chip: the reference's store is green
+/// cards on the scene (the operator's frame, 2026-10-21), darkened here so
+/// our off-white type holds on it.
+pub const CARD: Color = Color::srgba(0.196, 0.263, 0.133, 0.92);
+pub const CARD_HOVER: Color = Color::srgba(0.247, 0.329, 0.165, 0.96);
+pub const PRICE: Color = Color::srgb(0.361, 0.486, 0.149);
+/// A sunken well: the server list, an inventory tile, the identity block.
+pub const WELL: Color = Color::srgba(0.0, 0.0, 0.0, 0.25);
 /// A nav entry at rest. Dimmer than `DIM`, because the whole effect depends
 /// on the picked entry being obviously brighter than the rest.
 pub const NAV_IDLE: Color = Color::srgba(0.62, 0.60, 0.57, 0.65);
@@ -454,7 +473,7 @@ pub fn row(width_px: f32) -> impl Bundle {
 /// looks at for four seconds. That trade is the operator's to make, not this
 /// file's, and the still is what ships until it is made.
 ///
-/// **Absent is a supported state.** `assets/menu/backdrop.jpg` may simply not
+/// **Absent is a supported state.** `assets/menu/dusk.jpg` may simply not
 /// be there — on a source checkout, in a trimmed depot — and the menu must
 /// still be a menu. Bevy draws nothing for an unresolved image handle, so the
 /// `BG` behind it is what shows through and the screen looks exactly like it
@@ -469,7 +488,10 @@ pub struct Backdrop(pub Handle<Image>);
 
 /// Where the footage lives. One path, named once, so the loader and the
 /// depot's packing list cannot drift.
-pub const BACKDROP_PATH: &str = "menu/backdrop.jpg";
+///
+/// `dusk.jpg` since 2026-10-21: the plate the browser page draws, so both
+/// front ends open on the same beach.
+pub const BACKDROP_PATH: &str = "menu/dusk.jpg";
 
 /// Ask for it at `Startup`, beside the textures and the icons — it is wanted
 /// on the very first screen after the splash, and warming it while the client
@@ -494,12 +516,17 @@ pub fn backdrop(image: Handle<Image>) -> impl Bundle {
     )
 }
 
-/// The wash over the backdrop. Its alpha is the whole contrast budget of the
-/// front end: too little and the nav is unreadable over a bright frame, too
-/// much and there is no point having footage.
-pub const SCRIM: Color = Color::srgba(0.055, 0.051, 0.043, 0.82);
-
+/// The wash over the backdrop: the browser page's (`#scene .wash` and
+/// `.vignette`), heavier on the left where the nav and the panel sit and at
+/// the foot, so the sun on the water shows on the right. A flat scrim at one
+/// alpha hid the footage everywhere to keep the nav legible in one place.
 pub fn scrim() -> impl Bundle {
+    let ink = |a: f32| Color::srgba(0.055, 0.051, 0.043, a);
+    let stops = |s: &[(f32, f32)]| {
+        s.iter()
+            .map(|&(a, at)| ColorStop::new(ink(a), Val::Percent(at)))
+            .collect::<Vec<_>>()
+    };
     (
         Node {
             position_type: PositionType::Absolute,
@@ -507,9 +534,49 @@ pub fn scrim() -> impl Bundle {
             height: Val::Percent(100.0),
             ..default()
         },
-        BackgroundColor(SCRIM),
+        BackgroundGradient(vec![
+            LinearGradient::to_right(stops(&[
+                (0.88, 0.0),
+                (0.62, 24.0),
+                (0.18, 56.0),
+                (0.04, 100.0),
+            ]))
+            .into(),
+            LinearGradient::to_bottom(stops(&[
+                (0.45, 0.0),
+                (0.0, 18.0),
+                (0.0, 52.0),
+                (0.84, 100.0),
+            ]))
+            .into(),
+            RadialGradient::new(
+                UiPosition::TOP_LEFT.at_percent(64.0, 40.0),
+                RadialGradientShape::FarthestCorner,
+                vec![
+                    ColorStop::new(Color::NONE, Val::Percent(45.0)),
+                    ColorStop::new(Color::srgba(0.0, 0.0, 0.0, 0.45), Val::Percent(100.0)),
+                ],
+            )
+            .into(),
+        ]),
         ZIndex(-1),
     )
+}
+
+/// The backdrop's slow push-in, the page's `drift`: 70 s one way, eased,
+/// then back. The reference plays footage here; a still that moves reads as
+/// footage where one that sits does not. Read off the app's clock, so a
+/// rebuild of the screen does not restart it.
+pub fn drift(t: f32) -> UiTransform {
+    let leg = 70.0;
+    let u = (t % (2.0 * leg)) / leg;
+    let u = if u > 1.0 { 2.0 - u } else { u };
+    let e = u * u * (3.0 - 2.0 * u);
+    UiTransform {
+        translation: Val2::percent(-1.4 * e, -0.8 * e),
+        scale: Vec2::splat(1.0 + 0.07 * e),
+        ..default()
+    }
 }
 
 /// The Gates sigil, the wordmark's mark: the plate the window, the .exe and
@@ -674,6 +741,40 @@ pub fn wordmark() -> impl Bundle {
     )
 }
 
+/// The front end's wordmark: the same mark with the page's line under the
+/// word (`.wordmark .on`).
+pub fn wordmark_on(line: &str) -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(13.0),
+            ..default()
+        },
+        children![
+            (
+                ImageNode::new(SIGIL),
+                Node {
+                    width: Val::Px(44.0),
+                    height: Val::Px(44.0),
+                    ..default()
+                },
+            ),
+            (
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(6.0),
+                    ..default()
+                },
+                children![
+                    (strong("GATES", 44.0, TITLE), TEXT_SHADOW),
+                    strong(line.to_string(), 11.0, FAINT),
+                ],
+            ),
+        ],
+    )
+}
+
 /// One entry in the nav column.
 ///
 /// **Dim at rest, bright when picked** — the reference's exact treatment, and
@@ -686,18 +787,39 @@ pub fn nav_item(text: &str, picked: bool) -> impl Bundle {
     (
         Button,
         Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
             padding: UiRect::axes(Val::Px(0.0), Val::Px(7.0)),
             ..default()
         },
         // Transparent, not a panel: the nav floats over the backdrop.
         BackgroundColor(Color::NONE),
         Hover::new(Color::NONE, Color::NONE),
-        children![strong(
-            text.to_string(),
-            26.0,
-            if picked { TITLE } else { NAV_IDLE },
-        )],
+        children![
+            // The picked entry's green bar, out in the gutter: the page's
+            // `::before`. Drawn clear on the rest so every label sits on the
+            // same x — the bar's margins net to zero.
+            (
+                Node {
+                    width: Val::Px(5.0),
+                    height: Val::Px(22.0),
+                    margin: UiRect::new(Val::Px(-15.0), Val::Px(10.0), Val::Px(0.0), Val::Px(0.0)),
+                    ..default()
+                },
+                BackgroundColor(if picked { MARK } else { Color::NONE }),
+            ),
+            strong(text.to_string(), 26.0, nav_color(picked, false)),
+        ],
     )
+}
+
+/// A nav label's colour: picked is brightest, the pointer lifts the rest.
+pub fn nav_color(picked: bool, over: bool) -> Color {
+    match (picked, over) {
+        (true, _) => TITLE,
+        (false, true) => TEXT,
+        (false, false) => NAV_IDLE,
+    }
 }
 
 /// The tinted control column — the reference's filter panel, its YOUR ITEMS
@@ -723,10 +845,12 @@ pub fn panel(width_px: f32) -> impl Bundle {
             // pane's OPEN IN LAUNCHER button was not on the screen at all.
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(10.0),
-            padding: UiRect::all(Val::Px(16.0)),
+            padding: UiRect::all(Val::Px(20.0)),
+            border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
         BackgroundColor(PANEL_BG),
+        BorderColor::all(RULE),
     )
 }
 
@@ -737,16 +861,96 @@ pub fn panel(width_px: f32) -> impl Bundle {
 /// as a table that has been cut off rather than one that ends. The reference
 /// leaves the same margin.
 pub fn pane() -> impl Bundle {
+    pane_with(false)
+}
+
+/// [`pane`] with no panel beside it (the store), so it draws its own left
+/// edge; beside a panel the panel's edge is the shared one.
+pub fn pane_with(left_edge: bool) -> impl Bundle {
     (
         Node {
             flex_grow: 1.0,
             // Stretched by the row, not sized by a percentage — see `panel`.
             flex_direction: FlexDirection::Column,
-            padding: UiRect::new(Val::Px(0.0), Val::Px(20.0), Val::Px(0.0), Val::Px(0.0)),
+            border: UiRect::new(
+                Val::Px(if left_edge { 1.0 } else { 0.0 }),
+                Val::Px(1.0),
+                Val::Px(1.0),
+                Val::Px(1.0),
+            ),
             ..default()
         },
-        BackgroundColor(PANE_BG),
+        BackgroundColor(STAGE_BG),
+        BorderColor::all(RULE),
     )
+}
+
+/// A group heading with the page's rule running out to the right of it
+/// (`.group::after`).
+pub fn group_rule(text: &str) -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(8.0),
+            margin: UiRect::top(Val::Px(10.0)),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        children![
+            strong(text.to_string(), 12.0, FAINT),
+            (
+                Node {
+                    flex_grow: 1.0,
+                    height: Val::Px(1.0),
+                    ..default()
+                },
+                BackgroundColor(RULE),
+            ),
+        ],
+    )
+}
+
+/// The PLAY button — the one saturated control on the screen besides the
+/// wordmark, as on the page (`.go`). `ready` false is the page's `.wait`:
+/// nothing to join yet.
+pub fn go(ready: bool) -> impl Bundle {
+    let (idle, over) = if ready {
+        (MARK, GO_HOVER)
+    } else {
+        (GO_WAIT, GO_WAIT)
+    };
+    (
+        Button,
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(64.0),
+            flex_direction: FlexDirection::Column,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            row_gap: Val::Px(4.0),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        BackgroundColor(idle),
+        Hover::new(idle, over),
+        BoxShadow::new(
+            Color::srgba(0.0, 0.0, 0.0, 0.35),
+            Val::Px(0.0),
+            Val::Px(10.0),
+            Val::Px(0.0),
+            Val::Px(30.0),
+        ),
+    )
+}
+
+/// The ink on [`go`]: dark on the green, light on the waiting olive.
+pub fn go_ink(ready: bool) -> Color {
+    if ready {
+        GO_INK
+    } else {
+        Color::srgba(0.925, 0.941, 0.878, 0.9)
+    }
 }
 
 /// A small heading over a group of controls — the reference's `PLAYER SLOTS`
@@ -819,6 +1023,7 @@ fn button_node(width_px: f32) -> Node {
         justify_content: JustifyContent::Center,
         align_items: AlignItems::Center,
         flex_shrink: 0.0,
+        border: UiRect::all(Val::Px(1.0)),
         ..default()
     }
 }
@@ -827,31 +1032,32 @@ fn button_node(width_px: f32) -> Node {
 /// one knows the offset without guessing.
 pub const BUTTON_H: f32 = 34.0;
 
-fn button_skin(accent: bool) -> (BackgroundColor, Hover) {
+fn button_skin(accent: bool) -> (BackgroundColor, Hover, BorderColor) {
     (
         BackgroundColor(if accent { ACCENT } else { ROW_IDLE }),
         Hover::new(
             if accent { ACCENT } else { ROW_IDLE },
             if accent { ACCENT_HOVER } else { ROW_HOVER },
         ),
+        BorderColor::all(if accent { Color::NONE } else { RULE }),
     )
 }
 
 /// A wide flat button — CLEAR FILTERS, REFRESH, OPEN IN LAUNCHER.
 pub fn button(width_px: f32, accent: bool) -> impl Bundle {
-    let (bg, hover) = button_skin(accent);
-    (Button, button_node(width_px), bg, hover)
+    let (bg, hover, edge) = button_skin(accent);
+    (Button, button_node(width_px), bg, hover, edge)
 }
 
 /// The same button, pinned to the bottom of its panel — see [`pinned_bottom`]
 /// for why that is absolute rather than flexed.
 pub fn pinned_button(width_px: f32, accent: bool, up: f32) -> impl Bundle {
-    let (bg, hover) = button_skin(accent);
+    let (bg, hover, edge) = button_skin(accent);
     let mut node = button_node(width_px);
     node.position_type = PositionType::Absolute;
     node.left = Val::Px(16.0);
     node.bottom = Val::Px(up);
-    (Button, node, bg, hover)
+    (Button, node, bg, hover, edge)
 }
 
 /// A checkable filter row — the reference's radio group drawn as a mark plus
@@ -928,4 +1134,67 @@ pub fn stepper() -> impl Bundle {
         BorderColor::all(RULE),
         Hover::default(),
     )
+}
+
+/// A node the mouse wheel scrolls: the front end's grids and lists.
+#[derive(Component)]
+pub struct Scrolls;
+
+/// Where the open page's scroll area was left, so the menu's full rebuild
+/// (a landed fetch, a poll) does not throw the player back to the top.
+#[derive(Resource, Default)]
+pub struct ScrollMemo(pub f32);
+
+/// A column that scrolls on the wheel, opening at `y`.
+pub fn scroll_area(y: f32) -> impl Bundle {
+    (
+        Node {
+            flex_grow: 1.0,
+            min_height: Val::Px(0.0),
+            flex_direction: FlexDirection::Column,
+            overflow: Overflow::scroll_y(),
+            ..default()
+        },
+        ScrollPosition(Vec2::new(0.0, y)),
+        bevy::ui::RelativeCursorPosition::default(),
+        Scrolls,
+    )
+}
+
+/// How far one wheel notch moves a list, px.
+const WHEEL_LINE_PX: f32 = 48.0;
+
+/// The wheel, over whichever [`Scrolls`] node the pointer is on. Bevy lays
+/// out a scroll area but does not drive one.
+pub fn wheel(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut memo: ResMut<ScrollMemo>,
+    mut q: Query<
+        (
+            &mut ScrollPosition,
+            &bevy::ui::RelativeCursorPosition,
+            &ComputedNode,
+        ),
+        With<Scrolls>,
+    >,
+) {
+    use bevy::input::mouse::MouseScrollUnit;
+    let dy: f32 = wheel
+        .read()
+        .map(|e| match e.unit {
+            MouseScrollUnit::Line => e.y * WHEEL_LINE_PX,
+            MouseScrollUnit::Pixel => e.y,
+        })
+        .sum();
+    if dy == 0.0 {
+        return;
+    }
+    for (mut pos, cursor, node) in q.iter_mut() {
+        if !cursor.cursor_over() {
+            continue;
+        }
+        let max = (node.content_size().y - node.size().y).max(0.0) * node.inverse_scale_factor();
+        pos.0.y = (pos.0.y - dy).clamp(0.0, max);
+        memo.0 = pos.0.y;
+    }
 }
