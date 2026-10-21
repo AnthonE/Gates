@@ -482,8 +482,8 @@ pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
 // ---------------------------------------------------------------------------
 
 /// How far either side of the bearing the compass's marker row reaches,
-/// degrees: a mark this far round sits at the row's end.
-pub const COMPASS_HALF_SPAN_DEG: f32 = 90.0;
+/// degrees: a mark this far round sits at the row's end. The tape's own.
+pub const COMPASS_HALF_SPAN_DEG: f32 = super::compass::HALF_SPAN_DEG;
 
 /// Where a world point sits on the compass's marker row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -505,8 +505,7 @@ pub struct CompassMark {
 pub fn compass_mark(facing_deg: f32, from: (f32, f32), to: (f32, f32)) -> CompassMark {
     let (dx, dz) = (to.0 - from.0, to.1 - from.1);
     let bearing = crate::look::bearing_of(dx, dz);
-    let rel = (bearing - facing_deg + 540.0).rem_euclid(360.0) - 180.0;
-    let across = rel / COMPASS_HALF_SPAN_DEG;
+    let across = super::compass::rel_deg(facing_deg, bearing) / COMPASS_HALF_SPAN_DEG;
     CompassMark {
         across: across.clamp(-1.0, 1.0),
         off_row: across.abs() > 1.0,
@@ -891,9 +890,9 @@ mod tests {
         );
         // Turn to face it and it comes to the middle.
         assert!(at(90.0, east).across.abs() < 1e-3);
-        // Half-way round to the right.
-        let ne = at(45.0, east);
-        assert!((ne.across - 0.5).abs() < 1e-3, "{ne:?}");
+        // Half-way along the row to the right.
+        let half = at(90.0 - COMPASS_HALF_SPAN_DEG * 0.5, east);
+        assert!((half.across - 0.5).abs() < 1e-3, "{half:?}");
         // Behind, a little to the right: held at the right end, marked off.
         let behind = at(0.0, (here.0 - 1.0, here.1 - 10.0));
         assert!(
@@ -905,7 +904,7 @@ mod tests {
         assert!(back.off_row && back.across.abs() > 0.99, "{back:?}");
         // Across the 0/360 seam: facing 350, a mark at 10 is just right.
         let seam = at(350.0, (here.0 - 1.763, here.1 + 10.0));
-        assert!(seam.across > 0.0 && seam.across < 0.3, "{seam:?}");
+        assert!(seam.across > 0.0 && seam.across < 0.5, "{seam:?}");
     }
 
     #[test]

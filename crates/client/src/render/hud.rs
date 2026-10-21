@@ -1515,9 +1515,27 @@ pub fn hit_number(
     }
 }
 
-/// The compass strip: the bearing, and your nearest map mark after it.
+/// One tick on the compass tape, at its bearing in degrees
+/// (`ui::compass`): slid along the tape by [`compass`] as you turn.
 #[derive(Component)]
-pub struct Compass;
+pub struct CompassTick(u16);
+
+/// One number or point letter on the tape, at its bearing in degrees.
+#[derive(Component)]
+pub struct CompassLabel(u16);
+
+/// A map pin on the marker row, by its index in `MapPins`: a disc in the
+/// pin's colour at its bearing, with its label and how far.
+#[derive(Component)]
+pub struct CompassPin(usize);
+
+/// A pin mark's disc.
+#[derive(Component)]
+pub struct CompassPinDisc(usize);
+
+/// A pin mark's words: its label (or number) and distance.
+#[derive(Component)]
+pub struct CompassPinText(usize);
 
 /// Rust's death marker on the compass (operator, 2026-10-15): your last
 /// death, a skull riding the marker row over the bearing number at its
@@ -1536,12 +1554,24 @@ pub struct DeathMarkDisc;
 pub struct DeathMarkText;
 
 /// The marker row: its top, a mark's size, and how far either side of the
-/// middle it reaches — `ui::death::COMPASS_HALF_SPAN_DEG` of bearing.
+/// middle it reaches — `ui::compass::HALF_SPAN_DEG` of bearing, the tape's
+/// own, so a mark sits over the bearing it is at.
 const COMPASS_MARK_TOP: f32 = 3.0;
 const COMPASS_MARK_PX: f32 = 16.0;
-const COMPASS_HALF_SPAN_PX: f32 = 170.0;
-/// The bearing number, under the marker row.
-const COMPASS_TOP: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX + 3.0;
+const COMPASS_HALF_SPAN_PX: f32 = 220.0;
+/// The tape, under the marker row: its labels, then its ticks.
+const COMPASS_TOP: f32 = COMPASS_MARK_TOP + COMPASS_MARK_PX + 2.0;
+const COMPASS_LABEL_H: f32 = 16.0;
+const COMPASS_TICK_TOP: f32 = COMPASS_LABEL_H + 1.0;
+const COMPASS_TAPE_H: f32 = COMPASS_TICK_TOP + 10.0;
+/// Where the tape ends, for what hangs under it (the arc's banner).
+pub const COMPASS_BOTTOM: f32 = COMPASS_TOP + COMPASS_TAPE_H;
+/// A label's box; its text is centred in it, so the box's middle is the
+/// bearing.
+const COMPASS_LABEL_W: f32 = 32.0;
+/// The tape's ink, and its heading notch in the house green.
+const COMPASS_INK: [f32; 3] = [0.92, 0.90, 0.85];
+const COMPASS_NOTCH: Color = super::ui::MARK;
 /// The skull's red, the death screen's pin.
 const DEATH_MARK_INK: Color = Color::srgb(0.86, 0.17, 0.13);
 
@@ -2268,9 +2298,9 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
     ));
 
     // The marker row over the compass, Rust's arrangement: marks ride a
-    // row at their bearing and the number reads under it. One mark today,
-    // the last death; a zero-width anchor at the screen's middle that the
-    // mark is placed off by `death_mark`.
+    // row at their bearing and the tape reads under it. Your map pins and
+    // the last death; a zero-width anchor at the screen's middle that each
+    // mark is placed off by `compass` and `death_mark`.
     commands
         .spawn((
             super::WorldEntity,
@@ -2285,6 +2315,47 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             Pickable::IGNORE,
         ))
         .with_children(|row| {
+            for i in 0..crate::ui::map::PINS_MAX {
+                row.spawn((
+                    CompassPin(i),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(0.0),
+                        top: Val::Px(0.0),
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(4.0),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ))
+                .with_children(|mark| {
+                    mark.spawn((
+                        CompassPinDisc(i),
+                        Node {
+                            width: Val::Px(COMPASS_MARK_PX * 0.75),
+                            height: Val::Px(COMPASS_MARK_PX * 0.75),
+                            margin: UiRect::horizontal(Val::Px(COMPASS_MARK_PX * 0.125)),
+                            flex_shrink: 0.0,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::MAX,
+                            ..default()
+                        },
+                        BackgroundColor(Color::WHITE),
+                        BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+                        Pickable::IGNORE,
+                    ));
+                    mark.spawn((
+                        CompassPinText(i),
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(Color::srgba(0.95, 0.93, 0.88, 0.9)),
+                        super::ui::TEXT_SHADOW,
+                        Pickable::IGNORE,
+                    ));
+                });
+            }
             row.spawn((
                 DeathMark,
                 Node {
@@ -2340,25 +2411,88 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             });
         });
 
-    // The compass strip, top centre: a 90° window on the bearing, letters at
-    // the cardinals. `hud.js`'s shape, in text rather than in a canvas.
-    commands.spawn((
-        super::WorldEntity,
-        Compass,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(COMPASS_TOP),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        Text::new(""),
-        super::ui::font_bold(15.0),
-        TextColor(Color::srgba(0.90, 0.88, 0.82, 0.75)),
-        super::ui::TEXT_SHADOW,
-        TextLayout::new_with_justify(Justify::Center),
-        Pickable::IGNORE,
-    ));
+    // The compass tape, top centre (Rust's): a window of
+    // `ui::compass::HALF_SPAN_DEG` either side of the heading, a tick every
+    // 5°, a number every 15°, the eight points by letter, and a green notch
+    // where you are facing. Every tick and label is spawned once and slid
+    // by `compass`; the box clips what has slid off its ends.
+    commands
+        .spawn((
+            super::WorldEntity,
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(COMPASS_TOP),
+                left: Val::Percent(50.0),
+                margin: UiRect::left(Val::Px(-COMPASS_HALF_SPAN_PX)),
+                width: Val::Px(COMPASS_HALF_SPAN_PX * 2.0),
+                height: Val::Px(COMPASS_TAPE_H),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|tape| {
+            use crate::ui::compass::{label, tick_rank, LABEL_DEG, TICK_DEG};
+            let [r, g, b] = COMPASS_INK;
+            for deg in (0..360).step_by(TICK_DEG as usize) {
+                let (w, h) = match tick_rank(deg) {
+                    2 => (2.0, 8.0),
+                    1 => (1.0, 6.0),
+                    _ => (1.0, 3.0),
+                };
+                tape.spawn((
+                    CompassTick(deg),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(COMPASS_TICK_TOP),
+                        width: Val::Px(w),
+                        height: Val::Px(h),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(r, g, b, 0.0)),
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ));
+            }
+            for deg in (0..360).step_by(LABEL_DEG as usize) {
+                let point = tick_rank(deg) == 2;
+                let size = match deg % 90 {
+                    0 => 15.0,
+                    _ if point => 13.0,
+                    _ => 11.0,
+                };
+                tape.spawn((
+                    CompassLabel(deg),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: Val::Px(COMPASS_LABEL_H - size - 1.0),
+                        width: Val::Px(COMPASS_LABEL_W),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                    Text::new(label(deg)),
+                    super::ui::font_bold(size),
+                    TextColor(Color::srgba(r, g, b, 0.0)),
+                    super::ui::TEXT_SHADOW,
+                    TextLayout::new_with_justify(Justify::Center),
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ));
+            }
+            // The heading notch: green, through the tick row.
+            tape.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(COMPASS_TICK_TOP - 1.0),
+                    left: Val::Px(COMPASS_HALF_SPAN_PX - 1.0),
+                    width: Val::Px(2.0),
+                    height: Val::Px(COMPASS_TAPE_H - COMPASS_TICK_TOP + 1.0),
+                    ..default()
+                },
+                BackgroundColor(COMPASS_NOTCH),
+                Pickable::IGNORE,
+            ));
+        });
 
     // The viewmodel used to be spawned here, as two untextured `Cuboid`s
     // welded rigidly to the camera. It is `render::viewmodel` now — a textured
@@ -3485,10 +3619,10 @@ impl FrameMeter {
     }
 }
 
-/// The centre prompt and the compass.
-// Eight sources and each is a distinct input: the two picks, the swing,
-// the near structure, the look, the pad, and the two text nodes — plus the
-// give key's pick and the clock its hold runs on.
+/// The centre prompt.
+// Each is a distinct input: the two picks, the swing, the near structure,
+// the pad and the text node — plus the give key's pick and the clock its
+// hold runs on.
 #[allow(clippy::too_many_arguments)]
 pub fn prompt(
     // The catalog arrived with `Verb::Take` (ground items v0): a loose
@@ -3498,13 +3632,10 @@ pub fn prompt(
     swung: Res<super::verbs::Swung>,
     in_weak: Res<super::verbs::InWeak>,
     near: Res<super::verbs::Near>,
-    look: Res<super::input::Look>,
     pad: Res<super::verbs::Pad>,
-    pins: Option<Res<super::map::MapPins>>,
     give: Res<super::verbs::Give>,
     time: Res<Time>,
-    mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
-    mut compass: Query<&mut Text, (With<Compass>, Without<PromptLine>)>,
+    mut prompts: Query<&mut Text, With<PromptLine>>,
     binds: Res<super::binds::Binds>,
 ) {
     if let Ok(mut text) = prompts.single_mut() {
@@ -3605,17 +3736,133 @@ pub fn prompt(
             text.0 = want;
         }
     }
-    if let Ok(mut text) = compass.single_mut() {
-        let mut want = compass_strip(look.yaw);
-        // The nearest of your map marks, the way the reference pins them to
-        // its compass: which (its label's three characters, or its number),
-        // how far, which way.
-        let [x, _, z] = net.session.core.predict.render_position();
-        if let Some((n, style, d, b)) = pins.as_ref().and_then(|p| p.0.nearest(x, z)) {
-            want.push_str(&mark_strip(n, style.compass_label(), d, b));
+}
+
+/// Slide the compass tape to the heading, and put your map pins on the
+/// marker row over it at their bearings, the way the reference pins them to
+/// its compass: which (its label's three characters, or its number) and how
+/// far. A pin behind you is held, dimmed, at the end it is nearer.
+// Each query is one kind of node on the tape or its marker row.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn compass(
+    net: NonSend<super::Net>,
+    look: Res<super::input::Look>,
+    pins: Option<Res<super::map::MapPins>>,
+    mut ticks: Query<
+        (
+            &CompassTick,
+            &mut Node,
+            &mut BackgroundColor,
+            &mut Visibility,
+        ),
+        (
+            Without<CompassLabel>,
+            Without<CompassPin>,
+            Without<CompassPinDisc>,
+        ),
+    >,
+    mut labels: Query<
+        (&CompassLabel, &mut Node, &mut TextColor, &mut Visibility),
+        (
+            Without<CompassTick>,
+            Without<CompassPin>,
+            Without<CompassPinText>,
+        ),
+    >,
+    mut marks: Query<
+        (&CompassPin, &mut Node, &mut Visibility),
+        (Without<CompassTick>, Without<CompassLabel>),
+    >,
+    mut discs: Query<(&CompassPinDisc, &mut BackgroundColor), Without<CompassTick>>,
+    mut words: Query<(&CompassPinText, &mut Text, &mut TextColor), Without<CompassLabel>>,
+    mut facing_was: Local<Option<f32>>,
+) {
+    use crate::ui::compass::{fade, rel_deg, HALF_SPAN_DEG};
+    let facing = crate::look::bearing_smooth_deg(look.yaw);
+    let px = COMPASS_HALF_SPAN_PX / HALF_SPAN_DEG;
+    let [r, g, b] = COMPASS_INK;
+    // Off the tape's ends by more than a label's half-width: nothing of it
+    // shows through the clip.
+    let reach = HALF_SPAN_DEG + COMPASS_LABEL_W * 0.5 / px;
+    if *facing_was != Some(facing) {
+        *facing_was = Some(facing);
+        for (tick, mut node, mut ink, mut vis) in &mut ticks {
+            let rel = rel_deg(facing, tick.0 as f32);
+            let want = if rel.abs() > reach {
+                Visibility::Hidden
+            } else {
+                let w = match node.width {
+                    Val::Px(w) => w,
+                    _ => 1.0,
+                };
+                node.left = Val::Px(COMPASS_HALF_SPAN_PX + rel * px - w * 0.5);
+                ink.0 = Color::srgba(r, g, b, 0.70 * fade(rel));
+                Visibility::Inherited
+            };
+            vis.set_if_neq(want);
         }
-        if text.0 != want {
-            text.0 = want;
+        for (label, mut node, mut ink, mut vis) in &mut labels {
+            let rel = rel_deg(facing, label.0 as f32);
+            let want = if rel.abs() > reach {
+                Visibility::Hidden
+            } else {
+                node.left = Val::Px(COMPASS_HALF_SPAN_PX + rel * px - COMPASS_LABEL_W * 0.5);
+                let a = if label.0.is_multiple_of(45) {
+                    0.95
+                } else {
+                    0.75
+                };
+                ink.0 = Color::srgba(r, g, b, a * fade(rel));
+                Visibility::Inherited
+            };
+            vis.set_if_neq(want);
+        }
+    }
+
+    let [x, _, z] = net.session.core.predict.render_position();
+    let pins = pins.as_ref().map(|p| &p.0);
+    let at = pins.map(|p| p.marks()).unwrap_or(&[]);
+    for (mark, mut node, mut vis) in &mut marks {
+        let Some(&(mx, mz)) = at.get(mark.0) else {
+            vis.set_if_neq(Visibility::Hidden);
+            continue;
+        };
+        let (dx, dz) = (mx - x, mz - z);
+        let across = rel_deg(facing, crate::look::bearing_of(dx, dz)) / HALF_SPAN_DEG;
+        let behind = across.abs() > 1.0;
+        let left = Val::Px(across.clamp(-1.0, 1.0) * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
+        if node.left != left {
+            node.left = left;
+        }
+        vis.set_if_neq(Visibility::Inherited);
+        let style = pins.map(|p| p.styles()[mark.0]).unwrap_or_default();
+        let alpha = if behind { 0.45 } else { 1.0 };
+        let [cr, cg, cb] = style.rgb();
+        let fill = Color::srgba_u8(cr, cg, cb, (255.0 * alpha) as u8);
+        for (disc, mut bg) in &mut discs {
+            if disc.0 == mark.0 && bg.0 != fill {
+                bg.0 = fill;
+            }
+        }
+        for (text, mut t, mut ink) in &mut words {
+            if text.0 != mark.0 {
+                continue;
+            }
+            let name = match style.compass_label() {
+                "" => (mark.0 + 1).to_string(),
+                l => l.to_string(),
+            };
+            let want = format!(
+                "{name} {}",
+                crate::ui::death::short_distance((dx * dx + dz * dz).sqrt())
+            );
+            if t.0 != want {
+                t.0 = want;
+            }
+            let faded = ink.0.with_alpha(0.9 * alpha);
+            if ink.0 != faded {
+                ink.0 = faded;
+            }
         }
     }
 }
@@ -3645,7 +3892,7 @@ pub fn death_mark(
         return;
     };
     let [x, _, z] = core.predict.render_position();
-    let m = crate::ui::death::compass_mark(crate::look::bearing_deg(look.yaw), (x, z), at);
+    let m = crate::ui::death::compass_mark(crate::look::bearing_smooth_deg(look.yaw), (x, z), at);
     let left = Val::Px(m.across * COMPASS_HALF_SPAN_PX - COMPASS_MARK_PX * 0.5);
     if node.left != left {
         node.left = left;
@@ -4033,34 +4280,6 @@ fn swing_prompt(pick: &crate::ui::interact::SwingPick) -> String {
     } else {
         format!("[LMB] {label}")
     }
-}
-
-/// A map mark on the compass line: `      mark 2 · 340 m · 045°`, or
-/// `      HQ · 340 m · 045°` once it has a label (`label` is already the
-/// compass's three characters, `PinStyle::compass_label`).
-fn mark_strip(n: usize, label: &str, dist_m: f32, bearing: f32) -> String {
-    let d = if dist_m >= 1000.0 {
-        format!("{:.1} km", dist_m / 1000.0)
-    } else {
-        format!("{dist_m:.0} m")
-    };
-    if label.is_empty() {
-        format!("      mark {n} · {d} · {bearing:03.0}°")
-    } else {
-        format!("      {label} · {d} · {bearing:03.0}°")
-    }
-}
-
-/// The eight-point bearing plus degrees, e.g. `NE  045°`.
-///
-/// The number comes from [`crate::look::bearing_deg`] rather than from the
-/// free-running yaw, so this and the map's heading are one fact drawn twice
-/// and not two samples a frame apart.
-fn compass_strip(yaw: f32) -> String {
-    const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    let deg = crate::look::bearing_deg(yaw);
-    let idx = (((deg / 45.0) + 0.5) as usize) % 8;
-    format!("{}   {:03.0}°", POINTS[idx], deg)
 }
 
 /// One of Rust's item notices over the vitals, by row — row 0 is the
@@ -5502,21 +5721,6 @@ mod tests {
             Some("CHARGE  ·  8s  ·  NE 9M".to_string()),
             "a part-second rounds up, like the announce toast's"
         );
-    }
-
-    #[test]
-    fn the_compass_walks_the_sims_bearing() {
-        // Yaw 0 is +Z is north. Yaw turns the view LEFT (`look.rs`'s header),
-        // and east is `-X`, so a quarter turn lands on WEST.
-        assert!(compass_strip(0.0).starts_with('N'));
-        assert!(compass_strip(std::f32::consts::FRAC_PI_2).starts_with('W'));
-        assert!(compass_strip(std::f32::consts::PI).starts_with('S'));
-        assert!(compass_strip(3.0 * std::f32::consts::FRAC_PI_2).starts_with('E'));
-        // And it wraps rather than reading 360.
-        assert!(compass_strip(std::f32::consts::TAU - 0.001).starts_with('N'));
-        // Due north prints `000`, not `-00` — `look::bearing_of`'s signed-zero
-        // trap, gated at the `{:03.0}` site that would have shown it.
-        assert_eq!(compass_strip(0.0), "N   000°");
     }
 
     // ---- the announce stack's geometry ----------------------------------

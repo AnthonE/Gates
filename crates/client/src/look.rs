@@ -138,6 +138,14 @@ pub fn bearing_deg(yaw: f32) -> f32 {
     bearing_of(fx, fz)
 }
 
+/// [`bearing_deg`] without the LUT's 1.4° steps, for the compass tape: a
+/// strip that slides several pixels a degree would visibly tick as you turn
+/// slowly. It is never a step away from [`bearing_deg`]
+/// (`ui::compass`'s tests), so the tape and the map still agree.
+pub fn bearing_smooth_deg(yaw: f32) -> f32 {
+    bearing_of(yaw.sin(), yaw.cos())
+}
+
 /// The body's right, in world XZ, for a wire yaw. `r × up = −f`.
 ///
 /// This is the function the whole module exists for: everything else here

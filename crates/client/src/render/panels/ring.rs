@@ -19,10 +19,10 @@
 //! resolves the pointer with, so what is drawn and what is picked cannot
 //! disagree — the wheel's oldest rule, kept.
 //!
-//! Colours are measured off the reference `building.jpeg` by locating the ring
-//! programmatically (bright, low-saturation pixels; centre and radii from
-//! their distribution) rather than by eye: the band is `#f5e7dd` and the
-//! chosen wedge is `#d13f28`.
+//! The band's colour is measured off the reference `building.jpeg` by
+//! locating the ring programmatically (bright, low-saturation pixels; centre
+//! and radii from their distribution) rather than by eye: `#f5e7dd`. The
+//! chosen wedge is the house green, `ui::MARK`, not the reference's red.
 
 use bevy::asset::{uuid_handle, RenderAssetUsages};
 use bevy::image::Image;
@@ -33,8 +33,8 @@ use crate::ui::build::{Rings, SHAPES};
 
 /// The cream of the ring band, `#f5e7dd`.
 pub const CREAM: [u8; 3] = [245, 231, 221];
-/// The chosen wedge, `#d13f28`.
-pub const CHOSEN: [u8; 3] = [209, 63, 40];
+/// The chosen wedge, `#86b834`: `ui::MARK`, the GO button's green.
+pub const CHOSEN: [u8; 3] = [134, 184, 52];
 /// How opaque the ring is over the world. The reference's sits over a
 /// *blurred* world, which we do not have; a touch of translucency keeps it
 /// from reading as a sticker without costing legibility.

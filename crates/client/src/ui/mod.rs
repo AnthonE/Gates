@@ -84,6 +84,7 @@ pub mod arc;
 pub mod boot;
 pub mod build;
 pub mod chat;
+pub mod compass;
 pub mod craft;
 pub mod death;
 pub mod draw;
