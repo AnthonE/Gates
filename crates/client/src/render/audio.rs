@@ -639,6 +639,15 @@ pub fn build_bank_with(app: &mut App, spread: bool) {
     app.insert_resource(bank);
     if spread {
         app.insert_resource(Synth { next: 0 });
+        // A page fetches the recordings (`sound_bank::Rec`), in the order
+        // `synthesize` wants them, all asked for at once.
+        #[cfg(target_arch = "wasm32")]
+        for file in crate::sound_bank::all_files(&synth_order()) {
+            wasm_bindgen_futures::spawn_local(async move {
+                let got = super::asset_fetch::bytes(format!("assets/{file}")).await;
+                crate::sound_bank::landed(file, got);
+            });
+        }
     }
 }
 
@@ -691,6 +700,11 @@ pub fn synthesize(mut synth: ResMut<Synth>, mut bank: ResMut<Bank>, mut engine: 
         return;
     }
     let cue = synth_order()[synth.next];
+    // In a browser its recordings may still be on the way; the cues behind
+    // it wait with it, as they were fetched in this order.
+    if !crate::sound_bank::ready(cue) {
+        return;
+    }
     let (pcm, takes) = crate::sound_bank::pcm(cue);
     bank.land(cue, pcm.len(), takes);
     engine.install(cue, pcm);

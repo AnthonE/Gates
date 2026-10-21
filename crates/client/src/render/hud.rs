@@ -2929,12 +2929,16 @@ pub fn update(
                 if img.image != h {
                     img.image = h;
                 }
-                *vis = Visibility::Inherited;
+                // Through `set_if_neq`: a bare write marks every cell
+                // changed every frame, and visibility propagation re-walks it.
+                vis.set_if_neq(Visibility::Inherited);
             }
             // Hidden rather than cleared: an `ImageNode` with a default handle
             // draws Bevy's white placeholder square, which is a filled cell
             // claiming to hold something.
-            None => *vis = Visibility::Hidden,
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
         }
     }
     for (slot, mut text, mut ink) in counts.iter_mut() {

@@ -328,7 +328,7 @@ fn only_a_tree_carries_a_visibility_range() {
 
 /// A plant's range is its own fade (`plants::fade_band`), on every part, and
 /// never a tree's band — or it pops at the ring's edge, or fades apart from
-/// the rest of it. The desktop's: a browser's plants carry none.
+/// the rest of it. The desktop's: WebGL2's plants carry an abrupt one.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn every_part_of_a_plant_carries_the_plants_fade() {

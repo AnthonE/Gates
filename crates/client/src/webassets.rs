@@ -41,6 +41,21 @@
 //! carries, so the desktop is unchanged, and a PNG one gets the same
 //! derived chain a photograph gets.
 //!
+//! ## PNG only where there is alpha
+//!
+//! A map with no alpha in it — most albedos, every normal and packed
+//! roughness map — is written as JPEG instead ([`encode_web`]). Measured
+//! 2026-10-21 over the 153 models: 493 of 494 maps are opaque, and they went
+//! 100.1 MB as PNG → 27.5 MB, the staged models 138.4 → 65.7 MB, at a median
+//! PSNR of 39 dB (43 dB on the normals, 32 dB at worst, a carcass's noise).
+//! The models are most of what a page downloads: 99 GLBs are asked for at
+//! `Startup`. 4:4:4, because a normal or a
+//! roughness map keeps data in its colour channels and chroma subsampling
+//! would blur one channel into the next; quality [`JPEG_QUALITY`], and
+//! [`JPEG_QUALITY_NORMAL`] for a normal map, whose error is a lighting error.
+//! A map with any alpha below 255 stays PNG, which is lossless where a cut-out
+//! edge is decided.
+//!
 //! ## What this does to the file
 //!
 //! A GLB is a header, a JSON chunk and one binary chunk; images point at
@@ -59,6 +74,11 @@ use std::io::Read;
 /// per model the packer measured the KTX2 route against.
 pub const WEB_LEVEL: u32 = 1;
 
+/// JPEG quality for an opaque map that is not a normal map.
+pub const JPEG_QUALITY: u8 = 90;
+/// JPEG quality for a normal map: its error bends the lighting.
+pub const JPEG_QUALITY_NORMAL: u8 = 95;
+
 /// Why a file could not be converted.
 #[derive(Debug)]
 pub enum Error {
@@ -70,6 +90,8 @@ pub enum Error {
     Decode(String),
     /// The PNG encoder refused.
     Png(String),
+    /// The JPEG encoder refused.
+    Jpeg(String),
 }
 
 impl std::fmt::Display for Error {
@@ -79,6 +101,7 @@ impl std::fmt::Display for Error {
             Error::Json(e) => write!(f, "GLB JSON: {e}"),
             Error::Decode(why) => write!(f, "KTX2 decode: {why}"),
             Error::Png(why) => write!(f, "PNG encode: {why}"),
+            Error::Jpeg(why) => write!(f, "JPEG encode: {why}"),
         }
     }
 }
@@ -144,12 +167,12 @@ pub fn join(json: &serde_json::Value, bin: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Rewrite a GLB so every `image/ktx2` image holds what `png_of` makes of
-/// its bytes instead, as `image/png`. Returns the new GLB and how many
-/// images were converted.
+/// Rewrite a GLB so every `image/ktx2` image holds what `encode` makes of
+/// its bytes instead: `(bytes, mime type)`, given the image's index and its
+/// KTX2. Returns the new GLB and how many images were converted.
 pub fn rewrite(
     glb: &[u8],
-    mut png_of: impl FnMut(&[u8]) -> Result<Vec<u8>, Error>,
+    mut encode: impl FnMut(usize, &[u8]) -> Result<(Vec<u8>, &'static str), Error>,
 ) -> Result<(Vec<u8>, usize), Error> {
     let (mut json, bin) = split(glb)?;
     // Which bufferView each KTX2 image owns.
@@ -169,6 +192,7 @@ pub fn rewrite(
         .unwrap_or_default();
     let mut new_bin = Vec::with_capacity(bin.len());
     let mut new_views = Vec::with_capacity(views.len());
+    let mut mimes = Vec::with_capacity(image_views.len());
     let mut converted = 0;
     for (vi, view) in views.iter().enumerate() {
         let offset = view.get("byteOffset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -180,8 +204,10 @@ pub fn rewrite(
             .get(offset..offset + length)
             .ok_or(Error::Malformed("bufferView runs past the binary chunk"))?;
         let replaced;
-        let bytes: &[u8] = if image_views.iter().any(|(_, v)| *v == vi) {
-            replaced = png_of(bytes)?;
+        let bytes: &[u8] = if let Some(&(image, _)) = image_views.iter().find(|(_, v)| *v == vi) {
+            let (out, mime) = encode(image, bytes)?;
+            replaced = out;
+            mimes.push((image, mime));
             converted += 1;
             &replaced
         } else {
@@ -197,8 +223,8 @@ pub fn rewrite(
         new_views.push(nv);
     }
     if let Some(images) = json.get_mut("images").and_then(|v| v.as_array_mut()) {
-        for (i, _) in &image_views {
-            images[*i]["mimeType"] = serde_json::Value::from("image/png");
+        for (i, mime) in &mimes {
+            images[*i]["mimeType"] = serde_json::Value::from(*mime);
         }
     }
     // The chunk `join` writes is padded to four bytes; the buffer's declared
@@ -302,12 +328,68 @@ pub fn png(w: u32, h: u32, rgba: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// Convert one GLB's KTX2 images to PNG at [`WEB_LEVEL`].
+/// RGBA8 with its alpha dropped to a 4:4:4 JPEG at `quality`.
+pub fn jpeg(w: u32, h: u32, rgba: &[u8], quality: u8) -> Result<Vec<u8>, Error> {
+    let (w, h) = (
+        u16::try_from(w).map_err(|_| Error::Jpeg("wider than 65535".into()))?,
+        u16::try_from(h).map_err(|_| Error::Jpeg("taller than 65535".into()))?,
+    );
+    let mut out = Vec::new();
+    let mut enc = jpeg_encoder::Encoder::new(&mut out, quality);
+    enc.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+    enc.set_optimized_huffman_tables(true);
+    enc.encode(rgba, w, h, jpeg_encoder::ColorType::Rgba)
+        .map_err(|e| Error::Jpeg(e.to_string()))?;
+    Ok(out)
+}
+
+/// One decoded map as the browser gets it: PNG where any texel has alpha
+/// below 255, JPEG otherwise (the module header has why), as `(bytes, mime)`.
+pub fn encode_web(
+    w: u32,
+    h: u32,
+    rgba: &[u8],
+    normal: bool,
+) -> Result<(Vec<u8>, &'static str), Error> {
+    if rgba.chunks_exact(4).any(|t| t[3] != 255) {
+        return Ok((png(w, h, rgba)?, "image/png"));
+    }
+    let q = if normal {
+        JPEG_QUALITY_NORMAL
+    } else {
+        JPEG_QUALITY
+    };
+    Ok((jpeg(w, h, rgba, q)?, "image/jpeg"))
+}
+
+/// The images a GLB's materials use as normal maps, by image index —
+/// through `KHR_texture_basisu` where the texture names its KTX2 there.
+pub fn normal_images(json: &serde_json::Value) -> Vec<usize> {
+    let textures = json.get("textures").and_then(|v| v.as_array());
+    let image_of = |t: u64| -> Option<usize> {
+        let tex = textures?.get(t as usize)?;
+        tex.pointer("/extensions/KHR_texture_basisu/source")
+            .or_else(|| tex.get("source"))
+            .and_then(|v| v.as_u64())
+            .map(|i| i as usize)
+    };
+    json.get("materials")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.pointer("/normalTexture/index").and_then(|v| v.as_u64()))
+        .filter_map(image_of)
+        .collect()
+}
+
+/// Convert one GLB's KTX2 images at [`WEB_LEVEL`], each to the format
+/// [`encode_web`] picks for it.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn convert(glb: &[u8]) -> Result<(Vec<u8>, usize), Error> {
-    rewrite(glb, |ktx| {
+    let normals = normal_images(&split(glb)?.0);
+    rewrite(glb, |image, ktx| {
         let (w, h, rgba) = decode_level(ktx, WEB_LEVEL)?;
-        png(w, h, &rgba)
+        encode_web(w, h, &rgba, normals.contains(&image))
     })
 }
 
@@ -377,14 +459,15 @@ mod tests {
     #[test]
     fn the_image_view_is_replaced_and_every_other_view_is_byte_identical() {
         let src = glb();
-        let (out, n) = rewrite(&src, |ktx| {
+        let (out, n) = rewrite(&src, |image, ktx| {
+            assert_eq!(image, 0);
             assert_eq!(ktx, &(100..110u8).collect::<Vec<u8>>());
-            Ok(vec![7u8; 23])
+            Ok((vec![7u8; 23], "image/jpeg"))
         })
         .unwrap();
         assert_eq!(n, 1);
         let (json, bin) = split(&out).unwrap();
-        assert_eq!(json["images"][0]["mimeType"], "image/png");
+        assert_eq!(json["images"][0]["mimeType"], "image/jpeg");
         let views = json["bufferViews"].as_array().unwrap();
         let (o0, l0) = (
             views[0]["byteOffset"].as_u64().unwrap() as usize,
@@ -416,7 +499,7 @@ mod tests {
         let (mut json, bin) = split(&src).unwrap();
         json["images"][0]["mimeType"] = serde_json::Value::from("image/png");
         let plain = join(&json, &bin);
-        let (out, n) = rewrite(&plain, |_| panic!("nothing to convert")).unwrap();
+        let (out, n) = rewrite(&plain, |_, _| panic!("nothing to convert")).unwrap();
         assert_eq!(n, 0);
         assert_eq!(split(&out).unwrap().0["images"][0]["mimeType"], "image/png");
     }
@@ -431,5 +514,48 @@ mod tests {
         let info = reader.next_frame(&mut buf).unwrap();
         assert_eq!((info.width, info.height), (4, 4));
         assert_eq!(&buf[..info.buffer_size()], &rgba[..]);
+    }
+
+    /// Alpha anywhere keeps the map lossless; an opaque one becomes a JPEG
+    /// that decodes to the same picture within the quantizer's reach.
+    #[test]
+    fn alpha_picks_png_and_an_opaque_map_is_a_close_jpeg() {
+        let (w, h) = (16u32, 16u32);
+        let mut rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| [(i % w * 16) as u8, (i / w * 16) as u8, 128, 255])
+            .collect();
+        let (bytes, mime) = encode_web(w, h, &rgba, false).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(img.dimensions(), (w, h));
+        let worst = img
+            .as_raw()
+            .chunks_exact(4)
+            .zip(rgba.chunks_exact(4))
+            .flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c])))
+            .max()
+            .unwrap();
+        assert!(worst <= 24, "a 4:4:4 q90 JPEG is off by {worst} somewhere");
+
+        rgba[7] = 254;
+        assert_eq!(encode_web(w, h, &rgba, false).unwrap().1, "image/png");
+    }
+
+    #[test]
+    fn normal_maps_are_found_through_the_basisu_extension() {
+        let json = serde_json::json!({
+            "materials": [
+                {"normalTexture": {"index": 1}, "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}},
+                {"normalTexture": {"index": 2}}
+            ],
+            "textures": [
+                {"extensions": {"KHR_texture_basisu": {"source": 0}}},
+                {"extensions": {"KHR_texture_basisu": {"source": 3}}},
+                {"source": 4}
+            ]
+        });
+        assert_eq!(normal_images(&json), vec![3, 4]);
     }
 }

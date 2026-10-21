@@ -974,19 +974,23 @@ function counted(res) {
   if (!res.ok) throw new Error(`the game module answered HTTP ${res.status}`);
   if (!dl.want && !res.headers.get("content-encoding"))
     dl.want = Number(res.headers.get("content-length")) || 0;
-  if (!res.body || typeof TransformStream !== "function") return res;
+  if (!res.body) return res;
+  /* The bar counts a CLONE, and the compiler gets the response `fetch`
+     returned. A `new Response(stream)` has no URL, and V8 keys its wasm code
+     cache to the response's URL and HTTP cache entry, so a module handed over
+     that way was compiled from nothing on every visit. */
+  const reader = res.clone().body.getReader();
   let last = 0;
-  const body = res.body.pipeThrough(new TransformStream({
-    transform(chunk, ctl) {
-      dl.got += chunk.byteLength;
+  (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      dl.got += value.byteLength;
       const now = performance.now();
       if (now - last > 120) { last = now; paintDownload(); }
-      ctl.enqueue(chunk);
-    },
-  }));
-  /* the bytes are already decoded, so only the type travels: it is what lets
-     `instantiateStreaming` compile while the rest is still arriving */
-  return new Response(body, { status: 200, headers: { "Content-Type": "application/wasm" } });
+    }
+  })().catch(() => { /* the compile owns the error */ });
+  return res;
 }
 
 /* ── which module ──────────────────────────────────────────────────────────
@@ -1149,8 +1153,11 @@ async function load(gfx, sizes) {
      names), so both are asked for by the pair's own hash: a cached glue from
      the last publish cannot meet this publish's module. */
   const v = sizes && sizes.sha256 ? "?v=" + String(sizes.sha256).slice(0, 12) : "";
+  /* The module's fetch goes out before the glue's import rather than after
+     it: the two are independent requests, and the module is the long one. */
+  const res = fetch(new URL(m.wasm + v, import.meta.url), { priority: "high" }).then(counted);
+  res.catch(() => { /* awaited below; this only keeps a failed import from leaving it unhandled */ });
   const mod = await import(m.js + v);
-  const res = fetch(new URL(m.wasm + v, import.meta.url)).then(counted);
   /* The module's exports, kept on the window for a person with the console
      open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is
      the number to read when a tab dies with no message (an out-of-memory
@@ -2474,6 +2481,10 @@ if (typeof PerformanceObserver !== "undefined") {
       const heap = performance.memory ? ` · js heap ${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)} MB` : "";
       console.info(`page: long tasks ${longTasks} (longest ${longestMs.toFixed(0)} ms)${heap}`);
       longTasks = 0; longestMs = 0;
+      /* Bevy's wasm logger marks and measures every log line on the
+         performance timeline, and nothing ever clears those entries. */
+      performance.clearMarks();
+      performance.clearMeasures();
     }, 5000);
   } catch (err) { /* no longtask entry type here */ }
 }
