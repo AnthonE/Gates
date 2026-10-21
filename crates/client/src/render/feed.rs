@@ -280,6 +280,10 @@ pub struct Feed {
     /// Grants earned this frame: address + `sim_core::lock::GRANT_*`.
     auths: [(u16, u16, u8, u8, u8); FEED_CAP],
     n_auths: usize,
+    /// Fires and furnaces switched on or off this frame: address + lit.
+    /// Broadcast, like `knocks`.
+    oven_flips: [(u16, u16, u8, u8, bool); FEED_CAP],
+    n_oven_flips: usize,
     /// Arrows loosed this frame (wire v33): shooter id, yaw, pitch, and the
     /// round's speed and drop in mm/tick. Broadcast, like `knocks`.
     ///
@@ -473,6 +477,9 @@ impl Feed {
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
+    pub fn oven_flips(&self) -> &[(u16, u16, u8, u8, bool)] {
+        &self.oven_flips[..self.n_oven_flips]
+    }
     /// Placements that happened this frame, oldest first.
     /// The directions blows arrived from this frame, merged, in the order
     /// each direction was first seen.
@@ -570,6 +577,7 @@ impl Feed {
         self.reloaded = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
+        self.n_oven_flips = 0;
         self.n_shots = 0;
         self.n_impacts = 0;
         self.n_swings = 0;
@@ -778,6 +786,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_auths;
             feed.auths[n] = a;
             feed.n_auths += 1;
+        }
+    }
+    while let Some(f) = core.pop_oven_flip() {
+        if feed.n_oven_flips >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_oven_flips;
+            feed.oven_flips[n] = f;
+            feed.n_oven_flips += 1;
         }
     }
     while let Some(sh) = core.pop_shot() {

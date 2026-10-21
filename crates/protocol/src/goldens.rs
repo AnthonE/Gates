@@ -324,7 +324,7 @@ pub const FIXTURES: [&str; 183] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
-    // The lattice placement verbs (v130): a site on a standing building,
+    // The lattice placement verbs (v132): a site on a standing building,
     // and a foundation placed free.
     "action_place_at.bin",
     "action_place_free.bin",
@@ -399,14 +399,17 @@ pub fn event_arc_refused() -> (u8, u8, u8) {
     )
 }
 
-/// Speaker 3 of 5 at the third stone ring, with two topics (wire v96).
+/// Speaker 3 of 5 at the third stone ring, with three topics (wire v96):
+/// small talk, a free gift of two skins and a priced one (v130).
+#[allow(clippy::type_complexity)]
 pub fn event_arc_place() -> (
     u8,
     u8,
     u8,
     sim_core::spot::Spot,
     &'static [u8],
-    [&'static [u8]; 2],
+    [&'static [u8]; 3],
+    [crate::TopicOffer; 3],
 ) {
     (
         protocol_arc_speaker(),
@@ -420,7 +423,24 @@ pub fn event_arc_place() -> (
             z_cm: 1200,
         },
         b"THE GATEKEEPER",
-        [b"WHO ARE YOU", b"THE ISLAND"],
+        [b"WHO ARE YOU", b"THE FOUNDER'S GIFT", b"THE ABYSS RUG"],
+        [
+            crate::TopicOffer::default(),
+            crate::TopicOffer {
+                gift: true,
+                n: 2,
+                catalogs: [7, 8, 0, 0],
+                item: 0,
+                count: 0,
+            },
+            crate::TopicOffer {
+                gift: true,
+                n: 1,
+                catalogs: [10, 0, 0, 0],
+                item: 41,
+                count: 100,
+            },
+        ],
     )
 }
 
@@ -429,8 +449,14 @@ fn protocol_arc_speaker() -> u8 {
 }
 
 /// Inscription 7's text.
-pub fn event_arc_text() -> (u8, u8, u8, &'static [u8]) {
-    (crate::ARC_INSCRIPTION, 7, 0, b"TURN THE THREE TO 5 2 7")
+pub fn event_arc_text() -> (u8, u8, u8, u8, &'static [u8]) {
+    (
+        crate::ARC_INSCRIPTION,
+        7,
+        0,
+        crate::ARC_GIFT_NONE,
+        b"TURN THE THREE TO 5 2 7",
+    )
 }
 
 /// Mechanism 2's three dials, resting.
@@ -1302,13 +1328,15 @@ pub fn event_catalog() -> ItemCatalog {
                 ..row(0, 0, WEAR_NONE, u16::MAX)
             },
         ),
-        // The draw columns' coverage (v82), at the byte's corner.
+        // The draw columns' coverage (v82), at the byte's corner, and the
+        // damage column's (v131) at its own.
         (
             b"Hunting Bow",
             ItemRow {
                 draw_ticks: u8::MAX,
                 nock_ticks: u8::MAX - 1,
                 class: CLASS_WEAPONS,
+                damage: u16::MAX,
                 ..row(0, 0, WEAR_NONE, 1)
             },
         ),
@@ -1623,7 +1651,7 @@ pub fn event_piece_placed() -> (PieceRec, Frame) {
         // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
         // encoder that never wrote the field would match.
         hp: 0x9C35,
-        // Every bit-field of v130's own nonzero: the id, the building.
+        // Every bit-field of v132's own nonzero: the id, the building.
         id: 0x2A_5A5A,
         bld: 0xA5C,
         sock: sim_core::sock::from_grid(330, 677, 341, 682, sim_core::build::LOC_EDGE_ZLO)
@@ -1850,7 +1878,7 @@ pub fn event_deploy_placed() -> DeployRec {
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     // The loc walks the store's whole four-bit domain (wire v89: two edges
-    // and fourteen body slots; v130: slot 13 an edge the grid cannot name),
+    // and fourteen body slots; v132: slot 13 an edge the grid cannot name),
     // so every value reaches the bytes.
     let recs = core::array::from_fn(|i| {
         let mut rec = DeployRec {
@@ -3075,7 +3103,7 @@ pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
     (9, 0, 19, 4, 0)
 }
 
-/// A lattice placement (v130): a triangle flight on the top storey of a
+/// A lattice placement (v132): a triangle flight on the top storey of a
 /// building past the first byte of ids, its centre's coefficients mixed in
 /// sign so a lost bias or a swapped pair moves the bytes, and a turn that
 /// needs every direction bit.
@@ -3089,7 +3117,7 @@ pub fn action_place_at() -> (u16, u16, u8, sim_core::sock::Sock) {
     )
 }
 
-/// A free foundation (v130): the triangle, its origin west and north of
+/// A free foundation (v132): the triangle, its origin west and north of
 /// the world's zero so both signs are live, a yaw past 32 768 and an asked
 /// band negative and nonzero (`action_place`'s reasons).
 pub fn action_place_free() -> (u16, i32, i32, u16, bool, i8) {

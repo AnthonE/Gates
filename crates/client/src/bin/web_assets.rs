@@ -5,9 +5,9 @@
 //!   cargo run -p client --features webassets --bin web_assets -- <dir>
 //!
 //! Converts every `.glb` under `<dir>` in place — KTX2/UASTC images become
-//! PNG at `WEB_LEVEL` — and prints what it did. Refuses to run over the
-//! tree's own `assets/models/`: the variant is for a staged copy, and the
-//! files under git are what every gate reads.
+//! JPEG (PNG where a map has alpha) at `WEB_LEVEL` — and prints what it did.
+//! Refuses to run over the tree's own `assets/models/`: the variant is for a
+//! staged copy, and the files under git are what every gate reads.
 //!
 //! `webassets` is its own feature rather than part of `render`: the
 //! transcoder is the only thing it needs and Bevy is not, so a build script
@@ -40,7 +40,7 @@ fn main() {
     match client::webassets::convert_dir(&canonical) {
         Ok((files, images, before, after)) => {
             println!(
-                "web_assets: {files} models, {images} images -> PNG at level {} ({:.1} MB -> {:.1} MB)",
+                "web_assets: {files} models, {images} images -> JPEG/PNG at level {} ({:.1} MB -> {:.1} MB)",
                 client::webassets::WEB_LEVEL,
                 before as f64 / 1e6,
                 after as f64 / 1e6

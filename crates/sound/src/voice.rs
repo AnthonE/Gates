@@ -222,6 +222,24 @@ pub fn cue_of(slot: usize, near: bool) -> Cue {
     }
 }
 
+/// What the animal in roster slot `slot` cries when a blow lands on it.
+pub fn hurt_of(slot: usize) -> Cue {
+    match mob::kind_of(slot) {
+        mob::MOB_WOLF => Cue::WolfHurt,
+        mob::MOB_STAG => Cue::StagHurt,
+        _ => Cue::BoarHurt,
+    }
+}
+
+/// …and its last cry.
+pub fn death_of(slot: usize) -> Cue {
+    match mob::kind_of(slot) {
+        mob::MOB_WOLF => Cue::WolfDeath,
+        mob::MOB_STAG => Cue::StagDeath,
+        _ => Cue::BoarDeath,
+    }
+}
+
 /// The distance at which a wolf stops howling and starts growling, metres.
 ///
 /// **Not a knob** — it is [`Cue::Growl`]'s own `radius_m`, read back out of

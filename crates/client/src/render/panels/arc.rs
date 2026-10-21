@@ -193,7 +193,7 @@ pub struct IslandTab(pub u8);
 
 pub fn build_island(commands: &mut Commands, ui: &Ui, core: &ClientCore) {
     let arc = &core.arc;
-    kit::screen(commands, ISLAND_W, |p| {
+    kit::page(commands, ui, ISLAND_W, |p| {
         kit::header(
             p,
             "THE ISLAND",

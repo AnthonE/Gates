@@ -1059,6 +1059,46 @@ fn every_take_in_the_bank_is_a_sound() {
     );
 }
 
+/// No recording decodes past full scale. The bank decodes to 16 bits and
+/// normalizes after, so a file whose Vorbis overshoots 1.0 arrives with its
+/// transients flattened: Kenney's impact packs shipped that way, every one
+/// clipped, and the bank's own checks only ever saw the normalized result.
+#[test]
+fn no_recording_clips_on_decode() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("assets/sound") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "ogg") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/sound"),
+        &mut files,
+    );
+    assert!(files.len() > 100, "found {} recordings", files.len());
+    for f in files {
+        let bytes = std::fs::read(&f).expect("read");
+        let mut r =
+            lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(bytes)).expect("an ogg");
+        let mut run = 0;
+        while let Some(pkt) = r.read_dec_packet_itl().expect("decode") {
+            for v in pkt {
+                run = if v >= i16::MAX - 1 || v <= i16::MIN + 1 {
+                    run + 1
+                } else {
+                    0
+                };
+                assert!(run < 3, "{} clips on decode", f.display());
+            }
+        }
+    }
+}
+
 /// A cue with takes never plays the same one twice running, and plays all
 /// of them.
 #[test]
@@ -1787,6 +1827,41 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
         Some((50, 51, 0, LOC_PLANE, true)),
         "a deployable placement broadcast did not ring"
     );
+}
+
+/// A fire switched on by a hand rings, and so does any fire going out; the
+/// deploy walk restating a lit furnace (`by` 0) does not — a joiner walking
+/// into a base must not hear every furnace in it struck at once.
+#[test]
+fn a_fire_lit_by_a_hand_rings_and_a_restatement_does_not() {
+    use client_core::core::ClientCore;
+    use protocol::{encode_event_oven, MAX_EVENT_MSG_BYTES};
+
+    let mut core = ClientCore::new(1, 7, 0);
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let mut oven = |core: &mut ClientCore, lit: bool, by: u32| {
+        let len = encode_event_oven(30, 31, 0, 2, lit, by, &mut buf).expect("encode");
+        core.on_stream(&buf[..len]).expect("decode");
+    };
+
+    oven(&mut core, true, 0);
+    assert!(core.ovens().is_lit(30, 31, 0, 2));
+    assert_eq!(core.pop_oven_flip(), None, "a restated fire rang");
+    oven(&mut core, true, 9);
+    assert_eq!(core.pop_oven_flip(), None, "a fire already lit rang again");
+    oven(&mut core, false, 0);
+    assert_eq!(
+        core.pop_oven_flip(),
+        Some((30, 31, 0, 2, false)),
+        "a burn-out was silent"
+    );
+    oven(&mut core, true, 9);
+    assert_eq!(
+        core.pop_oven_flip(),
+        Some((30, 31, 0, 2, true)),
+        "a lit fire was silent"
+    );
+    assert_eq!(core.pop_oven_flip(), None);
 }
 
 /// The collapse's supply line: a piece coming down rings with the row and

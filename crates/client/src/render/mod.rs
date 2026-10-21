@@ -41,6 +41,8 @@ pub mod music_out;
 pub mod audio_web;
 pub mod bodies;
 pub mod casino;
+// Your own body, in the sun's shadow map and no camera.
+pub mod own_shadow;
 // The Verdigris as drawn: this wipe's outbreaks and the spread at the arc's
 // tick, read once a frame for the ground, the weather and the map.
 pub mod blight;
@@ -1799,7 +1801,11 @@ impl Plugin for GatesRenderPlugin {
                     // was drained on, so a body that streams before the
                     // drain reads last frame's swings and misses this
                     // frame's — a dropped arc nothing would report.
-                    bodies::stream.after(feed::drain),
+                    (
+                        bodies::stream,
+                        (own_shadow::stream, own_shadow::hold).chain(),
+                    )
+                        .after(feed::drain),
                     // The heli is the roster's last slot and the town's
                     // sentries the four below it, which `mobs::stream`
                     // leaves to `heli::stream` and `sentry::stream`.
@@ -1832,8 +1838,14 @@ impl Plugin for GatesRenderPlugin {
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
-                    // The compass's words, then its death marker.
-                    (hud::prompt, hud::death_mark),
+                    // The centre prompt, the compass tape, then the marks
+                    // riding under it.
+                    (
+                        hud::prompt,
+                        hud::compass,
+                        hud::compass_pins,
+                        hud::death_mark,
+                    ),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
@@ -1886,7 +1898,7 @@ impl Plugin for GatesRenderPlugin {
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
-                        (lore::spawn, lore::dials, lore::carve).chain(),
+                        (lore::spawn, lore::dials, lore::carve, lore::offer_marks).chain(),
                     ),
                     (hud::pad_overlay, hud::lift_announce),
                 )
