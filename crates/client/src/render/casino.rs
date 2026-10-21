@@ -1,9 +1,11 @@
 //! THE GATE's casino, drawn (`sim_core::casino`, `town::CASINO`): Rust's
 //! Bandit Camp big wheel on a timber stand under its sign, the betting
 //! terminals before it, and the slot machines under a lit marquee, all on a
-//! plank deck.
+//! plank deck under a timber-trussed tin roof (`town::CASINO_ROOF`), with a
+//! stool at every machine and a lounge of armchairs facing the wheel
+//! (`town::SEATS`, `sim_core::seat`).
 //!
-//! The terminals and the cabinets are generated models
+//! The terminals, the cabinets and the seats are generated models
 //! (`assets/models/site/`, `MANIFEST.md`) sized to the sim's own boxes. The
 //! wheel is drawn here: a disc of Rust's twenty-five coloured segments with
 //! their multipliers on them, turned when the shard says it spins
@@ -17,10 +19,12 @@ use bevy::prelude::*;
 use sim_core::casino::{WHEEL, WHEEL_OPEN_TICKS, WHEEL_PAYS, WHEEL_ROUND_TICKS, WHEEL_SEGMENTS};
 use sim_core::limits::TICK_HZ;
 use sim_core::town::{
-    CABINET_D, CABINET_H, CASINO, CASINO_GAP_M, SLOT_SPOTS, TERMINAL_D, WHEEL_HUB, WHEEL_RADIUS_M,
-    WHEEL_TERMINALS,
+    self, SeatKind, Town, CABINET_D, CABINET_H, CASINO, CASINO_GAP_M, CASINO_ROOF, ROOF_EAVES_M,
+    ROOF_OVERHANG_M, ROOF_RIDGE_M, ROOF_X, ROOF_Z, SEATS, SLOT_SPOTS, TERMINAL_D, WHEEL_HUB,
+    WHEEL_RADIUS_M, WHEEL_TERMINALS,
 };
 
+use super::depot::{self, Surface};
 use super::props::{boxes_mesh_with, linear, Soup};
 use super::town_signs::{letters, Boxes, Face};
 use super::{Net, WorldEntity, WorldId};
@@ -28,6 +32,25 @@ use super::{Net, WorldEntity, WorldId};
 /// The generated cabinet and terminal, each facing +Z at its base.
 pub const SLOT_GLB: &str = "models/site/slot_machine.glb";
 pub const TERMINAL_GLB: &str = "models/site/bet_terminal.glb";
+/// The generated seats, each facing +Z at its base, the seat 0.46 m up:
+/// where `Sitting_Idle_Loop` sits (`anim::SIT_LIFT_M`).
+pub const STOOL_GLB: &str = "models/site/casino_stool.glb";
+pub const ARMCHAIR_GLB: &str = "models/site/casino_armchair.glb";
+
+/// From a sitter's feet back to the middle of its seat, metres: where
+/// `Sitting_Idle_Loop` puts the hips (`stumpy.glb`, skinned at the loop's
+/// first frame, the seat of the pants 0.13–0.45 m behind the feet). A
+/// stool goes under them; an armchair's back goes behind them, its inside
+/// face 0.125 m behind the chair's middle.
+fn seat_back_m(kind: SeatKind) -> f32 {
+    match kind {
+        SeatKind::Stool => 0.27,
+        SeatKind::Armchair => 0.32,
+    }
+}
+/// How near its spot a sitter's feet must be to be on a seat, metres: the
+/// server puts them on it exactly, to the quantum (`sim_core::seat`).
+const SEAT_SNAP_M: f32 = 0.3;
 
 /// Whole turns the wheel makes before it settles.
 const TURNS: f32 = 5.0;
@@ -51,15 +74,43 @@ const GILT: u32 = 0xe2b551;
 const TIP: u32 = 0xc0241c;
 const INK_LIGHT: u32 = 0xf6efdc;
 const INK_DARK: u32 = 0x2a1d12;
+const PLANK_C: u32 = 0x634630;
+const SHADE: u32 = 0x1f2326;
+
+/// The deck's planks, metres: a board's width and its length, the joints
+/// staggered by a third of it.
+const PLANK_W: f32 = 0.3;
+const PLANK_L: f32 = 2.9;
+/// The lounge's rug, under the armchairs: `[x0, z0, x1, z1]`.
+const RUG: [f32; 4] = [18.7, 10.1, 22.5, 17.9];
+/// Section of the roof's timbers, metres.
+const TIMBER_W: f32 = 0.2;
+const TIMBER_H: f32 = 0.28;
+/// Where the purlins carry the sheets, local z, both slopes.
+const PURLINS_Z: [f32; 6] = [8.4, 10.6, 12.8, 17.0, 19.2, 21.4];
+/// Bulbs along each eave.
+const EAVE_BULBS: usize = 44;
 
 /// The bulbs' glow at full brightness, linear; the yard's own bulbs'.
 const BULB_GLOW: LinearRgba = LinearRgba::rgb(6.0, 4.5, 2.2);
 /// How much of the night eye's gain (`rig::FlameGain`) the bulbs take.
 const NIGHT_SHARE: f32 = 0.04;
-/// The casino's two lamps at night: over the wheel, over the slots.
-const LAMPS: [(f32, f32, f32); 2] = [(27.0, 5.6, 14.0), (20.0, 3.6, 18.8)];
+/// The casino's lamps, hung from the roof: before the wheel, over the
+/// lounge, over the slots.
+const LAMPS: [(f32, f32, f32); 5] = [
+    (27.0, 5.6, 14.0),
+    (20.6, 4.4, 12.0),
+    (20.6, 4.4, 16.0),
+    (18.0, 3.9, 19.2),
+    (22.0, 3.9, 19.2),
+];
 const LAMP_LUMENS: f32 = 2600.0;
 const LAMP_RANGE_M: f32 = 14.0;
+/// The share of their night light the lamps give by day: it is shade under
+/// the roof.
+const LAMP_DAY: f32 = 0.45;
+/// The lamps' bulbs, lit, linear.
+const LAMP_GLOW: LinearRgba = LinearRgba::rgb(9.0, 6.8, 3.4);
 
 #[derive(Component)]
 pub struct CasinoVisual;
@@ -68,11 +119,12 @@ pub struct CasinoVisual;
 #[derive(Component)]
 pub struct CasinoLamp;
 
-/// The two bulb sets' materials, which [`lights`] chases.
+/// The two bulb sets' materials, which [`lights`] chases, and the lamps'.
 #[derive(Resource)]
 pub struct CasinoBulbs {
     even: Handle<StandardMaterial>,
     odd: Handle<StandardMaterial>,
+    lamps: Handle<StandardMaterial>,
 }
 
 /// The turning disc: its rest transform, and the spin it is drawing (the
@@ -121,35 +173,105 @@ fn slot_marquee() -> [f32; 6] {
 /// deck, the stand, its sign, the pointer, the marquee.
 fn fixed_boxes() -> Boxes {
     let mut out = Boxes::new();
-    // The deck: planks across the wheel's floor and along the slot row, a
-    // carpet runner before the terminals.
+    // The deck: staggered planks over the whole floor under the roof, a rug
+    // with a gilt border under the lounge, and a carpet runner before the
+    // terminals.
+    let (fx0, fx1) = (ROOF_X[0], ROOF_X[ROOF_X.len() - 1]);
+    let (fz0, fz1) = (ROOF_Z[0], ROOF_Z[1]);
+    let mut x = fx0;
+    let mut k = 0;
+    while x < fx1 - 0.01 {
+        let x1 = (x + PLANK_W).min(fx1);
+        let mut z = fz0 - (k % 3) as f32 * PLANK_L / 3.0;
+        let mut j = 0;
+        while z < fz1 {
+            let (a, b) = (z.max(fz0), (z + PLANK_L).min(fz1));
+            if b - a > 0.05 {
+                let hex = [PLANK_A, PLANK_B, PLANK_C][(k + j) % 3];
+                put(
+                    &mut out,
+                    [x, 0.0, a + 0.004, x1 - 0.012, 0.035, b - 0.004],
+                    hex,
+                );
+            }
+            z += PLANK_L;
+            j += 1;
+        }
+        x += PLANK_W;
+        k += 1;
+    }
+    let [rx0, rz0, rx1, rz1] = RUG;
+    put(&mut out, [rx0, 0.035, rz0, rx1, 0.043, rz1], CARPET);
+    for b in [
+        [rx0, rz0, rx1, rz0 + 0.08],
+        [rx0, rz1 - 0.08, rx1, rz1],
+        [rx0, rz0, rx0 + 0.08, rz1],
+        [rx1 - 0.08, rz0, rx1, rz1],
+    ] {
+        put(&mut out, [b[0], 0.043, b[1], b[2], 0.046, b[3]], GILT);
+    }
     let (tx, _) = WHEEL_TERMINALS[0];
     let (z0, z1) = (
         WHEEL_TERMINALS[0].1 - 1.4,
         WHEEL_TERMINALS[WHEEL_TERMINALS.len() - 1].1 + 1.0,
     );
-    let mut x = tx - 1.4;
-    let mut k = 0;
-    while x < WHEEL_HUB.0 {
-        let x1 = (x + 0.3).min(WHEEL_HUB.0);
-        let hex = if k % 2 == 0 { PLANK_A } else { PLANK_B };
-        put(&mut out, [x, 0.0, z0, x1 - 0.01, 0.035, z1], hex);
-        x += 0.3;
-        k += 1;
-    }
     put(
         &mut out,
         [tx - 0.55, 0.035, z0 + 0.4, tx + 0.45, 0.045, z1 - 0.4],
         CARPET,
     );
-    let m = slot_marquee();
-    let mut z = z1;
-    let mut k = 0;
-    while z < m[5] + 0.2 {
-        let hex = if k % 2 == 0 { PLANK_B } else { PLANK_A };
-        put(&mut out, [m[0], 0.0, z, m[3], 0.035, z + 0.29], hex);
-        z += 0.3;
-        k += 1;
+
+    // The roof's painted fascia along both eaves, gilt-edged, and the
+    // lamps: a steel shade on a rod down from the roof.
+    for z in [ROOF_Z[0] - ROOF_OVERHANG_M, ROOF_Z[1] + ROOF_OVERHANG_M] {
+        let y = roof_y(z);
+        let (xa, xb) = (fx0 - ROOF_OVERHANG_M, fx1 + ROOF_OVERHANG_M);
+        put(
+            &mut out,
+            [xa, y - 0.34, z - 0.05, xb, y + 0.04, z + 0.05],
+            SIGN_RED,
+        );
+        put(
+            &mut out,
+            [xa, y - 0.38, z - 0.07, xb, y - 0.34, z + 0.07],
+            GILT,
+        );
+        put(
+            &mut out,
+            [xa, y + 0.04, z - 0.07, xb, y + 0.08, z + 0.07],
+            GILT,
+        );
+    }
+    for (lx, ly, lz) in LAMPS {
+        put(
+            &mut out,
+            [
+                lx - 0.02,
+                ly + 0.2,
+                lz - 0.02,
+                lx + 0.02,
+                roof_y(lz),
+                lz + 0.02,
+            ],
+            STEEL,
+        );
+        put(
+            &mut out,
+            [
+                lx - 0.24,
+                ly + 0.06,
+                lz - 0.24,
+                lx + 0.24,
+                ly + 0.14,
+                lz + 0.24,
+            ],
+            SHADE,
+        );
+        put(
+            &mut out,
+            [lx - 0.1, ly + 0.14, lz - 0.1, lx + 0.1, ly + 0.22, lz + 0.1],
+            SHADE,
+        );
     }
 
     // The stand: a steel foot, a dark board behind the disc framed in gilt,
@@ -239,6 +361,7 @@ fn fixed_boxes() -> Boxes {
     );
 
     // The marquee over the slot row, gilt-edged.
+    let m = slot_marquee();
     put(&mut out, m, SIGN_RED);
     put(
         &mut out,
@@ -265,6 +388,191 @@ fn fixed_boxes() -> Boxes {
         GILT,
     );
     out
+}
+
+/// The roof's height over the floor at local `z`, metres: the eaves over the
+/// posts, the ridge midway, and on down over the overhang.
+fn roof_y(z: f32) -> f32 {
+    let mid = (ROOF_Z[0] + ROOF_Z[1]) * 0.5;
+    let half = (ROOF_Z[1] - ROOF_Z[0]) * 0.5;
+    ROOF_RIDGE_M - (ROOF_RIDGE_M - ROOF_EAVES_M) * (z - mid).abs() / half
+}
+
+/// A timber of `w` × `h` from `a` to `b`, its width level.
+fn beam(soups: &mut [Soup; depot::SURFACES.len()], a: Vec3, b: Vec3, w: f32, h: f32) {
+    let along = (b - a).normalize_or_zero();
+    let side = along.cross(Vec3::Y).normalize_or_zero() * (w * 0.5);
+    let up = side.cross(along).normalize_or_zero() * (h * 0.5);
+    let c = |p: Vec3, sx: f32, sy: f32| p + side * sx + up * sy;
+    let (tint, sf) = ([1.0; 3], Surface::Timber);
+    for (p, q) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        .iter()
+        .zip([(1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)].iter())
+    {
+        depot::quad(
+            soups,
+            sf,
+            [
+                c(a, p.0, p.1),
+                c(b, p.0, p.1),
+                c(b, q.0, q.1),
+                c(a, q.0, q.1),
+            ],
+            tint,
+            true,
+        );
+    }
+}
+
+/// The roof in the town's frame, in the photographed surfaces: the posts,
+/// the wall plates on them, a king-post truss over each pair, the purlins
+/// and the ridge beam across the trusses, and the corrugated sheets on top.
+fn roof_meshes() -> Vec<(Surface, Mesh)> {
+    let mut soups = depot::kit();
+    let wood = [1.0; 3];
+    for p in CASINO_ROOF
+        .iter()
+        .filter(|p| p.flags & sim_core::kit::DECOR == 0)
+    {
+        depot::cuboid(&mut soups, p.b, Surface::Timber, wood);
+    }
+    let (x0, x1) = (ROOF_X[0], ROOF_X[ROOF_X.len() - 1]);
+    let (z0, z1) = (ROOF_Z[0], ROOF_Z[1]);
+    let zr = (z0 + z1) * 0.5;
+    let e = ROOF_EAVES_M;
+    let (w, h) = (TIMBER_W, TIMBER_H);
+    for z in ROOF_Z {
+        depot::cuboid(
+            &mut soups,
+            [x0 - 0.2, e - h, z - w * 0.5, x1 + 0.2, e, z + w * 0.5],
+            Surface::Timber,
+            wood,
+        );
+    }
+    for x in ROOF_X {
+        // The tie beam, the king post, the rafters, two struts.
+        depot::cuboid(
+            &mut soups,
+            [x - w * 0.5, e - h, z0, x + w * 0.5, e, z1],
+            Surface::Timber,
+            wood,
+        );
+        depot::cuboid(
+            &mut soups,
+            [
+                x - w * 0.5,
+                e,
+                zr - w * 0.5,
+                x + w * 0.5,
+                ROOF_RIDGE_M - h,
+                zr + w * 0.5,
+            ],
+            Surface::Timber,
+            wood,
+        );
+        for (za, zq) in [(z0, (z0 + zr) * 0.5), (z1, (z1 + zr) * 0.5)] {
+            let a = Vec3::new(x, roof_y(za) - h * 0.5, za);
+            let r = Vec3::new(x, ROOF_RIDGE_M - h * 0.5, zr);
+            beam(&mut soups, a, r, w, h);
+            let foot = Vec3::new(x, e + 0.1, zr);
+            beam(
+                &mut soups,
+                foot,
+                Vec3::new(x, roof_y(zq) - h, zq),
+                w * 0.8,
+                h * 0.7,
+            );
+        }
+    }
+    for z in PURLINS_Z {
+        let y = roof_y(z) - 0.02;
+        depot::cuboid(
+            &mut soups,
+            [x0 - 0.3, y - 0.18, z - 0.07, x1 + 0.3, y, z + 0.07],
+            Surface::Timber,
+            wood,
+        );
+    }
+    depot::cuboid(
+        &mut soups,
+        [
+            x0 - 0.3,
+            ROOF_RIDGE_M - h,
+            zr - 0.09,
+            x1 + 0.3,
+            ROOF_RIDGE_M,
+            zr + 0.09,
+        ],
+        Surface::Timber,
+        wood,
+    );
+    // The sheets: one face a slope, both sides lit, and a cap on the ridge.
+    let (xa, xb) = (x0 - ROOF_OVERHANG_M, x1 + ROOF_OVERHANG_M);
+    for zo in [z0 - ROOF_OVERHANG_M, z1 + ROOF_OVERHANG_M] {
+        let (yo, yr) = (roof_y(zo), ROOF_RIDGE_M);
+        depot::quad(
+            &mut soups,
+            Surface::Sheet,
+            [
+                Vec3::new(xa, yo, zo),
+                Vec3::new(xa, yr, zr),
+                Vec3::new(xb, yr, zr),
+                Vec3::new(xb, yo, zo),
+            ],
+            depot::DEPOT_ROOF_TINT,
+            true,
+        );
+    }
+    depot::cuboid(
+        &mut soups,
+        [
+            xa,
+            ROOF_RIDGE_M - 0.02,
+            zr - 0.22,
+            xb,
+            ROOF_RIDGE_M + 0.1,
+            zr + 0.22,
+        ],
+        Surface::Steel,
+        depot::DEPOT_STEEL_TINT,
+    );
+    depot::finish(soups)
+}
+
+/// The way a seat facing `face` quarter turns faces in the world, radians
+/// about up in the rig's sense (`rotation_y`, 0 toward +Z).
+fn face_yaw(t: &Town, face: u8) -> f32 {
+    (face.wrapping_add(t.rot) & 3) as f32 * FRAC_PI_2
+}
+
+/// The seat whose spot (world) `x`, `z` stands on, if any.
+fn seat_at(t: &Town, x: f32, z: f32) -> Option<usize> {
+    (0..SEATS.len()).find(|&k| {
+        town::seat_world(t, k).is_some_and(|(sx, sz)| {
+            (sx - x) * (sx - x) + (sz - z) * (sz - z) < SEAT_SNAP_M * SEAT_SNAP_M
+        })
+    })
+}
+
+/// The way a sitter at world `x`, `z` faces: its seat's way, since the
+/// server puts a sitter's feet on its seat's spot.
+pub fn seat_yaw(t: &Town, x: f32, z: f32) -> Option<f32> {
+    seat_at(t, x, z).map(|k| face_yaw(t, SEATS[k].face))
+}
+
+/// Whether somebody other than this client sits in seat `k`, off the wire's
+/// `seated` bits.
+pub fn seat_taken(core: &client_core::core::ClientCore, k: usize) -> bool {
+    let t = &core.haven().town;
+    core.view.entities.iter().any(|(id, e)| {
+        *id != core.player_id
+            && e.seated
+            && seat_at(
+                t,
+                e.qx as f32 * sim_core::movement::POS_XZ_Q,
+                e.qz as f32 * sim_core::movement::POS_XZ_Q,
+            ) == Some(k)
+    })
 }
 
 /// The signs' letters, a little lit (`town_signs`' block font).
@@ -326,6 +634,20 @@ fn bulb_boxes() -> (Boxes, Boxes) {
         let x = m[0] + (m[3] - m[0]) * (i as f32 + 0.5) / 30.0;
         bulb(Vec3::new(x, m[4] + 0.1, m[2] - 0.06));
         bulb(Vec3::new(x, m[1] - 0.08, m[2] - 0.06));
+    }
+    // Along both eaves, under the fascia.
+    let (xa, xb) = (
+        ROOF_X[0] - ROOF_OVERHANG_M,
+        ROOF_X[ROOF_X.len() - 1] + ROOF_OVERHANG_M,
+    );
+    for (z, out) in [
+        (ROOF_Z[0] - ROOF_OVERHANG_M, -0.1),
+        (ROOF_Z[1] + ROOF_OVERHANG_M, 0.1),
+    ] {
+        for i in 0..EAVE_BULBS {
+            let x = xa + (xb - xa) * (i as f32 + 0.5) / EAVE_BULBS as f32;
+            bulb(Vec3::new(x, roof_y(z) - 0.2, z + out));
+        }
     }
     (even, odd)
 }
@@ -537,6 +859,14 @@ pub fn spawn(
             ..default()
         },
     );
+    // The roof, in the town's own photographed surfaces, lit both sides:
+    // the sheets are single faces seen from under and over.
+    for (surface, mesh) in roof_meshes() {
+        let mut m = depot::material(surface, &server);
+        m.double_sided = true;
+        m.cull_mode = None;
+        solid(&mut commands, mesh, m);
+    }
     let (even, odd) = bulb_boxes();
     let bulb = || StandardMaterial {
         base_color: Color::srgb(1.0, 0.95, 0.8),
@@ -544,7 +874,17 @@ pub fn spawn(
         ..default()
     };
     let (even_mat, odd_mat) = (materials.add(bulb()), materials.add(bulb()));
-    for (boxes, mat) in [(even, &even_mat), (odd, &odd_mat)] {
+    // The lamps' bulbs: one under each shade, steady.
+    let mut lamp_bulbs = Boxes::new();
+    for (x, y, z) in LAMPS {
+        lamp_bulbs.push(([x, y, z], [0.09, 0.07, 0.09], 0xfff1c8));
+    }
+    let lamp_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.95, 0.8),
+        emissive: LAMP_GLOW,
+        ..default()
+    });
+    for (boxes, mat) in [(even, &even_mat), (odd, &odd_mat), (lamp_bulbs, &lamp_mat)] {
         commands.spawn((
             WorldEntity,
             CasinoVisual,
@@ -556,6 +896,7 @@ pub fn spawn(
     commands.insert_resource(CasinoBulbs {
         even: even_mat,
         odd: odd_mat,
+        lamps: lamp_mat,
     });
 
     // The generated cabinets and terminals, each turned to face its player.
@@ -588,6 +929,16 @@ pub fn spawn(
             z,
             -FRAC_PI_2,
         );
+    }
+    // Every seat behind its sitter's feet, facing the way they do.
+    for seat in SEATS {
+        let yaw = seat.face as f32 * FRAC_PI_2;
+        let back = Quat::from_rotation_y(yaw) * Vec3::Z * seat_back_m(seat.kind);
+        let glb = match seat.kind {
+            SeatKind::Stool => STOOL_GLB,
+            SeatKind::Armchair => ARMCHAIR_GLB,
+        };
+        place(&mut commands, glb, seat.x - back.x, seat.z - back.z, yaw);
     }
 
     // The disc catches the yard's lamps a little, so it reads at night.
@@ -670,9 +1021,9 @@ pub fn spin(net: NonSend<Net>, mut q: Query<(&mut WheelDisc, &mut Transform)>) {
     }
 }
 
-/// The bulbs and the lamps: the lamps follow the dark as the yard's do; the
-/// bulbs glow all day, chase while the wheel turns, flash as it lands, and
-/// breathe otherwise.
+/// The bulbs and the lamps: the lamps burn low by day, under the roof, and
+/// follow the dark as the yard's do by night; the bulbs glow all day, chase
+/// while the wheel turns, flash as it lands, and breathe otherwise.
 pub fn lights(
     net: NonSend<Net>,
     time: Res<Time>,
@@ -686,9 +1037,15 @@ pub fn lights(
     let night = glow.as_ref().map_or(0.0, |g| g.night());
     let g = gain.0;
     for mut l in lamps.iter_mut() {
-        let want = LAMP_LUMENS * night * g;
+        let want = LAMP_LUMENS * (LAMP_DAY * (1.0 - night) + night * g);
         if (l.intensity - want).abs() > 1.0 {
             l.intensity = want;
+        }
+    }
+    if let Some(m) = materials.get_mut(&bulbs.lamps) {
+        let want = LAMP_GLOW * (0.4 * (1.0 - night) + NIGHT_SHARE * 2.0 * night * g);
+        if m.emissive != want {
+            m.emissive = want;
         }
     }
     let core = &net.session.core;

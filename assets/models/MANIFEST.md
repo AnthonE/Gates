@@ -1398,6 +1398,24 @@ each to its player.
 >
 > **bet_terminal** — "A single small betting terminal kiosk standing upright on a plain white background, three-quarter front view. A squat steel pedestal 60 centimetres wide, 60 centimetres deep and 110 centimetres tall, with a sloped control desk on top facing the viewer that carries a dark glass screen and a row of five big round arcade buttons coloured yellow, green, blue, purple and red, a coin slot and a small chrome tray on the front of the pedestal, a bolted foot plate. Dark grey painted steel with brass trim, scratched and chipped, rust at the bolts, a salvaged post-apocalyptic look. Exactly one terminal. No stool, no ground, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Dark grey painted steel with brass trim, scratched and chipped, rusty bolts, dark glass screen, five big round arcade buttons coloured yellow, green, blue, purple and red, no text, no letters, no numbers, no logos"
 
+## `site/casino_stool.glb`, `site/casino_armchair.glb` — the casino's seats, Meshy, 2026-10-21
+
+Same terms and pipeline as the slot machine: `meshy_gen.py` (nano-banana-pro
+→ meshy-t2 smart topology, single view) → `import_meshy.py` uniform →
+`ktx_pack.py --size 512`. Run one after the other, 24 credits each (balance
+871 → 823). A stool at every slot machine and wheel terminal and a lounge of
+armchairs facing the wheel (`render/casino.rs`, `town::SEATS`); both face +Z
+at their base, the seat 0.46 m up, where `Sitting_Idle_Loop` sits.
+
+| file | image task | mesh task | size (m) | import |
+|---|---|---|---|---|
+| `site/casino_stool.glb` | `01a15d59-c7f3` | `01a15d5b-40db` | 0.31 × 0.46 × 0.31 | ×0.613 uniform, fit by height; the delivery was 0.51 × 0.75 × 0.51 |
+| `site/casino_armchair.glb` | `01a15d5b-f413` | `01a15d5c-7412` | 0.86 × 0.86 × 0.71 | ×0.956 uniform, the seat cushion at 0.46 m |
+
+> **casino_stool** — "A single old casino stool standing upright on a plain white background, three-quarter view. A low round stool 45 centimetres tall: a thick round padded seat cushion 42 centimetres across and 10 centimetres deep, upholstered in worn deep red leather with a row of brass studs round its edge, on one short chrome steel column over a heavy round chrome foot 40 centimetres across. Scratched and dented chrome, rust at the foot, cracked and scuffed leather, a salvaged post-apocalyptic look. Exactly one stool. No backrest, no arms, no ground, no shadow, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Worn deep red leather seat cushion with brass studs round the edge, scratched dented chrome column and round foot, rust at the foot, no text, no logos"
+>
+> **casino_armchair** — "A single old casino lounge armchair on a plain white background, three-quarter front view. A low club armchair 75 centimetres wide, 75 centimetres deep and 85 centimetres tall, its seat cushion 45 centimetres off the ground, thick rounded padded arms, a padded rounded backrest, upholstered in worn deep red leather with brass studs along the arms and round the back, four short turned dark wooden legs. Cracked and scuffed leather, scratched wood, a salvaged post-apocalyptic look. Exactly one armchair. No ground, no shadow, no people, no text, no letters, no numbers, no logos, no scale bar."  ·  texture: "Worn deep red leather upholstery with brass studs along the arms and the back, cracked and scuffed, short turned dark wooden legs, no text, no logos"
+
 ## `held/` — guns v1: Rust's guns, their rounds, the rocket and C4 (Meshy, 2026-10-18)
 
 Thirteen items for guns v1 (`content/weapons.toml`), the batch-1 pipeline

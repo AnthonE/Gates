@@ -80,7 +80,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         // A syringe on someone else is a mouthful's pace: one a second.
         ActionMsg::Consume { .. } | ActionMsg::Drink | ActionMsg::Treat { .. } => Kind::Mouth,
         ActionMsg::Vend { .. } | ActionMsg::Shop { .. } => Kind::Move,
-        ActionMsg::Wheel { .. } | ActionMsg::Slots { .. } => Kind::Move,
+        ActionMsg::Wheel { .. } | ActionMsg::Slots { .. } | ActionMsg::Sit { .. } => Kind::Move,
         ActionMsg::Swipe { .. } => Kind::Move,
         // A deposit moves a pack's worth of items, like a trade.
         ActionMsg::Arc { .. } => Kind::Move,

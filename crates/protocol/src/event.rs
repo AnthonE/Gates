@@ -160,7 +160,7 @@ pub const RECIPE_BATCH: usize = 4;
 pub const RESEARCH_BATCH: usize = 4;
 
 /// Placed-piece records one sync message carries (a record is at most 214
-/// bits since v133 carries its id, its building's frame and its footprint;
+/// bits since v134 carries its id, its building's frame and its footprint;
 /// eleven keep the batch ≈ 296 B, under the message cap, and the assert at
 /// `PIECE_REC_BITS` holds it there). The join walk is drip-fed like the
 /// harvested-set sync.
@@ -1912,7 +1912,7 @@ pub enum EventMsg {
     },
     /// A building piece landed (broadcast — pieces are world facts like
     /// slot changes). The record is the sim's own `PieceRec`, with the
-    /// frame of the building it stands in (v133).
+    /// frame of the building it stands in (v134).
     PiecePlaced { rec: PieceRec, frame: Frame },
     /// One batch of the placed-piece walk (join sync / event-lane resync).
     /// `reset` clears the client's piece set first. `frames[i]` is
@@ -3296,7 +3296,7 @@ pub(crate) fn read_sock(r: &mut BitReader) -> Result<Sock, WireError> {
 
 /// One placed-piece record on the wire (`PIECE_REC_BITS` at most), shared
 /// by the placed broadcast and the sync batches, with the frame of the
-/// building it stands in (freeform W2, v133). A piece the grid names
+/// building it stands in (freeform W2, v134). A piece the grid names
 /// crosses its grid address and the far end finds its footprint from the
 /// frame (`sock::from_grid`); any other crosses its footprint and the far
 /// end files it under the cell its middle stands in (`build::anchor_cell`)
@@ -9770,7 +9770,7 @@ mod tests {
                 &mut buf
             ),
             Err(WireError::Range),
-            "loc past the piece store's (LOC_NONE, v133)"
+            "loc past the piece store's (LOC_NONE, v134)"
         );
         // Every four-bit loc names a deploy since v89 (the body slots),
         // so the value a piece reads as a triangle half is a slot here.
@@ -10282,6 +10282,14 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/casino.rs"),
         },
         Module {
+            file: "seat.rs",
+            src: include_str!("../../sim-core/src/seat.rs"),
+        },
+        Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -10615,7 +10623,7 @@ mod wire_domains {
             exempt: &[],
             min_members: 5,
             bits: FOOT_BITS,
-            // 4 = FOOT_TRI_RISER at v133 (freeform W2), the flight on a
+            // 4 = FOOT_TRI_RISER at v134 (freeform W2), the flight on a
             // triangle; `support::on_lattice` refuses past it.
             live_max: 4,
         },
@@ -11156,7 +11164,7 @@ mod wire_domains {
             // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
             // `craft::CLASS_*`. 23 -> 24 at v123: `CASINO_CODE_BITS` over
             // `casino::REFUSE_CA_*`. 24 -> 25 at v132: `BOOST_KNOB_BITS`
-            // over `works::KNOB_*`. 25 -> 26 at v133: `FOOT_BITS` over
+            // over `works::KNOB_*`. 25 -> 26 at v134: `FOOT_BITS` over
             // `sock::FOOT_*`.
             DOMAINS.len(),
             26,
@@ -11337,7 +11345,7 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
-            // A piece record's freeform half (v133): its id, bounded by
+            // A piece record's freeform half (v134): its id, bounded by
             // `build::MAX_PIECE_ID`, and its building, `MAX_BUILDINGS` —
             // both const-asserted equal to their widths; a frame's origin
             // and band, signed magnitudes refused past their widths at

@@ -5284,6 +5284,20 @@ impl ClientCore {
             && !self.dead
     }
 
+    /// Is the body this client looks through sitting in a casino seat (wire
+    /// v130)? The server's word off this body's own record, while the
+    /// predicted body still stands where that record put it: the first step
+    /// stands a sitter up (`sim_core::seat`), and the eye need not wait a
+    /// round trip to hear so.
+    pub fn seated(&self) -> bool {
+        if self.spectating {
+            return self.spectate_view().is_some_and(|v| v.seated);
+        }
+        self.view.get(self.player_id).is_some_and(|e| {
+            e.seated && e.qx == self.predict.body.qx && e.qz == self.predict.body.qz
+        })
+    }
+
     /// Advance real time: run the fixed client ticks that elapsed, each
     /// generating one input frame and stepping prediction. Returns steps.
     ///

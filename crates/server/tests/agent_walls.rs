@@ -268,6 +268,7 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Shop { .. } => "shop",
         ActionMsg::Wheel { .. } => "wheel",
         ActionMsg::Slots { .. } => "slots",
+        ActionMsg::Sit { .. } => "sit",
         ActionMsg::Swipe { .. } => "swipe",
         ActionMsg::Pick { .. } => "pick",
         ActionMsg::Arc { .. } => "arc",

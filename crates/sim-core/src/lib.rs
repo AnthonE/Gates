@@ -66,6 +66,7 @@ pub mod research;
 pub mod rewind;
 pub mod rng;
 pub mod roster;
+pub mod seat;
 pub mod sentry;
 pub mod shop;
 pub mod skin;

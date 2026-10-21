@@ -43,7 +43,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 183] = [
+pub const FIXTURES: [&str; 184] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -324,7 +324,9 @@ pub const FIXTURES: [&str; 183] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
-    // The lattice placement verbs (v133): a site on a standing building,
+    // The casino's seats (v130): a seat past 8 bits' half.
+    "action_sit.bin",
+    // The lattice placement verbs (v134): a site on a standing building,
     // and a foundation placed free.
     "action_place_at.bin",
     "action_place_free.bin",
@@ -696,6 +698,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         wounded: false,
         // Upright, from no `rng` call, for the same reason (crouch, v83).
         crouched: false,
+        // Standing, from no `rng` call, for the same reason (seats, v130).
+        seated: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
         // Empty-handed and unlit, from no `rng` call, for the reason
@@ -821,6 +825,13 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // **true** — on the at-rest body, a third entity, so no two state bits
     // share a record and a swap between any pair cannot pass.
     entities[1].crouched = true;
+    // One sitter (v130), so the absolute encoder's `seated` bit is pinned at
+    // **true** — a fourth entity, drawn after the other three so none of
+    // their fields reshuffle, no state bit beside it, and at rest, where
+    // the absolute record carries the bit.
+    entities[3] = rng_entity(&mut rng, 103);
+    entities[3].qvy = 0;
+    entities[3].seated = true;
     // Two hands on the absolute path, and they are two different pins.
     // id 101 carries an item id with the flame OFF and id 100 an id with
     // the flame ON, so neither the field nor the bit can be read as the
@@ -849,7 +860,7 @@ pub fn snapshot_keyframe() -> SnapshotCase {
         baseline: [EntityState::default(); MAX_SNAPSHOT_ENTITIES],
         baseline_len: 0,
         entities,
-        entity_len: 3,
+        entity_len: 4,
     }
 }
 
@@ -933,6 +944,12 @@ pub fn snapshot_delta() -> SnapshotCase {
     baseline[4] = rng_entity(&mut rng, 6);
     entities[5] = baseline[4];
     entities[5].crouched = true;
+    // id 7: sat down this snapshot (v130) — the delta encoder's `seated` bit
+    // at **true** as a transition, on a body carrying no other state bit.
+    baseline[5] = rng_entity(&mut rng, 7);
+    baseline[5].qvy = 0;
+    entities[6] = baseline[5];
+    entities[6].seated = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 3_000,
@@ -945,9 +962,9 @@ pub fn snapshot_delta() -> SnapshotCase {
         },
         removed: &[90, 91],
         baseline,
-        baseline_len: 5,
+        baseline_len: 6,
         entities,
-        entity_len: 6,
+        entity_len: 7,
     }
 }
 
@@ -1663,7 +1680,7 @@ pub fn event_piece_placed() -> (PieceRec, Frame) {
         // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
         // encoder that never wrote the field would match.
         hp: 0x9C35,
-        // Every bit-field of v133's own nonzero: the id, the building.
+        // Every bit-field of v134's own nonzero: the id, the building.
         id: 0x2A_5A5A,
         bld: 0xA5C,
         sock: sim_core::sock::from_grid(330, 677, 341, 682, sim_core::build::LOC_EDGE_ZLO)
@@ -1890,7 +1907,7 @@ pub fn event_deploy_placed() -> DeployRec {
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     // The loc walks the store's whole four-bit domain (wire v89: two edges
-    // and fourteen body slots; v133: slot 13 an edge the grid cannot name),
+    // and fourteen body slots; v134: slot 13 an edge the grid cannot name),
     // so every value reaches the bytes.
     let recs = core::array::from_fn(|i| {
         let mut rec = DeployRec {
@@ -2161,6 +2178,11 @@ pub fn action_wheel() -> (u8, u16) {
 /// A lever (v123): the last machine at the top multiplier.
 pub fn action_slots() -> (u8, u8) {
     (3, sim_core::casino::SLOT_MULT_MAX)
+}
+
+/// A seat (v130): the last one, so a narrowed field drops a bit.
+pub fn action_sit() -> u8 {
+    (sim_core::town::SEATS.len() - 1) as u8
 }
 
 /// The wheel turns (v123): a round past 16 bits, the last segment.
@@ -3115,7 +3137,7 @@ pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
     (9, 0, 19, 4, 0)
 }
 
-/// A lattice placement (v133): a triangle flight on the top storey of a
+/// A lattice placement (v134): a triangle flight on the top storey of a
 /// building past the first byte of ids, its centre's coefficients mixed in
 /// sign so a lost bias or a swapped pair moves the bytes, and a turn that
 /// needs every direction bit.
@@ -3129,7 +3151,7 @@ pub fn action_place_at() -> (u16, u16, u8, sim_core::sock::Sock) {
     )
 }
 
-/// A free foundation (v133): the triangle, its origin west and north of
+/// A free foundation (v134): the triangle, its origin west and north of
 /// the world's zero so both signs are live, a yaw past 32 768 and an asked
 /// band negative and nonzero (`action_place`'s reasons).
 pub fn action_place_free() -> (u16, i32, i32, u16, bool, i8) {

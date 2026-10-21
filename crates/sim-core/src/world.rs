@@ -1568,6 +1568,10 @@ pub struct Player {
     /// memory. Not saved and not hashed: a restart forgets it, except on a
     /// body restored dead, whose corpse marks itself.
     pub death_at: Option<(i32, i32)>,
+    /// The casino seat this body sits in (`seat.rs`), one past its index in
+    /// `town::SEATS`; 0 standing. Hashed; not saved: a restart, a death, a
+    /// sleep or a wound stands everybody up.
+    pub seat: u8,
 }
 
 impl Player {
@@ -1674,6 +1678,7 @@ impl Default for Player {
             born: 0,
             died: 0,
             death_at: None,
+            seat: 0,
         }
     }
 }
@@ -2253,6 +2258,12 @@ pub enum Command {
         id: u32,
         machine: u8,
         mult: u8,
+    },
+    /// Sit in casino seat `seat`, or stand up for `seat::SEAT_NONE`
+    /// (`seat.rs`). The sim checks the reach and that the seat is free.
+    Sit {
+        id: u32,
+        seat: u8,
     },
     /// Swipe a keycard at one of the ziggurat's doors, or pull its inside
     /// lever (`monument.rs`). The sim checks reach and the card.
@@ -5211,6 +5222,7 @@ impl World {
                     // Not even for a dead save: a wipe's survivor is one
                     // (`server::wipe::survivor`), and its body is nowhere.
                     death_at: None,
+                    seat: 0,
                 };
                 craft::rearm(
                     &self.craft,
@@ -6581,6 +6593,12 @@ impl World {
                     );
                 }
             }
+            Command::Sit { id, seat } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let town = self.haven.town;
+                    crate::seat::sit(&town, &mut self.players, slot, seat);
+                }
+            }
             Command::Shop { id, key, act } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let reach = self
@@ -7450,6 +7468,13 @@ impl World {
             if !self.players[i].active {
                 continue;
             }
+            // Only a live, awake, standing-up body sits (`seat.rs`).
+            {
+                let p = &mut self.players[i];
+                if p.dead || p.sleeping || p.wounded {
+                    p.seat = 0;
+                }
+            }
             // A body on the death screen is still a body: it falls and it
             // settles, so a player killed off a roof lands on the ground
             // the screen's next respawn will not be measured from. What it
@@ -7660,6 +7685,7 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
+            crate::seat::stand_if_moved(&mut self.players[i], &falling);
             if self.fall(i, falling) {
                 continue;
             }
@@ -8815,6 +8841,7 @@ impl World {
             h.update(&p.assist_by.to_le_bytes());
             h.update(&p.assist_ticks.to_le_bytes());
             h.update(&wb);
+            h.update(&[p.seat]);
             for s in p.inv.iter() {
                 h.update(&stack_bytes(s));
             }
