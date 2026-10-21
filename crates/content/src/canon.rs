@@ -340,6 +340,14 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.hear_m.strike);
         h.u(m.hear_m.blast);
         h.stacks(&m.drops);
+        // A bred brain decides as much as the numbers above, so it replays
+        // under its own text. Absent folds nothing: a set with no genome
+        // hashes as it did.
+        if let Some(g) = &m.genome {
+            h.s("genome");
+            h.s(g.trim());
+            h.u(m.genome_tier.unwrap_or(crate::bake::GENOME_TIER_DEFAULT));
+        }
     }
 
     // The fel tiers move every row above while they hold, so they are hashed

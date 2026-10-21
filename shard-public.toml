@@ -158,6 +158,10 @@ siwe_domains = "game.elopros.com, elopros.com"
 # the parser refuses everywhere else).
 status_addr = "127.0.0.1:8431"
 
+# The companion (companion.rs), served at https://game.elopros.com/gates/team/
+# by ops/game-elopros-status.nginx.conf and at elopros.com/games/gates/team/.
+companion_addr = "127.0.0.1:8434"
+
 # ── the ticket door ──────────────────────────────────────────────────────────
 #
 # **COMMENTED OUT, AND THAT IS THE LIVE STATE: this shard checks no ticket.**

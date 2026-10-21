@@ -30,6 +30,7 @@ pub mod fmath;
 pub mod footprint;
 pub mod frame;
 pub mod gather;
+pub mod genome;
 pub mod grounditem;
 pub mod heli;
 pub mod input;

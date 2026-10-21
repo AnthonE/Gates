@@ -48,16 +48,20 @@ pub enum Section {
     /// A Claude-minded buddy that plays beside you, run by the platform
     /// (scry-forge `meter/buddy.py`, `ops/buddy/runner.py`).
     Buddies,
+    /// The companion page, Gates' Rust+ (`server::companion`): your team,
+    /// team chat and raid alerts from a phone.
+    Team,
 }
 
 impl Section {
     /// In the reference's own order, which is also the order of how often a
     /// player wants them.
-    pub const ALL: [Section; 4] = [
+    pub const ALL: [Section; 5] = [
         Section::News,
         Section::Store,
         Section::Workshop,
         Section::Buddies,
+        Section::Team,
     ];
 
     /// The nav label. Overridable by the manifest ([`Section::label`]) so the
@@ -68,6 +72,7 @@ impl Section {
             Section::Store => "ITEM STORE",
             Section::Workshop => "WORKSHOP",
             Section::Buddies => "BUDDIES",
+            Section::Team => "TEAM APP",
         }
     }
 
@@ -104,6 +109,11 @@ impl Section {
                  THE GATE, teams up and plays beside you, and only thinks while \
                  you're on."
             }
+            Section::Team => {
+                "Your team away from the game: where everyone is on the map, team \
+                 chat, and an alert when your base takes damage. Sign in with the \
+                 wallet you play with - nothing to pair."
+            }
         }
     }
 
@@ -127,6 +137,10 @@ impl Section {
                 "opens in the launcher: a buddy is set up and paid for there, and a \
                  game must never take a payment in its own window"
             }
+            Section::Team => {
+                "opens in the launcher; it is a web page, so it also works from a \
+                 phone with the game closed"
+            }
         }
     }
 
@@ -137,6 +151,7 @@ impl Section {
             Section::Store => &m.store,
             Section::Workshop => &m.workshop,
             Section::Buddies => &m.buddies,
+            Section::Team => &m.team,
         }
     }
 

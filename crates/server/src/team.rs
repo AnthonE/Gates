@@ -297,6 +297,11 @@ impl Teams {
         }
     }
 
+    /// The leader of `id`'s team, 0 for none.
+    pub fn leader_of(&self, id: u32) -> u32 {
+        self.index_of(id).map_or(0, |i| self.teams[i].leader)
+    }
+
     fn index_of(&self, id: u32) -> Option<usize> {
         if id == 0 {
             return None;
