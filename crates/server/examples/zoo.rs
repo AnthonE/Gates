@@ -71,12 +71,10 @@ mod rig;
 use server::agent::combat::Temperament;
 use server::agent::hands::Preset;
 use server::explorer::SurvivorOpts;
-use server::mind::{Mind, MindConfig};
-use sim_core::brain::{wolf_shape, Nets, NET_CHARGE, NO_TARGET, WOLF_NET_IN, WOLF_NET_PREFIX};
+use sim_core::brain::{wolf_shape, Nets, NET_CHARGE, WOLF_NET_IN, WOLF_NET_PREFIX};
 use sim_core::genome::{Genome, Net, TEXT_MAX};
-use sim_core::limits::{HOTBAR_SLOTS, MAX_MOBS, TICK_HZ};
-use sim_core::mob::{guard_site_of, kind_of, pack_of, MOB_WOLF};
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::limits::TICK_HZ;
+use sim_core::mob::MOB_WOLF;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -217,144 +215,48 @@ fn charge_share(g: &Genome, probes: &[[f32; WOLF_NET_IN]]) -> f32 {
     charges as f32 / probes.len().max(1) as f32
 }
 
-/// The first free pack with at least three slots: not a guard, the same
-/// pack. Its first `n` slots are the bout's wolves.
-fn free_pack(n: usize) -> Vec<usize> {
-    let wolves: Vec<usize> = (0..MAX_MOBS)
-        .filter(|&s| kind_of(s) == MOB_WOLF && guard_site_of(s).is_none())
-        .collect();
-    for &s in &wolves {
-        let Some(p) = pack_of(s) else { continue };
-        let mates: Vec<usize> = wolves
-            .iter()
-            .copied()
-            .filter(|&o| pack_of(o) == Some(p))
-            .collect();
-        if mates.len() >= 3 {
-            return mates.into_iter().take(n).collect();
-        }
-    }
-    panic!("the roster has no free pack of three");
-}
-
 /// One bout, with `genome` driving the pack (or the rule table, `None`)
 /// and `tactics` the agent's fights (or the sum, `None`).
 fn play(b: &Bout, genome: Option<&Genome>, tactics: Option<&Genome>) -> Outcome {
     let content = common::content();
-    let me = rig::ID + 2 * b.seed;
-    let mind = Mind::inline(rig::Sentry, MindConfig::default()).unwrap();
     let opts = SurvivorOpts {
         skill: b.preset.skill(),
         temperament: b.temperament,
         tactics: tactics.copied(),
         ..SurvivorOpts::default()
     };
-    let mut a = rig::Arena::seated(opts, mind, true, me, rig::arena_ground(), false);
-    // The island plays at the medium tier, and the brain drives from it.
-    let medium = a.shard.world.mob.tiers[1];
-    a.shard.world.mob.tiers[0] = medium;
+    let (item, rounds) = GEARS[b.gear];
+    let ammo = rounds.map(|(r, n)| {
+        let mut s = common::stack(&content, r);
+        s.count = n;
+        s
+    });
     let mut nets = Nets::default();
     if let Some(g) = genome {
         nets.install(MOB_WOLF, *g, 0);
     }
-    *a.shard.world.nets = nets;
-    // The roster enrols on the first armed tick; then it is cleared, and
-    // nothing hatches until the pack is placed by hand.
-    a.step();
-    for m in a.shard.world.mobs.m.iter_mut() {
-        m.alive = false;
-        m.homed = false;
-    }
-    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
-    let (item, rounds) = GEARS[b.gear];
-    let (arm, ammo) = (
-        common::stack(&content, item),
-        rounds.map(|(r, n)| {
-            let mut s = common::stack(&content, r);
-            s.count = n;
-            s
-        }),
-    );
-    a.stage(me, |p| {
-        for s in p.inv.iter_mut() {
-            *s = Default::default();
-        }
-        p.inv[0] = arm;
-        if let Some(s) = ammo {
-            p.inv[HOTBAR_SLOTS + 3] = s;
-        }
-        p.hp = p.hp_max;
-    });
-    a.step();
-
-    let at = a.player(me).body;
-    let (fx, fz) = sim_core::yaw_dir(b.bearing);
-    let (cx, cz) = (
-        at.qx as f32 * POS_XZ_Q + fx * b.dist_m,
-        at.qz as f32 * POS_XZ_Q + fz * b.dist_m,
-    );
-    let hp = a.shard.world.mob_now().def(MOB_WOLF).hp;
-    let slots = free_pack(b.pack);
-    for (k, &s) in slots.iter().enumerate() {
-        // Side by side across the line to the agent, two metres apart.
-        let side = k as f32 * 2.0 - (slots.len() - 1) as f32;
-        let body = Body::at(common::SEED, &a.haven, cx - fz * side, cz + fx * side);
-        let m = &mut a.shard.world.mobs.m[s];
-        m.homed = true;
-        m.alive = true;
-        m.hp = hp;
-        m.body = body;
-        m.home_qx = body.qx;
-        m.home_qz = body.qz;
-        m.respawn_at = u64::MAX;
-        m.state = sim_core::brain::AiState::Idle;
-        m.state_until = 0;
-        m.target = NO_TARGET;
-        m.roused_until = 0;
-        m.calm_until = 0;
-        m.tries = 0;
-        m.awake = false;
-        m.pick = 0;
-        m.pressed_at = 0;
-        m.path.clear();
-    }
-
-    let mut ticks = 0;
-    while ticks < LIMIT_TICKS {
-        let p = a.player(me);
-        if p.wounded || p.dead {
-            break;
-        }
-        if slots.iter().all(|&s| !a.shard.world.mobs.m[s].alive) {
-            break;
-        }
-        a.step();
-        ticks += 1;
-    }
-    let p = a.player(me);
-    let downed = p.wounded || p.dead;
-    let dealt = if downed {
-        1.0
-    } else {
-        1.0 - p.hp as f32 / p.hp_max.max(1) as f32
+    let pack = rig::Pack {
+        n: b.pack,
+        dist_m: b.dist_m,
+        bearing: b.bearing,
+        limit: LIMIT_TICKS,
+        always: None,
     };
-    let (mut dead, mut lost) = (0, 0u32);
-    for &s in &slots {
-        let m = &a.shard.world.mobs.m[s];
-        if !m.alive {
-            dead += 1;
-            lost += hp as u32;
-        } else {
-            lost += hp.saturating_sub(m.hp) as u32;
-        }
-    }
+    let (_, r) = rig::pack_bout(
+        opts,
+        rig::ID + 2 * b.seed,
+        common::stack(&content, item),
+        ammo,
+        pack,
+        nets,
+    );
     Outcome {
-        downed,
-        wolves_dead: dead,
-        pack: slots.len() as u32,
-        dealt,
-        taken: lost as f32 / (hp as u32 * slots.len() as u32).max(1) as f32,
-        ticks,
+        downed: r.downed,
+        wolves_dead: r.wolves_dead,
+        pack: r.pack,
+        dealt: r.hp_lost,
+        taken: r.pack_lost,
+        ticks: r.ticks,
     }
 }
 
@@ -859,8 +761,11 @@ mod agent {
 
     /// The held-out table: the sum against the bred brain, foe by foe,
     /// the aimbot among them as the ceiling.
-    fn bench(g: &Genome, n: usize, wolves: &Genome, threads: usize) {
-        let mut fights: Vec<Fight> = (1..=n as u32).map(|s| fight_of(s, true)).collect();
+    /// Held-out fights are seeds `from..from + n`: 1 by default, below the
+    /// training and confirm ranges; `--held-from 3001` is a second set
+    /// nothing has looked at.
+    fn bench(g: &Genome, n: usize, from: u32, wolves: &Genome, threads: usize) {
+        let mut fights: Vec<Fight> = (from..from + n as u32).map(|s| fight_of(s, true)).collect();
         for (k, gear) in [Gear::ROCK, Gear::SPEAR].into_iter().enumerate() {
             for (j, dist) in [5.0, 15.0, 30.0].into_iter().enumerate() {
                 for seed in 0..4u32 {
@@ -949,6 +854,7 @@ mod agent {
         let (mut gens, mut kids, mut batch_n, mut confirm, mut bases) =
             (100usize, 15usize, 48usize, 192usize, 32usize);
         let (mut screen, mut held, mut seed, mut z) = (4096usize, 192usize, 1u64, 2.0f32);
+        let mut held_from = 1u32;
         let mut threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         let (mut from, mut bench_only, mut wolves) = (None, None, None);
         let tactics = |s: Option<String>| -> Genome {
@@ -970,6 +876,7 @@ mod agent {
                 "--bases" => bases = num(),
                 "--screen" => screen = num(),
                 "--held-out" => held = num(),
+                "--held-from" => held_from = num() as u32,
                 "--seed" => seed = num() as u64,
                 "--threads" => threads = num().max(1),
                 "--z" => {
@@ -990,7 +897,7 @@ mod agent {
         }
         let wolves = wolves.unwrap_or_else(content_wolves);
         if let Some(g) = bench_only {
-            bench(&g, held, &wolves, threads);
+            bench(&g, held, held_from, &wolves, threads);
             return;
         }
         let started = Instant::now();
@@ -1062,6 +969,6 @@ mod agent {
             );
         }
         println!("\ngenome ({} mutations): {}", parent.len(), text(&parent));
-        bench(&parent, held, &wolves, threads);
+        bench(&parent, held, held_from, &wolves, threads);
     }
 }
