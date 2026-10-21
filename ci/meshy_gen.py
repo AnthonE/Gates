@@ -35,7 +35,8 @@ them -- which **forces the meshy-7.1 path**, because `multi-image-to-3d`
 refuses smart-topology outright.
 
 The key is read from `$MESHY_API_KEY` and is never written to disk -- not
-into the sidecar, not into a log line.
+into the sidecar, not into a log line. Unset, no header is sent: a cloud
+session's network secret adds it on the way out.
 
 ⚠ **`credits` in the sidecar is a balance delta, so it is only true for a
 run that had the account to itself.** Two of these running at once each
@@ -78,16 +79,16 @@ TIMEOUT_S = 1200
 
 
 def key():
-    k = os.environ.get("MESHY_API_KEY", "").strip()
-    if not k:
-        sys.exit("MESHY_API_KEY is not set")
-    return k
+    """The key, or None when a network secret on the session's proxy adds
+    the header itself (a cloud session never sees the key)."""
+    return os.environ.get("MESHY_API_KEY", "").strip() or None
 
 
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(API + path, data=data, method=method)
-    req.add_header("Authorization", "Bearer " + key())
+    if key():
+        req.add_header("Authorization", "Bearer " + key())
     if data:
         req.add_header("Content-Type", "application/json")
     try:
@@ -149,6 +150,10 @@ def main():
     ap.add_argument("--ref", action="append", default=[],
                     help="reference image file (repeatable, max 5): stage 1 "
                          "becomes image-to-image")
+    # Shape only: a rock drawn in the ground's own material
+    # (`render/boulders.rs`) never reads the file's maps.
+    ap.add_argument("--no-texture", action="store_true",
+                    help="geometry only, no texture stage")
     ap.add_argument("--resume-image", help="skip stage 1, use this task id")
     ap.add_argument("--resume-mesh", help="skip stage 2, use this task id")
     a = ap.parse_args()
@@ -194,10 +199,12 @@ def main():
         mesh_id = a.resume_mesh
     else:
         common = {
-            "should_texture": True,
-            "enable_pbr": True,
-            "texture_resolution": "2k",
-            **({"texture_prompt": a.mesh_prompt} if a.mesh_prompt else {}),
+            **({"should_texture": False} if a.no_texture else {
+                "should_texture": True,
+                "enable_pbr": True,
+                "texture_resolution": "2k",
+                **({"texture_prompt": a.mesh_prompt} if a.mesh_prompt else {}),
+            }),
             "auto_size": True,
             "origin_at": "bottom",
             **({"target_polycount": a.tris} if a.tris else {}),
