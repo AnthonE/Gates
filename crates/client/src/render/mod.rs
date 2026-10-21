@@ -1832,8 +1832,14 @@ impl Plugin for GatesRenderPlugin {
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
-                    // The prompt, the compass tape and its marks.
-                    (hud::prompt, hud::compass, hud::death_mark),
+                    // The centre prompt, the compass tape, then the marks
+                    // riding under it.
+                    (
+                        hud::prompt,
+                        hud::compass,
+                        hud::compass_pins,
+                        hud::death_mark,
+                    ),
                     // The netcode readout under the build stamp. Reads the
                     // predictor's own counters, which until now were computed
                     // every snapshot and displayed nowhere — see `NetLine`.
@@ -1886,7 +1892,7 @@ impl Plugin for GatesRenderPlugin {
                         // their rows arrive, lit by their state.
                         (works::spawn, works::light).chain(),
                         // Speakers, stones and dials (`ARC.md` F5–F7).
-                        (lore::spawn, lore::dials, lore::carve).chain(),
+                        (lore::spawn, lore::dials, lore::carve, lore::offer_marks).chain(),
                     ),
                     (hud::pad_overlay, hud::lift_announce),
                 )

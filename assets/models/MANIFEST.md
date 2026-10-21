@@ -1092,7 +1092,7 @@ with `ci/prop_kit.py sheet <names…>`.
 | files | what |
 |---|---|
 | `deploy/furnace`, `recycler`, `research_table`, `workbench2`, `workbench3` | the deployables that were cuboids |
-| `deploy/door`, `deploy/door_locked` | one geometry, two surface sets; `build_kit` lays the locked material on the door's mesh |
+| `deploy/door` | the wooden door (the metal door was its geometry under sheet metal until §Locks and the metal door) |
 | `held/metal_hatchet`, `metal_pickaxe`, `metal_spear`, `satchel_charge`, `bandage`, `medkit`, `berries`, `mushrooms`, `corn`, `raw_meat`, `cooked_meat`, `burnt_meat`, `green_keycard`, `blue_keycard`, `red_keycard` | held items that drew the stand-in tool |
 | `prop/death_bag` | the death backpack, centred like the cuboid it replaced |
 | `prop/crate_green`, `crate_blue`, `crate_elite` | the ziggurat's keycard crates (`props::TIER_CRATE_GLB`) |
@@ -1441,3 +1441,29 @@ ball; the rest are saguaros (`props::CACTUS_GLB`).
 |---|---|---|---|---|
 | `prop/cactus_saguaro.glb` | 2,559 | 1.41 × 3.60 × 0.49 (trunk ≈ `CACTUS_R_M`) | `01a1522a-31db-73e8-97e8-d30f66f0a68e` | `01a1522a-fbfe-72e0-b34d-dd672d3c2b67` |
 | `prop/cactus_ball.glb` | 1,212 | 0.62 × 0.60 × 0.62 (`BALL_CACTUS_TOP_M`) | `01a1522a-320a-7087-97ba-b7168bad2779` | `01a1522a-ae4a-7228-b011-275372bead61` |
+
+## Locks and the metal door — Meshy, 2026-10-21
+
+The code lock and key lock drew the prop kit's boxes, and the metal door was
+the wooden door's planks under a sheet-metal material. Same terms as
+§Roadside. `meshy_gen.py` (nano-banana-pro → meshy-t2 for the locks;
+`--multiview` → meshy-7.1 for the door, whose back is seen from inside every
+base) → `import_meshy.py` → `ktx_pack.py` (512 for the locks, 1024 for the
+door). The locks keep the generator's size (it was right: 0.10 × 0.18 and
+0.07 × 0.16 m) and are the held items, the icons and the lock bolted on a
+door or box (`structures::LOCK_ASSET`). The door is `--turn=y-90 --fit-axes`
+onto the door's row: hinge at −Z like `door.glb`, and its 24 cm of handle,
+sheet and back frame pressed to the row's 12 cm (x0.51; the sheet itself is
+8 mm). 87 credits for the three.
+
+| file | tris | size (m) | image | mesh |
+|---|---|---|---|---|
+| `held/code_lock.glb` | 2,910 | 0.10 × 0.18 × 0.06 | `01a15d54-bbeb-70a2-8dd2-9b8ae2e40e58` | `01a15d55-35f5-7466-8e18-8569dbc7deef` |
+| `held/key_lock.glb` | 3,202 | 0.07 × 0.16 × 0.09 | `01a15d54-c3a3-74b4-affb-c52a89631ef2` | `01a15d55-3f83-72b5-8b4c-0c609bbb3630` |
+| `deploy/door_metal.glb` | 5,173 | 0.12 × 2.20 × 1.20 | `01a15d54-c9dc-73e5-9100-6793130b1d83` (3 views) | `01a15d55-6f82-724e-8b0d-6972a62f83a8` |
+
+> **code_lock** — "A single heavy-duty electronic keypad lock for a door on a plain white background, three-quarter front view. A rugged upright rectangular housing of dark gunmetal steel, 11 centimetres wide, 18 centimetres tall and 5 centimetres deep, with chamfered edges and a thick faceplate fixed by four hex bolts at its corners. Near the top, one small round indicator light behind a domed clear lens in a raised steel bezel, beside a narrow dark recessed display window. Below it, a grid of twelve chunky square rubber buttons in three columns and four rows, worn grey with blank faces, inside a raised protective lip. A short armoured cable conduit entering the bottom edge. Scratched paint worn to bare steel on the edges, grime in the seams, light rust at the bolts. Real, photographed in soft daylight. Exactly one lock. No door, no wall, no ground, no hands, no text, no numbers, no letters, no logos, no scale bar."  ·  texture: "Dark gunmetal painted steel scratched to bare metal on the edges, worn grey rubber keypad buttons with blank faces, clear domed indicator lens, dark display glass, rusty hex bolts, grime in the seams, no text, no numbers, no letters, no logos"
+>
+> **key_lock** — "A single heavy steel hasp and padlock for a door on a plain white background, three-quarter front view. A thick flat rectangular steel hasp plate 7 centimetres wide and 17 centimetres tall with rounded corners, fixed by four large round bolt heads, with a folded steel staple loop standing out from its lower half. Hanging through the staple, one chunky laminated steel padlock 6 centimetres wide, 6 centimetres tall and 3 centimetres thick, its body made of stacked steel plates riveted together, a thick U-shaped hardened steel shackle, and a round brass keyhole on its front face. Scratched dull steel with rust spots and grime, worn and heavily used. Real, photographed in soft daylight. Exactly one hasp and one padlock. No door, no wall, no key, no chain, no ground, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Scratched dull grey steel with rust spots and grime, laminated padlock plates with rivets, polished hardened steel shackle, brass keyhole, rusty bolt heads, no text, no letters, no logos"
+>
+> **door_metal** — "A single heavy scrap-built steel door, flat and upright, on a plain white background. One rectangular door leaf 120 centimetres wide, 220 centimetres tall and 8 centimetres thick. Built from four mismatched riveted steel sheet panels, one of them corrugated, welded over a rectangular frame of angle iron, with a horizontal steel crossbar across the middle and rows of round rivet heads along every seam. Three heavy welded steel barrel hinges on the left edge. On the right side at waist height, a thick bent steel bar pull handle, and a small square steel mounting plate just above it. Faded industrial paint in dull grey-green, chipped and scratched to bare steel, orange rust streaks running down from the rivets, weld scars and dents. Real, photographed in soft daylight. Exactly one door. No door frame, no wall, no ground, no people, no plants, no window, no text, no numbers, no letters, no logos, no scale bar."  ·  texture: "Faded grey-green industrial paint over riveted sheet steel, chipped and scratched to bare metal, orange rust streaks from the rivets, one corrugated panel, weld scars, dents, grime, no text, no numbers, no letters, no logos"

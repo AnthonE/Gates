@@ -82,6 +82,27 @@ pub struct Carving {
 #[derive(Component)]
 pub struct DialNotch(pub u8, pub u8);
 
+/// The mark over a speaker with an offer this player can still take
+/// (`ui::offer::open_count`): a lit gold diamond turning over their head,
+/// shown while there is something to claim or buy and gone once it is
+/// theirs or minting. Its own entity, not the rig's child, so the rig's
+/// scale does not size it.
+#[derive(Component)]
+pub struct OfferMark {
+    speaker: u8,
+    base: Vec3,
+}
+
+/// How far over a speaker's feet the mark turns, metres.
+const MARK_UP_M: f32 = 2.45;
+/// Its half height and half width, metres.
+const MARK_HALF_H: f32 = 0.17;
+const MARK_HALF_W: f32 = 0.11;
+/// How fast it turns, rad/s, and how far it bobs, metres, how often.
+const MARK_SPIN: f32 = 1.6;
+const MARK_BOB_M: f32 = 0.06;
+const MARK_BOB_HZ: f32 = 0.7;
+
 fn drawn(have: &Query<&LoreMark>, kind: u8, index: u16) -> bool {
     have.iter().any(|m| m.kind == kind && m.index == index)
 }
@@ -154,6 +175,22 @@ pub fn spawn(
                     Transform::from_translation(p)
                         .with_rotation(Quat::from_rotation_y(yaw))
                         .with_scale(Vec3::splat(rig.scale)),
+                ));
+                let base = p + Vec3::Y * MARK_UP_M;
+                commands.spawn((
+                    WorldEntity,
+                    OfferMark {
+                        speaker: k as u8,
+                        base,
+                    },
+                    Mesh3d(meshes.add(diamond())),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        emissive: LinearRgba::rgb(1.8, 1.25, 0.4),
+                        ..worn_gold()
+                    })),
+                    Transform::from_translation(base),
+                    Visibility::Hidden,
+                    NotShadowCaster,
                 ));
             }
         }
@@ -252,6 +289,67 @@ pub fn spawn(
                 });
         }
     }
+}
+
+/// Show each speaker's mark while they have an offer this player can still
+/// take, turning and bobbing.
+pub fn offer_marks(
+    net: NonSend<Net>,
+    time: Res<Time>,
+    mut q: Query<(&OfferMark, &mut Transform, &mut Visibility)>,
+) {
+    let core = &net.session.core;
+    let t = time.elapsed_secs();
+    for (m, mut tf, mut vis) in q.iter_mut() {
+        let open = core.lore.speakers.get(m.speaker as usize).is_some_and(|s| {
+            crate::ui::offer::open_count(s, &core.skins, &core.skins_owned, |item| {
+                sim_core::craft::inv_count(&core.inv, item)
+            }) > 0
+        });
+        let want = if open {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        vis.set_if_neq(want);
+        if open {
+            let bob = (t * MARK_BOB_HZ * core::f32::consts::TAU).sin() * MARK_BOB_M;
+            tf.translation = m.base + Vec3::Y * bob;
+            tf.rotation = Quat::from_rotation_y(t * MARK_SPIN);
+        }
+    }
+}
+
+/// The mark's diamond: an octahedron, flat-shaded, its points up and down.
+fn diamond() -> Mesh {
+    let (h, w) = (MARK_HALF_H, MARK_HALF_W);
+    let ring = [
+        Vec3::new(w, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, w),
+        Vec3::new(-w, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -w),
+    ];
+    let (mut pos, mut nor) = (Vec::with_capacity(24), Vec::with_capacity(24));
+    for i in 0..4 {
+        let (a, b) = (ring[i], ring[(i + 1) % 4]);
+        for tri in [[Vec3::Y * h, b, a], [Vec3::NEG_Y * h, a, b]] {
+            let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize();
+            for v in tri {
+                pos.push(v.to_array());
+                nor.push(n.to_array());
+            }
+        }
+    }
+    let n = pos.len();
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32; 2]; n]);
+    mesh.insert_indices(Indices::U32((0..n as u32).collect()));
+    mesh
 }
 
 /// Turn each dial's notch to the notch it shows.

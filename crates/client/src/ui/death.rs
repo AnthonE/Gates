@@ -481,9 +481,10 @@ pub fn woke(asked: Wake, on_bag: bool, in_town: bool) -> Option<&'static str> {
 // The marker on the compass (Rust's death marker)
 // ---------------------------------------------------------------------------
 
-/// How far either side of the bearing the compass's marker row reaches,
-/// degrees: a mark this far round sits at the row's end. The tape's own.
-pub const COMPASS_HALF_SPAN_DEG: f32 = super::compass::HALF_SPAN_DEG;
+/// How far either side of the bearing the compass reaches, degrees: the
+/// tape's numbers end here and a mark this far round sits at the row's end.
+/// Rust's tape shows about this much (`render::hud`'s compass).
+pub const COMPASS_HALF_SPAN_DEG: f32 = 45.0;
 
 /// Where a world point sits on the compass's marker row.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -505,7 +506,8 @@ pub struct CompassMark {
 pub fn compass_mark(facing_deg: f32, from: (f32, f32), to: (f32, f32)) -> CompassMark {
     let (dx, dz) = (to.0 - from.0, to.1 - from.1);
     let bearing = crate::look::bearing_of(dx, dz);
-    let across = super::compass::rel_deg(facing_deg, bearing) / COMPASS_HALF_SPAN_DEG;
+    let rel = (bearing - facing_deg + 540.0).rem_euclid(360.0) - 180.0;
+    let across = rel / COMPASS_HALF_SPAN_DEG;
     CompassMark {
         across: across.clamp(-1.0, 1.0),
         off_row: across.abs() > 1.0,
@@ -890,9 +892,12 @@ mod tests {
         );
         // Turn to face it and it comes to the middle.
         assert!(at(90.0, east).across.abs() < 1e-3);
-        // Half-way along the row to the right.
-        let half = at(90.0 - COMPASS_HALF_SPAN_DEG * 0.5, east);
-        assert!((half.across - 0.5).abs() < 1e-3, "{half:?}");
+        // Part-way round to the right, in proportion to the span.
+        let ne = at(45.0, east);
+        assert!(
+            (ne.across - 45.0 / COMPASS_HALF_SPAN_DEG).abs() < 1e-3,
+            "{ne:?}"
+        );
         // Behind, a little to the right: held at the right end, marked off.
         let behind = at(0.0, (here.0 - 1.0, here.1 - 10.0));
         assert!(
@@ -904,7 +909,10 @@ mod tests {
         assert!(back.off_row && back.across.abs() > 0.99, "{back:?}");
         // Across the 0/360 seam: facing 350, a mark at 10 is just right.
         let seam = at(350.0, (here.0 - 1.763, here.1 + 10.0));
-        assert!(seam.across > 0.0 && seam.across < 0.5, "{seam:?}");
+        assert!(
+            seam.across > 0.0 && seam.across < 30.0 / COMPASS_HALF_SPAN_DEG,
+            "{seam:?}"
+        );
     }
 
     #[test]

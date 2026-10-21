@@ -299,7 +299,7 @@ const SUBJECTS: &[Subject] = &[
     s("wooden_door", "models/deploy/door.glb", [90.0, 0.0, 0.0]),
     s(
         "metal_door",
-        "models/deploy/door_locked.glb",
+        "models/deploy/door_metal.glb",
         [90.0, 0.0, 0.0],
     ),
     // The prop kit: long things on the diagonal…
@@ -335,8 +335,8 @@ const SUBJECTS: &[Subject] = &[
     kit("sheet_metal", [0.0, 0.0, 0.0]),
     kit("road_signs", [30.0, 0.0, 0.0]),
     kit("tech_trash", [30.0, 30.0, 0.0]),
-    kit("key_lock", [30.0, 0.0, 0.0]),
-    kit("code_lock", [30.0, 0.0, 0.0]),
+    s("key_lock", "models/held/key_lock.glb", [30.0, 0.0, 0.0]),
+    s("code_lock", "models/held/code_lock.glb", [30.0, 0.0, 0.0]),
     kit("pistol_round", [30.0, 0.0, 0.0]),
     kit("corn_seed", [0.0, 0.0, 0.0]),
     kit("hemp_seed", [0.0, 0.0, 0.0]),

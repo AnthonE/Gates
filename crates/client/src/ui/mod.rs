@@ -84,7 +84,6 @@ pub mod arc;
 pub mod boot;
 pub mod build;
 pub mod chat;
-pub mod compass;
 pub mod craft;
 pub mod death;
 pub mod draw;
@@ -105,6 +104,7 @@ pub mod nav;
 pub mod notices;
 // Walls between you and a sound: the shot walk, counted.
 pub mod occlusion;
+pub mod offer;
 pub mod oven;
 pub mod place;
 pub mod pointer;
