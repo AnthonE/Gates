@@ -49,6 +49,7 @@ use sim_core::gather::ItemStack;
 
 pub mod arc;
 pub mod casino;
+pub mod contacts;
 pub mod craft;
 pub mod hearth;
 pub mod inv;
@@ -111,6 +112,9 @@ pub enum Panel {
     /// A player's profile card (`profile.rs`): a click on a name in the
     /// standings or the chat. Escape goes back to where the click was.
     Profile,
+    /// The players you have met (`contacts.rs`, Rust's CONTACTS): the third
+    /// button in the strip across the inventory and crafting pages.
+    Contacts,
 }
 
 impl Panel {
@@ -128,6 +132,7 @@ impl Panel {
             Panel::None => Page::Closed,
             Panel::Inventory => Page::Inventory,
             Panel::Craft => Page::Crafting,
+            Panel::Contacts => Page::Contacts,
             Panel::Wheel
             | Panel::Hammer
             | Panel::Tech
@@ -152,6 +157,7 @@ impl Panel {
             Page::Closed => Some(Panel::None),
             Page::Inventory => Some(Panel::Inventory),
             Page::Crafting => Some(Panel::Craft),
+            Page::Contacts => Some(Panel::Contacts),
             Page::Other => None,
         }
     }
@@ -242,6 +248,11 @@ pub struct Ui {
     /// pointer go: take it back when the last panel shuts, as closing chat
     /// does (`profile::relock`).
     pub profile_relock: bool,
+    /// The contacts page: which ones it lists, the one picked (a wallet),
+    /// and which page of cards.
+    pub contacts_filter: crate::contacts::Filter,
+    pub contacts_sel: Option<String>,
+    pub contacts_page: usize,
     /// When this client saw the open research table start (research table
     /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
     /// `ui::research::TableClock` says why a start has to be SEEN.
@@ -351,6 +362,8 @@ pub(crate) struct Seen {
     /// The profile card's and the friends list's generations at the last
     /// redraw: a read landing, or a friends op answering.
     pub profile_gen: (u64, u64),
+    /// `render::contacts::Contacts::gen` at the last redraw.
+    pub contacts_gen: u64,
     /// The latched hearth stock ack — address, live rows, rows — so the
     /// hearth's column redraws when a feed, a take or the decay moves it.
     pub stock: StockSeen,
@@ -388,6 +401,9 @@ impl Default for Ui {
             island_tab: 0,
             profile_back: Panel::None,
             profile_relock: false,
+            contacts_filter: crate::contacts::Filter::All,
+            contacts_sel: None,
+            contacts_page: 0,
             tech_tab: 1,
             table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
@@ -638,7 +654,10 @@ pub fn page_tabs(root: &mut ChildSpawnerCommands, ui: &Ui) {
             row.spawn((
                 Button,
                 TabGo(panel),
-                Tip(format!("or press {}", nav::key_hint(*page))),
+                Tip(match nav::key_hint(*page) {
+                    "" => "the players you have met".into(),
+                    key => format!("or press {key}"),
+                }),
                 Node {
                     min_width: Val::Px(200.0),
                     padding: UiRect::axes(Val::Px(18.0), Val::Px(6.0)),
@@ -895,6 +914,7 @@ pub fn register(app: &mut App) {
                         profile::opens,
                         profile::chat_opens,
                         profile::clicks,
+                        contacts::clicks,
                         profile::relock,
                     )
                         .chain(),
@@ -1249,6 +1269,7 @@ pub fn keys(
             | Panel::BigWheel
             | Panel::Slots
             | Panel::Profile
+            | Panel::Contacts
     ) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
@@ -1413,7 +1434,7 @@ pub fn sync_refusals(
 /// changes when a player clicks or a sync lands, so the simple shape is also
 /// the cheap one. What is NOT cheap is rebuilding a still screen, which is
 /// what `Seen` exists to prevent.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn rebuild(
     mut commands: Commands,
     mut ui: ResMut<Ui>,
@@ -1426,15 +1447,17 @@ pub fn rebuild(
     near: Res<super::verbs::Near>,
     portrait: Option<Res<super::portrait::Portrait>>,
     hearth: Option<Res<super::verbs::HearthView>>,
-    (card, friends): (
+    (card, friends, book): (
         Option<Res<super::profile::Profile>>,
         Option<Res<super::friends::Friends>>,
+        Option<Res<super::contacts::Contacts>>,
     ),
 ) {
     let core = &net.session.core;
 
     detect_changes(&mut ui, core, near.0);
     profile::watch(&mut ui, card.as_deref(), friends.as_deref());
+    contacts::watch(&mut ui, book.as_deref());
     if hearth.as_ref().is_some_and(|h| h.is_changed()) && ui.panel != Panel::None {
         ui.dirty = true;
     }
@@ -1500,6 +1523,9 @@ pub fn rebuild(
             card.as_deref(),
             friends.as_deref(),
         ),
+        Panel::Contacts => {
+            contacts::build_screen(&mut commands, &ui, book.as_deref(), friends.as_deref())
+        }
         Panel::Island => {
             arc::build_island(&mut commands, &ui, core, friends.as_deref().map(|f| &f.set))
         }

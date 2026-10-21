@@ -98,6 +98,8 @@ pub mod guards;
 pub mod keepers;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
+/// Contacts (Rust's): the players met, their mugshots, friendly or enemy.
+pub mod contacts;
 pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
@@ -2211,6 +2213,7 @@ impl Plugin for GatesRenderPlugin {
             faces::register(app);
             friends::register(app);
             profile::register(app);
+            contacts::register(app);
             paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------

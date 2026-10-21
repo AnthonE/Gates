@@ -83,6 +83,9 @@ pub mod friends;
 // A player's profile card: their Elo Pros face, playtime and place on your
 // friends list. Pure; `render/profile.rs` owns the reads.
 pub mod profile;
+// Contacts (Rust's): the players you have met, with a mugshot, marked
+// friendly or enemy. Pure; `render/contacts.rs` watches, grabs and saves.
+pub mod contacts;
 pub mod shardlist;
 // Where a player's screenshot goes and what it is called. Unconditional for
 // `config`'s reason exactly: a path rule and a filename rule are pure, they

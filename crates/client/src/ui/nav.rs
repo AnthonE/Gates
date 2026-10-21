@@ -14,13 +14,17 @@
 //! "moves around to replace the opened menu button".
 
 /// The screens a page key can land on. `Other` is everything that is not
-/// one of the two pages — the build wheel, the tech tree — which a page key
+/// one of the pages — the build wheel, the tech tree — which a page key
 /// replaces rather than stacks on.
+///
+/// `Contacts` is Rust's third button in the strip: the players you have met.
+/// It has no key, Rust's neither; it is reached from the other two pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Closed,
     Inventory,
     Crafting,
+    Contacts,
     Other,
 }
 
@@ -42,8 +46,9 @@ pub fn click(tab: Page) -> Page {
 /// this one.
 pub fn strip(open: Page) -> &'static [Page] {
     match open {
-        Page::Inventory => &[Page::Crafting],
-        Page::Crafting => &[Page::Inventory],
+        Page::Inventory => &[Page::Crafting, Page::Contacts],
+        Page::Crafting => &[Page::Inventory, Page::Contacts],
+        Page::Contacts => &[Page::Inventory, Page::Crafting],
         Page::Closed | Page::Other => &[],
     }
 }
@@ -53,17 +58,18 @@ pub fn label(page: Page) -> &'static str {
     match page {
         Page::Inventory => "INVENTORY",
         Page::Crafting => "CRAFTING",
+        Page::Contacts => "CONTACTS",
         Page::Closed | Page::Other => "",
     }
 }
 
 /// The key that opens a page, Rust's own binding — in the button's
-/// tooltip, where Rust puts it.
+/// tooltip, where Rust puts it. Empty for a page with no key (CONTACTS).
 pub fn key_hint(page: Page) -> &'static str {
     match page {
         Page::Inventory => "Tab",
         Page::Crafting => "Q",
-        Page::Closed | Page::Other => "",
+        Page::Contacts | Page::Closed | Page::Other => "",
     }
 }
 
@@ -81,6 +87,8 @@ mod tests {
         assert_eq!(press(Page::Crafting, Page::Inventory), Page::Inventory);
         // The tech tree is not a page: a page key replaces it.
         assert_eq!(press(Page::Other, Page::Inventory), Page::Inventory);
+        // Nor does CONTACTS keep a key's page from opening.
+        assert_eq!(press(Page::Contacts, Page::Inventory), Page::Inventory);
     }
 
     #[test]
@@ -91,12 +99,14 @@ mod tests {
 
     #[test]
     fn the_strip_offers_the_other_page_and_never_this_one() {
-        for open in [Page::Inventory, Page::Crafting] {
+        for open in [Page::Inventory, Page::Crafting, Page::Contacts] {
             let offered = strip(open);
             assert!(!offered.is_empty(), "{open:?} has a way to the other page");
             assert!(!offered.contains(&open), "{open:?} offers itself");
             for page in offered {
-                assert!(!label(*page).is_empty() && !key_hint(*page).is_empty());
+                assert!(!label(*page).is_empty());
+                // CONTACTS has no key, Rust's neither; the two pages do.
+                assert_eq!(key_hint(*page).is_empty(), *page == Page::Contacts);
             }
         }
         assert!(strip(Page::Closed).is_empty() && strip(Page::Other).is_empty());
