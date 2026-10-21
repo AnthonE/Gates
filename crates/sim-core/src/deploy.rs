@@ -2475,14 +2475,26 @@ fn cell_bodies_cross(cols: &ColIndex, rect: &Rect, level: u8, ground: bool) -> b
     false
 }
 
-/// Whether the rectangle overlaps a placed body deployable at `level`
-/// (`skip` is a record's own address, for a re-check of one that stands).
-/// A row the table does not know is not read as anything: a client mirror
-/// can hold a record whose def has not dripped in, and the server's table
-/// is whole.
-fn deploys_cross(recs: &[DeployRec], dc: &DeployContent, rect: &Rect, level: u8) -> bool {
+/// Whether two deployables may share floor: exactly one of them is a rug. A
+/// rug is two centimetres of cloth a body walks over, so a box, a bed or a
+/// bench stands on it; two rugs would draw through each other, and their
+/// comfort is one rug's anyway (`World::furnish_comfort`).
+fn layers(a: u8, b: u8) -> bool {
+    (a == ARCH_RUG) != (b == ARCH_RUG)
+}
+
+/// Whether the rectangle of an `arch` deployable overlaps a placed body
+/// deployable at `level`. A row the table does not know is not read as
+/// anything: a client mirror can hold a record whose def has not dripped in,
+/// and the server's table is whole.
+///
+/// A rug lies under everything else ([`layers`]): it crosses only another rug.
+fn deploys_cross(recs: &[DeployRec], dc: &DeployContent, arch: u8, rect: &Rect, level: u8) -> bool {
     recs.iter().any(|d| {
         if d.level != level || is_edge_loc(d.loc) || d.row as u16 >= dc.def_count {
+            return false;
+        }
+        if layers(arch, dc.defs[d.row as usize].arch) {
             return false;
         }
         let (x, z) = d.xz();
@@ -2509,9 +2521,10 @@ fn deploys_cross(recs: &[DeployRec], dc: &DeployContent, rect: &Rect, level: u8)
 ///   and the ground under its rectangle falls away no more than the tilt
 ///   allows. Refusals: `REFUSE_D_SUPPORT`, or `REFUSE_D_TERRAIN` for a
 ///   ground-class deployable at level 0.
-/// - **Clearance** (`REFUSE_D_SPOT`): no other body deployable's rectangle,
-///   no edge piece of its storey, no riser in a cell it covers, and — on
-///   bare ground — no foundation's cell.
+/// - **Clearance** (`REFUSE_D_SPOT`): no other body deployable's rectangle
+///   (a rug and anything but a rug share floor), no edge piece of its
+///   storey, no riser in a cell it covers, and — on bare ground — no
+///   foundation's cell.
 #[allow(clippy::too_many_arguments)]
 pub fn body_site(
     seed: u64,
@@ -2582,7 +2595,7 @@ pub fn body_site(
     } else {
         return Err(REFUSE_D_SUPPORT);
     };
-    if deploys_cross(recs, dc, &rect, level)
+    if deploys_cross(recs, dc, arch, &rect, level)
         || edges_cross(cols, &rect, level)
         || cell_bodies_cross(cols, &rect, level, site.ground)
     {
@@ -4465,6 +4478,46 @@ mod tests {
             GRADED_FOUNDATION as u8,
             "the fixture foundation never reached its stone rung"
         );
+    }
+
+    /// A rug lies under anything (`layers`): a bench goes down on one and a
+    /// rug goes down under one, while two rugs still refuse each other.
+    #[test]
+    fn a_rug_layers_under_anything_but_a_rug() {
+        let mut dc = DeployContent::probe_fixture();
+        let rug = dc.def_count as u8;
+        dc.defs[rug as usize] = DeployDef {
+            arch: ARCH_RUG,
+            ..dc.defs[1]
+        };
+        dc.def_count += 1;
+        let pieces = Pieces::new();
+        let at = |row: u8| DeployRec {
+            cx: CX,
+            cz: CZ,
+            loc: BODY_LOCS[0],
+            row,
+            ..DeployRec::default()
+        };
+        let site = |recs: &[DeployRec], arch: u8| {
+            body_site(
+                SEED,
+                hv(),
+                pieces.cols(),
+                recs,
+                &dc,
+                PLACE_ANY,
+                arch,
+                CX,
+                CZ,
+                0,
+                crate::footprint::Pose::CENTRE,
+            )
+        };
+        assert!(site(&[at(1)], ARCH_RUG).is_ok(), "a rug under a bench");
+        assert!(site(&[at(rug)], ARCH_WORKBENCH).is_ok(), "a bench on a rug");
+        assert_eq!(site(&[at(rug)], ARCH_RUG), Err(REFUSE_D_SPOT));
+        assert_eq!(site(&[at(1)], ARCH_WORKBENCH), Err(REFUSE_D_SPOT));
     }
 
     #[test]
