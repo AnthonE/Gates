@@ -33,6 +33,7 @@ pub mod gather;
 pub mod genome;
 pub mod grounditem;
 pub mod heli;
+pub mod hull;
 pub mod input;
 pub mod inventory;
 pub mod kit;
