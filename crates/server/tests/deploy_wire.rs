@@ -1312,7 +1312,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
     for _ in 0..64 {
         place(&mut core, 0);
     }
-    // Two an hour after it (v132's batch of eleven is a smaller walk step,
+    // Two an hour after it (v133's batch of eleven is a smaller walk step,
     // so the storm has to outlast a walk with fewer pieces behind it).
     for hour in 1..=11u64 {
         for _ in 0..2 {

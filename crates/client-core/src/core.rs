@@ -2967,6 +2967,8 @@ impl ClientCore {
                 floor_len,
                 ceiling_name,
                 ceiling_len,
+                boost_knob,
+                boost_pct,
             } => {
                 self.arc.count = total.min(sim_core::limits::MAX_WORKS as u8);
                 if let Some(w) = self.arc.works.get_mut(index as usize) {
@@ -2978,6 +2980,8 @@ impl ClientCore {
                     w.floor_len = floor_len;
                     w.ceiling_name = ceiling_name;
                     w.ceiling_len = ceiling_len;
+                    w.boost_knob = boost_knob;
+                    w.boost_pct = boost_pct;
                 }
                 self.arc.gen = self.arc.gen.wrapping_add(1);
             }

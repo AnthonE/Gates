@@ -100,6 +100,8 @@ pub mod guards;
 pub mod keepers;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
+/// Contacts (Rust's): the players met, their mugshots, friendly or enemy.
+pub mod contacts;
 pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
@@ -108,6 +110,8 @@ pub mod faces;
 pub mod friends;
 /// Painted skins (wire v110): fetched by hash, drawn on their canvas.
 pub mod paint;
+/// A player's profile card, read when a name is clicked.
+pub mod profile;
 pub mod team;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
@@ -2220,6 +2224,8 @@ impl Plugin for GatesRenderPlugin {
             voice::register(app);
             faces::register(app);
             friends::register(app);
+            profile::register(app);
+            contacts::register(app);
             paint::register(app);
             team::register(app);
             // ---- the screenshot key ----------------------------------

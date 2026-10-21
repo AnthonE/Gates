@@ -275,7 +275,7 @@ fn main() {
     let (machine, mult, code, reels, pay) = goldens::event_slots();
     let len = protocol::encode_event_slots(machine, mult, code, reels, pay, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[180], &buf[..len]);
-    // The lattice placement verbs (v132).
+    // The lattice placement verbs (v133).
     let (row, bld, level, sock) = goldens::action_place_at();
     let len = protocol::encode_action_place_at(row, bld, level, &sock, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[181], &buf[..len]);

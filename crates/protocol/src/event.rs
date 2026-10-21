@@ -160,7 +160,7 @@ pub const RECIPE_BATCH: usize = 4;
 pub const RESEARCH_BATCH: usize = 4;
 
 /// Placed-piece records one sync message carries (a record is at most 214
-/// bits since v132 carries its id, its building's frame and its footprint;
+/// bits since v133 carries its id, its building's frame and its footprint;
 /// eleven keep the batch ≈ 296 B, under the message cap, and the assert at
 /// `PIECE_REC_BITS` holds it there). The join walk is drip-fed like the
 /// harvested-set sync.
@@ -674,6 +674,10 @@ pub struct StandingBoard {
     /// Printable ASCII, `names[i][..name_lens[i]]`.
     pub names: [[u8; STANDING_NAME_BYTES]; STANDING_TOP],
     pub name_lens: [u8; STANDING_TOP],
+    /// The wallet behind row `i` (wire v132), `Address::GUEST` for a row
+    /// that has none: what a click on a row opens a profile by. The shard's
+    /// own `/standings.json` already names it.
+    pub wallets: [crate::Address; STANDING_TOP],
     /// The purse's coin, capitals, `ticker[..ticker_len]`; empty for none.
     pub ticker: [u8; STANDING_TICKER_BYTES],
     pub ticker_len: u8,
@@ -700,6 +704,7 @@ impl StandingBoard {
         scores: [0; STANDING_TOP],
         names: [[0; STANDING_NAME_BYTES]; STANDING_TOP],
         name_lens: [0; STANDING_TOP],
+        wallets: [crate::Address::GUEST; STANDING_TOP],
         ticker: [0; STANDING_TICKER_BYTES],
         ticker_len: 0,
         n_prizes: 0,
@@ -740,6 +745,24 @@ impl StandingBoard {
             .get(i)
             .and_then(|n| core::str::from_utf8(&n[..len.min(STANDING_NAME_BYTES)]).ok())
             .unwrap_or("?")
+    }
+
+    /// Row `i`'s wallet, `None` for a guest or a key that is no wallet.
+    pub fn wallet(&self, i: usize) -> Option<crate::Address> {
+        self.wallets
+            .get(i)
+            .copied()
+            .filter(|a| i < self.n as usize && !a.is_guest())
+    }
+
+    /// [`Self::push`], and the wallet behind the row.
+    pub fn push_wallet(&mut self, name: &str, score: u32, wallet: crate::Address) -> bool {
+        let i = self.n as usize;
+        if !self.push(name, score) {
+            return false;
+        }
+        self.wallets[i] = wallet;
+        true
     }
 
     /// Put row `n`: a name (cut to the wire's length, non-printables
@@ -1889,7 +1912,7 @@ pub enum EventMsg {
     },
     /// A building piece landed (broadcast — pieces are world facts like
     /// slot changes). The record is the sim's own `PieceRec`, with the
-    /// frame of the building it stands in (v132).
+    /// frame of the building it stands in (v133).
     PiecePlaced { rec: PieceRec, frame: Frame },
     /// One batch of the placed-piece walk (join sync / event-lane resync).
     /// `reset` clears the client's piece set first. `frames[i]` is
@@ -2205,6 +2228,11 @@ pub enum EventMsg {
         floor_len: u8,
         ceiling_name: [u8; UNLOCK_NAME_BYTES],
         ceiling_len: u8,
+        /// The knob its ceiling turns while it burns
+        /// (`sim_core::works::KNOB_*`, wire v132), [`NO_BOOST`] for none,
+        /// and to what per cent.
+        boost_knob: u8,
+        boost_pct: u16,
     },
     /// Work `index` now (wire v95): `sim_core::works::WORK_*`, its tank, the
     /// first `n` quota lines so far, the receiver's share (basis points of a
@@ -2896,6 +2924,11 @@ pub fn encode_event_standing(b: &StandingBoard, buf: &mut [u8]) -> Result<usize,
         for &c in name {
             w.write(c as u32, 8)?;
         }
+        let wallet = b.wallets[i];
+        w.write(!wallet.is_guest() as u32, 1)?;
+        if !wallet.is_guest() {
+            crate::write_address(&mut w, &wallet)?;
+        }
     }
     Ok(w.finish())
 }
@@ -3263,7 +3296,7 @@ pub(crate) fn read_sock(r: &mut BitReader) -> Result<Sock, WireError> {
 
 /// One placed-piece record on the wire (`PIECE_REC_BITS` at most), shared
 /// by the placed broadcast and the sync batches, with the frame of the
-/// building it stands in (freeform W2, v132). A piece the grid names
+/// building it stands in (freeform W2, v133). A piece the grid names
 /// crosses its grid address and the far end finds its footprint from the
 /// frame (`sock::from_grid`); any other crosses its footprint and the far
 /// end files it under the cell its middle stands in (`build::anchor_cell`)
@@ -4463,8 +4496,31 @@ pub fn encode_event_work_def(
             w.write(b as u32, 8)?;
         }
     }
+    // What its ceiling does while it burns (wire v132): the first effect on
+    // that unlock, so a terminal can say "furnaces smelt 2x as fast" rather
+    // than the unlock's bare name.
+    let boost = wc
+        .effects
+        .iter()
+        .take(wc.n_effects as usize)
+        .find(|e| d.ceiling != sim_core::works::NO_UNLOCK && e.unlock == d.ceiling);
+    w.write(boost.is_some() as u32, 1)?;
+    if let Some(e) = boost {
+        if e.knob > sim_core::works::KNOB_MAX || e.pct as u32 >= 1 << BOOST_PCT_BITS {
+            return Err(WireError::Range);
+        }
+        w.write(e.knob as u32, BOOST_KNOB_BITS)?;
+        w.write(e.pct as u32, BOOST_PCT_BITS)?;
+    }
     Ok(w.finish())
 }
+
+/// Widths of a work's boost (`EventMsg::WorkDef::boost_knob`).
+const BOOST_KNOB_BITS: u32 = 3;
+const BOOST_PCT_BITS: u32 = 11;
+const _: () = assert!((sim_core::works::KNOB_MAX as u32) < 1 << BOOST_KNOB_BITS);
+/// `EventMsg::WorkDef::boost_knob` for a work whose ceiling turns nothing.
+pub const NO_BOOST: u8 = 0xFF;
 
 /// Work `index`'s state, as the receiver sees it.
 #[allow(clippy::too_many_arguments)]
@@ -6235,6 +6291,12 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     }
                 }
                 b.name_lens[i] = len as u8;
+                if r.read(1)? == 1 {
+                    b.wallets[i] = crate::read_address(&mut r)?;
+                    if b.wallets[i].is_guest() {
+                        return Err(WireError::Malformed);
+                    }
+                }
             }
             EventMsg::Standing(b)
         }
@@ -7105,6 +7167,16 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 }
                 lens[j] = len as u8;
             }
+            let (boost_knob, boost_pct) = if r.read(1)? == 1 {
+                let knob = r.read(BOOST_KNOB_BITS)? as u8;
+                let pct = r.read(BOOST_PCT_BITS)? as u16;
+                if knob > sim_core::works::KNOB_MAX {
+                    return Err(WireError::Malformed);
+                }
+                (knob, pct)
+            } else {
+                (NO_BOOST, 100)
+            };
             EventMsg::WorkDef {
                 total,
                 index,
@@ -7115,6 +7187,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 floor_len: lens[1],
                 ceiling_name,
                 ceiling_len: lens[2],
+                boost_knob,
+                boost_pct,
             }
         }
         SUB_WORK_STATE => {
@@ -9696,7 +9770,7 @@ mod tests {
                 &mut buf
             ),
             Err(WireError::Range),
-            "loc past the piece store's (LOC_NONE, v132)"
+            "loc past the piece store's (LOC_NONE, v133)"
         );
         // Every four-bit loc names a deploy since v89 (the body slots),
         // so the value a piece reads as a triangle half is a slot here.
@@ -10541,7 +10615,7 @@ mod wire_domains {
             exempt: &[],
             min_members: 5,
             bits: FOOT_BITS,
-            // 4 = FOOT_TRI_RISER at v132 (freeform W2), the flight on a
+            // 4 = FOOT_TRI_RISER at v133 (freeform W2), the flight on a
             // triangle; `support::on_lattice` refuses past it.
             live_max: 4,
         },
@@ -10918,6 +10992,19 @@ mod wire_domains {
             bits: BAG_GONE_BITS,
             live_max: 2,
         },
+        Domain {
+            what: "work boost knob",
+            sim_site: "works.rs KNOB_*",
+            wire_site: "BOOST_KNOB_BITS",
+            home: "works.rs",
+            prefix: "pub const KNOB_",
+            ty: ": u8 = ",
+            // `KNOB_MAX` names the ledger. Five knobs in three bits at v132.
+            exempt: &["MAX"],
+            min_members: 5,
+            bits: BOOST_KNOB_BITS,
+            live_max: 4,
+        },
     ];
 
     /// Scrape one domain's live members out of **every** module.
@@ -11068,10 +11155,11 @@ mod wire_domains {
             // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
             // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
             // `craft::CLASS_*`. 23 -> 24 at v123: `CASINO_CODE_BITS` over
-            // `casino::REFUSE_CA_*`. 24 -> 25 at v132: `FOOT_BITS` over
+            // `casino::REFUSE_CA_*`. 24 -> 25 at v132: `BOOST_KNOB_BITS`
+            // over `works::KNOB_*`. 25 -> 26 at v133: `FOOT_BITS` over
             // `sock::FOOT_*`.
             DOMAINS.len(),
-            25,
+            26,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -11249,7 +11337,7 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
-            // A piece record's freeform half (v132): its id, bounded by
+            // A piece record's freeform half (v133): its id, bounded by
             // `build::MAX_PIECE_ID`, and its building, `MAX_BUILDINGS` —
             // both const-asserted equal to their widths; a frame's origin
             // and band, signed magnitudes refused past their widths at
@@ -11262,6 +11350,9 @@ mod wire_domains {
             "FRAME_BAND_BITS",
             "COEF_BITS",
             "SOCK_DIR_BITS",
+            // A work's boost (v132): a per cent, which content bounds to
+            // 1..=1000 and the encoder refuses past the width.
+            "BOOST_PCT_BITS",
             // A team (v108): its member count, bounded by the wire's own
             // `TEAM_MAX` (const-asserted beside the width); a member's
             // state, the wire's own three, refused past `TEAM_STATE_MAX`;

@@ -94,8 +94,8 @@ pub use event::{
     encode_event_arc_refused, encode_event_arc_text, encode_event_glyphs, encode_event_mech_solved,
     encode_event_work, encode_event_work_def, encode_event_work_state, TopicOffer, ARC_GIFT_GIVEN,
     ARC_GIFT_GUEST, ARC_GIFT_NONE, ARC_GIFT_OWNED, ARC_GIFT_SHORT, ARC_GIFT_WAITING,
-    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, UNLOCK_NAME_BYTES,
-    WORK_NAME_BYTES,
+    ARC_INSCRIPTION, ARC_MECH, ARC_NAME_BYTES, ARC_SPEAKER, ARC_TEXT_BYTES, NO_BOOST,
+    UNLOCK_NAME_BYTES, WORK_NAME_BYTES,
 };
 pub use event::{
     encode_event_ammo, encode_event_fire, encode_event_lodged_sync, WireLodged, LODGED_SYNC_BATCH,
@@ -1270,11 +1270,14 @@ pub use voice::{
 /// the topic), so the talk panel draws an offer as a card with a button.
 /// v131 — a catalog row carries `damage` (16 bits after `class`): what one
 /// hit of the item takes off a body, for the inventory's item card.
-/// v132 — freeform W2: a piece record carries its id, its building and that
+/// v132 — names you can click: a standings row carries its wallet (a bit,
+/// then 20 bytes when set), and a work's definition what its ceiling does
+/// while it burns (a bit, then the knob in 3 bits and its per cent in 11).
+/// v133 — freeform W2: a piece record carries its id, its building and that
 /// building's frame, and its lattice footprint when the grid cannot name it
 /// (a grid bit picks); a piece address may be `LOC_NONE`, its id spelled in
 /// the other fields. `PIECE_SYNC_BATCH` 32 → 11.
-pub const PROTO_VER: u16 = 132;
+pub const PROTO_VER: u16 = 133;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2174,7 +2177,7 @@ const ACT_WHEEL: u32 = 37;
 /// `Command::Slots`).
 const ACT_SLOTS: u32 = 38;
 /// Place a piece on a building's lattice, or start a building with a
-/// foundation placed free (wire v132, freeform W2): a leading bit picks
+/// foundation placed free (wire v133, freeform W2): a leading bit picks
 /// (`Command::PlaceAt` / `Command::PlaceFree`).
 const ACT_LATTICE: u32 = 39;
 /// Widths of the casino's fields.
@@ -2287,7 +2290,7 @@ pub(crate) const BUILD_LOC_BITS: u32 = 4;
 /// message bounds its loc BY the bit and a site that picked the wrong
 /// constant would admit a forged address into the other store's range.
 ///
-/// A piece address may be `LOC_NONE` since v132: a piece the grid cannot
+/// A piece address may be `LOC_NONE` since v133: a piece the grid cannot
 /// name, its id spelled in the other fields (`sim_core::build::spell_id`).
 pub(crate) fn loc_max(deploy: bool) -> u8 {
     if deploy {
@@ -2415,7 +2418,7 @@ pub enum ActionMsg {
         plate: i8,
     },
     /// Place baked piece row `row` on standing building `bld`'s lattice at
-    /// footprint `sock`, socket `level` (v132, freeform W2): what the grid
+    /// footprint `sock`, socket `level` (v133, freeform W2): what the grid
     /// cannot name. The wire refuses a footprint the lattice cannot hold;
     /// everything else is the sim's verdict.
     PlaceAt {
@@ -2424,7 +2427,7 @@ pub enum ActionMsg {
         level: u8,
         sock: sim_core::sock::Sock,
     },
-    /// Start a building with a foundation placed free (v132): its frame's
+    /// Start a building with a foundation placed free (v133): its frame's
     /// origin on the foundation's first corner at world (`x_cm`, `z_cm`),
     /// turned `yaw`, the triangle when `tri`, `plate` the asked band
     /// (`Place`'s).
@@ -5742,7 +5745,7 @@ mod tests {
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
         // casino's wheel and slots (v123) 37 and 38, and freeform
-        // building's lattice placement (v132) 39.
+        // building's lattice placement (v133) 39.
         assert_eq!(ACT_MAX, ACT_LATTICE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
@@ -5752,7 +5755,7 @@ mod tests {
     }
 
     /// A lattice placement round-trips both ways it can be made, and a
-    /// footprint the lattice cannot hold is refused at decode (v132).
+    /// footprint the lattice cannot hold is refused at decode (v133).
     #[test]
     fn the_lattice_placements_round_trip() {
         use sim_core::lattice::LPt;

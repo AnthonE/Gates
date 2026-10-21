@@ -324,7 +324,7 @@ pub const FIXTURES: [&str; 183] = [
     "event_wheel_bet.bin",
     "event_wheel_paid.bin",
     "event_slots.bin",
-    // The lattice placement verbs (v132): a site on a standing building,
+    // The lattice placement verbs (v133): a site on a standing building,
     // and a foundation placed free.
     "action_place_at.bin",
     "action_place_free.bin",
@@ -370,6 +370,13 @@ pub fn event_work_def() -> (
             sim_core::works::WorkInput::default(),
         ],
     };
+    // Its ceiling runs the furnaces at 200% (wire v132).
+    wc.effects[wc.n_effects as usize] = sim_core::works::ArcEffect {
+        unlock: 32,
+        knob: sim_core::works::KNOB_SMELT_PCT,
+        pct: 200,
+    };
+    wc.n_effects += 1;
     (wc, b"THE CRUCIBLE", b"GUNPOWDER", b"SMELTING")
 }
 
@@ -1244,8 +1251,9 @@ pub fn action_fasttrack() -> (u16, u16) {
     (3, 41)
 }
 
-/// THE WORKS in wipe 7 (wire v104): two rows, the receiver third of 41,
-/// a three-place ORBS purse, 90 of 120 minutes played.
+/// THE WORKS in wipe 7 (wire v104): two rows, the first with its wallet
+/// (v132), the receiver third of 41, a three-place ORBS purse, 90 of 120
+/// minutes played.
 pub fn event_standing() -> crate::StandingBoard {
     let mut b = crate::StandingBoard {
         board: 1,
@@ -1255,7 +1263,11 @@ pub fn event_standing() -> crate::StandingBoard {
         my_score: 1_240,
         ..crate::StandingBoard::EMPTY
     };
-    b.push("ALICE", 98_765);
+    // ALICE's wallet rides with her row (wire v132); a guest's row has none.
+    let mut alice = [0u8; crate::ADDRESS_BYTES];
+    alice[0] = 0xA1;
+    alice[19] = 0xCE;
+    b.push_wallet("ALICE", 98_765, crate::Address(alice));
     b.push("0x12ab..cdef", 4_321);
     b.set_purse("ORBS", &[500, 300, 100]);
     b.my_prize = 100;
@@ -1651,7 +1663,7 @@ pub fn event_piece_placed() -> (PieceRec, Frame) {
         // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
         // encoder that never wrote the field would match.
         hp: 0x9C35,
-        // Every bit-field of v132's own nonzero: the id, the building.
+        // Every bit-field of v133's own nonzero: the id, the building.
         id: 0x2A_5A5A,
         bld: 0xA5C,
         sock: sim_core::sock::from_grid(330, 677, 341, 682, sim_core::build::LOC_EDGE_ZLO)
@@ -1878,7 +1890,7 @@ pub fn event_deploy_placed() -> DeployRec {
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     // The loc walks the store's whole four-bit domain (wire v89: two edges
-    // and fourteen body slots; v132: slot 13 an edge the grid cannot name),
+    // and fourteen body slots; v133: slot 13 an edge the grid cannot name),
     // so every value reaches the bytes.
     let recs = core::array::from_fn(|i| {
         let mut rec = DeployRec {
@@ -3103,7 +3115,7 @@ pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
     (9, 0, 19, 4, 0)
 }
 
-/// A lattice placement (v132): a triangle flight on the top storey of a
+/// A lattice placement (v133): a triangle flight on the top storey of a
 /// building past the first byte of ids, its centre's coefficients mixed in
 /// sign so a lost bias or a swapped pair moves the bytes, and a turn that
 /// needs every direction bit.
@@ -3117,7 +3129,7 @@ pub fn action_place_at() -> (u16, u16, u8, sim_core::sock::Sock) {
     )
 }
 
-/// A free foundation (v132): the triangle, its origin west and north of
+/// A free foundation (v133): the triangle, its origin west and north of
 /// the world's zero so both signs are live, a yaw past 32 768 and an asked
 /// band negative and nonzero (`action_place`'s reasons).
 pub fn action_place_free() -> (u16, i32, i32, u16, bool, i8) {

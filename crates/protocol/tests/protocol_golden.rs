@@ -546,7 +546,7 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 178);
     g!(seen, golden_event, 179);
     g!(seen, golden_event, 180);
-    // The lattice placement verbs (v132).
+    // The lattice placement verbs (v133).
     g!(seen, golden_action, 181);
     g!(seen, golden_action, 182);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
@@ -2397,12 +2397,19 @@ fn golden_event(fixture: &[u8], name: &str) {
                     floor_len,
                     ceiling_name,
                     ceiling_len,
+                    boost_knob,
+                    boost_pct,
                 } => {
                     assert_eq!((total, index), (2, 1), "{name:?}: index");
                     assert_eq!(def, wc.defs[1], "work def: decode mismatch");
                     assert_eq!(&n[..name_len as usize], name);
                     assert_eq!(&floor_name[..floor_len as usize], floor);
                     assert_eq!(&ceiling_name[..ceiling_len as usize], ceiling);
+                    assert_eq!(
+                        (boost_knob, boost_pct),
+                        (sim_core::works::KNOB_SMELT_PCT, 200),
+                        "work def: its ceiling's boost"
+                    );
                 }
                 other => panic!("work def: decoded {other:?}"),
             }
@@ -3310,7 +3317,7 @@ fn the_piece_goldens_carry_a_live_plate() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    // Both ends of the field and both signs (v132's batch of eleven holds
+    // Both ends of the field and both signs (v133's batch of eleven holds
     // fewer records than the field has values): a width one short loses an
     // end, a lost bias a sign.
     for band in [-protocol::PLATE_BIAS, protocol::PLATE_BIAS - 1, -1, 1] {
