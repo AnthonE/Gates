@@ -99,6 +99,97 @@ pub fn blurb(v: Verb) -> &'static str {
     }
 }
 
+/// A building skin: a look for one grade, picked with `Q` and `E` on the
+/// Upgrade wedge the way the reference picks Adobe or Brick for stone.
+///
+/// **Prep, not yet a look on the wire.** A piece record carries its row and
+/// nothing else (`sim_core::build::PieceRec`), so the pick is the client's
+/// alone for now and the upgrade still builds the grade's own look. Putting
+/// it on the piece is a world-save change, so it waits for a wipe; then the
+/// upgrade sends the pick, the piece sync carries it, and the renderer
+/// multiplies `tint` over the grade's texture, as item skins v0 do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GradeSkin {
+    pub name: &'static str,
+    /// The look, v0: an sRGB multiply over the grade's own colours.
+    pub tint: [u8; 3],
+}
+
+const WOOD_SKINS: [GradeSkin; 2] = [
+    GradeSkin {
+        name: "Driftwood",
+        tint: [200, 204, 200],
+    },
+    GradeSkin {
+        name: "Tarred",
+        tint: [96, 84, 74],
+    },
+];
+const STONE_SKINS: [GradeSkin; 3] = [
+    GradeSkin {
+        name: "Sandstone",
+        tint: [236, 200, 152],
+    },
+    GradeSkin {
+        name: "Basalt",
+        tint: [112, 112, 120],
+    },
+    GradeSkin {
+        name: "Mossback",
+        tint: [152, 182, 122],
+    },
+];
+const METAL_SKINS: [GradeSkin; 2] = [
+    GradeSkin {
+        name: "Rusted",
+        tint: [198, 122, 82],
+    },
+    GradeSkin {
+        name: "Verdigris",
+        tint: [122, 182, 166],
+    },
+];
+
+/// The skins a grade can wear besides its own look (pick 0).
+pub fn grade_skins(material: u8) -> &'static [GradeSkin] {
+    use sim_core::build::{MAT_METAL, MAT_STONE, MAT_WOOD};
+    match material {
+        MAT_WOOD => &WOOD_SKINS,
+        MAT_STONE => &STONE_SKINS,
+        MAT_METAL => &METAL_SKINS,
+        _ => &[],
+    }
+}
+
+/// `Q` (-1) and `E` (+1) step the pick round a grade's looks, its own look
+/// (0) included, wrapping both ways.
+pub fn step_skin(pick: u8, step: i32, material: u8) -> u8 {
+    let n = grade_skins(material).len() as i32 + 1;
+    (pick as i32 + step).rem_euclid(n) as u8
+}
+
+/// What the pick is called: the skin's name, or the grade's own.
+pub fn skin_name(material: u8, pick: u8) -> &'static str {
+    match pick.checked_sub(1) {
+        Some(i) => grade_skins(material)
+            .get(i as usize)
+            .map(|s| s.name)
+            .unwrap_or_else(|| super::build::material_label(material)),
+        None => super::build::material_label(material),
+    }
+}
+
+/// The Upgrade wedge's line under its title: what the grade is.
+pub fn grade_blurb(material: u8) -> &'static str {
+    use sim_core::build::{MAT_METAL, MAT_STONE, MAT_WOOD};
+    match material {
+        MAT_WOOD => "Timber. The first real wall.",
+        MAT_STONE => "A strong material. Heavier and harder to break than wood.",
+        MAT_METAL => "Sheet metal. The toughest grade.",
+        _ => "Take the piece one rung up the material ladder.",
+    }
+}
+
 /// Which verb segment the pointer is in — [`super::build::pick`]'s
 /// arithmetic over this ring's own count, so the two wheels cannot disagree
 /// about where the band is.
@@ -350,5 +441,24 @@ pub fn target_name(
             super::craft::item_label(catalog, deploys.defs[t.row as usize].item)
         }
         _ => "Waiting for building details".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_core::build::{MAT_STONE, MAT_TWIG};
+
+    #[test]
+    fn q_and_e_walk_a_grades_looks_and_wrap() {
+        let n = grade_skins(MAT_STONE).len() as u8 + 1;
+        assert_eq!(step_skin(0, 1, MAT_STONE), 1);
+        assert_eq!(step_skin(0, -1, MAT_STONE), n - 1);
+        assert_eq!(step_skin(n - 1, 1, MAT_STONE), 0);
+        assert_eq!(skin_name(MAT_STONE, 0), "Stone");
+        assert_eq!(skin_name(MAT_STONE, 2), grade_skins(MAT_STONE)[1].name);
+        // A grade with no skins stays on its own look.
+        assert_eq!(step_skin(0, 1, MAT_TWIG), 0);
+        assert_eq!(skin_name(MAT_STONE, 99), "Stone");
     }
 }

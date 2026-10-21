@@ -210,6 +210,10 @@ pub struct Ui {
     /// what the release fires, which is why `keys` reads it before
     /// `wheel::track` clears it.
     pub hover: Option<usize>,
+    /// The building skin picked for each grade on the hammer's Upgrade
+    /// wedge, by material (`ui::hammer::grade_skins`; 0 is the grade's own
+    /// look). Kept per grade across wheel opens, as the reference does.
+    pub grade_skin: [u8; 4],
     /// The tech tree's selected node — a recipe index, the sidebar's
     /// subject (tech tree v0).
     pub tech_sel: Option<u16>,
@@ -364,6 +368,7 @@ impl Default for Ui {
             status: String::new(),
             shape: 0,
             hover: None,
+            grade_skin: [0; 4],
             tech_sel: None,
             tech_tier: 1,
             vendor: 0,
@@ -1062,6 +1067,39 @@ pub fn keys(
         }
     }
 
+    // **`Q` and `E` pick the building skin on the hammer's wheel** (the
+    // reference's arrangement): over the Upgrade wedge they step the
+    // target grade's looks. Taken while the wheel is up either way, so `Q`
+    // does not open the crafting page out from under a held wheel.
+    if ui.panel == Panel::Hammer {
+        let step = if keyboard.just_pressed(KeyCode::KeyQ) {
+            -1
+        } else if keyboard.just_pressed(KeyCode::KeyE) {
+            1
+        } else {
+            0
+        };
+        if step != 0 {
+            keyboard.clear_just_pressed(KeyCode::KeyQ);
+            keyboard.clear_just_pressed(KeyCode::KeyE);
+            let verb = ui
+                .hover
+                .and_then(|i| crate::ui::hammer::VERBS.get(i).copied());
+            if verb == Some(crate::ui::hammer::Verb::Upgrade) {
+                if let crate::ui::hammer::Act::Upgrade { material, .. } = crate::ui::hammer::act(
+                    crate::ui::hammer::Verb::Upgrade,
+                    near.0.as_ref(),
+                    &core.piece_defs,
+                    core.piece_defs_have,
+                ) {
+                    let m = material as usize % ui.grade_skin.len();
+                    ui.grade_skin[m] =
+                        crate::ui::hammer::step_skin(ui.grade_skin[m], step, material);
+                    ui.dirty = true;
+                }
+            }
+        }
+    }
     // **Two pages, Rust's two keys.** `Tab` is the inventory and `Q` is the
     // crafting menu; each key shuts its own page and switches from the
     // other (`ui::nav::press`), and a tab in the strip across the top of
