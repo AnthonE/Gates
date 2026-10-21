@@ -228,6 +228,12 @@ seed = 20260731
 # DECISIONS.md §open "shard status endpoint v0".
 # status_addr = "127.0.0.1:8080"
 
+# The companion (crates/server/src/companion.rs): Gates' Rust+. A page and a
+# JSON API where a player or an agent signs in with their wallet and sees
+# their team on the map, reads and writes team chat, and gets raid alerts.
+# Unset serves nothing. Plain HTTP on loopback; put nginx in front.
+# companion_addr = "127.0.0.1:8434"
+
 # The ticket door (crates/server/src/entitle.rs): does a joiner own a copy?
 #
 # Unset — the default — checks NOTHING, and that is the state every test,

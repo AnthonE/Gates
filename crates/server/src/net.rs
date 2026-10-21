@@ -848,6 +848,23 @@ pub async fn spawn_shard(
         None => crate::admin::Bans::new(),
     };
 
+    // The companion (`companion.rs`), only where the operator said. A bind
+    // failure refuses the boot, as the status endpoint's does.
+    let companion = match cfg.companion_addr {
+        Some(addr) => {
+            let (c, bound) = crate::companion::spawn(
+                addr,
+                cfg.seed,
+                cfg.domain.clone(),
+                cfg.siwe_accepts().to_vec(),
+            )
+            .map_err(|e| format!("companion bind {addr}: {e}"))?;
+            println!("companion on http://{bound}/");
+            c
+        }
+        None => crate::companion::Companion::off(),
+    };
+
     {
         let stats = stats.clone();
         let shutdown = shutdown.clone();
@@ -901,6 +918,7 @@ pub async fn spawn_shard(
                     admins,
                     team_max,
                     trust,
+                    companion,
                     slots,
                     stats,
                     shutdown,
@@ -4129,6 +4147,7 @@ fn sim_thread(
     admins: crate::admin::Admins,
     team_max: u8,
     trust: crate::trustlog::Tap,
+    companion: crate::companion::Companion,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -4228,6 +4247,7 @@ fn sim_thread(
     core.gifts = crate::gifts::Gifts::open(standings_base.as_deref());
     core.mints = crate::mints::Mints::open(standings_base.as_deref());
     core.online = crate::online::Online::open(standings_base.as_deref());
+    core.companion = companion;
     core.motd = motd.iter().filter_map(|l| crate::wipe::chat(l)).collect();
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
@@ -4599,6 +4619,10 @@ fn sim_thread(
             core.standings_recount();
             core.standings.rebuild();
             core.publish_online();
+        }
+        // The companion's view of the island, once a second.
+        if core.companion.on() && core.world.tick % crate::companion::SNAP_TICKS == 7 {
+            core.publish_companion();
         }
         // Tick + publish. `Ops` is the tick's side channels (admin v0) —
         // the anomaly log, the kick ring and its answers, `/save`'s flag.

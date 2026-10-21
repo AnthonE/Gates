@@ -90,12 +90,13 @@ use crate::ui::hub::{Hub, Section};
 use crate::ui::servers::{self, Cat, Listing};
 
 impl Nav {
-    const ALL: [Nav; 7] = [
+    const ALL: [Nav; 8] = [
         Nav::Play,
         Nav::Hub(Section::News),
         Nav::Hub(Section::Store),
         Nav::Hub(Section::Workshop),
         Nav::Hub(Section::Buddies),
+        Nav::Hub(Section::Team),
         Nav::Settings,
         Nav::Quit,
     ];

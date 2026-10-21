@@ -5303,6 +5303,7 @@ dependencies = [
  "getrandom 0.2.17",
  "image",
  "k256",
+ "png",
  "protocol",
  "rtrb",
  "serde_json",
