@@ -1173,31 +1173,31 @@ mod shadow {
                 }
                 let feet = floors[rng.next_bounded(floors.len() as u32) as usize]
                     + (unit(&mut rng) - 0.4) * 7.0;
-                let ctx = format!("round {round} query {i} at ({x}, {z}) feet {feet}");
+                let ctx = (round, i, x, z, feet);
                 assert_eq!(
                     collide::piece_ground(s, hv, &b.cols, x, z, feet).to_bits(),
                     b.hulls.ground(x, z, feet).to_bits(),
-                    "ground, {ctx}"
+                    "ground, {ctx:?}"
                 );
                 assert_eq!(
                     collide::body_ground(s, hv, &b.cols, x, z, feet).to_bits(),
                     b.hulls.body_ground(x, z, feet).to_bits(),
-                    "body_ground, {ctx}"
+                    "body_ground, {ctx:?}"
                 );
                 assert_eq!(
                     collide::plane_blocked(s, hv, &b.cols, x, z, feet),
                     b.hulls.plane_blocked(x, z, feet),
-                    "plane_blocked, {ctx}"
+                    "plane_blocked, {ctx:?}"
                 );
                 assert_eq!(
                     collide::piece_ceiling(s, hv, &b.cols, x, z, feet).map(f32::to_bits),
                     b.hulls.ceiling(x, z, feet).map(f32::to_bits),
-                    "ceiling, {ctx}"
+                    "ceiling, {ctx:?}"
                 );
                 assert_eq!(
                     collide::floor_under(s, hv, &b.cols, x, z, feet),
                     b.hulls.floor_under(x, z, feet),
-                    "floor_under, {ctx}"
+                    "floor_under, {ctx:?}"
                 );
                 let ob = collide::blocked(s, hv, &b.cols, x, z, nx, nz, feet);
                 if ob != b.hulls.edges_block(x, z, nx, nz, feet) {
@@ -1208,9 +1208,9 @@ mod shadow {
                     assert_eq!(
                         ob,
                         seen.edges_block(x, z, nx, nz, feet),
-                        "blocked to ({nx}, {nz}), {ctx}"
+                        "blocked to ({nx}, {nz}), {ctx:?}"
                     );
-                    assert!(!ob, "a wall end can only add a block, {ctx}");
+                    assert!(!ob, "a wall end can only add a block, {ctx:?}");
                     ends += 1;
                 }
                 let y = feet + unit(&mut rng) * 3.0;
@@ -1218,7 +1218,7 @@ mod shadow {
                 let old = collide::shot_hit(s, hv, &b.cols, x, z, nx, nz, y, r);
                 let new = b.hulls.shot_hit(x, z, nx, nz, y, r);
                 let new = if old.is_some() != new.is_some() {
-                    assert!(old.is_none(), "a wall end can only add a hit, {ctx}");
+                    assert!(old.is_none(), "a wall end can only add a hit, {ctx:?}");
                     ends += 1;
                     cells_view(&b.hulls, x, z, nx, nz).shot_hit(x, z, nx, nz, y, r)
                 } else {
@@ -1227,7 +1227,7 @@ mod shadow {
                 assert_eq!(
                     old.is_some(),
                     new.is_some(),
-                    "shot to ({nx}, {nz}) y {y} r {r}: {old:?} vs {new:?}, {ctx}"
+                    "shot to ({nx}, {nz}) y {y} r {r}: {old:?} vs {new:?}, {ctx:?}"
                 );
                 if let (Some((oh, oi)), Some((nh, ni))) = (old, new) {
                     shots += 1;
@@ -1240,14 +1240,13 @@ mod shadow {
                         one.add(*b.hulls.find(k).expect("old hit has a row"));
                         assert!(
                             one.shot_hit(x, z, nx, nz, y, r).is_some(),
-                            "old pick {oh:?} is not a hit alone, {ctx}"
+                            "old pick {oh:?} is not a hit alone, {ctx:?}"
                         );
                     }
                 }
             }
         }
         assert!(shots > 10_000, "the shots must land: {shots}");
-        eprintln!("{shots} shots, {shot_ranks} ties, {ends} wall ends");
         assert!(ends * 200 < 160_000, "wall ends are corners: {ends}");
         assert!(
             shot_ranks * 100 < shots,
