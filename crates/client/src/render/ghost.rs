@@ -12,13 +12,12 @@
 //!
 //! ## What the colour promises
 //!
-//! Green means *nothing this client can see refuses it* — not "the server
-//! will take it". `place::verdict` checks the four refusals a client can
-//! check (spot taken, reach, ground, cost) and is silent on support, hearth
-//! claims and world capacity. So a green ghost can still be refused, and the
-//! refusal arrives on the toast like any other. What must never happen is the
-//! other way round: a red ghost on something the sim would have accepted,
-//! which is why every check in `verdict` is one the sim runs the same way.
+//! Green means the server will take it. `place::verdict` is the sim's own
+//! `build::check_place` run on this client's mirror — spot, reach, ground,
+//! plate, support, cost, in the server's order — so a red ghost is a refusal
+//! the player hears before the press and nothing is sent. Two things stay the
+//! server's: a hearth's claim (the wire never carries crew lists) and a full
+//! world, and those still arrive on the toast.
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
@@ -157,6 +156,9 @@ pub struct Ghost {
     /// drawn — the prompt-and-verb rule from `verbs`.
     pub target: Target,
     pub verdict: Verdict,
+    /// What the sim would make of `target` when `verdict` is ok — the plate
+    /// and soft side the piece is drawn with before the server answers.
+    pub placement: Option<sim_core::build::Placement>,
     pub row: Option<u16>,
     pub shape: u8,
     /// Whether this placement declines the plate latch (freehand placement
@@ -371,7 +373,12 @@ pub fn track(
     // nothing else decides the plate; sent always, because the client cannot
     // know which case the server is in.
     let want = place::plate_request(&site, target, aim.at, ghost.nudge);
-    let mut verdict = place::verdict(target, row, shape, &site, freehand, want);
+    let checked = place::check(target, row, &site, freehand, want);
+    let mut placement = checked.ok();
+    let mut verdict = match checked {
+        Ok(_) => Verdict::Ok,
+        Err(no) => no,
+    };
     // A piece may not be built through a deployable standing where it would
     // go (free placement) — the sim's own question, asked of the mirror.
     if verdict.ok()
@@ -387,6 +394,17 @@ pub fn track(
         )
     {
         verdict = Verdict::No("spot taken");
+        placement = None;
+    }
+    // A piece this client just placed is drawn before the mirror holds it
+    // (`ClientCore::predict_place`), and its spot is as taken as one that is.
+    if verdict.ok()
+        && core.pending_pieces().iter().any(|p| {
+            (p.cx, p.cz, p.level, p.loc) == (target.cx, target.cz, target.level, target.loc)
+        })
+    {
+        verdict = Verdict::No("spot taken");
+        placement = None;
     }
     // The floor this placement would take (build plate v1) — the sim's own
     // rule, so the preview stands where the piece will and a stilt is visible
@@ -394,6 +412,7 @@ pub fn track(
     let plate = place::ghost_plate(&site, target, freehand, want);
     ghost.target = target;
     ghost.verdict = verdict;
+    ghost.placement = placement;
     ghost.row = Some(row);
     ghost.shape = shape;
     ghost.freehand = freehand;
@@ -592,7 +611,7 @@ pub fn track(
 pub fn place_key(
     mouse: Res<ButtonInput<MouseButton>>,
     ghost: Res<Ghost>,
-    net: NonSend<Net>,
+    mut net: NonSendMut<Net>,
     mut toast: ResMut<Toast>,
     ui: Option<Res<Ui>>,
 ) {
@@ -612,10 +631,16 @@ pub fn place_key(
     let Some(row) = ghost.row else {
         return;
     };
-    // The local verdict is advisory, and refusing to SEND on it would make
-    // it authoritative — including its blind spots. So a red ghost still
-    // sends and still gets the server's own sentence back; the colour is
-    // there to stop the player wasting the press, not to veto it.
+    // The verdict is the sim's own `check_place` on this client's mirror, so
+    // a red ghost is a placement the server would refuse: say why and send
+    // nothing. The one rule it cannot see (a hearth's claim) answers green,
+    // so the server still has the last word there.
+    if let Verdict::No(why) = ghost.verdict {
+        if !why.is_empty() {
+            toast.warn(why);
+        }
+        return;
+    }
     let t = ghost.target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_place(
@@ -629,11 +654,29 @@ pub fn place_key(
         &mut buf,
     ) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
+            // Drawn now, not a round trip from now: the verdict was the
+            // sim's own check, so this is the piece the broadcast will name.
             Ok(()) => {
-                if let Verdict::No(why) = ghost.verdict {
-                    if !why.is_empty() {
-                        toast.warn(why);
-                    }
+                if let Some(at) = ghost.placement {
+                    let hp = net
+                        .session
+                        .core
+                        .piece_defs
+                        .pieces
+                        .get(row as usize)
+                        .map_or(0, |d| d.hp);
+                    net.session.core.predict_place(sim_core::build::PieceRec {
+                        cx: t.cx,
+                        cz: t.cz,
+                        level: t.level,
+                        loc: t.loc,
+                        row: row as u8,
+                        facing: at.facing,
+                        hp,
+                        uh: 0,
+                        dmg: 0,
+                        plate: at.plate,
+                    });
                 }
             }
             Err(e) => toast.warn(e.to_string()),
@@ -707,7 +750,7 @@ pub fn deploy_track(
     let core = &net.session.core;
     let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
     let Some(row) =
-        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held)
     else {
         // Not holding a deployable — the same silence `deploy_key` keeps.
         hide_deploy(&mut commands, ghost);
@@ -988,7 +1031,7 @@ pub fn deploy_key(
     let core = &net.session.core;
     let held = core.inv[(net.sel as usize).min(core.inv.len() - 1)];
     let Some(row) =
-        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
+        crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held)
     else {
         return; // not holding a deployable; nothing to say about it
     };

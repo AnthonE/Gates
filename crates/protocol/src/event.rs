@@ -9931,6 +9931,18 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/footprint.rs"),
         },
         Module {
+            file: "frame.rs",
+            src: include_str!("../../sim-core/src/frame.rs"),
+        },
+        Module {
+            file: "lattice.rs",
+            src: include_str!("../../sim-core/src/lattice.rs"),
+        },
+        Module {
+            file: "space.rs",
+            src: include_str!("../../sim-core/src/space.rs"),
+        },
+        Module {
             file: "gather.rs",
             src: include_str!("../../sim-core/src/gather.rs"),
         },

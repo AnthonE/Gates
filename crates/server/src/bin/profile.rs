@@ -12,10 +12,11 @@
 //! roster alive, and a piece store filled to whatever the terrain will
 //! take. Then it separates the sim from the netcode: `World::tick` is
 //! public, so a run of bare sim ticks measures the sim alone, and
-//! `ShardCore::tick_bare_marked` stamps a clock just before the snapshot
-//! phase, so every full tick splits into "before snapshots" and "snapshots".
-//! The mark is a closure the shard passes as a no-op, so there is still no
-//! `#[cfg]` in the code being timed.
+//! `ShardCore::tick_bare_marked` marks each `Phase` as it starts, so every
+//! full tick splits into prep, sim, interest, events and encode — the same
+//! marks the shard files into `/status.json`, so a profile and a live
+//! shard read in the same columns. `--pitch 60` spreads the bodies out of
+//! each other's interest, the other end of the AOI question.
 //!
 //! ```text
 //! cargo run --release -p server --bin profile -- --clients 100 --ticks 600
@@ -28,7 +29,7 @@
 //! can produce twice and get the same answer.
 
 use protocol::InputDatagram;
-use server::core::{Lane, ShardCore};
+use server::core::{Lane, Phase, ShardCore};
 use server::stats::ShardStats;
 use sim_core::build::{LOC_PLANE, MAT_TWIG, SHAPE_FOUNDATION};
 use sim_core::gather::ItemStack;
@@ -72,7 +73,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             clients: MAX_PLAYERS,
-            pieces: 2_000,
+            pieces: 16_000,
             ticks: 600,
             warmup: 60,
             seed: 20_260_731,
@@ -273,6 +274,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     let id = core.world.players[w].id;
     let mut cmds: Vec<Command> = Vec::with_capacity(MAX_COMMANDS_PER_TICK);
     let mut placed = 0usize;
+    let mut refused = [0u32; 16];
     // A solid block of foundations on the build grid (`BUILD_CELL_M`), one
     // per cell. The builder teleports to each address because `place`
     // checks reach and this is not a walk simulator.
@@ -288,8 +290,14 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
             // player, and paying for 2,000 foundations honestly would be a
             // gather benchmark rather than a server one.
             let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
-            core.world.players[w].body.qx = (ax / 0.03) as i32;
-            core.world.players[w].body.qz = (az / 0.03) as i32;
+            // Stood on the ground there, and kept alive: set by x and z
+            // alone the builder fell or sank on every hop, and once dead its
+            // placements were dropped without a word.
+            let (seed, haven) = (core.world.seed, core.world.haven);
+            let hp = core.world.combat.player_hp;
+            let b = &mut core.world.players[w];
+            b.body = sim_core::movement::Body::at(seed, &haven, ax, az);
+            b.hp = hp;
             for &(item, units) in cost.costs.iter().take(cost.n_costs as usize) {
                 core.world.players[w].inv[0] = ItemStack {
                     item,
@@ -305,17 +313,29 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
-                freehand: false,
+                // Each on its own ground: latched into one block, the whole
+                // sweep is one plate and the hills refuse nearly all of it
+                // (194 of 16 000 landed).
+                freehand: true,
                 plate: 0,
             });
             let before = core.world.pieces.len();
             core.world.tick(&cmds);
             cmds.clear();
             placed += core.world.pieces.len() - before;
+            for ev in core.world.events.entries() {
+                if ev.code == sim_core::world::EV_BUILD_REFUSED && ev.a == id {
+                    refused[(ev.b as usize).min(refused.len() - 1)] += 1;
+                }
+            }
         }
     }
     // The fixture leaves; its body must not sit in the cluster's AOI.
     core.world.tick(&[Command::Leave { id }]);
+    // Said, so a store that came up short is never mistaken for a full one.
+    if placed < want {
+        eprintln!("profile: {placed} of {want} pieces landed; refusals by code {refused:?}");
+    }
     core.world.pieces.len()
 }
 
@@ -406,15 +426,16 @@ fn main() {
         });
     }
 
-    // --- full ticks, each split at the snapshot phase by the core's mark.
+    // --- full ticks, each split into the core's phases by its marks.
     let mut full = Vec::with_capacity(a.ticks as usize);
-    let mut head = Vec::with_capacity(a.ticks as usize);
-    let mut snap = Vec::with_capacity(a.ticks as usize);
+    let mut phases: [Vec<Duration>; 6] = Default::default();
     for _ in 0..a.ticks {
         feed(&mut core, &mut seq, &last_snap);
         let snap_tick = (core.world.tick + 1) as u16;
         let t0 = Instant::now();
-        let mut t1 = t0;
+        let mut last = t0;
+        let mut cur = Phase::Prep as usize;
+        let mut acc = [Duration::ZERO; 6];
         core.tick_bare_marked(
             &stats,
             |lane, slot, _| {
@@ -423,12 +444,19 @@ fn main() {
                 }
                 true
             },
-            || t1 = Instant::now(),
+            |p| {
+                let now = Instant::now();
+                acc[cur] += now - last;
+                last = now;
+                cur = p as usize;
+            },
         );
         let t2 = Instant::now();
+        acc[cur] += t2 - last;
         full.push(t2 - t0);
-        head.push(t1 - t0);
-        snap.push(t2 - t1);
+        for (v, d) in phases.iter_mut().zip(acc) {
+            v.push(d);
+        }
     }
 
     // --- the sim alone. `World::tick` is public and takes the command
@@ -463,8 +491,6 @@ fn main() {
     }
 
     let (f_avg, f_p99, f_max) = stat(&mut full);
-    let (b_avg, b_p99, b_max) = stat(&mut head);
-    let (n_avg, n_p99, n_max) = stat(&mut snap);
     let (s_avg, s_p99, s_max) = stat(&mut sim);
     let (h_avg, h_p99, h_max) = stat(&mut hash_t);
     let (w_avg, w_p99, w_max) = stat(&mut save_t);
@@ -501,14 +527,21 @@ fn main() {
         "  full tick                  {f_avg:10.1}  {f_p99:10.1}  {f_max:10.1}  {:8.1}%",
         100.0 * f_avg / budget_us
     );
-    println!(
-        "    before snapshots         {b_avg:10.1}  {b_p99:10.1}  {b_max:10.1}  {:8.1}%",
-        100.0 * b_avg / budget_us
-    );
-    println!(
-        "    snapshot encode          {n_avg:10.1}  {n_p99:10.1}  {n_max:10.1}  {:8.1}%",
-        100.0 * n_avg / budget_us
-    );
+    let names = [
+        "",
+        "prep (commands)",
+        "sim (World::tick)",
+        "interest",
+        "events + drips",
+        "snapshot encode",
+    ];
+    for (name, v) in names.iter().zip(phases.iter_mut()).skip(1) {
+        let (avg, p99, max) = stat(v);
+        println!(
+            "    {name:<22} {avg:10.1}  {p99:10.1}  {max:10.1}  {:8.1}%",
+            100.0 * avg / budget_us
+        );
+    }
     println!(
         "  World::tick alone          {s_avg:10.1}  {s_p99:10.1}  {s_max:10.1}  {:8.1}%",
         100.0 * s_avg / budget_us
@@ -523,14 +556,6 @@ fn main() {
         server::config::DEFAULT_WORLD_SAVE_INTERVAL_TICKS,
         100.0 * w_avg / budget_us
     );
-    println!();
-    println!("  split (avg):");
-    println!("    snapshot encode (all clients) {n_avg:10.1} µs  (measured)");
-    println!(
-        "    interest + events + drip      {:10.1} µs  (before snapshots - sim alone)",
-        b_avg - s_avg
-    );
-    println!("    sim                           {s_avg:10.1} µs");
     println!();
     println!(
         "  counters: snap_sent {} · candidates {} · shed {} · ev_sent {} · resyncs {}",

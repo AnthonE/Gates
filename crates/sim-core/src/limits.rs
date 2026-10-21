@@ -564,14 +564,24 @@ pub const MAX_SLOT_LIVES: usize = 131_072;
 /// occupy.rs masks with it and a const block asserts it.
 /// Proposed default, DECISIONS.md §open (occupant collision v0 row).
 pub const SLOT_CACHE_SLOTS: usize = 1_024;
+/// The same memo on the shard's `World`, scaled with the roster: a body
+/// probes nine cells, and a shard whose players are spread out has
+/// `MAX_PLAYERS * 9` live at once. At 1 024 lines those collided and missed
+/// over half the time, which made movement 94 % of a spread tick (profile,
+/// 2026-10-20: 100 players at 60 m, 9.4 ms of sim against 0.2 ms clustered).
+/// About 24 B a line.
+pub const SLOT_CACHE_LINES: usize = (128 * MAX_PLAYERS).next_power_of_two();
+const _: () = assert!(SLOT_CACHE_LINES >= SLOT_CACHE_SLOTS);
 
 /// Lines in the direct-mapped memo of `cliff::crag` that the occupant query
 /// reads cliff crags through (occupy.rs), on the shard's `World`. A body's
 /// query scans at most 64 spots, so a full shard has `MAX_PLAYERS * 64` live
-/// at once; at 44 B a line this is 1.4 MB. `SLOT_CACHE_SLOTS`'s posture: a
-/// memo of a pure function, so a collision re-resolves (five ground taps off
-/// a cliff) and nothing can be lost. Must stay a power of two.
-pub const CRAG_CACHE_LINES: usize = 32_768;
+/// at once — kept under 5 % of the lines, because at 32 768 a spread shard's
+/// spots collided often enough to miss 30 % of the time (profile,
+/// 2026-10-20). 44 B a line. `SLOT_CACHE_SLOTS`'s posture: a memo of a pure
+/// function, so a collision re-resolves (five ground taps off a cliff) and
+/// nothing can be lost. Must stay a power of two.
+pub const CRAG_CACHE_LINES: usize = (1_024 * MAX_PLAYERS).next_power_of_two();
 /// The same memo for one predicted body (`ClientCore`, fixtures).
 pub const CRAG_CACHE_LINES_ONE: usize = 512;
 /// Lines in each direct-mapped memo of the faces by whole-metre point (the
@@ -621,6 +631,13 @@ const _: () = assert!(MAX_BUILD_SOCKETS == MAX_BUILD_LEVELS * 2);
 pub const COL_INDEX_SLOTS: usize = 2 * MAX_PIECES;
 const _: () = assert!(COL_INDEX_SLOTS.is_power_of_two());
 
+/// Slots in the piece store's address → index table (`build::Pieces`):
+/// one row per piece, power of two, 2 × MAX_PIECES so it never passes half
+/// load. Structural, not a knob.
+pub const PIECE_ADDR_SLOTS: usize = 2 * MAX_PIECES;
+const _: () = assert!(PIECE_ADDR_SLOTS.is_power_of_two());
+const _: () = assert!(MAX_PIECES <= u16::MAX as usize + 1);
+
 /// Deployable definitions the sim preallocates for (the alpha set is 9
 /// rows, content/deployables.toml). The content bake refuses a set past
 /// this; the wire carries the row in 5 bits — exactly this range.
@@ -646,6 +663,14 @@ pub const MAX_DEPLOYS: usize = 4_096;
 /// 2 × `MAX_DEPLOYS`, so it never passes half load. Structural, not a knob.
 pub const SOLID_SLOTS: usize = 2 * MAX_DEPLOYS;
 const _: () = assert!(SOLID_SLOTS.is_power_of_two());
+
+/// Rows in the freeform broadphase (`space::Space`, unwired): a piece or a
+/// deployable files under up to four 4 m buckets, and the table refuses past
+/// half load, so this holds every piece and deployable at the caps with room
+/// over. Power of two. Structural, not a knob.
+pub const SPACE_SLOTS: usize = 16 * MAX_PIECES;
+const _: () = assert!(SPACE_SLOTS.is_power_of_two());
+const _: () = assert!(SPACE_SLOTS / 2 >= 4 * (MAX_PIECES + MAX_DEPLOYS));
 
 /// Hearths per shard, tracked in their own dense list so claim checks
 /// and the upkeep sweep scan hearths, never the whole deploy store.

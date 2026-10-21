@@ -673,10 +673,10 @@ fn doors_toggle_across_the_wire() {
     assert!(core.connect(1, id_of(1)));
     // A third client, a long way off. It is here for the aim: the door's
     // placement must not reach it (class-S interest, `NOW.md` §0n1 item
-    // 2), so it holds no record of the door, and nor must the knock. The
-    // door's STATE events still do (`EV_DOOR` is unfiltered; `core.rs`
-    // says why). Slot 3, not 2: this test adds a late joiner at slot 2
-    // further down.
+    // 2), so it holds no record of the door, and nor must the knock or the
+    // door's state events (`EV_DOOR` takes the placement's aim; `core.rs`
+    // says why that is safe). Slot 3, not 2: this test adds a late joiner at
+    // slot 2 further down.
     assert!(core.connect(3, id_of(3)));
     const FAR: usize = 3;
     let mut clients = vec![
@@ -886,14 +886,18 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        3,
-        "bolting a lock on must announce has_lock to EVERY client — three, \
-         including the one 400 m away, because `EV_DOOR` is deliberately \
-         unfiltered: a client keeps every deploy record it was ever told \
-         about, and a state change it never hears leaves that record wrong \
-         forever. Contrast the knock below, which is an instant and is \
-         filtered. And it must not announce it as locked — an unarmed lock \
-         is not a locked door"
+        2,
+        "bolting a lock on must announce has_lock to the two clients at the \
+         door and not the one 400 m away, which holds no record of it: \
+         `EV_DOOR` is aimed like the placement, and a client that walks back \
+         re-arms its walk and reads the door's bits off the record before it \
+         is near. And it must not announce it as locked — an unarmed lock is \
+         not a locked door"
+    );
+    assert!(
+        seen.iter()
+            .all(|(slot, m)| *slot != FAR || !matches!(m, protocol::EventMsg::Door { .. })),
+        "a door's state reached the client 400 m away"
     );
 
     // ...and arms it with a code. Now it is shut to everyone else.
@@ -962,8 +966,7 @@ fn doors_toggle_across_the_wire() {
         "a client 400 m from the door heard somebody knock on it"
     );
     // And the far client holds no record of the door at all: neither the
-    // aimed placement nor the aimed walk told it, and the unfiltered
-    // `EV_DOOR`s it did hear name an address it does not hold.
+    // aimed placement, the aimed walk nor the aimed door events told it.
     assert!(
         !clients[2]
             .1
@@ -1050,9 +1053,9 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        3,
-        "the door announcement must reach every client open and still \
-         locked — three, `EV_DOOR` being unfiltered (see above)"
+        2,
+        "the door announcement must reach both clients at the door open and \
+         still locked, and not the far one (see above)"
     );
     assert!(
         core.world
@@ -1147,9 +1150,9 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        4,
-        "the unlock must cross to all four clients with the leaf untouched \
-         — the fourth is 400 m off and `EV_DOOR` is unfiltered on purpose"
+        3,
+        "the unlock must cross to the three clients at the door with the \
+         leaf untouched — the fourth is 400 m off and holds no record of it"
     );
     for (_, c) in clients.iter().filter(|(s, _)| *s != FAR) {
         let rec = c

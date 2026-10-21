@@ -19,7 +19,8 @@ on:
       - "assets/textures/**"
       - ".github/workflows/gates.yml"
   push:
-    branches: [main]
+    # `next-wipe` is gated like main: it is the other branch that merges.
+    branches: [main, next-wipe]
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"

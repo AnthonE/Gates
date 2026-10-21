@@ -23,6 +23,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// (`stats.rs`'s own argument for the lane-byte pairs, one level out).
 pub const AIM_STALE_BUCKETS: usize = 8;
 
+/// Rows of [`ShardStats::phase_hist`], one per `core::Phase` (net, prep,
+/// sim, interest, events, encode), and the last is the whole tick.
+pub const PHASE_ROWS: usize = 7;
+/// The whole-tick row of [`ShardStats::phase_hist`].
+pub const PHASE_TICK: usize = PHASE_ROWS - 1;
+/// Log2 microsecond buckets: index 0 is under a microsecond, index `b` is
+/// `[2^(b-1), 2^b)` µs, and the last is everything from ~0.5 s up.
+pub const PHASE_BUCKETS: usize = 21;
+
 /// Raw staleness a sample may carry before it is refused as unbelievable
 /// rather than folded into the distribution — **derived, not picked**.
 ///
@@ -882,6 +891,15 @@ pub struct ShardStats {
     /// or above it. See [`AIM_STALE_BUCKETS`] for why the top edge is 7.
     pub aim_stale_hist: [AtomicU64; AIM_STALE_BUCKETS],
 
+    // ── Where a tick's time goes ──
+    //
+    // One log2-µs histogram per phase of the shard loop (`core::Phase`, plus
+    // the whole tick in the last row), filled every tick by `net::sim_thread`.
+    // Totals since boot, like every counter here: a window is two polls of
+    // `/status.json` and a subtraction. The max is the worst single tick.
+    pub phase_hist: [[AtomicU64; PHASE_BUCKETS]; PHASE_ROWS],
+    pub phase_max_us: [AtomicU64; PHASE_ROWS],
+
     // ── The favour actually granted (lagcomp slice 5) ──
     //
     // **Whether lag compensation is on, and how much of it a shard is
@@ -1030,6 +1048,37 @@ impl ShardStats {
         }
     }
 
+    /// File one phase's time for this tick (`row` is a `core::Phase` index
+    /// or [`PHASE_TICK`]).
+    pub fn record_phase(&self, row: usize, us: u64) {
+        let Some(hist) = self.phase_hist.get(row) else {
+            return;
+        };
+        let b = ((u64::BITS - us.leading_zeros()) as usize).min(PHASE_BUCKETS - 1);
+        Self::bump(&hist[b]);
+        self.phase_max_us[row].fetch_max(us, Ordering::Relaxed);
+    }
+
+    /// The bucket's upper edge in µs below which `pct` percent of a phase's
+    /// ticks fell — an over-estimate by at most 2×, which is the price of a
+    /// histogram that costs one atomic add a phase. Zero with no samples.
+    pub fn phase_pct_us(&self, row: usize, pct: u64) -> u64 {
+        let hist = &self.phase_hist[row];
+        let total: u64 = hist.iter().map(Self::get).sum();
+        if total == 0 {
+            return 0;
+        }
+        let want = (total * pct).div_ceil(100);
+        let mut seen = 0;
+        for (b, n) in hist.iter().enumerate() {
+            seen += Self::get(n);
+            if seen >= want {
+                return 1 << b;
+            }
+        }
+        1 << (PHASE_BUCKETS - 1)
+    }
+
     /// Publish a gauge — a number that is *read off* the world each tick
     /// rather than accumulated, so it must be assigned and never bumped.
     pub fn set(field: &AtomicU64, v: u64) {
@@ -1119,5 +1168,40 @@ impl ShardStats {
             "trust_sim_overflow" => &self.trust_sim_overflow,
             _ => return None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bucket edges are where an off-by-one hides: 0 µs, 1 µs and a
+    /// power of two each land where `PHASE_BUCKETS`' doc says, and a
+    /// percentile reads back the upper edge of the bucket it falls in.
+    #[test]
+    fn phase_buckets_and_percentiles() {
+        let s = ShardStats::default();
+        for us in [0, 1, 2, 3, 1000, 1024] {
+            s.record_phase(PHASE_TICK, us);
+        }
+        let got: Vec<u64> = s.phase_hist[PHASE_TICK]
+            .iter()
+            .map(ShardStats::get)
+            .collect();
+        let mut want = vec![0u64; PHASE_BUCKETS];
+        want[0] = 1; // 0
+        want[1] = 1; // 1
+        want[2] = 2; // 2, 3
+        want[10] = 1; // 1000
+        want[11] = 1; // 1024
+        assert_eq!(got, want);
+        assert_eq!(ShardStats::get(&s.phase_max_us[PHASE_TICK]), 1024);
+        assert_eq!(s.phase_pct_us(PHASE_TICK, 50), 4);
+        assert_eq!(s.phase_pct_us(PHASE_TICK, 99), 2048);
+        assert_eq!(s.phase_pct_us(0, 50), 0);
+        // Past the top bucket, and a row that does not exist.
+        s.record_phase(0, u64::MAX);
+        assert_eq!(ShardStats::get(&s.phase_hist[0][PHASE_BUCKETS - 1]), 1);
+        s.record_phase(PHASE_ROWS, 5);
     }
 }

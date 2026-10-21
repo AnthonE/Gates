@@ -2305,6 +2305,77 @@ pub enum Command {
     },
 }
 
+/// Rows in [`SlotHint`]: a power of two at least twice `MAX_PLAYERS`, so the
+/// table never passes half load.
+const SLOT_HINT_ROWS: usize = (2 * MAX_PLAYERS).next_power_of_two();
+const _: () = assert!(MAX_PLAYERS < u16::MAX as usize);
+
+/// Player id → slot (`World::slot_of`): open addressing on the id's
+/// Fibonacci hash, rebuilt in slot order at the top of every tick (the first
+/// slot wins, as the scan's `position` does) and topped up when a join seats
+/// a body. It knows nothing about how the server mints ids — it hashes
+/// them — and it is only ever a hint: `slot_of` checks the row against
+/// `players` before it believes it.
+struct SlotHint {
+    ids: [u32; SLOT_HINT_ROWS],
+    /// Slot + 1; 0 is an empty row.
+    slots: [u16; SLOT_HINT_ROWS],
+}
+
+impl SlotHint {
+    const EMPTY: Self = Self {
+        ids: [0; SLOT_HINT_ROWS],
+        slots: [0; SLOT_HINT_ROWS],
+    };
+
+    #[inline]
+    fn home(id: u32) -> usize {
+        (id.wrapping_mul(0x9E37_79B1) >> (32 - SLOT_HINT_ROWS.trailing_zeros())) as usize
+            & (SLOT_HINT_ROWS - 1)
+    }
+
+    fn get(&self, id: u32) -> Option<usize> {
+        let mut i = Self::home(id);
+        loop {
+            match self.slots[i] {
+                0 => return None,
+                s if self.ids[i] == id => return Some(s as usize - 1),
+                _ => i = (i + 1) & (SLOT_HINT_ROWS - 1),
+            }
+        }
+    }
+
+    /// File `id` at `slot`. A rebuild keeps the first slot an id met; a
+    /// join (`overwrite`) replaces whatever row a departed holder left.
+    fn file(&mut self, id: u32, slot: usize, overwrite: bool) {
+        let mut i = Self::home(id);
+        while self.slots[i] != 0 {
+            if self.ids[i] == id {
+                if overwrite {
+                    self.slots[i] = slot as u16 + 1;
+                }
+                return;
+            }
+            i = (i + 1) & (SLOT_HINT_ROWS - 1);
+        }
+        self.ids[i] = id;
+        self.slots[i] = slot as u16 + 1;
+    }
+
+    fn put(&mut self, id: u32, slot: usize) {
+        self.file(id, slot, true);
+    }
+
+    fn rebuild(&mut self, players: &[Player]) {
+        self.slots.fill(0);
+        for (s, p) in players.iter().enumerate() {
+            if p.active {
+                self.file(p.id, s, false);
+            }
+        }
+    }
+}
+
 pub struct World {
     pub seed: u64,
     pub tick: u64,
@@ -2531,6 +2602,9 @@ pub struct World {
     /// `backpacks` is: `World` is built on the stack and this is 24 kB of
     /// fixed capacity. One allocation at construction, none in the tick.
     pub slot_cache: Box<crate::occupy::SlotCache>,
+    /// Player id → slot, the hint in front of `slot_of`'s scan. Derived,
+    /// never hashed or saved, boxed for `slot_cache`'s reason.
+    slot_hint: Box<SlotHint>,
     /// Every arrow in the air (ranged.rs). Boxed for `slot_cache`'s
     /// reason — `World` is built on the stack and this is fixed capacity
     /// that only grows with `MAX_ARROWS`. One allocation at construction,
@@ -2631,6 +2705,7 @@ impl World {
             env: crate::weather::Env::default(),
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::shard()),
+            slot_hint: Box::new(SlotHint::EMPTY),
             arrows: Box::new(ranged::Arrows::new()),
             spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
@@ -2771,7 +2846,17 @@ impl World {
         true
     }
 
+    /// The slot holding player `id`. Every command and every hit asks this,
+    /// so it probes [`SlotHint`] first; a row is believed only if that slot
+    /// still holds the id, and anything else (a stale row, a test that wrote
+    /// `players` directly) falls through to the scan, so the answer is the
+    /// scan's either way.
     fn slot_of(&self, id: u32) -> Option<usize> {
+        if let Some(s) = self.slot_hint.get(id) {
+            if self.players[s].active && self.players[s].id == id {
+                return Some(s);
+            }
+        }
         self.players.iter().position(|p| p.active && p.id == id)
     }
 
@@ -3732,13 +3817,16 @@ impl World {
                     {
                         continue;
                     }
-                    let (r, top) = terrain::slot_volume(&slot);
-                    let reach = crate::collide::CAPSULE_RADIUS_M + r * slot.scale + CACTUS_TOUCH_M;
-                    let (ox, oz) = (slot.x - x, slot.z - z);
-                    if ox * ox + oz * oz <= reach * reach
-                        && y < slot.y + top * slot.scale
-                        && y + h > slot.y
-                    {
+                    // The volume that stops the body, arms and all, a hand
+                    // wider.
+                    if terrain::slot_blocks(
+                        &slot,
+                        x,
+                        z,
+                        y,
+                        crate::collide::CAPSULE_RADIUS_M + CACTUS_TOUCH_M,
+                        h,
+                    ) {
                         prick = Some((slot.x, slot.z));
                     }
                 }
@@ -4924,6 +5012,7 @@ impl World {
         let Some(slot) = self.players.iter().position(|p| !p.active) else {
             return;
         };
+        self.slot_hint.put(id, slot);
         match save {
             None => {
                 let (x, z) = self.spawn_pos(id);
@@ -7125,6 +7214,7 @@ impl World {
     }
 
     pub fn tick(&mut self, commands: &[Command]) {
+        self.slot_hint.rebuild(&self.players);
         self.events.clear();
         self.trust.clear(self.tick);
         self.safe_zone();

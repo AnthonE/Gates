@@ -2488,19 +2488,16 @@ pub fn update(
             // `R` turns only what stands freely; a door, a lock or an
             // insert goes where its doorway or box says. Kept while red,
             // when a turn is often what makes it fit.
-            let turns = crate::ui::structure::row_for_item(
-                &core.deploy_defs,
-                core.deploy_defs_have,
-                held.item,
-            )
-            .is_some_and(|row| {
-                matches!(
-                    core.deploy_defs.defs[row as usize].placement,
-                    sim_core::deploy::PLACE_GROUND
-                        | sim_core::deploy::PLACE_FOUNDATION
-                        | sim_core::deploy::PLACE_ANY
-                )
-            });
+            let turns =
+                crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held)
+                    .is_some_and(|row| {
+                        matches!(
+                            core.deploy_defs.defs[row as usize].placement,
+                            sim_core::deploy::PLACE_GROUND
+                                | sim_core::deploy::PLACE_FOUNDATION
+                                | sim_core::deploy::PLACE_ANY
+                        )
+                    });
             match (why.is_empty(), turns) {
                 (true, true) => format!("PLACE  {name}   (left click · [R] turn)"),
                 (true, false) => format!("PLACE  {name}   (left click)"),

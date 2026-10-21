@@ -4326,7 +4326,12 @@ fn sim_thread(
     let mut next = Instant::now();
     // The boundary loop: clock read and sleep live here and only here;
     // the tick body makes no syscalls (L1 — the sleep IS the boundary).
+    // The phase marks below read the clock from inside `tick_marked`, which
+    // is this loop's closure doing it: a vDSO read into an atomic, nothing
+    // the tick itself decides on.
+    let us = |d: Duration| d.as_micros().min(u64::MAX as u128) as u64;
     while !shutdown.load(Ordering::Relaxed) {
+        let t_iter = Instant::now();
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
             // A spectator seat: no body, no command, no save — a connection's
@@ -4604,33 +4609,49 @@ fn sim_thread(
             admin_answers: Some(&mut answer_rx),
             save_now: &mut save_now,
         };
-        core.tick(&stats, &mut ops, |lane, slot, bytes| {
-            let Some(link) = links[slot].as_mut() else {
-                return false;
-            };
-            match lane {
-                Lane::Snapshot => {
-                    let mut msg = SnapMsg {
-                        len: bytes.len() as u16,
-                        buf: [0; sim_core::limits::DATAGRAM_BUDGET_BYTES],
-                    };
-                    msg.buf[..bytes.len()].copy_from_slice(bytes);
-                    if link.snaps.push(msg).is_err() {
-                        ShardStats::bump(&stats.snap_ring_skips);
-                        return false; // counted; snapshots supersede anyway
+        let t_core = Instant::now();
+        stats.record_phase(crate::core::Phase::Net as usize, us(t_core - t_iter));
+        let mut last = t_core;
+        let mut cur = crate::core::Phase::Prep as usize;
+        let mark = |phase: crate::core::Phase| {
+            let now = Instant::now();
+            stats.record_phase(cur, us(now - last));
+            last = now;
+            cur = phase as usize;
+        };
+        core.tick_marked(
+            &stats,
+            &mut ops,
+            |lane, slot, bytes| {
+                let Some(link) = links[slot].as_mut() else {
+                    return false;
+                };
+                match lane {
+                    Lane::Snapshot => {
+                        let mut msg = SnapMsg {
+                            len: bytes.len() as u16,
+                            buf: [0; sim_core::limits::DATAGRAM_BUDGET_BYTES],
+                        };
+                        msg.buf[..bytes.len()].copy_from_slice(bytes);
+                        if link.snaps.push(msg).is_err() {
+                            ShardStats::bump(&stats.snap_ring_skips);
+                            return false; // counted; snapshots supersede anyway
+                        }
+                        true
                     }
-                    true
+                    Lane::Event => {
+                        let mut msg = EvMsg {
+                            len: bytes.len() as u16,
+                            buf: [0; MAX_EVENT_MSG_BYTES],
+                        };
+                        msg.buf[..bytes.len()].copy_from_slice(bytes);
+                        link.events.push(msg).is_ok()
+                    }
                 }
-                Lane::Event => {
-                    let mut msg = EvMsg {
-                        len: bytes.len() as u16,
-                        buf: [0; MAX_EVENT_MSG_BYTES],
-                    };
-                    msg.buf[..bytes.len()].copy_from_slice(bytes);
-                    link.events.push(msg).is_ok()
-                }
-            }
-        });
+            },
+            mark,
+        );
+        stats.record_phase(cur, us(last.elapsed()));
         // This tick's snapshots and events, and the voice relayed above,
         // are on the rings: wake the writers (`wake_relay`).
         slots.publish();
@@ -4697,6 +4718,7 @@ fn sim_thread(
         ShardStats::set(&stats.players, core.connected() as u64);
         ShardStats::set(&stats.agents, core.agents_connected() as u64);
         ShardStats::set(&stats.spectators, core.spectators() as u64);
+        stats.record_phase(crate::stats::PHASE_TICK, us(t_iter.elapsed()));
 
         // Pace (the boundary).
         next += tick_dur;

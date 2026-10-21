@@ -176,7 +176,7 @@ pub fn click_of(
         Click::Read
     } else if catalog.row(stack.item as usize).eats() {
         Click::Eat
-    } else if crate::ui::structure::row_for_item(deploys, deploys_have, stack.item).is_some() {
+    } else if crate::ui::structure::row_for_item(deploys, deploys_have, stack).is_some() {
         Click::Deploy
     } else {
         Click::Swing
