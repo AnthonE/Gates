@@ -696,6 +696,11 @@ fn a_round_does_not_sound_like_a_blow() {
     );
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M - 1.0), Cue::ShotGun);
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M + 1.0), Cue::ShotGunFar);
+    assert_eq!(
+        far_layer(Cue::ShotRifle, SHOT_FAR_M + 1.0),
+        Cue::ShotRifleFar
+    );
+    assert_eq!(far_layer(Cue::ShotBolt, SHOT_FAR_M - 1.0), Cue::ShotBolt);
     assert_eq!(far_layer(Cue::ShotBow, 80.0), Cue::ShotBow);
     assert_eq!(far_layer(Cue::ShotHeli, 150.0), Cue::ShotHeli);
     use client::render::audio::{heli_shot_cue, HELI_SHOT_FAR_M};

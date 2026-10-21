@@ -2929,11 +2929,7 @@ pub fn stream(
                 // (the mirror is predicted), anyone else's on the event.
                 if let Some(sound) = sound.as_deref_mut().filter(|_| live.row == rec.row) {
                     let leaf = deploy_transform(seed, haven, key, arch, rec.open, plate);
-                    let cue = if rec.open {
-                        crate::sound::Cue::DoorOpen
-                    } else {
-                        crate::sound::Cue::DoorClose
-                    };
+                    let cue = door_cue(arch, matter, rec.open);
                     let at = leaf.translation + Vec3::Y * 1.0;
                     sound.play(crate::sound::mixer::Request::at(cue, at.to_array()));
                 }
@@ -3659,6 +3655,20 @@ pub struct RecyclerHum {
     pub loc: u8,
 }
 
+/// The swing of a door-like deployable, by what it is: a garage door rolls,
+/// a sheet-metal door clanks, and a wooden door or a shutter creaks.
+pub fn door_cue(arch: u8, matter: u8, open: bool) -> crate::sound::Cue {
+    use crate::sound::Cue;
+    match (arch, matter == sim_core::deploy::MATTER_METAL, open) {
+        (ARCH_GARAGE_DOOR, _, true) => Cue::GarageOpen,
+        (ARCH_GARAGE_DOOR, _, false) => Cue::GarageClose,
+        (_, true, true) => Cue::DoorMetalOpen,
+        (_, true, false) => Cue::DoorMetalClose,
+        (_, false, true) => Cue::DoorOpen,
+        (_, false, false) => Cue::DoorClose,
+    }
+}
+
 /// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
 /// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
 /// a spawn is not type-checked. Drop the `with_child` and every other gate in
@@ -3779,6 +3789,7 @@ pub fn spawn_deploy(
                 cz: rec.cz,
                 level: rec.level,
                 loc: rec.loc,
+                furnace: arch == ARCH_FURNACE,
             },
             PointLight {
                 color: FIRE_COLOR,
@@ -4016,6 +4027,9 @@ pub struct FireLight {
     pub level: u8,
     /// The fire's body slot — two fires can share a cell (free placement).
     pub loc: u8,
+    /// A furnace rather than an open fire: it roars in its box where a
+    /// campfire crackles (`audio::fires`, `audio::bed`).
+    pub furnace: bool,
 }
 
 /// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries
