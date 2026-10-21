@@ -611,6 +611,36 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
             render_take(Cue::ShotGun, take)
         }
         Cue::ShotRocket => render_take(Cue::ShotBow, take),
+        // The furnace and the campfire are recordings; their fallbacks are
+        // the dark bed, a whoosh for a flame catching, the torch's fizzle
+        // for one going out, and a creak for the door.
+        Cue::BedFurnace => render_take(Cue::BedUnder, take),
+        Cue::FurnaceLight | Cue::Kindle => whoosh(&mut r, 0.7),
+        Cue::FurnaceOut | Cue::Snuff => render_take(Cue::TorchOut, take),
+        Cue::FurnaceOpen => creak(&mut r),
+        Cue::DryFire => render_take(Cue::UiClick, take),
+        Cue::ReloadRifle | Cue::ReloadPistol | Cue::ReloadShotgun | Cue::ReloadBolt => {
+            render_take(Cue::Reload, take)
+        }
+        Cue::RemoteReloadRifle => render_take(Cue::ReloadRifle, take),
+        Cue::RemoteReloadPistol => render_take(Cue::ReloadPistol, take),
+        Cue::RemoteReloadShotgun => render_take(Cue::ReloadShotgun, take),
+        Cue::RemoteReloadBolt => render_take(Cue::ReloadBolt, take),
+        Cue::ShotRifleFar
+        | Cue::ShotSmgFar
+        | Cue::ShotPistolFar
+        | Cue::ShotShotgunFar
+        | Cue::ShotBoltFar => render_take(Cue::ShotGunFar, take),
+        Cue::DoorMetalOpen | Cue::GarageOpen => render_take(Cue::DoorOpen, take),
+        Cue::DoorMetalClose | Cue::GarageClose => render_take(Cue::DoorClose, take),
+        Cue::Repair => render_take(Cue::Knock, take),
+        Cue::WolfHurt | Cue::WolfDeath => render_take(Cue::Growl, take),
+        Cue::BoarHurt | Cue::BoarDeath => render_take(Cue::Snort, take),
+        Cue::StagHurt | Cue::StagDeath => render_take(Cue::Bellow, take),
+        Cue::PlaceStone => render_take(Cue::ImpactStone, take),
+        Cue::PlaceMetal => render_take(Cue::ImpactMetal, take),
+        Cue::RecyclerStart | Cue::RecyclerStop => render_take(Cue::Collapse, take),
+        Cue::KnockMetal => render_take(Cue::ImpactMetal, take),
 
         // **The one wildcard arm in this match, and it is gated rather than
         // trusted.** A cue added to the enum and forgotten everywhere else

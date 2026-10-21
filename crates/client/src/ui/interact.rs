@@ -318,6 +318,10 @@ pub struct Pick {
     /// to take, and a recycler that pays the safe zone's share. Stamped by
     /// the caller, as `lit` is, from [`town_station`].
     pub public: bool,
+    /// Offers a speaker has that this player can still take
+    /// (`ui::offer::open_count`), so the prompt says there is something to
+    /// be had. Stamped by the caller, as `lit` is.
+    pub offers: u8,
     /// The swing in hand would land on THIS carcass: the hand butchers and
     /// nothing nearer along the look takes the blow (`SwingPick::bag` is
     /// this pick's handle, §0ray 2). Stamped by the caller, as `lit` is, so
@@ -486,7 +490,11 @@ impl Pick {
             }
             Verb::Sit => "[E] SIT".to_string(),
             Verb::Work => "[E] THE WORK".to_string(),
-            Verb::Talk => "[E] TALK".to_string(),
+            Verb::Talk => match self.offers {
+                0 => "[E] TALK".to_string(),
+                1 => "[E] TALK  ·  1 OFFER".to_string(),
+                n => format!("[E] TALK  ·  {n} OFFERS"),
+            },
             Verb::Read => "[E] READ THE STONE".to_string(),
             Verb::Turn => format!(
                 "[E] TURN DIAL {} · SHOWS {}",

@@ -505,9 +505,18 @@ pub fn resolve(
             aimed.0 = work;
         }
     }
-    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way.
+    // A speaker, a stone or a dial (`ARC.md` F5–F7), the same way. A
+    // speaker says how many offers they have left for you.
     if aimed.0.is_none() {
-        let lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        let mut lore = interact::resolve_lore(x, y, z, core.haven(), &core.lore);
+        if lore.verb == interact::Verb::Talk {
+            if let Some(s) = core.lore.speakers.get(lore.handle as usize) {
+                lore.offers =
+                    crate::ui::offer::open_count(s, &core.skins, &core.skins_owned, |item| {
+                        sim_core::craft::inv_count(&core.inv, item)
+                    });
+            }
+        }
         if lore.verb != interact::Verb::None {
             aimed.0 = lore;
         }
@@ -1214,13 +1223,24 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 protocol::encode_action_sit(seat, buf)
             });
         }
-        // A speaker opens the talk panel and asks the first topic: they greet
-        // you. The answer is the server's (`SUB_ARC_TEXT`).
+        // A speaker opens the talk panel and asks the first topic that is
+        // not a gift: they greet you. A gift is asked only by its own button
+        // (`ui::offer`), since asking one takes it, price and all. The answer
+        // is the server's (`SUB_ARC_TEXT`).
         Verb::Talk => {
             let k = pick.handle as u8;
-            send(net, toast, "talk", |buf| {
-                protocol::encode_action_arc(sim_core::lore::OP_TALK, k, 0, buf)
-            });
+            let greeting = net
+                .session
+                .core
+                .lore
+                .speakers
+                .get(k as usize)
+                .and_then(|s| s.greeting());
+            if let Some(t) = greeting {
+                send(net, toast, "talk", |buf| {
+                    protocol::encode_action_arc(sim_core::lore::OP_TALK, k, t, buf)
+                });
+            }
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Talk;

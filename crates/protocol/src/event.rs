@@ -62,8 +62,8 @@ pub const GROW_SYNC_BATCH: usize = 32;
 pub const NODE_STAGE_BATCH: usize = 32;
 
 /// Item names one catalog message carries. Five since v126: a worst-case
-/// row is 427 bits with a gun's handling, and six of them would pass
-/// `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
+/// row is 443 bits with a gun's handling and v131's damage, and six of them
+/// would pass `MAX_EVENT_MSG_BYTES` (the assert at `CATALOG_ROW_MAX_BITS`).
 pub const CATALOG_BATCH: usize = 5;
 
 /// Skin rows one skin-catalog message carries. A row is at most
@@ -83,6 +83,38 @@ pub const ARC_TEXT_BYTES: usize = 280;
 pub const ARC_SPEAKER: u8 = 0;
 pub const ARC_INSCRIPTION: u8 = 1;
 pub const ARC_MECH: u8 = 2;
+/// What asking a gift topic came to (`SUB_ARC_TEXT`, wire v130): none for
+/// a plain answer, else one of `content::bake::Gift`'s outcomes.
+pub const ARC_GIFT_NONE: u8 = 0;
+pub const ARC_GIFT_GUEST: u8 = 1;
+pub const ARC_GIFT_OWNED: u8 = 2;
+pub const ARC_GIFT_GIVEN: u8 = 3;
+pub const ARC_GIFT_SHORT: u8 = 4;
+pub const ARC_GIFT_WAITING: u8 = 5;
+
+/// A gift topic (`content/arc.toml` `gift`, wire v130): the skins asking
+/// it hands over, by catalog id, and what it costs, `count` 0 being free.
+/// A plain topic is the default, `gift: false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TopicOffer {
+    pub gift: bool,
+    pub n: u8,
+    pub catalogs: [u16; sim_core::lore::MAX_GIFT_ROWS],
+    /// The price's item row and count.
+    pub item: u16,
+    pub count: u16,
+}
+
+impl TopicOffer {
+    pub fn catalogs(&self) -> &[u16] {
+        &self.catalogs[..(self.n as usize).min(sim_core::lore::MAX_GIFT_ROWS)]
+    }
+
+    /// Asking takes a price from the pack.
+    pub fn priced(&self) -> bool {
+        self.gift && self.count > 0
+    }
+}
 /// Longest unlock name on the wire.
 pub const UNLOCK_NAME_BYTES: usize = 16;
 
@@ -637,6 +669,10 @@ pub struct StandingBoard {
     /// Printable ASCII, `names[i][..name_lens[i]]`.
     pub names: [[u8; STANDING_NAME_BYTES]; STANDING_TOP],
     pub name_lens: [u8; STANDING_TOP],
+    /// The wallet behind row `i` (wire v132), `Address::GUEST` for a row
+    /// that has none: what a click on a row opens a profile by. The shard's
+    /// own `/standings.json` already names it.
+    pub wallets: [crate::Address; STANDING_TOP],
     /// The purse's coin, capitals, `ticker[..ticker_len]`; empty for none.
     pub ticker: [u8; STANDING_TICKER_BYTES],
     pub ticker_len: u8,
@@ -663,6 +699,7 @@ impl StandingBoard {
         scores: [0; STANDING_TOP],
         names: [[0; STANDING_NAME_BYTES]; STANDING_TOP],
         name_lens: [0; STANDING_TOP],
+        wallets: [crate::Address::GUEST; STANDING_TOP],
         ticker: [0; STANDING_TICKER_BYTES],
         ticker_len: 0,
         n_prizes: 0,
@@ -703,6 +740,24 @@ impl StandingBoard {
             .get(i)
             .and_then(|n| core::str::from_utf8(&n[..len.min(STANDING_NAME_BYTES)]).ok())
             .unwrap_or("?")
+    }
+
+    /// Row `i`'s wallet, `None` for a guest or a key that is no wallet.
+    pub fn wallet(&self, i: usize) -> Option<crate::Address> {
+        self.wallets
+            .get(i)
+            .copied()
+            .filter(|a| i < self.n as usize && !a.is_guest())
+    }
+
+    /// [`Self::push`], and the wallet behind the row.
+    pub fn push_wallet(&mut self, name: &str, score: u32, wallet: crate::Address) -> bool {
+        let i = self.n as usize;
+        if !self.push(name, score) {
+            return false;
+        }
+        self.wallets[i] = wallet;
+        true
     }
 
     /// Put row `n`: a name (cut to the wire's length, non-printables
@@ -1194,6 +1249,13 @@ pub struct ItemRow {
     /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
     /// also what a row past the drip watermark reads as.
     pub class: u8,
+    /// What one hit of it takes off a body (v131): the ranged row's
+    /// `damage` for a gun or a bow (per pellet — a shotgun's card multiplies
+    /// by [`GunRow::pellets`]), else the melee swing's, else a throwable's;
+    /// 0 for anything that does not hit. The client draws it on the item
+    /// card (Rust's DAMAGE) and decides nothing with it. Full width, the
+    /// sim's own `u16`.
+    pub damage: u16,
     /// How a gun handles (v126, `combat::Gun`), for the client to kick its
     /// own view on the shot it fires and to draw it the instant the trigger
     /// breaks rather than a round trip later. `None` on all but firearms.
@@ -1269,6 +1331,7 @@ const CATALOG_ROW_MAX_BITS: usize = (NAME_LEN_BITS as usize + 8 * MAX_ITEM_NAME_
     + OVEN_ROLE_BITS as usize
     + 2
     + ITEM_CLASS_BITS as usize
+    + 16
     + 1
     + GUN_ROW_BITS;
 // A full batch of the widest rows fits one message. v102's class nibble is
@@ -1295,6 +1358,7 @@ impl ItemRow {
         holster: false,
         revive: false,
         class: CLASS_OTHER,
+        damage: 0,
         gun: None,
     };
 
@@ -2126,6 +2190,11 @@ pub enum EventMsg {
         floor_len: u8,
         ceiling_name: [u8; UNLOCK_NAME_BYTES],
         ceiling_len: u8,
+        /// The knob its ceiling turns while it burns
+        /// (`sim_core::works::KNOB_*`, wire v132), [`NO_BOOST`] for none,
+        /// and to what per cent.
+        boost_knob: u8,
+        boost_pct: u16,
     },
     /// Work `index` now (wire v95): `sim_core::works::WORK_*`, its tank, the
     /// first `n` quota lines so far, the receiver's share (basis points of a
@@ -2145,8 +2214,8 @@ pub enum EventMsg {
     /// Your arc verb was refused (`sim_core::works::REFUSE_A_*`).
     ArcRefused { code: u8, op: u8, target: u8 },
     /// Arc object `index` of `total` of `kind` (`ARC_SPEAKER`…, wire v96):
-    /// where it stands, its name, a speaker's topic titles, a mechanism's
-    /// dials and notches.
+    /// where it stands, its name, a speaker's topic titles and which of
+    /// them are gifts (v130), a mechanism's dials and notches.
     ArcPlace {
         kind: u8,
         index: u8,
@@ -2157,14 +2226,17 @@ pub enum EventMsg {
         n_topics: u8,
         topics: [[u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS],
         topic_lens: [u8; sim_core::lore::MAX_TOPICS],
+        offers: [TopicOffer; sim_core::lore::MAX_TOPICS],
         dials: u8,
         values: u8,
     },
-    /// What speaker `index` said on `topic`, or inscription `index`'s text.
+    /// What speaker `index` said on `topic`, or inscription `index`'s text,
+    /// and what asking a gift topic came to (`ARC_GIFT_*`, v130).
     ArcText {
         kind: u8,
         index: u8,
         topic: u8,
+        gift: u8,
         text: [u8; ARC_TEXT_BYTES],
         len: u16,
     },
@@ -2814,6 +2886,11 @@ pub fn encode_event_standing(b: &StandingBoard, buf: &mut [u8]) -> Result<usize,
         for &c in name {
             w.write(c as u32, 8)?;
         }
+        let wallet = b.wallets[i];
+        w.write(!wallet.is_guest() as u32, 1)?;
+        if !wallet.is_guest() {
+            crate::write_address(&mut w, &wallet)?;
+        }
     }
     Ok(w.finish())
 }
@@ -2885,6 +2962,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.revive)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
+        // The damage a hit does (v131), full width.
+        w.write(row.damage as u32, 16)?;
         // A gun's handling (v126), behind a presence bit.
         w.write_bit(row.gun.is_some())?;
         if let Some(g) = row.gun {
@@ -4274,8 +4353,31 @@ pub fn encode_event_work_def(
             w.write(b as u32, 8)?;
         }
     }
+    // What its ceiling does while it burns (wire v132): the first effect on
+    // that unlock, so a terminal can say "furnaces smelt 2x as fast" rather
+    // than the unlock's bare name.
+    let boost = wc
+        .effects
+        .iter()
+        .take(wc.n_effects as usize)
+        .find(|e| d.ceiling != sim_core::works::NO_UNLOCK && e.unlock == d.ceiling);
+    w.write(boost.is_some() as u32, 1)?;
+    if let Some(e) = boost {
+        if e.knob > sim_core::works::KNOB_MAX || e.pct as u32 >= 1 << BOOST_PCT_BITS {
+            return Err(WireError::Range);
+        }
+        w.write(e.knob as u32, BOOST_KNOB_BITS)?;
+        w.write(e.pct as u32, BOOST_PCT_BITS)?;
+    }
     Ok(w.finish())
 }
+
+/// Widths of a work's boost (`EventMsg::WorkDef::boost_knob`).
+const BOOST_KNOB_BITS: u32 = 3;
+const BOOST_PCT_BITS: u32 = 11;
+const _: () = assert!((sim_core::works::KNOB_MAX as u32) < 1 << BOOST_KNOB_BITS);
+/// `EventMsg::WorkDef::boost_knob` for a work whose ceiling turns nothing.
+pub const NO_BOOST: u8 = 0xFF;
 
 /// Work `index`'s state, as the receiver sees it.
 #[allow(clippy::too_many_arguments)]
@@ -4339,7 +4441,9 @@ pub fn encode_event_arc_refused(
 }
 
 /// Arc object `index` of `total` of `kind`: where it stands and what it is
-/// called; `topics` for a speaker, `(dials, values)` for a mechanism.
+/// called; `topics` for a speaker, with `offers` saying which are gifts (a
+/// topic past the end of `offers` is plain), `(dials, values)` for a
+/// mechanism.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_event_arc_place(
     kind: u8,
@@ -4348,6 +4452,7 @@ pub fn encode_event_arc_place(
     spot: &sim_core::spot::Spot,
     name: &[u8],
     topics: &[&[u8]],
+    offers: &[TopicOffer],
     dials: u8,
     values: u8,
     buf: &mut [u8],
@@ -4359,6 +4464,10 @@ pub fn encode_event_arc_place(
         || name.len() > ARC_NAME_BYTES
         || topics.len() > sim_core::lore::MAX_TOPICS
         || topics.iter().any(|t| t.len() > ARC_NAME_BYTES)
+        || offers.len() > topics.len()
+        || offers.iter().any(|o| {
+            o.n as usize > sim_core::lore::MAX_GIFT_ROWS || (!o.gift && *o != TopicOffer::default())
+        })
         || dials as usize > sim_core::limits::MAX_DIALS
         || values > sim_core::mech::MAX_VALUES
     {
@@ -4380,10 +4489,22 @@ pub fn encode_event_arc_place(
     match kind {
         ARC_SPEAKER => {
             w.write(topics.len() as u32, 3)?;
-            for t in topics {
+            for (i, t) in topics.iter().enumerate() {
                 w.write(t.len() as u32, 5)?;
                 for &b in *t {
                     w.write(b as u32, 8)?;
+                }
+                let o = offers.get(i).copied().unwrap_or_default();
+                w.write(o.gift as u32, 1)?;
+                if o.gift {
+                    w.write(o.n as u32, 3)?;
+                    for &c in o.catalogs() {
+                        w.write(c as u32, 16)?;
+                    }
+                    w.write(o.count as u32, 16)?;
+                    if o.count > 0 {
+                        w.write(o.item as u32, 16)?;
+                    }
                 }
             }
         }
@@ -4396,21 +4517,29 @@ pub fn encode_event_arc_place(
     Ok(w.finish())
 }
 
-/// What a speaker said, or what a stone holds — to the one who asked.
+/// What a speaker said, or what a stone holds — to the one who asked; and
+/// what asking a gift topic came to (`ARC_GIFT_*`).
 pub fn encode_event_arc_text(
     kind: u8,
     index: u8,
     topic: u8,
+    gift: u8,
     text: &[u8],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    if kind > ARC_MECH || index >= 32 || topic >= 8 || text.len() > ARC_TEXT_BYTES {
+    if kind > ARC_MECH
+        || index >= 32
+        || topic >= 8
+        || gift > ARC_GIFT_WAITING
+        || text.len() > ARC_TEXT_BYTES
+    {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_ARC_TEXT)?;
     w.write(kind as u32, 2)?;
     w.write(index as u32, 5)?;
     w.write(topic as u32, 3)?;
+    w.write(gift as u32, 3)?;
     w.write(text.len() as u32, 9)?;
     for &b in text {
         w.write(b as u32, 8)?;
@@ -6019,6 +6148,12 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     }
                 }
                 b.name_lens[i] = len as u8;
+                if r.read(1)? == 1 {
+                    b.wallets[i] = crate::read_address(&mut r)?;
+                    if b.wallets[i].is_guest() {
+                        return Err(WireError::Malformed);
+                    }
+                }
             }
             EventMsg::Standing(b)
         }
@@ -6072,6 +6207,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
+                    damage: r.read(16)? as u16,
                     gun: if r.read_bit()? {
                         let rate_ticks = r.read(8)? as u8;
                         let reload_ticks = r.read(GUN_RELOAD_BITS)? as u16;
@@ -6885,6 +7021,16 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 }
                 lens[j] = len as u8;
             }
+            let (boost_knob, boost_pct) = if r.read(1)? == 1 {
+                let knob = r.read(BOOST_KNOB_BITS)? as u8;
+                let pct = r.read(BOOST_PCT_BITS)? as u16;
+                if knob > sim_core::works::KNOB_MAX {
+                    return Err(WireError::Malformed);
+                }
+                (knob, pct)
+            } else {
+                (NO_BOOST, 100)
+            };
             EventMsg::WorkDef {
                 total,
                 index,
@@ -6895,6 +7041,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 floor_len: lens[1],
                 ceiling_name,
                 ceiling_len: lens[2],
+                boost_knob,
+                boost_pct,
             }
         }
         SUB_WORK_STATE => {
@@ -6964,6 +7112,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut topics = [[0u8; ARC_NAME_BYTES]; sim_core::lore::MAX_TOPICS];
             let mut topic_lens = [0u8; sim_core::lore::MAX_TOPICS];
+            let mut offers = [TopicOffer::default(); sim_core::lore::MAX_TOPICS];
             let (mut n_topics, mut dials, mut values) = (0u8, 0u8, 0u8);
             match kind {
                 ARC_SPEAKER => {
@@ -6971,9 +7120,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     if n_topics as usize > sim_core::lore::MAX_TOPICS {
                         return Err(WireError::Malformed);
                     }
-                    for (t, len) in topics
+                    for ((t, len), o) in topics
                         .iter_mut()
                         .zip(topic_lens.iter_mut())
+                        .zip(offers.iter_mut())
                         .take(n_topics as usize)
                     {
                         let l = r.read(5)? as usize;
@@ -6984,6 +7134,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                             *b = r.read(8)? as u8;
                         }
                         *len = l as u8;
+                        if r.read(1)? == 1 {
+                            o.gift = true;
+                            o.n = r.read(3)? as u8;
+                            if o.n as usize > sim_core::lore::MAX_GIFT_ROWS {
+                                return Err(WireError::Malformed);
+                            }
+                            for c in o.catalogs.iter_mut().take(o.n as usize) {
+                                *c = r.read(16)? as u16;
+                            }
+                            o.count = r.read(16)? as u16;
+                            if o.count > 0 {
+                                o.item = r.read(16)? as u16;
+                            }
+                        }
                     }
                 }
                 ARC_MECH => {
@@ -7007,6 +7171,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 n_topics,
                 topics,
                 topic_lens,
+                offers,
                 dials,
                 values,
             }
@@ -7015,8 +7180,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let kind = r.read(2)? as u8;
             let index = r.read(5)? as u8;
             let topic = r.read(3)? as u8;
+            let gift = r.read(3)? as u8;
             let len = r.read(9)? as usize;
-            if kind > ARC_MECH || len > ARC_TEXT_BYTES {
+            if kind > ARC_MECH || gift > ARC_GIFT_WAITING || len > ARC_TEXT_BYTES {
                 return Err(WireError::Malformed);
             }
             let mut text = [0u8; ARC_TEXT_BYTES];
@@ -7027,6 +7193,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 kind,
                 index,
                 topic,
+                gift,
                 text,
                 len: len as u16,
             }
@@ -8150,6 +8317,74 @@ mod tests {
         );
     }
 
+    /// The widest speaker — every name full and every topic a priced gift
+    /// of the most rows — fits one message, and a plain topic stays plain.
+    #[test]
+    fn a_speaker_of_priced_gifts_fits_one_message() {
+        use sim_core::lore::{MAX_GIFT_ROWS, MAX_TOPICS};
+        let name = [b'N'; ARC_NAME_BYTES];
+        let title = [b'T'; ARC_NAME_BYTES];
+        let topics = [&title[..]; MAX_TOPICS];
+        let mut offers = [TopicOffer {
+            gift: true,
+            n: MAX_GIFT_ROWS as u8,
+            catalogs: [u16::MAX; MAX_GIFT_ROWS],
+            item: u16::MAX,
+            count: u16::MAX,
+        }; MAX_TOPICS];
+        offers[0] = TopicOffer::default();
+        let spot = sim_core::spot::Spot {
+            site: sim_core::spot::SITE_MAX,
+            nth: u8::MAX,
+            x_cm: i16::MIN,
+            y_cm: i16::MAX,
+            z_cm: -1,
+        };
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = encode_event_arc_place(
+            ARC_SPEAKER,
+            31,
+            32,
+            &spot,
+            &name,
+            &topics,
+            &offers,
+            0,
+            0,
+            &mut buf,
+        )
+        .unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ArcPlace {
+                n_topics,
+                offers: o,
+                ..
+            } => {
+                assert_eq!(n_topics as usize, MAX_TOPICS);
+                assert_eq!(o, offers);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // A plain topic carrying a price is not a thing the wire can say.
+        let bad = [TopicOffer {
+            count: 5,
+            ..TopicOffer::default()
+        }];
+        assert!(encode_event_arc_place(
+            ARC_SPEAKER,
+            0,
+            1,
+            &spot,
+            &name,
+            &topics[..1],
+            &bad,
+            0,
+            0,
+            &mut buf
+        )
+        .is_err());
+    }
+
     /// The skin drip's worst case — every row priced (the widest coin
     /// arm) with a full-width name — fits the message cap, walks the whole
     /// table, and round-trips row for row.
@@ -8324,6 +8559,8 @@ mod tests {
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
+                // The damage (v131) at the width's corner, distinct per row.
+                damage: u16::MAX - 5 * i as u16,
                 gun: None,
             };
             cat.set(i, &name, row).unwrap();
@@ -9955,6 +10192,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/gather.rs"),
         },
         Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
+        },
+        Module {
             file: "heli.rs",
             src: include_str!("../../sim-core/src/heli.rs"),
         },
@@ -10005,6 +10246,10 @@ mod wire_domains {
         Module {
             file: "brain.rs",
             src: include_str!("../../sim-core/src/brain.rs"),
+        },
+        Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
         },
         Module {
             file: "nav.rs",
@@ -10475,6 +10720,19 @@ mod wire_domains {
             bits: BAG_GONE_BITS,
             live_max: 2,
         },
+        Domain {
+            what: "work boost knob",
+            sim_site: "works.rs KNOB_*",
+            wire_site: "BOOST_KNOB_BITS",
+            home: "works.rs",
+            prefix: "pub const KNOB_",
+            ty: ": u8 = ",
+            // `KNOB_MAX` names the ledger. Five knobs in three bits at v132.
+            exempt: &["MAX"],
+            min_members: 5,
+            bits: BOOST_KNOB_BITS,
+            live_max: 4,
+        },
     ];
 
     /// Scrape one domain's live members out of **every** module.
@@ -10625,9 +10883,10 @@ mod wire_domains {
             // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
             // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
             // `craft::CLASS_*`. 23 -> 24 at v123: `CASINO_CODE_BITS` over
-            // `casino::REFUSE_CA_*`.
+            // `casino::REFUSE_CA_*`. 24 -> 25 at v132: `BOOST_KNOB_BITS`
+            // over `works::KNOB_*`.
             DOMAINS.len(),
-            24,
+            25,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -10805,6 +11064,9 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A work's boost (v132): a per cent, which content bounds to
+            // 1..=1000 and the encoder refuses past the width.
+            "BOOST_PCT_BITS",
             // A team (v108): its member count, bounded by the wire's own
             // `TEAM_MAX` (const-asserted beside the width); a member's
             // state, the wire's own three, refused past `TEAM_STATE_MAX`;

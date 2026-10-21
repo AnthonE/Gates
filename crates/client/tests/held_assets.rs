@@ -103,12 +103,24 @@ fn nothing_held_glows() {
     // has NO row of its own: the world's fire pit is lit and bakes a full
     // emissive, and a carried unlit one must not glow. Point a row at it and
     // this test is the one that goes red.
+    //
+    // **A glow skin is the one exception, and it says so** (`SkinModelDef::
+    // glow`, Rust's glow skins): its emissive is a map of the cracks it was
+    // painted with (`ci/meshy_retexture.py --glow`), never a flat factor.
+    let glows = |rel: &str| SKIN_MODELS.iter().any(|s| s.path == rel && s.glow);
     for (key, rel) in glb_rows() {
         let g = glb_json(&asset_path(rel));
         for m in g["materials"].as_array().into_iter().flatten() {
             let lit = m
                 .get("emissiveFactor")
                 .is_some_and(|f| (0..3).any(|k| f[k].as_f64().unwrap_or(0.0) > 1e-6));
+            if glows(rel) {
+                assert!(
+                    lit && m.get("emissiveTexture").is_some(),
+                    "{key} ({rel}) is a glow skin with no emissive map"
+                );
+                continue;
+            }
             assert!(
                 !lit,
                 "{key} ({rel}) has a non-zero emissiveFactor — it would glow \
@@ -116,6 +128,22 @@ fn nothing_held_glows() {
                  `--emissive` is passed, so the import skipped a step."
             );
         }
+    }
+}
+
+/// A skin with a model is sold and carried as a picture of that model
+/// (`SkinModelDef::icon`, `iconbake --skins`): without one the store falls
+/// back to the plain item in a colour, which is the look this replaced.
+#[test]
+fn every_skin_model_has_its_picture() {
+    for s in &SKIN_MODELS {
+        let icon = s.icon();
+        assert!(
+            asset_path(&icon).exists(),
+            "{} has no picture at assets/{icon}: run `iconbake --skins` then \
+             `ci/finish_icons.py --only-renders --renders <dir> --out assets/icons/skins`",
+            s.path
+        );
     }
 }
 

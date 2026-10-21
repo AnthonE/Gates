@@ -242,6 +242,13 @@ impl Gates {
                 // is the page's only word that a WebGPU module's renderer
                 // never started (`window.gatesPanic`). Ours logs the same.
                 .disable::<bevy::app::PanicHandlerPlugin>()
+                // Nothing in the game reads a gamepad, and on this target
+                // gilrs asks `navigator.getGamepads()` for one every frame.
+                .disable::<bevy::gilrs::GilrsPlugin>()
+                .set(bevy::log::LogPlugin {
+                    custom_layer: quiet_frame_span,
+                    ..default()
+                })
                 .set(AssetPlugin {
                     // **No `.meta` probe.** Bevy's default is `Always`, which
                     // fires a second request for `<path>.meta` before every
@@ -327,6 +334,38 @@ impl Gates {
         });
         app.run();
     }
+}
+
+/// Switch off `bevy_render`'s `present_frames` span, the one span Bevy opens
+/// every frame without its `trace` feature.
+///
+/// The wasm logger (`tracing_wasm`, as `LogPlugin` builds it) answers a span's
+/// entry with `performance.mark` and its exit with `performance.measure`: two
+/// calls into JS a frame, and two User Timing entries a frame that nothing
+/// ever clears — about 430,000 an hour of play, held by the tab. A layer that
+/// is not interested in a callsite disables it for every layer, so the span
+/// is never built at all.
+fn quiet_frame_span(_: &mut bevy::app::App) -> Option<bevy::log::BoxedLayer> {
+    use bevy::log::tracing::{subscriber::Interest, Metadata, Subscriber};
+    use bevy::log::tracing_subscriber::layer::{Context, Layer};
+
+    struct Quiet;
+    fn frame_span(m: &Metadata<'_>) -> bool {
+        m.is_span() && m.name() == "present_frames"
+    }
+    impl<S: Subscriber> Layer<S> for Quiet {
+        fn register_callsite(&self, m: &'static Metadata<'static>) -> Interest {
+            if frame_span(m) {
+                Interest::never()
+            } else {
+                Interest::always()
+            }
+        }
+        fn enabled(&self, m: &Metadata<'_>, _: Context<'_, S>) -> bool {
+            !frame_span(m)
+        }
+    }
+    Some(Box::new(Quiet))
 }
 
 /// Turn a join failure into something the page can BRANCH on rather than read.

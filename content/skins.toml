@@ -9,7 +9,10 @@
 #            Nonzero, unique, never reused for a different look.
 #   name     what the store and the item's label say (≤ 24 ASCII bytes)
 #   covers   the one item it fits (a stack-1 item, not a deployable, v0)
-#   tint     the look, v0: an sRGB multiply over the item's own colours
+#   tint     the look, v0: an sRGB multiply over the item's own colours. A
+#            skin with a model of its own (`client::ui::hold::SKIN_MODELS`)
+#            draws that, and a picture of it in the store; its tint is the
+#            fallback while the model loads
 #   coin     JUNK, ELO or ORBS \  optional, together: a row without them
 #   price    bare amount       /  ships its look and is not on sale until
 #                                priced — prices are the operator's
@@ -133,3 +136,112 @@ covers = "item.abyss_rug"
 tint = [14, 59, 67]
 season = "abyss"
 unlock = true
+
+# ── The Realm drop (2026-10-21) ──────────────────────────────────────────────
+# Rust's store shape: a drop of themed sets, each across guns and tools, one
+# per register of the island (WORLD.md §1). Every one is its item's own mesh
+# repainted (`ci/meshy_retexture.py`), so it is held, aimed and fired exactly
+# as the item is; the Verdigris set's cracks glow. Unpriced: the operator
+# prices them (BUSINESS.md), and until then a `skins_all` shard shows them.
+
+# Verdigris: The Interior's corruption: black volcanic glass, verdigris bronze, and cracks that glow.
+
+[[skin]]
+id = "skin.ar_verdigris"
+catalog = 11
+name = "Verdigris AR"
+covers = "item.assault_rifle"
+tint = [96, 168, 128]
+season = "realm"
+
+[[skin]]
+id = "skin.python_verdigris"
+catalog = 12
+name = "Verdigris Python"
+covers = "item.python"
+tint = [96, 168, 128]
+season = "realm"
+
+[[skin]]
+id = "skin.longsword_verdigris"
+catalog = 13
+name = "Verdigris Longsword"
+covers = "item.longsword"
+tint = [96, 168, 128]
+season = "realm"
+
+[[skin]]
+id = "skin.hatchet_metal_verdigris"
+catalog = 14
+name = "Verdigris Hatchet"
+covers = "item.hatchet_metal"
+tint = [96, 168, 128]
+season = "realm"
+
+# Lapis: The Lost Realm's court: obsidian, lapis inlay and tarnished gold.
+
+[[skin]]
+id = "skin.thompson_lapis"
+catalog = 15
+name = "Lapis Thompson"
+covers = "item.thompson"
+tint = [70, 92, 170]
+season = "realm"
+
+[[skin]]
+id = "skin.bolt_rifle_lapis"
+catalog = 16
+name = "Lapis Bolt Rifle"
+covers = "item.bolt_rifle"
+tint = [70, 92, 170]
+season = "realm"
+
+[[skin]]
+id = "skin.pickaxe_metal_lapis"
+catalog = 17
+name = "Lapis Pickaxe"
+covers = "item.pickaxe_metal"
+tint = [70, 92, 170]
+season = "realm"
+
+[[skin]]
+id = "skin.mace_lapis"
+catalog = 18
+name = "Lapis Mace"
+covers = "item.mace"
+tint = [70, 92, 170]
+season = "realm"
+
+# Tidewrack: The Living Coast's salvage: driftwood, rope, barnacled brass and sea glass.
+
+[[skin]]
+id = "skin.pump_shotgun_tidewrack"
+catalog = 19
+name = "Tidewrack Shotgun"
+covers = "item.pump_shotgun"
+tint = [196, 188, 170]
+season = "realm"
+
+[[skin]]
+id = "skin.custom_smg_tidewrack"
+catalog = 20
+name = "Tidewrack SMG"
+covers = "item.custom_smg"
+tint = [196, 188, 170]
+season = "realm"
+
+[[skin]]
+id = "skin.semi_rifle_tidewrack"
+catalog = 21
+name = "Tidewrack SAR"
+covers = "item.semi_rifle"
+tint = [196, 188, 170]
+season = "realm"
+
+[[skin]]
+id = "skin.cleaver_tidewrack"
+catalog = 22
+name = "Tidewrack Cleaver"
+covers = "item.cleaver_salvaged"
+tint = [196, 188, 170]
+season = "realm"
