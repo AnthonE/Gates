@@ -3,7 +3,8 @@
 //! its id and scaled by its stage, with the children its stage shows — a
 //! patch of turned soil for a seed, a sprout for a seedling, the crop's own
 //! mesh from sapling on, its fruit while fruiting and ripe, and the wilt
-//! once it is dying.
+//! once it is dying — over a mound of heaped soil when it grows in the
+//! open ground.
 //!
 //! **Bevy draws, it does not decide.** Every fact here is the wire record;
 //! nothing is predicted. The reconcile runs only on frames the plant set
@@ -41,14 +42,19 @@ pub struct CropKit {
     sprout_mat: Handle<StandardMaterial>,
     disc: Handle<Mesh>,
     disc_mat: Handle<StandardMaterial>,
+    /// A ground plant's heaped soil, under it at every stage.
+    mound: Handle<Mesh>,
+    mound_mat: Handle<StandardMaterial>,
     fruit: Handle<Mesh>,
     fruit_mat: Handle<StandardMaterial>,
     /// A dying plant's brown: one for the solid parts and corn's straps,
     /// one wearing hemp's leaf card (a card's shape is its alpha).
     wilt_solid: Handle<StandardMaterial>,
     wilt_card: Handle<StandardMaterial>,
-    /// The planting ghost's sprout (`render::farm_ghost`).
+    /// The planting ghost's sprout (`render::farm_ghost`), and its red for
+    /// ground the sim would refuse.
     pub ghost: Handle<StandardMaterial>,
+    pub ghost_no: Handle<StandardMaterial>,
     pub ghost_mesh: Handle<Mesh>,
 }
 
@@ -134,6 +140,7 @@ pub fn build_kit(
     let stalk_mat = solid(&mut materials, Color::WHITE, 0.8);
     let sprout_mat = solid(&mut materials, Color::WHITE, 0.85);
     let disc_mat = solid(&mut materials, Color::linear_rgb(0.035, 0.024, 0.014), 0.95);
+    let mound_mat = solid(&mut materials, Color::linear_rgb(0.05, 0.032, 0.018), 0.97);
     let fruit_mat = solid(&mut materials, Color::linear_rgb(0.62, 0.42, 0.04), 0.55);
     let wilt_solid = solid(&mut materials, Color::linear_rgb(0.16, 0.10, 0.045), 0.95);
     let wilt_card = materials.add(StandardMaterial {
@@ -148,6 +155,14 @@ pub fn build_kit(
     });
     let ghost = materials.add(StandardMaterial {
         base_color: Color::srgba(0.55, 0.95, 0.5, 0.45),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        double_sided: true,
+        ..default()
+    });
+    let ghost_no = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.86, 0.28, 0.22, 0.4),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         cull_mode: None,
@@ -181,11 +196,14 @@ pub fn build_kit(
         sprout_mat,
         disc: meshes.add(plants::soil_disc()),
         disc_mat,
+        mound: meshes.add(plants::soil_mound()),
+        mound_mat,
         fruit: meshes.add(Capsule3d::new(0.035, 0.11)),
         fruit_mat,
         wilt_solid,
         wilt_card,
         ghost,
+        ghost_no,
         ghost_mesh: sprout,
     });
 }
@@ -304,6 +322,14 @@ fn spawn_crop(commands: &mut Commands, kit: &CropKit, p: &WirePlant) -> Entity {
     // the turned soil and two leaves are what a seed looks like at any
     // scale, and 6% of a corn plant is a speck.
     let absolute = Transform::from_scale(Vec3::splat(1.0 / s.max(1e-3)));
+    // A ground plant stands in its own heaped soil, at its own size.
+    if p.spot == SPOT_GROUND {
+        e.with_child((
+            Mesh3d(kit.mound.clone()),
+            MeshMaterial3d(kit.mound_mat.clone()),
+            absolute,
+        ));
+    }
     match p.stage {
         STAGE_SEED => {
             e.with_child((

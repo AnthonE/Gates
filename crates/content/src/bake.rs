@@ -1600,6 +1600,15 @@ impl Content {
         fc.y_pct = pct(f.y_pct, "y_pct")?;
         fc.h_pct = pct(f.h_pct, "h_pct")?;
         fc.w_pct = pct(f.w_pct, "w_pct")?;
+        fc.ground_cap_wu = ticks(f.ground_water, "ground_water")?;
+        fc.ground_rain_wu_s = ticks(f.ground_rain, "ground_rain")?;
+        for (name, v) in &f.soil {
+            let b = sim_core::terrain::BIOME_NAMES
+                .iter()
+                .position(|n| n == name)
+                .ok_or_else(|| format!("bake: farm soil names no biome `{name}`"))?;
+            fc.soil_pm[b] = pm(*v, "soil")?;
+        }
         let mut sum = 0u32;
         for (k, pct) in f.stage_pct.iter().enumerate() {
             sum += *pct as u32;

@@ -1,7 +1,9 @@
 //! Farming v2: one seed is one plant (`content/cooking.toml` `[farm]` and
 //! `[[crop]]`). Every living plant on the island sits in one fixed store,
 //! [`Farm`], beside the loose stacks: a bed plant names its planter by box
-//! key and a spot 0..6, a ground plant (later) names [`HOST_GROUND`].
+//! key and a spot 0..6, a ground plant names [`HOST_GROUND`] (Rust's
+//! fallback: soft open ground, paced by its biome's soil, watered by the
+//! rain or by hand, never crossbred; [`ground_ok`]).
 //!
 //! The planter keeps its box record only as a one-slot water tank
 //! (`oven::PLANTER_LAYOUT`, `OvenState::water`). A plant grows by daylight
@@ -647,6 +649,13 @@ pub struct FarmContent {
     pub y_pct: u8,
     pub h_pct: u8,
     pub w_pct: u8,
+    /// The open ground's soil per biome (`terrain::Biome` order), per
+    /// mille: a ground plant's pace at best. 0 refuses a seed there.
+    pub soil_pm: [u16; crate::terrain::BIOMES],
+    /// A ground plant's own water: what it holds, and what full rain banks
+    /// in it per second, wu.
+    pub ground_cap_wu: u32,
+    pub ground_rain_wu_s: u32,
 }
 
 impl FarmContent {
@@ -675,6 +684,9 @@ impl FarmContent {
         y_pct: 0,
         h_pct: 0,
         w_pct: 0,
+        soil_pm: [0; crate::terrain::BIOMES],
+        ground_cap_wu: 0,
+        ground_rain_wu_s: 0,
     };
 
     /// A corn crop on the gather fixture's items (seed 1, yield 0, a full
@@ -707,6 +719,10 @@ impl FarmContent {
         f.y_pct = 10;
         f.h_pct = 10;
         f.w_pct = 25;
+        f.soil_pm[crate::terrain::Biome::Meadow as usize] = 550;
+        f.soil_pm[crate::terrain::Biome::Forest as usize] = 450;
+        f.ground_cap_wu = 1800 * hz;
+        f.ground_rain_wu_s = 3 * hz;
         f
     }
 
@@ -795,6 +811,15 @@ pub fn step(
         }
     }
 
+    // What full rain banks in a ground plant this period.
+    let ground_rain = if wx.rain > 0 && fc.ground_rain_wu_s > 0 && fc.ground_cap_wu > 0 {
+        (fc.ground_rain_wu_s as u64 * FARM_PERIOD_TICKS * wx.rain.min(1000) as u64
+            / (TICK_HZ as u64 * 1000))
+            .min(u32::MAX as u64) as u32
+    } else {
+        0
+    };
+
     // (b) The plants. A bed whose planter is gone is uprooted whole after
     // the pass (every plant in it, not only the one visited), so no plant
     // outlives its planter by more than a period however the store moves.
@@ -855,11 +880,16 @@ pub fn step(
         let Some(crop) = fc.crop(rec.crop).copied().filter(|c| c.grow_ticks > 0) else {
             continue;
         };
-        if night {
-            continue;
-        }
         let (x, y, z) = rec.pos();
-        if !open_sky_at(x, z, y) {
+        // One roof test a visit, asked only when rain or the sun needs it.
+        let mut sky = None;
+        let mut open = || *sky.get_or_insert_with(|| open_sky_at(x, z, y));
+        // A ground plant banks the rain that reaches its soil, day or night.
+        if bed.is_none() && ground_rain > 0 && rec.water < fc.ground_cap_wu && open() {
+            rec.water = rec.water.saturating_add(ground_rain).min(fc.ground_cap_wu);
+            farm.entries[i] = rec;
+        }
+        if night || !open() {
             continue;
         }
         let need = fc.need(rec.genes);
@@ -1014,6 +1044,187 @@ pub fn plant_bed(
     Ok(i)
 }
 
+// ---------------------------------------------------------------- ground
+
+/// Why the open ground at a point will not take a seed, as far as the
+/// terrain and what is built there say: [`ground_site`]'s answer. The soil
+/// itself (content) and the store (spacing, caps) are [`ground_ok`]'s.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ground {
+    /// Under the land line: the sea, or the water's edge.
+    Water,
+    /// On the road, shoulder or carriageway.
+    Road,
+    /// An authored site's ground: the town, the depot's yard, a landmark.
+    Reserved,
+    /// Inside someone else's claim (the sim's alone to know).
+    Claimed,
+    /// Steeper than a foundation may stand on.
+    Steep,
+    /// Under a roof: no rain and no sun would reach it.
+    Roofed,
+    /// Something built stands over the point.
+    Built,
+}
+
+/// How far around a point an authored site's reserve refuses a seed, m.
+pub const GROUND_RESERVE_M: f32 = 0.5;
+/// How far over the soil a built surface must stand to be over it, m.
+pub const GROUND_BUILT_M: f32 = 0.05;
+
+/// The soil height at `(x, z)` if the ground there could take a seed:
+/// above the land line, off the road, outside every authored site, not in a
+/// claim `foreign` says is someone else's, no steeper than a foundation, and
+/// open to the sky with nothing built over it. Cheapest first; the claim is
+/// asked only of ground the sea, the roads and the sites leave. The sim
+/// ([`ground_ok`]) and the client's planting ghost both ask this, so the
+/// two cannot disagree about the ground; the client has no crew lists and
+/// answers `foreign` with `false`.
+pub fn ground_site(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &crate::collide::ColIndex,
+    x: f32,
+    z: f32,
+    foreign: impl FnOnce() -> bool,
+) -> Result<f32, Ground> {
+    use crate::terrain;
+    let y = terrain::ground(seed, haven, x, z);
+    if y < terrain::LAND_MIN_H {
+        return Err(Ground::Water);
+    }
+    if terrain::road_band(seed, haven, x, z) != terrain::RoadBand::Off {
+        return Err(Ground::Road);
+    }
+    if terrain::build_reserved(haven, x, z, GROUND_RESERVE_M) {
+        return Err(Ground::Reserved);
+    }
+    if foreign() {
+        return Err(Ground::Claimed);
+    }
+    if terrain::ground_slope(seed, haven, x, z) >= crate::build::FOUNDATION_MAX_SLOPE {
+        return Err(Ground::Steep);
+    }
+    if crate::collide::roofed(seed, haven, cols, x, z, y) {
+        return Err(Ground::Roofed);
+    }
+    let over = crate::collide::piece_ground(seed, haven, cols, x, z, y + crate::reach::LIFT_M);
+    if over > y + GROUND_BUILT_M {
+        return Err(Ground::Built);
+    }
+    Ok(y)
+}
+
+/// Whether `owner` may sow the open ground at `(x, z)` (`Command::Plant`
+/// on [`HOST_GROUND`]): [`ground_site`] with the hearths' claims, then the
+/// biome's soil (`FarmContent::soil_pm`, 0 refuses), the spacing to the
+/// nearest ground plant ([`GROUND_SPACING_M`]) and the caps
+/// (`limits::MAX_GROUND_PLANTS`, `MAX_GROUND_PLANTS_PER_OWNER`). Returns the
+/// soil and its height, or a `REFUSE_D_*`. Noise taps run here, on the
+/// command, never in the tick.
+#[allow(clippy::too_many_arguments)]
+pub fn ground_ok(
+    fc: &FarmContent,
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    pieces: &crate::build::Pieces,
+    deploys: &Deploys,
+    farm: &Farm,
+    owner: u32,
+    x: f32,
+    z: f32,
+) -> Result<(u16, f32), u32> {
+    use crate::limits::{MAX_GROUND_PLANTS, MAX_GROUND_PLANTS_PER_OWNER};
+    use crate::movement::quant_xz;
+    let y = ground_site(seed, haven, pieces.cols(), x, z, || {
+        crate::claim::foreign_claim(pieces, deploys, x, z, owner)
+    })
+    .map_err(|g| match g {
+        Ground::Claimed => crate::deploy::REFUSE_D_CLAIM,
+        _ => REFUSE_D_PLANT_SOIL,
+    })?;
+    let biome = crate::terrain::biome_at(seed, y, x, z) as usize;
+    let soil = fc.soil_pm.get(biome).copied().unwrap_or(0);
+    if soil == 0 {
+        return Err(REFUSE_D_PLANT_SOIL);
+    }
+    if farm.ground_near(quant_xz(x), quant_xz(z), quant_xz(GROUND_SPACING_M)) {
+        return Err(REFUSE_D_PLANT_SPOT);
+    }
+    if farm.len() >= MAX_PLANTS
+        || farm.ground_count() >= MAX_GROUND_PLANTS
+        || farm.ground_count_of(owner) >= MAX_GROUND_PLANTS_PER_OWNER
+    {
+        return Err(REFUSE_D_PLANTS_FULL);
+    }
+    Ok((soil.min(1000), y))
+}
+
+/// Plant one unit of `p.inv[slot]` in the open ground at quantized
+/// `(qx, qz)`, its soil `soil_pm` at height `y` ([`ground_ok`]'s answer).
+/// The caller has checked reach and the ground. A ground plant drinks its
+/// own water (none yet: the rain or a skin fills it) and never crossbreeds.
+/// Returns the new plant's store index, or a `REFUSE_D_*`.
+#[allow(clippy::too_many_arguments)]
+pub fn plant_ground(
+    fc: &FarmContent,
+    seed: u64,
+    tick: u64,
+    farm: &mut Farm,
+    p: &mut Player,
+    slot: usize,
+    (qx, qz): (i32, i32),
+    soil_pm: u16,
+    y: f32,
+    events: &mut EventQueue,
+) -> Result<usize, u32> {
+    let stack = p.inv.get(slot).copied().unwrap_or_default();
+    let Some(crop) = fc.crop_of_item(stack.item).filter(|_| stack.count > 0) else {
+        return Err(REFUSE_D_PLANT_ITEM);
+    };
+    let (x, z) = (qx as f32 * POS_XZ_Q, qz as f32 * POS_XZ_Q);
+    let cell = |v: f32| {
+        crate::build::build_cell_of(v).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1) as u16
+    };
+    let genes = clone_genes(stack.cond)
+        .unwrap_or_else(|| roll_genes(fc, seed, cell(x), cell(z), tick, farm.next_id()));
+    let rec = PlantRec {
+        owner: p.id,
+        host: HOST_GROUND,
+        spot: SPOT_GROUND,
+        crop,
+        stage: STAGE_SEED,
+        genes,
+        soil_pm,
+        arid_pm: (crate::terrain::aridity(seed, x, z) * 1000.0).clamp(0.0, 1000.0) as u16,
+        alt_m: (y - crate::terrain::SEA_LEVEL).clamp(-1000.0, 10_000.0) as i16,
+        qx,
+        qy: crate::movement::quant_y(y),
+        qz,
+        ..PlantRec::default()
+    };
+    let Some(i) = farm.insert(rec) else {
+        return Err(REFUSE_D_PLANTS_FULL);
+    };
+    let s = &mut p.inv[slot];
+    s.count -= 1;
+    if s.count == 0 {
+        *s = ItemStack::default();
+    }
+    let rec = farm.entries()[i];
+    events.push(EV_PLANT, rec.id, rec.ev_b(), i as u32);
+    Ok(i)
+}
+
+/// Whether an eye at `eye` reaches the soil point `at` to sow it: within
+/// `gather::PICK_REACH_M`, straight-line. A sown seed's pick cylinder
+/// contains the point, so what was sown can be tended from where it was.
+pub fn in_sow_reach(at: (f32, f32, f32), eye: (f32, f32, f32)) -> bool {
+    let (dx, dy, dz) = (at.0 - eye.0, at.1 - eye.1, at.2 - eye.2);
+    let reach = crate::gather::PICK_REACH_M;
+    dx * dx + dy * dy + dz * dz <= reach * reach
+}
+
 /// Tend plant `i` (`Command::Tend`): pick it, cut it for clones, clear it,
 /// or water it. The caller has checked reach. What will not fit the pack lands
 /// in `spill` for the caller to drain.
@@ -1093,27 +1304,30 @@ pub fn tend(
             Ok(())
         }
         TEND_WATER => {
-            // Ground plants drink from their own bank (S4).
-            if rec.host == HOST_GROUND {
-                return Err(REFUSE_D_PLANT_SOIL);
-            }
             let sel = p.frame.sel as usize;
             let hand = p.inv.get(sel).copied().unwrap_or_default();
             if fc.skin_wu == 0 || hand.count == 0 || hand.item != fc.water_full {
                 return Err(REFUSE_D_PLANT_ITEM);
             }
-            // Only a planter has a tank. A planter gone by the drop path
-            // leaves its plants until self-heal reaches them, and a box
-            // placed at the same address takes the same key meanwhile.
-            let Some(h) = deploys
-                .box_index(rec.host)
-                .filter(|&h| deploys.oven_states()[h].arch == ARCH_PLANTER)
-            else {
-                return Err(REFUSE_D_SPOT);
+            // A ground plant holds its own water; a bed plant drinks from
+            // its planter's tank. Only a planter has one: a planter gone by
+            // the drop path leaves its plants until self-heal reaches them,
+            // and a box placed at the same address takes the same key
+            // meanwhile.
+            let (bank, cap) = if rec.host == HOST_GROUND {
+                (&mut farm.entries[i].water, fc.ground_cap_wu)
+            } else {
+                let Some(h) = deploys
+                    .box_index(rec.host)
+                    .filter(|&h| deploys.oven_states()[h].arch == ARCH_PLANTER)
+                else {
+                    return Err(REFUSE_D_SPOT);
+                };
+                let (_, ovens) = deploys.oven_parts_mut();
+                (&mut ovens[h].water, fc.planter_cap_wu)
             };
-            let (_, ovens) = deploys.oven_parts_mut();
-            let bank = &mut ovens[h].water;
-            let room = fc.planter_cap_wu.saturating_sub(*bank);
+            // A skin is poured whole: what the soil cannot hold runs off.
+            let room = cap.saturating_sub(*bank);
             if room < fc.skin_wu / 4 {
                 return Err(REFUSE_D_PLANT_WATER);
             }

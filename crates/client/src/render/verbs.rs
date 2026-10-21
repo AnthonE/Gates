@@ -1098,7 +1098,8 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         // A crop (farming v2): pick it ripe, clear it dead, water a growing
-        // bed plant from the skin in hand; otherwise open its planter.
+        // one from the skin in hand; otherwise open a bed plant's planter
+        // (a ground plant's `E` does nothing else).
         Verb::Plant => {
             if let Some(act) = pick.tend() {
                 let plant = pick.plant.id;

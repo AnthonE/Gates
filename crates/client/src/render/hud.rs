@@ -2444,6 +2444,7 @@ pub fn update(
     ui: Option<Res<super::panels::Ui>>,
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
+    sow: Option<Res<super::farm_ghost::PlantAimed>>,
 ) {
     let core = &net.session.core;
 
@@ -2547,6 +2548,15 @@ pub fn update(
                 (false, true) => format!("PLACE  {name}  — {}   ([R] turn)", why.to_uppercase()),
                 (false, false) => format!("PLACE  {name}  — {}", why.to_uppercase()),
             }
+        } else if click == crate::ui::hold::Click::Plant {
+            // A seed says where its ghost stands: a bed, soft ground, or
+            // why the ground would refuse it.
+            crate::ui::hold::plant_hint(
+                &core.catalog,
+                &core.research,
+                held,
+                sow.as_ref().map_or_else(Default::default, |s| s.0),
+            )
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;

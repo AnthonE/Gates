@@ -375,8 +375,10 @@ impl Pick {
     }
 
     /// What `E` tends a `Verb::Plant` with (`farm::TEND_*`), or `None` when
-    /// it opens the planter instead: pick a ripe plant, clear a dead one,
-    /// water a growing bed plant from a full skin in hand.
+    /// it opens a bed plant's planter instead (a ground plant has none):
+    /// pick a ripe plant, clear a dead one, water a growing one — its
+    /// planter's tank, or a ground plant's own soil — from a full skin in
+    /// hand.
     pub fn tend(&self) -> Option<u8> {
         if self.verb != Verb::Plant {
             return None;
@@ -385,7 +387,7 @@ impl Pick {
         match p.stage {
             sim_core::farm::STAGE_RIPE => Some(sim_core::farm::TEND_PICK),
             sim_core::farm::STAGE_DYING => Some(sim_core::farm::TEND_CLEAR),
-            s if sim_core::farm::is_growing(s) && self.water_in_hand && p.in_bed() => {
+            s if sim_core::farm::is_growing(s) && self.water_in_hand => {
                 Some(sim_core::farm::TEND_WATER)
             }
             _ => None,
@@ -554,8 +556,9 @@ impl Pick {
             .to_string(),
             // What `E` does to a crop (farming v2), in the order the sim
             // takes it: a ripe one is picked, a dead one cleared, a growing
-            // bed plant watered from a full skin in hand, and otherwise its
-            // planter opens. The crop's own line is [`Self::info`].
+            // one watered from a full skin in hand, and otherwise a bed
+            // plant's planter opens — a ground plant has no fallback, and
+            // shows its line alone. The crop's own line is [`Self::info`].
             // From sapling to mature `C` cuts it for clones, named beside.
             Verb::Plant => {
                 let e = match self.tend() {
@@ -3163,5 +3166,30 @@ mod plant_tests {
         assert_eq!(dry.info(), "CORN SAPLING · 80% · GGYHWX · NEEDS WATER");
         assert_eq!(sapling.tend(), None);
         assert_eq!(at(STAGE_RIPE, true).tend(), Some(sim_core::farm::TEND_PICK));
+
+        // A ground plant has no planter: a skin waters it, and otherwise
+        // `E` says nothing (its info line still shows).
+        let ground = |stage: u8, water: bool| {
+            let mut p = corn(stage, 0.0, 0.0, 0.0);
+            p.spot = sim_core::farm::SPOT_GROUND;
+            Pick {
+                water_in_hand: water,
+                ..fold_plant(Pick::default(), Some((p, 1.0)), None)
+            }
+        };
+        assert_eq!(
+            ground(STAGE_SAPLING, true).prompt(&cat),
+            "[E] WATER CORN  ·  [C] TAKE CLONE"
+        );
+        assert_eq!(ground(STAGE_SAPLING, false).prompt(&cat), "[C] TAKE CLONE");
+        assert_eq!(
+            ground(sim_core::farm::STAGE_FRUITING, false).prompt(&cat),
+            ""
+        );
+        assert_eq!(
+            ground(sim_core::farm::STAGE_FRUITING, false).info(),
+            "CORN FRUITING · 80% · XXXXXX"
+        );
+        assert_eq!(ground(STAGE_RIPE, false).prompt(&cat), "[E] PICK CORN");
     }
 }

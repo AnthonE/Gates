@@ -5204,6 +5204,38 @@ fn the_shipped_farm_bakes_to_its_numbers() {
     assert_eq!(fc.crop_of_item(corn.seed), Some(0));
     assert_eq!((fc.good_gene_pm, fc.bad_w_pm), (500, 500));
     assert_eq!((fc.g_pct, fc.y_pct, fc.h_pct, fc.w_pct), (10, 10, 10, 25));
+    // The open ground: meadow and forest take a seed, nothing else does.
+    use sim_core::terrain::Biome;
+    let mut soil = [0u16; sim_core::terrain::BIOMES];
+    soil[Biome::Meadow as usize] = 550;
+    soil[Biome::Forest as usize] = 450;
+    assert_eq!(fc.soil_pm, soil);
+    assert_eq!((fc.ground_cap_wu, fc.ground_rain_wu_s), (1800 * 30, 3 * 30));
+}
+
+/// The ground's soil names biomes and stays per mille, and a ground plant's
+/// water holds at least the quarter skin a pour asks room for.
+#[test]
+fn a_farm_soil_off_the_biomes_or_a_ground_too_small_to_water_is_refused() {
+    let soil = "soil = { meadow = 550, forest = 450 }";
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 550, swamp = 450 }",
+        "not a biome",
+    );
+    refuses(
+        "cooking.toml",
+        soil,
+        "soil = { meadow = 1550 }",
+        "past 1000 per mille",
+    );
+    refuses(
+        "cooking.toml",
+        "ground_water = 1800",
+        "ground_water = 800",
+        "quarter skin",
+    );
 }
 
 /// Genes ride a seed's `cond` (a clone): the walls' ceiling for a seed is

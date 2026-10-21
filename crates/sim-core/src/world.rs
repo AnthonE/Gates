@@ -2168,8 +2168,9 @@ pub enum Command {
         cell: u32,
     },
     /// Plant one unit of inventory slot `slot` (farming v2, `farm.rs`): in
-    /// spot `spot` of the planter whose box key is `host`, or — later — on
-    /// the ground at `(qx, qz)` when `host` is `farm::HOST_GROUND`. The slot
+    /// spot `spot` of the planter whose box key is `host`, or in the open
+    /// ground at `(qx, qz)` (`movement::quant_xz`) when `host` is
+    /// `farm::HOST_GROUND` (`farm::ground_ok`). The slot
     /// rides the wire, so the seed planted is the one the click named.
     Plant {
         id: u32,
@@ -3277,10 +3278,18 @@ impl World {
         }
     }
 
-    /// `Command::Plant`'s body: a bed spot in a planter in reach.
-    fn plant(&mut self, slot: usize, inv_slot: u8, host: u32, spot: u8) -> Result<(), u32> {
+    /// `Command::Plant`'s body: a bed spot in a planter in reach, or the
+    /// open ground at `q` when `host` is `farm::HOST_GROUND`.
+    fn plant(
+        &mut self,
+        slot: usize,
+        inv_slot: u8,
+        host: u32,
+        spot: u8,
+        q: (i32, i32),
+    ) -> Result<(), u32> {
         if host == crate::farm::HOST_GROUND {
-            return Err(deploy::REFUSE_D_PLANT_SOIL);
+            return self.plant_ground(slot, inv_slot, q);
         }
         let Some(b) = self
             .deploys
@@ -3313,6 +3322,59 @@ impl World {
             &mut self.players[slot],
             inv_slot as usize,
             spot,
+            &mut self.events,
+        )
+        .map(|_| ())
+    }
+
+    /// `Command::Plant` on the open ground (`farm::ground_ok`): a seed in the
+    /// named slot, the soil point within a hand's reach of the eye and in
+    /// plain sight of it, then the ground, the soil, the spacing and the caps.
+    fn plant_ground(&mut self, slot: usize, inv_slot: u8, q: (i32, i32)) -> Result<(), u32> {
+        let fc = &self.cook.farm;
+        let p = &self.players[slot];
+        let stack = p.inv.get(inv_slot as usize).copied().unwrap_or_default();
+        if stack.count == 0 || fc.crop_of_item(stack.item).is_none() {
+            return Err(deploy::REFUSE_D_PLANT_ITEM);
+        }
+        let (x, z) = (
+            q.0 as f32 * crate::movement::POS_XZ_Q,
+            q.1 as f32 * crate::movement::POS_XZ_Q,
+        );
+        let y = terrain::ground(self.seed, &self.haven, x, z);
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (q.0, crate::movement::quant_y(y), q.1),
+        );
+        if !crate::farm::in_sow_reach((x, y, z), crate::reach::eye(p))
+            || !crate::reach::clear(self.seed, &self.haven, cols, self.card_door_bits, p, at)
+        {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        let (soil, y) = crate::farm::ground_ok(
+            fc,
+            self.seed,
+            &self.haven,
+            &self.pieces,
+            &self.deploys,
+            &self.farm,
+            p.id,
+            x,
+            z,
+        )?;
+        crate::farm::plant_ground(
+            &self.cook.farm,
+            self.seed,
+            self.tick,
+            &mut self.farm,
+            &mut self.players[slot],
+            inv_slot as usize,
+            q,
+            soil,
+            y,
             &mut self.events,
         )
         .map(|_| ())
@@ -6927,10 +6989,11 @@ impl World {
                 slot: inv_slot,
                 host,
                 spot,
-                ..
+                qx,
+                qz,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    if let Err(why) = self.plant(slot, inv_slot, host, spot) {
+                    if let Err(why) = self.plant(slot, inv_slot, host, spot, (qx, qz)) {
                         self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
                     }
                 }

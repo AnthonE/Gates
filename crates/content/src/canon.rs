@@ -503,8 +503,15 @@ pub fn hash(c: &Content) -> u64 {
         fm.y_pct,
         fm.h_pct,
         fm.w_pct,
+        fm.ground_water,
+        fm.ground_rain,
     ] {
         h.u(v);
+    }
+    h.u(fm.soil.len() as u32);
+    for (biome, v) in &fm.soil {
+        h.s(biome);
+        h.u(*v);
     }
     h.u(c.crops.len() as u32);
     for k in &c.crops {

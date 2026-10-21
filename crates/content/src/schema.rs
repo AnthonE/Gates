@@ -808,6 +808,14 @@ pub struct FarmSection {
     pub y_pct: u32,
     pub h_pct: u32,
     pub w_pct: u32,
+    /// The open ground (Rust's fallback to a planter): what water a ground
+    /// plant holds, and what full rain banks in it per second.
+    pub ground_water: u32,
+    pub ground_rain: u32,
+    /// The ground's soil per biome (`sim_core::terrain::BIOME_NAMES`), per
+    /// mille: a ground plant's pace at best. A biome left out refuses a
+    /// seed; an unknown name is refused.
+    pub soil: BTreeMap<String, u32>,
 }
 
 /// One crop (`content/cooking.toml` `[[crop]]`): what plants it, what a

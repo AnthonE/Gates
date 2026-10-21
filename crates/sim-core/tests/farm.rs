@@ -7,14 +7,16 @@
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::deploy::{
     box_key, DeployContent, DeployDef, ARCH_PLANTER, MATTER_WOOD, PLACE_ANY, REFUSE_D_NOT_EMPTY,
-    REFUSE_D_PLANTS_FULL, REFUSE_D_PLANT_ITEM, REFUSE_D_PLANT_SPOT, REFUSE_D_PLANT_STAGE,
+    REFUSE_D_PLANTS_FULL, REFUSE_D_PLANT_ITEM, REFUSE_D_PLANT_SOIL, REFUSE_D_PLANT_SPOT,
+    REFUSE_D_PLANT_STAGE, REFUSE_D_REACH,
 };
 use sim_core::farm::{
-    FarmContent, PlantRec, FL_DRY, GONE_PICKED, GONE_UPROOTED, GONE_WITHERED, HOST_GROUND,
-    STAGE_DYING, STAGE_RIPE, STAGE_SEED, TEND_PICK,
+    ground_site, FarmContent, Ground, PlantRec, FL_DRY, GONE_PICKED, GONE_UPROOTED, GONE_WITHERED,
+    HOST_GROUND, SPOT_GROUND, STAGE_DYING, STAGE_RIPE, STAGE_SEED, TEND_PICK,
 };
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::limits::MAX_PLANTS;
+use sim_core::movement::quant_xz;
 use sim_core::oven::{CookContent, OVEN_PERIOD_TICKS};
 use sim_core::world::{
     is_night, Command, World, EV_DEPLOY_REFUSED, EV_GATHER, EV_PLANT, EV_PLANT_GONE,
@@ -119,6 +121,7 @@ fn farm_world() -> (Box<World>, u16, u16) {
     fc.water_full = SKIN_FULL;
     fc.water_empty = SKIN_EMPTY;
     fc.rain_wu_s = 0;
+    fc.ground_rain_wu_s = 0;
     // Blank seeds roll XXXXXX, the neutral genome, so every test that is
     // not about genes grows at the crop's own numbers. The gene tests plant
     // clones, whose genes they choose.
@@ -732,7 +735,7 @@ fn rain_fills_an_open_planter_and_not_a_roofed_one() {
 /// refuses, so the shard would not boot), and the save still loads.
 #[test]
 fn a_stale_plant_is_not_tended_through_a_box_at_its_address() {
-    use sim_core::deploy::{ARCH_BOX, REFUSE_D_REACH};
+    use sim_core::deploy::ARCH_BOX;
     use sim_core::farm::{TEND_CLEAR, TEND_WATER};
     const BOX_ITEM: u16 = 25;
     const HAND: usize = 4;
@@ -1315,4 +1318,465 @@ fn a_clone_pays_seeds_carrying_genes_and_kills_the_plant() {
     assert_eq!(refused(&w), None);
     assert_eq!(plant_of(&w, next).genes, genes);
     assert_eq!(w.players[0].inv[i].count, 1);
+}
+
+// ---------------------------------------------------------------- ground
+
+/// Whether the open ground at `(x, z)` would take a seed as far as the
+/// terrain and the build say, and what biome it is.
+fn site(w: &World, x: f32, z: f32) -> Result<(f32, sim_core::terrain::Biome), Ground> {
+    let y = ground_site(SEED, hv(SEED), w.pieces.cols(), x, z, || false)?;
+    Ok((y, sim_core::terrain::biome_at(SEED, y, x, z)))
+}
+
+/// The first point, scanned outward in rings of `step` metres from the
+/// fixture's cell, that `want` takes — the generator decides where things
+/// are, so a fixture point is found, never typed.
+fn scan(w: &World, step: f32, rings: i32, want: impl Fn(f32, f32) -> bool) -> (f32, f32) {
+    let (cx, cz) = buildable_cell(SEED);
+    let (x0, z0) = cell_center(cx, cz);
+    for r in 0..rings {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let (x, z) = (x0 + dx as f32 * step, z0 + dz as f32 * step);
+                if want(x, z) {
+                    return (x, z);
+                }
+            }
+        }
+    }
+    let _ = w;
+    panic!("no fixture point within {rings} rings of {step} m — the generator moved");
+}
+
+/// Open meadow at `(x, z)` and at `(x + 0.9, z)`, so two ground plants fit
+/// a hand's reach apart.
+fn meadow(w: &World) -> (f32, f32) {
+    use sim_core::terrain::Biome;
+    scan(w, 1.5, 200, |x, z| {
+        [(x, z), (x + 0.9, z), (x + 0.45, z + 1.0)]
+            .iter()
+            .all(|&(x, z)| matches!(site(w, x, z), Ok((_, Biome::Meadow))))
+    })
+}
+
+/// Stand the player a metre from `(x, z)`.
+fn stand_by(w: &mut World, x: f32, z: f32) {
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 1.0);
+}
+
+fn sow(w: &mut World, slot: usize, x: f32, z: f32) {
+    w.tick(&[Command::Plant {
+        id: PLAYER,
+        slot: slot as u8,
+        host: HOST_GROUND,
+        spot: 0,
+        qx: quant_xz(x),
+        qz: quant_xz(z),
+    }]);
+}
+
+/// Sow a clone of `genes` at `(x, z)` and return its id.
+fn sow_clone(w: &mut World, x: f32, z: f32, genes: u16) -> u32 {
+    w.players[0].inv[CLONE_SLOT] = ItemStack {
+        item: SEED_ITEM,
+        count: 1,
+        cond: genes + 1,
+        skin: 0,
+    };
+    let next = w.farm.next_id();
+    sow(w, CLONE_SLOT, x, z);
+    assert_eq!(refused(w), None, "the clone at ({x}, {z}) did not sow");
+    next
+}
+
+/// The hotbar slot a skin is poured from.
+const HAND: usize = 5;
+
+/// Pour the full skin put in hand on plant `id`.
+fn pour(w: &mut World, id: u32) -> Option<u32> {
+    w.players[0].inv[HAND] = ItemStack {
+        item: SKIN_FULL,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = HAND as u8;
+    w.tick(&[Command::Tend {
+        id: PLAYER,
+        plant: id,
+        act: sim_core::farm::TEND_WATER,
+    }]);
+    refused(w)
+}
+
+/// **A seed sows soft open ground**: one unit, a ground plant at the soil
+/// point (no host, spot 15), paced by its biome's soil, holding no water
+/// yet — and a second one closer than the spacing refuses.
+#[test]
+fn a_seed_sows_open_meadow_and_a_neighbour_too_close_refuses() {
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    stand_by(&mut w, x, z);
+    sow(&mut w, SEED_SLOT, x, z);
+    assert_eq!(refused(&w), None);
+    assert_eq!(w.players[0].inv[SEED_SLOT].count, 49);
+    let p = w.farm.entries()[0];
+    assert_eq!(
+        (p.host, p.spot, p.owner, p.soil_pm, p.water),
+        (HOST_GROUND, SPOT_GROUND, PLAYER, 550, 0)
+    );
+    let y = sim_core::terrain::ground(SEED, hv(SEED), x, z);
+    assert_eq!(
+        (p.qx, p.qy, p.qz),
+        (quant_xz(x), sim_core::movement::quant_y(y), quant_xz(z))
+    );
+    assert!(w
+        .events
+        .entries()
+        .iter()
+        .any(|e| e.code == EV_PLANT && e.a == p.id));
+    // 0.3 m off: inside the 0.6 m spacing.
+    sow(&mut w, SEED_SLOT, x + 0.3, z);
+    assert_eq!(refused(&w), Some(REFUSE_D_PLANT_SPOT));
+    // 0.9 m off: clear of it.
+    sow(&mut w, SEED_SLOT, x + 0.9, z);
+    assert_eq!(refused(&w), None);
+    assert_eq!(w.farm.ground_count(), 2);
+    // Past a hand's reach: refused before the ground is asked.
+    sow(&mut w, SEED_SLOT, x + 6.0, z);
+    assert_eq!(refused(&w), Some(REFUSE_D_REACH));
+}
+
+/// **The road, the town, the sea's edge, a roof, a foundation, a foreign
+/// claim, the desert and the Verdigris refuse a seed**, each for its own
+/// reason, at points the generator put there.
+#[test]
+fn ground_that_is_not_soft_open_soil_refuses_a_seed() {
+    use sim_core::terrain::{biome_at, road_band, Biome, RoadBand};
+    let (mut w, cx, cz) = farm_world();
+    let refuse = |w: &mut World, x: f32, z: f32| {
+        stand_by(w, x, z);
+        sow(w, SEED_SLOT, x, z);
+        refused(w)
+    };
+    let land = |x: f32, z: f32| {
+        sim_core::terrain::ground(SEED, hv(SEED), x, z) >= sim_core::terrain::LAND_MIN_H
+    };
+
+    // The carriageway.
+    let (x, z) = scan(&w, 4.0, 800, |x, z| {
+        land(x, z) && road_band(SEED, hv(SEED), x, z) == RoadBand::Carriageway
+    });
+    assert_eq!(site(&w, x, z).err(), Some(Ground::Road));
+    assert_eq!(refuse(&mut w, x, z), Some(REFUSE_D_PLANT_SOIL), "the road");
+
+    // The town's reserve, off its roads.
+    let town = &hv(SEED).town;
+    assert!(town.live, "the fixture's island has no town");
+    let (x, z) = (0..400)
+        .map(|k| {
+            (
+                town.x + (k % 20) as f32 * 2.0 - 20.0,
+                town.z + (k / 20) as f32 * 2.0 - 20.0,
+            )
+        })
+        .find(|&(x, z)| {
+            land(x, z)
+                && road_band(SEED, hv(SEED), x, z) == RoadBand::Off
+                && sim_core::terrain::build_reserved(hv(SEED), x, z, 0.5)
+        })
+        .expect("no unpaved point inside the town's reserve");
+    assert_eq!(site(&w, x, z).err(), Some(Ground::Reserved));
+    assert_eq!(refuse(&mut w, x, z), Some(REFUSE_D_PLANT_SOIL), "the town");
+
+    // The desert and the Verdigris: open land the soil table leaves out.
+    for (biome, what) in [(Biome::Desert, "the desert"), (Biome::Fel, "the Verdigris")] {
+        let (x, z) = scan(&w, 24.0, 160, |x, z| {
+            land(x, z)
+                && biome_at(SEED, sim_core::terrain::ground(SEED, hv(SEED), x, z), x, z) == biome
+                && site(&w, x, z).is_ok()
+        });
+        assert_eq!(refuse(&mut w, x, z), Some(REFUSE_D_PLANT_SOIL), "{what}");
+    }
+
+    // A foundation, then a wall and a floor over it: built over, then roofed.
+    for (row, level, loc) in [
+        (0u16, 0u8, LOC_PLANE),
+        (1, 0, LOC_EDGE_XLO),
+        (2, 1, LOC_PLANE),
+    ] {
+        let (x, z) = cell_center(cx, cz);
+        w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 2.5);
+        let before = w.pieces.len();
+        w.tick(&[Command::Place {
+            id: PLAYER,
+            row,
+            cx,
+            cz,
+            level,
+            loc,
+            freehand: false,
+            plate: 0,
+        }]);
+        assert_eq!(w.pieces.len(), before + 1, "piece {row} did not place");
+        if row == 0 {
+            assert_eq!(site(&w, x, z).err(), Some(Ground::Built));
+        }
+    }
+    let (x, z) = cell_center(cx, cz);
+    assert_eq!(site(&w, x, z).err(), Some(Ground::Roofed));
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x + 0.5, z);
+    sow(&mut w, SEED_SLOT, x, z);
+    assert_eq!(refused(&w), Some(REFUSE_D_PLANT_SOIL), "under a roof");
+    assert!(w.farm.is_empty(), "something sowed");
+}
+
+/// **A foreign base's claim refuses a seed beside it**, and its own crew
+/// sows there.
+#[test]
+fn a_foreign_claim_refuses_a_seed_and_the_crew_sows() {
+    use sim_core::deploy::REFUSE_D_CLAIM;
+    let (mut w, cx, cz) = farm_world();
+    let (x, z) = cell_center(cx, cz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z + 2.5);
+    w.tick(&[Command::Place {
+        id: PLAYER,
+        row: 0,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        freehand: false,
+        plate: 0,
+    }]);
+    assert_eq!(w.pieces.len(), 1, "the foundation did not place");
+    w.players[0].inv[PLANTER_SLOT] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.players[0].frame.sel = PLANTER_SLOT as u8;
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: 0,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        pose: sim_core::footprint::Pose::CENTRE,
+    }]);
+    assert_eq!(w.deploys.hearths().len(), 1, "the hearth did not place");
+    // Two metres off the foundation's edge, inside the claim's cushion.
+    let (px, pz) = (x + BUILD_CELL_M * 0.5 + 2.0, z);
+    assert!(
+        site(&w, px, pz).is_ok(),
+        "the ground beside the base is not soft"
+    );
+
+    const STRANGER: u32 = 4;
+    w.tick(&[Command::Join { id: STRANGER }]);
+    let s = w
+        .players
+        .iter()
+        .position(|p| p.id == STRANGER)
+        .expect("joined");
+    w.players[s].body = sim_core::movement::Body::at(SEED, hv(SEED), px + 0.5, pz + 1.0);
+    w.players[s].inv[SEED_SLOT] = ItemStack {
+        item: SEED_ITEM,
+        count: 5,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Plant {
+        id: STRANGER,
+        slot: SEED_SLOT as u8,
+        host: HOST_GROUND,
+        spot: 0,
+        qx: quant_xz(px),
+        qz: quant_xz(pz),
+    }]);
+    let why = w
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_DEPLOY_REFUSED && e.a == STRANGER)
+        .map(|e| e.b);
+    assert_eq!(why, Some(REFUSE_D_CLAIM));
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), px + 0.5, pz + 1.0);
+    sow(&mut w, SEED_SLOT, px, pz);
+    assert_eq!(refused(&w), None, "the crew's own ground");
+}
+
+/// **One planter sows at most 48 ground plants, the island 512.**
+#[test]
+fn the_49th_ground_plant_of_one_owner_refuses() {
+    use sim_core::limits::{MAX_GROUND_PLANTS, MAX_GROUND_PLANTS_PER_OWNER};
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    let far = |k: usize, owner: u32| PlantRec {
+        owner,
+        host: HOST_GROUND,
+        spot: SPOT_GROUND,
+        qx: 10 + k as i32 * 100,
+        qz: 10,
+        ..PlantRec::default()
+    };
+    for k in 0..MAX_GROUND_PLANTS_PER_OWNER - 1 {
+        w.farm.insert(far(k, PLAYER)).expect("room");
+    }
+    stand_by(&mut w, x + 0.45, z);
+    sow(&mut w, SEED_SLOT, x, z);
+    assert_eq!(refused(&w), None, "the 48th");
+    sow(&mut w, SEED_SLOT, x + 0.9, z);
+    assert_eq!(refused(&w), Some(REFUSE_D_PLANTS_FULL), "the 49th");
+    assert_eq!(w.players[0].inv[SEED_SLOT].count, 49);
+
+    // Someone else's fill the island.
+    let (mut w, _, _) = farm_world();
+    for k in 0..MAX_GROUND_PLANTS {
+        w.farm.insert(far(k, 100 + k as u32)).expect("room");
+    }
+    stand_by(&mut w, x, z);
+    sow(&mut w, SEED_SLOT, x, z);
+    assert_eq!(refused(&w), Some(REFUSE_D_PLANTS_FULL), "the 513th");
+}
+
+/// **Meadow corn on full water ripens in its grow over the soil's 0.55 and
+/// picks floor(4 × 0.55) = 2.**
+#[test]
+fn watered_meadow_corn_ripens_at_the_soils_pace_and_picks_two() {
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    stand_by(&mut w, x, z);
+    let id = sow_clone(&mut w, x, z, g(b"XXXXXX"));
+    assert_eq!(pour(&mut w, id), None);
+    assert_eq!(plant_of(&w, id).water, w.cook.farm.ground_cap_wu);
+    let start = w.tick;
+    let want = GROW * 1000 / 550;
+    while plant_of(&w, id).stage < STAGE_RIPE && w.tick < start + want + 600 {
+        w.tick(&[]);
+        assert!(!is_night(w.tick), "the grow must run by day");
+        // Fed and watered, so the long grow does not starve the farmer.
+        w.players[0].food = w.survival.max_food;
+        w.players[0].water = w.survival.max_water;
+    }
+    let took = w.tick - start;
+    let p = plant_of(&w, id);
+    assert_eq!(p.stage, STAGE_RIPE, "never ripened");
+    assert!(
+        took.abs_diff(want) <= 2 * OVEN_PERIOD_TICKS,
+        "ripe after {took} ticks, wanted {want}"
+    );
+    assert_eq!(p.avg_pm(), 550);
+    assert_eq!(p.flags & (FL_DRY | sim_core::farm::FL_CROSSED), 0);
+    w.tick(&[Command::Tend {
+        id: PLAYER,
+        plant: id,
+        act: TEND_PICK,
+    }]);
+    assert_eq!(refused(&w), None);
+    let ev = w
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_GATHER && e.a == PLAYER)
+        .copied()
+        .expect("a pick announces its pay");
+    assert_eq!(ev.b, (CORN as u32) << 16 | 2, "two corn");
+    assert_eq!(gone(&w), Some((id, GONE_PICKED as u32, PLAYER)));
+}
+
+/// **A dry ground plant holds; the rain fills it, and so does a skin**,
+/// which empties in the hand; a full one refuses another.
+#[test]
+fn a_dry_ground_plant_holds_until_rain_or_a_skin_waters_it() {
+    use sim_core::deploy::REFUSE_D_PLANT_WATER;
+    use sim_core::weather::{FORCE_FADE_TICKS, KEEP_TIME, STORM};
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    stand_by(&mut w, x + 0.45, z);
+    let a = sow_clone(&mut w, x, z, g(b"XXXXXX"));
+    let b = sow_clone(&mut w, x + 0.9, z, g(b"XXXXXX"));
+    idle(&mut w, 60);
+    for id in [a, b] {
+        let p = plant_of(&w, id);
+        assert_eq!((p.grown, p.water), (0, 0), "a dry plant grew");
+        assert_ne!(p.flags & FL_DRY, 0, "a dry plant is not marked dry");
+    }
+
+    // A skin: poured whole, the plant takes what it holds.
+    assert_eq!(pour(&mut w, a), None);
+    assert_eq!(
+        w.players[0].inv[HAND].item, SKIN_EMPTY,
+        "the skin did not empty"
+    );
+    assert_eq!(plant_of(&w, a).water, w.cook.farm.ground_cap_wu);
+    assert_eq!(pour(&mut w, a), Some(REFUSE_D_PLANT_WATER), "a full plant");
+    assert_eq!(
+        w.players[0].inv[HAND].item, SKIN_FULL,
+        "a refused pour spent the skin"
+    );
+    idle(&mut w, 60);
+    let p = plant_of(&w, a);
+    assert!(p.grown > 0 && p.flags & FL_DRY == 0, "a watered plant held");
+
+    // The rain.
+    w.cook.farm.ground_rain_wu_s = 3 * 30;
+    w.tick(&[Command::AdminEnv {
+        weather: STORM,
+        time_pm: KEEP_TIME,
+    }]);
+    idle(&mut w, FORCE_FADE_TICKS + 60);
+    assert!(
+        plant_of(&w, b).water > 0,
+        "a storm did not water an open plant"
+    );
+    idle(&mut w, 60);
+    assert!(plant_of(&w, b).grown > 0, "the rain-fed plant held");
+}
+
+/// **A ground plant never crossbreeds**, however close a neighbour of its
+/// crop stands.
+#[test]
+fn a_ground_plant_beside_its_own_crop_never_crossbreeds() {
+    use sim_core::farm::{FL_CROSSED, STAGE_MATURE};
+    let (mut w, _, _) = farm_world();
+    quick(&mut w);
+    let (x, z) = meadow(&w);
+    stand_by(&mut w, x + 0.45, z);
+    let mine = g(b"GGGGGG");
+    let a = sow_clone(&mut w, x, z, mine);
+    let b = sow_clone(&mut w, x + 0.9, z, g(b"WWWWWW"));
+    for id in [a, b] {
+        assert_eq!(pour(&mut w, id), None);
+    }
+    grow_to(&mut w, a, STAGE_MATURE, 4_000);
+    let p = plant_of(&w, a);
+    assert_eq!(p.genes, mine, "a ground plant took a neighbour's genes");
+    assert_eq!(p.flags & FL_CROSSED, 0);
+}
+
+/// **A save keeps a ground plant**, water and all, to the same hash.
+#[test]
+fn a_save_round_trips_a_ground_plant() {
+    let (mut w, _, _) = farm_world();
+    let (x, z) = meadow(&w);
+    stand_by(&mut w, x, z);
+    let id = sow_clone(&mut w, x, z, g(b"GYHXWX"));
+    assert_eq!(pour(&mut w, id), None);
+    idle(&mut w, 40);
+    w.tick(&[Command::Leave { id: PLAYER }]);
+    let mut buf = vec![0u8; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut buf).expect("encodes");
+    let (mut back, _, _) = farm_world();
+    back.load(&buf[..n]).expect("its own bytes load");
+    assert_eq!(back.farm.entries(), w.farm.entries());
+    assert_eq!(back.farm.entries()[0].host, HOST_GROUND);
+    assert!(back.farm.entries()[0].water > 0);
+    assert_eq!(back.state_hash(), w.state_hash());
 }

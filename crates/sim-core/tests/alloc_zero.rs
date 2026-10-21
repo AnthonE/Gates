@@ -509,6 +509,29 @@ fn test_alloc_zero() {
     // (fixture item 1) in the farmer's hand.
     let farm_cell = buildable_cell(&world, SEED, 700, 700);
     let (fx, fz) = cell_center(farm_cell.0, farm_cell.1);
+    // And a patch of soft open ground beside where the farmer stands, for
+    // the ground half of the plant verb: a meadow or forest point the
+    // terrain and the build would take, scanned rather than typed for
+    // `buildable_cell`'s reason, a metre or two off the planter's side.
+    let soft = (0..64)
+        .map(|k| {
+            (
+                fx - 1.8 + (k % 8) as f32 * 0.5,
+                fz + 0.2 + (k / 8) as f32 * 0.35,
+            )
+        })
+        .find(|&(x, z)| {
+            let Ok(y) =
+                sim_core::farm::ground_site(SEED, hv(SEED), world.pieces.cols(), x, z, || false)
+            else {
+                return false;
+            };
+            let biome = sim_core::terrain::biome_at(SEED, y, x, z) as usize;
+            world.cook.farm.soil_pm[biome] > 0
+                && sim_core::fmath::fabs(x - fx) > 1.0
+                && sim_core::farm::in_sow_reach((x, y, z), (fx, y + 1.6, fz + 1.0))
+        })
+        .expect("no soft ground beside the farmer's planter — the fixture, not the gate");
     world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz);
     world.players[FARMER].inv[3] = ItemStack {
         item: PLANTER_ITEM,
@@ -547,6 +570,16 @@ fn test_alloc_zero() {
         },
     );
     world.players[FARMER].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz + 1.0);
+    let soft_q = (
+        sim_core::movement::quant_xz(soft.0),
+        sim_core::movement::quant_xz(soft.1),
+    );
+    let skin = ItemStack {
+        item: world.cook.farm.water_full,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
 
     let mut assisted_world = sim_core::probe::assist_probe_world(42);
     let mut headroom = sim_core::probe::headroom_probe();
@@ -693,6 +726,8 @@ fn test_alloc_zero() {
     let mut corpse_acted = 0u32;
     let mut planted = 0u32;
     let mut picked = 0u32;
+    let mut sown = 0u32;
+    let mut poured = 0u32;
     for t in 0..300u16 {
         let mut cmds = tick_cmds(
             &mut rng,
@@ -748,7 +783,7 @@ fn test_alloc_zero() {
         // grows on the stack rather than stealing a bot's input slot —
         // `MAX_COMMANDS_PER_TICK` is 256 and this is 113, so they all
         // still apply, and copying `Command`s allocates nothing.
-        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 19];
+        let mut all = [Command::Loot { id: 3 }; MAX_PLAYERS + 21];
         all[..MAX_PLAYERS + 7].copy_from_slice(&cmds);
         all[MAX_PLAYERS + 7] = Command::Loot { id: 3 };
         all[MAX_PLAYERS + 8] = Command::Loot { id: 4 };
@@ -823,7 +858,38 @@ fn test_alloc_zero() {
             plant: target,
             act: sim_core::farm::TEND_PICK,
         };
+        // …and sows the soft ground beside it (a standing plant there
+        // refuses for spacing), and pours a skin on the first ground plant
+        // (one with room takes it, a full one refuses). The skin in its
+        // hand is refilled every tick.
+        all[MAX_PLAYERS + 19] = Command::Plant {
+            id: FARMER as u32 + 1,
+            slot: 4,
+            host: sim_core::farm::HOST_GROUND,
+            spot: 0,
+            qx: soft_q.0,
+            qz: soft_q.1,
+        };
+        all[MAX_PLAYERS + 20] = Command::Tend {
+            id: FARMER as u32 + 1,
+            plant: world
+                .farm
+                .entries()
+                .iter()
+                .find(|p| p.host == sim_core::farm::HOST_GROUND)
+                .map_or(0, |p| p.id),
+            act: sim_core::farm::TEND_WATER,
+        };
+        world.players[FARMER].inv[0] = skin;
+        world.players[FARMER].frame.sel = 0;
+        let ground_before = world.farm.ground_count();
         world.tick(&all);
+        if world.farm.ground_count() > ground_before {
+            sown += 1;
+        }
+        if world.players[FARMER].inv[0].item == world.cook.farm.water_empty {
+            poured += 1;
+        }
         let pieces_now = world.pieces.len();
         if pieces_now > pieces_prev {
             placed_in_window += 1;
@@ -1086,6 +1152,12 @@ fn test_alloc_zero() {
         "the farmer planted {planted} and picked {picked} inside the counted \
          window — the plant verb, the grow to ripe and the pick must all be in \
          the alloc gate"
+    );
+    assert!(
+        sown > 0 && poured > 0,
+        "the farmer sowed the ground {sown} times and poured {poured} skins \
+         inside the counted window — the ground plant verb and its water must \
+         be in the alloc gate"
     );
     // The bag, raid, starve and eat counters above are all read off the
     // event ring, so a saturated ring would let them go quiet for a reason

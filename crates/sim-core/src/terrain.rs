@@ -1902,6 +1902,10 @@ pub enum Biome {
 /// How many biomes there are — the length of every per-biome table.
 pub const BIOMES: usize = 6;
 
+/// The biomes' names in [`Biome`] order, as content spells them
+/// (`cooking.toml` `[farm] soil`).
+pub const BIOME_NAMES: [&str; BIOMES] = ["beach", "meadow", "forest", "highland", "desert", "fel"];
+
 /// The beach mask (TERRAIN.md §1 stage 5): height within ~2 m of sea
 /// level. One definition — `biome` classifies by it and `World::spawn_pos`
 /// spawns into it, so the spawn zone cannot drift away from the biome.

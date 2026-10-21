@@ -712,6 +712,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<clutter::ClutterRing>()
             .init_resource::<structures::StructRing>()
             .init_resource::<crops::CropRing>()
+            .init_resource::<farm_ghost::PlantAimed>()
             .init_resource::<bodies::Bodies>()
             .insert_resource(bodies::DrawWatched(filming))
             .init_resource::<mobs::Herd>()
@@ -1745,7 +1746,8 @@ impl Plugin for GatesRenderPlugin {
                 ghost::deploy_track,
                 ghost::place_key,
                 ghost::deploy_key,
-                // A seed in hand: the bed spot the click plants, and the click.
+                // A seed in hand: the bed spot or the open ground the click
+                // plants, and the click.
                 farm_ghost::plant_ghost,
                 // After `verbs::resolve` has answered what is aimed at, and
                 // before the click that acts on it.

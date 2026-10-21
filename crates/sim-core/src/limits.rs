@@ -865,6 +865,13 @@ pub const MAX_BOXES: usize = 1_024;
 /// planting with `REFUSE_D_PLANTS_FULL` — the seed stays in the hand.
 pub const MAX_PLANTS: usize = 4_096;
 
+/// Of [`MAX_PLANTS`], how many may stand in the open ground, island-wide
+/// and per planter (`farm::ground_ok`). A ground plant never dies before it
+/// ripens, so these are what bound a field sown to spam. Overflow policy:
+/// **refuse** the planting with `REFUSE_D_PLANTS_FULL`.
+pub const MAX_GROUND_PLANTS: usize = 512;
+pub const MAX_GROUND_PLANTS_PER_OWNER: usize = 48;
+
 /// Crop rows the sim preallocates for (`content/cooking.toml` `[[crop]]`).
 /// Structural cap like [`MAX_COOK_ROWS`]: the bake refuses a set past it.
 /// A plant stores its crop as this table's index.

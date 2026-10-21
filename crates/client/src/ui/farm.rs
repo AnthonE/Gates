@@ -1,11 +1,91 @@
 //! Farming v2 on the client, the pure half: which bed spot a seed in hand
-//! would go into, which planter a bed plant stands in, and whether the hand
-//! holds water. Bevy-free, so the arithmetic is tested headless; the ghost
-//! and the click are `render::farm_ghost`'s.
+//! would go into, or else which patch of open ground and whether it is soft;
+//! which planter a bed plant stands in, and whether the hand holds water.
+//! Bevy-free, so the arithmetic is tested headless; the ghost and the click
+//! are `render::farm_ghost`'s.
 
 use protocol::WirePlant;
 use sim_core::deploy::{DeployContent, DeployRec, ARCH_PLANTER, DEPLOY_VOL};
-use sim_core::farm::{spot_xz, BED_SOIL_DROP_M, PLANTER_SPOTS};
+use sim_core::farm::{
+    ground_site, in_sow_reach, spot_xz, Ground, BED_SOIL_DROP_M, GROUND_SPACING_M, PLANTER_SPOTS,
+};
+use sim_core::movement::{quant_xz, POS_XZ_Q};
+
+/// What a seed in hand would do where the crosshair is: the planting
+/// ghost's verdict, and the HUD's line for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlantAim {
+    /// Nowhere to plant: the ghost hides.
+    #[default]
+    None,
+    /// A free spot in a planter's bed.
+    Bed,
+    /// Open ground the ghost finds soft. Its soil is content, so whether
+    /// the biome grows anything stays the sim's to say.
+    Ground,
+    /// Open ground the sim would refuse, and why, in the line's words.
+    No(&'static str),
+}
+
+/// How a [`Ground`] refusal reads on the planting line.
+pub fn ground_words(g: Ground) -> &'static str {
+    match g {
+        Ground::Road => "ON THE ROAD",
+        Ground::Roofed => "UNDER A ROOF",
+        Ground::Water => "TOO WET",
+        Ground::Reserved | Ground::Claimed | Ground::Steep | Ground::Built => "TOO STONY",
+    }
+}
+
+/// A patch of open ground under the crosshair ([`ground_target`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundSpot {
+    /// The point as the wire carries it (`movement::quant_xz`).
+    pub q: (i32, i32),
+    /// Its soil point, where the ghost stands.
+    pub at: (f32, f32, f32),
+    pub aim: PlantAim,
+}
+
+/// The open ground a seed in hand would go into: the look ray's hit on the
+/// terrain at `hit` (planar), quantized as the wire carries it, with the
+/// verdict — the sim's own ground rules ([`ground_site`]: road, reserve,
+/// slope, roof, what is built there, with no claim, which the wire never
+/// carries) and the spacing to the ground plants in `plants`. `None` past a
+/// hand's reach of `eye`.
+pub fn ground_target(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    eye: (f32, f32, f32),
+    hit: (f32, f32),
+    plants: &[WirePlant],
+) -> Option<GroundSpot> {
+    let q = (quant_xz(hit.0), quant_xz(hit.1));
+    let (x, z) = (q.0 as f32 * POS_XZ_Q, q.1 as f32 * POS_XZ_Q);
+    let site = ground_site(seed, haven, cols, x, z, || false);
+    let y = match site {
+        Ok(y) => y,
+        Err(_) => sim_core::terrain::ground(seed, haven, x, z),
+    };
+    if !in_sow_reach((x, y, z), eye) {
+        return None;
+    }
+    let crowded = plants.iter().any(|p| {
+        let (px, _, pz) = p.pos();
+        !p.in_bed() && (px - x).powi(2) + (pz - z).powi(2) < GROUND_SPACING_M * GROUND_SPACING_M
+    });
+    let aim = match site {
+        Err(g) => PlantAim::No(ground_words(g)),
+        Ok(_) if crowded => PlantAim::No("TOO CLOSE"),
+        Ok(_) => PlantAim::Ground,
+    };
+    Some(GroundSpot {
+        q,
+        at: (x, y, z),
+        aim,
+    })
+}
 
 /// How far from a spot's centre the crosshair may land on the soil and
 /// still name that spot, metres.
@@ -196,6 +276,57 @@ mod tests {
             ..p
         };
         assert!(planter_of(&ground, &deploys, &defs, 1).is_none());
+    }
+
+    /// The open ground under the crosshair: in reach it is offered at the
+    /// wire's quantized point, a neighbour inside the spacing reddens it,
+    /// the road reddens it in its own words, and past reach it is nothing.
+    #[test]
+    fn the_ground_under_the_crosshair_is_offered_in_reach_and_reddens_by_rule() {
+        use sim_core::terrain::{road_band, RoadBand, LAND_MIN_H};
+        let seed = 0x0FEE_0FEE;
+        let haven = sim_core::terrain::haven(seed);
+        let cols = sim_core::collide::ColIndex::new();
+        let find = |want: &dyn Fn(f32, f32) -> bool| {
+            (0..40_000)
+                .map(|k| {
+                    (
+                        1500.0 + (k % 200) as f32 * 7.0,
+                        1500.0 + (k / 200) as f32 * 7.0,
+                    )
+                })
+                .find(|&(x, z)| want(x, z))
+                .expect("a fixture point")
+        };
+        let (x, z) = find(&|x, z| ground_site(seed, &haven, &cols, x, z, || false).is_ok());
+        let y = sim_core::terrain::ground(seed, &haven, x, z);
+        let eye = (x, y + 1.6, z + 1.0);
+        let GroundSpot { q, at, aim } =
+            ground_target(seed, &haven, &cols, eye, (x, z), &[]).expect("in reach");
+        assert_eq!(q, (quant_xz(x), quant_xz(z)));
+        assert!((at.0 - x).abs() < POS_XZ_Q && (at.2 - z).abs() < POS_XZ_Q);
+        assert_eq!(aim, PlantAim::Ground);
+        // A ground plant 0.3 m off crowds it; a bed plant there does not.
+        let near = WirePlant {
+            spot: sim_core::farm::SPOT_GROUND,
+            ..plant_at(0, x + 0.3, y, z)
+        };
+        let got = ground_target(seed, &haven, &cols, eye, (x, z), &[near]).map(|t| t.aim);
+        assert_eq!(got, Some(PlantAim::No("TOO CLOSE")));
+        let bed = plant_at(0, x + 0.3, y, z);
+        let got = ground_target(seed, &haven, &cols, eye, (x, z), &[bed]).map(|t| t.aim);
+        assert_eq!(got, Some(PlantAim::Ground));
+        // Past a hand's reach: no ghost.
+        let far = (x, y + 1.6, z + 4.0);
+        assert!(ground_target(seed, &haven, &cols, far, (x, z), &[]).is_none());
+        // The road says so.
+        let (x, z) = find(&|x, z| {
+            sim_core::terrain::ground(seed, &haven, x, z) >= LAND_MIN_H
+                && road_band(seed, &haven, x, z) == RoadBand::Carriageway
+        });
+        let y = sim_core::terrain::ground(seed, &haven, x, z);
+        let got = ground_target(seed, &haven, &cols, (x, y + 1.6, z + 1.0), (x, z), &[]);
+        assert_eq!(got.map(|t| t.aim), Some(PlantAim::No("ON THE ROAD")));
     }
 
     /// A bed plant is in sight when its planter is, and never without one;

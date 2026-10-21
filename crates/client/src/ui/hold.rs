@@ -267,12 +267,27 @@ pub fn hand_hint(
                 format!("{}{left}   (F: light)", name())
             }
         }
-        // A clone names its genome ("CORN CLONE · GGYHWX").
-        Click::Plant => format!(
-            "[LMB] PLANT {}",
-            crate::ui::research::stack_label(catalog, research, stack).to_uppercase()
-        ),
+        Click::Plant => plant_hint(catalog, research, stack, crate::ui::farm::PlantAim::None),
         Click::Build | Click::Deploy => String::new(),
+    }
+}
+
+/// [`hand_hint`]'s line for a seed in hand, said against where the planting
+/// ghost stands (`render::farm_ghost`): a bed spot, soft open ground, or the
+/// reason the ground would refuse it, as the deploy line says a red ghost's.
+/// A clone names its genome ("CORN CLONE · GGYHWX").
+pub fn plant_hint(
+    catalog: &ItemCatalog,
+    research: &sim_core::research::ResearchContent,
+    stack: ItemStack,
+    aim: crate::ui::farm::PlantAim,
+) -> String {
+    use crate::ui::farm::PlantAim;
+    let name = crate::ui::research::stack_label(catalog, research, stack).to_uppercase();
+    match aim {
+        PlantAim::None | PlantAim::Bed => format!("[LMB] PLANT {name}"),
+        PlantAim::Ground => format!("[LMB] PLANT {name} IN SOFT GROUND"),
+        PlantAim::No(why) => format!("PLANT {name}  — {why}"),
     }
 }
 
@@ -2000,6 +2015,20 @@ mod tests {
         assert_eq!(
             hand_hint(&c, &r, Click::Plant, clone, false),
             "[LMB] PLANT CORN CLONE · GGYHWX"
+        );
+        // Over open ground the line says whether it is soft, and why not.
+        use crate::ui::farm::PlantAim;
+        assert_eq!(
+            plant_hint(&c, &r, seed, PlantAim::Ground),
+            "[LMB] PLANT CORN SEED IN SOFT GROUND"
+        );
+        assert_eq!(
+            plant_hint(&c, &r, seed, PlantAim::No("ON THE ROAD")),
+            "PLANT CORN SEED  — ON THE ROAD"
+        );
+        assert_eq!(
+            plant_hint(&c, &r, seed, PlantAim::Bed),
+            hand_hint(&c, &r, Click::Plant, seed, false)
         );
         assert_eq!(
             crate::ui::research::stack_label(&c, &r, clone),

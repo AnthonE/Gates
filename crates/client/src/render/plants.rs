@@ -1583,6 +1583,17 @@ pub fn sprout(variant: u32) -> Mesh {
     s.mesh()
 }
 
+/// A ground plant's mound of heaped soil (farming v2, open ground): a low
+/// dome 18 cm in radius rising 4 cm over y = 0, its underside buried so it
+/// sits on a slope without a lip showing.
+pub fn soil_mound() -> Mesh {
+    Sphere::new(1.0)
+        .mesh()
+        .uv(16, 8)
+        .scaled_by(Vec3::new(0.18, 0.05, 0.18))
+        .translated_by(Vec3::Y * -0.01)
+}
+
 /// A planted seed's patch of turned soil (farming v2): a disc 12 cm across
 /// the radius and a centimetre tall, standing on y = 0.
 pub fn soil_disc() -> Mesh {

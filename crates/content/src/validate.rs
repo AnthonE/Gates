@@ -2356,6 +2356,26 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!("farm: {what} {v} is past 100 per cent"));
         }
     }
+    for (biome, v) in &fm.soil {
+        if !sim_core::terrain::BIOME_NAMES.contains(&biome.as_str()) {
+            return Err(format!(
+                "farm: soil names `{biome}`, not a biome ({})",
+                sim_core::terrain::BIOME_NAMES.join(", ")
+            ));
+        }
+        if *v > 1000 {
+            return Err(format!("farm: soil `{biome}` {v} is past 1000 per mille"));
+        }
+    }
+    // A ground plant that soil takes must be one a skin can water: a pour
+    // is refused unless a quarter skin fits, so a tank under that would
+    // never take one.
+    if fm.soil.values().any(|&v| v > 0) && fm.ground_water < fm.skin_water.div_ceil(4) {
+        return Err(format!(
+            "farm: ground_water {} holds less than a quarter skin ({}), so no skin pours",
+            fm.ground_water, fm.skin_water
+        ));
+    }
     if fm.skin_water == 0 || fm.skin_water > fm.planter_water {
         return Err(format!(
             "farm: a skin ({}) must hold water and fit a planter ({})",

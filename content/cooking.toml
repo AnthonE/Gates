@@ -365,6 +365,13 @@ g_pct = 10
 y_pct = 10
 h_pct = 10
 w_pct = 25
+# The open ground (Rust's fallback to a planter): a ground plant holds
+# `ground_water` plant-seconds of its own and banks `ground_rain` a second
+# in full rain. Its pace at best is its biome's soil, per mille; a biome
+# left out (beach, highland, desert, the Verdigris) takes no seed.
+ground_water = 1800
+ground_rain = 3
+soil = { meadow = 550, forest = 450 }
 
 # A pick pays `count` of `yield` at full health, fewer for a plant that grew
 # thirsty, cold or in poor soil (never none).
