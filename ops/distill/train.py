@@ -26,6 +26,7 @@ done, failed, or the body died before the next decision. Autopilot turns
 import argparse
 import datetime
 import glob
+import gzip
 import json
 import math
 import os
@@ -39,14 +40,21 @@ NAMED = ("craft", "buy", "sell", "go", "walk")
 
 
 def load(paths):
-    """Recordings, each its rows in decision order."""
+    """Recordings, each its rows in decision order: `*.jsonl`, or kept
+    gzipped as `*.jsonl.gz` (`ops/distill/data/`)."""
     files = []
     for p in paths:
-        files += sorted(glob.glob(os.path.join(p, "**", "*.jsonl"), recursive=True)) if os.path.isdir(p) else [p]
+        if os.path.isdir(p):
+            found = []
+            for pattern in ("*.jsonl", "*.jsonl.gz"):
+                found += glob.glob(os.path.join(p, "**", pattern), recursive=True)
+            files += sorted(found)
+        else:
+            files.append(p)
     runs = []
     for f in files:
         rows = []
-        with open(f) as fh:
+        with (gzip.open(f, "rt") if f.endswith(".gz") else open(f)) as fh:
             for line in fh:
                 try:
                     r = json.loads(line)
