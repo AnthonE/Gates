@@ -51,6 +51,12 @@
 //! brain must still lose to it as the sum does, because the eyes and hands
 //! it plays through are a person's.
 //!
+//! Its confirm stage is stricter than the wolves': the child must lead its
+//! parent on the same fresh fights by `--z` standard errors of the paired
+//! lead (default 2). Fights end in a few coin-flip outcomes, and a plain
+//! "scored higher" kept a mutation in two generations of five and bred a
+//! brain that beat the sum on its own batches and lost to it held out.
+//!
 //! ```text
 //! cargo run --release -p server --example zoo -- --agent
 //! cargo run --release -p server --example zoo -- --agent --bench ga1:...
@@ -750,20 +756,43 @@ mod agent {
         }
     }
 
-    fn score(
+    /// Each genome's fitness in every fight, genome by genome.
+    fn each(
         genomes: &[Option<Genome>],
         fights: &[Fight],
         wolves: &Genome,
         threads: usize,
-    ) -> Vec<f32> {
+    ) -> Vec<Vec<f32>> {
         let jobs: Vec<_> = genomes
             .iter()
             .flat_map(|g| fights.iter().map(move |f| (*g, *f)))
             .collect();
         pool(&jobs, threads, |(g, f)| play_fight(f, g.as_ref(), wolves))
             .chunks(fights.len())
-            .map(|c| c.iter().map(Went::fitness).sum::<f32>() / c.len() as f32)
+            .map(|c| c.iter().map(Went::fitness).collect())
             .collect()
+    }
+
+    fn score(
+        genomes: &[Option<Genome>],
+        fights: &[Fight],
+        wolves: &Genome,
+        threads: usize,
+    ) -> Vec<f32> {
+        each(genomes, fights, wolves, threads)
+            .iter()
+            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
+            .collect()
+    }
+
+    /// The child's lead over its parent on the same fights, and that
+    /// lead's standard error.
+    fn lead(parent: &[f32], child: &[f32]) -> (f32, f32) {
+        let n = parent.len().max(2) as f32;
+        let d: Vec<f32> = child.iter().zip(parent).map(|(c, p)| c - p).collect();
+        let mean = d.iter().sum::<f32>() / n;
+        let var = d.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / (n - 1.0);
+        (mean, (var / n).sqrt())
     }
 
     fn batch(from: u32, n: usize, at: u64) -> Vec<Fight> {
@@ -918,8 +947,8 @@ mod agent {
     pub fn main() {
         let mut it = std::env::args().skip(2);
         let (mut gens, mut kids, mut batch_n, mut confirm, mut bases) =
-            (60usize, 15usize, 24usize, 48usize, 32usize);
-        let (mut screen, mut held, mut seed) = (4096usize, 96usize, 1u64);
+            (100usize, 15usize, 48usize, 192usize, 32usize);
+        let (mut screen, mut held, mut seed, mut z) = (4096usize, 192usize, 1u64, 2.0f32);
         let mut threads = std::thread::available_parallelism().map_or(4, |n| n.get());
         let (mut from, mut bench_only, mut wolves) = (None, None, None);
         let tactics = |s: Option<String>| -> Genome {
@@ -943,6 +972,12 @@ mod agent {
                 "--held-out" => held = num(),
                 "--seed" => seed = num() as u64,
                 "--threads" => threads = num().max(1),
+                "--z" => {
+                    z = it
+                        .next()
+                        .and_then(|v| v.parse().ok())
+                        .expect("--z takes a number")
+                }
                 "--from" => from = Some(tactics(it.next())),
                 "--bench" => bench_only = Some(tactics(it.next())),
                 "--wolves" => {
@@ -1007,13 +1042,14 @@ mod agent {
             if fit[best] > fit[1] {
                 let fresh = batch(CONFIRM_SEEDS, confirm, confirms);
                 confirms += 1;
-                let again = score(&[Some(parent), pool[best]], &fresh, &wolves, threads);
-                if again[1] > again[0] {
+                let again = each(&[Some(parent), pool[best]], &fresh, &wolves, threads);
+                let (d, se) = lead(&again[0], &again[1]);
+                if d > z * se {
                     parent = pool[best].unwrap();
-                    note = format!("kept ({:.3} > {:.3} on confirm)", again[1], again[0]);
+                    note = format!("kept (+{d:.3} ± {se:.3} on confirm)");
                     eprintln!("checkpoint gen {gen}: {}", text(&parent));
                 } else {
-                    note = format!("refused ({:.3} <= {:.3} on confirm)", again[1], again[0]);
+                    note = format!("refused ({d:+.3} ± {se:.3} on confirm)");
                 }
             }
             println!(
