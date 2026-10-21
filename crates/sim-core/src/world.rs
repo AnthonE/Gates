@@ -1988,6 +1988,30 @@ pub enum Command {
         /// past half a wall either way.
         plate: i8,
     },
+    /// Place baked piece row `row` on standing building `bld`'s lattice, at
+    /// footprint `sock` on socket `level` (freeform W2, `build::place_at`):
+    /// what the grid cannot name — a triangle, anything in a building
+    /// turned off the grid — and what it can, by the same rules.
+    PlaceAt {
+        id: u32,
+        row: u16,
+        bld: u16,
+        level: u8,
+        sock: crate::sock::Sock,
+    },
+    /// Start a building with a foundation placed free (freeform W2,
+    /// `build::place_free`): its frame's origin on the foundation's first
+    /// corner at world (`x_cm`, `z_cm`), turned `yaw`; `tri` asks for the
+    /// triangle; `plate` is `Place`'s asked band over its ground.
+    PlaceFree {
+        id: u32,
+        row: u16,
+        x_cm: i32,
+        z_cm: i32,
+        yaw: u16,
+        tri: bool,
+        plate: i8,
+    },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic). `pose` is where in
     /// the cell a body deployable stands and which way it faces (free
@@ -4279,6 +4303,7 @@ impl World {
         };
         let rec = self.pieces.entries()[i];
         let amount = crate::build::structure_price(
+            &self.pieces,
             &rec,
             self.build.pieces[rec.row as usize].shape,
             c.from_x,
@@ -6047,6 +6072,57 @@ impl World {
                             &mut self.events,
                         );
                     }
+                }
+            }
+            Command::PlaceAt {
+                id,
+                row,
+                bld,
+                level,
+                sock,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    build::place_at(
+                        self.seed,
+                        &self.haven,
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        self.tick,
+                        row,
+                        bld,
+                        level,
+                        sock,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::PlaceFree {
+                id,
+                row,
+                x_cm,
+                z_cm,
+                yaw,
+                tri,
+                plate,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    build::place_free(
+                        self.seed,
+                        &self.haven,
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &mut self.players[slot],
+                        self.tick,
+                        row,
+                        (x_cm, z_cm),
+                        yaw,
+                        tri,
+                        plate,
+                        &mut self.events,
+                    );
                 }
             }
             Command::PlaceDeploy {
@@ -7824,7 +7900,7 @@ impl World {
         // noise is recorded off the charge while its address still exists.
         for c in self.charges.entries() {
             if c.fires_at <= tick {
-                let (x, z) = crate::charge::epicentre(&self.deploys, c);
+                let (x, z) = crate::charge::epicentre(&self.pieces, &self.deploys, c);
                 self.noises.push(crate::noise::Noise {
                     qx: crate::movement::quant_xz(x),
                     qz: crate::movement::quant_xz(z),
@@ -8783,6 +8859,32 @@ impl World {
             // whether a body is standing or falling.
             buf[12] = r.plate as u8;
             h.update(&buf);
+            // Where it stands on its building's lattice (freeform W3): the
+            // identity the support rules read, and the id its collision
+            // row is filed under.
+            let mut at = [0u8; 24];
+            at[0..4].copy_from_slice(&r.id.to_le_bytes());
+            at[4..6].copy_from_slice(&r.bld.to_le_bytes());
+            at[6] = r.sock.foot;
+            at[7] = r.sock.dir;
+            for (k, c) in [r.sock.at.a, r.sock.at.b, r.sock.at.c, r.sock.at.d]
+                .into_iter()
+                .enumerate()
+            {
+                at[8 + 4 * k..12 + 4 * k].copy_from_slice(&c.to_le_bytes());
+            }
+            h.update(&at);
+        }
+        // The buildings' frames, in row order, and the id counter: two
+        // shards that disagree about a frame disagree about where every
+        // piece in it stands.
+        h.update(&self.pieces.next_id().to_le_bytes());
+        for (b, f) in self.pieces.buildings().iter() {
+            h.update(&b.to_le_bytes());
+            h.update(&f.origin_cm.0.to_le_bytes());
+            h.update(&f.origin_cm.1.to_le_bytes());
+            h.update(&f.band.to_le_bytes());
+            h.update(&f.yaw.to_le_bytes());
         }
         // Arrows in the air, and deliberately on the **player** idiom
         // rather than every store's above: skip-if-inactive, with no length

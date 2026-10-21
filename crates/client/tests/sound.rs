@@ -1711,13 +1711,17 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
 
     // The join flood: a reset walk restating a standing base, both stores.
-    let batch: [PieceRec; 6] = core::array::from_fn(|i| PieceRec {
-        cx: 10 + i as u16,
-        cz: 20,
-        level: 0,
-        loc: LOC_PLANE,
-        row: 0,
-        ..PieceRec::default()
+    let batch: [(PieceRec, sim_core::frame::Frame); 6] = core::array::from_fn(|i| {
+        let rec = PieceRec {
+            cx: 10 + i as u16,
+            cz: 20,
+            level: 0,
+            loc: LOC_PLANE,
+            row: 0,
+            id: 1 + i as u32,
+            ..PieceRec::default()
+        };
+        (rec, sim_core::frame::Frame::ZERO)
     });
     let len = encode_event_piece_sync(true, &batch, &mut buf).expect("encode");
     core.on_stream(&buf[..len]).expect("decode");
@@ -1743,9 +1747,11 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
         level: 1,
         loc: LOC_PLANE,
         row: 0,
+        id: 100,
         ..PieceRec::default()
     };
-    let len = encode_event_piece_placed(&rec, &mut buf).expect("encode");
+    let len =
+        encode_event_piece_placed(&rec, &sim_core::frame::Frame::ZERO, &mut buf).expect("encode");
     core.on_stream(&buf[..len]).expect("decode");
     assert_eq!(
         core.pop_placed(),
@@ -1757,7 +1763,8 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
     // The wire then sends the walk's tail batch carrying the SAME record
     // (broadcast first, walk after — `pump_events`' order); the mirror
     // insert is idempotent, so the duplicate delivery stays silent.
-    let len = encode_event_piece_sync(false, &[rec], &mut buf).expect("encode");
+    let len = encode_event_piece_sync(false, &[(rec, sim_core::frame::Frame::ZERO)], &mut buf)
+        .expect("encode");
     core.on_stream(&buf[..len]).expect("decode");
     assert!(
         core.pop_placed().is_none(),
@@ -1802,7 +1809,8 @@ fn a_removal_rings_with_what_stood_there_and_a_resync_does_not() {
         plate: 1,
         ..PieceRec::default()
     };
-    let len = encode_event_piece_sync(true, &[rec], &mut buf).expect("encode");
+    let len = encode_event_piece_sync(true, &[(rec, sim_core::frame::Frame::ZERO)], &mut buf)
+        .expect("encode");
     core.on_stream(&buf[..len]).expect("decode");
     let len = encode_event_removed(true, 12, 13, 0, LOC_EDGE_XLO, &mut buf).expect("encode");
     core.on_stream(&buf[..len]).expect("decode");
@@ -1817,11 +1825,13 @@ fn a_removal_rings_with_what_stood_there_and_a_resync_does_not() {
             row: 2,
             plate: 1,
             pose: Default::default(),
+            lattice: None,
         })
     );
     assert!(core.pop_removed().is_none(), "one removal rang twice");
 
-    let len = encode_event_piece_sync(true, &[rec], &mut buf).expect("encode");
+    let len = encode_event_piece_sync(true, &[(rec, sim_core::frame::Frame::ZERO)], &mut buf)
+        .expect("encode");
     core.on_stream(&buf[..len]).expect("decode");
     let len = encode_event_piece_sync(true, &[], &mut buf).expect("encode");
     core.on_stream(&buf[..len]).expect("decode");

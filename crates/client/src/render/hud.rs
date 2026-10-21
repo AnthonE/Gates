@@ -3160,20 +3160,20 @@ pub fn readout(
     // This player's own blows only (wire v77): the island-wide
     // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
     if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
-        let (cx, cz, _, _, left, max) = core.own_struct_hit;
+        let (cx, cz, level, loc, left, max) = core.own_struct_hit;
         // `max == 0` is the defs-not-arrived state and pins nothing: the
         // same honesty rule the toast held (`struct_hit_line`'s doc).
         if max > 0 {
-            ro.wall = Some((cx, cz));
+            ro.wall = Some(cell_of(core, (cx, cz, level, loc)));
             ro.wall_left = left;
             ro.wall_max = max;
             ro.wall_secs = TOAST_SECS;
         }
     }
     if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
-        let (cx, cz, _, _, _, fuse) = core.charge_placed;
+        let (cx, cz, level, loc, _, fuse) = core.charge_placed;
         if fuse > 0 {
-            ro.charge = Some((cx, cz));
+            ro.charge = Some(cell_of(core, (cx, cz, level, loc)));
             ro.charge_secs = fuse as f32 / sim_core::limits::TICK_HZ as f32;
         }
     }
@@ -4351,6 +4351,21 @@ pub fn pickups(
             colour.0 = c;
         }
     }
+}
+
+/// The cell an event's piece address stands in: the address's own, or —
+/// for a spelled id (freeform W2, `build::spell_id`) — the cell the mirror
+/// files that piece under.
+fn cell_of(
+    core: &client_core::core::ClientCore,
+    (cx, cz, level, loc): (u16, u16, u8, u8),
+) -> (u16, u16) {
+    if sim_core::build::spelled_id(cx, cz, level, loc).is_none() {
+        return (cx, cz);
+    }
+    core.pieces
+        .find(cx, cz, level, loc)
+        .map_or((cx, cz), |r| (r.cx, r.cz))
 }
 
 #[cfg(test)]

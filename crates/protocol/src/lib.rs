@@ -1262,7 +1262,11 @@ pub use voice::{
 /// a craft may be refused `REFUSE_CR_OWNED`.
 /// v129 — a chat line holds 120 bytes (`CHAT_MAX_BYTES`, 48 before), its
 /// length 7 bits.
-pub const PROTO_VER: u16 = 129;
+/// v130 — freeform W2: a piece record carries its id, its building and that
+/// building's frame, and its lattice footprint when the grid cannot name it
+/// (a grid bit picks); a piece address may be `LOC_NONE`, its id spelled in
+/// the other fields. `PIECE_SYNC_BATCH` 32 → 11.
+pub const PROTO_VER: u16 = 130;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2161,6 +2165,10 @@ const ACT_WHEEL: u32 = 37;
 /// Pull slot machine `machine`'s lever at ×`mult` (wire v123,
 /// `Command::Slots`).
 const ACT_SLOTS: u32 = 38;
+/// Place a piece on a building's lattice, or start a building with a
+/// foundation placed free (wire v130, freeform W2): a leading bit picks
+/// (`Command::PlaceAt` / `Command::PlaceFree`).
+const ACT_LATTICE: u32 = 39;
 /// Widths of the casino's fields.
 const WHEEL_COLOUR_BITS: u32 = 3;
 const WHEEL_STAKE_BITS: u32 = 7;
@@ -2198,7 +2206,7 @@ const ARC_OP_BITS: u32 = 4;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_SLOTS;
+const ACT_MAX: u32 = ACT_LATTICE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2270,13 +2278,17 @@ pub(crate) const BUILD_LOC_BITS: u32 = 4;
 /// One function rather than ten scattered comparisons, because a store-bit
 /// message bounds its loc BY the bit and a site that picked the wrong
 /// constant would admit a forged address into the other store's range.
+///
+/// A piece address may be `LOC_NONE` since v130: a piece the grid cannot
+/// name, its id spelled in the other fields (`sim_core::build::spell_id`).
 pub(crate) fn loc_max(deploy: bool) -> u8 {
     if deploy {
         (1 << BUILD_LOC_BITS) - 1
     } else {
-        sim_core::build::LOC_RISER_XLO
+        sim_core::build::LOC_NONE
     }
 }
+const _: () = assert!(sim_core::build::LOC_NONE < 1 << BUILD_LOC_BITS);
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
 /// Deployable rows cross in 5 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
@@ -2392,6 +2404,28 @@ pub enum ActionMsg {
         /// sim's refusal rather than the decoder's truncation. Cannot be
         /// re-derived for the freehand bit's reason: how high the player
         /// WANTED the floor is a fact only the client holds.
+        plate: i8,
+    },
+    /// Place baked piece row `row` on standing building `bld`'s lattice at
+    /// footprint `sock`, socket `level` (v130, freeform W2): what the grid
+    /// cannot name. The wire refuses a footprint the lattice cannot hold;
+    /// everything else is the sim's verdict.
+    PlaceAt {
+        row: u16,
+        bld: u16,
+        level: u8,
+        sock: sim_core::sock::Sock,
+    },
+    /// Start a building with a foundation placed free (v130): its frame's
+    /// origin on the foundation's first corner at world (`x_cm`, `z_cm`),
+    /// turned `yaw`, the triangle when `tri`, `plate` the asked band
+    /// (`Place`'s).
+    PlaceFree {
+        row: u16,
+        x_cm: i32,
+        z_cm: i32,
+        yaw: u16,
+        tri: bool,
         plate: i8,
     },
     /// Place baked deployable row `row` at the grid address. Same
@@ -3154,6 +3188,61 @@ pub fn encode_action_place(
     Ok(w.finish())
 }
 
+/// A lattice placement (`ActionMsg::PlaceAt`).
+pub fn encode_action_place_at(
+    row: u16,
+    bld: u16,
+    level: u8,
+    sock: &sim_core::sock::Sock,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if row as usize >= sim_core::limits::MAX_PIECE_DEFS
+        || bld as usize >= sim_core::limits::MAX_BUILDINGS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_LATTICE, ACTION_SUB_BITS)?;
+    w.write_bit(false)?;
+    w.write(row as u32, PIECE_ROW_BITS)?;
+    w.write(bld as u32, event::BUILDING_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    event::write_sock(&mut w, sock)?;
+    Ok(w.finish())
+}
+
+/// A free foundation (`ActionMsg::PlaceFree`).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_action_place_free(
+    row: u16,
+    x_cm: i32,
+    z_cm: i32,
+    yaw: u16,
+    tri: bool,
+    plate: i8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if row as usize >= sim_core::limits::MAX_PIECE_DEFS
+        || (plate as i32) < -PLATE_BIAS
+        || (plate as i32) >= PLATE_BIAS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_LATTICE, ACTION_SUB_BITS)?;
+    w.write_bit(true)?;
+    w.write(row as u32, PIECE_ROW_BITS)?;
+    event::write_signed(&mut w, x_cm, event::ORIGIN_CM_BITS)?;
+    event::write_signed(&mut w, z_cm, event::ORIGIN_CM_BITS)?;
+    w.write(yaw as u32, 16)?;
+    w.write_bit(tri)?;
+    w.write((plate as i32 + PLATE_BIAS) as u32, PLATE_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_deploy(
     row: u16,
     cx: u16,
@@ -3540,6 +3629,40 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 loc,
                 freehand,
                 plate,
+            }
+        }
+        ACT_LATTICE => {
+            let free = r.read_bit()?;
+            let row = r.read(PIECE_ROW_BITS)? as u16;
+            if row as usize >= sim_core::limits::MAX_PIECE_DEFS {
+                return Err(WireError::Malformed);
+            }
+            if free {
+                let x_cm = event::read_signed(&mut r, event::ORIGIN_CM_BITS)?;
+                let z_cm = event::read_signed(&mut r, event::ORIGIN_CM_BITS)?;
+                let yaw = r.read(16)? as u16;
+                let tri = r.read_bit()?;
+                let plate = (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8;
+                ActionMsg::PlaceFree {
+                    row,
+                    x_cm,
+                    z_cm,
+                    yaw,
+                    tri,
+                    plate,
+                }
+            } else {
+                // The building and level widths are exact; the footprint is
+                // refused where the lattice cannot hold it.
+                let bld = r.read(event::BUILDING_BITS)? as u16;
+                let level = r.read(BUILD_LEVEL_BITS)? as u8;
+                let sock = event::read_sock(&mut r)?;
+                ActionMsg::PlaceAt {
+                    row,
+                    bld,
+                    level,
+                    sock,
+                }
             }
         }
         ACT_DEPLOY => {
@@ -5608,13 +5731,53 @@ mod tests {
         // (v97) 30 and treat (v99) 31 filled the five-bit field, give
         // (v102) 32 widened `ACTION_SUB_BITS` to six, unload (v103) 33
         // and fast-track 34, teams (v108) 35, the shop (v118) 36, and the
-        // casino's wheel and slots (v123) 37 and 38.
-        assert_eq!(ACT_MAX, ACT_SLOTS);
+        // casino's wheel and slots (v123) 37 and 38, and freeform
+        // building's lattice placement (v130) 39.
+        assert_eq!(ACT_MAX, ACT_LATTICE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            25,
+            24,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    /// A lattice placement round-trips both ways it can be made, and a
+    /// footprint the lattice cannot hold is refused at decode (v130).
+    #[test]
+    fn the_lattice_placements_round_trip() {
+        use sim_core::lattice::LPt;
+        use sim_core::sock::Sock;
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let sock = Sock::tri_from(LPt::new(-6 * 40, 6 * 3, 0, 6 * 900), 3);
+        let n = encode_action_place_at(17, 4_095, 6, &sock, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::PlaceAt {
+                row: 17,
+                bld: 4_095,
+                level: 6,
+                sock
+            })
+        );
+        let n = encode_action_place_free(3, -2_000, 409_000, 0xC0DE, true, -3, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::PlaceFree {
+                row: 3,
+                x_cm: -2_000,
+                z_cm: 409_000,
+                yaw: 0xC0DE,
+                tri: true,
+                plate: -3
+            })
+        );
+        // Half a side off the lattice: a forged footprint.
+        let off = Sock {
+            at: LPt::new(3, 0, 0, 0),
+            ..Sock::square_from(LPt::ZERO, 0)
+        };
+        let n = encode_action_place_at(17, 0, 0, &off, &mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
     }
 
     #[test]

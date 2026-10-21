@@ -73,6 +73,7 @@ pub mod sock;
 pub mod space;
 pub mod spent;
 pub mod spot;
+pub mod support;
 pub mod survival;
 pub mod terrain;
 pub mod town;

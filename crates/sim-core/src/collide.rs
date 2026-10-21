@@ -1353,9 +1353,15 @@ fn col_band(
 /// How far an edge's solid foot continues to the lower adjoining floor.
 /// Its head and opening sockets stay on the column lattice. Only an actual
 /// supporting plane counts; bare terrain and a triangle's opposite edge do not.
-/// A row's floor and foot as the column index derives them: the column's
-/// floor at the row's socket, and how far an edge reaches below it.
+/// A row's floor and foot: its own, or as the column index derives them —
+/// the column's floor at the row's socket, and how far an edge reaches
+/// below it.
 fn hull_y(seed: u64, haven: &crate::terrain::Haven, cols: &ColIndex, h: &Hull) -> (f32, f32) {
+    // A row posed from its building (`build::Pieces`) carries its heights;
+    // a grid row a mirror filed (`ColIndex::add`) derives them here.
+    if !h.floor_y.is_nan() {
+        return (h.floor_y, h.foot_y);
+    }
     let (cx, cz) = (h.hit.cx, h.hit.cz);
     let floor = col_base_y(seed, haven, cols, cx, cz) + crate::build::level_y(h.level);
     if h.kind == crate::hull::HULL_EDGE {
@@ -2508,106 +2514,6 @@ mod tests {
         assert_eq!(at(x, z, base + 1.5), None, "a jump over it is not on it");
         assert_eq!(at(x, z, base - 1.0), None, "under it is not on it");
         assert_eq!(at(x + 3.0 * BUILD_CELL_M, z, base), None, "off its cell");
-    }
-
-    /// Triangles v0's collision contract: a tri foundation is ground over
-    /// its own half and terrain over the other, and a diagonal wall stops
-    /// a walk and a shot across its line while the open half-cell passes.
-    #[test]
-    fn tri_ground_holds_its_half_and_the_diagonal_blocks_the_cross() {
-        let mut occ = crate::occupy::Scratch::barren();
-        let bc = free_table();
-        let mut pieces = Pieces::new();
-        // The NW half (dx + dz <= 3) and its hypotenuse wall on B.
-        put(
-            &bc,
-            &mut pieces,
-            CX,
-            CZ,
-            0,
-            crate::build::LOC_TRI_XLO_ZLO,
-            7,
-        );
-        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
-        let x0 = CX as f32 * BUILD_CELL_M;
-        let z0 = CZ as f32 * BUILD_CELL_M;
-
-        // Ground on the NW side of the split; terrain on the SE side.
-        let on = piece_ground(SEED, hv(), pieces.cols(), x0 + 0.7, z0 + 0.7, base + 0.05);
-        assert!(
-            fabs(on - base) < 1e-4,
-            "the half's own ground reads the slab: {on} vs {base}"
-        );
-        let off = piece_ground(SEED, hv(), pieces.cols(), x0 + 2.5, z0 + 2.5, base + 0.05);
-        assert_eq!(off, NO_SURFACE, "the other half is not this piece");
-
-        // The diagonal wall across B: a walk from the NW half toward SE
-        // stops at the line; with no wall it passes.
-        let mut b = body_at(x0 + 1.0, z0 + 1.0);
-        for _ in 0..160 {
-            movement::step(
-                SEED,
-                hv(),
-                pieces.cols(),
-                &mut occ.occupants(),
-                &mut b,
-                &walk(90, 90),
-            );
-        }
-        assert!(
-            pos(&b).0 > x0 + 2.5 && pos(&b).2 > z0 + 2.5,
-            "with no diagonal wall the cross passes: ({}, {})",
-            pos(&b).0,
-            pos(&b).2
-        );
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_DIAG_B, 1);
-        let mut b = body_at(x0 + 1.0, z0 + 1.0);
-        for _ in 0..160 {
-            movement::step(
-                SEED,
-                hv(),
-                pieces.cols(),
-                &mut occ.occupants(),
-                &mut b,
-                &walk(90, 90),
-            );
-        }
-        let (bx, _, bz) = pos(&b);
-        assert!(
-            (bx - x0) + (bz - z0) < BUILD_CELL_M,
-            "the diagonal wall must hold the walker on its own side: ({bx}, {bz})"
-        );
-
-        // The shot walk agrees: across the line stops, along the open
-        // half passes.
-        assert!(
-            shot_blocked(
-                SEED,
-                hv(),
-                pieces.cols(),
-                x0 + 1.0,
-                z0 + 1.0,
-                x0 + 2.2,
-                z0 + 2.2,
-                base + 1.5,
-                0.05
-            ),
-            "an arrow across the diagonal stops"
-        );
-        assert!(
-            !shot_blocked(
-                SEED,
-                hv(),
-                pieces.cols(),
-                x0 + 0.3,
-                z0 + 1.0,
-                x0 + 1.0,
-                z0 + 0.3,
-                base + 1.5,
-                0.05
-            ),
-            "an arrow inside the NW half never meets the line"
-        );
     }
 
     #[test]

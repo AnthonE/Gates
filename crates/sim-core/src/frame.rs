@@ -38,7 +38,10 @@ pub const STEP_CS: [(f32, f32); 12] = [
 /// Where a building's lattice stands. `yaw` follows `footprint::Rect` and
 /// `yaw_dir`: 0 faces +z, increasing turns toward +x, 65 536 a whole turn,
 /// so local +x lands on (c, −s) and local +z on (s, c).
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// Two frames are equal when their origin, band and yaw are: the sine and
+/// cosine are a cache of the yaw.
+#[derive(Clone, Copy, Debug)]
 pub struct Frame {
     /// The lattice origin, world centimetres (the island is 409 600 cm a
     /// side, comfortably inside i32).
@@ -49,6 +52,14 @@ pub struct Frame {
     s: f32,
     c: f32,
 }
+
+impl PartialEq for Frame {
+    fn eq(&self, o: &Self) -> bool {
+        (self.origin_cm, self.band, self.yaw) == (o.origin_cm, o.band, o.yaw)
+    }
+}
+
+impl Eq for Frame {}
 
 impl Frame {
     /// Facing +x from the world origin, on band 0: an unused row.

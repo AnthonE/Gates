@@ -155,6 +155,10 @@ pub struct Ghost {
     /// Where it is and what it decided, so `place` acts on exactly what is
     /// drawn — the prompt-and-verb rule from `verbs`.
     pub target: Target,
+    /// Set when the drawn placement is on a building's lattice rather than
+    /// the grid (freeform W2, `place::lattice_aim`): what `place_key` sends
+    /// instead of `target`.
+    pub lattice: Option<place::LatticeAim>,
     pub verdict: Verdict,
     /// What the sim would make of `target` when `verdict` is ok — the plate
     /// and soft side the piece is drawn with before the server answers.
@@ -358,8 +362,7 @@ pub fn track(
         seed: world.seed,
         haven: &world.haven,
         at: (x, z),
-        taken: core.pieces.entries(),
-        cols: core.pieces.cols(),
+        store: core.pieces.store(),
         content: &core.piece_defs,
         inv: &core.inv,
     };
@@ -409,7 +412,66 @@ pub fn track(
     // The floor this placement would take (build plate v1) — the sim's own
     // rule, so the preview stands where the piece will and a stilt is visible
     // before the key is pressed rather than after.
-    let plate = place::ghost_plate(&site, target, freehand, want);
+    let mut plate = place::ghost_plate(&site, target, shape, freehand, want);
+    // The same base point and quarter-turn `structures::spawn_piece` gives
+    // the real thing, from the same function, so the ghost and the piece it
+    // becomes are the same object in the same pose.
+    let mut transform = base_transform(
+        world.seed,
+        &world.haven,
+        (target.cx, target.cz, target.level, target.loc),
+        plate,
+    );
+    // Where the footing is measured, and which drawn location the parts
+    // take (`structures::parts_for`).
+    let mut foot_cell = (target.cx, target.cz);
+    let mut part_loc = target.loc;
+    // A triangle, or a wall on a triangle's side, goes on a building's
+    // lattice (freeform W2): drawn in that building's frame and judged by
+    // the sim's own rules for the site it names.
+    ghost.lattice = None;
+    if let Some(l) = place::lattice_aim(
+        core.pieces.store(),
+        shape,
+        level,
+        aim.at,
+        target,
+        ghost.stair_turn,
+        crate::look::yaw_u16(look.yaw),
+    ) {
+        let drawn = place::lattice_site(&site, l, level, want)
+            .ok()
+            .and_then(|s| {
+                s.frame(core.pieces.store())
+                    .copied()
+                    .map(|f| (f, s.addr.sock))
+            });
+        let Some((frame, sock)) = drawn else {
+            hide(&mut commands, ghost);
+            return;
+        };
+        match place::check_lattice(&site, row, l, level, want) {
+            Ok((_, at)) => {
+                verdict = Verdict::Ok;
+                placement = Some(at);
+            }
+            Err(no) => {
+                verdict = no;
+                placement = None;
+            }
+        }
+        transform = structures::posed_transform(&frame, &sock, level);
+        foot_cell = sim_core::build::anchor_cell(&frame, &sock);
+        let ground =
+            sim_core::build::terrain_band(world.seed, &world.haven, foot_cell.0, foot_cell.1);
+        plate = (frame.band - ground).clamp(i8::MIN as i32, i8::MAX as i32) as i8;
+        part_loc = if structures::is_edge_shape(shape) {
+            sim_core::build::LOC_EDGE_XLO
+        } else {
+            sim_core::build::LOC_PLANE
+        };
+        ghost.lattice = Some(l);
+    }
     ghost.target = target;
     ghost.verdict = verdict;
     ghost.placement = placement;
@@ -420,15 +482,6 @@ pub fn track(
     ghost.want = want;
     ghost.plate = plate;
 
-    // The same base point and quarter-turn `structures::spawn_piece` gives
-    // the real thing, from the same function, so the ghost and the piece it
-    // becomes are the same object in the same pose.
-    let transform = base_transform(
-        world.seed,
-        &world.haven,
-        (target.cx, target.cz, target.level, target.loc),
-        plate,
-    );
     let mat = if verdict.ok() {
         ghost.ok_mat.clone()
     } else {
@@ -462,8 +515,8 @@ pub fn track(
         structures::foundation_part(
             world.seed,
             &world.haven,
-            target.cx,
-            target.cz,
+            foot_cell.0,
+            foot_cell.1,
             shape == SHAPE_TRI_FOUNDATION,
             plate,
         )
@@ -474,7 +527,7 @@ pub fn track(
             | sim_core::build::SHAPE_HALF_WALL
             | sim_core::build::SHAPE_LOW_WALL
     ) && matches!(
-        target.loc,
+        part_loc,
         sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
     );
 
@@ -494,7 +547,7 @@ pub fn track(
         // would promise a bare corner. The foundations' parts are the
         // per-address footing computed above instead of the table's
         // fixed-thickness fallback arm.
-        let (mut parts, n) = structures::parts_for(shape, target.loc);
+        let (mut parts, n) = structures::parts_for(shape, part_loc);
         if let Some(part) = footing {
             parts[0] = part;
         }
@@ -552,12 +605,18 @@ pub fn track(
         target.loc,
         plate,
     );
+    // Off the grid the column index knows nothing under the edge.
+    let foot_drop = if ghost.lattice.is_some() {
+        0.0
+    } else {
+        foot_drop
+    };
     let apron = if structures::is_edge_shape(shape)
         && matches!(
-            target.loc,
+            part_loc,
             sim_core::build::LOC_EDGE_XLO | sim_core::build::LOC_EDGE_ZLO
         ) {
-        structures::edge_apron_transform(target.level, foot_drop)
+        structures::edge_apron_transform(level, foot_drop)
     } else {
         None
     };
@@ -643,6 +702,32 @@ pub fn place_key(
     }
     let t = ghost.target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    // A lattice placement (freeform W2) is sent as itself and drawn when
+    // its broadcast lands: a pending piece is filed by its grid address.
+    if let Some(l) = ghost.lattice {
+        let sent = match l {
+            place::LatticeAim::At { bld, sock } => {
+                protocol::encode_action_place_at(row, bld, ghost.level, &sock, &mut buf)
+            }
+            place::LatticeAim::Free {
+                x_cm,
+                z_cm,
+                yaw,
+                tri,
+            } => {
+                protocol::encode_action_place_free(row, x_cm, z_cm, yaw, tri, ghost.want, &mut buf)
+            }
+        };
+        match sent {
+            Ok(len) => {
+                if let Err(e) = net.session.send_action(&buf[..len]) {
+                    toast.warn(e.to_string());
+                }
+            }
+            Err(e) => toast.warn(format!("that placement would not encode ({e:?})")),
+        }
+        return;
+    }
     match protocol::encode_action_place(
         row,
         t.cx,
@@ -676,6 +761,7 @@ pub fn place_key(
                         uh: 0,
                         dmg: 0,
                         plate: at.plate,
+                        ..Default::default()
                     });
                 }
             }

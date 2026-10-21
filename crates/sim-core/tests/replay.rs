@@ -560,7 +560,7 @@ const TICKS: u64 = 900;
 /// than the LUTs' 1.4° steps, so the fixture gun's rounds land elsewhere.
 /// **Moved → `0xF5EC_8D2C_AC0F_ACE9` at bigger barrels and solid cactus
 /// arms** (2026-10-20).
-const GOLDEN_FINAL_HASH: u64 = 0x7614_F32D_2CCB_3704;
+const GOLDEN_FINAL_HASH: u64 = 0xDE1F_BB90_00EA_8CC7;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -682,7 +682,7 @@ const GOLDEN_FINAL_HASH: u64 = 0x7614_F32D_2CCB_3704;
 /// final hash.
 /// **Moved → `0xD2DC_F376_72B4_9018` at bigger barrels and solid cactus arms**
 /// (2026-10-20), with the final hash.
-const GOLDEN_TRACE_HASH: u64 = 0xFD5A_E963_4738_33D6;
+const GOLDEN_TRACE_HASH: u64 = 0xF8FF_AA9A_1DE9_B671;
 
 /// Fold a stamped trace into one number.
 ///

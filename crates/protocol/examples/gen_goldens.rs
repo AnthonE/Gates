@@ -336,7 +336,8 @@ fn main() {
     let len = encode_action_place(row, cx, cz, level, loc, freehand, plate, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[21], &buf[..len]);
 
-    let len = encode_event_piece_placed(&goldens::event_piece_placed(), &mut buf).unwrap();
+    let (rec, frame) = goldens::event_piece_placed();
+    let len = encode_event_piece_placed(&rec, &frame, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[22], &buf[..len]);
 
     let (reset, recs) = goldens::event_piece_sync();

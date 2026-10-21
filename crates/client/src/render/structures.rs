@@ -1142,9 +1142,11 @@ pub enum PartRole {
 pub enum PartKind {
     #[default]
     Box,
-    /// A right triangular prism over the NW half of the unit cell —
-    /// hypotenuse from (+x, −z) to (−x, +z) in part-local space — scaled
-    /// by `size`. [`tri_prism_unit`] is the one mesh.
+    /// An equilateral triangular prism (freeform W3), `size.x` a side,
+    /// its centroid at the part's origin and its first side along +x on
+    /// the −z side — the lattice's triangle at direction 0
+    /// (`sock::Sock::tri_from`), which [`posed_transform`] turns into
+    /// place. `size.z` scales a unit mesh like `size.x` does.
     Tri,
     /// Treads and risers in the smooth ramp's local frame. Keeping that
     /// frame lets the existing placement checks still compare the ramp
@@ -1339,9 +1341,8 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
         ),
         SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => (
             [
-                // One NW prism; the other three halves are this part under
-                // the root's quarter-turns (`base_transform`), the way the
-                // north edge is the west edge turned.
+                // One equilateral prism; every triangle the lattice holds is
+                // this part under its own turn (`posed_transform`).
                 Part {
                     size: Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M),
                     offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
@@ -2125,13 +2126,16 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
 /// shape for the other filling.
 fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
     let h = size * 0.5;
-    // The three cross-section corners, CCW seen from +y (bevy's up).
-    let a = Vec3::new(-h.x, 0.0, -h.z); // right angle (NW corner)
-    let b = Vec3::new(h.x, 0.0, -h.z); // N-E corner
-    let c = Vec3::new(-h.x, 0.0, h.z); // S-W corner
-                                       // The two triangular caps. They are emitted by hand rather than through
-                                       // `quad` — a triangle is not a quad, and its UV is the cross-section's
-                                       // own x/z in metres so the cap's grain matches the sides'.
+    // The three cross-section corners round the centroid, the first side
+    // along +x, in the same turning sense the half-cell prism used: a side
+    // of `size.x`, the apothem a third of the height.
+    let k = size.z * (3.0f32.sqrt() / 6.0);
+    let a = Vec3::new(-h.x, 0.0, -k);
+    let b = Vec3::new(h.x, 0.0, -k);
+    let c = Vec3::new(0.0, 0.0, 2.0 * k);
+    // The two triangular caps. They are emitted by hand rather than through
+    // `quad` — a triangle is not a quad, and its UV is the cross-section's
+    // own x/z in metres so the cap's grain matches the sides'.
     for (ny, y, wind) in [(1.0f32, h.y, false), (-1.0, -h.y, true)] {
         let (pos, nor, col, uv, idx) = &mut *buf;
         let base = pos.len() as u32;
@@ -2231,6 +2235,76 @@ pub fn base_transform(
     Transform::from_translation(pos)
         .with_rotation(Quat::from_rotation_y(yaw))
         .with_scale(scale)
+}
+
+/// The world transform of a footprint on a building's lattice (freeform
+/// W2): its middle on the building's floor at socket `level`, turned so the
+/// drawn object's own axes lie along the footprint's — a body's first side
+/// along local +x (the triangle prism's and the square slab's), an edge's
+/// run and a flight's climb along local +z, as the grid's `LOC_EDGE_XLO`
+/// and `LOC_RISER` are drawn. A grid footprint lands where
+/// [`base_transform`] puts its address.
+pub fn posed_transform(
+    frame: &sim_core::frame::Frame,
+    sock: &sim_core::sock::Sock,
+    level: u8,
+) -> Transform {
+    use sim_core::sock::{FOOT_EDGE, FOOT_RISER, FOOT_TRI_RISER};
+    const STEP: f32 = std::f32::consts::PI / 6.0;
+    let (x, z) = frame.to_world(sock.at);
+    let y = sim_core::build::band_y(frame.band) + sim_core::build::level_y(level);
+    let (s, c) = frame.sin_cos();
+    let turn = match sock.foot {
+        FOOT_EDGE | FOOT_RISER => std::f32::consts::FRAC_PI_2 - sock.dir as f32 * STEP,
+        FOOT_TRI_RISER => -((sock.dir % 4) as f32) * STEP,
+        _ => -(sock.dir as f32) * STEP,
+    };
+    Transform::from_translation(Vec3::new(x, y, z))
+        .with_rotation(Quat::from_rotation_y(s.atan2(c) + turn))
+}
+
+/// Where a piece record is drawn from: [`base_transform`] for one the grid
+/// names, [`posed_transform`] in its building's frame for one it cannot.
+pub fn piece_root(
+    seed: u64,
+    haven: &terrain::Haven,
+    store: &sim_core::build::Pieces,
+    rec: &sim_core::build::PieceRec,
+) -> Transform {
+    match store.frame(rec.bld) {
+        Some(frame) if !rec.on_grid() => posed_transform(frame, &rec.sock, rec.level),
+        _ => base_transform(seed, haven, (rec.cx, rec.cz, rec.level, rec.loc), rec.plate),
+    }
+}
+
+/// [`piece_root`] for an address an event names: a spelled id
+/// (`build::spell_id`) is looked up in the mirror; a grid address is drawn
+/// from with the plate it is given.
+pub fn addr_root(
+    seed: u64,
+    haven: &terrain::Haven,
+    store: &sim_core::build::Pieces,
+    addr: Addr,
+    plate: i8,
+) -> Transform {
+    match store.find(addr.0, addr.1, addr.2, addr.3) {
+        Some(rec) if !rec.on_grid() => piece_root(seed, haven, store, rec),
+        _ => base_transform(seed, haven, addr, plate),
+    }
+}
+
+/// Is a posed edge's soft face on its drawn +x side? The record's facing
+/// is the lattice's (1: soft toward the edge's anticlockwise normal,
+/// `build::check_site`), resolved through the root actually drawn.
+pub fn posed_soft_positive_x(
+    frame: &sim_core::frame::Frame,
+    sock: &sim_core::sock::Sock,
+    facing: u8,
+    root: &Transform,
+) -> bool {
+    let x = root.rotation * Vec3::X;
+    let (nx, nz) = frame.axis((sock.dir + 3) % 12);
+    (x.x * nx + x.z * nz > 0.0) == (facing == 1)
 }
 
 /// The insert's exact solids, centered for `deploy_transform`.
@@ -2749,30 +2823,43 @@ pub fn stream(
         if (rec.row as u16) >= have {
             continue;
         }
-        let key = (rec.cx, rec.cz, rec.level, rec.loc);
+        // The address the piece answers to: its grid address, or its id
+        // spelled (`build::spell_id`) — what removals and hits name it by.
+        let key = rec.target();
         if ahead && ring.pieces.get(&key).is_some_and(|l| l.seen == gen) {
+            continue;
+        }
+        // A pending lattice placement has no id yet to file it under.
+        if ahead && !rec.on_grid() {
             continue;
         }
         let def = core.piece_defs.pieces[rec.row as usize];
         // Which corner posts this piece draws is a fact about its NEIGHBOURS
         // (gap v1), so it is re-read here every pass rather than latched at
         // spawn: the wall that arrived beside this one takes the post they
-        // share, and this one must be redrawn without it.
-        let own = if is_edge_shape(def.shape) {
+        // share, and this one must be redrawn without it. Off the grid the
+        // column index knows no neighbours: both posts.
+        let own = if !is_edge_shape(def.shape) {
+            0
+        } else if rec.on_grid() {
             post_owner(core.pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc).bits()
         } else {
-            0
+            PostOwn::BOTH.bits()
         };
-        let foot_drop = sim_core::collide::edge_foot_drop(
-            seed,
-            haven,
-            core.pieces.cols(),
-            rec.cx,
-            rec.cz,
-            rec.level,
-            rec.loc,
-            rec.plate,
-        );
+        let foot_drop = if rec.on_grid() {
+            sim_core::collide::edge_foot_drop(
+                seed,
+                haven,
+                core.pieces.cols(),
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+                rec.plate,
+            )
+        } else {
+            0.0
+        };
         if let Some(live) = ring.pieces.get_mut(&key) {
             live.seen = gen;
             // An upgrade keeps the address and changes the row; a raid keeps
@@ -2792,7 +2879,7 @@ pub fn stream(
             // on what is stone now) go with the old face.
             if live.row != rec.row {
                 if let Some(m) = marks.as_deref_mut() {
-                    let tf = base_transform(seed, haven, key, live.plate);
+                    let tf = addr_root(seed, haven, core.pieces.store(), key, live.plate);
                     let up = if is_edge_shape(def.shape) {
                         LEVEL_H_M * 0.5
                     } else {
@@ -2804,17 +2891,23 @@ pub fn stream(
             commands.entity(live.entity).despawn();
             ring.pieces.remove(&key);
         }
+        let root = piece_root(seed, haven, core.pieces.store(), rec);
+        let soft = match core.pieces.frame(rec.bld) {
+            Some(frame) if !rec.on_grid() => {
+                posed_soft_positive_x(frame, &rec.sock, rec.facing, &root)
+            }
+            _ => soft_face_positive_x(key, rec.facing, &root),
+        };
         let entity = spawn_piece(
             &mut commands,
             kit,
             seed,
             haven,
-            key,
+            rec,
+            root,
+            soft,
             def.shape,
             def.material,
-            rec.dmg,
-            rec.plate,
-            rec.facing,
             PostOwn::from_bits(own),
             foot_drop,
         );
@@ -3364,12 +3457,11 @@ fn spawn_piece(
     kit: &Kit,
     seed: u64,
     haven: &terrain::Haven,
-    addr: Addr,
+    rec: &sim_core::build::PieceRec,
+    root: Transform,
+    soft_side: bool,
     shape: u8,
     material: u8,
-    dmg: u8,
-    plate: i8,
-    facing: u8,
     own: PostOwn,
     foot_drop: f32,
 ) -> Entity {
@@ -3377,14 +3469,21 @@ fn spawn_piece(
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
     // material the sim gained without a row here — which is a red test long
     // before it is a wrong wall.
-    let mat = kit.piece_material(material, dmg, addr);
+    let mat = kit.piece_material(material, rec.dmg, rec.target());
     // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
-    // build ghost are the same object in the same pose.
-    let root = base_transform(seed, haven, addr, plate);
-    let (cx, cz, _, loc) = addr;
-    let soft_side = usize::from(soft_face_positive_x(addr, facing, &root));
+    // build ghost are the same object in the same pose. A piece the grid
+    // cannot name stands where its footprint is (`posed_transform`) and is
+    // drawn as the grid's west edge or plane would be.
+    let (cx, cz, plate) = (rec.cx, rec.cz, rec.plate);
+    let loc = if rec.on_grid() {
+        rec.loc
+    } else if is_edge_shape(shape) {
+        LOC_EDGE_XLO
+    } else {
+        sim_core::build::LOC_PLANE
+    };
 
     // **Every piece is ONE entity with its mesh on it.** Not a style choice:
     // the hammer highlight reads `Transform` + `Mesh3d` off the entity
@@ -3410,7 +3509,7 @@ fn spawn_piece(
     } else {
         root * piece_local(shape)
     };
-    let mesh = kit.piece_mesh(shape, material, loc, own, soft_side != 0, step);
+    let mesh = kit.piece_mesh(shape, material, loc, own, soft_side, step);
     let mut piece = commands.spawn((
         super::WorldEntity,
         Mesh3d(mesh),
@@ -3422,7 +3521,7 @@ fn spawn_piece(
     // material, owned like its posts. The root keeps the mesh the highlight
     // reads; a child is exactly what the one-entity contract allows.
     if is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
-        if let Some(apron) = edge_apron_transform(addr.2, foot_drop) {
+        if let Some(apron) = edge_apron_transform(rec.level, foot_drop) {
             piece.with_child((
                 Mesh3d(kit.apron_mesh(material, own)),
                 MeshMaterial3d(mat),

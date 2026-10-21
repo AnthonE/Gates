@@ -21,7 +21,8 @@ use crate::{
 };
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{
-    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_FLOOR_FRAME,
+    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, LOC_NONE, LOC_RISER_XLO, MAT_METAL,
+    SHAPE_TRI_FLOOR_FRAME,
 };
 use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
@@ -29,14 +30,17 @@ use sim_core::craft::{CraftContent, CraftJob, RecipeDef, CLASS_MAX, CLASS_OTHER,
 use sim_core::deploy::{
     BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_RUG, BAG_CAP, MATTER_MAX, PLACE_FRAME,
 };
+use sim_core::frame::Frame;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
+use sim_core::lattice::LPt;
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, KNOWN_WORDS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS,
     MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
     MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, WEAR_SLOTS,
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
+use sim_core::sock::Sock;
 
 /// Longest event-lane message. Sized by the worst subtypes (a full
 /// ground-stack batch ≈ 315 B; a full catalog batch ≈ 284 B since v102 —
@@ -123,11 +127,12 @@ pub const RECIPE_BATCH: usize = 4;
 /// `RECIPE_BATCH` because the two tables drip side by side on join.
 pub const RESEARCH_BATCH: usize = 4;
 
-/// Placed-piece records one sync message carries (a record is 62 bits
-/// since v102's exact hp; 32 keep the batch ≈ 251 B, under the message cap,
-/// and the assert at `PIECE_REC_BITS` holds it there). The join walk is
-/// drip-fed like the harvested-set sync.
-pub const PIECE_SYNC_BATCH: usize = 32;
+/// Placed-piece records one sync message carries (a record is at most 214
+/// bits since v130 carries its id, its building's frame and its footprint;
+/// eleven keep the batch ≈ 296 B, under the message cap, and the assert at
+/// `PIECE_REC_BITS` holds it there). The join walk is drip-fed like the
+/// harvested-set sync.
+pub const PIECE_SYNC_BATCH: usize = 11;
 
 /// Piece-def rows one defs message carries (a full row is ~11 B).
 pub const PIECE_DEFS_BATCH: usize = 6;
@@ -994,16 +999,46 @@ const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
 /// stores' own `u16` at its full width, so every hp the sim can hold
 /// crosses as itself and there is no value past it to refuse.
 const STRUCT_HP_BITS: u32 = u16::BITS;
-/// The widths `write_piece_rec` puts down: address, row, facing, band,
-/// plate, and the exact hp (v102).
-const PIECE_REC_BITS: usize = (2 * BUILD_CELL_BITS
+/// A piece's id (freeform W2): every id an address can spell
+/// (`sim_core::build::MAX_PIECE_ID`), so the width is the range check.
+pub(crate) const PIECE_ID_BITS: u32 = 26;
+/// A building row, `MAX_BUILDINGS` exactly.
+pub(crate) const BUILDING_BITS: u32 = 12;
+/// A frame's origin, signed centimetres biased by half the width: ±5.2 km,
+/// the island and its sea.
+pub(crate) const ORIGIN_CM_BITS: u32 = 20;
+/// A frame's floor band, signed and biased: ±1 km at half a metre.
+pub(crate) const FRAME_BAND_BITS: u32 = 12;
+/// A footprint's kind (`sim_core::sock::FOOT_*`).
+pub(crate) const FOOT_BITS: u32 = 3;
+/// One lattice coefficient, signed and biased: every one that
+/// `LPt::fits` (`lattice::LATTICE_MAX_COEF`).
+pub(crate) const COEF_BITS: u32 = 16;
+/// A footprint's direction, under twelve.
+pub(crate) const SOCK_DIR_BITS: u32 = 4;
+const _: () = assert!(1 << PIECE_ID_BITS == sim_core::build::MAX_PIECE_ID);
+const _: () = assert!(1 << BUILDING_BITS == sim_core::limits::MAX_BUILDINGS);
+const _: () = assert!(sim_core::lattice::LATTICE_MAX_COEF < 1 << (COEF_BITS - 1));
+/// The widths `write_piece_rec` puts down at most: id, building, frame,
+/// the grid bit, the footprint (the longer of a grid address and a
+/// lattice one), level, row, facing, band, plate, and the exact hp.
+const PIECE_REC_BITS: usize = (PIECE_ID_BITS
+    + BUILDING_BITS
+    + 2 * ORIGIN_CM_BITS
+    + FRAME_BAND_BITS
+    + 16
+    + 1
+    + FOOT_BITS
+    + 4 * COEF_BITS
+    + SOCK_DIR_BITS
     + BUILD_LEVEL_BITS
-    + BUILD_LOC_BITS
     + PIECE_ROW_BITS
     + 1
     + DMG_BAND_BITS
     + PLATE_BITS
     + STRUCT_HP_BITS) as usize;
+const _: () =
+    assert!(FOOT_BITS + 4 * COEF_BITS + SOCK_DIR_BITS >= 2 * BUILD_CELL_BITS + BUILD_LOC_BITS);
 /// `write_deploy_rec`'s: address, row, the four state bits (v120's key
 /// bit the fourth), band, the pose's three bytes, the beds, and the exact
 /// hp (v102).
@@ -1812,13 +1847,16 @@ pub enum EventMsg {
         rows: [ResearchRow; RESEARCH_BATCH],
     },
     /// A building piece landed (broadcast — pieces are world facts like
-    /// slot changes). The record is the sim's own `PieceRec`.
-    PiecePlaced { rec: PieceRec },
+    /// slot changes). The record is the sim's own `PieceRec`, with the
+    /// frame of the building it stands in (v130).
+    PiecePlaced { rec: PieceRec, frame: Frame },
     /// One batch of the placed-piece walk (join sync / event-lane resync).
-    /// `reset` clears the client's piece set first.
+    /// `reset` clears the client's piece set first. `frames[i]` is
+    /// `recs[i]`'s building's.
     PieceSync {
         reset: bool,
         recs: [PieceRec; PIECE_SYNC_BATCH],
+        frames: [Frame; PIECE_SYNC_BATCH],
         count: u8,
     },
     /// A place request bounced: `reason` is a `sim_core::build::REFUSE_B_*`
@@ -3134,27 +3172,90 @@ pub fn encode_event_research_rows(
     Ok((w.finish(), count))
 }
 
-/// One placed-piece record on the wire: 62 bits (`PIECE_REC_BITS`), shared
-/// by the placed broadcast and the sync batches. Refuses an address outside
-/// the grid or a row outside the def table — this encoder only ever sees
+/// A signed value in `bits`, biased by half the width; `Range` past it.
+pub(crate) fn write_signed(w: &mut BitWriter, v: i32, bits: u32) -> Result<(), WireError> {
+    let half = 1i32 << (bits - 1);
+    if v < -half || v >= half {
+        return Err(WireError::Range);
+    }
+    w.write((v + half) as u32, bits)
+}
+
+pub(crate) fn read_signed(r: &mut BitReader, bits: u32) -> Result<i32, WireError> {
+    Ok(r.read(bits)? as i32 - (1i32 << (bits - 1)))
+}
+
+/// A lattice footprint: its kind, its four coefficients and its direction.
+pub(crate) fn write_sock(w: &mut BitWriter, s: &Sock) -> Result<(), WireError> {
+    if s.dir as u32 >= 1 << SOCK_DIR_BITS || s.foot as u32 >= 1 << FOOT_BITS {
+        return Err(WireError::Range);
+    }
+    w.write(s.foot as u32, FOOT_BITS)?;
+    for v in [s.at.a, s.at.b, s.at.c, s.at.d] {
+        write_signed(w, v, COEF_BITS)?;
+    }
+    w.write(s.dir as u32, SOCK_DIR_BITS)
+}
+
+/// [`write_sock`]'s twin; a footprint the lattice cannot hold is a forgery.
+pub(crate) fn read_sock(r: &mut BitReader) -> Result<Sock, WireError> {
+    let foot = r.read(FOOT_BITS)? as u8;
+    let mut c = [0i32; 4];
+    for v in c.iter_mut() {
+        *v = read_signed(r, COEF_BITS)?;
+    }
+    let sock = Sock {
+        foot,
+        at: LPt::new(c[0], c[1], c[2], c[3]),
+        dir: r.read(SOCK_DIR_BITS)? as u8,
+    };
+    if !sim_core::support::on_lattice(&sock) {
+        return Err(WireError::Malformed);
+    }
+    Ok(sock)
+}
+
+/// One placed-piece record on the wire (`PIECE_REC_BITS` at most), shared
+/// by the placed broadcast and the sync batches, with the frame of the
+/// building it stands in (freeform W2, v130). A piece the grid names
+/// crosses its grid address and the far end finds its footprint from the
+/// frame (`sock::from_grid`); any other crosses its footprint and the far
+/// end files it under the cell its middle stands in (`build::anchor_cell`)
+/// — both what the shard's store holds, derived the way the store derives
+/// them. Refuses anything outside the widths — this encoder only ever sees
 /// sim records.
-/// The trailing bit is the soft side's facing (hard/soft v0, wire v39):
-/// the client labels the side a player is looking at, so the bit rides
-/// every record the way a door's open bit does.
-fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
+/// The facing bit is the soft side's (hard/soft v0, wire v39): the client
+/// labels the side a player is looking at, so the bit rides every record
+/// the way a door's open bit does.
+fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec, frame: &Frame) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_SOCKETS
-        || rec.loc > loc_max(false)
+        || (rec.on_grid() && rec.loc > LOC_RISER_XLO)
         || rec.row as usize >= MAX_PIECE_DEFS
         || rec.facing > 1
+        || rec.id >= sim_core::build::MAX_PIECE_ID
+        || rec.bld as usize >= sim_core::limits::MAX_BUILDINGS
+        || rec.sock.dir as u32 >= 1 << SOCK_DIR_BITS
+        || rec.sock.foot as u32 >= 1 << FOOT_BITS
     {
         return Err(WireError::Range);
     }
-    w.write(rec.cx as u32, BUILD_CELL_BITS)?;
-    w.write(rec.cz as u32, BUILD_CELL_BITS)?;
+    w.write(rec.id, PIECE_ID_BITS)?;
+    w.write(rec.bld as u32, BUILDING_BITS)?;
+    write_signed(w, frame.origin_cm.0, ORIGIN_CM_BITS)?;
+    write_signed(w, frame.origin_cm.1, ORIGIN_CM_BITS)?;
+    write_signed(w, frame.band, FRAME_BAND_BITS)?;
+    w.write(frame.yaw as u32, 16)?;
+    w.write_bit(rec.on_grid())?;
+    if rec.on_grid() {
+        w.write(rec.cx as u32, BUILD_CELL_BITS)?;
+        w.write(rec.cz as u32, BUILD_CELL_BITS)?;
+        w.write(rec.loc as u32, BUILD_LOC_BITS)?;
+    } else {
+        write_sock(w, &rec.sock)?;
+    }
     w.write(rec.level as u32, BUILD_LEVEL_BITS)?;
-    w.write(rec.loc as u32, BUILD_LOC_BITS)?;
     w.write(rec.row as u32, PIECE_ROW_BITS)?;
     w.write_bit(rec.facing != 0)?;
     // The damage band (wire v44). `dmg` is a wire field the store does not
@@ -3182,14 +3283,49 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     Ok(())
 }
 
-fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
+fn read_piece_rec(r: &mut BitReader) -> Result<(PieceRec, Frame), WireError> {
+    let id = r.read(PIECE_ID_BITS)?;
+    let bld = r.read(BUILDING_BITS)? as u16;
+    let origin = (
+        read_signed(r, ORIGIN_CM_BITS)?,
+        read_signed(r, ORIGIN_CM_BITS)?,
+    );
+    let band = read_signed(r, FRAME_BAND_BITS)?;
+    let frame = Frame::new(origin, band, r.read(16)? as u16);
+    let rec = if r.read_bit()? {
+        let (cx, cz) = (
+            r.read(BUILD_CELL_BITS)? as u16,
+            r.read(BUILD_CELL_BITS)? as u16,
+        );
+        let loc = r.read(BUILD_LOC_BITS)? as u8;
+        // A grid address names a footprint only in a frame on the grid.
+        let sock = sim_core::build::grid_origin(&frame)
+            .and_then(|(ox, oz)| sim_core::sock::from_grid(ox, oz, cx, cz, loc))
+            .ok_or(WireError::Malformed)?;
+        PieceRec {
+            cx,
+            cz,
+            loc,
+            sock,
+            ..PieceRec::default()
+        }
+    } else {
+        let sock = read_sock(r)?;
+        let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+        PieceRec {
+            cx,
+            cz,
+            loc: LOC_NONE,
+            sock,
+            ..PieceRec::default()
+        }
+    };
     let rec = PieceRec {
-        cx: r.read(BUILD_CELL_BITS)? as u16,
-        cz: r.read(BUILD_CELL_BITS)? as u16,
+        id,
+        bld,
         level: r.read(BUILD_LEVEL_BITS)? as u8,
-        loc: r.read(BUILD_LOC_BITS)? as u8,
         row: r.read(PIECE_ROW_BITS)? as u8,
-        ..PieceRec::default()
+        ..rec
     };
     let rec = PieceRec {
         facing: r.read_bit()? as u8,
@@ -3200,25 +3336,30 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         hp: r.read(STRUCT_HP_BITS)? as u16,
         ..rec
     };
-    // Coord/level/facing widths are exact; the row — and, since v40's
-    // widening, the loc — can be forged.
-    if rec.row as usize >= MAX_PIECE_DEFS || rec.loc > loc_max(false) {
+    // Coord/level/facing widths are exact; the row can be forged (the loc
+    // and the footprint were checked where they were read).
+    if rec.row as usize >= MAX_PIECE_DEFS {
         return Err(WireError::Malformed);
     }
-    Ok(rec)
+    Ok((rec, frame))
 }
 
-pub fn encode_event_piece_placed(rec: &PieceRec, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_event_piece_placed(
+    rec: &PieceRec,
+    frame: &Frame,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_PIECE_PLACED)?;
-    write_piece_rec(&mut w, rec)?;
+    write_piece_rec(&mut w, rec, frame)?;
     Ok(w.finish())
 }
 
 /// A batch may be empty only with `reset` — the "your piece set is now
-/// empty" resync message, same contract as the slot sync.
+/// empty" resync message, same contract as the slot sync. Each record
+/// rides with its building's frame.
 pub fn encode_event_piece_sync(
     reset: bool,
-    recs: &[PieceRec],
+    recs: &[(PieceRec, Frame)],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if recs.len() > PIECE_SYNC_BATCH || (recs.is_empty() && !reset) {
@@ -3227,8 +3368,8 @@ pub fn encode_event_piece_sync(
     let mut w = begin(buf, SUB_PIECE_SYNC)?;
     w.write_bit(reset)?;
     w.write(recs.len() as u32, PIECE_SYNC_COUNT_BITS)?;
-    for rec in recs {
-        write_piece_rec(&mut w, rec)?;
+    for (rec, frame) in recs {
+        write_piece_rec(&mut w, rec, frame)?;
     }
     Ok(w.finish())
 }
@@ -6323,9 +6464,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 rows,
             }
         }
-        SUB_PIECE_PLACED => EventMsg::PiecePlaced {
-            rec: read_piece_rec(&mut r)?,
-        },
+        SUB_PIECE_PLACED => {
+            let (rec, frame) = read_piece_rec(&mut r)?;
+            EventMsg::PiecePlaced { rec, frame }
+        }
         SUB_PIECE_SYNC => {
             let reset = r.read_bit()?;
             let count = r.read(PIECE_SYNC_COUNT_BITS)? as usize;
@@ -6333,12 +6475,14 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             let mut recs = [PieceRec::default(); PIECE_SYNC_BATCH];
-            for rec in recs.iter_mut().take(count) {
-                *rec = read_piece_rec(&mut r)?;
+            let mut frames = [Frame::ZERO; PIECE_SYNC_BATCH];
+            for (rec, frame) in recs.iter_mut().zip(frames.iter_mut()).take(count) {
+                (*rec, *frame) = read_piece_rec(&mut r)?;
             }
             EventMsg::PieceSync {
                 reset,
                 recs,
+                frames,
                 count: count as u8,
             }
         }
@@ -8523,21 +8667,61 @@ mod tests {
         assert_eq!(took + took2, cc.recipe_count as usize);
     }
 
+    /// A grid record as the store holds it, in a grid building whose origin
+    /// is the world's: its footprint is the one its address names.
+    fn grid_rec(cx: u16, cz: u16, level: u8, loc: u8, row: u8) -> (PieceRec, Frame) {
+        let frame = Frame::new((0, 0), -3, 0);
+        let rec = PieceRec {
+            cx,
+            cz,
+            level,
+            loc,
+            row,
+            id: 4_242,
+            bld: 9,
+            sock: sim_core::sock::from_grid(0, 0, cx, cz, loc).unwrap(),
+            ..PieceRec::default()
+        };
+        (rec, frame)
+    }
+
+    /// A record the grid cannot name — a triangle in a turned building —
+    /// filed under the cell its middle stands in, as the store files it.
+    fn free_rec(at: LPt, dir: u8, frame: Frame) -> PieceRec {
+        let sock = Sock::tri_from(at, dir);
+        let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+        PieceRec {
+            cx,
+            cz,
+            level: 2,
+            loc: LOC_NONE,
+            row: 5,
+            id: sim_core::build::MAX_PIECE_ID - 1,
+            bld: sim_core::limits::MAX_BUILDINGS as u16 - 1,
+            sock,
+            ..PieceRec::default()
+        }
+    }
+
     #[test]
     fn piece_placed_and_build_refused_round_trip() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        let rec = PieceRec {
-            cx: 341,
-            cz: 682,
-            level: 3,
-            loc: LOC_EDGE_ZLO,
-            row: 17,
-            ..PieceRec::default()
-        };
-        let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+        let (rec, frame) = grid_rec(341, 682, 3, LOC_EDGE_ZLO, 17);
+        let len = encode_event_piece_placed(&rec, &frame, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::PiecePlaced { rec }
+            EventMsg::PiecePlaced { rec, frame }
+        );
+        // A piece the grid cannot name crosses its footprint.
+        let turned = Frame::new((150_000, -2_000), 400, 9_001);
+        let tri = free_rec(LPt::new(6 * 400, -6 * 30, 6 * 7, 0), 3, turned);
+        let len = encode_event_piece_placed(&tri, &turned, &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::PiecePlaced {
+                rec: tri,
+                frame: turned
+            }
         );
         // A record the sim could never hold refuses at encode.
         let bad = PieceRec {
@@ -8545,7 +8729,7 @@ mod tests {
             ..rec
         };
         assert_eq!(
-            encode_event_piece_placed(&bad, &mut buf),
+            encode_event_piece_placed(&bad, &frame, &mut buf),
             Err(WireError::Range)
         );
         let len = encode_event_build_refused(4, &mut buf).unwrap();
@@ -8571,19 +8755,12 @@ mod tests {
         for plate in -(sim_core::build::PLATE_SINK_MAX_BANDS as i8)
             ..=sim_core::build::PLATE_RISE_MAX_BANDS as i8
         {
-            let rec = PieceRec {
-                cx: 341,
-                cz: 682,
-                level: 3,
-                loc: LOC_EDGE_ZLO,
-                row: 17,
-                plate,
-                ..PieceRec::default()
-            };
-            let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+            let (rec, frame) = grid_rec(341, 682, 3, LOC_EDGE_ZLO, 17);
+            let rec = PieceRec { plate, ..rec };
+            let len = encode_event_piece_placed(&rec, &frame, &mut buf).unwrap();
             assert_eq!(
                 decode_event(&buf[..len]).unwrap(),
-                EventMsg::PiecePlaced { rec },
+                EventMsg::PiecePlaced { rec, frame },
                 "plate {plate} did not survive the wire"
             );
         }
@@ -8592,15 +8769,10 @@ mod tests {
         // between them and the width must not alias onto legal ones.
         let mut seen = std::collections::BTreeSet::new();
         for plate in -PLATE_BIAS as i8..PLATE_BIAS as i8 {
-            let rec = PieceRec {
-                cx: 1,
-                cz: 1,
-                row: 0,
-                plate,
-                ..PieceRec::default()
-            };
-            let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
-            let EventMsg::PiecePlaced { rec: back } = decode_event(&buf[..len]).unwrap() else {
+            let (rec, frame) = grid_rec(1, 1, 0, sim_core::build::LOC_PLANE, 0);
+            let rec = PieceRec { plate, ..rec };
+            let len = encode_event_piece_placed(&rec, &frame, &mut buf).unwrap();
+            let EventMsg::PiecePlaced { rec: back, .. } = decode_event(&buf[..len]).unwrap() else {
                 panic!("not a placement")
             };
             assert!(
@@ -8614,16 +8786,24 @@ mod tests {
     #[test]
     fn piece_sync_full_batch_fits_the_cap() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-        // Every field at a live value, the hp (v102) across its whole width:
-        // a record's size is fixed, so any full batch is the worst case.
-        let recs: [PieceRec; PIECE_SYNC_BATCH] = core::array::from_fn(|i| PieceRec {
-            cx: i as u16 * 31,
-            cz: 1023 - i as u16,
-            level: (i % MAX_BUILD_SOCKETS) as u8,
-            loc: (i % 4) as u8,
-            row: (i % MAX_PIECE_DEFS) as u8,
-            hp: u16::MAX - i as u16 * 2047,
-            ..PieceRec::default()
+        // Every field at a live value, the hp (v102) across its whole width,
+        // and every record the wider kind — a footprint, not an address —
+        // so the batch is the worst case.
+        let frame = Frame::new((-524_288, 524_287), -2_048, u16::MAX);
+        let recs: [(PieceRec, Frame); PIECE_SYNC_BATCH] = core::array::from_fn(|i| {
+            let k = i as i32;
+            let rec = free_rec(
+                LPt::new(-16_380 + 6 * k, 16_374, -6 * k, 6 * k),
+                (i % 4) as u8,
+                frame,
+            );
+            let rec = PieceRec {
+                level: (i % MAX_BUILD_SOCKETS) as u8,
+                row: (i % MAX_PIECE_DEFS) as u8,
+                hp: u16::MAX - i as u16 * 2047,
+                ..rec
+            };
+            (rec, frame)
         });
         let len = encode_event_piece_sync(true, &recs, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
@@ -8631,11 +8811,14 @@ mod tests {
             EventMsg::PieceSync {
                 reset,
                 recs: got,
+                frames,
                 count,
             } => {
                 assert!(reset);
                 assert_eq!(count as usize, PIECE_SYNC_BATCH);
-                assert_eq!(got, recs);
+                for (i, (rec, frame)) in recs.iter().enumerate() {
+                    assert_eq!((got[i], frames[i]), (*rec, *frame));
+                }
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -9341,14 +9524,14 @@ mod tests {
                 0,
                 0,
                 0,
-                sim_core::build::LOC_RISER_XLO + 1,
+                sim_core::build::LOC_NONE + 1,
                 0,
                 1,
                 1,
                 &mut buf
             ),
             Err(WireError::Range),
-            "loc past the piece store's ten"
+            "loc past the piece store's (LOC_NONE, v130)"
         );
         // Every four-bit loc names a deploy since v89 (the body slots),
         // so the value a piece reads as a triangle half is a slot here.
@@ -9951,6 +10134,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/sock.rs"),
         },
         Module {
+            file: "support.rs",
+            src: include_str!("../../sim-core/src/support.rs"),
+        },
+        Module {
             file: "hull.rs",
             src: include_str!("../../sim-core/src/hull.rs"),
         },
@@ -9961,6 +10148,10 @@ mod wire_domains {
         Module {
             file: "gather.rs",
             src: include_str!("../../sim-core/src/gather.rs"),
+        },
+        Module {
+            file: "genome.rs",
+            src: include_str!("../../sim-core/src/genome.rs"),
         },
         Module {
             file: "heli.rs",
@@ -10110,6 +10301,20 @@ mod wire_domains {
     /// gate, and the narrowing rule at `PROTO_VER` is why no version
     /// turned for it).
     const DOMAINS: &[Domain] = &[
+        Domain {
+            what: "footprint kind",
+            sim_site: "sock.rs FOOT_*",
+            wire_site: "FOOT_BITS",
+            home: "sock.rs",
+            prefix: "pub const FOOT_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 5,
+            bits: FOOT_BITS,
+            // 4 = FOOT_TRI_RISER at v130 (freeform W2), the flight on a
+            // triangle; `support::on_lattice` refuses past it.
+            live_max: 4,
+        },
         Domain {
             what: "death cause",
             sim_site: "world.rs DEATH_BY_*",
@@ -10633,9 +10838,10 @@ mod wire_domains {
             // 21 -> 22 at v102: `MATTER_BITS` over `deploy::MATTER_*`,
             // and 22 -> 23 in the same turn: `ITEM_CLASS_BITS` over
             // `craft::CLASS_*`. 23 -> 24 at v123: `CASINO_CODE_BITS` over
-            // `casino::REFUSE_CA_*`.
+            // `casino::REFUSE_CA_*`. 24 -> 25 at v130: `FOOT_BITS` over
+            // `sock::FOOT_*`.
             DOMAINS.len(),
-            24,
+            25,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -10813,6 +11019,19 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A piece record's freeform half (v130): its id, bounded by
+            // `build::MAX_PIECE_ID`, and its building, `MAX_BUILDINGS` —
+            // both const-asserted equal to their widths; a frame's origin
+            // and band, signed magnitudes refused past their widths at
+            // encode; a lattice coefficient, `LATTICE_MAX_COEF`
+            // const-asserted inside it; a footprint's direction, under
+            // twelve, refused by `support::on_lattice` at decode.
+            "PIECE_ID_BITS",
+            "BUILDING_BITS",
+            "ORIGIN_CM_BITS",
+            "FRAME_BAND_BITS",
+            "COEF_BITS",
+            "SOCK_DIR_BITS",
             // A team (v108): its member count, bounded by the wire's own
             // `TEAM_MAX` (const-asserted beside the width); a member's
             // state, the wire's own three, refused past `TEAM_STATE_MAX`;

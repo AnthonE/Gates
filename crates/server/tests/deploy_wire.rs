@@ -1237,10 +1237,10 @@ fn addrs(recs: &[sim_core::build::PieceRec]) -> Vec<(u16, u16, u8, u8, u8)> {
 /// (`reference/NETWORK.md` §9.2.1). The walk goes downward now, so the
 /// entry that moves is always one already sent and the cursor survives.
 ///
-/// The fixture is a 196-piece base whose upkeep clocks are staggered an
-/// hour apart, so decay takes it down over eight consecutive ticks —
-/// peaking at a tick that removes a whole sync batch, which is the
-/// condition that makes the amplifier bite — instead of in one cliff. It
+/// The fixture is an 86-piece base whose upkeep clocks are staggered an
+/// hour apart, so decay takes it down over consecutive ticks — peaking at
+/// a tick that removes a whole sync batch, which is the condition that
+/// makes the amplifier bite — instead of in one cliff. It
 /// stops with pieces still standing, so the convergence asserted at the
 /// end is convergence on a world with something in it.
 ///
@@ -1312,8 +1312,10 @@ fn a_removal_storm_leaves_every_walk_standing() {
     for _ in 0..64 {
         place(&mut core, 0);
     }
+    // Two an hour after it (v130's batch of eleven is a smaller walk step,
+    // so the storm has to outlast a walk with fewer pieces behind it).
     for hour in 1..=11u64 {
-        for _ in 0..12 {
+        for _ in 0..2 {
             place(&mut core, hour);
         }
     }
@@ -1479,10 +1481,12 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
     const HOURS: u64 = 3;
     /// The half that rots, all of it due in hour 0 so the sweep meets a
     /// whole tick's worth of overdue entries at once.
-    const DOOMED: usize = 4 * PIECE_SYNC_BATCH;
+    /// Two sweeps' worth (`UPKEEP_SWEEP_PER_TICK`), so the removals span
+    /// the joins below.
+    const DOOMED: usize = 128;
     /// The half that does not, and the reason the agreement at the end is
     /// not the agreement of two empty sets.
-    const STANDING: usize = 2 * PIECE_SYNC_BATCH;
+    const STANDING: usize = 64;
 
     // Laid before anyone connects, by `build::place` against a spare world
     // record for the sibling test's reason: 192 placements through the

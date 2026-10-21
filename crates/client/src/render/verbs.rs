@@ -534,7 +534,7 @@ pub fn resolve(
         structure::struck(
             built?,
             (x, z),
-            core.pieces.entries(),
+            core.pieces.store(),
             &core.piece_defs,
             core.piece_defs_have,
             core.deploys.entries(),

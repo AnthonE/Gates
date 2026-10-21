@@ -1649,13 +1649,13 @@ fn golden_event(fixture: &[u8], name: &str) {
             len
         }
         "event_piece_placed.bin" => {
-            let rec = event_piece_placed();
+            let (rec, frame) = event_piece_placed();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::PiecePlaced { rec },
+                EventMsg::PiecePlaced { rec, frame },
                 "{name}: decode mismatch"
             );
-            encode_event_piece_placed(&rec, &mut buf).unwrap()
+            encode_event_piece_placed(&rec, &frame, &mut buf).unwrap()
         }
         "event_piece_sync.bin" => {
             let (reset, recs) = event_piece_sync();
@@ -1663,11 +1663,14 @@ fn golden_event(fixture: &[u8], name: &str) {
                 EventMsg::PieceSync {
                     reset: got_r,
                     recs: got,
+                    frames,
                     count,
                 } => {
                     assert_eq!(got_r, reset, "{name}: reset mismatch");
                     assert_eq!(count as usize, PIECE_SYNC_BATCH);
-                    assert_eq!(got, recs, "{name}: decode mismatch");
+                    for (i, want) in recs.iter().enumerate() {
+                        assert_eq!((got[i], frames[i]), *want, "{name}: record {i} mismatch");
+                    }
                 }
                 other => panic!("{name}: wrong variant {other:?}"),
             }
@@ -3247,7 +3250,7 @@ fn the_piece_goldens_carry_a_live_plate() {
     match decode_event(GOLDEN[fixture_index("event_piece_placed.bin")])
         .expect("piece placed decodes")
     {
-        EventMsg::PiecePlaced { rec } => assert!(
+        EventMsg::PiecePlaced { rec, .. } => assert!(
             rec.plate < 0,
             "the placed golden carries plate {}, so its bytes cannot tell a              dropped sign from a correct one",
             rec.plate
@@ -3268,10 +3271,12 @@ fn the_piece_goldens_carry_a_live_plate() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for (i, hit) in seen.iter().enumerate() {
-        let band = i as i32 - protocol::PLATE_BIAS;
+    // Both ends of the field and both signs (v130's batch of eleven holds
+    // fewer records than the field has values): a width one short loses an
+    // end, a lost bias a sign.
+    for band in [-protocol::PLATE_BIAS, protocol::PLATE_BIAS - 1, -1, 1] {
         assert!(
-            hit,
+            seen[(band + protocol::PLATE_BIAS) as usize],
             "no piece in the sync golden carries plate {band}, so that value's \
              bytes are pinned by nothing — the field is {width} values wide"
         );
@@ -3286,7 +3291,8 @@ fn the_piece_goldens_carry_a_live_plate() {
 
 #[test]
 fn the_loc_fuzz_covers_each_stores_whole_domain() {
-    use sim_core::build::{LOC_EDGE_ZLO, LOC_RISER_XLO};
+    use protocol::goldens::PIECE_SYNC_LOCS;
+    use sim_core::build::LOC_EDGE_ZLO;
 
     let mut seen = [false; 16];
     match decode_event(GOLDEN[fixture_index("event_piece_sync.bin")]).expect("piece sync decodes") {
@@ -3297,18 +3303,15 @@ fn the_loc_fuzz_covers_each_stores_whole_domain() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for loc in 0..=LOC_RISER_XLO {
-        assert!(
-            seen[loc as usize],
-            "no piece in the sync golden sits at loc {loc}, so its bytes are \
-             pinned by nothing — the piece store addresses 0..={LOC_RISER_XLO}"
-        );
-    }
-    for (loc, hit) in seen.iter().enumerate().skip(LOC_RISER_XLO as usize + 1) {
-        assert!(
-            !*hit,
-            "the piece-sync golden carries loc {loc}, which no store can \
-             address — the fixture is pinning a forgery as if it were legal"
+    // Since freeform W3 the piece store holds squares, edges and the four
+    // flights on the grid, and `LOC_NONE` for what only a footprint names.
+    for (loc, hit) in seen.iter().enumerate() {
+        let legal = PIECE_SYNC_LOCS.contains(&(loc as u8));
+        assert_eq!(
+            *hit, legal,
+            "loc {loc}: the piece-sync golden must carry exactly the locs the \
+             store holds — one missing is pinned by nothing, one extra is a \
+             forgery pinned as if it were legal"
         );
     }
 

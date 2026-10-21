@@ -1731,11 +1731,18 @@ pub fn feed(
         if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
             let (cx, cz, level, loc, _row, fuse) = core.charge_placed;
             if fuse > 0 {
-                let (x, z) = sim_core::build::anchor(cx, cz, loc);
                 let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
-                let y =
-                    super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
-                sound.play(Request::at(Cue::Fuse, [x, y + 1.0, z]));
+                // The piece it is stuck to: a spelled id names one the grid
+                // cannot (freeform W2), and the mirror says where it is.
+                let at = super::structures::addr_root(
+                    world.seed,
+                    &world.haven,
+                    core.pieces.store(),
+                    (cx, cz, level, loc),
+                    plate,
+                )
+                .translation;
+                sound.play(Request::at(Cue::Fuse, [at.x, at.y + 1.0, at.z]));
             }
         }
     }
@@ -2048,9 +2055,10 @@ pub fn place(
                 core.deploy_defs_have,
                 r,
             ),
-            None => super::structures::base_transform(
+            None => super::structures::addr_root(
                 world.seed,
                 &world.haven,
+                core.pieces.store(),
                 (cx, cz, level, loc),
                 plate,
             ),
@@ -2063,9 +2071,7 @@ pub fn place(
         let material = (!deploy)
             .then(|| {
                 core.pieces
-                    .entries()
-                    .iter()
-                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                    .find(cx, cz, level, loc)
                     .filter(|r| {
                         (r.row as u16) < core.piece_defs_have.min(core.piece_defs.piece_count)
                     })

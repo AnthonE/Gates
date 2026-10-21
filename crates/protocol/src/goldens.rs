@@ -20,8 +20,7 @@ use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, WireGItem, WireLodged, WireToss, BAG_SYNC_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, PLATE_BIAS,
-    PLATE_BITS, SLOT_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, LODGED_SYNC_BATCH, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::collide::Part;
@@ -32,6 +31,7 @@ use sim_core::craft::{
     STATION_WORKBENCH3,
 };
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
+use sim_core::frame::Frame;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
@@ -1595,9 +1595,11 @@ pub fn action_place() -> (u16, u16, u16, u8, u8, bool, i8) {
     (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO, true, -2)
 }
 
-/// The piece record behind the placed broadcast.
-pub fn event_piece_placed() -> PieceRec {
-    PieceRec {
+/// The piece record behind the placed broadcast, and its building's frame:
+/// a grid building, whose origin is a cell's corner and which faces +x.
+pub fn event_piece_placed() -> (PieceRec, Frame) {
+    let frame = Frame::new((300 * 330, 300 * 677), -37, 0);
+    let rec = PieceRec {
         cx: 341,
         cz: 682,
         level: 1,
@@ -1617,49 +1619,109 @@ pub fn event_piece_placed() -> PieceRec {
         // Nonzero with bits in both bytes (v102): an hp of 0 pins bytes an
         // encoder that never wrote the field would match.
         hp: 0x9C35,
+        // Every bit-field of v130's own nonzero: the id, the building.
+        id: 0x2A_5A5A,
+        bld: 0xA5C,
+        sock: sim_core::sock::from_grid(330, 677, 341, 682, sim_core::build::LOC_EDGE_ZLO)
+            .expect("a grid footprint"),
         ..PieceRec::default()
-    }
+    };
+    (rec, frame)
 }
 
+/// The piece locs the sync batch walks round: every grid address the store
+/// holds since freeform W3 (squares, edges and the four flights), and
+/// `LOC_NONE` — a piece only a footprint names.
+pub const PIECE_SYNC_LOCS: [u8; 8] = [
+    sim_core::build::LOC_PLANE,
+    sim_core::build::LOC_RISER,
+    sim_core::build::LOC_EDGE_XLO,
+    sim_core::build::LOC_EDGE_ZLO,
+    sim_core::build::LOC_RISER_XHI,
+    sim_core::build::LOC_RISER_ZLO,
+    sim_core::build::LOC_RISER_XLO,
+    sim_core::build::LOC_NONE,
+];
+
 /// A full piece-sync batch with the reset bit set — the join-sync first
-/// message at its cap.
-pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
+/// message at its cap. Records walk [`PIECE_SYNC_LOCS`] off the index; the
+/// ones the grid names stand in grid buildings, the rest in buildings
+/// turned off it, as triangles.
+pub fn event_piece_sync() -> (bool, [(PieceRec, Frame); PIECE_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 18);
-    let recs = core::array::from_fn(|i| PieceRec {
-        cx: rng.next_bounded(1024) as u16,
-        cz: rng.next_bounded(1024) as u16,
-        level: rng.next_bounded(sim_core::limits::MAX_BUILD_SOCKETS as u32) as u8,
-        // Cover every stair direction as well as planes, edges and halves.
-        loc: rng.next_bounded(sim_core::build::LOC_RISER_XLO as u32 + 1) as u8,
-        row: rng.next_bounded(32) as u8,
-        facing: rng.next_bounded(2) as u8,
-        // The whole FIELD, both signs — the batch is where a width is pinned
-        // across many records, so it covers the range rather than a value
-        // (`event_piece_placed` pins the single deliberate one).
-        //
-        // **The wire's range, not the sim's knobs.** `PLATE_BITS` is
-        // deliberately wider than `build::PLATE_RISE_MAX_BANDS` and
-        // `PLATE_SINK_MAX_BANDS`, and its own doc says why: those two are
-        // balance knobs, and a wire field sized to today's knob is a
-        // `PROTO_VER` bump for every balance pass. A fixture cycled off the
-        // knobs has the same defect one layer up, and it fired the day it was
-        // written — adopting the reference's ±half-a-wall offset moved every
-        // byte of this golden for a reason that has nothing to do with the
-        // wire. The field's own width pins what the LAYOUT can carry, which
-        // is what a wire golden is for, and it stays put while balance moves.
-        //
-        // **Cycled off the index, deliberately NOT drawn from `rng`.** Every
-        // field above shares one stream, so an extra draw per record shifts
-        // every later one — and the first version of this line did draw,
-        // which slid the `loc` sequence far enough that one of the ten
-        // addresses stopped appearing in the batch at all.
-        // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
-        // that gate's whole reason for existing.
-        plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
-        // The hp (v102) down the field from its top, off the index for the
-        // plate's reason: a draw here would shift every later record.
-        hp: u16::MAX - i as u16 * 2047,
-        ..PieceRec::default()
+    // The plate's whole FIELD, both ends and both signs — the wire's range,
+    // not the sim's knobs (`PLATE_BITS` says why it is wider), and off the
+    // index rather than `rng` so a draw added later shifts nothing.
+    const PLATES: [i8; 11] = [-8, 7, -1, 0, 1, -7, 6, 3, -4, 5, -2];
+    let recs = core::array::from_fn(|i| {
+        let loc = PIECE_SYNC_LOCS[i % PIECE_SYNC_LOCS.len()];
+        let level = rng.next_bounded(sim_core::limits::MAX_BUILD_SOCKETS as u32) as u8;
+        let row = rng.next_bounded(32) as u8;
+        let facing = rng.next_bounded(2) as u8;
+        let id = rng.next_u32() >> 6;
+        let bld = rng.next_bounded(sim_core::limits::MAX_BUILDINGS as u32) as u16;
+        let (rec, frame) = if loc == sim_core::build::LOC_NONE {
+            let frame = Frame::new(
+                (
+                    rng.next_bounded(409_600) as i32,
+                    rng.next_bounded(409_600) as i32,
+                ),
+                rng.next_bounded(400) as i32 - 200,
+                rng.next_u32() as u16,
+            );
+            let at = sim_core::lattice::LPt::new(
+                6 * (rng.next_bounded(200) as i32 - 100),
+                6 * (rng.next_bounded(200) as i32 - 100),
+                6 * (rng.next_bounded(200) as i32 - 100),
+                6 * (rng.next_bounded(200) as i32 - 100),
+            );
+            let sock = sim_core::sock::Sock::tri_from(at, rng.next_bounded(4) as u8);
+            let (cx, cz) = sim_core::build::anchor_cell(&frame, &sock);
+            (
+                PieceRec {
+                    cx,
+                    cz,
+                    loc,
+                    sock,
+                    ..PieceRec::default()
+                },
+                frame,
+            )
+        } else {
+            let (ox, oz) = (rng.next_bounded(1024) as u16, rng.next_bounded(1024) as u16);
+            let (cx, cz) = (
+                ox + rng.next_bounded(64) as u16,
+                oz + rng.next_bounded(64) as u16,
+            );
+            let frame = Frame::new(
+                (300 * ox as i32, 300 * oz as i32),
+                rng.next_bounded(400) as i32 - 200,
+                0,
+            );
+            (
+                PieceRec {
+                    cx,
+                    cz,
+                    loc,
+                    sock: sim_core::sock::from_grid(ox, oz, cx, cz, loc).expect("a grid footprint"),
+                    ..PieceRec::default()
+                },
+                frame,
+            )
+        };
+        let rec = PieceRec {
+            level,
+            row,
+            facing,
+            id,
+            bld,
+            plate: PLATES[i],
+            // The hp (v102) down the field from its top, off the index for
+            // the plate's reason.
+            hp: u16::MAX - i as u16 * 2047,
+            ..rec
+        };
+        (rec, frame)
     });
     (true, recs)
 }

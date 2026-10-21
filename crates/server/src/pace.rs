@@ -88,9 +88,11 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
         ActionMsg::Use { .. } | ActionMsg::Team { .. } => Kind::Use,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,
-        ActionMsg::Place { .. } | ActionMsg::Upgrade { .. } | ActionMsg::Rotate { .. } => {
-            Kind::Build
-        }
+        ActionMsg::Place { .. }
+        | ActionMsg::PlaceAt { .. }
+        | ActionMsg::PlaceFree { .. }
+        | ActionMsg::Upgrade { .. }
+        | ActionMsg::Rotate { .. } => Kind::Build,
         ActionMsg::Demolish { .. } => Kind::Demolish,
         ActionMsg::Deploy { .. } => Kind::Deploy,
         // Taking stock back out moves a pack's worth, like a trade; so does

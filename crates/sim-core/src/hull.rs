@@ -305,27 +305,38 @@ impl Hull {
     /// radius: where along the edge it meets, if it does — `collide.rs`'s
     /// `edge_meet` and `diag_meet`, in the hull's frame.
     fn meet(&self, x: f32, z: f32, nx: f32, nz: f32, r_extra: f32) -> Option<f32> {
-        let (d0, d1, along) = if self.kind == HULL_DIAG {
+        let (d0, d1, t0, along) = if self.kind == HULL_DIAG {
             let (x0, z0) = (self.ox, self.oz);
             if self.loc == LOC_DIAG_B {
                 let d = |px: f32, pz: f32| ((px - x0) + (pz - z0) - SIDE_M) * INV_SQRT2;
-                let s = ((nx - x0) - (nz - z0) + SIDE_M) * INV_SQRT2;
-                (d(x, z), d(nx, nz), s)
+                let s = |px: f32, pz: f32| ((px - x0) - (pz - z0) + SIDE_M) * INV_SQRT2;
+                (d(x, z), d(nx, nz), s(x, z), s(nx, nz))
             } else {
                 let d = |px: f32, pz: f32| ((pz - z0) - (px - x0)) * INV_SQRT2;
-                let s = ((nx - x0) + (nz - z0)) * INV_SQRT2;
-                (d(x, z), d(nx, nz), s)
+                let s = |px: f32, pz: f32| ((px - x0) + (pz - z0)) * INV_SQRT2;
+                (d(x, z), d(nx, nz), s(x, z), s(nx, nz))
             }
         } else {
-            let (_, d0) = self.local(x, z);
+            let (t0, d0) = self.local(x, z);
             let (t, d1) = self.local(nx, nz);
-            (d0, d1, t)
+            (d0, d1, t0, t)
         };
         let r = WALL_THICKNESS_M * 0.5 + r_extra;
         let crosses = (d0 < 0.0) != (d1 < 0.0);
         let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
         if !crosses && !pushes_in {
             return None;
+        }
+        // A crossing more than the mover's reach past an end went by the
+        // wall, not through it. A body's step is shorter than that reach,
+        // so this never decides one; it is what keeps a long probe (an
+        // agent's route test across a metre) from meeting a wall whose
+        // line it crossed beyond the wall's end.
+        if crosses {
+            let tc = t0 + (along - t0) * (d0 / (d0 - d1));
+            if tc < -r || tc > self.span() + r {
+                return None;
+            }
         }
         Some(along)
     }
@@ -540,7 +551,14 @@ impl Hulls {
     /// Visit every row whose filed box meets the world box, possibly more
     /// than once; stops when `f` answers true, and answers whether it did.
     #[inline]
-    fn near(&self, x0: f32, z0: f32, x1: f32, z1: f32, mut f: impl FnMut(&Hull) -> bool) -> bool {
+    pub(crate) fn near(
+        &self,
+        x0: f32,
+        z0: f32,
+        x1: f32,
+        z1: f32,
+        mut f: impl FnMut(&Hull) -> bool,
+    ) -> bool {
         if self.rows.is_empty() {
             return false;
         }
@@ -756,7 +774,13 @@ impl Hulls {
         r: f32,
     ) -> Option<(Hull, bool)> {
         let reach = r + WALL_THICKNESS_M * 0.5;
-        let mut best: Option<(Hull, bool)> = None;
+        let mut best: Option<(Hull, bool, ShotOrder)> = None;
+        let cells = (
+            crate::build::build_cell_of(nx),
+            crate::build::build_cell_of(nz),
+            crate::build::build_cell_of(x),
+            crate::build::build_cell_of(z),
+        );
         self.near(
             x.min(nx) - reach,
             z.min(nz) - reach,
@@ -777,14 +801,15 @@ impl Hulls {
                     _ => None,
                 };
                 if let Some(insert) = got {
-                    if best.is_none_or(|(b, _)| h.rank() < b.rank()) {
-                        best = Some((*h, insert));
+                    let order = shot_order(h, cells, (x, z, nx, nz));
+                    if best.is_none_or(|(_, _, o)| order < o) {
+                        best = Some((*h, insert, order));
                     }
                 }
                 false
             },
         );
-        best
+        best.map(|(h, insert, _)| (h, insert))
     }
 
     /// Which body or flight a shot sample at (`x`, `z`), altitude `y`,
@@ -914,6 +939,58 @@ impl Hulls {
     }
 }
 
+/// The order a shot sample prefers among the edges and diagonals it stops
+/// on: the order the column index walked them in for a grid row — the
+/// destination cell's four edges, then the origin's, levels up within each,
+/// then the diagonals the same way — and for any other row the point along
+/// the sample where it crosses the row's line, earliest first. Ties fall to
+/// [`Hull::rank`].
+type ShotOrder = (u32, u8, u8, (u8, u16, u16, u8, u8));
+
+fn shot_order(h: &Hull, cells: (i32, i32, i32, i32), seg: (f32, f32, f32, f32)) -> ShotOrder {
+    use crate::build::LOC_DIAG_A;
+    let (bx1, bz1, bx0, bz0) = cells;
+    let (cx, cz) = (h.hit.cx as i32, h.hit.cz as i32);
+    let edge_at = |bx: i32, bz: i32| -> Option<u32> {
+        match h.hit.loc {
+            LOC_EDGE_XLO if cz == bz && cx == bx => Some(0),
+            LOC_EDGE_XLO if cz == bz && cx == bx + 1 => Some(1),
+            LOC_EDGE_ZLO if cx == bx && cz == bz => Some(2),
+            LOC_EDGE_ZLO if cx == bx && cz == bz + 1 => Some(3),
+            _ => None,
+        }
+    };
+    let moved = (bx0, bz0) != (bx1, bz1);
+    let at = match (h.kind, h.hit.loc) {
+        (HULL_EDGE, LOC_EDGE_XLO | LOC_EDGE_ZLO) => edge_at(bx1, bz1)
+            .or_else(|| edge_at(bx0, bz0).filter(|_| moved).map(|i| i + 4))
+            .unwrap_or(8),
+        (HULL_DIAG, _) => {
+            if (cx, cz) == (bx1, bz1) {
+                10
+            } else if moved && (cx, cz) == (bx0, bz0) {
+                11
+            } else {
+                12
+            }
+        }
+        _ => {
+            // Where along the sample it crosses the row's line.
+            let (x, z, nx, nz) = seg;
+            let (_, d0) = h.local(x, z);
+            let (_, d1) = h.local(nx, nz);
+            let f = if (d0 < 0.0) != (d1 < 0.0) {
+                d0 / (d0 - d1)
+            } else {
+                1.0
+            };
+            20 + (f.clamp(0.0, 1.0) * 1024.0) as u32
+        }
+    };
+    let sub = (h.kind == HULL_DIAG && h.hit.loc != LOC_DIAG_A) as u8;
+    (at, h.level, sub, h.rank())
+}
+
 /// A straight edge a shot sample meets `t` along: `collide::cell_edges_stop_shot`'s
 /// per-level body. Some(insert) when it stops the shot.
 fn shot_edge(h: &Hull, (bottom, foot): (f32, f32), t: f32, y: f32, r: f32) -> Option<bool> {
@@ -960,7 +1037,7 @@ pub fn posed_hull(
         FOOT_SQUARE => HULL_PLANE,
         FOOT_TRI => HULL_TRI,
         FOOT_EDGE => HULL_EDGE,
-        FOOT_RISER => HULL_RISER,
+        FOOT_RISER | crate::sock::FOOT_TRI_RISER => HULL_RISER,
         _ => HULL_TRI,
     };
     let floor_y = crate::build::band_y(frame.band) + crate::build::level_y(addr.level);
@@ -1236,6 +1313,31 @@ mod tests {
         assert!(hulls.plane_blocked(&STORED, cx, cz, floor - 1.0));
     }
 
+    /// An agent's route test crosses a metre at a time. One that starts on
+    /// the line a diagonal wall would run on past its end crosses that line
+    /// beside the wall, not through it, and is not stopped — the case that
+    /// stalled the survivor agents (`server/tests/agent_walls.rs`) when
+    /// every wall near a move became a candidate, not just its two cells'.
+    #[test]
+    fn a_long_probe_past_a_walls_end_is_not_stopped() {
+        use crate::build::{LOC_DIAG_B, SHAPE_WALL};
+        let mut hulls = Hulls::new();
+        // Cell (585, 172): its B diagonal runs (1758, 516) → (1755, 519).
+        hulls.add(grid_hull(
+            key(1),
+            585,
+            172,
+            0,
+            LOC_DIAG_B,
+            SHAPE_WALL,
+            2.0,
+            2.0,
+        ));
+        assert!(!hulls.edges_block(&STORED, 1754.5, 519.5, 1754.5, 518.5, 2.38));
+        // Walking into it still is.
+        assert!(hulls.edges_block(&STORED, 1756.5, 518.5, 1756.2, 518.2, 2.38));
+    }
+
     #[test]
     fn a_wall_blocks_a_crossing_and_not_a_pass_beside_it() {
         let mut hulls = Hulls::new();
@@ -1499,7 +1601,10 @@ mod shadow {
                 let x = lo + unit(&mut rng) * span;
                 let z = lo + unit(&mut rng) * span;
                 let a = unit(&mut rng) * std::f32::consts::TAU;
-                let d = unit(&mut rng) * 0.6;
+                // A body's step and an arrow's tap are under 0.2 m; a
+                // longer probe can cross a wall's line past its end, which
+                // the column index's own cell walk could not see.
+                let d = unit(&mut rng) * 0.19;
                 let (sa, ca) = crate::fmath::sin_cos(a);
                 let (nx, nz) = (x + d * ca, z + d * sa);
                 if [x, z, nx, nz].into_iter().any(near_seam) {
@@ -1550,6 +1655,11 @@ mod shadow {
                 }
                 let y = feet + unit(&mut rng) * 3.0;
                 let r = [0.0, 0.03, 0.15][rng.next_bounded(3) as usize];
+                // A tap no longer than the wall's half thickness: within
+                // reach of the end it crossed past, as every real tap is
+                // of a wall it hits.
+                let k = 0.12 / d.max(0.12);
+                let (nx, nz) = (x + (nx - x) * k, z + (nz - z) * k);
                 let old = crate::cells_oracle::shot_hit(s, hv, &b.cols, x, z, nx, nz, y, r);
                 let new = b.hulls.shot_hit(&STORED, x, z, nx, nz, y, r);
                 let new = if old.is_some() != new.is_some() {

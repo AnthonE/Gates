@@ -2270,7 +2270,12 @@ fn a_wall_the_core_was_sent_shadows_the_tree() {
         let (len, _) = encode_event_piece_defs(&bc, 0, &mut buf).expect("encode defs");
         core.on_stream(&buf[..len]).expect("defs apply");
         if with_wall {
-            let len = encode_event_piece_placed(&wall, &mut buf).expect("encode piece");
+            let len = encode_event_piece_placed(
+                &wall,
+                &sim_core::build::grid_frame(seed, &haven, wall.cx, wall.cz),
+                &mut buf,
+            )
+            .expect("encode piece");
             core.on_stream(&buf[..len]).expect("piece applies");
             assert_eq!(core.pieces.len(), 1, "the core holds the wall");
         }

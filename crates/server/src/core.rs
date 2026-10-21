@@ -40,6 +40,7 @@ use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, BAG_CAP};
+use sim_core::frame::Frame;
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::inventory::{
     slots_in, CONT_BAG, CONT_BODY, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD,
@@ -1536,6 +1537,10 @@ impl ShardCore {
             (ev.b >> 8) as u8,
         );
         let row = (ev.b & 0xff) as u16;
+        // A lattice placement names its piece by footprint, not by the
+        // address the event spells: matched against the record it made.
+        let made = self.world.pieces.find(at.0, at.1, at.2, at.3).copied();
+        let frame = made.and_then(|r| self.world.pieces.frame(r.bld).copied());
         cmds.iter().find_map(|c| match *c {
             Command::Place {
                 id,
@@ -1546,6 +1551,30 @@ impl ShardCore {
                 loc,
                 ..
             } if (cx, cz, level, loc) == at && r == row => Some((id, Piece::Placed(r))),
+            Command::PlaceAt {
+                id,
+                row: r,
+                bld,
+                level,
+                sock,
+            } if r == row
+                && made.is_some_and(|m| (m.bld, m.level, m.sock) == (bld, level, sock)) =>
+            {
+                Some((id, Piece::Placed(r)))
+            }
+            Command::PlaceFree {
+                id,
+                row: r,
+                x_cm,
+                z_cm,
+                yaw,
+                ..
+            } if r == row
+                && made.is_some_and(|m| m.level == 0)
+                && frame.is_some_and(|f| (f.origin_cm, f.yaw) == ((x_cm, z_cm), yaw)) =>
+            {
+                Some((id, Piece::Placed(r)))
+            }
             Command::Upgrade {
                 id,
                 cx,
@@ -2955,6 +2984,34 @@ impl ShardCore {
                         level,
                         loc,
                         freehand,
+                        plate,
+                    },
+                    ActionMsg::PlaceAt {
+                        row,
+                        bld,
+                        level,
+                        sock,
+                    } => Command::PlaceAt {
+                        id: c.id,
+                        row,
+                        bld,
+                        level,
+                        sock,
+                    },
+                    ActionMsg::PlaceFree {
+                        row,
+                        x_cm,
+                        z_cm,
+                        yaw,
+                        tri,
+                        plate,
+                    } => Command::PlaceFree {
+                        id: c.id,
+                        row,
+                        x_cm,
+                        z_cm,
+                        yaw,
+                        tri,
                         plate,
                     },
                     ActionMsg::Deploy {
@@ -4500,7 +4557,13 @@ impl ShardCore {
                         dmg: damage_band(r.hp, piece_hp_max(&self.world.build, r.row)),
                         ..*r
                     };
-                    match encode_event_piece_placed(&rec, &mut self.ev_buf) {
+                    let frame = self
+                        .world
+                        .pieces
+                        .frame(r.bld)
+                        .copied()
+                        .unwrap_or(Frame::ZERO);
+                    match encode_event_piece_placed(&rec, &frame, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 let c = &self.clients[slot];
@@ -7185,7 +7248,7 @@ impl ShardCore {
             // The band is filled HERE and stored nowhere (`PieceRec::dmg`).
             // A stack copy of the batch, not an allocation — wall 2 counts
             // the tick and this is `PIECE_SYNC_BATCH` records deep.
-            let mut wire = [PieceRec::default(); PIECE_SYNC_BATCH];
+            let mut wire = [(PieceRec::default(), Frame::ZERO); PIECE_SYNC_BATCH];
             let mut n = 0usize;
             let mut scanned = 0usize;
             // Scanned from the TOP of the owed region down, because the
@@ -7197,8 +7260,15 @@ impl ShardCore {
                 if !interest::rec_in_interest(anchor, src) {
                     continue;
                 }
-                wire[n] = *src;
-                wire[n].dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
+                // Every record names a live building (`Pieces`' contract).
+                let frame = self
+                    .world
+                    .pieces
+                    .frame(src.bld)
+                    .copied()
+                    .unwrap_or(Frame::ZERO);
+                wire[n] = (*src, frame);
+                wire[n].0.dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
                 n += 1;
                 if n == PIECE_SYNC_BATCH {
                     break;

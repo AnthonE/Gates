@@ -3765,12 +3765,8 @@ pub(crate) fn drop_piece(
 ) {
     let rec = pieces.entries()[i];
     pieces.remove_at(i, shape);
-    events.push(
-        EV_PIECE_REMOVED,
-        crate::gather::cell_key(rec.cx, rec.cz),
-        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
-        0,
-    );
+    let (a, b) = rec.ev_addr();
+    events.push(EV_PIECE_REMOVED, a, b | rec.row as u32, 0);
     // An edge piece takes the insert hung in it — the door in the doorway,
     // the bars in the window — which shares its address exactly.
     if is_edge_loc(rec.loc) {
@@ -3898,10 +3894,11 @@ pub fn damage_piece(
         left = 1;
     }
     let dealt = rec.hp - left;
+    let (a, b) = rec.ev_addr();
     events.push(
         EV_STRUCT_HIT,
-        crate::gather::cell_key(rec.cx, rec.cz),
-        ((rec.level as u32) << 16) | ((rec.loc as u32) << 8) | rec.row as u32,
+        a,
+        b | rec.row as u32,
         ((dealt as u32) << 16) | left as u32,
     );
     if left == 0 {
@@ -3917,15 +3914,7 @@ pub fn damage_piece(
         // Take the legs out and the base comes down: everything that
         // rested on this address is re-checked against the same support
         // rule that let it be placed (build.rs).
-        crate::build::collapse_from(
-            dc,
-            bc,
-            pieces,
-            deploys,
-            (rec.cx, rec.cz, rec.level, rec.loc),
-            budget,
-            events,
-        );
+        crate::build::collapse_from(dc, bc, pieces, deploys, rec.addr(), budget, events);
         return true;
     }
     pieces.set_hp(i, left);
@@ -4266,15 +4255,7 @@ pub fn upkeep_sweep(
             // from under it falls exactly as one a raider broke would.
             drop_piece(dc, pieces, deploys, i, def.shape, events);
             *budget -= 1;
-            crate::build::collapse_from(
-                dc,
-                bc,
-                pieces,
-                deploys,
-                (rec.cx, rec.cz, rec.level, rec.loc),
-                budget,
-                events,
-            );
+            crate::build::collapse_from(dc, bc, pieces, deploys, rec.addr(), budget, events);
             *piece_cursor = (i as u32).min(pieces.len().saturating_sub(1) as u32);
         } else {
             pieces.set_upkeep(i, hp, uh);
