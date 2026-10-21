@@ -272,6 +272,20 @@ pub const TACTICS_PREFIX: &[u8; 4] = b"ga1:";
 /// second, so it cannot flicker between a charge and a retreat.
 pub const TACTIC_HOLD_TICKS: u32 = 15;
 
+/// The bred brain every agent fights wolves with unless told otherwise
+/// (`jev-bot --tactics`): `examples/zoo.rs --agent --seed 2`, four
+/// mutations kept in 100 generations. On 192 fights no stage of breeding
+/// saw (`--held-from 3001`), against the rule-table wolf it went down in 5%
+/// of fights to the sum's 9% and lost 31% of its hp to the sum's 49%;
+/// against the bred wolf it won 34% to 25%. Against people it is never
+/// asked ([`Combat::tactic`]).
+pub const DEFAULT_TACTICS: &str = "ga1:_kg9waqK-QGQkHgY";
+
+pub fn default_tactics() -> sim_core::genome::Genome {
+    sim_core::genome::Genome::decode(TACTICS_PREFIX, DEFAULT_TACTICS.as_bytes())
+        .expect("DEFAULT_TACTICS is a ga1: genome")
+}
+
 /// The tactics brain's shape.
 pub fn tactics_shape() -> sim_core::genome::Shape {
     sim_core::genome::Shape::new(TACTICS_IN, TACTICS_HIDDEN, TACTICS)
@@ -743,7 +757,7 @@ impl Combat {
     }
 
     /// Let a bred brain make the fight-or-run call and choose the hand
-    /// ([`tactics_shape`]); `None` puts the sum back.
+    /// against wolves ([`tactics_shape`]); `None` puts the sum back.
     pub fn set_tactics(&mut self, net: Option<sim_core::genome::Net>) {
         self.tactics = net.map(Box::new);
         self.tactic = None;
@@ -762,6 +776,14 @@ impl Combat {
         d: f32,
         tick: u32,
     ) -> Option<u8> {
+        // Wolves only: the brain is bred and judged against packs and the
+        // arena's stand-in players (`examples/zoo.rs --agent`), and held out
+        // it beat the sum against packs and lost to it against people, two
+        // runs of two. Against a person, or prey it never met, the sum makes
+        // the call, so every ceiling the arena holds the sum to still holds.
+        if t.species != Species::Wolf {
+            return None;
+        }
         let net = self.tactics.as_ref()?;
         if let Some((c, since, id)) = self.tactic {
             if id == t.id && tick.wrapping_sub(since) < TACTIC_HOLD_TICKS {
