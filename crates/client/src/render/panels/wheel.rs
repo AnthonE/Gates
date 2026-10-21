@@ -38,6 +38,7 @@ use client_core::core::ClientCore;
 
 use super::{font, font_bold, ring, Panel, Ui, BADGE, TEXT_DIM, TEXT_SHORT};
 use crate::render::icons::Icons;
+use crate::ui::arc::thousands;
 use crate::ui::build::{
     costs, material_label, row_for, segment_angle, shape_blurb, shape_icon, shape_label, Cost,
     Rings, PLACE_MATERIAL, SHAPES,
@@ -45,9 +46,13 @@ use crate::ui::build::{
 use crate::ui::craft::item_label;
 use crate::ui::hammer;
 
-/// The wheel's live wedge ink: the reference build wheel's red, on a
-/// glyph, a centre label and a ring alike.
-const WHEEL_RED: Color = Color::srgb(0.82, 0.25, 0.16);
+/// The wheel's live wedge ink, on a glyph, a centre icon and the chosen wedge
+/// alike: our green (`ui::MARK`), where the reference build wheel is red.
+const WHEEL_INK: Color = crate::render::ui::MARK;
+
+/// The centre readout's icon, px: the reference draws the chosen piece large
+/// over its name, about a quarter of the centre across.
+const READOUT_ICON: f32 = 72.0;
 
 /// Follow the pointer over whichever wheel is up.
 ///
@@ -186,7 +191,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                         rings,
                         (rings.dead + rings.rim) * 0.5,
                         segment_angle(i, SHAPES.len()),
-                        38.0,
+                        42.0,
                         icons.shape(shape_icon(*s)),
                         shape_label(*s),
                         on,
@@ -321,7 +326,7 @@ pub fn build_hammer_screen(
                             },
                             ImageNode {
                                 image,
-                                color: WHEEL_RED,
+                                color: WHEEL_INK,
                                 ..default()
                             },
                             Pickable::IGNORE,
@@ -446,15 +451,18 @@ pub fn build_hammer_screen(
         });
 }
 
-/// One full-size ring texture, laid over the wheel box.
+/// One full-size ring texture, laid over the wheel box. The textures span
+/// `ring::REACH` of the rim, so a chosen wedge can run past it; the node is
+/// that much larger and centred on the box.
 fn plate(parent: &mut ChildSpawnerCommands, rings: Rings, image: Handle<Image>) {
+    let r = rings.rim * ring::REACH;
     parent.spawn((
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(0.0),
-            top: Val::Px(0.0),
-            width: Val::Px(rings.rim * 2.0),
-            height: Val::Px(rings.rim * 2.0),
+            left: Val::Px(rings.rim - r),
+            top: Val::Px(rings.rim - r),
+            width: Val::Px(r * 2.0),
+            height: Val::Px(r * 2.0),
             ..default()
         },
         ImageNode::new(image),
@@ -466,7 +474,7 @@ fn plate(parent: &mut ChildSpawnerCommands, rings: Rings, image: Handle<Image>) 
 /// One glyph on a ring, placed along its segment's centre angle.
 ///
 /// The icon is tinted rather than swapped: white-on-transparent PNGs mean a
-/// chosen wedge (dark glyph on red), an ordinary wedge (red glyph on cream)
+/// chosen wedge (white glyph on green), an ordinary wedge (green glyph on cream)
 /// and a dead one are three colours of one texture. Falls back to the label
 /// when no icon was baked — an empty wedge is the dark-panel defect.
 #[allow(clippy::too_many_arguments)]
@@ -484,14 +492,14 @@ fn glyph(
     // Same convention as `pick`: 0 is up and the angle grows clockwise.
     let x = rings.rim + radius * angle.sin();
     let y = rings.rim - radius * angle.cos();
-    // On the chosen wedge the ground is red, so the glyph goes near-white;
-    // everywhere else the ground is cream and the glyph is the same red.
+    // On the chosen wedge the ground is green, so the glyph goes near-white;
+    // everywhere else the ground is cream and the glyph is the same green.
     let tint = if !live {
         Color::srgba(0.55, 0.50, 0.47, 0.55)
     } else if selected {
         Color::srgb(0.99, 0.97, 0.95)
     } else {
-        WHEEL_RED
+        WHEEL_INK
     };
 
     let mut node = parent.spawn((
@@ -533,10 +541,9 @@ fn glyph(
 
 /// The centre: what is chosen, what it is for, what it costs.
 ///
-/// Over the world rather than on a plate, which is the reference's
-/// arrangement — so everything here is near-white and the chosen shape's own
-/// icon sits above it in red, the way `building.jpeg` puts a large red glyph
-/// over the name.
+/// The reference's arrangement, top to bottom: the chosen piece's own icon
+/// large, its name, the one-line blurb, then — set apart below — the price,
+/// `25 x Wood (2,213)`.
 #[allow(clippy::too_many_arguments)]
 fn readout(
     parent: &mut ChildSpawnerCommands,
@@ -550,13 +557,14 @@ fn readout(
     if let Some(image) = icons.shape(shape_icon(shape)) {
         parent.spawn((
             Node {
-                width: Val::Px(34.0),
-                height: Val::Px(34.0),
+                width: Val::Px(READOUT_ICON),
+                height: Val::Px(READOUT_ICON),
+                margin: UiRect::bottom(Val::Px(4.0)),
                 ..default()
             },
             ImageNode {
                 image,
-                color: WHEEL_RED,
+                color: WHEEL_INK,
                 ..default()
             },
             Pickable::IGNORE,
@@ -564,18 +572,28 @@ fn readout(
     }
     parent.spawn((
         Text::new(shape_label(shape).to_string()),
-        font_bold(18.0),
+        font_bold(20.0),
         TextColor(Color::srgb(0.99, 0.98, 0.96)),
+        TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
     parent.spawn((
         Node {
-            max_width: Val::Px(150.0),
+            max_width: Val::Px(190.0),
             ..default()
         },
         Text::new(shape_blurb(shape).to_string()),
-        font(11.0),
+        font_bold(13.0),
         TextColor(TEXT_DIM),
+        TextLayout::new_with_justify(Justify::Center),
+        Pickable::IGNORE,
+    ));
+    // The gap the reference leaves between what a piece is and what it costs.
+    parent.spawn((
+        Node {
+            height: Val::Px(18.0),
+            ..default()
+        },
         Pickable::IGNORE,
     ));
 
@@ -591,19 +609,6 @@ fn readout(
         return;
     };
 
-    let hp = core
-        .piece_defs
-        .pieces
-        .get(row as usize)
-        .map(|p| p.hp)
-        .unwrap_or(0);
-    parent.spawn((
-        Text::new(format!("{}  -  {hp} hp", material_label(material))),
-        font_bold(12.0),
-        TextColor(BADGE),
-        Pickable::IGNORE,
-    ));
-
     let (lines, n) = costs(&core.piece_defs, row, &core.inv);
     cost_lines(parent, core, &lines[..n]);
 }
@@ -616,10 +621,10 @@ fn cost_lines(parent: &mut ChildSpawnerCommands, core: &ClientCore, lines: &[Cos
     for line in lines {
         parent.spawn((
             Text::new(format!(
-                "{} {} ({})",
-                line.units,
+                "{} x {} ({})",
+                thousands(line.units),
                 item_label(&core.catalog, line.item),
-                line.have
+                thousands(line.have)
             )),
             font_bold(11.0),
             TextColor(if line.short() { TEXT_SHORT } else { TEXT_DIM }),
