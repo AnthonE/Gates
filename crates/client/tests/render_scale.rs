@@ -154,3 +154,27 @@ fn the_default_does_not_create_an_offscreen_pass_and_the_stepper_is_bounded() {
     }
     assert_eq!(settings.gfx.render_scale, 100);
 }
+
+#[test]
+fn a_browser_world_holds_a_1080p_frame() {
+    use client::render::render_scale::{budget_percent, WEB_PIXEL_BUDGET};
+    // At or under the budget the row is the only say.
+    assert_eq!(budget_percent(UVec2::new(1920, 1080)), 100);
+    assert_eq!(budget_percent(UVec2::new(1280, 720)), 100);
+    // WebGL2's 2048 cap on a retina laptop, the same laptop under WebGPU,
+    // and a 4K monitor.
+    assert_eq!(budget_percent(UVec2::new(2048, 1280)), 85);
+    assert_eq!(budget_percent(UVec2::new(2880, 1800)), 60);
+    assert_eq!(budget_percent(UVec2::new(3840, 2160)), 50);
+    // The row's floor holds however large the canvas.
+    assert_eq!(budget_percent(UVec2::new(8192, 8192)), 50);
+    for w in [
+        UVec2::new(2048, 1280),
+        UVec2::new(2560, 1440),
+        UVec2::new(2880, 1800),
+        UVec2::new(3840, 2160),
+    ] {
+        let e = extent(w, budget_percent(w));
+        assert!(u64::from(e.x) * u64::from(e.y) <= WEB_PIXEL_BUDGET, "{w}");
+    }
+}
