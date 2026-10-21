@@ -33,6 +33,9 @@ pub const OP_READ: u8 = 3;
 pub const LORE_REACH_M: f32 = 4.0;
 /// Topics one speaker has.
 pub const MAX_TOPICS: usize = 6;
+/// Skin rows one gift topic hands over, so the talk panel can name each
+/// one (`SUB_ARC_PLACE`, wire v130).
+pub const MAX_GIFT_ROWS: usize = 4;
 
 /// One speaker: where they stand, and how many topics they answer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

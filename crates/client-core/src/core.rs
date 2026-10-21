@@ -3034,6 +3034,7 @@ impl ClientCore {
                 n_topics,
                 topics,
                 topic_lens,
+                offers,
                 dials,
                 values,
             } => {
@@ -3050,6 +3051,7 @@ impl ClientCore {
                             s.n_topics = n_topics;
                             s.topics = topics;
                             s.topic_lens = topic_lens;
+                            s.offers = offers;
                         }
                     }
                     protocol::ARC_INSCRIPTION => {
@@ -3077,6 +3079,7 @@ impl ClientCore {
                 kind,
                 index,
                 topic,
+                gift,
                 text,
                 len,
             } => {
@@ -3086,6 +3089,7 @@ impl ClientCore {
                         s.said_topic = topic;
                         s.said = text;
                         s.said_len = len;
+                        s.heard(topic, gift);
                     }
                 } else if let Some(i) = l.inscriptions.get_mut(index as usize) {
                     i.text = text;
