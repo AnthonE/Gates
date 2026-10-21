@@ -812,3 +812,42 @@ fn a_turned_base_draws_each_corner_post_once() {
     }
     assert_eq!(drawn, [1; 4], "posts drawn per corner");
 }
+
+/// A turned foundation's skirt is sized off its own footprint: its bottom is
+/// in the ground under every corner, wherever the cap does not stop it
+/// (`structures::posed_footing`).
+#[test]
+fn a_turned_footing_is_buried_under_its_own_corners() {
+    use client::render::structures::{posed_footing, SKIRT_MAX_M};
+    use sim_core::sock::Sock;
+    let seed = 20260731;
+    let haven = hv(seed);
+    let mut buried = 0;
+    for i in 0..24 {
+        let origin = (180_000 + i * 2_300, 210_000 + i * 1_700);
+        let (ox, oz) = (origin.0 as f32 / 100.0, origin.1 as f32 / 100.0);
+        let band = sim_core::build::band_of_ground(terrain::ground(seed, haven, ox, oz));
+        let frame = sim_core::frame::Frame::new(origin, band, (i as u16).wrapping_mul(9_973));
+        for sock in [
+            Sock::square_from(sim_core::lattice::LPt::ZERO, 0),
+            Sock::tri_from(sim_core::lattice::LPt::ZERO, 0),
+        ] {
+            let (_, depth) = posed_footing(seed, haven, &frame, &sock);
+            if depth >= SKIRT_MAX_M - 1e-4 {
+                continue;
+            }
+            let bottom = sim_core::build::band_y(band) - depth;
+            let (c, n) = sock.corners();
+            for p in &c[..n] {
+                let (x, z) = frame.to_world(*p);
+                assert!(
+                    bottom <= terrain::ground(seed, haven, x, z) + 1e-3,
+                    "the skirt stops {} over the ground at a corner",
+                    bottom - terrain::ground(seed, haven, x, z)
+                );
+            }
+            buried += 1;
+        }
+    }
+    assert!(buried > 0);
+}

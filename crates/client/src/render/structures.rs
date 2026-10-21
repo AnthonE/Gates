@@ -1681,7 +1681,29 @@ pub fn foundation_part(
     tri: bool,
     plate: i8,
 ) -> Part {
-    let (_, depth) = footing_of(seed, haven, cx, cz, plate);
+    footing_part(footing_of(seed, haven, cx, cz, plate).1, tri)
+}
+
+/// [`footing_of`] for a foundation the grid cannot name (freeform): its own
+/// corners' and middle's ground against its building's floor.
+pub fn posed_footing(
+    seed: u64,
+    haven: &terrain::Haven,
+    frame: &sim_core::frame::Frame,
+    sock: &sim_core::sock::Sock,
+) -> (usize, f32) {
+    let base = sim_core::build::band_y(frame.band);
+    let (corners, n) = sock.body().corners();
+    let mut lo = f32::MAX;
+    for p in corners[..n].iter().chain([&sock.at]) {
+        let (x, z) = frame.to_world(*p);
+        lo = lo.min(terrain::ground(seed, haven, x, z));
+    }
+    skirt_step((base - lo + SKIRT_SINK_M).clamp(SLAB_T, SKIRT_MAX_M))
+}
+
+/// A foundation's one drawn part for a footing `depth` deep.
+pub fn footing_part(depth: f32, tri: bool) -> Part {
     Part {
         size: Vec3::new(BUILD_CELL_M, depth, BUILD_CELL_M),
         offset: Vec3::new(0.0, -depth * 0.5, 0.0),
@@ -2944,12 +2966,15 @@ pub fn stream(
             }
             _ => soft_face_positive_x(key, rec.facing, &root),
         };
+        let footing = match core.pieces.frame(rec.bld) {
+            Some(frame) if !rec.on_grid() => posed_footing(seed, haven, frame, &rec.sock),
+            _ => footing_of(seed, haven, rec.cx, rec.cz, rec.plate),
+        };
         let entity = spawn_piece(
             &mut commands,
             kit,
-            seed,
-            haven,
             rec,
+            footing,
             root,
             soft,
             def.shape,
@@ -3517,9 +3542,8 @@ fn planted_transform(position: Vec3, id: u32) -> Transform {
 fn spawn_piece(
     commands: &mut Commands,
     kit: &Kit,
-    seed: u64,
-    haven: &terrain::Haven,
     rec: &sim_core::build::PieceRec,
+    footing: (usize, f32),
     root: Transform,
     soft_side: bool,
     shape: u8,
@@ -3538,7 +3562,6 @@ fn spawn_piece(
     // build ghost are the same object in the same pose. A piece the grid
     // cannot name stands where its footprint is (`posed_transform`) and is
     // drawn as the grid's west edge or plane would be.
-    let (cx, cz, plate) = (rec.cx, rec.cz, rec.plate);
     let loc = if rec.on_grid() {
         rec.loc
     } else if is_edge_shape(shape) {
@@ -3561,12 +3584,11 @@ fn spawn_piece(
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
         // The footing is per address — the terrain-following skirt
-        // (`foundation_part`, the shared emit the ghost also draws) — picked
-        // by the same call that sized it, already true-size, so the transform
-        // carries no scale and the skirt wears a metre-scaled texture.
-        let tri = shape == SHAPE_TRI_FOUNDATION;
-        let part = foundation_part(seed, haven, cx, cz, tri, plate);
-        step = footing_of(seed, haven, cx, cz, plate).0;
+        // (`footing_of`, or `posed_footing` off the grid, the shared sizing
+        // the ghost also draws) — already true-size, so the transform carries
+        // no scale and the skirt wears a metre-scaled texture.
+        let part = footing_part(footing.1, shape == SHAPE_TRI_FOUNDATION);
+        step = footing.0;
         root * part.transform()
     } else {
         root * piece_local(shape)

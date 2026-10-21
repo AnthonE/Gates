@@ -425,6 +425,8 @@ pub fn track(
     // Where the footing is measured, and which drawn location the parts
     // take (`structures::parts_for`).
     let mut foot_cell = (target.cx, target.cz);
+    // A foundation on a lattice is sized off its own footprint.
+    let mut posed_foot: Option<(usize, f32)> = None;
     let mut part_loc = target.loc;
     // A triangle, or a wall on a triangle's side, goes on a building's
     // lattice (freeform W2): drawn in that building's frame and judged by
@@ -474,6 +476,12 @@ pub fn track(
             }
         }
         transform = structures::posed_transform(&frame, &sock, level);
+        posed_foot = Some(structures::posed_footing(
+            world.seed,
+            &world.haven,
+            &frame,
+            &sock,
+        ));
         foot_cell = sim_core::build::anchor_cell(&frame, &sock);
         let ground =
             sim_core::build::terrain_band(world.seed, &world.haven, foot_cell.0, foot_cell.1);
@@ -525,14 +533,18 @@ pub fn track(
     // — the same emit the standing piece draws, so the preview promises
     // exactly the object the click buys).
     let footing = matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION).then(|| {
-        structures::foundation_part(
-            world.seed,
-            &world.haven,
-            foot_cell.0,
-            foot_cell.1,
-            shape == SHAPE_TRI_FOUNDATION,
-            plate,
-        )
+        let tri = shape == SHAPE_TRI_FOUNDATION;
+        match posed_foot {
+            Some((_, depth)) => structures::footing_part(depth, tri),
+            None => structures::foundation_part(
+                world.seed,
+                &world.haven,
+                foot_cell.0,
+                foot_cell.1,
+                tri,
+                plate,
+            ),
+        }
     });
     let diagonal = matches!(
         shape,
