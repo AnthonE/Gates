@@ -383,6 +383,7 @@ pub fn resolve(
                         crouched,
                     },
                     &mut island,
+                    shadows.cols,
                 );
                 if bush.occupant != 0 {
                     aimed.0 = interact::Pick {
