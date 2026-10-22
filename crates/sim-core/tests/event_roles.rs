@@ -6042,7 +6042,13 @@ fn a_shop_press_names_the_presser_the_machine_then_the_press() {
     w.tick(&[Command::Shop {
         id: BUILDER,
         key,
-        act: ShopAct::Buy { row: 2, times: 1 },
+        act: ShopAct::Buy {
+            row: 2,
+            times: 1,
+            item: 3,
+            lot: 2,
+            price: 5,
+        },
     }]);
     let ev = only(&w, EV_SHOP_REFUSED);
     assert_eq!(ev.a, BUILDER, "EV_SHOP_REFUSED.a is the presser");

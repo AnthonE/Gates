@@ -223,3 +223,55 @@ fn a_turret_spares_its_owner_after_they_reconnect() {
     assert!(locks > 0, "the turret never locked on to the stranger");
     assert_eq!(hurt_owner, 0, "it shot its owner after a reconnect");
 }
+
+/// **Only the hands it spares open its box** (exploit sweep 2026-10). A
+/// turret carries no lock, and its box was anybody's: a stranger in reach
+/// could empty its rounds, or stuff it, with the move verb. The reference
+/// loots a turret only for its authorised; ours are the owner and the
+/// claim's crew (`turret::spares`), the vending machine's rule.
+#[test]
+fn only_the_hands_a_turret_spares_move_its_rounds() {
+    use sim_core::deploy::REFUSE_D_OWNER;
+    use sim_core::inventory::{CONT_BOX, CONT_SELF};
+    use sim_core::world::{EV_DEPLOY_REFUSED, EV_MOVED};
+    let (mut w, key) = turret_world(64);
+    // Both within arm's reach of it, either side.
+    let i = w.deploys.box_index(key).unwrap();
+    let (x, z) = w.deploys.boxes()[i].xz();
+    let o = w.players.iter().position(|p| p.id == OWNER).unwrap();
+    let s = w.players.iter().position(|p| p.id == STRANGER).unwrap();
+    w.players[o].body = Body::at(SEED, &w.haven, x - 1.5, z);
+    w.players[s].body = Body::at(SEED, &w.haven, x + 1.5, z);
+    w.players[s].inv[5] = ItemStack {
+        item: ROUND,
+        count: 10,
+        cond: 0,
+        skin: 0,
+    };
+    let mv = |w: &mut World, id, from_kind, from_slot, to_kind, to_slot, count| {
+        w.tick(&[Command::Move {
+            id,
+            cont: key,
+            from_kind,
+            from_slot,
+            to_kind,
+            to_slot,
+            count,
+        }]);
+        w.events
+            .entries()
+            .iter()
+            .filter(|e| (e.code == EV_MOVED || e.code == EV_DEPLOY_REFUSED) && e.a == id)
+            .map(|e| (e.code, e.b))
+            .next()
+    };
+    let refused = Some((EV_DEPLOY_REFUSED, REFUSE_D_OWNER));
+    assert_eq!(mv(&mut w, STRANGER, CONT_BOX, 0, CONT_SELF, 6, 64), refused);
+    assert_eq!(mv(&mut w, STRANGER, CONT_SELF, 5, CONT_BOX, 1, 10), refused);
+    assert_eq!(rounds_left(&w, key), 64, "a stranger moved its rounds");
+    assert_eq!(w.players[s].inv[5].count, 10);
+    // Its owner still loads and unloads it.
+    let r = mv(&mut w, OWNER, CONT_BOX, 0, CONT_SELF, 6, 64);
+    assert_eq!(r.map(|r| r.0), Some(EV_MOVED), "its owner was refused");
+    assert_eq!(rounds_left(&w, key), 0);
+}

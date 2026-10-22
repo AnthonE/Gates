@@ -279,6 +279,7 @@ pub fn shop(code: u8) -> String {
         REFUSE_SH_TAKINGS => "the machine has no room for the junk".into(),
         REFUSE_SH_ALLOWED => "only its owner's crew sets its offers".into(),
         REFUSE_SH_CAP => "too many shops on the island".into(),
+        REFUSE_SH_CHANGED => "that offer just changed - check it and buy again".into(),
         _ => "the machine does not answer".into(),
     }
 }

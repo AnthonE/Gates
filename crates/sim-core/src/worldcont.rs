@@ -296,7 +296,9 @@ impl WorldConts {
 
     /// Open the container at cell `(cx, cz)` on behalf of `p`, minting the
     /// record and rolling its contents if this is the first visit — or if
-    /// it was emptied and its refill tick has come.
+    /// it was emptied and its refill tick has come. The roll draws on the
+    /// world's secret `salt` as well as `seed` (`loot::salted`), so a client
+    /// cannot pick the tick it opens on to the roll it wants.
     ///
     /// Returns the resolved index, or `None` with nothing written. The
     /// three refusals are all silent by design: the container simply does
@@ -321,6 +323,7 @@ impl WorldConts {
     pub fn open(
         &mut self,
         seed: u64,
+        salt: u64,
         scatter: &terrain::ScatterTable,
         haven: &terrain::Haven,
         cols: &crate::collide::ColIndex,
@@ -336,6 +339,7 @@ impl WorldConts {
         if handle == 0 {
             return None;
         }
+        let loot_seed = crate::loot::salted(seed, salt);
         let slot = terrain::scatter(seed, scatter, haven, cx as i32, cz as i32);
         let table = table_of(slot.occupant)?;
 
@@ -376,7 +380,7 @@ impl WorldConts {
                     items: [ItemStack::default(); INV_SLOTS],
                 };
                 self.len += 1;
-                self.roll(i, lc, gc, seed, handle, tick);
+                self.roll(i, lc, gc, loot_seed, handle, tick);
                 return Some(i);
             }
         };
@@ -386,7 +390,7 @@ impl WorldConts {
         // is why an untouched container never re-rolls.
         if self.entries[i].refill_at != 0 && tick >= self.entries[i].refill_at {
             self.entries[i].refill_at = 0;
-            self.roll(i, lc, gc, seed, handle, tick);
+            self.roll(i, lc, gc, loot_seed, handle, tick);
         }
         Some(i)
     }

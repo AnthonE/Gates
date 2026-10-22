@@ -769,11 +769,18 @@ impl Backpacks {
     /// `pct` percent and never less than one. What does not fit goes to
     /// `spill`, as a gather's overflow does. An emptied carcass leaves by
     /// `loot_nearest`'s route. Returns false when there was nothing to cut.
+    ///
+    /// Only an item `grown` names is cut: what the body was born holding
+    /// (`World::butcher`). Anything else in it is loot, taken by hand at
+    /// face value. The rate is meat's, and a cut that paid it on any stack
+    /// was a 150% copier for whatever a player parked in a carcass.
+    #[allow(clippy::too_many_arguments)]
     pub fn butcher(
         &mut self,
         i: usize,
         gc: &GatherContent,
         pct: u16,
+        grown: impl Fn(u16) -> bool,
         p: &mut Player,
         spill: &mut [ItemStack; INV_SLOTS],
         events: &mut EventQueue,
@@ -783,7 +790,7 @@ impl Backpacks {
         }
         let Some(s) = (0..INV_SLOTS).find(|&s| {
             let st = self.entries[i].items[s];
-            st.count > 0 && gc.stack_max_of(st.item) > 0
+            st.count > 0 && gc.stack_max_of(st.item) > 0 && grown(st.item)
         }) else {
             return false;
         };
@@ -915,6 +922,7 @@ mod tests {
             i,
             &GatherContent::probe_fixture(),
             100,
+            |item| item == 9,
             &mut cutter,
             &mut spill,
             &mut ev

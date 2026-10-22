@@ -1324,7 +1324,11 @@ pub use voice::{
 /// v138 — captions: `SUB_CAPTION` carries what a nearby player said out
 /// loud as text, or a line translated into the receiver's language
 /// (`lang.rs`).
-pub const PROTO_VER: u16 = 138;
+/// v139 — a shop buy (`ACT_SHOP`, `SHOP_OP_BUY`) carries the offer it was
+/// pressed against (item, lot and price, 16 bits each, after `times`), and
+/// a shop refusal admits 10 (`REFUSE_SH_CHANGED`): the owner can no longer
+/// swap the row between the buyer's view and the buy.
+pub const PROTO_VER: u16 = 139;
 
 /// This game's slug in the elo catalog.
 ///
@@ -3078,7 +3082,18 @@ pub fn encode_action_shop(key: u32, act: ShopAct, buf: &mut [u8]) -> Result<usiz
             w.write(price as u32, 16)?;
         }
         ShopAct::Clear { .. } => {}
-        ShopAct::Buy { times, .. } => w.write(times as u32, 5)?,
+        ShopAct::Buy {
+            times,
+            item,
+            lot,
+            price,
+            ..
+        } => {
+            w.write(times as u32, 5)?;
+            w.write(item as u32, 16)?;
+            w.write(lot as u32, 16)?;
+            w.write(price as u32, 16)?;
+        }
     }
     Ok(w.finish())
 }
@@ -3149,7 +3164,14 @@ fn shop_act_ok(act: &ShopAct) -> bool {
     match *act {
         ShopAct::Set { item, lot, .. } => lot > 0 && (item as usize) < MAX_ITEM_DEFS,
         ShopAct::Clear { .. } => true,
-        ShopAct::Buy { times, .. } => times > 0 && times <= sim_core::shop::SHOP_TIMES_MAX,
+        ShopAct::Buy {
+            times, item, lot, ..
+        } => {
+            times > 0
+                && times <= sim_core::shop::SHOP_TIMES_MAX
+                && lot > 0
+                && (item as usize) < MAX_ITEM_DEFS
+        }
     }
 }
 
@@ -4102,6 +4124,9 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 sim_core::shop::SHOP_OP_BUY => ShopAct::Buy {
                     row,
                     times: r.read(5)? as u8,
+                    item: r.read(16)? as u16,
+                    lot: r.read(16)? as u16,
+                    price: r.read(16)? as u16,
                 },
                 _ => return Err(WireError::Malformed),
             };
@@ -5274,6 +5299,37 @@ mod tests {
             lit: false,
             held_skin: 0,
         }
+    }
+
+    /// A buy carries the offer it was pressed against (v139), every field of
+    /// it, and a buy naming no lot does not encode (the decoder asks the same
+    /// `shop_act_ok`).
+    #[test]
+    fn a_shop_buy_round_trips_the_offer_it_saw() {
+        let act = ShopAct::Buy {
+            row: (sim_core::limits::SHOP_ROWS - 1) as u8,
+            times: sim_core::shop::SHOP_TIMES_MAX,
+            item: (MAX_ITEM_DEFS - 1) as u16,
+            lot: 0xFFFF,
+            price: 0xA5C3,
+        };
+        let mut buf = [0u8; 32];
+        let n = encode_action_shop(0xDEAD_BEEF, act, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]).unwrap(),
+            ActionMsg::Shop {
+                key: 0xDEAD_BEEF,
+                act
+            }
+        );
+        let no_lot = ShopAct::Buy {
+            row: 0,
+            times: 1,
+            item: 0,
+            lot: 0,
+            price: 1,
+        };
+        assert!(encode_action_shop(1, no_lot, &mut buf).is_err());
     }
 
     #[test]

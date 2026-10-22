@@ -52,7 +52,10 @@ pub const REFUSE_SH_TAKINGS: u32 = 7;
 pub const REFUSE_SH_ALLOWED: u32 = 8;
 /// Every shop record on the island is spoken for (`MAX_SHOPS`).
 pub const REFUSE_SH_CAP: u32 = 9;
-pub const REFUSE_SH_MAX: u32 = REFUSE_SH_CAP;
+/// The row no longer offers what the buyer saw: its item, lot or price
+/// moved between the view and the press (v139).
+pub const REFUSE_SH_CHANGED: u32 = 10;
+pub const REFUSE_SH_MAX: u32 = REFUSE_SH_CHANGED;
 
 /// One offer: `lot` of `item` for `price` of the coin. `lot == 0` is an
 /// empty row, and an empty row is all zeros.
@@ -92,6 +95,12 @@ impl ShopRec {
 }
 
 /// What a shop press asks: set a row, clear it, or buy `times` lots of it.
+///
+/// A buy names the offer it was pressed against (`item`, `lot`, `price`, as
+/// the buyer's view drew them) and is refused if the row says anything else
+/// (`REFUSE_SH_CHANGED`). The owner may reprice a row every tick, so a buy
+/// that named only the row paid whatever the row said when it landed: a
+/// lot of 100 shown, a lot of 1 sold, at ten times the price.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShopAct {
     Set {
@@ -106,6 +115,9 @@ pub enum ShopAct {
     Buy {
         row: u8,
         times: u8,
+        item: u16,
+        lot: u16,
+        price: u16,
     },
 }
 
@@ -388,7 +400,13 @@ pub fn apply(
             }
             deploys.shops_mut().clear(key, row);
         }
-        ShopAct::Buy { times, .. } => {
+        ShopAct::Buy {
+            times,
+            item,
+            lot,
+            price,
+            ..
+        } => {
             let coin = dc.shop_coin;
             if times == 0 || times > SHOP_TIMES_MAX || coin == NO_SHOP_COIN {
                 refuse(events, REFUSE_SH_KIND);
@@ -397,6 +415,11 @@ pub fn apply(
             let o = deploys.shops().offers(key)[row];
             if !o.live() {
                 refuse(events, REFUSE_SH_OFFER);
+                return;
+            }
+            // The offer the buyer saw, or nothing: no bait and switch.
+            if o != (ShopOffer { item, lot, price }) {
+                refuse(events, REFUSE_SH_CHANGED);
                 return;
             }
             let goods = o.lot as u32 * times as u32;
