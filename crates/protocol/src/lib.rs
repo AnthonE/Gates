@@ -4868,7 +4868,6 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         dy: i64,
         dz: i64,
     ) -> Result<(), WireError> {
-        self.w.write_bit(true)?; // is_delta
         let pos_changed = dx != 0 || dy != 0 || dz != 0;
         let vel_changed = e.qvy != b.qvy;
         let look_changed = e.yaw != b.yaw || e.pitch != b.pitch;
@@ -4877,16 +4876,22 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         // and puts the flame out in the same tick — and a torch that
         // burns out changes `lit` alone, which is one flag either way.
         let hand_changed = e.held != b.held || e.lit != b.lit || e.held_skin != b.held_skin;
-        self.w.write_bit(pos_changed)?;
-        self.w.write_bit(vel_changed)?;
-        self.w.write_bit(look_changed)?;
-        self.w.write_bit(hand_changed)?;
-        self.w.write_bit(e.grounded)?;
-        self.w.write_bit(e.sleeping)?;
-        self.w.write_bit(e.dead)?;
-        self.w.write_bit(e.wounded)?;
-        self.w.write_bit(e.crouched)?;
-        self.w.write_bit(e.seated)?;
+        // is_delta and the ten flags in one write: LSB-first, so packing
+        // them low bit first is the same bits as eleven `write_bit`s.
+        let flags = [
+            true, // is_delta
+            pos_changed,
+            vel_changed,
+            look_changed,
+            hand_changed,
+            e.grounded,
+            e.sleeping,
+            e.dead,
+            e.wounded,
+            e.crouched,
+            e.seated,
+        ];
+        self.w.write(pack_bits(&flags), flags.len() as u32)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -4919,11 +4924,8 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write(e.qx as u32, POS_XZ_BITS)?;
         self.w.write((e.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
         self.w.write(e.qz as u32, POS_XZ_BITS)?;
-        self.w.write_bit(e.grounded)?;
-        self.w.write_bit(e.sleeping)?;
-        self.w.write_bit(e.dead)?;
-        self.w.write_bit(e.wounded)?;
-        self.w.write_bit(e.crouched)?;
+        let flags = [e.grounded, e.sleeping, e.dead, e.wounded, e.crouched];
+        self.w.write(pack_bits(&flags), flags.len() as u32)?;
         self.write_vel(e.qvy)?;
         // A sitter is at rest (`check_ranges`), so the bit rides behind the
         // at-rest flag and a moving body's record costs what it always did.
@@ -4969,6 +4971,15 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
             .patch(self.entity_count_at, self.entities, COUNT_BITS)?;
         Ok(self.w.finish())
     }
+}
+
+/// Flags packed first-is-lowest, the order `BitWriter` lays bits down.
+#[inline]
+fn pack_bits(flags: &[bool]) -> u32 {
+    flags
+        .iter()
+        .enumerate()
+        .fold(0, |acc, (i, &f)| acc | (f as u32) << i)
 }
 
 /// Absolute-record range check, up front so a `Range` refusal never needs

@@ -61,6 +61,7 @@ impl<'a> BitWriter<'a> {
     /// (`server/bin/profile.rs`, 2026-08-11). Not one byte on the wire
     /// moves, which is what makes it landable — `test_protocol_golden` is
     /// the proof, and it would fail on any layout drift this could cause.
+    #[inline]
     pub fn write(&mut self, val: u32, bits: u32) -> Result<(), WireError> {
         debug_assert!((1..=32).contains(&bits));
         if bits < 32 && (val >> bits) != 0 {
@@ -74,16 +75,25 @@ impl<'a> BitWriter<'a> {
         // At most 32 bits starting at most 7 bits into a byte touches 5
         // bytes, and `<< bit` cannot overflow a u64 at 32 + 7 = 39 bits.
         let spread = (val as u64) << bit;
-        let touched = (bit + bits as usize).div_ceil(8);
-        for k in 0..touched {
-            // In range: the overflow check above bounds the last bit
-            // written, so `byte + touched - 1` is the byte holding it.
-            self.buf[byte + k] |= (spread >> (8 * k)) as u8;
+        // One 8-byte load-or-store wherever eight bytes remain, which is
+        // every write but the last few of a buffer: the bytes past the
+        // field are ORed with zero, so the result is the per-byte loop's.
+        if let Some(word) = self.buf.get_mut(byte..byte + 8) {
+            let word: &mut [u8; 8] = word.try_into().unwrap();
+            *word = (u64::from_le_bytes(*word) | spread).to_le_bytes();
+        } else {
+            let touched = (bit + bits as usize).div_ceil(8);
+            for k in 0..touched {
+                // In range: the overflow check above bounds the last bit
+                // written, so `byte + touched - 1` is the byte holding it.
+                self.buf[byte + k] |= (spread >> (8 * k)) as u8;
+            }
         }
         self.pos += bits as usize;
         Ok(())
     }
 
+    #[inline]
     pub fn write_bit(&mut self, b: bool) -> Result<(), WireError> {
         self.write(b as u32, 1)
     }
@@ -104,8 +114,10 @@ impl<'a> BitWriter<'a> {
     /// a partially written record vanishes (the encoder's shed path).
     pub fn rewind_to(&mut self, pos: usize) {
         debug_assert!(pos <= self.pos);
-        for b in pos..self.pos {
-            self.buf[b / 8] &= !(1 << (b % 8));
+        if pos < self.pos {
+            let first = pos / 8;
+            self.buf[first] &= ((1u16 << (pos % 8)) - 1) as u8;
+            self.buf[first + 1..self.pos.div_ceil(8)].fill(0);
         }
         self.pos = pos;
     }
