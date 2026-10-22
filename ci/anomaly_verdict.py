@@ -51,6 +51,7 @@ PRESSURE = {
     "forced_resyncs",
     "ev_resyncs",
     "saves_evicted",
+    "saves_refused",
     "sleepers_evicted",
     "chat_undelivered",
     "handshake_errors",
