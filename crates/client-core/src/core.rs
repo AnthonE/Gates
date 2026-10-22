@@ -68,6 +68,10 @@ pub const OWN_BAG_NEAR_M: f32 = 4.0;
 /// dropped line is the one loss a player would actually notice.
 pub const CHAT_RING: usize = 16;
 
+/// Captions buffered for the log (v138, drop-oldest): a transcript and
+/// its translation are two, and a long one is a few.
+pub const CAPTION_RING: usize = 16;
+
 /// Arrow impacts buffered for the renderer (drop-oldest, cosmetic).
 ///
 /// **Deeper than `REFUSAL_RING` because this is a broadcast lane, not an
@@ -1989,6 +1993,9 @@ pub struct ClientCore {
     chats: [(u32, protocol::Channel, ChatText); CHAT_RING],
     chat_head: usize,
     chat_len: usize,
+    captions: [protocol::Caption; CAPTION_RING],
+    caption_head: usize,
+    caption_len: usize,
     /// Own health, absolute as the server last stated it. `hp_max` 0 means
     /// no `Health` has arrived yet — a shard whose content disarms combat
     /// never sends one, and the HUD must not draw an empty bar for a
@@ -2525,6 +2532,17 @@ impl ClientCore {
             chats: [(0, protocol::Channel::Local, ChatText::EMPTY); CHAT_RING],
             chat_head: 0,
             chat_len: 0,
+            captions: [protocol::Caption {
+                from: 0,
+                line: 0,
+                voice: true,
+                more: false,
+                channel: protocol::Channel::Local,
+                lang: 0,
+                text: ChatText::EMPTY,
+            }; CAPTION_RING],
+            caption_head: 0,
+            caption_len: 0,
             hp: 0,
             hp_max: 0,
             food: 0,
@@ -4394,6 +4412,16 @@ impl ClientCore {
                 self.chat_len += 1;
                 flags |= APPLIED_CHAT;
             }
+            // Words as text (v138): the chat log's, like a line.
+            EventMsg::Caption(c) => {
+                if self.caption_len == CAPTION_RING {
+                    self.caption_head = (self.caption_head + 1) % CAPTION_RING;
+                    self.caption_len -= 1;
+                }
+                self.captions[(self.caption_head + self.caption_len) % CAPTION_RING] = c;
+                self.caption_len += 1;
+                flags |= APPLIED_CHAT;
+            }
             EventMsg::Stock {
                 cx,
                 cz,
@@ -4999,6 +5027,17 @@ impl ClientCore {
         self.craft_toast_head = (self.craft_toast_head + 1) % TOAST_RING;
         self.craft_toast_len -= 1;
         Some(t)
+    }
+
+    /// Oldest buffered caption (v138).
+    pub fn pop_caption(&mut self) -> Option<protocol::Caption> {
+        if self.caption_len == 0 {
+            return None;
+        }
+        let c = self.captions[self.caption_head];
+        self.caption_head = (self.caption_head + 1) % CAPTION_RING;
+        self.caption_len -= 1;
+        Some(c)
     }
 
     /// Oldest buffered chat line: (speaker id, channel, text).

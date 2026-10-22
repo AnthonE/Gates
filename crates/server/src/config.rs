@@ -16,6 +16,9 @@ use std::net::SocketAddr;
 ///
 /// Proposed default, DECISIONS.md §open ("world persistence v0").
 pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
+/// How long a transcript file is kept (`transcript_days`): two weeks, long
+/// enough for a report to be filed and read.
+pub const DEFAULT_TRANSCRIPT_DAYS: u32 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetSim {
@@ -299,6 +302,14 @@ pub struct ShardConfig {
     /// Where admin bans last (`ban_file`, `admin::Bans`). `None` ⇒ a ban
     /// holds for the uptime only.
     pub ban_file: Option<String>,
+    /// Caption and translate what players say (`captions`, `scribe.rs`).
+    /// Off by default; on, the boot needs a transcriber's key in the
+    /// environment.
+    pub captions: bool,
+    /// Where transcripts are kept (`transcript_file`), one file a day beside
+    /// it; `None` keeps none. And for how many days (`transcript_days`).
+    pub transcript_file: Option<String>,
+    pub transcript_days: u32,
     /// **How many resident inhabitants the shard seats itself**
     /// (`population.rs`). Bots, dialled over this shard's own wire after the
     /// bind, running the raid profile — half owners building and locking,
@@ -461,6 +472,9 @@ impl ShardConfig {
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
             ban_file: None,
+            captions: false,
+            transcript_file: None,
+            transcript_days: DEFAULT_TRANSCRIPT_DAYS,
             population: 0,
             agent_seats: 0,
             agents_only: false,
@@ -646,6 +660,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut admins: Option<crate::admin::Admins> = None;
     let mut anomaly_file: Option<String> = None;
     let mut ban_file: Option<String> = None;
+    let mut captions = false;
+    let mut transcript_file: Option<String> = None;
+    let mut transcript_days = DEFAULT_TRANSCRIPT_DAYS;
     let mut population: Option<usize> = None;
     let mut agent_seats: u32 = 0;
     let mut agents_only: Option<bool> = None;
@@ -1262,6 +1279,34 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             }
             // Admission policy, so refused rather than coerced, as
             // `require_auth` is.
+            "captions" => match value {
+                "true" => captions = true,
+                "false" => captions = false,
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: captions must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
+            "transcript_file" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: transcript_file is empty",
+                        n + 1
+                    ));
+                }
+                transcript_file = Some(value.to_string());
+            }
+            "transcript_days" => {
+                transcript_days = value.parse().ok().filter(|&d| d > 0).ok_or_else(|| {
+                    format!(
+                        "shard.toml line {}: transcript_days must be a whole number of days, \
+                         at least 1",
+                        n + 1
+                    )
+                })?;
+            }
             "agents_only" => match value {
                 "true" => agents_only = Some(true),
                 "false" => agents_only = Some(false),
@@ -1540,6 +1585,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         admins: admins.unwrap_or_else(crate::admin::Admins::none),
         anomaly_file,
         ban_file,
+        captions,
+        transcript_file,
+        transcript_days,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         agent_seats,
