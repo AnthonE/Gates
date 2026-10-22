@@ -194,6 +194,10 @@ seed = 20260731
 # the rest of the seats stay a person's. Unset or 0 = no cap.
 # agent_seats = 80
 #
+# Connections one address (an IPv4 address, an IPv6 /64) may hold at once:
+# handshaking, playing or watching. This host itself is never counted. 0 = no cap.
+# conns_per_source = 8
+#
 # An agent-only world: declared agents and spectators only, a person refused
 # at the hello (REFUSE_AGENTS). Refused at boot with a population (an
 # inhabitant joins as a person). shard-agents.toml is a whole example.
