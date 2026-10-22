@@ -45,6 +45,9 @@ const LINE_PX: f32 = 15.0;
 /// taller than this would climb into the team panel.
 const SHOWN: usize = 10;
 const MESSAGE_INK: Color = Color::srgba(0.97, 0.97, 0.95, 1.0);
+/// A name on words said out loud (a caption, v138): the voice HUD's
+/// lavender rather than a channel's colour, since nobody chose a channel.
+const VOICE_INK: Color = Color::srgba(0.80, 0.72, 1.0, 1.0);
 const AVATAR_BLANK: Color = Color::srgba(0.12, 0.12, 0.13, 0.75);
 /// A clickable line under the pointer while the composer is open.
 const LINE_HOVER: Color = Color::srgba(1.0, 1.0, 1.0, 0.10);
@@ -78,6 +81,9 @@ pub struct Chat {
     /// would allocate a node per line per frame for a screen that changes
     /// when somebody speaks.
     pub dirty: bool,
+    /// This client's language has gone to the shard (`/lang … auto`, v138),
+    /// or it has none to send.
+    pub lang_sent: bool,
 }
 
 impl Chat {
@@ -344,14 +350,28 @@ fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
     }
 }
 
-/// Drain the core's chat ring into the log.
+/// Drain the core's chat and caption rings into the log, and tell the shard
+/// which language this player reads, once a session.
 pub fn drain(
     mut net: NonSendMut<Net>,
     mut chat: ResMut<Chat>,
     time: Res<Time<Real>>,
     friends: Option<Res<super::friends::Friends>>,
+    mutes: Option<Res<super::voice::Mutes>>,
 ) {
+    if !chat.lang_sent {
+        chat.lang_sent = send_lang(&net);
+    }
     let now = time.elapsed_secs_f64();
+    // Who a line is from, settled as it arrives.
+    let who = |core: &client_core::core::ClientCore, speaker: u32| {
+        let name = crate::ui::names::of(core, speaker);
+        let face = core.tag(speaker).map(|t| (t.address, t.pic));
+        let friend = face
+            .zip(friends.as_deref())
+            .is_some_and(|((address, _), f)| f.set.has(&address));
+        (name, face, friend)
+    };
     while let Some((speaker, channel, text)) = net.session.core.pop_chat() {
         // Valid UTF-8 by construction (`ChatText` is only built by
         // `sanitize`), but a decode that somehow was not is dropped rather
@@ -360,12 +380,7 @@ pub fn drain(
         let Ok(s) = std::str::from_utf8(text.as_bytes()) else {
             continue;
         };
-        let core = &net.session.core;
-        let name = crate::ui::names::of(core, speaker);
-        let face = core.tag(speaker).map(|t| (t.address, t.pic));
-        let friend = face
-            .zip(friends.as_deref())
-            .is_some_and(|((address, _), f)| f.set.has(&address));
+        let (name, face, friend) = who(&net.session.core, speaker);
         chat.log.push(Line {
             speaker,
             name,
@@ -374,9 +389,63 @@ pub fn drain(
             face,
             friend,
             at: now,
+            key: protocol::caption_key(&text),
+            ..Line::default()
         });
         chat.dirty = true;
     }
+    // Captions (v138): words said out loud nearby, and translations. A
+    // talker this player muted stays muted in text too.
+    while let Some(c) = net.session.core.pop_caption() {
+        if c.voice && mutes.as_deref().is_some_and(|m| m.muted(c.from)) {
+            continue;
+        }
+        let Ok(s) = std::str::from_utf8(c.text.as_bytes()) else {
+            continue;
+        };
+        let (name, face, friend) = who(&net.session.core, c.from);
+        chat.log.caption(
+            Line {
+                speaker: c.from,
+                name,
+                channel: c.channel,
+                text: s.to_string(),
+                face,
+                friend,
+                at: now,
+                voice: c.voice,
+                lang: c.lang,
+                key: c.line,
+            },
+            c.more,
+        );
+        chat.dirty = true;
+    }
+}
+
+/// Say `/lang <code> auto` for the system's language, so captions and chat
+/// arrive translated into it without the player asking. `false` when the
+/// line could not go yet; a system language not in the list sends nothing.
+fn send_lang(net: &Net) -> bool {
+    let Some(code) = system_lang() else {
+        return true;
+    };
+    let line = format!("/lang {code} auto");
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::chat::encode_chat(line.as_bytes(), Channel::Local, &mut buf) {
+        Ok(len) => net.session.send_action(&buf[..len]).is_ok(),
+        Err(_) => true,
+    }
+}
+
+/// The system's language as a `/lang` code: the OS locale natively, the
+/// browser's language on the web.
+fn system_lang() -> Option<&'static str> {
+    #[cfg(target_arch = "wasm32")]
+    let locale = web_sys::window().and_then(|w| w.navigator().language());
+    #[cfg(not(target_arch = "wasm32"))]
+    let locale = sys_locale::get_locale();
+    protocol::lang_of(&locale?).and_then(protocol::lang_code)
 }
 
 /// Redraw the log and the composer when either changed.
@@ -514,6 +583,8 @@ pub fn draw(
                     // channel: the channel is still the tag before it.
                     TextColor(if l.friend {
                         super::ui::FRIEND
+                    } else if l.voice {
+                        VOICE_INK
                     } else {
                         ink(l.channel)
                     }),

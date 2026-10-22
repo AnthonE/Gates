@@ -532,6 +532,21 @@ pub struct ShardStats {
     pub voice_relayed: AtomicU64,
     /// Relayed voice frames a listener's full outbound ring refused.
     pub voice_out_drops: AtomicU64,
+    /// Captions (v138, `scribe.rs`): utterances long and loud enough to be
+    /// speech, ended by their talker.
+    pub caption_utterances: AtomicU64,
+    /// Utterances transcribed, and translations made.
+    pub caption_transcribed: AtomicU64,
+    pub caption_translated: AtomicU64,
+    /// Utterances and lines left uncaptioned because an hour's spend was gone.
+    pub caption_spent: AtomicU64,
+    /// Frames, lines, service calls and captions dropped by a full ring or
+    /// queue on the way.
+    pub caption_dropped: AtomicU64,
+    /// Service calls that failed.
+    pub caption_failures: AtomicU64,
+    /// Captions handed to a receiver's event ring.
+    pub caption_sent: AtomicU64,
     /// Joins that arrived as a *saved* character rather than a fresh one
     /// (`store.rs`). The one number that says persistence is doing anything:
     /// a shard with a save file whose `saves_restored` stays 0 while

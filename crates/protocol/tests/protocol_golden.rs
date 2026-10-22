@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 190] = [
+const GOLDEN: [&[u8]; 191] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -253,6 +253,7 @@ const GOLDEN: [&[u8]; 190] = [
     include_bytes!("golden/action_plant_ground.bin"),
     include_bytes!("golden/action_tend.bin"),
     include_bytes!("golden/event_vessel.bin"),
+    include_bytes!("golden/event_caption.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -566,8 +567,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 188);
     // The water pass (v137).
     g!(seen, golden_event, 189);
+    // Captions (v138).
+    g!(seen, golden_event, 190);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 190, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 191, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1503,6 +1506,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}"
             );
             protocol::encode_event_wheel_paid(staked, paid, &mut buf).unwrap()
+        }
+        "event_caption.bin" => {
+            let c = protocol::goldens::event_caption();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Caption(c),
+                "{name}"
+            );
+            protocol::encode_event_caption(&c, &mut buf).unwrap()
         }
         "event_slots.bin" => {
             let (machine, mult, code, reels, pay) = protocol::goldens::event_slots();

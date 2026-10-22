@@ -413,6 +413,11 @@ pub struct ShardCore {
     pub online: crate::online::Online,
     /// The companion's end of its rings (`companion.rs`). Not sim state.
     pub companion: crate::companion::Companion,
+    /// The scribe's end of its rings (`scribe.rs`): captions. Not sim state.
+    pub scribe: crate::scribe::Scribe,
+    /// The language each player reads captions in (`/lang`, v138), 0 for
+    /// none. Not sim state.
+    langs: [u8; MAX_PLAYERS],
     /// Bases recently alerted as under attack, by hearth address, and when:
     /// one alert per base per `companion::RAID_QUIET_TICKS`.
     raid_quiet: [(u64, u64); 16],
@@ -778,6 +783,8 @@ impl ShardCore {
             mints: crate::mints::Mints::off(),
             online: crate::online::Online::off(),
             companion: crate::companion::Companion::off(),
+            scribe: crate::scribe::Scribe::off(),
+            langs: [0; MAX_PLAYERS],
             raid_quiet: [(u64::MAX, 0); 16],
             raid_checks: 0,
             teams: crate::team::Teams::default(),
@@ -2397,6 +2404,7 @@ impl ShardCore {
             self.evicted.forget(k);
         }
         self.keys[slot] = key;
+        self.langs[slot] = 0;
         self.clients[slot].reset(id);
         let wallet = self.key_str(slot);
         self.achievements.join(slot, wallet.as_deref());
@@ -3693,6 +3701,31 @@ impl ShardCore {
             return;
         }
 
+        // `/lang` is everybody's: the language their captions are
+        // translated into (v138). The client's own at join is quiet.
+        if let AdminCmd::Lang { lang, quiet } = cmd {
+            if from_slot < MAX_PLAYERS {
+                self.langs[from_slot] = lang;
+            }
+            if !quiet {
+                let line = self.lang_line(from_slot);
+                self.answer(from_slot, line, stats, send);
+            }
+            return;
+        }
+        if let AdminCmd::LangWhat = cmd {
+            let line = self.lang_line(from_slot);
+            self.answer(from_slot, line, stats, send);
+            let codes: Vec<&str> = protocol::LANGS.iter().map(|(c, _)| *c).collect();
+            self.answer(
+                from_slot,
+                format!("/lang <code> or /lang off: {}", codes.join(" ")),
+                stats,
+                send,
+            );
+            return;
+        }
+
         // `/top` is everybody's: the standings, to the asker.
         if let AdminCmd::Top = cmd {
             let key = self.key_str(from_slot);
@@ -3902,7 +3935,9 @@ impl ShardCore {
             | AdminCmd::WipeWhen
             | AdminCmd::Top
             | AdminCmd::Achievements
-            | AdminCmd::Team { .. } => return,
+            | AdminCmd::Team { .. }
+            | AdminCmd::Lang { .. }
+            | AdminCmd::LangWhat => return,
         }
         ops.log.push(logged);
     }
@@ -3969,11 +4004,11 @@ impl ShardCore {
             // No position ⇒ nothing to measure a radius from. A line
             // typed inside the one-tick window between the welcome and
             // the join command landing is dropped, not guessed at.
-            let Some(from_w) = self.live_wslot(from_slot) else {
+            let mut hears = [false; MAX_CONNS];
+            if !self.chat_audience(from_slot, msg.channel, &mut hears) {
                 ShardStats::bump(&stats.chat_undelivered);
                 continue;
-            };
-            let own = self.world.players[from_w].body;
+            }
             // The team channel (v108) reaches the speaker's team wherever
             // they are, and nobody else. A player with no team is told so
             // rather than heard by no one.
@@ -4000,27 +4035,17 @@ impl ShardCore {
                     continue;
                 }
             };
-            for to_slot in 0..MAX_PLAYERS {
-                if !self.clients[to_slot].connected {
+            // The languages it reached, for the scribe to translate into.
+            let mut langs = 0u32;
+            for (to_slot, &hears) in hears.iter().enumerate().take(MAX_PLAYERS) {
+                if !hears {
                     continue;
-                }
-                if msg.channel == protocol::Channel::Team {
-                    if !team.contains(&self.clients[to_slot].id) {
-                        continue;
-                    }
-                } else if !msg.channel.is_global() {
-                    let Some(to_w) = self.live_wslot(to_slot) else {
-                        continue;
-                    };
-                    let p = self.world.players[to_w].body;
-                    let dx = (p.qx - own.qx) as i64 * 3;
-                    let dz = (p.qz - own.qz) as i64 * 3;
-                    if dx * dx + dz * dz > CHAT_LOCAL_CM * CHAT_LOCAL_CM {
-                        continue;
-                    }
                 }
                 if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
                     ShardStats::bump(&stats.ev_sent);
+                    if self.langs[to_slot] != 0 {
+                        langs |= 1 << self.langs[to_slot];
+                    }
                 } else {
                     // Deliberately no `ev_resync` here, unlike every other
                     // event: a resync restarts the harvested/piece/deploy
@@ -4029,6 +4054,153 @@ impl ShardCore {
                     ShardStats::bump(&stats.chat_undelivered);
                 }
             }
+            // To the record, and translated for those who read another
+            // language (`scribe.rs`).
+            if self.scribe.on() {
+                let wallet = self.keys[from_slot];
+                if !self
+                    .scribe
+                    .read(from_slot, from_id, wallet, msg.channel, &msg.text, langs)
+                {
+                    ShardStats::bump(&stats.caption_dropped);
+                }
+            }
+        }
+        self.pump_captions(stats, send);
+    }
+
+    /// Who a line `from_slot` says on `channel` reaches now (ALPHA.md §1):
+    /// every connected player for global, the speaker's team for team, and
+    /// for local everyone within `CHAT_LOCAL_CM` planar of the speaker, the
+    /// speaker included (the echo is the delivery receipt). `false`, and
+    /// nobody, when the speaker has no body to measure from.
+    fn chat_audience(
+        &self,
+        from_slot: usize,
+        channel: protocol::Channel,
+        hears: &mut [bool; MAX_CONNS],
+    ) -> bool {
+        hears.fill(false);
+        let Some(from_w) = self.live_wslot(from_slot) else {
+            return false;
+        };
+        let own = self.world.players[from_w].body;
+        let team = self.teams.team_of(self.clients[from_slot].id);
+        for (to_slot, hears) in hears.iter_mut().enumerate().take(MAX_PLAYERS) {
+            if !self.clients[to_slot].connected {
+                continue;
+            }
+            *hears = match channel {
+                protocol::Channel::Team => team.contains(&self.clients[to_slot].id),
+                protocol::Channel::Global => true,
+                protocol::Channel::Local => {
+                    let Some(to_w) = self.live_wslot(to_slot) else {
+                        continue;
+                    };
+                    let p = self.world.players[to_w].body;
+                    let dx = (p.qx - own.qx) as i64 * 3;
+                    let dz = (p.qz - own.qz) as i64 * 3;
+                    dx * dx + dz * dz <= CHAT_LOCAL_CM * CHAT_LOCAL_CM
+                }
+            };
+        }
+        true
+    }
+
+    /// Captions back from the scribe (v138), each to whoever hears its
+    /// talker now: the voice radius for words said out loud, the talker
+    /// included (they see what was heard), and the line's channel for a
+    /// typed one. A translation goes only to those who read its language.
+    /// A talker who left, died or slept meanwhile is captioned to nobody.
+    fn pump_captions(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let mut hears = [false; MAX_CONNS];
+        while let Some(said) = self.scribe.pop() {
+            let slot = said.slot as usize;
+            let c = said.caption;
+            if slot >= MAX_PLAYERS
+                || !self.clients[slot].connected
+                || self.clients[slot].id != c.from
+            {
+                continue;
+            }
+            if c.voice {
+                if self.voice_reach(slot, &mut hears).is_none() {
+                    continue;
+                }
+                hears[slot] = true;
+            } else if !self.chat_audience(slot, c.channel, &mut hears) {
+                continue;
+            }
+            let len = match protocol::encode_event_caption(&c, &mut self.ev_buf) {
+                Ok(len) => len,
+                Err(_) => {
+                    ShardStats::bump(&stats.encode_range_errors);
+                    continue;
+                }
+            };
+            for (to, &hears) in hears.iter().enumerate().take(MAX_PLAYERS) {
+                if !hears || (said.to_lang != 0 && self.langs[to] != said.to_lang) {
+                    continue;
+                }
+                if send(Lane::Event, to, &self.ev_buf[..len]) {
+                    ShardStats::bump(&stats.caption_sent);
+                } else {
+                    ShardStats::bump(&stats.chat_undelivered);
+                }
+            }
+        }
+    }
+
+    /// Voice frames from `slot` just relayed to `hears` (v138): to the
+    /// scribe, with the languages their listeners read. Voice no player
+    /// heard is not sent; nothing is when captions are off.
+    pub fn scribe_hear(
+        &mut self,
+        slot: usize,
+        frames: &[protocol::VoiceFrame],
+        hears: &[bool; MAX_CONNS],
+        stats: &ShardStats,
+    ) {
+        if !self.scribe.on() || slot >= MAX_PLAYERS {
+            return;
+        }
+        let mut heard = false;
+        let mut langs = 0u32;
+        for (&hears, &lang) in hears.iter().zip(&self.langs) {
+            if hears {
+                heard = true;
+                if lang != 0 {
+                    langs |= 1 << lang;
+                }
+            }
+        }
+        if !heard {
+            return;
+        }
+        let (id, wallet) = (self.clients[slot].id, self.keys[slot]);
+        for f in frames {
+            if !self.scribe.hear(slot, id, wallet, f, langs) {
+                ShardStats::bump(&stats.caption_dropped);
+            }
+        }
+    }
+
+    /// What `/lang` says back: the asker's caption language, or that there
+    /// is none, and whether this shard captions at all.
+    fn lang_line(&self, slot: usize) -> String {
+        let lang = self.langs.get(slot).copied().unwrap_or(0);
+        let on = if self.scribe.on() {
+            ""
+        } else {
+            " (this shard has captions off)"
+        };
+        match protocol::lang_name(lang) {
+            Some(name) => format!("Captions and chat translated into {name}{on}."),
+            None => format!("Translation off{on}."),
         }
     }
 

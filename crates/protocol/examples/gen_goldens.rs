@@ -304,6 +304,9 @@ fn main() {
     let (poured, salt, doused, watered) = goldens::event_vessel();
     let len = protocol::encode_event_vessel(poured, salt, doused, watered, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[189], &buf[..len]);
+    // Captions (v138).
+    let len = protocol::encode_event_caption(&goldens::event_caption(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[190], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

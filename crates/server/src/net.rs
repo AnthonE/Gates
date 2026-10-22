@@ -963,6 +963,23 @@ pub async fn spawn_shard(
         None => crate::companion::Companion::off(),
     };
 
+    // Captions (`scribe.rs`), only where the operator said. A shard told to
+    // caption without a transcriber's key refuses the boot rather than
+    // captioning nothing.
+    let scribe = if cfg.captions {
+        let scribe_cfg = crate::scribe::ScribeConfig::from_env(
+            cfg.transcript_file.as_deref().map(std::path::PathBuf::from),
+            cfg.transcript_days,
+        )?;
+        println!(
+            "captions on: {} transcribes, {} translates",
+            scribe_cfg.voice.stt_model, scribe_cfg.translate_model
+        );
+        crate::scribe::spawn(scribe_cfg, stats.clone())?
+    } else {
+        crate::scribe::Scribe::off()
+    };
+
     {
         let stats = stats.clone();
         let shutdown = shutdown.clone();
@@ -980,7 +997,24 @@ pub async fn spawn_shard(
             .map(std::path::PathBuf::from);
         let prizes = cfg.prizes.clone();
         let exits = cfg.exits;
-        let motd = cfg.motd.clone();
+        let mut motd = cfg.motd.clone();
+        // Captions say so at every join: what is transcribed, why, for how
+        // long, and how to choose the language.
+        if scribe.on() {
+            motd.push(match cfg.transcript_file {
+                Some(_) => format!(
+                    "Voice and chat here are transcribed for captions, translation and \
+                     reports, kept {} days.",
+                    cfg.transcript_days
+                ),
+                None => "Voice and chat here are transcribed for captions and translation.".into(),
+            });
+            motd.push(
+                "Captions come in your system's language: /lang <code> changes it, /lang off \
+                 stops translating."
+                    .into(),
+            );
+        }
         // The trust log's tap rides the save boot artifact (`store::Saves`).
         let trust = saves.trust;
         std::thread::Builder::new()
@@ -1017,6 +1051,7 @@ pub async fn spawn_shard(
                     team_max,
                     trust,
                     companion,
+                    scribe,
                     slots,
                     stats,
                     shutdown,
@@ -4266,6 +4301,7 @@ fn sim_thread(
     team_max: u8,
     trust: crate::trustlog::Tap,
     companion: crate::companion::Companion,
+    scribe: crate::scribe::Scribe,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -4303,6 +4339,7 @@ fn sim_thread(
     core.mints = crate::mints::Mints::open(standings_base.as_deref());
     core.online = crate::online::Online::open(standings_base.as_deref());
     core.companion = companion;
+    core.scribe = scribe;
     core.motd = motd.iter().filter_map(|l| crate::wipe::chat(l)).collect();
     core.wipe = wipe;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
@@ -4574,6 +4611,8 @@ fn sim_thread(
                 ShardStats::add(&stats.voice_unheard, n as u64);
                 continue;
             };
+            // To the scribe too, for captions (v138).
+            core.scribe_hear(slot, &frames[..n], &voice_hears, &stats);
             for f in &mut frames[..n] {
                 f.from = from;
                 let mut msg = VoiceMsg {
