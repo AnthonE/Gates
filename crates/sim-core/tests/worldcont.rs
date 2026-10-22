@@ -1388,3 +1388,40 @@ fn a_sanctum_crate_is_not_opened_from_the_ledge_outside() {
     open(&mut w, cx, cz);
     assert_eq!(w.world_conts.len(), 1, "opened from inside the sanctum");
 }
+
+/// **A crate's refill waits on the world's secret too**
+/// (`gather::respawn_seed`, the barrel's and the node's seed): on the seed
+/// and the first take's tick alone, a looter read the wait ahead and took
+/// on the tick that came back soonest. A salt of 0 keeps the old wait.
+#[test]
+fn a_crate_refill_waits_on_the_worlds_salt() {
+    use sim_core::gather::respawn_seed;
+    use sim_core::worldcont::refill_ticks;
+    const SALT: u64 = 0xFEED;
+    assert_eq!(
+        respawn_seed(SEED, 0),
+        SEED,
+        "an unsalted world keeps its waits"
+    );
+    let mut w = world();
+    w.arc.salt = SALT;
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+    let items = w.world_conts.entries()[0].items;
+    let s = (0..INV_SLOTS).find(|&s| items[s].count > 0).unwrap();
+    let to = w.players[0].inv.iter().position(|t| t.count == 0).unwrap();
+    let at = w.tick;
+    take(&mut w, cx, cz, s as u8, to as u8, 1);
+    let due = w.world_conts.entries()[0].refill_at;
+    assert_eq!(
+        due,
+        at + refill_ticks(respawn_seed(SEED, SALT), cx, cz, at),
+        "the first take armed the salted wait"
+    );
+    assert_ne!(
+        due,
+        at + refill_ticks(SEED, cx, cz, at),
+        "the refill ignored the salt"
+    );
+}

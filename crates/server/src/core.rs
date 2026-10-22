@@ -1523,8 +1523,9 @@ impl ShardCore {
                         .get(ev.a as usize)
                         .map_or("a lock", |n| n.as_str());
                     let what = format!("opened {name}");
-                    let points = self.standings.rules.solved_points;
-                    self.standings.deed(&k, &l, points, Some(&what));
+                    // Once a day per wallet and lock, named for its first
+                    // opener only (`Standings::solved`).
+                    self.standings.solved(&k, &l, ev.a, self.world.tick, &what);
                 }
                 // Each names its actor in `a`: the striker, the shooter, the
                 // learner, the eater (or the hand on a syringe).

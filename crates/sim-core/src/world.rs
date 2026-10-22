@@ -3226,7 +3226,12 @@ impl World {
             // respawn 20–45 min" — reused, not re-spoken).
             inventory::CONT_WORLD => {
                 let c = self.world_conts.entries()[ci];
-                let refill = crate::worldcont::refill_ticks(self.seed, c.cx, c.cz, self.tick);
+                let refill = crate::worldcont::refill_ticks(
+                    gather::respawn_seed(self.seed, self.arc.salt),
+                    c.cx,
+                    c.cz,
+                    self.tick,
+                );
                 self.world_conts
                     .set_slot(ci, s as usize, v, self.tick, refill);
             }
@@ -5602,6 +5607,9 @@ impl World {
                     death_at: None,
                     seat: 0,
                 };
+                // A record taken in a card doorway comes back to a door
+                // that may be shut.
+                self.out_of_shut_leaves(slot);
                 craft::rearm(
                     &self.craft,
                     &self.deploy,
@@ -5780,6 +5788,8 @@ impl World {
         // none until the server reads them again, so a skin sold while the
         // body slept cannot be put on by the sleeper's old answer.
         p.skins = crate::skin::SkinSet::EMPTY;
+        // Asleep in a card doorway across a restart: the door shut on it.
+        self.out_of_shut_leaves(slot);
         if self.players[slot].dead {
             // Nothing to announce: a corpse has no vitals, and the respawn
             // that answers the screen announces the new body's.
@@ -6976,7 +6986,11 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // A charge is not thrown from hands wrapping a bandage.
+                if let Some(slot) = self
+                    .live_slot_of(id)
+                    .filter(|&s| !survival::hands_busy(&self.players[s]))
+                {
                     crate::charge::place(
                         self.seed,
                         &self.haven,
@@ -7375,20 +7389,42 @@ impl World {
                         cx as i32,
                         cz as i32,
                     );
-                    let mut spill = [ItemStack::default(); INV_SLOTS];
-                    gather::pick(
+                    // In sight of the hand, as every other hand verb is
+                    // (`reach::clear_from`): a plant or a pile standing
+                    // inside a base was picked through its wall.
+                    let (eye, feet) = self.hand(slot);
+                    let at = crate::reach::Target::lying(
                         self.seed,
-                        self.tick,
-                        &self.gather,
-                        &mut self.slot_lives,
-                        &mut self.events,
-                        &mut self.players[slot],
-                        &mut spill,
-                        cx,
-                        cz,
-                        &s,
+                        &self.haven,
+                        self.pieces.cols(),
+                        (quant_xz(s.x), quant_y(s.y), quant_xz(s.z)),
                     );
-                    self.drain_spill(slot, &mut spill);
+                    let seen = gather::pickable(s.occupant)
+                        && crate::reach::clear_from(
+                            self.seed,
+                            &self.haven,
+                            self.pieces.cols(),
+                            self.card_door_bits,
+                            eye,
+                            feet,
+                            at,
+                        );
+                    if seen {
+                        let mut spill = [ItemStack::default(); INV_SLOTS];
+                        gather::pick(
+                            gather::respawn_seed(self.seed, self.arc.salt),
+                            self.tick,
+                            &self.gather,
+                            &mut self.slot_lives,
+                            &mut self.events,
+                            &mut self.players[slot],
+                            &mut spill,
+                            cx,
+                            cz,
+                            &s,
+                        );
+                        self.drain_spill(slot, &mut spill);
+                    }
                 }
             }
             Command::Plant {
@@ -7571,21 +7607,57 @@ impl World {
         let y = p.body.qy as f32 * POS_Y_Q;
         let id = p.id;
         let r = POUR_RADIUS_M;
+        let (eye, feet) = self.hand(i);
+        let (seed, cols, doors) = (self.seed, self.pieces.cols(), self.card_door_bits);
         let events = &mut self.events;
         let mut doused = self.fires.douse(x, y, z, r, |f| {
             events.push(EV_FIRE, fire_a(0, f.qx), f.qz as u32, f.qy as u32);
         });
-        let (boxes, ovens) = self.deploys.oven_parts_mut();
-        for (b, st) in boxes.iter().zip(ovens.iter_mut()) {
+        // The splash reaches only what a hand at the pourer reaches, the
+        // press's own rule (`reach::clear_box`: in sight, on its storey).
+        // Planar alone, a pour from outside a wall or through a floor put
+        // out every furnace and salted every planter within 4 m.
+        let mut seen = [0u64; crate::limits::MAX_BOXES.div_ceil(64)];
+        for (j, (b, st)) in self
+            .deploys
+            .boxes()
+            .iter()
+            .zip(self.deploys.oven_states())
+            .enumerate()
+        {
             let (bx, bz) = b.xz();
             let (dx, dz) = (bx - x, bz - z);
-            // Planar, as a box's own reach is (`Deploys::box_in_reach`).
-            if st.burns() && st.lit && dx * dx + dz * dz <= r * r {
+            if ((st.burns() && st.lit) || st.arch == deploy::ARCH_PLANTER)
+                && dx * dx + dz * dz <= r * r
+                && crate::reach::clear_box(
+                    seed,
+                    &self.haven,
+                    cols,
+                    doors,
+                    &self.deploy,
+                    &self.deploys,
+                    j,
+                    eye,
+                    feet,
+                )
+            {
+                seen[j / 64] |= 1 << (j % 64);
+            }
+        }
+        let sees_box = |j: usize| seen[j / 64] >> (j % 64) & 1 != 0;
+        let (boxes, ovens) = self.deploys.oven_parts_mut();
+        for (j, (b, st)) in boxes.iter().zip(ovens.iter_mut()).enumerate() {
+            if st.burns() && st.lit && sees_box(j) {
                 st.lit = false;
                 crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, id, &mut self.events);
                 doused += 1;
             }
         }
+        let haven = &self.haven;
+        let sees_ground = |q: (i32, i32, i32)| {
+            let at = crate::reach::Target::lying(seed, haven, cols, q);
+            crate::reach::clear_from(seed, haven, cols, doors, eye, feet, at)
+        };
         let (boxes, ovens) = self.deploys.oven_parts_mut();
         let watered = crate::farm::pour(
             &self.cook.farm,
@@ -7595,6 +7667,8 @@ impl World {
             (x, z),
             r,
             salt,
+            sees_box,
+            sees_ground,
         );
         self.players[i].inv[sel].item = v.empty;
         let c = u32::from(watered) | if salt { survival::POURED_SALT } else { 0 };
@@ -7947,6 +8021,12 @@ impl World {
 
     /// The card doors, once a tick: a door whose time is up does not shut on
     /// a body in its doorway (it waits a second and tries again).
+    ///
+    /// Only a live, awake body holds it. A sleeper or a corpse left in the
+    /// doorway held it for the rest of the wipe (a corpse stays `active`
+    /// where it fell), so one swipe, or a walk in behind a swiper and a
+    /// logout, opened the card loop to everyone. When the door shuts, any
+    /// body its leaf would hold goes out to the reader (`out_of_leaf`).
     fn card_door_sweep(&mut self) {
         let z = self.haven.ziggurat;
         if !z.live {
@@ -7958,20 +8038,35 @@ impl World {
                 continue;
             }
             let blocked = self.players.iter().any(|p| {
-                p.active && {
+                p.active && !p.dead && !p.sleeping && {
                     let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
                     let wz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
                     let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
                     crate::monument::in_doorway(&z, d, x, wz, feet)
                 }
             });
-            self.card_doors[d] = if blocked {
-                self.tick + crate::limits::TICK_HZ as u64
-            } else {
-                0
-            };
+            if blocked {
+                self.card_doors[d] = self.tick + crate::limits::TICK_HZ as u64;
+                continue;
+            }
+            self.card_doors[d] = 0;
+            for p in self.players.iter_mut().filter(|p| p.active) {
+                crate::monument::out_of_leaf(&z, d, &mut p.body);
+            }
         }
         self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
+    }
+
+    /// A body arriving in the world (a restore, a sleeper woken) out of any
+    /// shut card door's leaf. `card_doors` is not saved, so after a restart
+    /// every door is shut on whoever slept in its doorway.
+    fn out_of_shut_leaves(&mut self, slot: usize) {
+        let z = self.haven.ziggurat;
+        for d in 0..crate::monument::CARD_DOORS {
+            if self.card_door_bits & (1 << d) == 0 {
+                crate::monument::out_of_leaf(&z, d, &mut self.players[slot].body);
+            }
+        }
     }
 
     pub fn tick(&mut self, commands: &[Command]) {
@@ -8367,8 +8462,10 @@ impl World {
             // all, so nothing leaves the zone to hurt anyone outside it.
             // The client holsters it on screen (`ItemRow::holster`).
             // Nor fired from the water: a swimmer keeps only melee.
+            // Nor anything while a bandage is wrapped on (`hands_busy`).
             let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i])
-                || combat::waterlogged(&self.combat, &self.players[i]);
+                || combat::waterlogged(&self.combat, &self.players[i])
+                || survival::hands_busy(&self.players[i]);
             let took_arm = holstered
                 || ranged::draw(
                     tick,
@@ -8460,6 +8557,7 @@ impl World {
                     melee::Reached::Node(hit) => {
                         swung = gather::land(
                             seed,
+                            gather::respawn_seed(seed, self.arc.salt),
                             tick,
                             &self.gather,
                             &self.loot,

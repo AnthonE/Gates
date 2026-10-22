@@ -382,6 +382,48 @@ pub fn in_doorway(z: &Ziggurat, d: usize, x: f32, wz: f32, feet: f32) -> bool {
         && feet + 1.8 > z.floor_y + b[1]
 }
 
+/// Move a body that door `d`'s shut leaf would hold out to the door's
+/// reader; true if it moved. `movement::step` lifts its veto for a body
+/// already inside a solid (being stuck must not be absorbing), so a body
+/// left in a shut leaf walks on through it, into the room behind with no
+/// card. The test is `blocks`' own, for the leaf alone.
+pub fn out_of_leaf(z: &Ziggurat, d: usize, body: &mut crate::movement::Body) -> bool {
+    use crate::collide::{CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
+    use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
+    let Some(leaf) = PARTS.iter().find(|p| p.door as usize == d + 1) else {
+        return false;
+    };
+    let Some((rx, ry, rz)) = reader_world(z, d, false) else {
+        return false;
+    };
+    let (x, wz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    let (lx, lz) = kit::to_local(&z.placed(), x, wz);
+    let feet = body.qy as f32 * POS_Y_Q;
+    let shut = core::slice::from_ref(leaf);
+    if !z.live
+        || !kit::blocks_local(
+            shut,
+            z.floor_y,
+            0,
+            lx,
+            lz,
+            feet,
+            CAPSULE_RADIUS_M,
+            CAPSULE_HEIGHT_M,
+        )
+    {
+        return false;
+    }
+    *body = crate::movement::Body {
+        qx: quant_xz(rx),
+        qy: quant_y(ry),
+        qz: quant_xz(rz),
+        qvy: 0,
+        grounded: true,
+    };
+    true
+}
+
 /// The kit as JSON for `ci/site_kit.py` (`examples/kit_dump.rs`).
 pub fn dump(w: &mut impl core::fmt::Write) -> core::fmt::Result {
     let mut anchors = [("", 0.0, 0.0, 0.0); CRATES.len() + 2 * CARD_DOORS];

@@ -363,8 +363,20 @@ fn turn(
     }
     m.solves = m.solves.wrapping_add(1);
     m.rest_until = tick + def.rest_ticks as u64;
+    // Scrambled a secret step (1..values) off the answer, drawn under the
+    // salt. It was `want + 1 + j`, a fixed function of the answer, and
+    // every client is sent the dials: after the first solve the whole
+    // shard could read this wipe's answer off the resting lock.
+    let values = def.values.max(1);
     for (j, v) in m.dials.iter_mut().enumerate().take(def.dials as usize) {
-        *v = (want[j] + 1 + j as u8) % def.values.max(1);
+        let h = crate::rng::sip24(
+            state.salt,
+            seed,
+            (k as u64) << 8 | j as u64,
+            m.solves as u64,
+        );
+        let step = 1 + (h % (values.max(2) as u64 - 1)) as u8;
+        *v = (want[j] + step) % values;
     }
     events.push(EV_MECH_SOLVED, k as u32, who, 0);
 }

@@ -205,6 +205,19 @@ pub const WEAK_COS: f32 = 0.707_106_77;
 pub const RESPAWN_MIN_TICKS: u64 = 36_000;
 pub const RESPAWN_RANGE_TICKS: u64 = 45_000;
 
+/// The seed a node's, barrel's, pickup's or world crate's respawn jitter
+/// draws from: the world seed under its secret (`rng::salted`). Keyed on
+/// the bare seed, the cell and a tick the harvester picks (the finishing
+/// swing, the pick, the first take), a script read the jitter ahead and
+/// chose the tick with the shortest wait. A salt of 0 is the seed.
+#[inline]
+pub fn respawn_seed(seed: u64, salt: u64) -> u64 {
+    crate::rng::salted(seed, salt, CH_RESPAWN_SALT)
+}
+
+/// [`respawn_seed`]'s channel, apart from every other stream on the salt.
+const CH_RESPAWN_SALT: u64 = 0x7265_7370_6177_6e31;
+
 /// Tree regrowth (tree growth v0): a felled tree's stump stands for the
 /// respawn window above, then a sapling sprouts in the same cell and grows
 /// to the tree it was over this long — an hour at 30 Hz. The reference
@@ -1358,9 +1371,13 @@ pub fn strike_due(tick: u64, p: &mut Player) -> bool {
 /// caller's buffer for the tick and this function only writes into it; the
 /// caller stands it up as a bag, because gather owns the slot bit and not
 /// the container store — the same split `Smashed` already makes.
+///
+/// `respawn` keys the respawn jitter ([`respawn_seed`]); `seed` the
+/// weak-spot marks, which the client predicts.
 #[allow(clippy::too_many_arguments)]
 pub fn land(
     seed: u64,
+    respawn: u64,
     tick: u64,
     gc: &GatherContent,
     lc: &LootContent,
@@ -1385,7 +1402,7 @@ pub fn land(
     let d2 = ox * ox + oz * oz;
 
     if smashable(ni).is_some() {
-        return smash(lc, seed, tick, ni, cx, cz, pos, lives, events, p);
+        return smash(lc, respawn, tick, ni, cx, cz, pos, lives, events, p);
     }
 
     let def = &gc.nodes[ni];
@@ -1515,7 +1532,7 @@ pub fn land(
     if exhausted && stump {
         life.hits = STUMP_GRUBBED;
     } else if exhausted {
-        let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
+        let jitter = splitmix64(cell_hash(respawn, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
         life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
         life.grown_at = 0;
         life.occ = occupant_of(ni) as u8;
@@ -1697,10 +1714,11 @@ pub const PICK_REACH_M: f32 = crate::backpack::LOOT_REACH_M;
 /// goes into the inventory and any `secondary` beside it, both announced
 /// with `EV_GATHER`, and `EV_SLOT_HARVESTED` says it is gone. No
 /// `EV_IMPACT`, no tool wear, no weak-spot chase: picking is not chopping.
-/// What will not fit lands in `spill` for the caller to drain.
+/// What will not fit lands in `spill` for the caller to drain. `respawn`
+/// keys the respawn jitter ([`respawn_seed`]).
 #[allow(clippy::too_many_arguments)]
 pub fn pick(
-    seed: u64,
+    respawn: u64,
     tick: u64,
     gc: &GatherContent,
     lives: &mut SlotLives,
@@ -1743,7 +1761,7 @@ pub fn pick(
     let hits = def.hits.max(1);
     let budget = hits as u32 * HIT_UNIT;
     life.hits = budget.min(u16::MAX as u32) as u16;
-    let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
+    let jitter = splitmix64(cell_hash(respawn, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
     life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
     life.grown_at = 0;
     life.occ = slot.occupant as u8;
@@ -1794,10 +1812,12 @@ pub fn pick(
 /// "node/barrel respawn 20–45 min" names both), and the same
 /// `EV_SLOT_HARVESTED` on the way out, so a client that already hides a
 /// felled tree hides a smashed barrel with no wire change at all.
+///
+/// `respawn` keys the respawn jitter ([`respawn_seed`]).
 #[allow(clippy::too_many_arguments)]
 fn smash(
     lc: &LootContent,
-    seed: u64,
+    respawn: u64,
     tick: u64,
     target: usize,
     cx: u16,
@@ -1827,7 +1847,7 @@ fn smash(
     if life.hits < hits {
         return Swing::Absorbed;
     }
-    let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
+    let jitter = splitmix64(cell_hash(respawn, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
     life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
     life.occ = occupant_of(target) as u8;
     events.push(EV_SLOT_HARVESTED, cell_key(cx, cz), occupant_of(target), 0);
