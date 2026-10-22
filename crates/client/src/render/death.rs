@@ -363,7 +363,7 @@ pub fn setup(
         own_id: core.player_id,
         alive_s: core.own_death_alive_s,
     };
-    let killer = crate::ui::names::of(core, d.killer);
+    let killer = crate::ui::names::shown(core, d.killer);
     // Where the body fell, as the server states it (`DeathMark`, v116) — the
     // spot the compass and the held map keep showing after the respawn. The
     // predicted body until it lands.
@@ -1199,7 +1199,7 @@ pub fn click(
             let title = model::report_title(
                 &d,
                 &core.catalog,
-                &crate::ui::names::of(core, d.killer),
+                &crate::ui::names::shown(core, d.killer),
                 &map::grid_label(x, z),
             );
             reports.open_with(&title);

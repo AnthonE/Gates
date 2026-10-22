@@ -343,7 +343,7 @@ function rowEl(r, onGo, kind) {
   }
   const sub = document.createElement("span");
   sub.className = "sub";
-  sub.textContent = [r.addr, r.map].filter(Boolean).join("  ·  ");
+  sub.textContent = streamer() ? "address hidden" : [r.addr, r.map].filter(Boolean).join("  ·  ");
   const pop = document.createElement("span");
   pop.className = "pop num" + (Number.isInteger(r.players) ? "" : " unknown");
   if (r.live) {
@@ -391,6 +391,7 @@ function renderServers() {
   $("watch-servers").replaceChildren(...rows.map((r) => rowEl(r, () => watch(), "watch")));
   const r = current();
   if (r && document.activeElement !== serverInput) serverInput.value = r.addr;
+  serverInput.type = streamer() ? "password" : "text";
   /* The embed has no server list, so it says how busy the island is instead:
      the people the shard reported, and only while somebody is on. */
   const n = r && Number.isInteger(r.players)
@@ -853,6 +854,7 @@ function paintFace(el) {
   el.replaceChildren();
   if (!address) { el.textContent = "·"; return; }
   const name = who && who.name;
+  if (streamer()) { el.textContent = "·"; return; }
   el.textContent = name ? name.trim().charAt(0).toUpperCase() : address.slice(2, 4).toUpperCase();
   if (who && who.face) {
     const img = document.createElement("img");
@@ -865,18 +867,19 @@ function paintFace(el) {
 
 function paintAccount() {
   const here = !!address;
-  const name = (who && who.name) || (address ? short(address) : "");
-  const bal = balance != null ? `${balance} ELO` : "";
+  const hide = streamer();
+  const name = hide ? "Streamer mode" : (who && who.name) || (address ? short(address) : "");
+  const bal = balance != null && !hide ? `${balance} ELO` : "";
   $("acct-in").hidden = here;
   $("acct-chip").hidden = !here;
   $("who-here").hidden = !here;
   $("who-away").hidden = here;
   if (here) {
     $("acct-name").textContent = name;
-    $("acct-bal").textContent = bal || short(address);
-    $("acct-addr").textContent = address;
+    $("acct-bal").textContent = bal || (hide ? "" : short(address));
+    $("acct-addr").textContent = hide ? "wallet hidden" : address;
     $("who-name").textContent = name;
-    $("who-addr").textContent = short(address);
+    $("who-addr").textContent = hide ? "wallet hidden" : short(address);
     const wb = $("who-bal");
     wb.textContent = bal;
     wb.className = bal ? "elo-tag num" : "";
@@ -1403,6 +1406,34 @@ function saveNum(key, value) {
   } catch (err) { /* storage blocked: nowhere to keep it */ }
 }
 const musicLevel = () => savedNum("vol_master", 1) * savedNum("vol_music", MUSIC_DEFAULT);
+
+/* ── streamer mode ───────────────────────────────────────────────────────────
+   The game's switch (`ui::streamer`, `streamer_mode` in the same settings
+   text), read here too, so the page hides what the game hides: your wallet,
+   server addresses, the map seed, friends' names and where they play. Names
+   are made up per page load, the game's way (`ui::streamer::alias`). */
+function streamer() {
+  try {
+    const t = localStorage.getItem(SETTINGS) || "";
+    const all = [...t.matchAll(/^\s*streamer_mode\s*=\s*([^#\n]*)/gm)];
+    return all.length > 0 && all[all.length - 1][1].trim() === "true";
+  } catch (err) { return false; }
+}
+const ALIAS_A = ["Amber", "Ash", "Birch", "Bramble", "Brass", "Cedar", "Cinder", "Clay", "Copper",
+  "Dusk", "Ember", "Fern", "Flint", "Frost", "Gale", "Granite", "Hazel", "Iron", "Juniper", "Lichen",
+  "Moss", "Oak", "Pine", "Quartz", "Reed", "Rust", "Sable", "Slate", "Sorrel", "Thorn", "Tide", "Willow"];
+const ALIAS_B = ["Badger", "Bear", "Boar", "Crane", "Crow", "Deer", "Eagle", "Ferret", "Finch", "Fox",
+  "Frog", "Gull", "Hare", "Hawk", "Heron", "Jay", "Lark", "Lynx", "Marten", "Mole", "Moth", "Newt",
+  "Otter", "Owl", "Pike", "Raven", "Seal", "Stoat", "Toad", "Viper", "Wolf", "Wren"];
+const ALIAS_SALT = (() => {
+  try { return crypto.getRandomValues(new Uint32Array(1))[0] >>> 0; }
+  catch (err) { return (Math.random() * 4294967296) >>> 0; }
+})();
+function alias(key) {
+  let h = 2166136261 ^ ALIAS_SALT;
+  for (const c of String(key).toLowerCase()) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+  return `${ALIAS_A[h & 31]} ${ALIAS_B[(h >>> 5) & 31]} ${(h >>> 10) % 100}`;
+}
 let music = null;
 function startMusic() {
   if (music) return music;
@@ -1646,7 +1677,9 @@ async function join(kind, audio, identity) {
    keyboard and pointer events, and the pointer is captured on the first click
    inside the world, by the same rule the desktop has (`ui::pointer`). */
 async function enter(g, audio, row) {
-  $("handoff-line").textContent = g.watching ? g.watching : `entering ${row ? row.name : "the island"}…`;
+  $("handoff-line").textContent = g.watching
+    ? (streamer() ? "watching…" : g.watching)
+    : `entering ${row && !streamer() ? row.name : "the island"}…`;
   $("handoff").hidden = false;
   document.body.classList.add("playing");
   if (!g.watching) window.addEventListener("beforeunload", guardLeave);
@@ -2261,8 +2294,8 @@ function frRowEl(f, line, live, acts) {
   lines.className = "lines";
   const nm = document.createElement("div");
   nm.className = "name";
-  nm.textContent = f.name || short(f.wallet);
-  nm.title = String(f.wallet || "");
+  nm.textContent = streamer() ? alias(f.wallet) : f.name || short(f.wallet);
+  nm.title = streamer() ? "" : String(f.wallet || "");
   if (f.buddy || f.agent) {
     const m = document.createElement("span");
     m.className = "mark";
@@ -2290,7 +2323,7 @@ function frPresence(f) {
   const p = f.online && f.playing;
   if (p) {
     const title = p.title || p.game || "a game";
-    const where = p.server_name || p.server;
+    const where = streamer() ? "" : p.server_name || p.server;
     return where ? `Playing ${title} · ${where}` : `Playing ${title}`;
   }
   if (f.online) return "online";
@@ -2424,6 +2457,15 @@ rows = baseRows();
 picked = rows[0].id;
 renderServers();
 paintAccount();
+/* the Options switch writes the game's own line, so both read one setting */
+const streamerBox = $("streamer");
+streamerBox.checked = streamer();
+streamerBox.addEventListener("change", () => {
+  saveNum("streamer_mode", streamerBox.checked);
+  renderServers();
+  paintAccount();
+  paintFriends();
+});
 // WebTransport is the only path a page has to a QUIC shard, and it is not
 // everywhere yet. Say so before the button is pressed rather than after.
 if (!canTransport) say("This browser has no WebTransport, which Gates needs to reach its servers. Chrome, Edge and Firefox have it.", "bad");

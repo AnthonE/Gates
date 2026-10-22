@@ -164,7 +164,7 @@ pub fn setup(
         .find(|r| !r.direct && r.addr == addr)
         .map(|r| r.name.clone())
         .unwrap_or(addr);
-    let title = if name.is_empty() {
+    let title = if name.is_empty() || crate::ui::streamer::on() {
         "ENTERING THE ISLAND".to_string()
     } else {
         format!("ENTERING {}", name.to_uppercase())
@@ -307,7 +307,10 @@ pub fn update(
     // a wait, but the player still has to be able to leave one — the same
     // rule the connect screen obeys.
     if keyboard.just_pressed(KeyCode::Escape) {
-        menu.status = format!("{}: left while the world was loading", connecting.addr);
+        menu.status = format!(
+            "{}: left while the world was loading",
+            crate::ui::streamer::server(&connecting.addr)
+        );
         next.set(Screen::Menu);
         return;
     }

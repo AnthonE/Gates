@@ -469,7 +469,7 @@ pub fn hear(
             lp,
         });
         if !l.ended && now - l.last < TALKING_S {
-            talking.push((l.id, crate::ui::names::of(&net.session.core, l.id)));
+            talking.push((l.id, crate::ui::names::shown(&net.session.core, l.id)));
         }
     }
     if talking != hud.talking {
@@ -569,7 +569,7 @@ pub fn command(line: &str, mutes: &mut Mutes, net: &Net, hud: &VoiceHud) -> Opti
     let Some(id) = found else {
         return Some(format!("voice: no player near you called {who}"));
     };
-    let name = crate::ui::names::of(core, id);
+    let name = crate::ui::names::shown(core, id);
     if mute {
         mutes.mute(id);
         Some(format!("voice: muted {name}"))

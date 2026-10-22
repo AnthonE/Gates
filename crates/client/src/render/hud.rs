@@ -3350,7 +3350,7 @@ pub fn feedback(
     // A work changed (`ARC.md`): the whole island hears it, because what a
     // work gives it gives everybody.
     for &(index, what, by) in feed.work_events() {
-        let who = (by != 0).then(|| crate::ui::names::of(core, by));
+        let who = (by != 0).then(|| crate::ui::names::shown(core, by));
         if let Some(line) = crate::ui::arc::event_line(&core.arc, index, what, who.as_deref()) {
             toast.say(line);
         }
@@ -3368,7 +3368,7 @@ pub fn feedback(
             .get(mech as usize)
             .filter(|m| m.known)
             .map_or("A LOCK", |m| m.name());
-        let who = crate::ui::names::of(core, by);
+        let who = crate::ui::names::shown(core, by);
         toast.say(format!("{name} OPENED — {who} read the stones"));
     }
 
@@ -3515,7 +3515,7 @@ pub fn feedback(
             Some(sim_core::mob::MOB_HELI) => "the attack helicopter".to_string(),
             Some(sim_core::mob::MOB_WOLF) => "a wolf".to_string(),
             Some(_) => "a pig".to_string(),
-            None => crate::ui::names::of(core, id),
+            None => crate::ui::names::shown(core, id),
         };
         if let Some(line) = kill_line_for(victim, killer, core.player_id, name) {
             toast.say(line);
@@ -4037,7 +4037,7 @@ pub fn prompt(
         let want = match give.pick.filter(|_| !pad.0.is_open()) {
             Some(p) => {
                 let core = &net.session.core;
-                let who = crate::ui::names::of(core, p.target);
+                let who = crate::ui::names::shown(core, p.target);
                 let left = give.hold.left(time.elapsed_secs_f64());
                 let line = crate::ui::interact::give_prompt(&p, &core.catalog, &who, left);
                 if left.is_none() && !aimed.0.is_none() {
@@ -4054,7 +4054,7 @@ pub fn prompt(
             .filter(|_| !pad.0.is_open() && give.hold.left(0.0).is_none())
         {
             Some(target) => {
-                let who = crate::ui::names::of(&net.session.core, target);
+                let who = crate::ui::names::shown(&net.session.core, target);
                 let line = crate::ui::team::invite_prompt(&who);
                 if want.is_empty() {
                     line
@@ -4491,7 +4491,10 @@ pub fn pad_overlay(
                                     BorderColor::all(if i == cursor { LINE_HOT } else { LINE }),
                                     Pickable::IGNORE,
                                     children![(
+                                        // Dots in streamer mode: a code on
+                                        // stream is a door opened for a viewer.
                                         Text::new(match c {
+                                            Some(_) if crate::ui::streamer::on() => "•".to_string(),
                                             Some(d) => d.to_string(),
                                             None => String::new(),
                                         }),
