@@ -14,8 +14,7 @@ use sim_core::sentry::{SentryDef, SENTRIES, SENTRY_SLOT0};
 use sim_core::town;
 use sim_core::world::{
     Command, EventQueue, Player, World, DEATH_BY_MOB, EV_HURT, EV_MOVED, EV_MOVE_REFUSED,
-    EV_SENTRY_LOCK,
-    EV_SHOT, GATE_SPAWN_COOLDOWN_TICKS, SAFE_SLEEP_TICKS,
+    EV_SENTRY_LOCK, EV_SHOT, GATE_SPAWN_COOLDOWN_TICKS, SAFE_SLEEP_TICKS,
 };
 
 const SEED: u64 = 20_260_731;
@@ -447,7 +446,10 @@ fn a_bag_in_the_zone_takes_nothing_even_from_its_owner() {
         w.backpacks.entries()[b].qx as f32 * POS_XZ_Q,
         w.backpacks.entries()[b].qz as f32 * POS_XZ_Q,
     );
-    assert!(town::safe(&w.haven.town, x, z), "the bag is not in the zone");
+    assert!(
+        town::safe(&w.haven.town, x, z),
+        "the bag is not in the zone"
+    );
     let items = |w: &World| w.backpacks.entries()[b].items;
     let mv = |w: &mut World, from: (u8, u8), to: (u8, u8)| {
         w.tick(&[Command::Move {

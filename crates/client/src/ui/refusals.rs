@@ -584,10 +584,7 @@ mod tests {
             deploy(REFUSE_D_OWN_CAP as u8),
             "you have too many of those placed"
         );
-        assert_eq!(
-            deploy(REFUSE_D_BAG_SPENT as u8),
-            "that bag isn't ready yet"
-        );
+        assert_eq!(deploy(REFUSE_D_BAG_SPENT as u8), "that bag isn't ready yet");
 
         assert_eq!(
             build(REFUSE_B_WINDOW as u8),

@@ -9612,7 +9612,11 @@ mod tests {
             crate::footprint::Pose::CENTRE,
             &mut ev,
         );
-        assert!(deploys.locks.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().is_key());
+        assert!(deploys
+            .locks
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
+            .unwrap()
+            .is_key());
 
         const MATE: u32 = 11;
         const STRANGER: u32 = 13;

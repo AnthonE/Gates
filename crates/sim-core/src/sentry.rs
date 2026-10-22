@@ -533,11 +533,9 @@ mod tests {
                 }
             }
             let mut occ = scratch.occupants();
-            if layout
-                .iter()
-                .enumerate()
-                .all(|(k, &(_, open))| sees(SEED, &haven, &cols, &mut occ, gun, &players[k]) == open)
-            {
+            if layout.iter().enumerate().all(|(k, &(_, open))| {
+                sees(SEED, &haven, &cols, &mut occ, gun, &players[k]) == open
+            }) {
                 found = Some(gun);
                 break 'search;
             }
