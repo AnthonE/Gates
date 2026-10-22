@@ -1,6 +1,6 @@
 //! The game guide the website's guide tab draws: every item, recipe, weapon,
 //! armour piece, food, cooking step, research row and animal, read straight
-//! off the validated content set, as `guide.json` (schema 1, scry-forge's
+//! off the validated content set, as `guide.json` (schema 1, the platform's
 //! `/games/<slug>/guide/`).
 //!
 //! ```text

@@ -197,7 +197,7 @@ companion_addr = "127.0.0.1:8434"
 # `entitle_unknown` in the stats — armed and climbing means the door is open
 # and nobody can see it.
 #
-# entitle_origin = "https://elopros.com"   # scry.moreright.xyz retired 2026-08-20 (410)
+# entitle_origin = "https://elopros.com"   # the former host retired 2026-08-20 (410)
 
 # ── the wipe and the way out (the alpha) ────────────────────────────────────
 #

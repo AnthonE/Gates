@@ -2,8 +2,8 @@
 //! inventory (the client sends a Steam-signed snapshot, the server checks it
 //! belongs to that SteamID and answers `HasItem`). A Gates shard asks the
 //! platform instead, over the route elo already serves for its inventory
-//! page: `GET {origin}/api/items/of/{wallet}` (`meter/items.py` in
-//! `AnthonE/scry-forge`), which lists the wallet's item-contract tokens and
+//! page: `GET {origin}/api/items/of/{wallet}` (the platform's
+//! `meter/items.py`), which lists the wallet's item-contract tokens and
 //! re-reads each one's `catalogId` off the chain, keeping only this title's
 //! catalog rows (`&title=gates`). A catalog id is exactly
 //! what `content/skins.toml` calls `catalog`, so the answer maps straight

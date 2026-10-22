@@ -625,7 +625,7 @@ bevy = { version = "0.18", optional = true, features = [
     "ktx2",
     "zstd_rust",
 ] }
-# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
+# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/elo-pros-launcher).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
 # OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.
@@ -802,7 +802,7 @@ rtrb = { version = "0.3", optional = true }
 # in this table, which is the only reason the wasm build gets past the first
 # dependency at all.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
-# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
+# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/elo-pros-launcher).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
 # OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.

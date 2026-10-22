@@ -11,7 +11,7 @@
 //! - **`elo://join/<slug>/<host:port>`** — the form to share. The launcher
 //!   owns it: it is the binary a player installs, it already knows how to
 //!   start a title with `{server}` substituted into its launch args
-//!   (`scry-depot`'s `ARG_VARS`), it already holds the identity the shard will
+//!   (`elo-depot`'s `ARG_VARS`), it already holds the identity the shard will
 //!   ask to sign, and one scheme serves every title on the platform rather
 //!   than one per game. A link naming a title the player has not installed is
 //!   therefore still a *useful* link — the launcher can offer to install it,
@@ -49,7 +49,7 @@ use crate::shardlist::{check_addr, MAX_URL_BYTES};
 /// The schemes a join link may use. `elo` is canonical; see the module docs
 /// for why `gates` exists as well.
 ///
-/// **`scry` is the platform's former spelling and is still accepted.** The
+/// **The platform's former scheme (the middle entry) is still accepted.** The
 /// rename landed here before it landed in the launcher, and a link is a
 /// string a stranger already sent: one sitting in a chat log, a forum post or
 /// a bookmark keeps working, and there is nothing to gain by refusing it.
@@ -305,8 +305,8 @@ mod tests {
     #[test]
     fn the_platforms_former_scheme_still_resolves_and_grants_nothing_extra() {
         // The rename landed here before it landed in the launcher, so a link
-        // minted yesterday says `scry://`. It must keep working, and it must
-        // arrive through the same door: same slug check, same refusals.
+        // minted before then uses the former scheme. It must keep working, and
+        // it must arrive through the same door: same slug check, same refusals.
         let j = parse("scry://join/gates/game.elopros.com:61234").expect("legacy");
         assert_eq!(j.slug.as_deref(), Some("gates"));
         assert_eq!(j.addr, "game.elopros.com:61234");

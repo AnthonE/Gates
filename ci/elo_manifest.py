@@ -1,30 +1,46 @@
 #!/usr/bin/env python3
-"""Gates' end of elo's repo desk — `scry.json` and the signature over it.
+"""Gates' end of elo's repo desk — the store manifest and the signature over it.
 
     ./ci/elo_manifest.py --self-test    the gate: no network, no key, stdlib only
     ./ci/elo_manifest.py --check        the same, plus recover the signature
     ./ci/elo_manifest.py --print        the exact text to sign, for a signer we do not hold
-    ./ci/elo_manifest.py --sign         write scry.sig.json (needs a key)
+    ./ci/elo_manifest.py --sign         write the signature beside the manifest (needs a key)
 
 ## What this seam is
 
 elo reads two files from this repo's default branch and nothing else:
 
-    scry.json        what this game is, right now — its store row and its feed
-    scry.sig.json    a detached EIP-191 signature over scry.json's exact bytes
+    elo.json         what this game is, right now — its store row and its feed
+    elo.sig.json     a detached EIP-191 signature over elo.json's exact bytes
 
 It applies what changed. Nothing here runs on elo's box and nothing of elo's
 runs here: the whole transport is a commit, and the authority is the signature.
 The standard is `GET https://elopros.com/api/library/GAME-REPO.md`.
 
+## Two names, one pair
+
+elo also reads the pair under the platform's former name (`LEGACY` below),
+which is what this repo committed first. This script reads both the way elo
+does: the first manifest in the tree is THE manifest, and its pair is taken
+whole. elo never matches one name's manifest with the other's signature,
+because a signature covers exact bytes — so an `elo.json` committed without
+its `elo.sig.json` hides a signed legacy pair, and the store row stops moving.
+The gate fails on exactly that.
+
+Moving the row to the current names is one commit, by whoever holds the key:
+rename the legacy manifest to `elo.json` and set `"elo": 1` in place of its old
+key, run `--sign` (it writes `elo.sig.json` at the next seq), `git rm` the
+legacy signature, and commit the pair together.
+
 ## What the GATE checks, and what it deliberately does not
 
-Two properties, both **local**, both fully decidable with the standard library:
+These properties, all **local**, all fully decidable with the standard library:
 
-  1. `scry.json` is a JSON object naming this game and standard 1.
+  1. The manifest is a JSON object naming this game and standard 1.
   2. `version` equals the workspace version in `Cargo.toml`.
-  3. If `scry.sig.json` exists, its `sha256` is the sha256 of `scry.json`'s
+  3. If its signature exists, its `sha256` is the sha256 of the manifest's
      bytes — i.e. the signature was written for the manifest that is here.
+  4. An unsigned `elo.json` never sits in front of a signed legacy pair.
 
 Property 3 is the one that earns this gate. The failure it catches is not
 exotic, it is the ordinary one: **edit the manifest, forget to re-sign.** elo
@@ -54,8 +70,9 @@ wrong reason.
 ## The seq
 
 The anti-replay counter, and it only goes up. elo refuses a manifest whose seq
-it has already applied, so bump it on every publish. `--sign` bumps it from the
-current `scry.sig.json` by default; ask elo what it will take with:
+it has already applied, so bump it on every publish. elo keeps one counter per
+title, whichever name signed it, so `--sign` bumps from the highest seq signed
+under either name by default; ask elo what it will take with:
 
     curl -s https://elopros.com/api/store/repo/gates | python3 -m json.tool
 """
@@ -71,8 +88,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "scry.json"
-SIG = ROOT / "scry.sig.json"
+# (manifest, signature), in the order elo's reader tries them (header).
+CURRENT = ("elo.json", "elo.sig.json")
+LEGACY = ("scry.json", "scry.sig.json")
+LEGACY_KEY = "scry"   # the standard's key in a legacy manifest; elo still reads it
+PAIRS = tuple((ROOT / m, ROOT / s) for m, s in (CURRENT, LEGACY))
+# THE pair is the first whose manifest is in the tree, as elo picks it. With
+# neither there, the current names, so every message names what to write.
+MANIFEST, SIG = next(((m, s) for m, s in PAIRS if m.is_file()), PAIRS[0])
 SLUG = "gates"
 STANDARD = 1
 
@@ -120,14 +143,20 @@ def read_manifest() -> tuple[bytes, dict]:
         raise SystemExit(f"ci/elo_manifest.py: {MANIFEST.name} is not readable JSON: {e}")
 
 
-def read_sig() -> dict | None:
-    if not SIG.is_file():
+def read_sig(path: Path | None = None) -> dict | None:
+    path = path or SIG
+    if not path.is_file():
         return None
     try:
-        got = json.loads(SIG.read_text(encoding="utf-8"))
+        got = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001
-        raise SystemExit(f"ci/elo_manifest.py: {SIG.name} is not readable JSON: {e}")
+        raise SystemExit(f"ci/elo_manifest.py: {path.name} is not readable JSON: {e}")
     return got if isinstance(got, dict) else {}
+
+
+def others() -> list[tuple[Path, Path]]:
+    """The pairs elo is NOT reading: everything but THE pair."""
+    return [(m, s) for m, s in PAIRS if m != MANIFEST]
 
 
 def self_test(*, recover: bool) -> int:
@@ -135,13 +164,12 @@ def self_test(*, recover: bool) -> int:
     digest = hashlib.sha256(raw).hexdigest()
     print(f"== elo manifest ({MANIFEST.name}, {len(raw)} bytes, sha256 {digest[:16]}…)")
 
-    # ⚠ The standard's key is `scry`, not `elo`, and that is not an oversight.
-    # It names the manifest FORMAT the platform reads, and the platform still
-    # spells it `scry` (`/api/library/GAME-REPO.md`, read 2026-08-21). The
-    # brand renamed; the wire word did not. Renaming this reads a key that is
-    # not there, which is `null` — the exact failure this line reports.
-    if doc.get("scry") != STANDARD:
-        bad(f'"scry" is {json.dumps(doc.get("scry"))}; this desk speaks standard {STANDARD}')
+    # The standard's key is `"elo"`. elo still takes the key a manifest was
+    # first written under, reading `"elo"` first, and so does this; a refusal
+    # names only `"elo"`, because it is an instruction.
+    std = doc.get("elo", doc.get(LEGACY_KEY))
+    if std != STANDARD:
+        bad(f'"elo" is {json.dumps(std)}; this desk speaks standard {STANDARD}')
     else:
         ok(f"standard {STANDARD}")
 
@@ -171,7 +199,7 @@ def self_test(*, recover: bool) -> int:
     # Wall 8, on the text that actually leaves this repo. `AGENTS.md` states the
     # bare-ticker rule as this repo's own law and names a `ci/gates.sh` docs
     # check as its gate — that check does not exist, so the rule has been
-    # ungated. This closes it for `scry.json` and ONLY for `scry.json`, which is
+    # ungated. This closes it for the store manifest and ONLY for it, which is
     # where it now has teeth: an update's title and body become a public post on
     # elo's feed, and elo refuses a `$`-prefixed ticker outright — so a `$` here
     # is not a style slip, it is a manifest that silently stops applying.
@@ -188,7 +216,15 @@ def self_test(*, recover: bool) -> int:
         ok("no $-prefixed tickers in any update")
 
     sig = read_sig()
-    if sig is None:
+    hidden = [m for m, s in others() if m.is_file() and s.is_file()]
+    stale = [p.name for m, s in others() for p in (m, s) if p.is_file()]
+    if sig is None and hidden:
+        # The one unsigned state that is worse than before the edit: elo reads
+        # THE pair first, so the signed pair behind it is no longer read at all.
+        bad(f"{MANIFEST.name} has no {SIG.name} beside it, and elo reads it before "
+            f"the signed {hidden[0].name} — so elo now sees an unsigned manifest and "
+            f"the store row stops moving. Sign it (`--sign`) in the same commit.")
+    elif sig is None:
         # Not a failure: a manifest is written before it is signed, and elo
         # reports that state as unsigned rather than as an error. It IS a
         # failure to have signed for different bytes, which is the case below.
@@ -221,6 +257,9 @@ def self_test(*, recover: bool) -> int:
                         bad(f"it recovers {rec}, and {SIG.name} claims {claimed}")
                     else:
                         ok(f"signature recovers {rec}")
+    if stale and sig is not None:
+        ok(f"elo reads {MANIFEST.name} first and no longer reads the rest: "
+           f"`git rm {' '.join(stale)}`")
 
     if FAILURES:
         print(f"\nGATE FAIL: elo manifest — {len(FAILURES)} problem(s)", file=sys.stderr)
@@ -232,8 +271,10 @@ def self_test(*, recover: bool) -> int:
 def do_sign(args) -> int:
     raw, _doc = read_manifest()
     digest = hashlib.sha256(raw).hexdigest()
-    prior = read_sig() or {}
-    seq = args.seq if args.seq is not None else int(prior.get("seq") or 0) + 1
+    # elo's counter is the title's, not the file's: a first `elo.sig.json`
+    # continues from the legacy signature's seq, or elo refuses it as replayed.
+    prior = max(int((read_sig(s) or {}).get("seq") or 0) for _, s in PAIRS)
+    seq = args.seq if args.seq is not None else prior + 1
     text = message(digest, seq)
 
     if args.show:
@@ -260,6 +301,7 @@ def do_sign(args) -> int:
             raise SystemExit("signing needs eth-account (`pip install eth-account`), or "
                              "use --print and sign the text with whatever holds your key")
         from eth_account.messages import encode_defunct
+        # Each variable's former name is still read, after the current one.
         key = args.key or os.getenv("ELO_DEV_KEY") or os.getenv("SCRY_DEV_KEY")
         if key:
             acct = Account.from_key(key)
@@ -270,7 +312,7 @@ def do_sign(args) -> int:
             acct = Account.from_key(Account.decrypt(blob, pw))
         else:
             raise SystemExit(
-                "no key. --key, ELO_DEV_KEY (SCRY_DEV_KEY still read), --keystore, "
+                "no key. --key, ELO_DEV_KEY, --keystore, "
                 "or --print for a signer we "
                 "never touch. elo holds no key either; that is the whole posture.")
         sig = acct.sign_message(encode_defunct(text=text)).signature.hex()
@@ -282,6 +324,9 @@ def do_sign(args) -> int:
     }, indent=1) + "\n", encoding="utf-8")
     print(f"wrote {SIG.name}  (seq {seq}, sha256 {digest[:16]}…, wallet {wallet})")
     print(f"commit {MANIFEST.name} and {SIG.name} together — the signature covers those bytes.")
+    stale = [p.name for m, s in others() for p in (m, s) if p.is_file()]
+    if stale:
+        print(f"and `git rm {' '.join(stale)}` in that commit — elo reads {MANIFEST.name} first.")
     print(f"then:  curl -s https://elopros.com/api/store/repo/{SLUG}")
     return 0
 
@@ -290,7 +335,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Gates' elo manifest and its signature")
     ap.add_argument("--self-test", action="store_true", help="the gate (no key, no network)")
     ap.add_argument("--check", action="store_true", help="the gate plus signature recovery")
-    ap.add_argument("--sign", action="store_true", help="write scry.sig.json")
+    ap.add_argument("--sign", action="store_true", help="write the signature beside the manifest")
     ap.add_argument("--print", dest="show", action="store_true",
                     help="print the text to sign and exit — no key is touched")
     ap.add_argument("--seq", type=int)

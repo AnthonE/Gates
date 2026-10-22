@@ -17,7 +17,7 @@
 # The order matters: `servers.url` pointing at a file that is not there is
 # an error dialog on a game that is running fine, which is worse than the
 # honest "no shards published" both readers draw while it is null.
-# Both acts are DONE — the url is set in scry-forge's
+# Both acts are DONE — the url is set in the platform's
 # `data/launcher/gates.manifest.json` and the origin answers 200. What is
 # left on the box is step 1 again, whenever a row here changes.
 

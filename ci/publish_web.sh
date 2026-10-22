@@ -23,7 +23,7 @@
 # `<version>-g<sha>` plus its `-dirty` marker — so a directory on the origin
 # names the commit it came from, and a dirty tree says so in its name.
 #
-# What serves it: `scry-forge/deploy/nginx/elopros.com.conf`, `location ^~
+# What serves it: the platform's `deploy/nginx/elopros.com.conf`, `location ^~
 # /games/gates/`, whose `alias` is `<root>/current/` and whose CSP is the
 # reason the page works there at all ('wasm-unsafe-eval', and the shard in
 # `connect-src`, and `gzip_static` for the `client_web_bg.wasm.gz` and

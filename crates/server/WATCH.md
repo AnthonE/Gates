@@ -119,7 +119,7 @@ and its matching `content/`, with render assets at the sibling `assets/`.
 It does not depend on the build checkout at runtime. The render-host nginx
 snippet forwards `/gates/watch/` to loopback; the website's more-specific
 `/games/gates/watch/` route forwards there over verified HTTPS. Both leave
-frames uncached. The website proxy lives in scry-forge's
+frames uncached. The website proxy lives in the platform's
 `deploy/nginx/elopros.com.conf`. Neither route changes the playable client's
 static files or the public gameplay shard.
 

@@ -2,7 +2,7 @@
 """Buddies: Claude-minded jev-bots that players get on elopros.com/buddy.html
 (`ops/gates-buddies.service`).
 
-The platform (scry-forge `meter/buddy.py`) decides who exists and how much
+The platform (`meter/buddy.py`) decides who exists and how much
 each pool of credit holds; this runs them and says what they spent. Three
 kinds come down the feed (`BUDDY_FEED_URL`):
 

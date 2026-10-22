@@ -2,7 +2,7 @@
    `cpal` (under `bevy_audio` → `rodio`) decides whether the browser has Web
    Audio with `js_sys::eval("typeof AudioContext !== 'undefined'")` (cpal
    0.15.3, `host/webaudio/mod.rs`). This page's CSP allows 'wasm-unsafe-eval'
-   and NOT 'unsafe-eval' (scry-forge's nginx block for /games/gates/), so that
+   and NOT 'unsafe-eval' (the platform's nginx block for /games/gates/), so that
    eval throws, cpal counts the throw as "no Web Audio", and `bevy_audio` logs
    "No audio device found": a silent game with every check green. Measured
    2026-09-13 as an A/B of one build — served without the header it found its
@@ -439,7 +439,7 @@ $("refresh").addEventListener("click", () => {
 
 /* ── the wallet ────────────────────────────────────────────────────────────
    Deliberately the same calls as the platform's own `Deck.wallet`
-   (`watchtower/js/deck-shim.js` in AnthonE/scry-forge): has, accounts,
+   (`watchtower/js/deck-shim.js` in the platform repo): has, accounts,
    connect, sign — and the address check before signing is copied from it for
    the reason its own comment gives: somebody switches account in the
    extension, the page still holds the old address, and `personal_sign` then
@@ -463,7 +463,7 @@ $("refresh").addEventListener("click", () => {
    wallet that injects after this script announces late, and the panel
    repaints when it does (`walletAppeared`).
 
-   Two more rows, both the platform's (`js/wallets.js` in AnthonE/scry-forge
+   Two more rows, both the platform's (`js/wallets.js` in the platform repo
    draws the same picker): a **phone wallet** (WalletConnect), once the
    platform's `js/wallet-config.js` carries a project ID, through the bundle
    it names; and **Solana-only wallets** (Wallet Standard), greyed, saying why
@@ -2088,8 +2088,8 @@ function invTile(catalog, n, s) {
 $("inv-refresh").addEventListener("click", () => fillStore());
 
 /* ── friends ───────────────────────────────────────────────────────────────
-   The Elo Pros friends list (`meter/friends.py`, `docs/client/FRIENDS.md` in
-   AnthonE/scry-forge), the same list the profile page draws and the desktop
+   The Elo Pros friends list (`meter/friends.py`, and `docs/FRIENDS.md` in
+   AnthonE/elo-pros-launcher), the same list the profile page draws and the desktop
    client's FRIENDS tab reads (`client::friends`). One read,
    GET /api/friends/{wallet}, when this pane opens and when the wallet
    changes — never on a timer. Every change is prepare → sign → act, and the

@@ -4,7 +4,7 @@ A painted skin is one square PNG drawn on an item's canvas (`skinkit template
 <item>`), listed in `content/skins.toml` by its sha256 (`texture`). The game
 fetches it from the platform by that hash, so this folder is the source a
 skin is reviewed and kept from; the platform's copy is a mirror
-(`scry-forge/data/items/skins/<sha256>.png`).
+(`data/items/skins/<sha256>.png` in the platform repo).
 
 Same licence rail as every asset here (`ART.md` §7): **CC0 or your own work,
 CC-BY with a `NOTICE` entry; NC and SA refused** (the game is sold), and never
