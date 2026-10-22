@@ -3687,6 +3687,10 @@ async fn writer_task(
         (ns, netsim_rng(&ns, slot ^ 0x80), tx)
     });
     let mut wake = Wake::new(&slots);
+    // The dev shim's two delay lines, at their worst, which quinn's round
+    // trip never sees: added back so a netsim player keeps the rewind its
+    // shaped link needs (`ClientNetState::rtt_bounded_view`).
+    let shim_us = netsim.map_or(0, |ns| 2_000 * u64::from(ns.lat_ms + ns.jitter_ms));
     // Per-connection previous readings, so what reaches `ShardStats` is a
     // delta. Local to the task on purpose: a shared table keyed by
     // connection would be a map with a lifetime problem and a lock, to hold
@@ -3704,6 +3708,13 @@ async fn writer_task(
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return; // slot moved on; sim (or reader) already knows
+        }
+        // This connection's round trip, every wake: the sim thread holds its
+        // acks to it (`ShardStats::slot_rtt_us`), so it must track a link
+        // that worsens within the tick, not the second.
+        if slot < MAX_PLAYERS {
+            let rtt = connection.rtt().as_micros() as u64;
+            stats.slot_rtt_us.store(slot, rtt.max(1) + shim_us);
         }
         // Transport telemetry (NETCODE.md §2.2). Reads quinn's own counters
         // through wtransport's passthrough — no wire field, no PROTO_VER,

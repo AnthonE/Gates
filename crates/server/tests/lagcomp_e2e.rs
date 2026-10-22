@@ -60,9 +60,23 @@ struct Run {
 
 /// Run the shooter (slot 0, a real `ClientCore`) and the runner (slot 1,
 /// raw frames with no acks, so it mints no favour of its own) for `secs`
-/// with `one_way_ms` of delay on both of the shooter's directions.
+/// with `one_way_ms` of delay on both of the shooter's directions, the
+/// shard holding the shooter's acks to the round trip quinn would read for
+/// that link (`ShardStats::slot_rtt_us`).
 fn run(one_way_ms: f64, secs: f64) -> Run {
+    run_with(one_way_ms, secs, 0, true)
+}
+
+/// [`run`], with every datagram the shooter sends acking `lie` ticks
+/// further back than it had applied, and the round trip `measured` or not.
+fn run_with(one_way_ms: f64, secs: f64, lie: u16, measured: bool) -> Run {
     let stats = ShardStats::default();
+    if measured {
+        // The pipe's round trip, and loopback's own fraction of a millisecond.
+        stats
+            .slot_rtt_us
+            .store(0, (2.0 * one_way_ms * 1000.0) as u64 + 100);
+    }
     let mut core = Box::new(ShardCore::new(SEED));
     let p = core.world.spawn_pos(id_of(0));
     core.world.dev_spawn = Some(p);
@@ -107,7 +121,10 @@ fn run(one_way_ms: f64, secs: f64) -> Run {
         // The shard's ticks that fall inside this frame.
         while next_tick <= now {
             for (_, b) in up.due(now) {
-                let dg = decode_input(&b).expect("valid");
+                let mut dg = decode_input(&b).expect("valid");
+                // Acking late: the newest ack and its bits slid back.
+                dg.snapshot_ack = dg.snapshot_ack.wrapping_sub(lie);
+                dg.ack_bits >>= lie;
                 core.push_input(0, &dg);
             }
             runner_seq = runner_seq.wrapping_add(1);
@@ -246,4 +263,30 @@ fn the_rewind_lands_on_the_body_the_shooter_drew() {
             r.errors.len()
         );
     }
+}
+
+fn mean_favour(r: &Run) -> f64 {
+    r.favours.iter().map(|&f| f as f64).sum::<f64>() / r.favours.len() as f64
+}
+
+/// A client that acks late looks as stale as a slow link and was paid like
+/// one: its own ack history agrees with it, so the cross-check against
+/// that history cannot see it, and on a loopback link it bought the whole
+/// clamp. Held to the round trip quinn measures, it gets what the link
+/// explains plus the slack, and no more.
+#[test]
+fn acking_late_buys_no_more_rewind_than_the_round_trip_explains() {
+    let honest = mean_favour(&run_with(0.0, 4.0, 0, true));
+    let unbounded = mean_favour(&run_with(0.0, 4.0, 10, false));
+    let bounded = mean_favour(&run_with(0.0, 4.0, 10, true));
+    eprintln!("honest {honest:.2}, late acks unbounded {unbounded:.2}, bounded {bounded:.2}");
+    assert!(
+        unbounded >= honest + 8.0,
+        "acking 10 ticks late bought only {unbounded:.2} against {honest:.2}: the harness lies wrong"
+    );
+    // At most the slack and the trip's rounding up over an honest age of 0.
+    assert!(
+        bounded <= honest + (server::stats::RTT_AGE_SLACK_TICKS + 1) as f64,
+        "acking 10 ticks late on loopback still bought {bounded:.2} against {honest:.2}"
+    );
 }

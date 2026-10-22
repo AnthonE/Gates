@@ -12,7 +12,8 @@
 //! special case.
 
 use crate::stats::{
-    AIM_STALE_CEILING_TICKS, JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS, PLAYOUT_CLAIM_MARGIN_TICKS,
+    AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS, JITTER_K_WHOLE, PLAYOUT_BOUND_DECAY_TICKS,
+    PLAYOUT_CLAIM_MARGIN_TICKS,
 };
 use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
@@ -208,6 +209,11 @@ pub struct ClientNetState {
     /// gives back one tick per `PLAYOUT_BOUND_DECAY_TICKS`, the client's
     /// slew.
     playout_peak: (u8, u64),
+    /// This connection's transport round trip, µs, as its writer task last
+    /// read it (`ShardStats::slot_rtt_us`, copied in by the tick): the
+    /// bound on how stale its acks may claim to be (`rtt_bounded_view`).
+    /// 0 is unmeasured and bounds nothing.
+    pub transport_rtt_us: u32,
     /// The bound in force: the most playout favour is priced at. Never
     /// below `INTERP_DELAY_TICKS`, the delay every client starts at and
     /// every agent reports, so neither is ever capped. Not sim state:
@@ -532,6 +538,7 @@ impl ClientNetState {
             ack_sample_credit: 0,
             ack_note_tick: 0,
             playout_peak: (0, 0),
+            transport_rtt_us: 0,
             playout_cap: INTERP_DELAY_TICKS,
             depth_report: 0,
             nudge: Nudge::Ok,
@@ -810,6 +817,31 @@ impl ClientNetState {
         } else {
             self.playout_cap = held;
         }
+    }
+
+    /// The view a datagram arriving at `now` may claim: no staler than this
+    /// connection's transport round trip explains (`stats::rtt_age_bound`).
+    /// `findings/lagcomp-design-20260818.md` §6.2's wall-clock check, read
+    /// off quinn rather than a clock: the ack-history cross-check in
+    /// `ShardCore::push_input` cannot see a client that simply acks late,
+    /// because its history is those same late acks, and holding them back
+    /// on a 20 ms link bought the whole `REWIND_MAX_TICKS`. A claim past
+    /// the band is counted as a disagreement. An age past
+    /// `AIM_STALE_CEILING_TICKS` (or a view from the future) is left for
+    /// `favour_for` to refuse outright: clamping it would turn a refused
+    /// ack into a paid one.
+    pub fn rtt_bounded_view(&mut self, now: u16, view: u16) -> u16 {
+        let Some(bound) = crate::stats::rtt_age_bound(self.transport_rtt_us) else {
+            return view;
+        };
+        let age = now.wrapping_sub(view);
+        if age <= bound || age > AIM_STALE_CEILING_TICKS {
+            return view;
+        }
+        if age - bound > FAVOUR_DISAGREE_BAND_TICKS {
+            self.note_ack_regression();
+        }
+        now.wrapping_sub(bound)
     }
 
     /// The playout favour is priced at: the claim on the shared rails,
@@ -1488,6 +1520,32 @@ mod tests {
             c.reported_playout = claim;
             assert_eq!(c.priced_playout(), want, "claim {claim}");
         }
+    }
+
+    /// The transport's round trip bounds how stale an ack may claim to be:
+    /// nothing until measured, a late claim cut to the bound and counted,
+    /// and an ack past the ceiling left for `favour_for` to refuse.
+    #[test]
+    fn a_late_ack_is_held_to_the_round_trip() {
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        let now = 1000u16;
+        assert_eq!(c.rtt_bounded_view(now, now - 12), now - 12, "unmeasured");
+        // 20 ms: one tick of trip, plus the slack.
+        c.transport_rtt_us = 20_000;
+        let bound = 1 + crate::stats::RTT_AGE_SLACK_TICKS;
+        // The field, not the drain: the drain has one reader
+        // (`lagcomp_measure::the_disagreement_relay_has_one_reader`).
+        assert_eq!(c.rtt_bounded_view(now, now - 3), now - 3);
+        assert_eq!(c.ack_regressions, 0);
+        assert_eq!(c.rtt_bounded_view(now, now - 12), now - bound);
+        assert_eq!(c.ack_regressions, 1);
+        let ancient = now.wrapping_sub(AIM_STALE_CEILING_TICKS + 1);
+        assert_eq!(c.rtt_bounded_view(now, ancient), ancient);
+        assert_eq!(c.rtt_bounded_view(now, now + 1), now + 1, "from the future");
+        // 250 ms: eight ticks of trip, all of them owed.
+        c.transport_rtt_us = 250_000;
+        assert_eq!(c.rtt_bounded_view(now, now - 12), now - 12);
     }
 
     /// A starved tick earns its catch-up only when the body stood still on

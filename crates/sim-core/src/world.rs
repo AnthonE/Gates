@@ -7525,12 +7525,22 @@ impl World {
         false
     }
 
-    /// Fall damage for slot `i`, whose body was `before` ahead of this
-    /// tick's step. True when the landing downed or killed it — the
-    /// caller's `continue`, as for the cold.
+    /// Fall damage for slot `i`, whose body was `before` ahead of the step
+    /// just taken. Called after EVERY `movement::step` a body takes, so a
+    /// throttle tick's two steps each answer for their own landing. True
+    /// when the landing downed or killed it — the caller's `continue`, as
+    /// for the cold.
+    ///
+    /// A landing is a fall the step stopped: onto ground the body stands
+    /// on, or onto a face, which stops it dead (`qvy` 0) but slides it
+    /// rather than standing it (`movement::face_fall`), so `grounded` alone
+    /// let a drop onto any cliff land free. Nothing else zeroes a falling
+    /// body's speed: gravity always adds, a ceiling only stops a rise, and
+    /// water is the sea check below.
     fn fall(&mut self, i: usize, before: movement::Body) -> bool {
         let body = self.players[i].body;
-        if before.grounded || !body.grounded {
+        let landed = body.grounded || (before.qvy < 0 && body.qvy == 0);
+        if before.grounded || !landed {
             return false;
         }
         // The speed going in: last tick's fall plus this tick's gravity.
@@ -8014,6 +8024,7 @@ impl World {
                     sel: self.players[i].frame.sel,
                     ..InputFrame::default()
                 };
+                let falling = self.players[i].body;
                 movement::step(
                     seed,
                     &self.haven,
@@ -8028,6 +8039,11 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                // It lands as hard as it would have awake: logging off
+                // mid-fall must not be a parachute.
+                if self.fall(i, falling) {
+                    continue;
+                }
                 // A sleeper floats, but one left on a sunken floor drowns.
                 self.breathe(i);
                 continue;
@@ -8054,6 +8070,9 @@ impl World {
                 if self.wound_tick(i) {
                     continue;
                 }
+                // A downed body falls as hard as a standing one, step by
+                // step as the live branch below does.
+                let mut falling = self.players[i].body;
                 if let Some(prev) = catchup[i] {
                     let prev = crate::wound::crawl_frame(&prev);
                     movement::step(
@@ -8070,6 +8089,10 @@ impl World {
                         &mut self.players[i].body,
                         &prev,
                     );
+                    if self.fall(i, falling) {
+                        continue;
+                    }
+                    falling = self.players[i].body;
                 }
                 let frame = crate::wound::crawl_frame(&self.players[i].frame);
                 movement::step(
@@ -8086,6 +8109,9 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                if self.fall(i, falling) {
+                    continue;
+                }
                 // A body down in the water still has to breathe.
                 self.breathe(i);
                 continue;
@@ -8138,7 +8164,8 @@ impl World {
             // The verbs below never see it — the older frame's buttons
             // never act, exactly as they never acted when the throttle
             // silently dropped it.
-            let falling = self.players[i].body;
+            let start = self.players[i].body;
+            let mut falling = start;
             if let Some(prev) = catchup[i] {
                 movement::step(
                     seed,
@@ -8154,6 +8181,13 @@ impl World {
                     &mut self.players[i].body,
                     &prev,
                 );
+                // Each step answers for its own landing. The older frame
+                // can land the body and the newer jump or walk it straight
+                // back off, and one check across both saw only the air.
+                if self.fall(i, falling) {
+                    continue;
+                }
+                falling = self.players[i].body;
             }
             let frame = self.players[i].frame;
             movement::step(
@@ -8170,7 +8204,7 @@ impl World {
                 &mut self.players[i].body,
                 &frame,
             );
-            crate::seat::stand_if_moved(&mut self.players[i], &falling);
+            crate::seat::stand_if_moved(&mut self.players[i], &start);
             if self.fall(i, falling) {
                 continue;
             }
