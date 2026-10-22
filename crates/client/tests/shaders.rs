@@ -295,6 +295,16 @@ fn def_sets(name: &str) -> Vec<(String, Vec<ShaderDefVal>)> {
             sets.push((format!("high tier, {mesh}"), main_pass(true, full)));
         }
     }
+    // The sea's POTATO pipeline (`water::WaterKey`): the swell's normal per
+    // vertex, at both ends of the tiers.
+    if name == "water.wgsl" {
+        for high in [false, true] {
+            let mut d = main_pass(high, true);
+            d.push("WATER_VERTEX_NORMALS".into());
+            let tier = if high { "high" } else { "low" };
+            sets.push((format!("{tier} tier, full mesh, vertex normals"), d));
+        }
+    }
     sets
 }
 

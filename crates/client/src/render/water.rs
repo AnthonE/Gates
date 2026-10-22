@@ -218,6 +218,16 @@ pub const PX_FOOTPRINT_K: f32 = 1.0;
 /// footprint, because the deck has no mips and a swell finer than that turns
 /// its noise into glitter (`water.wgsl`'s `sky_radiance`).
 pub const DECK_FOOTPRINT_K: f32 = 2.0;
+/// `E[ds²]` of [`shape`] over a whole cycle: `(1 + sin θ)² cos² θ` averages
+/// to ⅝. A wave's slope variance is this times `(a·k)²`.
+pub const SHAPE_SLOPE_VAR: f32 = 0.625;
+/// The least `N·V` a front-facing pixel's swell normal may show the eye. A
+/// wave face turned past the view at the horizon reflects the sea under it,
+/// which a mirror sky cannot draw; it is bent back to graze instead.
+pub const HORIZON_NDOTV: f32 = 0.05;
+/// How far ahead of a breaker's crest its front softens, metres: the white
+/// arrives over this, not in one pixel.
+pub const SURF_FRONT_M: f32 = 0.3;
 
 /// A crest-sharpened sine and its derivative, both in θ.
 ///
@@ -1084,6 +1094,76 @@ pub fn surface_local(
     }
 }
 
+/// The whole swell's slope variance at a sea state: what a pixel too big to
+/// resolve any wave sees as roughness. `SHAPE_SLOPE_VAR · Σ (aᵢ·gainᵢ·kᵢ)²`.
+pub fn hidden_slope(state: &SeaState) -> f32 {
+    let mut v = 0.0;
+    for (w, g) in WAVES.iter().zip(state.swell) {
+        let ak = w.amp_m * g * std::f32::consts::TAU / w.len_m;
+        v += ak * ak;
+    }
+    SHAPE_SLOPE_VAR * v
+}
+
+/// How much of a wave of length `len_m` a footprint of `footprint_m` keeps:
+/// [`band_weight`]'s law, in the form the fragment writes it
+/// (`1 − smoothstep(len/4, len/2, f)`), with the pixel for the mesh spacing.
+pub fn footprint_keep(footprint_m: f32, len_m: f32) -> f32 {
+    let (lo, hi) = (0.25 * len_m, 0.5 * len_m);
+    let t = ((footprint_m - lo) / (hi - lo)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
+
+/// The swell at one pixel, per pixel: its gradient (`g`), the gradient the
+/// cloud deck is reflected off (`gd`, retired at [`DECK_FOOTPRINT_K`]), and
+/// the slope variance of what the pixel cannot resolve (`hidden`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwellPx {
+    pub g: Vec2,
+    pub gd: Vec2,
+    pub hidden: f32,
+}
+
+/// [`SwellPx`] at local offset `(lx, lz)`, with `fx`/`fy` the pixel's
+/// world-XZ footprint across the screen (`dpdx`/`dpdy` of the position):
+/// `water.wgsl`'s `swell_px`, line for line.
+///
+/// **Every wave retires on the pixel, not on the mesh.** The vertex stage
+/// drops a wave where the mesh spacing passes half its length; per pixel it
+/// stays until the pixel does, so the swell keeps shaping the reflection and
+/// the glitter far past the core — and what a pixel cannot resolve comes back
+/// as roughness instead of vanishing.
+pub fn swell_px(
+    lx: f32,
+    lz: f32,
+    folded: &[f32; WAVE_COUNT],
+    state: &SeaState,
+    shoal_share: f32,
+    fx: Vec2,
+    fy: Vec2,
+) -> SwellPx {
+    let mut o = SwellPx {
+        g: Vec2::ZERO,
+        gd: Vec2::ZERO,
+        hidden: 0.0,
+    };
+    for (i, w) in WAVES.iter().enumerate() {
+        let dir = Vec2::from_array(w.dir);
+        let f = fx.dot(dir).abs().max(fy.dot(dir).abs());
+        let keep = footprint_keep(PX_FOOTPRINT_K * f, w.len_m);
+        let keep_d = footprint_keep(DECK_FOOTPRINT_K * f, w.len_m);
+        let inv_len = 1.0 / w.len_m;
+        let (_, ds) = shape(reduced(
+            (w.dir[0] * lx + w.dir[1] * lz) * inv_len + folded[i],
+        ));
+        let ak = w.amp_m * state.swell[i] * shoal_share * std::f32::consts::TAU * inv_len;
+        o.g += (ak * keep * ds) * dir;
+        o.gd += (ak * keep_d * ds) * dir;
+        o.hidden += SHAPE_SLOPE_VAR * ak * ak * (1.0 - keep * keep);
+    }
+    o
+}
+
 // ---------------------------------------------------------------------------
 // The ripple map.
 // ---------------------------------------------------------------------------
@@ -1298,8 +1378,13 @@ pub const CONTACT_FOAM: f32 = 0.45;
 /// flat, so the slope they no longer resolve comes back as roughness — a
 /// Cox–Munk sea at a light breeze has a total slope variance near 0.02.
 /// Without it the far glitter path collapses to a pinpoint mirror of the sun.
+///
+/// **The far value is the ripples' share alone now.** The swell's slope that
+/// the pixel cannot resolve is added per pixel on top ([`hidden_slope`],
+/// `swell_px`'s `hidden`) and grows with the sea state, so the calm sea's far
+/// glint is still `0.02` (`0.0141 + 0.0059`) and a storm's spreads wide.
 pub const GLINT_A2_NEAR: f32 = 0.0016;
-pub const GLINT_A2_FAR: f32 = 0.02;
+pub const GLINT_A2_FAR: f32 = 0.0141;
 pub const GLINT_FAR_M: f32 = 400.0;
 
 /// How far the reflected clear sky's chroma is pulled toward grey, `0..1`.
@@ -1459,6 +1544,9 @@ pub struct WaterParams {
     /// fragment's local offset is `wp.xz − field.xy`); z [`PX_FOOTPRINT_K`],
     /// w [`DECK_FOOTPRINT_K`].
     pub field: Vec4,
+    /// x [`SHOAL_FULL_M`], y [`HORIZON_NDOTV`], z [`SURF_FRONT_M`] over
+    /// [`SURF_LEN_M`], w this sea state's [`hidden_slope`].
+    pub px: Vec4,
 }
 
 impl WaterParams {
@@ -1506,6 +1594,12 @@ impl WaterParams {
             crest: Vec4::new(CREST_FOAM_FROM, CREST_FOAM_SPAN, CREST_FOAM_MAX, 0.0),
             breaker: Vec4::new(BREAKER_FROM_M, BREAKER_SPAN_M, WASH_FLOOR, FOAM_SURGE_FLOOR),
             field: Vec4::new(0.0, 0.0, PX_FOOTPRINT_K, DECK_FOOTPRINT_K),
+            px: Vec4::new(
+                SHOAL_FULL_M,
+                HORIZON_NDOTV,
+                SURF_FRONT_M / SURF_LEN_M,
+                hidden_slope(&SeaState::CALM),
+            ),
         }
     }
 
@@ -1517,6 +1611,7 @@ impl WaterParams {
         self.surf.x = state.surf;
         self.field.x = centre.x;
         self.field.y = centre.y;
+        self.px.w = hidden_slope(state);
         self
     }
 
@@ -1532,6 +1627,7 @@ impl WaterParams {
 /// **Not `#[bindless]`**, for the reason `ground_splat.rs` gives: it forces
 /// the whole `ExtendedMaterial` non-bindless.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
+#[bind_group_data(WaterKey)]
 pub struct WaterExt {
     #[uniform(100)]
     pub params: WaterParams,
@@ -1540,6 +1636,26 @@ pub struct WaterExt {
     #[texture(101, dimension = "cube")]
     #[sampler(102)]
     pub sky: Handle<Image>,
+    /// POTATO: the swell's normal per vertex, as it was before it was drawn
+    /// per pixel — the shader's `WATER_VERTEX_NORMALS` ([`WaterKey`]).
+    pub vertex_normals: bool,
+}
+
+/// What specializes the sea's pipeline beyond its mesh: whether the swell's
+/// normal is drawn per vertex (POTATO) or per pixel. A compile-time def and
+/// not a uniform branch, because a branch around the per-pixel swell would put
+/// the fragment's derivatives after it (`tests/water.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WaterKey {
+    pub vertex_normals: bool,
+}
+
+impl From<&WaterExt> for WaterKey {
+    fn from(ext: &WaterExt) -> Self {
+        Self {
+            vertex_normals: ext.vertex_normals,
+        }
+    }
 }
 
 impl MaterialExtension for WaterExt {
@@ -1571,7 +1687,7 @@ impl MaterialExtension for WaterExt {
         _pipeline: &MaterialExtensionPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialExtensionKey<Self>,
+        key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let sea = layout.0.get_layout(&[
             ATTRIBUTE_SWELL.at_shader_location(8),
@@ -1581,6 +1697,15 @@ impl MaterialExtension for WaterExt {
         descriptor.vertex.buffers[0]
             .attributes
             .extend(sea.attributes);
+        if key.bind_group_data.vertex_normals {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("WATER_VERTEX_NORMALS".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("WATER_VERTEX_NORMALS".into());
+            }
+        }
         Ok(())
     }
     /// Forward only, like the ground: this client never runs deferred.
@@ -1639,6 +1764,7 @@ fn water_material(ripples: Handle<Image>, sky: Handle<Image>) -> WaterMaterial {
         extension: WaterExt {
             params: WaterParams::noon(),
             sky,
+            vertex_normals: false,
         },
     }
 }
@@ -2295,6 +2421,7 @@ pub fn animate(
     time: Res<Time>,
     weather: Option<Res<WeatherNow>>,
     composer: Option<Res<super::sky::SkyComposer>>,
+    settings: Option<Res<super::settings::Settings>>,
 ) {
     let Some(centre) = sea.centre() else {
         return;
@@ -2338,6 +2465,14 @@ pub fn animate(
         },
     }
     .with_sea(folded, &state, centre);
+    // POTATO draws the swell's normal per vertex; a change re-specializes the
+    // pipeline (`WaterKey`), so it is written only when it moves.
+    let potato = settings
+        .as_deref()
+        .is_some_and(|s| s.quality == crate::config::Quality::Potato);
+    if m.extension.vertex_normals != potato {
+        m.extension.vertex_normals = potato;
+    }
     // The composer's cube, once there is one. It replaces the image behind
     // the same handle, and the material is re-prepared every frame by this
     // very `get_mut`, so the clouds in the reflection follow the clouds in the

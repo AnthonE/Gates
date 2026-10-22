@@ -93,6 +93,9 @@ struct Water {
     // xy the grid centre the phases are folded around; z `PX_FOOTPRINT_K`,
     // w `DECK_FOOTPRINT_K`.
     field: vec4<f32>,
+    // x `SHOAL_FULL_M`, y `HORIZON_NDOTV`, z `SURF_FRONT_M / SURF_LEN_M`, w
+    // this sea state's `hidden_slope`.
+    px: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
@@ -165,7 +168,7 @@ fn vertex(
         + swell_term(water.waves[2], water.phase.z, water.swell.z, swell_w.z, local)
         + swell_term(water.waves[3], water.phase.w, water.swell.w, swell_w.w, local);
     var h = sw.x;
-    var g = sw.yz;
+    var gb = vec2<f32>(0.0);
     // Whitecaps on the swell alone, before the breaker is added.
     let caps = crest_foam(h, reach);
 
@@ -179,7 +182,7 @@ fn vertex(
         if amp > 0.0 {
             let s = wave_shape(reduced(c));
             h = h + amp * s.x;
-            g = g + (amp * s.y * TAU * water.surf.y) * surf.yz;
+            gb = (amp * s.y * TAU * water.surf.y) * surf.yz;
         }
     }
 
@@ -203,6 +206,13 @@ fn vertex(
     let p = vec3<f32>(in.position.x, in.position.y + h, in.position.z);
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(p, 1.0));
     out.position = position_world_to_clip(out.world_position.xyz);
+    // The breaker's normal only: the swell's is drawn per pixel
+    // (`swell_px`), except on POTATO.
+#ifdef WATER_VERTEX_NORMALS
+    let g = sw.yz + gb;
+#else
+    let g = gb;
+#endif
     out.world_normal = mesh_functions::mesh_normal_local_to_world(
         normalize(vec3<f32>(-g.x, 1.0, -g.y)),
         in.instance_index,
@@ -327,9 +337,11 @@ fn sky_radiance(r: vec3<f32>, rd: vec3<f32>, tint: vec3<f32>) -> vec3<f32> {
 
 // The sun (and any other directional light) off the surface: GGX, shadowed,
 // through the atmosphere's transmittance where Bevy applies it.
-fn sun_glint(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, world_normal: vec3<f32>, flags: u32, n_var: f32) -> vec3<f32> {
+fn sun_glint(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, world_normal: vec3<f32>, flags: u32, n_var: f32, extra: f32) -> vec3<f32> {
     let dist = length(view.world_position.xyz - wp);
-    var a2 = mix(water.glint.y, water.glint.z, smoothstep(0.0, water.glint.w, dist));
+    // The ripples' share by distance, plus the slope this pixel cannot
+    // resolve (`extra`: the swell's hidden variance, and the rain's).
+    var a2 = mix(water.glint.y, water.glint.z, smoothstep(0.0, water.glint.w, dist)) + extra;
     // Specular anti-aliasing (Kaplanyan & Hoffman 2016): the normal's variance
     // across this pixel is slope the pixel cannot show, so it goes into the lobe.
     a2 = min(a2 + min(2.0 * n_var, 0.18), 1.0);
@@ -382,16 +394,80 @@ fn sun_glint(N: vec3<f32>, V: vec3<f32>, wp: vec3<f32>, world_normal: vec3<f32>,
     return total * view.exposure;
 }
 
+// The swell at one pixel (`water::swell_px`, line for line): its gradient,
+// the gradient the deck is reflected off, and the slope variance the pixel
+// cannot resolve. Every wave retires on the pixel's footprint along it, not
+// on the mesh spacing (`band_weight`'s law), so the swell shapes the
+// reflection far past the mesh's core.
+struct SwellPx {
+    g: vec2<f32>,
+    gd: vec2<f32>,
+    hidden: f32,
+}
+
+// `water::footprint_keep`.
+fn footprint_keep(f: f32, len: f32) -> f32 {
+    return 1.0 - smoothstep(0.25 * len, 0.5 * len, f);
+}
+
+fn swell_px_term(acc: SwellPx, w: vec4<f32>, phase: f32, gain: f32, shoal: f32,
+                 local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>) -> SwellPx {
+    let f = max(abs(dot(fx, w.xy)), abs(dot(fy, w.xy)));
+    let len = 1.0 / w.z;
+    let keep = footprint_keep(water.field.z * f, len);
+    let keep_d = footprint_keep(water.field.w * f, len);
+    let s = wave_shape(reduced(dot(w.xy, local) * w.z + phase));
+    let ak = w.w * gain * shoal * TAU * w.z;
+    var o = acc;
+    o.g = acc.g + (ak * keep * s.y) * w.xy;
+    o.gd = acc.gd + (ak * keep_d * s.y) * w.xy;
+    o.hidden = acc.hidden + 0.625 * ak * ak * (1.0 - keep * keep);
+    return o;
+}
+
+fn swell_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, shoal: f32) -> SwellPx {
+    var o = SwellPx(vec2<f32>(0.0), vec2<f32>(0.0), 0.0);
+    o = swell_px_term(o, water.waves[0], water.phase.x, water.swell.x, shoal, local, fx, fy);
+    o = swell_px_term(o, water.waves[1], water.phase.y, water.swell.y, shoal, local, fx, fy);
+    o = swell_px_term(o, water.waves[2], water.phase.z, water.swell.z, shoal, local, fx, fy);
+    o = swell_px_term(o, water.waves[3], water.phase.w, water.swell.w, shoal, local, fx, fy);
+    return o;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
-    let N = pbr_input.N;
-    let V = pbr_input.V;
     let wp = in.world_position.xyz;
-
     // Every derivative before any branch: naga does not hold the fragment
     // stage to uniform control flow, so a `dpdx` under an `if` is a smear,
     // not an error.
+    let fx = dpdx(wp.xz);
+    let fy = dpdy(wp.xz);
+    let local = wp.xz - water.field.xy;
+    let V0 = normalize(view.world_position.xyz - wp);
+    var vin = in;
+#ifdef WATER_VERTEX_NORMALS
+    // POTATO: the vertex's swell normal, and the swell's hidden slope by
+    // distance alone (`GLINT_A2_FAR` is the ripples' share).
+    let n_deck_up = in.world_normal;
+    let hid = water.px.w * smoothstep(0.0, water.glint.w, length(view.world_position.xyz - wp));
+#else
+    // The swell per pixel, over the breaker's normal from the vertex. The
+    // shoaling is the vertex column's (the prepass depth would halo a leg).
+    let shoal = smoothstep(0.0, water.px.x, in.uv_b.y) * clamp(in.color.r, 0.0, 1.0);
+    let sw = swell_px(local, fx, fy, shoal);
+    let nb = normalize(in.world_normal);
+    let gb = -nb.xz / max(nb.y, 0.2);
+    var ns = normalize(vec3<f32>(-(sw.g.x + gb.x), 1.0, -(sw.g.y + gb.y)));
+    // A face turned past the eye at the horizon is bent back to graze.
+    ns = normalize(ns + V0 * select(0.0, max(0.0, water.px.y - dot(ns, V0)), is_front));
+    vin.world_normal = ns;
+    let n_deck_up = normalize(vec3<f32>(-(sw.gd.x + gb.x), 1.0, -(sw.gd.y + gb.y)));
+    let hid = sw.hidden;
+#endif
+    var pbr_input = pbr_input_from_standard_material(vin, is_front);
+    let N = pbr_input.N;
+    let V = pbr_input.V;
+
     let dndx = dpdx(N);
     let dndy = dpdy(N);
     let n_var = 0.5 * (dot(dndx, dndx) + dot(dndy, dndy));
@@ -492,10 +568,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var R = reflect(-V, Nr);
         // A ray reflected downward would meet the next wave: read the horizon.
         R = normalize(vec3<f32>(R.x, max(R.y, 0.0) + 1e-3, R.z));
-        var Rd = reflect(-V, pbr_input.world_normal);
+        var Rd = reflect(-V, n_deck_up);
         Rd = normalize(vec3<f32>(Rd.x, max(Rd.y, 0.0) + 1e-3, Rd.z));
         let sky = sky_radiance(R, Rd, daylight_tint()) * view.exposure;
-        let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var) * smooth_share;
+        let glint = sun_glint(N, V, wp, pbr_input.world_normal, pbr_input.flags, n_var, hid) * smooth_share;
         // 6 · Premultiplied: the sky replaces what Fresnel takes from below.
         color = vec4<f32>(
             color.rgb * (1.0 - F) + sky * F + glint,

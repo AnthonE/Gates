@@ -456,6 +456,82 @@ fn the_skirt_never_caps_a_calm_sea_more_than_the_core() {
     }
 }
 
+/// **The swell per pixel is the swell.** With a footprint too small to
+/// retire anything, `swell_px` — the fragment's swell, in Rust — is the
+/// gradient `wave_field` gives the core, and its footprint law is
+/// `band_weight`'s with the pixel for the mesh spacing.
+#[test]
+fn the_swell_per_pixel_is_the_swell() {
+    let tau = std::f32::consts::TAU;
+    let state = SeaState::at(0.4);
+    let folded: [f32; WAVE_COUNT] = core::array::from_fn(|i| PHASE[i] / tau);
+    for iz in 0..64 {
+        for ix in 0..64 {
+            let (x, z) = (ix as f32 * 2.0 - 64.0, iz as f32 * 2.0 - 64.0);
+            let (_, gx, gz) = wave_field(x, z, &PHASE, &state.swell, STEP_M, 1.0);
+            let px = swell_px(x, z, &folded, &state, 1.0, Vec2::ZERO, Vec2::ZERO);
+            assert!(
+                (px.g.x - gx).abs() < 1e-4 && (px.g.y - gz).abs() < 1e-4,
+                "at ({x}, {z}) the pixel's swell slope {:?} is not the field's ({gx}, {gz})",
+                px.g
+            );
+            assert_eq!(px.g, px.gd, "a footprint of nothing retires nothing");
+            assert_eq!(px.hidden, 0.0);
+        }
+    }
+    for w in WAVES {
+        for k in 0..400 {
+            let f = k as f32 * w.len_m / 300.0;
+            let (a, b) = (footprint_keep(f, w.len_m), band_weight(f, w.len_m));
+            assert!(
+                (a - b).abs() < 1e-6,
+                "{} m wave at {f} m: {a} against {b}",
+                w.len_m
+            );
+        }
+    }
+}
+
+/// **What a pixel cannot resolve comes back as roughness, and the calm far
+/// glint did not move.** The swell's slope variance is `⅝·Σ(a·k)²` (`⅝` the
+/// crest shape's own `E[ds²]`); a pixel past every wave carries all of it,
+/// and the far glint's ripple share plus the calm sea's is the old `0.02`.
+#[test]
+fn the_hidden_swell_is_roughness() {
+    let n = 100_000;
+    let mut e = 0.0f64;
+    for k in 0..n {
+        let (_, ds) = shape(k as f32 / n as f32 * std::f32::consts::TAU);
+        e += f64::from(ds * ds);
+    }
+    assert!((e / n as f64 - f64::from(SHAPE_SLOPE_VAR)).abs() < 1e-4);
+    assert!((hidden_slope(&SeaState::CALM) - 0.005886).abs() < 1e-5);
+    assert!((hidden_slope(&SeaState::at(1.0)) - 0.03064).abs() < 1e-4);
+    let shoal = 0.7;
+    let state = SeaState::at(0.5);
+    let far = swell_px(
+        3.0,
+        -11.0,
+        &[0.1, 0.2, 0.3, 0.4],
+        &state,
+        shoal,
+        Vec2::new(1e4, 0.0),
+        Vec2::new(0.0, 1e4),
+    );
+    let want = hidden_slope(&state) * shoal * shoal;
+    assert!(
+        (far.hidden - want).abs() < 1e-5 * want.max(1.0),
+        "{} against {want}",
+        far.hidden
+    );
+    assert_eq!(
+        far.g,
+        Vec2::ZERO,
+        "a pixel past every wave shows none of them"
+    );
+    assert!((GLINT_A2_FAR + hidden_slope(&SeaState::CALM) - 0.02).abs() < 2e-4);
+}
+
 /// **A storm whitens the swell, and a breeze keeps its scatter.**
 /// `crest_foam` measures every sea against the clear sea's crest reach, so
 /// the clear sea's caps are exactly the old ones and a storm's crests, which
