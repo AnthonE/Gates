@@ -193,11 +193,14 @@ fn topic_offer(
     o
 }
 
-/// What asking a gift topic came to, as `SUB_ARC_TEXT` says it.
+/// What asking a gift topic came to, as `SUB_ARC_TEXT` says it. `Early`
+/// has no code of its own: it rides as a plain answer, so a signed-in wallet
+/// is never shown the guest's "sign in" offers.
 fn gift_wire(g: content::bake::Gift) -> u8 {
     use content::bake::Gift;
     match g {
         Gift::Guest => protocol::ARC_GIFT_GUEST,
+        Gift::Early => protocol::ARC_GIFT_NONE,
         Gift::Owned => protocol::ARC_GIFT_OWNED,
         Gift::Given => protocol::ARC_GIFT_GIVEN,
         Gift::Short => protocol::ARC_GIFT_SHORT,
@@ -2010,8 +2013,8 @@ impl ShardCore {
 
     /// A gift topic was asked (`content/arc.toml`): give `set` to `slot`'s
     /// wallet, and owe the sim the owned set with it. A wallet that has not
-    /// played [`crate::gifts::GIFT_MIN_MINUTES`] this wipe is answered as a
-    /// guest ("come back"): a gift needs only a wallet, and wallets are free.
+    /// played [`crate::gifts::GIFT_MIN_MINUTES`] this wipe is told to come
+    /// back (`Early`): a gift needs only a wallet, and wallets are free.
     fn give_skins(&mut self, slot: usize, set: sim_core::skin::SkinSet) -> content::bake::Gift {
         use content::bake::Gift;
         let Some(key) = self
@@ -2023,9 +2026,8 @@ impl ShardCore {
         if self.gifts.of(&key, &self.world.skins).has_all(&set) {
             return Gift::Owned;
         }
-        let played = self.standings.row_of(&key).map_or(0, |r| r.played);
-        if played < crate::gifts::GIFT_MIN_MINUTES {
-            return Gift::Guest;
+        if self.played_of(&key) < crate::gifts::GIFT_MIN_MINUTES {
+            return Gift::Early;
         }
         if !self.gifts.give(&key, set, &self.world.skins) {
             return Gift::Owned;
@@ -2059,6 +2061,11 @@ impl ShardCore {
         if self.mints.waiting(&key, set, &self.world.skins) {
             return Gift::Waiting;
         }
+        // Asked once more at the sale: a wipe may have closed while the
+        // payment was out, and `EV_PAID` gives the price back.
+        if self.played_of(&key) < self.sale_min_minutes() {
+            return Gift::Early;
+        }
         // One sale of each per wallet a wipe, written down before the sale:
         // a token sent on and bought again would be coin into tokens without
         // end. Bought already (or no room to write it down), the price goes
@@ -2088,11 +2095,28 @@ impl ShardCore {
         catalogs.iter().any(|&c| self.standings.bought(key, c))
     }
 
+    /// Minutes `key` played this wipe (`standings_minute`).
+    fn played_of(&self, key: &str) -> u32 {
+        self.standings.row_of(key).map_or(0, |r| r.played)
+    }
+
+    /// Minutes a wallet must play this wipe before THE OUTFITTER sells it a
+    /// token: the gift's floor, or `extract_min_minutes` when higher. A token
+    /// leaves the island as extracted Junk does, and a wallet is a free
+    /// keypair: without this, one rug a wallet is one rug a script.
+    fn sale_min_minutes(&self) -> u32 {
+        self.standings
+            .exits
+            .min_minutes
+            .max(crate::gifts::GIFT_MIN_MINUTES)
+    }
+
     /// A priced gift topic was asked: a guest, an owner, a buyer whose
-    /// token is still on the way and a wallet that bought it this wipe
-    /// already (and sent it on) are answered at once; anyone else's payment
-    /// is queued (one at a time), and `EV_PAID` sells and answers. `tag`
-    /// comes back on it to name the topic.
+    /// token is still on the way, a wallet that bought it this wipe already
+    /// (and sent it on) and one that has not played
+    /// [`Self::sale_min_minutes`] are answered at once, paying nothing;
+    /// anyone else's payment is queued (one at a time), and `EV_PAID` sells
+    /// and answers. `tag` comes back on it to name the topic.
     fn ask_priced(
         &mut self,
         slot: usize,
@@ -2117,6 +2141,9 @@ impl ShardCore {
         }
         if self.bought_this_wipe(&key, &self.catalogs_of(set)) {
             return Some(Gift::Owned);
+        }
+        if self.played_of(&key) < self.sale_min_minutes() {
+            return Some(Gift::Early);
         }
         if !c.paying {
             let id = c.id;
@@ -9722,6 +9749,7 @@ mod tests {
                         price: None,
                         lines: vec![
                             (When::Gift(Gift::Guest), "sign in".into()),
+                            (When::Gift(Gift::Early), "come back".into()),
                             (When::Gift(Gift::Owned), "you have them".into()),
                             (When::Gift(Gift::Given), "these are yours".into()),
                         ],
@@ -9743,19 +9771,23 @@ mod tests {
             core.world.players[w].body =
                 sim_core::movement::Body::at(SEED, &core.world.haven, x, z);
         }
-        let ask = |core: &mut ShardCore, id: u32, slot: usize| -> String {
+        // What was said, and what the asking came to on the wire.
+        let ask = |core: &mut ShardCore, id: u32, slot: usize| -> (String, u8) {
             assert!(core.queue(Command::Arc {
                 id,
                 op: sim_core::lore::OP_TALK,
                 target: 0,
                 arg: 1,
             }));
-            let mut said = String::new();
+            let mut said = (String::new(), u8::MAX);
             for _ in 0..3 {
                 core.tick_bare(&stats, |lane, to, bytes| {
                     if lane == Lane::Event && to == slot {
-                        if let Ok(EventMsg::ArcText { text, len, .. }) = decode_event(bytes) {
-                            said = String::from_utf8_lossy(&text[..len as usize]).into();
+                        if let Ok(EventMsg::ArcText {
+                            text, len, gift, ..
+                        }) = decode_event(bytes)
+                        {
+                            said = (String::from_utf8_lossy(&text[..len as usize]).into(), gift);
                         }
                     }
                     true
@@ -9763,21 +9795,36 @@ mod tests {
             }
             said
         };
+        let said = |text: &str, gift: u8| (text.to_string(), gift);
         let owned = |core: &ShardCore, id: u32| {
             let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
             core.world.players[w].skins
         };
-        // A wallet that has not played its minutes is told to come back.
-        assert_eq!(ask(&mut core, 256, 0), "sign in");
+        // A wallet that has not played its minutes is told to come back,
+        // as a plain answer: it is signed in, and the guest's code would
+        // turn every offer on the client into "sign in".
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("come back", protocol::ARC_GIFT_NONE)
+        );
         assert!(owned(&core, 256).is_empty() && core.gifts.is_empty());
         let wallet = format!("0x{:040x}", 0xa1);
         for _ in 0..crate::gifts::GIFT_MIN_MINUTES {
             core.standings.minute(&wallet, "", false);
         }
-        assert_eq!(ask(&mut core, 256, 0), "these are yours");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("these are yours", protocol::ARC_GIFT_GIVEN)
+        );
         assert_eq!(owned(&core, 256), founder);
-        assert_eq!(ask(&mut core, 256, 0), "you have them");
-        assert_eq!(ask(&mut core, 257, 1), "sign in");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("you have them", protocol::ARC_GIFT_OWNED)
+        );
+        assert_eq!(
+            ask(&mut core, 257, 1),
+            said("sign in", protocol::ARC_GIFT_GUEST)
+        );
         assert!(owned(&core, 257).is_empty());
         // The platform answers late with the one paid skin it holds.
         let mut paid = SkinSet::EMPTY;
@@ -9792,7 +9839,9 @@ mod tests {
     /// price is told so and keeps its junk; one that has it pays once and is
     /// owed a token (`mints.rs`), owning nothing until the platform shows
     /// it; asking meanwhile costs nothing; the token settles the sale; sent
-    /// on, it is not sold again this wipe; a guest pays nothing.
+    /// on, it is not sold again this wipe; a guest pays nothing, nor does a
+    /// wallet under the sale's minutes, even one that falls under them
+    /// while its payment is out.
     #[test]
     fn the_outfitter_sells_an_unlock_for_junk() {
         use content::bake::{ArcText, Gift, SpeakerText, TopicText, When};
@@ -9828,6 +9877,7 @@ mod tests {
                         Some((JUNK, 100)),
                         vec![
                             (When::Gift(Gift::Guest), "sign in".into()),
+                            (When::Gift(Gift::Early), "come back".into()),
                             (When::Gift(Gift::Owned), "you have it".into()),
                             (When::Gift(Gift::Short), "you are short".into()),
                             (When::Gift(Gift::Waiting), "on its way".into()),
@@ -9843,10 +9893,13 @@ mod tests {
         core.tag_join(0, 256, Some(&key));
         assert!(core.connect_as(1, 257, None, None).is_some());
         core.tag_join(1, 257, None);
+        let key3 = PlayerKey::new(format!("0x{:040x}", 0xb3).as_bytes()).unwrap();
+        assert!(core.connect_as(2, 258, Some(key3), None).is_some());
+        core.tag_join(2, 258, Some(&key3));
         core.tick_bare(&stats, |_, _, _| true);
         let spot = core.world.lore_def.speakers[0].spot;
         let (x, _, z) = sim_core::spot::world(&core.world.haven, &spot).expect("a town");
-        for id in [256, 257] {
+        for id in [256, 257, 258] {
             let w = ShardCore::world_slot_of(&core.world, id).expect("seated");
             core.world.players[w].body =
                 sim_core::movement::Body::at(SEED, &core.world.haven, x, z);
@@ -9870,13 +9923,15 @@ mod tests {
             core.world.players[w].skins
         };
         // What was said, and what the asking came to (wire v130).
-        let ask = |core: &mut ShardCore, id: u32, slot: usize| -> (String, u8) {
+        let talk = |core: &mut ShardCore, id: u32| {
             assert!(core.queue(Command::Arc {
                 id,
                 op: sim_core::lore::OP_TALK,
                 target: 0,
                 arg: 1,
             }));
+        };
+        let hear = |core: &mut ShardCore, slot: usize| -> (String, u8) {
             let mut said = (String::new(), u8::MAX);
             for _ in 0..4 {
                 core.tick_bare(&stats, |lane, to, bytes| {
@@ -9893,7 +9948,29 @@ mod tests {
             }
             said
         };
+        let ask = |core: &mut ShardCore, id: u32, slot: usize| {
+            talk(core, id);
+            hear(core, slot)
+        };
         let said = |text: &str, gift: u8| (text.to_string(), gift);
+        // The sale's floor is the exchange's when that is higher than the
+        // gift's, and a wallet under it keeps its junk.
+        core.standings.exits.min_minutes = 120;
+        let wallet = format!("0x{:040x}", 0xb2);
+        carry(&mut core, 256, 150);
+        for _ in 0..2 {
+            assert_eq!(
+                ask(&mut core, 256, 0),
+                said("come back", protocol::ARC_GIFT_NONE)
+            );
+            assert_eq!(junk(&core, 256), 150, "nothing taken");
+            for _ in 0..crate::gifts::GIFT_MIN_MINUTES {
+                core.standings.minute(&wallet, "", false);
+            }
+        }
+        while core.played_of(&wallet) < 120 {
+            core.standings.minute(&wallet, "", false);
+        }
         carry(&mut core, 256, 60);
         assert_eq!(
             ask(&mut core, 256, 0),
@@ -9948,6 +10025,27 @@ mod tests {
         );
         assert_eq!(junk(&core, 257), 150, "a guest pays nothing");
         assert!(owned(&core, 257).is_empty());
+        // The wipe closes while a payment is out: the sale asks again, and
+        // the price goes back with the early line.
+        let third = format!("0x{:040x}", 0xb3);
+        for _ in 0..120 {
+            core.standings.minute(&third, "", false);
+        }
+        carry(&mut core, 258, 150);
+        talk(&mut core, 258);
+        for _ in 0..4 {
+            if core.clients[2].paying {
+                break;
+            }
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        assert!(core.clients[2].paying, "the payment is out");
+        let exits = core.standings.exits;
+        core.standings = crate::standings::Standings::off();
+        core.standings.exits = exits;
+        assert_eq!(hear(&mut core, 2), said("come back", protocol::ARC_GIFT_NONE));
+        assert_eq!(junk(&core, 258), 150, "the price came back");
+        assert!(core.mints.is_empty() && owned(&core, 258).is_empty());
     }
 
     #[test]
