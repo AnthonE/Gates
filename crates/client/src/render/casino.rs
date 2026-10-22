@@ -1042,9 +1042,14 @@ pub fn lights(
             l.intensity = want;
         }
     }
-    if let Some(m) = materials.get_mut(&bulbs.lamps) {
-        let want = LAMP_GLOW * (0.4 * (1.0 - night) + NIGHT_SHARE * 2.0 * night * g);
-        if m.emissive != want {
+    // Compared through `get` first: `get_mut` alone marks the material
+    // modified, and a modified material is re-prepared that frame.
+    let want = LAMP_GLOW * (0.4 * (1.0 - night) + NIGHT_SHARE * 2.0 * night * g);
+    if materials
+        .get(&bulbs.lamps)
+        .is_some_and(|m| m.emissive != want)
+    {
+        if let Some(m) = materials.get_mut(&bulbs.lamps) {
             m.emissive = want;
         }
     }

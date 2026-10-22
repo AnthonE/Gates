@@ -356,9 +356,10 @@ pub fn footstep(fx: &mut Fx, cue: Cue, at: Vec3, gain: f32) {
                 Matter::Sand,
             );
         }
+        // The ring is the sea's own now (`water::Wakes`), riding the swell a
+        // flat particle cut through; the spray stays.
         Cue::StepWater | Cue::RemoteStepWater => {
             let at = Vec3::new(at.x, sim_core::terrain::SEA_LEVEL + 0.02, at.z);
-            emit(&mut fx.soft, Layer::Ring, 1, at, Vec3::Y, Matter::Water);
             if gain > 0.6 {
                 emit(&mut fx.soft, Layer::Droplets, 3, at, Vec3::Y, Matter::Water);
             }
@@ -367,11 +368,11 @@ pub fn footstep(fx: &mut Fx, cue: Cue, at: Vec3, gain: f32) {
     }
 }
 
-/// A body breaking the surface: rings spread from it and spray goes up, more
-/// of both the harder it went in (`gain` is the splash cue's own, `0..1`).
+/// A body breaking the surface: spray goes up, more the harder it went in
+/// (`gain` is the splash cue's own, `0..1`). Its rings are the sea's
+/// (`water::Wakes`).
 pub fn splash(fx: &mut Fx, at: Vec3, gain: f32) {
     let at = Vec3::new(at.x, sim_core::terrain::SEA_LEVEL + 0.02, at.z);
-    emit(&mut fx.soft, Layer::Ring, 2, at, Vec3::Y, Matter::Water);
     let n = scaled(8, gain.clamp(0.3, 1.0));
     emit(&mut fx.soft, Layer::Droplets, n, at, Vec3::Y, Matter::Water);
 }

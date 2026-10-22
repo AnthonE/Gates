@@ -235,6 +235,7 @@ pub fn stream(
     mut skin_mats: ResMut<super::viewmodel::SkinMats>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     draw_watched: Res<DrawWatched>,
+    sea: Option<Res<super::water::Sea>>,
 ) {
     // Nothing is drawn until the rig has loaded. A body spawned before it
     // would get no scene and no player, and the bind below only ever runs on
@@ -295,7 +296,19 @@ pub fn stream(
         // The old draw added 0.9 m to the wire's y to centre a pill; a glTF
         // humanoid stands on its own origin, so adding it again floats every
         // player a metre off the ground. The wire's y IS the feet — no offset.
-        let pos = Vec3::new(rs.x, rs.y + swim_lift(rs.y), rs.z);
+        //
+        // A floater is drawn lifted (`swim_lift`) and riding the drawn swell,
+        // capped (`water::Sea::swimmer_ride`); the gait reads the feet, so the
+        // swim clips still see the depth the sim swims at.
+        // On a bed rather than afloat, never drawn below its own feet: and no
+        // gate on `airborne`, so touching the bottom does not pop the body.
+        let feet = Vec3::new(rs.x, rs.y, rs.z);
+        let lift = swim_lift(rs.y);
+        let ride = sea
+            .as_deref()
+            .map_or(0.0, |sea| sea.swimmer_ride(rs.x, rs.y, rs.z));
+        let ride = if rs.airborne { ride } else { ride.max(-lift) };
+        let pos = feet + Vec3::Y * (lift + ride);
         // The wire has carried yaw since the first snapshot and nothing ever
         // read it: bodies faced +Z no matter where they were looking or
         // walking. A capsule hid that; a figure with a face cannot.
@@ -337,7 +350,7 @@ pub fn stream(
                     anim.seated = seat_yaw.is_some();
                     anim.facing = seat_yaw.unwrap_or(wire_yaw_to_radians(rs.yaw));
                     anim.hold = shoulders(&core.catalog, &rs);
-                    anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
+                    anim.observe(feet, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
                     // imply.** Everything else here is derived — the gait
@@ -395,7 +408,7 @@ pub fn stream(
                     hold: shoulders(&core.catalog, &rs),
                     ..BodyAnim::default()
                 };
-                anim.observe(pos, 0.0, rs.sleeping, rs.dead, rs.wounded);
+                anim.observe(feet, 0.0, rs.sleeping, rs.dead, rs.wounded);
                 anim.pitch = wire_pitch_to_radians(rs.pitch);
                 // A body that enters AOI on the same frame it swings still
                 // gets its arc; without this the first swing of every

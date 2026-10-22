@@ -50,7 +50,8 @@
 //! The cubemap is generated from the world seed. No asset, no shader, no
 //! download. **Since weather v0 it is composed, not baked once**: a tileable
 //! noise field is built at boot, and [`compose`] re-projects the deck from it
-//! every half second or so, a few rows a frame — the wind drifting it, the
+//! every half second or so (whole, on a worker; a few rows a frame in a
+//! browser, every second and a half) — the wind drifting it, the
 //! weather thickening and darkening it, its lit side facing the sun it is
 //! actually lit by, and the night's moon behind it. The stars are not in it:
 //! a texel is too big to be a star (`stars.rs`).
@@ -64,6 +65,9 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use std::sync::Arc;
 
 use super::fill::linear_to_srgb;
 use super::rig::{EyeCam, CAPTURE_DAY_FRAC};
@@ -470,20 +474,14 @@ pub const DUSK_GLOW: [f32; 3] = [0.10, 0.045, 0.02];
 /// wall rather than a hole.
 const NIGHT_FOG: [f32; 3] = [0.0025, 0.003, 0.0045];
 
-/// Texels composed per frame. A full deck is six frames of this on a
-/// desktop; a debug build takes an eighth, because its client crate is not
-/// optimized and a frame there is already slow.
-const COMPOSE_BUDGET: usize = {
-    let b = if cfg!(target_arch = "wasm32") {
-        16_384
-    } else {
-        65_536
-    };
-    if cfg!(debug_assertions) {
-        b / 8
-    } else {
-        b
-    }
+/// Texels composed per frame in a browser; natively the cube is one task off
+/// the frame ([`SkyComposer`]). A debug build takes an eighth, because its
+/// client crate is not optimized and a frame there is already slow.
+#[cfg(target_arch = "wasm32")]
+const COMPOSE_BUDGET: usize = if cfg!(debug_assertions) {
+    16_384 / 8
+} else {
+    16_384
 };
 /// The least time between two composes, seconds: often enough that the
 /// drift reads as motion, rare enough that the re-upload is noise.
@@ -1483,19 +1481,35 @@ pub fn cloud_cubemap_with(seed: u64, backdrop: bool) -> Image {
 }
 
 /// The deck's live state: the field and geometry it composes from, the
-/// half-built next cube, and the handle the `Skybox` shows.
+/// next cube in progress, and the handle the `Skybox` shows.
+///
+/// **Native composes on `AsyncComputeTaskPool`, a browser on the frame.** A
+/// whole cube is ~25 ms of arithmetic, and the deck drifts, so a new one is
+/// wanted every [`COMPOSE_INTERVAL_S`] for as long as the game runs. Spread
+/// over the frame at the old native budget of 65,536 texels, that was 3.2 ms
+/// of main thread in six of every ~30 frames, measured. A worker takes the
+/// whole cube and hands back the bytes, which go to the image as they are
+/// rather than cloned. In a browser that pool IS the main thread, so the
+/// budgeted pass stays there, at a quarter of that budget (`COMPOSE_BUDGET`):
+/// one 25 ms task would be one 25 ms frame.
 #[derive(Resource)]
 pub struct SkyComposer {
-    field: CloudField,
-    geo: TexelGeo,
+    field: Arc<CloudField>,
+    geo: Arc<TexelGeo>,
+    #[cfg(target_arch = "wasm32")]
     scratch: Vec<u8>,
+    #[cfg(target_arch = "wasm32")]
     cursor: usize,
+    #[cfg(target_arch = "wasm32")]
+    composing: bool,
+    /// The cube being composed off the frame, if one is.
+    #[cfg(not(target_arch = "wasm32"))]
+    task: Option<Task<Vec<u8>>>,
     params: ComposeParams,
     shown: Option<ComposeParams>,
     handle: Handle<Image>,
     field_image: Handle<Image>,
     next_at: f32,
-    composing: bool,
     /// The field at [`soft_level`]: the deck over the sun's disk.
     soft: SoftField,
 }
@@ -1563,7 +1577,10 @@ pub fn setup(
     let params = ComposeParams::noon(BAKE_BACKDROP);
     let mut scratch = vec![0u8; geo.len() * 4];
     compose_range(&field, &geo, &params, 0..geo.len(), &mut scratch);
+    #[cfg(target_arch = "wasm32")]
     let handle = images.add(cube_image(scratch.clone()));
+    #[cfg(not(target_arch = "wasm32"))]
+    let handle = images.add(cube_image(scratch));
     let field_image = images.add(field.image());
     // Only where the deck is not drawn at depth 0 itself (`deck.rs`): the
     // `Skybox` draws after every opaque item and would paint over it.
@@ -1576,23 +1593,70 @@ pub fn setup(
     }
     let soft = field.soft(soft_level());
     commands.insert_resource(SkyComposer {
-        field,
-        geo,
+        field: Arc::new(field),
+        geo: Arc::new(geo),
+        #[cfg(target_arch = "wasm32")]
         scratch,
+        #[cfg(target_arch = "wasm32")]
         cursor: 0,
+        #[cfg(target_arch = "wasm32")]
+        composing: false,
+        #[cfg(not(target_arch = "wasm32"))]
+        task: None,
         params,
         shown: Some(params),
         handle,
         field_image,
         next_at: 0.0,
-        composing: false,
         soft,
     });
 }
 
-/// Re-compose the deck when the sky has moved on: a budget of texels a
-/// frame into the scratch cube, then one re-upload when it is whole. The
-/// params are latched for the whole pass, so a cube is never half one sky.
+/// Re-compose the deck when the sky has moved on, then re-upload it whole.
+/// The params are latched for the whole cube, so it is never half one sky.
+///
+/// Natively the cube is one task on `AsyncComputeTaskPool`, landed on the
+/// first frame that finds it done ([`SkyComposer`] says why).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn compose(
+    time: Res<Time>,
+    weather: Res<super::weather::WeatherNow>,
+    composer: Option<ResMut<SkyComposer>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(mut composer) = composer else {
+        return;
+    };
+    let c = &mut *composer;
+    let now = time.elapsed_secs();
+    if let Some(task) = c.task.as_mut() {
+        let Some(data) = block_on(future::poll_once(task)) else {
+            return;
+        };
+        c.task = None;
+        // `RENDER_WORLD` drops the CPU copy after upload, so the asset is
+        // replaced whole rather than edited in place.
+        let _ = images.insert(&c.handle, cube_image(data));
+        c.shown = Some(c.params);
+        c.next_at = now + COMPOSE_INTERVAL_S;
+        return;
+    }
+    let want = ComposeParams::from_weather(&weather);
+    if now < c.next_at || c.shown == Some(want) {
+        return;
+    }
+    c.params = want;
+    let (field, geo) = (c.field.clone(), c.geo.clone());
+    c.task = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let mut out = vec![0u8; geo.len() * 4];
+        compose_range(&field, &geo, &want, 0..geo.len(), &mut out);
+        out
+    }));
+}
+
+/// A browser's compose: a budget of texels a frame into the scratch cube,
+/// then one re-upload when it is whole.
+#[cfg(target_arch = "wasm32")]
 pub fn compose(
     time: Res<Time>,
     weather: Res<super::weather::WeatherNow>,
