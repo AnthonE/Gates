@@ -67,6 +67,13 @@ const ALERTS_SHOWN: usize = 20;
 const CHALLENGE_SECS: u64 = 300;
 /// Nonces signed in with and not yet expired, kept so none is used twice.
 const USED_KEPT: usize = 65536;
+/// Of those, one wallet's. Only a wallet with a body on the island spends a
+/// nonce, so this bounds the table by the island: one wallet signing every
+/// challenge it can fetch is told to wait (429) rather than filling it and
+/// locking everyone else out. Never evicted early instead: a nonce pushed
+/// out of `used` is a signed login anyone who saw it could replay.
+const USED_PER_WALLET: usize = 32;
+const _: () = assert!(sim_core::limits::MAX_PLAYERS * USED_PER_WALLET < USED_KEPT);
 /// Signed-in sessions, all wallets and one wallet's, and how long one lasts.
 const SESSIONS_KEPT: usize = 4096;
 const SESSIONS_PER_WALLET: usize = 8;
@@ -326,8 +333,8 @@ pub struct Web {
     /// of `keccak(secret, random, issued_at)`, so nothing is kept per
     /// challenge and nobody can flood one out of a table.
     secret: [u8; 32],
-    /// nonce → when it stops mattering
-    used: BTreeMap<[u8; NONCE_BYTES], u64>,
+    /// nonce → (when it stops mattering, the wallet that spent it)
+    used: BTreeMap<[u8; NONCE_BYTES], (u64, String)>,
     /// token → (wallet, expires)
     sessions: BTreeMap<String, (String, u64)>,
     /// wallet → (tokens, unix ms of the last refill)
@@ -480,7 +487,7 @@ impl Web {
         if now > issued_at + CHALLENGE_SECS || issued_at > now + 5 {
             return Response::error(401, "challenge expired");
         }
-        self.used.retain(|_, until| *until > now);
+        self.used.retain(|_, (until, _)| *until > now);
         if self.used.contains_key(&nonce) {
             return Response::error(401, "challenge already used");
         }
@@ -503,8 +510,14 @@ impl Web {
         }
         // Spent only now, by a sign-in that lands: spent before the island
         // check, throwaway wallets (free to make) filled `used` and every
-        // real sign-in met "busy" until their challenges expired.
-        self.used.insert(nonce, issued_at + CHALLENGE_SECS + 5);
+        // real sign-in met "busy" until their challenges expired. And at most
+        // `USED_PER_WALLET` at once, or one island wallet could do the same.
+        let spent = self.used.values().filter(|(_, w)| *w == wallet).count();
+        if spent >= USED_PER_WALLET {
+            return Response::error(429, "too many sign-ins, wait a few minutes");
+        }
+        self.used
+            .insert(nonce, (issued_at + CHALLENGE_SECS + 5, wallet.clone()));
         let mut raw = [0u8; 32];
         if getrandom::getrandom(&mut raw).is_err() {
             return Response::error(503, "no entropy");
@@ -1022,6 +1035,33 @@ mod tests {
         }
         assert_eq!(w.handle(&get("/api/team", Some(&first)), 1100).status, 401);
         assert_eq!(w.handle(&get("/api/team", Some(&last)), 1100).status, 200);
+    }
+
+    /// One island wallet holds at most `USED_PER_WALLET` unexpired nonces, so
+    /// signing every challenge it can fetch cannot fill the replay table: it
+    /// is told to wait, everyone else still signs in, and its room comes back
+    /// as its nonces expire.
+    #[test]
+    fn one_wallet_cannot_fill_the_replay_table() {
+        let (mut w, _rx) = web();
+        island(&mut w, &[(&addr(&key(7)), 0), (&addr(&key(8)), 0)]);
+        for i in 0..USED_PER_WALLET as u64 {
+            sign_in(&mut w, &key(7), 1000 + i);
+        }
+        let refused = login_body(&mut w, &key(7), 1100);
+        assert_eq!(
+            w.handle(&post("/api/login", None, refused.clone()), 1100)
+                .status,
+            429
+        );
+        assert_eq!(w.used.len(), USED_PER_WALLET, "the refusal spent nothing");
+        sign_in(&mut w, &key(8), 1100);
+        // The first two expire; the refused body's nonce was never spent.
+        let later = 1001 + CHALLENGE_SECS + 5;
+        assert_eq!(
+            w.handle(&post("/api/login", None, refused), later).status,
+            200
+        );
     }
 
     /// The page's own host is signed when the shard accepts it; anything else
