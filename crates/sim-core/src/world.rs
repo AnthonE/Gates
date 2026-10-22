@@ -3433,6 +3433,7 @@ impl World {
         crate::farm::plant_bed(
             &self.cook.farm,
             self.seed,
+            self.arc.salt,
             self.tick,
             &mut self.farm,
             &rec,
@@ -3495,6 +3496,7 @@ impl World {
         crate::farm::plant_ground(
             &self.cook.farm,
             self.seed,
+            self.arc.salt,
             self.tick,
             &mut self.farm,
             &mut self.players[slot],
@@ -3520,9 +3522,14 @@ impl World {
             return;
         }
         let pid = self.players[slot].id;
-        let roll = crate::rng::splitmix64(
-            crate::rng::cell_hash(self.seed, pid as i32, 0, crate::farm::CH_LEAVES) ^ self.tick,
-        ) % 1000;
+        // On the world's secret (`rng::salted`): the seed, the eater's id
+        // and the tick are all the eater's, so unsalted the meal could be
+        // timed to the tick that pays the seed.
+        let ch = crate::farm::CH_LEAVES;
+        let seed = crate::rng::salted(self.seed, self.arc.salt, u64::from(ch));
+        let roll =
+            crate::rng::splitmix64(crate::rng::cell_hash(seed, pid as i32, 0, ch) ^ self.tick)
+                % 1000;
         if roll >= u64::from(def.leaves_pm) {
             return;
         }

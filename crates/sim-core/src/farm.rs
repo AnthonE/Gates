@@ -128,10 +128,20 @@ pub const fn cross_weight(letter: u8) -> u32 {
     }
 }
 
+/// The seed [`roll_genes`] draws on when a seed is planted: the world's,
+/// keyed on its secret (`rng::salted`). The cell, the tick and the next
+/// plant id (`SUB_PLANT` shows the ids) are a planter's to know, so on the
+/// seed alone a planter could time a sowing to a good genome. Aridity and
+/// everything else a client draws off the seed stay on the plain seed.
+#[inline]
+pub fn genes_seed(seed: u64, salt: u64) -> u64 {
+    crate::rng::salted(seed, salt, u64::from(CH_GENES))
+}
+
 /// A seed's genome, rolled when it is planted (a clone plants its own).
-/// Deterministic in the world seed, the plant's 3 m build cell, the tick and
-/// the new plant's id: per slot a good gene (G, Y or H, evenly) with
-/// `good_gene_pm`, else a W with `bad_w_pm`, else an X.
+/// Deterministic in the world seed ([`genes_seed`]), the plant's 3 m build
+/// cell, the tick and the new plant's id: per slot a good gene (G, Y or H,
+/// evenly) with `good_gene_pm`, else a W with `bad_w_pm`, else an X.
 pub fn roll_genes(fc: &FarmContent, seed: u64, cx: u16, cz: u16, tick: u64, id: u32) -> u16 {
     use crate::rng::{cell_hash, splitmix64};
     let h =
@@ -1198,6 +1208,7 @@ pub fn pour(
 pub fn plant_bed(
     fc: &FarmContent,
     seed: u64,
+    salt: u64,
     tick: u64,
     farm: &mut Farm,
     b: &BoxRec,
@@ -1221,7 +1232,7 @@ pub fn plant_bed(
     let (x, z) = spot_xz(b.cx, b.cz, b.pose, spot);
     let y = feet_y + DEPLOY_VOL[ARCH_PLANTER as usize][1] - BED_SOIL_DROP_M;
     let genes = clone_genes(stack.cond)
-        .unwrap_or_else(|| roll_genes(fc, seed, b.cx, b.cz, tick, farm.next_id()));
+        .unwrap_or_else(|| roll_genes(fc, genes_seed(seed, salt), b.cx, b.cz, tick, farm.next_id()));
     let rec = PlantRec {
         owner: p.id,
         host,
@@ -1508,6 +1519,7 @@ pub fn ground_ok(
 pub fn plant_ground(
     fc: &FarmContent,
     seed: u64,
+    salt: u64,
     tick: u64,
     farm: &mut Farm,
     p: &mut Player,
@@ -1526,7 +1538,10 @@ pub fn plant_ground(
         crate::build::build_cell_of(v).clamp(0, crate::limits::MAX_BUILD_COORD as i32 - 1) as u16
     };
     let genes = clone_genes(stack.cond)
-        .unwrap_or_else(|| roll_genes(fc, seed, cell(x), cell(z), tick, farm.next_id()));
+        .unwrap_or_else(|| {
+            let s = genes_seed(seed, salt);
+            roll_genes(fc, s, cell(x), cell(z), tick, farm.next_id())
+        });
     let rec = PlantRec {
         owner: p.id,
         host: HOST_GROUND,

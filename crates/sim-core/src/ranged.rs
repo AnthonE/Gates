@@ -2684,15 +2684,19 @@ fn hitscan_in(
             } else {
                 0
             };
-        // The secret rotated as the casino rotates it (`casino::draw`), so
-        // a salt of 0 is exactly the seed's key and every fixture keeps
-        // its cone.
-        let key = crate::rng::splitmix64(
-            seed ^ salt.rotate_left(23)
-                ^ CH_CONE
-                ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                ^ ((i as u64) << 40),
-        );
+        // A salted shot's key is a PRF of the secret (`rng::sip24`), not a
+        // mix of it: the shooter reads ~20 bits of every key back off
+        // `EV_SHOT` at a tick it picks, and splitmix64 inverts, so a mixed
+        // salt came back out offline — and with it the casino, the loot and
+        // the mechs, which share it. A salt of 0 is the seed's key exactly,
+        // so every fixture keeps its cone.
+        let key = if salt == 0 {
+            crate::rng::splitmix64(
+                seed ^ CH_CONE ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((i as u64) << 40),
+            )
+        } else {
+            crate::rng::sip24(salt, seed ^ CH_CONE, tick, i as u64)
+        };
         let ctx = Shot {
             seed,
             haven,

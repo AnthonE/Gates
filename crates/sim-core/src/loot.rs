@@ -39,11 +39,17 @@ const GUARANTEED_SALT: u64 = 0x8000;
 /// the seed, the cell and the tick, all three in a client's hands, so a
 /// client could time the open or the smash to the tick that paid the
 /// revolver. A salt of 0 (an unsalted world, every test fixture) rolls as
-/// it always did.
+/// it always did. Keyed through `rng::salted` (a PRF of the salt) rather
+/// than xored in, so what a looter learns of this seed names neither the
+/// salt nor the casino's, the mechs' or the gun's draws.
 #[inline]
 pub fn salted(seed: u64, salt: u64) -> u64 {
-    seed ^ salt.rotate_left(31)
+    crate::rng::salted(seed, salt, CH_LOOT_SALT)
 }
+
+/// [`salted`]'s channel: the loot tables' seed apart from every other
+/// stream keyed on the same salt.
+const CH_LOOT_SALT: u64 = 0x6C6F_6F74_5F73_6131;
 
 /// Baked table index for `container = "barrel"`. The container *name* is
 /// content and the *index* is code, exactly as `deploy.rs`'s `ARCH_*` maps
