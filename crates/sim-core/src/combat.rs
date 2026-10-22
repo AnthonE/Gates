@@ -653,6 +653,10 @@ pub struct CombatContent {
     /// 100 for that reason and it is the one field of this struct whose
     /// inert value is not zero.
     pub arrow_break_pct: u16,
+    /// The share of the hp a hit takes that opens a wound, per cent
+    /// (`[survival] bleed_pct`, Rust's bleeding): `hurt` adds it to
+    /// `Player::bleed`, which the survival clock bleeds out. Zero is none.
+    pub bleed_pct: u16,
     /// Ticks an arrow that DEALT DAMAGE waits before it may be taken back
     /// (`globals.arrow_lodge_s` × `TICK_HZ`, baked). A missed arrow is
     /// takeable on the tick it lands, so this number prices exactly one
@@ -760,6 +764,7 @@ impl CombatContent {
         // row silently giving ammunition back forever) is the one that
         // cannot be noticed by looking at the game.
         arrow_break_pct: 100,
+        bleed_pct: 0,
         arrow_lodge_ticks: 0,
         cond_max: [0; MAX_ITEM_DEFS],
         shot_wear: [0; MAX_ITEM_DEFS],
@@ -1270,6 +1275,16 @@ pub fn holstered(cc: &CombatContent, gc: &crate::gather::GatherContent, p: &Play
     p.safe && drawn_weapon(cc, gc, held_item(p))
 }
 
+/// A swimmer with a bow, a gun or a charge in hand: the reference fires
+/// nothing but melee in the water, so the hand does nothing (`World::tick`).
+#[inline]
+pub fn waterlogged(cc: &CombatContent, p: &Player) -> bool {
+    let item = held_item(p);
+    item != NO_ITEM
+        && crate::movement::swimming(&p.body)
+        && (cc.held_ranged(item).is_some() || cc.held_throw(item).is_some())
+}
+
 /// Whether the safe zone protects this body: inside it and not hostile.
 #[inline]
 pub fn protected(v: &Player) -> bool {
@@ -1299,6 +1314,22 @@ pub fn knuckles(cc: &CombatContent, p: &mut Player, events: &mut EventQueue) {
 
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
+    let h = burn(cc, v, raw);
+    // Rust's bleeding: a hit opens a wound worth a share of what got
+    // through the armor, and the survival clock bleeds it out
+    // (`survival::step`) until a bandage closes it.
+    let opened = (u32::from(h.dealt) * u32::from(cc.bleed_pct) / 100) as u16;
+    v.bleed = v
+        .bleed
+        .saturating_add(opened)
+        .min(crate::survival::BLEED_MAX);
+    h
+}
+
+/// [`hurt`] without the wound: fire scorches, it does not cut. Armor still
+/// blunts it and wears for it, exactly as for a hit.
+#[inline]
+pub fn burn(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
     let pct = worn_pct(cc, v);
     wear_worn(cc, v, raw);
     debit(v, reduce(raw, pct))

@@ -292,8 +292,11 @@ pub const EV_CONSUMED: u8 = 22;
 /// that eats the input and says nothing is indistinguishable from a broken
 /// one, so every refusal is announced (craft/build/deploy's posture).
 pub const EV_CONSUME_REFUSED: u8 = 23;
-/// EV_DRANK: a = player id, b = water units restored, c = hp the drink
-/// cost. Own-fact, and it exists for the cost: `EV_HEALTH` is absolute and
+/// EV_DRANK: a = player id, b = `survival::drank_b(kind, n)`: a mouthful
+/// (`DRANK_DRINK`, n the water units restored, c = hp the drink cost), a
+/// vessel filled (`DRANK_FILL`, n 1 for salt) or one poured out
+/// (`DRANK_POUR`, n the fires it put out, c the planters it reached, with
+/// `survival::POURED_SALT` set for salt water). Own-fact, and it exists for the cost: `EV_HEALTH` is absolute and
 /// states the new number without naming what took it, so a client that
 /// heard only the health drop could not tell a mouthful of sea from a
 /// knife (survival.rs). A refused drink rides `EV_CONSUME_REFUSED` — one
@@ -897,11 +900,11 @@ pub const EV_ARC_DID: u8 = 57;
 /// **Broadcast**: a lock opening is heard across the island.
 pub const EV_MECH_SOLVED: u8 = 58;
 
-/// EV_GROW: a = build cell key, b = level << 16 | loc << 8 | stages, c = 0.
-/// A planter's beds changed how they are drawn (crops v1): two bits a bed,
-/// `oven::planter_stages`. **Broadcast**, `EV_OVEN`'s posture: a crop in a
-/// planter is visible from outside the base it is in.
-pub const EV_GROW: u8 = 59;
+/// EV_PLANT: a = plant id, b = stage << 8 | flags, c = its store index at
+/// push time (a hint the server verifies). A plant was planted, or changed
+/// stage, dryness or health band (`farm.rs`). **Aimed** at the clients whose
+/// interest holds it.
+pub const EV_PLANT: u8 = 59;
 
 /// EV_STUMP_GRUBBED: a = cell key, b = 0, c = 0. A felled tree's stump was
 /// grubbed out (`gather::STUMP_GRUBBED`): the slot stays harvested until the
@@ -984,7 +987,12 @@ pub const PAID_SHORT: u32 = 0;
 pub const PAID_DONE: u32 = 1;
 pub const PAID_NO_BODY: u32 = 2;
 
-pub const EV_MAX: u8 = EV_PAID;
+/// EV_PLANT_GONE: a = plant id, b = `farm::GONE_*`, c = the hand that
+/// picked, cloned or cleared it, 0 otherwise. **Broadcast**, so a removal
+/// never leaves a ghost on a far client.
+pub const EV_PLANT_GONE: u8 = 74;
+
+pub const EV_MAX: u8 = EV_PLANT_GONE;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1110,7 +1118,12 @@ pub const DEATH_BY_CACTUS: u8 = 11;
 /// [`World::prick_deploys`]).
 pub const DEATH_BY_SPIKES: u8 = 12;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_SPIKES;
+/// An open wound took the last hp (`Player::bleed`, survival.rs).
+pub const DEATH_BY_BLEED: u8 = 13;
+/// The water took them (water pass, [`World::breathe`]): they stayed under
+/// past their breath.
+pub const DEATH_BY_DROWN: u8 = 14;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_DROWN;
 
 /// A cactus pricks a body pressed against it (`terrain::Occupant::Cactus`):
 /// this much health once a [`CACTUS_PERIOD_TICKS`], before armour. Ours —
@@ -1141,6 +1154,18 @@ pub const SPIKES_TOP_M: f32 = 0.3;
 pub const FALL_SAFE_MPS: f32 = 12.6;
 pub const FALL_HP_PER_MPS: f32 = 9.0;
 pub const FALL_SEA_CM: f32 = 80.0;
+
+/// Water poured from a vessel lands this far ahead of the feet and splashes
+/// this far round, metres (the reference's water ball: 2.5 m).
+pub const POUR_AHEAD_M: f32 = 1.5;
+pub const POUR_RADIUS_M: f32 = 2.5;
+
+/// Drowning bites this often, ticks: five times a second, so the ramp reads
+/// as a ramp on the health bar ([`World::breathe`]).
+pub const DROWN_PERIOD_TICKS: u64 = 6;
+/// Surfacing gives the whole breath back over this many ticks: the
+/// reference's oxygen refills in a second.
+pub const AIR_BACK_TICKS: u16 = 30;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -1512,6 +1537,10 @@ pub struct Player {
     /// cold's; a body restored from the player store comes back clean.
     pub fel: u16,
     pub fel_acc: u32,
+    /// Ticks the mouth has been under water, less what surfacing gave back:
+    /// 0 is a full breath (`World::breathe`). Hashed, not saved — a load is
+    /// a breath, as `bloom` settles over one.
+    pub under: u16,
     /// The skins this player owns (`skin.rs`), as the server last heard it
     /// from the platform: Rust's Steam inventory, held by the game only so
     /// the two verbs that put a skin on can ask it. Set by
@@ -1541,6 +1570,25 @@ pub struct Player {
     /// over the body that rebuild in seconds, and the hp they move is
     /// hashed already.
     pub calm: u16,
+    /// The open wound, in hp it still owes (Rust's `bleeding`, up to
+    /// `survival::BLEED_MAX`): a hit opens it (`combat::hurt`), the survival
+    /// clock bleeds it out, a bandage closes it. Going down closes it too
+    /// (Rust: you do not bleed out while wounded). `bleed_acc` is the
+    /// clock's remainder.
+    ///
+    /// A use in the hands (Rust's `MedicalTool`, `survival::begin_use`): the
+    /// tick it lands (0 for none), the slot and item it will spend, and the
+    /// hand that was up when it began. Switching hands cancels it.
+    ///
+    /// None of these is hashed or saved, for `hostile`'s reason: the hp a
+    /// wound takes and the item a use spends are hashed when they move, and
+    /// a restart forgives a wound and ends every session's use.
+    pub bleed: u16,
+    pub bleed_acc: u32,
+    pub use_at: u64,
+    pub use_slot: u8,
+    pub use_sel: u8,
+    pub use_item: u16,
     /// THE GATE's respawn point is unlocked: set the first time this player
     /// stands in the town (Rust's Outpost spawn point). Carried through a
     /// death; not saved.
@@ -1668,11 +1716,18 @@ impl Default for Player {
             air_dc: 0,
             fel: 0,
             fel_acc: 0,
+            under: 0,
             skins: crate::skin::SkinSet::EMPTY,
             safe: false,
             hostile: 0,
             comfort: 0,
             calm: 0,
+            bleed: 0,
+            bleed_acc: 0,
+            use_at: 0,
+            use_slot: 0,
+            use_sel: 0,
+            use_item: NO_ITEM,
             gate_spawn: false,
             gate_spawn_at: 0,
             born: 0,
@@ -2191,6 +2246,26 @@ pub enum Command {
         id: u32,
         cell: u32,
     },
+    /// Plant one unit of inventory slot `slot` (farming v2, `farm.rs`): in
+    /// spot `spot` of the planter whose box key is `host`, or in the open
+    /// ground at `(qx, qz)` (`movement::quant_xz`) when `host` is
+    /// `farm::HOST_GROUND` (`farm::ground_ok`). The slot
+    /// rides the wire, so the seed planted is the one the click named.
+    Plant {
+        id: u32,
+        slot: u8,
+        host: u32,
+        spot: u8,
+        qx: i32,
+        qz: i32,
+    },
+    /// Tend plant `plant` (`farm::TEND_*`): pick it, take a clone, clear a
+    /// dead one, or water it from the held skin. Anyone in reach may.
+    Tend {
+        id: u32,
+        plant: u32,
+        act: u8,
+    },
     /// Move `count` items between two slots (`inventory.rs`). `cont` names
     /// the one ground container this move touches — a bag id for
     /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, a
@@ -2606,6 +2681,8 @@ pub struct World {
     /// `world_conts` — it costs the tick nothing but one bounded expiry
     /// sweep over the live entries.
     pub ground_items: crate::grounditem::GroundItems,
+    /// Every living plant (`farm.rs`). Sim state, hashed and saved.
+    pub farm: crate::farm::Farm,
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
@@ -2745,6 +2822,7 @@ impl World {
             rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
             ground_items: crate::grounditem::GroundItems::new(),
+            farm: crate::farm::Farm::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
             sweep_support: 0,
@@ -3247,6 +3325,216 @@ impl World {
                 p,
                 at,
             )
+    }
+
+    /// [`Self::box_reachable`] for plant `i` (`farm.rs`): the eye within
+    /// `gather::PICK_REACH_M` of the nearest point of its pick cylinder, and
+    /// then a bed plant's planter in reach, or a ground plant in plain sight.
+    pub fn plant_reachable(&self, i: usize, slot: usize) -> bool {
+        let (Some(p), Some(rec)) = (self.players.get(slot), self.farm.entries().get(i)) else {
+            return false;
+        };
+        let look = self.cook.farm.crop(rec.crop).map_or(0, |c| c.look);
+        if !crate::farm::in_pick_reach(look, rec.stage, rec.pos(), crate::reach::eye(p)) {
+            return false;
+        }
+        if rec.host == crate::farm::HOST_GROUND {
+            let at = crate::reach::Target::lying(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                (rec.qx, rec.qy, rec.qz),
+            );
+            crate::reach::clear(
+                self.seed,
+                &self.haven,
+                self.pieces.cols(),
+                self.card_door_bits,
+                p,
+                at,
+            )
+        } else {
+            // A bed's planter, not whatever box took its address after a
+            // raid or decay: that plant is stale until self-heal uproots it.
+            self.deploys
+                .box_index(rec.host)
+                .filter(|&b| self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER)
+                .is_some_and(|b| self.box_reachable(b, slot))
+        }
+    }
+
+    /// `Command::Plant`'s body: a bed spot in a planter in reach, or the
+    /// open ground at `q` when `host` is `farm::HOST_GROUND`.
+    fn plant(
+        &mut self,
+        slot: usize,
+        inv_slot: u8,
+        host: u32,
+        spot: u8,
+        q: (i32, i32),
+    ) -> Result<(), u32> {
+        if host == crate::farm::HOST_GROUND {
+            return self.plant_ground(slot, inv_slot, q);
+        }
+        let Some(b) = self
+            .deploys
+            .box_index(host)
+            .filter(|&b| self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER)
+        else {
+            return Err(deploy::REFUSE_D_SPOT);
+        };
+        if !self.box_reachable(b, slot) {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        let rec = self.deploys.boxes()[b];
+        // The floor the planter is drawn, collides and is reached at, so
+        // the soil a plant roots in is the bed's (on bare ground the lowest
+        // terrain under it, not the column's band).
+        let feet = deploy::box_base_y(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            &rec,
+            deploy::ARCH_PLANTER,
+        );
+        crate::farm::plant_bed(
+            &self.cook.farm,
+            self.seed,
+            self.tick,
+            &mut self.farm,
+            &rec,
+            feet,
+            &mut self.players[slot],
+            inv_slot as usize,
+            spot,
+            &mut self.events,
+        )
+        .map(|_| ())
+    }
+
+    /// `Command::Plant` on the open ground (`farm::ground_ok`): a seed in the
+    /// named slot, the soil point within a hand's reach of the eye and in
+    /// plain sight of it, then the ground, the soil, the spacing and the caps.
+    fn plant_ground(&mut self, slot: usize, inv_slot: u8, q: (i32, i32)) -> Result<(), u32> {
+        let fc = &self.cook.farm;
+        let p = &self.players[slot];
+        let stack = p.inv.get(inv_slot as usize).copied().unwrap_or_default();
+        if stack.count == 0 || fc.crop_of_item(stack.item).is_none() {
+            return Err(deploy::REFUSE_D_PLANT_ITEM);
+        }
+        let (x, z) = (
+            q.0 as f32 * crate::movement::POS_XZ_Q,
+            q.1 as f32 * crate::movement::POS_XZ_Q,
+        );
+        let y = terrain::ground(self.seed, &self.haven, x, z);
+        let cols = self.pieces.cols();
+        let at = crate::reach::Target::lying(
+            self.seed,
+            &self.haven,
+            cols,
+            (q.0, crate::movement::quant_y(y), q.1),
+        );
+        if !crate::farm::in_sow_reach((x, y, z), crate::reach::eye(p))
+            || !crate::reach::clear(self.seed, &self.haven, cols, self.card_door_bits, p, at)
+        {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        // The scatter as the seed draws it (`farm::ground_clear`).
+        let mut occ = crate::occupy::Occupants {
+            table: &self.scatter,
+            haven: &self.haven,
+            harvested: &crate::occupy::Pristine,
+            cache: &mut self.slot_cache,
+            doors: self.card_door_bits,
+        };
+        let (soil, y) = crate::farm::ground_ok(
+            fc,
+            self.seed,
+            &self.haven,
+            &mut occ,
+            &self.pieces,
+            &self.deploys,
+            &self.farm,
+            p.id,
+            x,
+            z,
+        )?;
+        crate::farm::plant_ground(
+            &self.cook.farm,
+            self.seed,
+            self.tick,
+            &mut self.farm,
+            &mut self.players[slot],
+            inv_slot as usize,
+            q,
+            soil,
+            y,
+            &mut self.events,
+        )
+        .map(|_| ())
+    }
+
+    /// Seeds from eating (Rust's): what eating `item` leaves in the eater's
+    /// hand, its row's `leaves_pm` of the time, rolled on the eater and the
+    /// tick. Into the pack, sparing the held hotbar slot if the meal emptied
+    /// it (so the next click there eats or does nothing, never sows), and
+    /// what will not fit in a bag at the feet.
+    fn leave_seed(&mut self, slot: usize, item: u16) {
+        let Some(def) = self.survival.row(item) else {
+            return;
+        };
+        if def.leaves == NO_ITEM || def.leaves_pm == 0 {
+            return;
+        }
+        let pid = self.players[slot].id;
+        let roll = crate::rng::splitmix64(
+            crate::rng::cell_hash(self.seed, pid as i32, 0, crate::farm::CH_LEAVES) ^ self.tick,
+        ) % 1000;
+        if roll >= u64::from(def.leaves_pm) {
+            return;
+        }
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let held = self.players[slot].frame.sel as usize;
+        let added = crate::gather::inv_add_spilling_sparing(
+            &mut self.players[slot].inv,
+            &mut spill,
+            def.leaves,
+            1,
+            self.gather.stack_max_of(def.leaves),
+            0,
+            held,
+        );
+        self.events.push(
+            EV_GATHER,
+            pid,
+            ((def.leaves as u32) << 16) | added as u32,
+            (1 - added) as u32,
+        );
+        self.drain_spill(slot, &mut spill);
+    }
+
+    /// `Command::Tend`'s body.
+    fn tend(&mut self, slot: usize, plant: u32, act: u8) -> Result<(), u32> {
+        let Some(i) = self.farm.index_of_id(plant) else {
+            return Err(deploy::REFUSE_D_SPOT);
+        };
+        if !self.plant_reachable(i, slot) {
+            return Err(deploy::REFUSE_D_REACH);
+        }
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let r = crate::farm::tend(
+            &self.cook.farm,
+            &self.gather,
+            &mut self.farm,
+            &mut self.deploys,
+            &mut self.players[slot],
+            i,
+            act,
+            &mut spill,
+            &mut self.events,
+        );
+        self.drain_spill(slot, &mut spill);
+        r
     }
 
     /// [`Self::box_reachable`] for world container `i` — the pad's crate, a
@@ -4001,7 +4289,7 @@ impl World {
                     i64::from(f.qz - v.body.qz),
                 );
                 let v = &mut self.players[j];
-                let hurt = combat::hurt(&self.combat, v, FIRE_HP);
+                let hurt = combat::burn(&self.combat, v, FIRE_HP);
                 let (vid, left, vmax) = (v.id, u32::from(hurt.left), u32::from(v.hp_max));
                 self.events
                     .push(EV_HURT, vid, u32::from(from), u32::from(FIRE_HP));
@@ -4352,6 +4640,19 @@ impl World {
         );
     }
 
+    /// The survival clock's step for body `i`, and the death it ends in:
+    /// `true` when it died this tick and the slot is a corpse now.
+    fn clock(&mut self, i: usize) -> bool {
+        let cause = match survival::step(&self.survival, &mut self.players[i], &mut self.events) {
+            survival::Step::Died => DEATH_BY_CLOCK,
+            survival::Step::BledOut => DEATH_BY_BLEED,
+            survival::Step::Quiet | survival::Step::Changed => return false,
+        };
+        let id = self.players[i].id;
+        self.die(i, id, cause, NO_ITEM, 0);
+        true
+    }
+
     /// A lethal blow landed: lay the body down, or make the corpse.
     ///
     /// **Every kill site goes through here, and the choice is the
@@ -4406,6 +4707,11 @@ impl World {
         q.wounded = true;
         q.wound_until = self.tick + span as u64;
         q.hp = crate::wound::WOUNDED_HP;
+        // Rust: you do not bleed out while down (Devblog 54), and what was
+        // in the hands fell with you.
+        q.bleed = 0;
+        q.bleed_acc = 0;
+        survival::clear_use(q);
         q.death_by = by;
         q.death_cause = cause;
         q.death_item = item;
@@ -5193,6 +5499,7 @@ impl World {
                     air_dc: 0,
                     fel: 0,
                     fel_acc: 0,
+                    under: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -5214,6 +5521,12 @@ impl World {
                     hostile: 0,
                     comfort: 0,
                     calm: 0,
+                    bleed: 0,
+                    bleed_acc: 0,
+                    use_at: 0,
+                    use_slot: 0,
+                    use_sel: 0,
+                    use_item: NO_ITEM,
                     gate_spawn: false,
                     gate_spawn_at: 0,
                     // The save does not carry it: the clock starts here.
@@ -5300,11 +5613,11 @@ impl World {
     /// Every player id the world files anything under, through `f`: each
     /// body's own, the killer on each corpse, every owner — a bag's, a
     /// cupboard's, a box's, a lock's, a turret's, a death bag's, a planted
-    /// charge's, a fire's — every cupboard crew and lock list, each arrow
-    /// lodged in a body, and each works credit. [`World::rekey`] moves a
-    /// player's things with them to a new connection id through it, and the
-    /// server reads the highest id a saved world still holds through it
-    /// (`worldfile::id_floor`), so the two cannot disagree about what a
+    /// charge's, a fire's, a plant's — every cupboard crew and lock list,
+    /// each arrow lodged in a body, and each works credit. [`World::rekey`]
+    /// moves a player's things with them to a new connection id through it,
+    /// and the server reads the highest id a saved world still holds through
+    /// it (`worldfile::id_floor`), so the two cannot disagree about what a
     /// player owns.
     ///
     /// Arrows in flight and the per-tick scratch are not visited: they live
@@ -5329,6 +5642,8 @@ impl World {
         for w in self.works.w.iter_mut() {
             w.map_ids(f);
         }
+        // A ground plant's owner is its cap's key (`farm::ground_ok`).
+        self.farm.map_ids(f);
     }
 
     /// Everything `from` owns is `to`'s: the same player, back on a new
@@ -5538,7 +5853,9 @@ impl World {
         let mut moved = 0u32;
         let mut clamp = |stacks: &mut [ItemStack]| {
             for s in stacks.iter_mut() {
-                let max = gc.cond_max_of(s.item);
+                // A seed's genes and a blueprint's target are data, not
+                // wear: the ceiling is what the item may carry.
+                let max = gc.cond_cap_of(s.item);
                 if s.count > 0 && s.cond > max {
                     s.cond = max;
                     moved += 1;
@@ -6349,7 +6666,29 @@ impl World {
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
-                    if deploy {
+                    // A planter with plants in it comes up empty or not at
+                    // all, a box's rule (farming v2).
+                    let key = deploy::box_key(cx, cz, level, loc);
+                    let planted = deploy
+                        && self.farm.has_host(key)
+                        && self.deploys.box_index(key).is_some_and(|b| {
+                            self.deploys.oven_states()[b].arch == deploy::ARCH_PLANTER
+                        });
+                    if planted {
+                        // Only a hand that could lift it hears it is planted.
+                        let why = deploy::pick_up_hand(
+                            &self.pieces,
+                            &self.deploys,
+                            &self.players[slot],
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                        )
+                        .err()
+                        .unwrap_or(deploy::REFUSE_D_NOT_EMPTY);
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
+                    } else if deploy {
                         deploy::pick_up(
                             &self.deploy,
                             &self.gather,
@@ -6380,6 +6719,12 @@ impl World {
                             &mut self.events,
                             &mut spill,
                         );
+                    }
+                    // A planter that came up takes nothing of the farm's
+                    // with it (pick_up refuses a planted one; this is the
+                    // eager half of `farm::step`'s self-heal).
+                    if deploy && self.farm.has_host(key) && self.deploys.box_index(key).is_none() {
+                        self.farm.uproot_host(key, &mut self.events);
                     }
                     // One buffer for both arms: they are two verbs behind
                     // one command and exactly one of them ran.
@@ -6691,7 +7036,20 @@ impl World {
             }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    survival::consume(
+                    // A bandage takes its time in the hands
+                    // (`survival::begin_use`); food goes down at once.
+                    let tick = self.tick;
+                    let eaten = self.players[slot]
+                        .inv
+                        .get(inv as usize)
+                        .filter(|s| s.count > 0)
+                        .map_or(NO_ITEM, |s| s.item);
+                    if !survival::begin_use(
+                        &self.survival,
+                        inv as usize,
+                        &mut self.players[slot],
+                        tick,
+                    ) && survival::consume(
                         &self.survival,
                         inv as usize,
                         &mut self.players[slot],
@@ -6701,7 +7059,9 @@ impl World {
                             self.works.unlocks,
                             crate::works::KNOB_HEAL_PCT,
                         ),
-                    );
+                    ) {
+                        self.leave_seed(slot, eaten);
+                    }
                 }
             }
             Command::Drop {
@@ -6913,6 +7273,27 @@ impl World {
                     self.drain_spill(slot, &mut spill);
                 }
             }
+            Command::Plant {
+                id,
+                slot: inv_slot,
+                host,
+                spot,
+                qx,
+                qz,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if let Err(why) = self.plant(slot, inv_slot, host, spot, (qx, qz)) {
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
+                    }
+                }
+            }
+            Command::Tend { id, plant, act } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    if let Err(why) = self.tend(slot, plant, act) {
+                        self.events.push(EV_DEPLOY_REFUSED, id, why, 0);
+                    }
+                }
+            }
             Command::Move {
                 id,
                 cont,
@@ -7046,6 +7427,101 @@ impl World {
             self.survival.max_water,
             &mut self.players[i],
         );
+        false
+    }
+
+    /// Pour out the full vessel slot `i` holds (water pass, the reference's
+    /// right mouse): it lands [`POUR_AHEAD_M`] ahead and splashes
+    /// [`POUR_RADIUS_M`] round, putting out every fire it reaches — a lit
+    /// camp fire or furnace, a fire arrow's — and watering what grows there
+    /// (`farm::pour`), or with salt water, emptying its tank. The vessel is empty after. False when
+    /// the hand holds no full vessel, so the right mouse means nothing here.
+    fn pour(&mut self, i: usize) -> bool {
+        let p = &self.players[i];
+        let sel = p.frame.sel as usize;
+        let held = p.inv.get(sel).copied().unwrap_or_default();
+        let Some((v, salt)) = self
+            .survival
+            .vessel_full(held.item)
+            .filter(|_| held.count == 1)
+        else {
+            return false;
+        };
+        let (fx, fz) = crate::yaw_lut::yaw_dir(p.frame.yaw);
+        let x = p.body.qx as f32 * POS_XZ_Q + fx * POUR_AHEAD_M;
+        let z = p.body.qz as f32 * POS_XZ_Q + fz * POUR_AHEAD_M;
+        let y = p.body.qy as f32 * POS_Y_Q;
+        let id = p.id;
+        let r = POUR_RADIUS_M;
+        let events = &mut self.events;
+        let mut doused = self.fires.douse(x, y, z, r, |f| {
+            events.push(EV_FIRE, fire_a(0, f.qx), f.qz as u32, f.qy as u32);
+        });
+        let (boxes, ovens) = self.deploys.oven_parts_mut();
+        for (b, st) in boxes.iter().zip(ovens.iter_mut()) {
+            let (bx, bz) = b.xz();
+            let (dx, dz) = (bx - x, bz - z);
+            // Planar, as a box's own reach is (`Deploys::box_in_reach`).
+            if st.burns() && st.lit && dx * dx + dz * dz <= r * r {
+                st.lit = false;
+                crate::oven::announce(b.cx, b.cz, b.level, b.loc, false, id, &mut self.events);
+                doused += 1;
+            }
+        }
+        let (boxes, ovens) = self.deploys.oven_parts_mut();
+        let watered = crate::farm::pour(
+            &self.cook.farm,
+            &mut self.farm,
+            boxes,
+            ovens,
+            (x, z),
+            r,
+            salt,
+        );
+        self.players[i].inv[sel].item = v.empty;
+        let c = u32::from(watered) | if salt { survival::POURED_SALT } else { 0 };
+        self.events.push(
+            EV_DRANK,
+            id,
+            survival::drank_b(survival::DRANK_POUR, doused),
+            c,
+        );
+        true
+    }
+
+    /// Breath for slot `i`, every tick (water pass): a mouth under the
+    /// surface spends a tick of air and one out of it gets the whole breath
+    /// back in about a second. Past half the air gone the water costs hp, on
+    /// [`DROWN_PERIOD_TICKS`], ramping to `drown_hp_per_s` at none — the
+    /// reference's oxygen, which kills a full body in about 12 s. True when
+    /// it killed the body, the caller's `continue`.
+    fn breathe(&mut self, i: usize) -> bool {
+        let ec = &self.survival.exposure;
+        let air = ec.air_ticks;
+        let p = &mut self.players[i];
+        if air == 0 {
+            return false;
+        }
+        let feet = p.body.qy as f32 * movement::POS_Y_Q;
+        if !movement::mouth_under(feet) {
+            p.under = p.under.saturating_sub((air / AIR_BACK_TICKS).max(1));
+            return false;
+        }
+        p.under = (p.under + 1).min(air);
+        let half = air / 2;
+        if p.under <= half || !(self.tick + i as u64).is_multiple_of(DROWN_PERIOD_TICKS) {
+            return false;
+        }
+        let span = u32::from(air - half).max(1);
+        let per_s = u32::from(ec.drown_hp_per_s) * u32::from(p.under - half).min(span) / span;
+        let dmg = (per_s * DROWN_PERIOD_TICKS as u32 / crate::limits::TICK_HZ).max(1) as u16;
+        let took = combat::hurt_unreduced(p, dmg);
+        let (id, hp, hp_max) = (p.id, u32::from(p.hp), u32::from(p.hp_max));
+        self.events.push(EV_HEALTH, id, hp, hp_max);
+        if took.died {
+            self.die(i, id, DEATH_BY_DROWN, NO_ITEM, 0);
+            return true;
+        }
         false
     }
 
@@ -7519,11 +7995,9 @@ impl World {
             // air over a base that decayed out from under it.
             if self.players[i].sleeping {
                 gather::strike_due(tick, &mut self.players[i]);
-                if survival::step(&self.survival, &mut self.players[i], &mut self.events)
-                    == survival::Step::Died
-                {
-                    let id = self.players[i].id;
-                    self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                // Nobody is holding the bandage any more.
+                survival::clear_use(&mut self.players[i]);
+                if self.clock(i) {
                     continue;
                 }
                 // A sleeper that was down when its owner left keeps its
@@ -7554,6 +8028,8 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                // A sleeper floats, but one left on a sunken floor drowns.
+                self.breathe(i);
                 continue;
             }
             // Down (wounded v0): the clock, the roll, the crawl, and none
@@ -7567,11 +8043,7 @@ impl World {
             // held, and `held` on the wire says so (`server/core.rs`).
             if self.players[i].wounded {
                 gather::strike_due(tick, &mut self.players[i]);
-                if survival::step(&self.survival, &mut self.players[i], &mut self.events)
-                    == survival::Step::Died
-                {
-                    let id = self.players[i].id;
-                    self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                if self.clock(i) {
                     continue;
                 }
                 // Wet and cold (weather v0): a body on the ground in the
@@ -7614,23 +8086,36 @@ impl World {
                     &mut self.players[i].body,
                     &frame,
                 );
+                // A body down in the water still has to breathe.
+                self.breathe(i);
                 continue;
             }
             // The clock runs before the arm. A body that starves this tick
             // does not also get to swing on it — and running the clock
             // first is what makes the death below the tick's last word
             // about this slot, exactly as a combat death is.
-            if survival::step(&self.survival, &mut self.players[i], &mut self.events)
-                == survival::Step::Died
-            {
-                let id = self.players[i].id;
-                self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+            if self.clock(i) {
                 continue;
             }
             // Wet and cold (weather v0), on the clock's footing: before the
             // arm, so a body the cold kills does not also swing.
             if self.expose(i, tick, &wx, night) {
                 continue;
+            }
+            // The bandage being wrapped lands, or was put away.
+            if self.players[i].use_at != 0 {
+                let heal_pct = crate::works::knob_pct(
+                    &self.works_def,
+                    self.works.unlocks,
+                    crate::works::KNOB_HEAL_PCT,
+                );
+                survival::tick_use(
+                    &self.survival,
+                    &mut self.players[i],
+                    &mut self.events,
+                    self.tick,
+                    heal_pct,
+                );
             }
             // The torch burns on the same footing as the metabolism, and
             // deliberately beside it: both are clocks that spend something
@@ -7689,6 +8174,15 @@ impl World {
             if self.fall(i, falling) {
                 continue;
             }
+            if self.breathe(i) {
+                continue;
+            }
+            // The right mouse with a full vessel in hand pours it out (the
+            // water pass). Once: the vessel is empty after, and holding the
+            // button over an empty one means nothing.
+            if self.players[i].frame.buttons & crate::input::BTN_AIM != 0 {
+                self.pour(i);
+            }
             // A drawn bow takes the arm before the gather scan sees it.
             // `gather::swing` searches the 3×3 cell ring for a node and
             // absorbs the swing into it, which is precisely what would eat
@@ -7713,7 +8207,9 @@ impl World {
             // spear, a bow, a gun or a charge in hand there does nothing at
             // all, so nothing leaves the zone to hurt anyone outside it.
             // The client holsters it on screen (`ItemRow::holster`).
-            let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i]);
+            // Nor fired from the water: a swimmer keeps only melee.
+            let holstered = combat::holstered(&self.combat, &self.gather, &self.players[i])
+                || combat::waterlogged(&self.combat, &self.players[i]);
             let took_arm = holstered
                 || ranged::draw(
                     tick,
@@ -8546,30 +9042,6 @@ impl World {
         // sweeps that can remove the thing it is stepping — an oven that
         // decays this tick has already spent its period, which is the
         // ordering a raid and a decay have to agree on.
-        // A planter grows by day under open sky (crops v1): the shelter
-        // question a body asks of the rain, asked at the planter's feet.
-        // The same rain waters it.
-        let night = is_night(tick);
-        let wx = crate::weather::now(self.seed, tick, &self.env);
-        let rain_pm = wx.rain;
-        let day_tick = crate::weather::day_tick(tick, &self.env);
-        let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
-        let air = &self.survival.exposure.air;
-        let planter_feet = |b: &crate::deploy::BoxRec| {
-            crate::collide::col_base_y(seed, haven, pieces.cols(), b.cx, b.cz)
-                + crate::build::level_y(b.level)
-        };
-        let open_sky = |b: &crate::deploy::BoxRec| {
-            let (x, z) = b.xz();
-            !crate::collide::roofed(seed, haven, pieces.cols(), x, z, planter_feet(b))
-        };
-        // The air at the planter sets its pace (climate v0).
-        let crop_pm = |b: &crate::deploy::BoxRec| {
-            let (x, z) = b.xz();
-            let alt = planter_feet(b) - crate::terrain::SEA_LEVEL;
-            let t = crate::climate::air_dc(air, seed, x, z, alt, day_tick, &wx);
-            crate::climate::crop_pm(air, t)
-        };
         crate::oven::sweep(
             &self.cook,
             &self.gather,
@@ -8580,10 +9052,38 @@ impl World {
                 self.works.unlocks,
                 crate::works::KNOB_SMELT_PCT,
             ),
-            &open_sky,
-            &crop_pm,
+            &mut self.events,
+        );
+        // The farm (`farm.rs`), on the ovens' stride and right behind them:
+        // a plant grows by day under open sky — the shelter question a body
+        // asks of the rain, asked at its soil — and the same rain fills the
+        // planters' tanks.
+        // Night by the day clock everyone sees, not the raw tick: an
+        // admin `/time` moves `Env::day_offset`, and the sun with it.
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let night = is_night(day_tick);
+        let wx = crate::weather::now(self.seed, tick, &self.env);
+        let (seed, haven, pieces) = (self.seed, &self.haven, &self.pieces);
+        let feet_of = |b: &crate::deploy::BoxRec, arch: u8| {
+            deploy::box_base_y(seed, haven, pieces.cols(), b, arch)
+        };
+        let open_sky_at =
+            |x: f32, z: f32, y: f32| !crate::collide::roofed(seed, haven, pieces.cols(), x, z, y);
+        let ground_open = |x: f32, z: f32, y: f32| {
+            crate::farm::ground_cover(seed, haven, pieces.cols(), x, z, y).is_ok()
+        };
+        crate::farm::step(
+            &self.cook.farm,
+            &self.survival.exposure.air,
+            &mut self.farm,
+            &mut self.deploys,
+            tick,
             night,
-            rain_pm,
+            &wx,
+            day_tick,
+            &feet_of,
+            &open_sky_at,
+            &ground_open,
             &mut self.events,
         );
         // The research tables, on the same stride and at the same point
@@ -8820,6 +9320,11 @@ impl World {
                 fb[0..2].copy_from_slice(&p.fel.to_le_bytes());
                 fb[2..6].copy_from_slice(&p.fel_acc.to_le_bytes());
                 h.update(&fb);
+            }
+            // The held breath, the same way: a world nobody swam in hashes
+            // as it did before there was water to hold it under.
+            if p.under != 0 {
+                h.update(&p.under.to_le_bytes());
             }
             // `hostile` is not hashed and not saved: a restart forgives it,
             // like `safe` it is a clock over the body rather than a fact
@@ -9344,6 +9849,23 @@ impl World {
             h.update(&buf);
             for c in ov.cook.iter() {
                 h.update(&c.to_le_bytes());
+            }
+            // A planter's or a catcher's tank (farming v2), only where there
+            // is one, so a world without one hashes as it did before.
+            if crate::oven::OvenState::arch_has_tank(ov.arch) {
+                h.update(&ov.water.to_le_bytes());
+            }
+        }
+        // The farm (`farm.rs`), only once it has ever held a plant (the
+        // fires' idiom): every field of every plant. The hint is a lookup
+        // accelerator and never folded.
+        if !self.farm.is_empty() || self.farm.next_id() > 1 {
+            h.update(&(self.farm.len() as u64).to_le_bytes());
+            h.update(&self.farm.next_id().to_le_bytes());
+            for p in self.farm.entries() {
+                let mut buf = [0u8; crate::farm::PLANT_BYTES];
+                crate::farm::pack(p, &mut buf);
+                h.update(&buf);
             }
         }
         h.update(&(self.backpacks.len() as u64).to_le_bytes());

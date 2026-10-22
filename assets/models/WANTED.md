@@ -215,6 +215,8 @@ blocks, so they are hard.
 | 4.10 | **Recycler** | 1.3 × 1.15 × 0.9 | ≤ 1.2 k | Metal, squat, industrial hopper. Sits next to 4.5 in a base — *squat metal* against the furnace's *tall stone* is the whole read. |
 | 4.11 | **Code lock** | 0.2 × 0.3 × 0.12 | ≤ 400 | Keypad, bolted on. **Not drawn at all today** — a lock mints no deploy record, so this needs a draw path as well as a mesh. Mounts on a door's outer face at chest height. |
 | 4.12 | **Large box** | ~1.4 × 1.0 × 1.0 | ≤ 800 | Blocked on §0.4's archetype split. Size is a proposal, not read off code — nothing draws it yet. |
+| 4.13 | ~~**Planter box**~~ | 1.6 × 0.5 × 0.8 | 3,973 | ✅ **SHIPPED 2026-10-21** — `deploy/planter_box.glb` (`DEPLOY` 17), soil 6 cm under the rim where the sim plants. |
+| 4.14 | ~~**Water catcher**~~ | 0.9 × 1.1 × 0.9 | 4,724 | ✅ **SHIPPED 2026-10-21** — `deploy/water_catcher.glb` (`DEPLOY` 23): poles, a canvas funnel, a hose and a drum. |
 
 ---
 
@@ -269,6 +271,8 @@ corpse bag.
 | 5.20 | Raw meat | 0.2 | ≤ 400 | The one food you cannot eat — it exists to be carried to a fire. |
 | 5.21 | Cooked meat | 0.2 | ≤ 400 | Same cut, seared. Must be tellable from 5.20 and 5.22 in hand. |
 | 5.22 | Burnt meat | 0.2 | ≤ 400 | Blackened. |
+| 5.23 | ~~Potato~~ | 0.11 | 834 | ✅ **SHIPPED 2026-10-21** — `held/potato.glb`, lying on its side. |
+| 5.24 | ~~Pumpkin~~ | 0.34 | 1,573 | ✅ **SHIPPED 2026-10-21** — `held/pumpkin.glb`; also the fruit on a bed vine (`render::crops::FRUIT_GLB`). |
 
 ---
 
@@ -389,6 +393,11 @@ with no code change.
 | 9.8 | **Fern / frond atlas** | ✅ shipped: `fern_card` (Poly Haven `fern_02`). | — |
 | 9.9 | **Bark ×2–3** (not alpha) | Birch shipped (`birch`, TextureCan). A dead/weathered bark is still wanted, but nothing would draw it yet; the best candidate measured is Poly Haven `bark_willow_02` (2.15 m). | 5 |
 | 9.10 | **Flower / forb atlas** | Meadow-biome variety. Poly Haven has the sheets with alpha (`dandelion_01`, `celandine_01`, `flower_gazania`, `periwinkle_plant`); they are loose parts and need a baker like `ci/bake_fern_atlas.py`. | 6 |
+
+**Crops — 3 meshes**, ✅ shipped 2026-10-21 (`crops/`, `render::crops::CROP_GLB`;
+`MANIFEST.md` §Farming v2): corn (1.8 m), the potato haulm (0.55 m, marginal:
+it reads as a leafy crop more than a potato) and the pumpkin vine (0.35 m).
+Hemp and the berry bush stay generated.
 
 Sources to start from: [`madjin/awesome-cc0`](https://github.com/madjin/awesome-cc0)
 indexes the CC0 collections; ambientCG and Poly Haven are the usual bark
@@ -523,7 +532,7 @@ on. The box is the held one; the worn fit is `worn.rs`'s.
 | 12.45 | Pistol Round | 0.09×0.08×0.04 | three revolver cartridges, brass cases, copper bullets | |
 | 12.46 | Rope | 0.25×0.14×0.25 | a coil of rough hemp rope, one loose end | `Rope001` on a helix sweep |
 | 12.47 | Sewing Kit | 0.21×0.11×0.17 | two wooden thread spools and a steel needle | |
-| 12.48 | Planter Box | 0.41×0.25×0.21 | a box of old planks, soil, seedlings | the world's planter is still a cuboid (`DEPLOY` 17): build it at the world's size and the hand reuses it scaled |
+| 12.48 | ~~Planter Box~~ | 0.41×0.25×0.21 | a box of old planks, soil, seedlings | ✅ **DONE 2026-10-21** (Meshy, not Blender): `deploy/planter_box.glb` at the world's size (`DEPLOY` 17, 1.6×0.5×0.8, soil at the sim's 0.44 m), and the hand reuses it scaled (`MANIFEST.md` §Farming v2) |
 | 12.49 | Gears | 0.34×0.26×0.06 | two cast steel gears, one large and one small, machined teeth, oily, a little rust | `Metal009` |
 | 12.50 | Corn Seed | 0.13×0.03×0.14 | a small heap of dried corn kernels | rarely seen; last |
 | 12.51 | Hemp Seed | 0.09×0.02×0.11 | a small heap of small brown seeds | rarely seen; last |

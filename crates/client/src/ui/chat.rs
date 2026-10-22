@@ -181,7 +181,7 @@ pub struct Line {
     pub friend: bool,
     /// When it arrived, seconds on the client's clock. The fade reads it.
     pub at: f64,
-    /// Words said out loud, transcribed by the shard (a caption, v135).
+    /// Words said out loud, transcribed by the shard (a caption, v138).
     pub voice: bool,
     /// The language the text was translated from, 0 for the words as said
     /// or typed (`protocol::lang`).
@@ -206,7 +206,7 @@ impl Log {
         self.lines.push(line);
     }
 
-    /// A caption (v135), as a line: `more` continues the speaker's last
+    /// A caption (v138), as a line: `more` continues the speaker's last
     /// piece of the same caption in the same language. A translation
     /// replaces the line it translates, the words as said or the line as
     /// typed, rather than adding a second; one with nothing to replace is

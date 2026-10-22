@@ -66,6 +66,59 @@ pub const WADE_SPEED_MULT: f32 = 0.5;
 /// Ground at or below this height counts as wading (alpha swim = slow
 /// wade, TERRAIN.md §3).
 pub const WADE_GROUND_MAX: f32 = SEA_LEVEL + 0.4;
+
+// ── Swimming (water pass, 2026-10-21) ─────────────────────────────────────
+//
+// The reference floats a body once the water reaches its chest and lets it
+// swim where it looks (`reference/WATER.md`). Every water surface here is
+// `SEA_LEVEL` — the sea and the carved lakes alike — and the ground is always
+// under the feet, so feet this far under the line ARE in water this deep: the
+// state is a function of `qy` alone, with nothing new on the body or the wire.
+
+/// Water over the feet at which a body swims instead of wading, metres.
+pub const SWIM_DEPTH_M: f32 = 1.15;
+/// Where a floating body's feet hang under the surface: the head out.
+pub const FLOAT_DEPTH_M: f32 = 1.3;
+/// The mouth over the feet: under the surface past this, a body holds its
+/// breath (`World::breathe`).
+pub const MOUTH_M: f32 = 1.5;
+/// Swimming, m/s: slower than a walk, as the reference's is.
+pub const SWIM_SPEED: f32 = 1.6;
+pub const SWIM_SPRINT_SPEED: f32 = 2.4;
+/// Diving and rising, m/s: crouch, jump, or swimming forward looking down
+/// or up past [`SWIM_PITCH_DEAD`].
+pub const SWIM_VERT_SPEED: f32 = 1.8;
+/// The drift back up to [`FLOAT_DEPTH_M`] when nothing holds a body down.
+pub const BUOY_SPEED: f32 = 1.2;
+/// The share of the gap to the wanted vertical speed water closes a tick:
+/// a dive into a lake slows instead of hitting the bed at fall speed.
+pub const WATER_DRAG: f32 = 0.15;
+/// The share of a full look down (or up) under which swimming forward stays
+/// level, about 30°, so a swimmer eyeing the shore does not sink toward it.
+pub const SWIM_PITCH_DEAD: f32 = 0.35;
+/// How high above its feet a swimmer hauls out onto an edge: a dock, a
+/// foundation's lip, a bank. Walking keeps [`STEP_UP`].
+pub const SWIM_CLIMB_M: f32 = 1.8;
+
+/// Feet at `feet_y` are swimming.
+#[inline]
+pub fn swimming_at(feet_y: f32) -> bool {
+    feet_y < SEA_LEVEL - SWIM_DEPTH_M
+}
+
+/// A body is swimming: in water too deep to stand in with its head out.
+/// Guns, bows and building wait for dry feet (the reference's rule).
+#[inline]
+pub fn swimming(body: &Body) -> bool {
+    swimming_at(body.qy as f32 * POS_Y_Q)
+}
+
+/// The mouth of feet at `feet_y` is under water. The one hook a sealed,
+/// air-filled room would answer to, when there is one to build.
+#[inline]
+pub fn mouth_under(feet_y: f32) -> bool {
+    feet_y + MOUTH_M < SEA_LEVEL
+}
 /// Hard world border: the sea ring beyond the island is not walkable v1.
 pub const BORDER_MARGIN: f32 = 8.0;
 
@@ -260,17 +313,26 @@ pub fn step_scaled(
     // A drawn bow walks (`BTN_AIM`, `reference/PROJECTILES.md` §6): the
     // draw costs the legs as well as the time. Crouch is read off the frame
     // alone, like the draw, so the predictor needs nothing else to agree.
-    let mut speed = if frame.buttons & BTN_CROUCH != 0 {
+    let swim = swimming_at(y);
+    let mut speed = if swim {
+        if frame.buttons & BTN_SPRINT != 0 {
+            SWIM_SPRINT_SPEED
+        } else {
+            SWIM_SPEED
+        }
+    } else if frame.buttons & BTN_CROUCH != 0 {
         CROUCH_SPEED
     } else if frame.buttons & BTN_SPRINT != 0 && frame.buttons & BTN_AIM == 0 {
         SPRINT_SPEED
     } else {
         WALK_SPEED
     };
-    if ground_here <= WADE_GROUND_MAX {
+    if !swim && ground_here <= WADE_GROUND_MAX {
         speed *= WADE_SPEED_MULT;
     }
     speed *= scale;
+    // A swimmer hauls out onto what a walker would have to climb.
+    let step_up = if swim { SWIM_CLIMB_M } else { STEP_UP };
 
     // Horizontal, axis-resolved: full move, then x-only, then z-only.
     // Walls veto a candidate outright; a built surface accepts on the
@@ -445,7 +507,7 @@ pub fn step_scaled(
             let hard = pg.max(og);
             let mut face = None;
             let ok = if hard > g {
-                hard - y <= STEP_UP
+                hard - y <= step_up
             } else if !climbable(y, g, run2.sqrt()) {
                 false
             } else if g > y {
@@ -510,14 +572,50 @@ pub fn step_scaled(
     // capsule has no air-control penalty and no ground friction to escape:
     // horizontal speed is `WALK_SPEED`/`SPRINT_SPEED` in the air exactly as
     // it is on the ground.
-    let jumping = body.grounded && frame.buttons & BTN_JUMP != 0;
+    let jumping = !swim && body.grounded && frame.buttons & BTN_JUMP != 0;
     if jumping {
         vy = JUMP_SPEED;
     }
     // A slide keeps to the face like a walk keeps to the ground, so its foot
     // is not a fall.
     let held = body.grounded || slide.is_some();
-    if !jumping && held && ground - y <= STEP_UP && y - ground <= STEP_UP {
+    if swim {
+        // In the water: jump rises, crouch dives, swimming forward looking
+        // well down or up steers; otherwise the body drifts back up to float
+        // with its head out. Water drag closes on the wanted speed rather
+        // than gravity adding to it, so a dive off a cliff slows in the lake.
+        let float_y = SEA_LEVEL - FLOAT_DEPTH_M;
+        let up = frame.buttons & BTN_JUMP != 0;
+        let down = frame.buttons & BTN_CROUCH != 0;
+        let mut want = match (up, down) {
+            (true, false) => SWIM_VERT_SPEED,
+            (false, true) => -SWIM_VERT_SPEED,
+            _ => 0.0,
+        };
+        if want == 0.0 && mf > 0.0 {
+            // The look as a share of straight up (1) or down (-1): linear in
+            // the angle, which is all an intent needs and costs no trig.
+            let look = frame.pitch as f32 * (2.0 / 255.0) - 1.0;
+            if !(-SWIM_PITCH_DEAD..=SWIM_PITCH_DEAD).contains(&look) {
+                want = mf * look * SWIM_VERT_SPEED;
+            }
+        }
+        if want == 0.0 && y < float_y {
+            want = BUOY_SPEED;
+        }
+        vy += (want - vy) * WATER_DRAG;
+        ny += vy * DT;
+        // Swimming does not lift a body out of the water: the surface holds
+        // it at the float line. Out is a haul onto an edge, above.
+        if vy > 0.0 && ny > float_y {
+            ny = float_y.max(y);
+            vy = 0.0;
+        }
+        if ny <= ground {
+            ny = ground;
+            vy = vy.max(0.0);
+        }
+    } else if !jumping && held && ground - y <= STEP_UP && y - ground <= STEP_UP {
         ny = ground;
         vy = 0.0;
     } else {

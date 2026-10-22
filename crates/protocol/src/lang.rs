@@ -1,4 +1,4 @@
-//! The languages captions are translated into (wire v135).
+//! The languages captions are translated into (wire v138).
 //!
 //! A language is a small number on the wire: 0 is none (no translation, or
 //! a caption in the words as said), and `1..=LANGS.len()` index [`LANGS`].

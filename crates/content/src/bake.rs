@@ -94,6 +94,8 @@ fn node_slot(a: NodeArchetype) -> usize {
         NodeArchetype::SulfurPile => sim_core::terrain::Occupant::SulfurPile,
         NodeArchetype::MushroomPatch => sim_core::terrain::Occupant::MushroomPatch,
         NodeArchetype::Cactus => sim_core::terrain::Occupant::Cactus,
+        NodeArchetype::WildCorn => sim_core::terrain::Occupant::WildCorn,
+        NodeArchetype::WildPumpkin => sim_core::terrain::Occupant::WildPumpkin,
     };
     sim_core::gather::node_index(o).expect("every archetype is a gather node")
 }
@@ -159,6 +161,12 @@ impl Content {
                     item.id, item.light_burn
                 )
             })?;
+            // Data the stack's `cond` carries: the walls' ceiling for it.
+            gc.cond_cap[idx] = match item.cond_carries {
+                None => 0,
+                Some(crate::schema::CondCarries::Genes) => sim_core::farm::GENOME_VALUES as u16,
+                Some(crate::schema::CondCarries::Target) => MAX_ITEM_DEFS as u16,
+            };
         }
         for g in &self.gatherables {
             let slot = node_slot(g.archetype);
@@ -516,6 +524,7 @@ impl Content {
                     DeployArchetype::BarricadeBarbed => sim_core::deploy::ARCH_BARRICADE_BARBED,
                     DeployArchetype::FloorSpikes => sim_core::deploy::ARCH_FLOOR_SPIKES,
                     DeployArchetype::Rug => sim_core::deploy::ARCH_RUG,
+                    DeployArchetype::Catcher => sim_core::deploy::ARCH_CATCHER,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -684,6 +693,17 @@ impl Content {
         // narrow cannot fail on shipped content; it is written as a bake
         // refusal anyway for `repair_cost_pct`'s reason one function over —
         // `bake_combat` is reachable from fixtures that never validated.
+        // Bleeding's half that a hit owns (`combat::hurt`); the clock's half
+        // is `bake_survival`'s. `validate::structural` pins it to 0..=100.
+        cc.bleed_pct = u16::try_from(self.balance.survival.bleed_pct)
+            .ok()
+            .filter(|&p| p <= 100)
+            .ok_or_else(|| {
+                format!(
+                    "bake: survival bleed_pct {} is not a percentage",
+                    self.balance.survival.bleed_pct
+                )
+            })?;
         cc.arrow_break_pct = u16::try_from(self.balance.globals.arrow_break_pct)
             .ok()
             .filter(|&p| p <= 100)
@@ -1294,18 +1314,33 @@ impl Content {
         sc.spawn_hp = u16f(s.spawn_hp, "spawn_hp")?;
         sc.spawn_food = u16f(s.spawn_food, "spawn_food")?;
         sc.spawn_water = u16f(s.spawn_water, "spawn_water")?;
-        match (&s.vessel, &s.vessel_full) {
-            (Some(e), Some(f)) => {
-                let idx = |id: &str| {
-                    self.item_index(id)
-                        .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
-                };
-                sc.vessel = idx(e)?;
-                sc.vessel_full = idx(f)?;
-            }
-            (None, None) => {}
-            _ => return Err("bake: survival names one half of the vessel pair".to_string()),
+        sc.bleed_hp_per_min = u16f(s.bleed_hp_per_min, "bleed_hp_per_min")?;
+        sc.drink_water_salt = u16f(
+            s.drink_water_salt.unwrap_or(s.drink_water),
+            "drink_water_salt",
+        )?;
+        if s.vessels.len() > sim_core::survival::MAX_VESSELS {
+            return Err(format!(
+                "bake: survival names {} vessels, over MAX_VESSELS {}",
+                s.vessels.len(),
+                sim_core::survival::MAX_VESSELS
+            ));
         }
+        for (k, v) in s.vessels.iter().enumerate() {
+            let idx = |id: &str| {
+                self.item_index(id)
+                    .ok_or_else(|| format!("bake: survival vessel `{id}` is not an item"))
+            };
+            sc.vessels[k] = sim_core::survival::Vessel {
+                empty: idx(&v.empty)?,
+                fresh: idx(&v.fresh)?,
+                salt: match &v.salt {
+                    Some(id) => idx(id)?,
+                    None => sim_core::gather::NO_ITEM,
+                },
+            };
+        }
+        sc.vessel_count = s.vessels.len() as u8;
         let span = |min: u32, what: &str| {
             min.checked_mul(TICKS_PER_MIN)
                 .ok_or_else(|| format!("bake: survival {what} {min} min overflows the tick span"))
@@ -1388,6 +1423,8 @@ impl Content {
         ex.fel_ward_max = u16f(e.fel_ward_max, "fel_ward_max")?;
         ex.fel_pocket_per_s = u16f(e.fel_pocket_per_s, "fel_pocket_per_s")?;
         ex.snow_wet_pm = u16f(e.snow_wet_pm, "snow_wet_pm")?;
+        ex.air_ticks = u16f(e.air_s.saturating_mul(TICK_HZ), "air_s")?;
+        ex.drown_hp_per_s = u16f(e.drown_hp_per_s, "drown_hp_per_s")?;
         let cl = &self.balance.climate;
         ex.air = sim_core::climate::ClimateContent {
             temperate_low_dc: dc(cl.temperate_low_c),
@@ -1457,20 +1494,62 @@ impl Content {
                         con.id, con.fel
                     )
                 })?;
+            let bleed = i16::try_from(con.bleed)
+                .ok()
+                .filter(|v| (-(sim_core::survival::BLEED_MAX as i16)..=0).contains(v))
+                .ok_or_else(|| {
+                    format!(
+                        "bake: consumable `{}` bleed {} outside -{}..=0",
+                        con.id,
+                        con.bleed,
+                        sim_core::survival::BLEED_MAX
+                    )
+                })?;
+            // Ticks in a byte, the draw's resolution: 8.5 s is a ceiling
+            // no use nears.
+            let use_ticks =
+                u8::try_from(con.use_seconds.saturating_mul(TICK_HZ)).map_err(|_| {
+                    format!(
+                        "bake: consumable `{}` use_seconds {} overflows",
+                        con.id, con.use_seconds
+                    )
+                })?;
+            let leaves = match &con.leaves {
+                Some(l) => self
+                    .item_index(l)
+                    .ok_or_else(|| format!("bake: consumable `{}` leaves no item `{l}`", con.id))?,
+                None => sim_core::gather::NO_ITEM,
+            };
+            if con.leaves_pm > 1000 || (leaves == sim_core::gather::NO_ITEM) != (con.leaves_pm == 0)
+            {
+                return Err(format!(
+                    "bake: consumable `{}` leaves_pm {} does not match its leaves",
+                    con.id, con.leaves_pm
+                ));
+            }
             sc.consumable[idx] = ConsumableDef {
                 health,
                 food: u16f(con.food, "food")?,
                 water: u16f(con.water, "water")?,
                 seconds,
                 fel,
+                bleed,
+                use_ticks,
+                leaves,
+                leaves_pm: con.leaves_pm as u16,
             };
             sc.belt_recovery[idx] = con.belt_recovery;
             sc.revive[idx] = con.revive;
         }
-        if sc.vessel_full != sim_core::gather::NO_ITEM
-            && sc.consumable[sc.vessel_full as usize].water == 0
-        {
-            return Err("bake: survival vessel_full holds no water".to_string());
+        for v in sc.vessels() {
+            if sc.consumable[v.fresh as usize].water == 0 {
+                return Err("bake: a survival vessel's fresh item holds no water".to_string());
+            }
+            if v.salt != sim_core::gather::NO_ITEM && sc.consumable[v.salt as usize].is_food() {
+                // Salt water is boiled, never drunk from the vessel: a row
+                // here would be the sea with no price.
+                return Err("bake: a survival vessel's salt item is a consumable".to_string());
+            }
         }
         Ok(sc)
     }
@@ -1544,30 +1623,122 @@ impl Content {
                     CookStation::Fire => ARCH_FIRE,
                     CookStation::Furnace => ARCH_FURNACE,
                     CookStation::Recycler => ARCH_RECYCLER,
-                    CookStation::Planter => sim_core::deploy::ARCH_PLANTER,
                 },
             };
         }
         cc.row_count = self.cooks.len() as u16;
-        let w = &self.planter;
-        cc.water_full = self
-            .item_index(&w.item)
-            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.item))?;
-        cc.water_empty = self
-            .item_index(&w.emptied)
-            .ok_or_else(|| format!("bake: planter water `{}` names no item", w.emptied))?;
-        cc.water_ticks = w
-            .seconds
-            .checked_mul(TICK_HZ)
-            .and_then(|t| u16::try_from(t).ok())
+        cc.farm = self.bake_farm()?;
+        Ok(cc)
+    }
+
+    /// The farm (`cooking.toml` `[farm]` and `[[crop]]`, `sim_core::farm`), for
+    /// [`Self::bake_cooking`]:
+    /// seconds to ticks, plant-seconds to water units (× `TICK_HZ`), the
+    /// stage shares made cumulative, and each crop's look resolved. Refuses a
+    /// value past its integer and a table past `MAX_CROPS`.
+    fn bake_farm(&self) -> Result<sim_core::farm::FarmContent, String> {
+        use sim_core::farm::{CropDef, FarmContent, LOOK_NAMES};
+        let mut fc = FarmContent::EMPTY;
+        let f = &self.farm;
+        let item = |id: &str, what: &str| {
+            self.item_index(id)
+                .ok_or_else(|| format!("bake: farm {what} `{id}` names no item"))
+        };
+        let ticks = |v: u32, what: &str| {
+            v.checked_mul(TICK_HZ)
+                .ok_or_else(|| format!("bake: farm {what} {v} overflows a u32 of ticks"))
+        };
+        fc.water_full = item(&f.water, "water")?;
+        fc.water_empty = item(&f.emptied, "emptied")?;
+        fc.skin_wu = ticks(f.skin_water, "skin_water")?;
+        fc.planter_cap_wu = ticks(f.planter_water, "planter_water")?;
+        fc.rain_wu_s = ticks(f.rain_water, "rain_water")?;
+        fc.ripe_ticks = ticks(f.ripe_seconds, "ripe_seconds")?;
+        fc.dying_ticks = ticks(f.dying_seconds, "dying_seconds")?;
+        let pm = |v: u32, what: &str| {
+            u16::try_from(v)
+                .ok()
+                .filter(|&v| v <= 1000)
+                .ok_or_else(|| format!("bake: farm {what} {v} is past 1000 per mille"))
+        };
+        let pct = |v: u32, what: &str| {
+            u8::try_from(v)
+                .ok()
+                .filter(|&v| v <= 100)
+                .ok_or_else(|| format!("bake: farm {what} {v} is past 100 per cent"))
+        };
+        fc.good_gene_pm = pm(f.good_gene_pm, "good_gene_pm")?;
+        fc.bad_w_pm = pm(f.bad_w_pm, "bad_w_pm")?;
+        fc.g_pct = pct(f.g_pct, "g_pct")?;
+        fc.y_pct = pct(f.y_pct, "y_pct")?;
+        fc.h_pct = pct(f.h_pct, "h_pct")?;
+        fc.w_pct = pct(f.w_pct, "w_pct")?;
+        fc.clone_y_per = u8::try_from(f.clone_y_per)
+            .ok()
+            .filter(|&v| v > 0)
             .ok_or_else(|| {
                 format!(
-                    "bake: planter water {} s does not fit a u16 of ticks",
-                    w.seconds
+                    "bake: farm clone_y_per {} is not within 1..=255",
+                    f.clone_y_per
                 )
             })?;
-        cc.rain_pct = w.rain_pct;
-        Ok(cc)
+        fc.ground_cap_wu = ticks(f.ground_water, "ground_water")?;
+        fc.ground_rain_wu_s = ticks(f.ground_rain, "ground_rain")?;
+        fc.catcher_cap_wu = ticks(f.catcher_water, "catcher_water")?;
+        fc.catcher_rain_wu_s = ticks(f.catcher_rain, "catcher_rain")?;
+        fc.catcher_flow_wu_s = ticks(f.catcher_flow, "catcher_flow")?;
+        fc.catcher_reach_cm = u16::try_from(f.catcher_reach_cm).map_err(|_| {
+            format!(
+                "bake: farm catcher_reach_cm {} is past a u16",
+                f.catcher_reach_cm
+            )
+        })?;
+        for (name, v) in &f.soil {
+            let b = sim_core::terrain::BIOME_NAMES
+                .iter()
+                .position(|n| n == name)
+                .ok_or_else(|| format!("bake: farm soil names no biome `{name}`"))?;
+            fc.soil_pm[b] = pm(*v, "soil")?;
+        }
+        let mut sum = 0u32;
+        for (k, pct) in f.stage_pct.iter().enumerate() {
+            sum += *pct as u32;
+            fc.stage_end_pct[k] = u8::try_from(sum)
+                .map_err(|_| format!("bake: farm stage_pct sums past 255 ({sum})"))?;
+        }
+        if self.crops.len() > sim_core::limits::MAX_CROPS {
+            return Err(format!(
+                "bake: {} crops exceed the sim's {}-row table",
+                self.crops.len(),
+                sim_core::limits::MAX_CROPS
+            ));
+        }
+        for (k, c) in self.crops.iter().enumerate() {
+            let look = LOOK_NAMES
+                .iter()
+                .position(|n| n.eq_ignore_ascii_case(&c.look))
+                .ok_or_else(|| format!("bake: crop `{}` has no look `{}`", c.id, c.look))?;
+            let grow_ticks = ticks(c.seconds, "crop seconds")?;
+            if grow_ticks.checked_mul(1000).is_none() {
+                return Err(format!(
+                    "bake: crop `{}` grows {} s, past a u32 of milli-ticks",
+                    c.id, c.seconds
+                ));
+            }
+            fc.crops[k] = CropDef {
+                look: look as u8,
+                seed: item(&c.seed, "crop seed")?,
+                yield_item: item(&c.yield_item, "crop yield")?,
+                count: u16::try_from(c.count).map_err(|_| {
+                    format!("bake: crop `{}` pays {} units, past a u16", c.id, c.count)
+                })?,
+                grow_ticks,
+                clones: u8::try_from(c.clones)
+                    .map_err(|_| format!("bake: crop `{}` clones {} past a u8", c.id, c.clones))?,
+            };
+        }
+        fc.crop_count = self.crops.len() as u8;
+        Ok(fc)
     }
 
     /// The research table: what may be learned, what it unlocks, and what

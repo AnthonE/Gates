@@ -396,7 +396,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 24] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -570,6 +570,9 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 23] = [
         0.95,
         0.0,
     ),
+    // 23 · water catcher: a barrel under a tarp funnel on a pole frame, as
+    // wide as a barrel and chest high, `DEPLOY_VOL`'s row, in its wood.
+    ([0.9, 1.1, 0.9], Color::srgb(0.420, 0.329, 0.231), 0.9, 0.0),
 ];
 
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
@@ -738,10 +741,6 @@ pub struct Kit {
     gitem_mat: Handle<StandardMaterial>,
     arrow_mesh: Handle<Mesh>,
     arrow_mat: Handle<StandardMaterial>,
-    /// A planter's crop (crops v1): one leafy cone a bed, scaled by its
-    /// stage ([`PlanterBed`]).
-    plant_mesh: Handle<Mesh>,
-    plant_mat: Handle<StandardMaterial>,
 }
 
 /// [`Kit::edge_mesh`]: tier, shape, ownership, soft side.
@@ -2452,22 +2451,25 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     Some("models/deploy/workbench.glb"), // 5 workbench
     // 6 door — a metal one draws [`METAL_DOOR_ASSET`] instead.
     Some("models/deploy/door.glb"),
-    None,                                       // 7 lock — never drawn
-    Some("models/deploy/recycler.glb"),         // 8 recycler
-    Some("models/deploy/research_table.glb"),   // 9 research table
-    Some("models/deploy/workbench2.glb"),       // 10 workbench 2
-    Some("models/deploy/workbench3.glb"),       // 11 workbench 3
-    None,                                       // 12 window bars — shared insert geometry
-    None,                                       // 13 garage door — shared insert geometry
-    None,                                       // 14 glass — shared insert geometry
-    None,                                       // 15 shutters — shared insert geometry
-    Some("models/deploy/barricade.glb"),        // 16 barricade
-    None,                                       // 17 planter — the cuboid until a model
-    Some(TURRET_BASE_GLB),                      // 18 turret base; the gun is `sentry.rs`'s
-    Some("models/deploy/vending.glb"),          // 19 vending machine
+    None,                                     // 7 lock — never drawn
+    Some("models/deploy/recycler.glb"),       // 8 recycler
+    Some("models/deploy/research_table.glb"), // 9 research table
+    Some("models/deploy/workbench2.glb"),     // 10 workbench 2
+    Some("models/deploy/workbench3.glb"),     // 11 workbench 3
+    None,                                     // 12 window bars — shared insert geometry
+    None,                                     // 13 garage door — shared insert geometry
+    None,                                     // 14 glass — shared insert geometry
+    None,                                     // 15 shutters — shared insert geometry
+    Some("models/deploy/barricade.glb"),      // 16 barricade
+    // 17 planter: Meshy, fitted per axis to the row so the bed is the box
+    // the sim blocks and plants in; its soil is at the sim's 0.44 m.
+    Some("models/deploy/planter_box.glb"),
+    Some(TURRET_BASE_GLB), // 18 turret base; the gun is `sentry.rs`'s
+    Some("models/deploy/vending.glb"), // 19 vending machine
     Some("models/deploy/barbed_barricade.glb"), // 20 barbed barricade
-    Some("models/deploy/floor_spikes.glb"),     // 21 floor spikes
-    Some("models/deploy/abyss_rug.glb"),        // 22 rug
+    Some("models/deploy/floor_spikes.glb"), // 21 floor spikes
+    Some("models/deploy/abyss_rug.glb"), // 22 rug
+    Some("models/deploy/water_catcher.glb"), // 23 water catcher
 ];
 
 /// The auto turret's steel base, which the town's sentries stand on too
@@ -2717,12 +2719,6 @@ pub fn build_kit(
         })
     });
     Kit {
-        plant_mesh: meshes.add(Cone::new(PLANT_R_M, PLANT_H_M)),
-        plant_mat: materials.add(StandardMaterial {
-            base_color: PLANT_COLOR,
-            perceptual_roughness: 0.8,
-            ..default()
-        }),
         shutters_open: meshes.add(open_shutters_mesh()),
         shape_mesh,
         edge_mesh,
@@ -3996,30 +3992,6 @@ pub fn spawn_deploy(
             spawn_lock(&mut e, kit, at, out, rec.keyed, rec.locked);
         }
     }
-    // A planter carries one plant a bed, hidden until the sim says a bed is
-    // sown (crops v1). See [`PlanterBed`].
-    if arch == sim_core::deploy::ARCH_PLANTER {
-        let top = DEPLOY[idx].0[1] * 0.5;
-        let beds = sim_core::oven::PLANTER_LAYOUT.input as usize;
-        let span = DEPLOY[idx].0[0];
-        for bed in 0..beds {
-            let x = (bed as f32 + 0.5) / beds as f32 * span - span * 0.5;
-            e.with_child((
-                PlanterBed {
-                    cx: rec.cx,
-                    cz: rec.cz,
-                    level: rec.level,
-                    loc: rec.loc,
-                    bed: bed as u8,
-                    top,
-                },
-                Mesh3d(kit.plant_mesh.clone()),
-                MeshMaterial3d(kit.plant_mat.clone()),
-                Transform::from_xyz(x, top, 0.0).with_scale(Vec3::splat(0.001)),
-                Visibility::Hidden,
-            ));
-        }
-    }
     // A thing that burns gets a light, hung as a child and dark until the sim
     // says the fire is lit. See [`FireLight`].
     if burns(arch) {
@@ -4368,68 +4340,6 @@ pub fn apply_fire_lights(
     }
 }
 
-/// One bed's crop on a planter (crops v1): its address, which bed, and the
-/// planter's top above its own origin. Driven by [`planter_beds`] off the
-/// deploy mirror's `grow` byte (`SUB_PLANTER`, the deploy walk).
-#[derive(Component)]
-pub struct PlanterBed {
-    pub cx: u16,
-    pub cz: u16,
-    pub level: u8,
-    pub loc: u8,
-    pub bed: u8,
-    pub top: f32,
-}
-
-/// A grown plant's cone, metres.
-const PLANT_R_M: f32 = 0.16;
-const PLANT_H_M: f32 = 0.55;
-/// Leaf green, a little yellow so it reads as a crop rather than a shrub.
-const PLANT_COLOR: Color = Color::srgb(0.30, 0.48, 0.16);
-
-/// How big a bed's plant draws at a stage (`oven::planter_stages`): nothing
-/// in an empty bed, then a sprout, half grown, and nearly ripe.
-pub fn plant_scale(stage: u8) -> f32 {
-    match stage {
-        1 => 0.3,
-        2 => 0.65,
-        3 => 1.0,
-        _ => 0.0,
-    }
-}
-
-/// Size every planter's beds off the mirror. Reads the whole mirror for
-/// [`fire_lights`]' reason, and writes only on a change.
-pub fn planter_beds(
-    net: NonSend<super::Net>,
-    mut q: Query<(&PlanterBed, &mut Transform, &mut Visibility)>,
-) {
-    if q.is_empty() {
-        return;
-    }
-    let deploys = net.session.core.deploys.entries();
-    for (b, mut t, mut vis) in q.iter_mut() {
-        let grow = deploys
-            .iter()
-            .find(|r| r.cx == b.cx && r.cz == b.cz && r.level == b.level && r.loc == b.loc)
-            .map_or(0, |r| r.grow);
-        let s = plant_scale((grow >> (2 * b.bed)) & 3);
-        let want = if s > 0.0 {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *vis != want {
-            *vis = want;
-        }
-        if s > 0.0 && (t.scale.x - s).abs() > 1e-4 {
-            t.scale = Vec3::splat(s);
-            // The cone is centred: stand it on the soil.
-            t.translation.y = b.top + PLANT_H_M * 0.5 * s;
-        }
-    }
-}
-
 /// Lumens a lit fire delivers — read by the gate so the number is not written
 /// twice.
 pub fn fire_lumens() -> f32 {
@@ -4442,14 +4352,20 @@ pub fn is_container(arch: u8) -> bool {
     matches!(arch, ARCH_BOX | ARCH_BAG)
 }
 
-/// Which archetypes convert what is inside them — the ovens and the
-/// recycler. `sim_core::oven::OvenState::arch_converts` is the sim's
-/// answer and this is the client's read of the same fact; both are the
-/// archetype table, so neither invents anything.
+/// Which archetypes convert what is inside them — the ovens, the recycler,
+/// and the farm's two tanks (a planter waters its bed, a water catcher
+/// fills a skin).
+/// `sim_core::oven::OvenState::arch_converts` is the sim's answer and this
+/// is the client's read of the same fact; both are the archetype table, so
+/// neither invents anything.
 pub fn is_converter(arch: u8) -> bool {
     matches!(
         arch,
-        ARCH_FIRE | ARCH_FURNACE | ARCH_RECYCLER | sim_core::deploy::ARCH_PLANTER
+        ARCH_FIRE
+            | ARCH_FURNACE
+            | ARCH_RECYCLER
+            | sim_core::deploy::ARCH_PLANTER
+            | sim_core::deploy::ARCH_CATCHER
     )
 }
 

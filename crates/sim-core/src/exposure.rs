@@ -159,6 +159,12 @@ pub struct ExposureContent {
     /// ([`comfort_target`]); it needs no fire.
     pub furnish: [u16; MAX_ITEM_DEFS],
     pub furnish_radius_cm: [u16; MAX_ITEM_DEFS],
+    /// Drowning (water pass): the breath a body holds with its mouth under,
+    /// in ticks, and what it costs a second once that runs out — ramping in
+    /// from half the breath gone, the reference's shape (`World::breathe`).
+    /// Zero air is drowning disarmed.
+    pub air_ticks: u16,
+    pub drown_hp_per_s: u16,
 }
 
 impl ExposureContent {
@@ -217,6 +223,8 @@ impl ExposureContent {
         ward: [0; MAX_ITEM_DEFS],
         furnish: [0; MAX_ITEM_DEFS],
         furnish_radius_cm: [0; MAX_ITEM_DEFS],
+        air_ticks: 0,
+        drown_hp_per_s: 0,
     };
 
     /// Is exposure armed? A zero chill rate means nothing ever moves.
@@ -710,6 +718,13 @@ pub struct Readout {
     /// The Verdigris' meter, per cent, and whether it is costing hp.
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// The open wound, in hp it still owes (`Player::bleed`, at most
+    /// `survival::BLEED_MAX`): the BLEEDING chip.
+    pub bleed: u8,
+    /// The breath left, per cent (100 out of the water), and whether the
+    /// water is costing hp (water pass).
+    pub breath_pct: u8,
+    pub drowning: bool,
 }
 
 #[inline]
@@ -723,5 +738,18 @@ pub fn readout(ec: &ExposureContent, p: &Player) -> Readout {
         air_c: crate::climate::whole_c(p.air_dc),
         fel_pct: (p.fel / 10).min(100) as u8,
         fel_hurting: p.fel > ec.fel_hurt_at && ec.fel_hurt_at < 1000,
+        bleed: p.bleed.min(crate::survival::BLEED_MAX) as u8,
+        breath_pct: breath_pct(ec, p),
+        drowning: ec.air_ticks > 0 && p.under > ec.air_ticks / 2,
     }
+}
+
+/// The breath a body has left, per cent of [`ExposureContent::air_ticks`].
+#[inline]
+pub fn breath_pct(ec: &ExposureContent, p: &Player) -> u8 {
+    if ec.air_ticks == 0 {
+        return 100;
+    }
+    let left = ec.air_ticks.saturating_sub(p.under) as u32;
+    (left * 100 / ec.air_ticks as u32) as u8
 }

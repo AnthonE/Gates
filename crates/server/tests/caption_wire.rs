@@ -1,4 +1,4 @@
-//! Captions on the wire (v135): `/lang` sets a player's language quietly or
+//! Captions on the wire (v138): `/lang` sets a player's language quietly or
 //! with an answer, the scribe is handed what was said with the languages of
 //! who heard it, and a caption reaches whoever hears its talker, a
 //! translation only those who read its language. The scribe's thread and

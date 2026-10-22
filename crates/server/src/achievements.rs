@@ -627,6 +627,13 @@ pub const ACHIEVEMENTS: &[Def] = &[
         Rule::Place(&["item.planter"]),
     ),
     building(
+        "PLACE_CATCHER",
+        "Rain Barrel",
+        "Place a water catcher",
+        "water_catcher",
+        Rule::Place(&["item.water_catcher"]),
+    ),
+    building(
         "PLACE_TURRET",
         "Sentry Duty",
         "Place an auto turret",
@@ -1655,7 +1662,9 @@ impl Achievements {
                 self.bars[slot].ate = true;
                 self.bars[slot].drank = true;
             }
-            EV_DRANK => self.bars[slot].drank = true,
+            EV_DRANK if (ev.b >> 16) as u16 == sim_core::survival::DRANK_DRINK => {
+                self.bars[slot].drank = true
+            }
             EV_RESPAWN => self.bars[slot] = Bars::default(),
             EV_VITALS => {
                 let (food, water) = ((ev.b >> 16) as u16, ev.b as u16);

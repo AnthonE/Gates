@@ -45,7 +45,7 @@ const LINE_PX: f32 = 15.0;
 /// taller than this would climb into the team panel.
 const SHOWN: usize = 10;
 const MESSAGE_INK: Color = Color::srgba(0.97, 0.97, 0.95, 1.0);
-/// A name on words said out loud (a caption, v135): the voice HUD's
+/// A name on words said out loud (a caption, v138): the voice HUD's
 /// lavender rather than a channel's colour, since nobody chose a channel.
 const VOICE_INK: Color = Color::srgba(0.80, 0.72, 1.0, 1.0);
 const AVATAR_BLANK: Color = Color::srgba(0.12, 0.12, 0.13, 0.75);
@@ -81,7 +81,7 @@ pub struct Chat {
     /// would allocate a node per line per frame for a screen that changes
     /// when somebody speaks.
     pub dirty: bool,
-    /// This client's language has gone to the shard (`/lang … auto`, v135),
+    /// This client's language has gone to the shard (`/lang … auto`, v138),
     /// or it has none to send.
     pub lang_sent: bool,
 }
@@ -394,7 +394,7 @@ pub fn drain(
         });
         chat.dirty = true;
     }
-    // Captions (v135): words said out loud nearby, and translations. A
+    // Captions (v138): words said out loud nearby, and translations. A
     // talker this player muted stays muted in text too.
     while let Some(c) = net.session.core.pop_caption() {
         if c.voice && mutes.as_deref().is_some_and(|m| m.muted(c.from)) {

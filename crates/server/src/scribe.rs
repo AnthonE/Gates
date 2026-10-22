@@ -1,4 +1,4 @@
-//! Captions (wire v135): what players say out loud near each other, as
+//! Captions (wire v138): what players say out loud near each other, as
 //! text, and what they say or type translated into each listener's
 //! language.
 //!

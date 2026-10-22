@@ -208,6 +208,8 @@ impl Matter {
             x if x == Occupant::Hemp as u8 => Matter::Plant,
             x if x == Occupant::Shrub as u8 => Matter::Plant,
             x if x == Occupant::Cactus as u8 => Matter::Plant,
+            x if x == Occupant::WildCorn as u8 => Matter::Plant,
+            x if x == Occupant::WildPumpkin as u8 => Matter::Plant,
             x if x == Occupant::StoneNode as u8 => Matter::Stone,
             x if x == Occupant::MetalNode as u8 => Matter::Metal,
             x if x == Occupant::SulfurNode as u8 => Matter::Stone,

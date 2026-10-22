@@ -162,7 +162,7 @@ pub enum AdminCmd {
     /// carries (`ActionMsg::Team`), typed. Anyone may. `target` is 0 where
     /// none was given; a leading `#` on the id is the chat's own label.
     Team { op: u8, target: u32 },
-    /// `/lang <code>|off` (wire v135): the language this player's captions
+    /// `/lang <code>|off` (wire v138): the language this player's captions
     /// are translated into (`lang.rs`), 0 for none. Anyone may. `quiet` is
     /// the client's own `/lang <code> auto` at join, which the server does
     /// not answer.

@@ -554,6 +554,7 @@ mod tests {
             session,
             sel: 0,
             light: false,
+            farm_sent: None,
         });
         let exits = |world: &mut World| {
             world
