@@ -161,6 +161,9 @@ pub struct Look {
     pub glb: &'static str,
     /// Half its footprint (x, z), metres: where the ground is sampled.
     pub half: [f32; 2],
+    /// Whether it stands on a round base, so its footing on a slope is a
+    /// drum and not a block that shows past its edge.
+    pub round: bool,
     /// A turn on top of its site's, radians.
     pub turn: f32,
     pub ring: Option<Ring>,
@@ -188,6 +191,7 @@ pub struct Look {
 pub static PLINTH: Look = Look {
     glb: PLINTH_GLB,
     half: [0.8, 0.8],
+    round: false,
     turn: 0.0,
     ring: Some(Ring {
         at: [0.0, 2.35, -0.95],
@@ -214,6 +218,7 @@ pub static PLINTH: Look = Look {
 const CRUCIBLE: Look = Look {
     glb: "models/site/works_crucible.glb",
     half: [1.6, 1.6],
+    round: false,
     turn: 0.0,
     ring: Some(Ring {
         at: [-0.13, 2.85, -1.2],
@@ -247,6 +252,7 @@ const CRUCIBLE: Look = Look {
 const WELLS: Look = Look {
     glb: "models/site/works_wells.glb",
     half: [2.05, 2.05],
+    round: true,
     turn: 0.0,
     ring: None,
     fire: None,
@@ -277,6 +283,7 @@ const WELLS: Look = Look {
 const OBSERVATORY: Look = Look {
     glb: "models/site/works_observatory.glb",
     half: [2.3, 2.3],
+    round: true,
     turn: 0.0,
     ring: None,
     fire: None,
@@ -306,6 +313,7 @@ const OBSERVATORY: Look = Look {
 const SPINE: Look = Look {
     glb: "models/site/works_spine.glb",
     half: [3.5, 0.85],
+    round: false,
     turn: 0.0,
     ring: None,
     fire: None,
@@ -337,6 +345,7 @@ const SPINE: Look = Look {
 const EXCHANGE: Look = Look {
     glb: "models/site/works_exchange_counter.glb",
     half: [0.8, 1.1],
+    round: false,
     turn: core::f32::consts::PI,
     ring: None,
     fire: None,
@@ -449,12 +458,17 @@ pub fn spawn(
                 if hi - lo > SINK_M {
                     let top = -SINK_M + 0.05;
                     let bottom = lo - hi - FOOTING_M;
-                    c.spawn((
-                        Mesh3d(meshes.add(Cuboid::new(
+                    let footing = if look.round {
+                        meshes.add(Cylinder::new(look.half[0] * 0.95, top - bottom))
+                    } else {
+                        meshes.add(Cuboid::new(
                             look.half[0] * 1.9,
                             top - bottom,
                             look.half[1] * 1.9,
-                        ))),
+                        ))
+                    };
+                    c.spawn((
+                        Mesh3d(footing),
                         MeshMaterial3d(materials.add(StandardMaterial {
                             base_color: Color::srgb(0.60, 0.48, 0.36),
                             perceptual_roughness: 0.95,
