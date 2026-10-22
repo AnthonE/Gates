@@ -131,6 +131,12 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
 /// floor above it.
 fn place_bag_on(w: &mut World, cx: u16, cz: u16, level: u8) {
     stand(w, cx, cz);
+    // On the storey the bag goes on: a deployable goes where its placer
+    // can see (`deploy::place_deploy`), never up through the floor above.
+    if let Some(plate) = w.pieces.cols().plate(cx, cz) {
+        let floor = column_floor_y(SEED, hv(SEED), cx, cz, plate) + f32::from(level) * LEVEL_H_M;
+        w.players[0].body.qy = sim_core::movement::quant_y(floor);
+    }
     w.players[0].inv[10] = ItemStack {
         item: BAG_ITEM,
         count: 1,
