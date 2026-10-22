@@ -75,6 +75,14 @@ async fn stall(
     (connection, send, recv)
 }
 
+/// The stalled session is not kept: past its welcome's deadline the shard
+/// sends it away and closes the connection, however faithfully it acks.
+async fn hung_up(held: &Stalled) {
+    tokio::time::timeout(Duration::from_secs(10), held.0.closed())
+        .await
+        .expect("the shard closed a session that would not take its welcome");
+}
+
 async fn joins(addr: std::net::SocketAddr) {
     let endpoint = bot_endpoint().expect("endpoint");
     let connection = endpoint
@@ -115,10 +123,11 @@ async fn a_joiner_that_never_reads_does_not_hold_the_door() {
     .await
     .expect("boots");
     let starved = starved_endpoint();
-    let _held = stall(&starved, handle.local_addr, &protocol::Hello::this_build()).await;
+    let held = stall(&starved, handle.local_addr, &protocol::Hello::this_build()).await;
     // Let the door reach the stalled welcome before the honest client knocks.
     tokio::time::sleep(Duration::from_millis(300)).await;
     joins(handle.local_addr).await;
+    hung_up(&held).await;
     handle
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -169,9 +178,10 @@ async fn a_watcher_that_never_reads_does_not_hold_the_door() {
         target: protocol::Address::GUEST,
         ..protocol::Hello::this_build()
     };
-    let _held = stall(&starved, handle.local_addr, &watch).await;
+    let held = stall(&starved, handle.local_addr, &watch).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     joins(handle.local_addr).await;
+    hung_up(&held).await;
     handle
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);

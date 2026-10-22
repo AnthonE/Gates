@@ -2049,17 +2049,35 @@ async fn accept_loop(
                         }
                     }
                 }
+                // A tenant that ended by any road but a kick — a lane
+                // failed, the sim sent it away, it would not take its
+                // welcome — still has a QUIC connection, and its datagram
+                // reader keeps that alive for as long as the peer acks. A
+                // session the shard ended must not outlive it uncounted, so
+                // it is closed here, with its reason when one was recorded.
+                for (s, k) in keys.iter_mut().enumerate() {
+                    let w = slots.load(s);
+                    if state_of(w) == SLOT_LIVE && generation_of(w) == k.generation {
+                        continue;
+                    }
+                    if let Some(conn) = k.conn.take() {
+                        end_session(conn, slots.why(s, k.generation));
+                    }
+                }
                 // Spectator seats whose target left (`NETCODE.md` §2.3). The
                 // sim stopped feeding them the tick the target's slot turned
                 // over; this closes the connection with the reason, on the
-                // cadence the admin kick uses. A seat whose OWN connection
-                // went is just forgotten.
+                // cadence the admin kick uses. A seat whose OWN session
+                // ended is closed the way a player's is, above.
                 for (i, seat) in seats.iter_mut().enumerate() {
                     if !seat.occupied {
                         continue;
                     }
                     let own = slots.load(MAX_PLAYERS + i);
                     if state_of(own) != SLOT_LIVE || generation_of(own) != seat.generation {
+                        if let Some(conn) = seat.conn.take() {
+                            end_session(conn, slots.why(MAX_PLAYERS + i, seat.generation));
+                        }
                         *seat = SeatSlot::default();
                         continue;
                     }
@@ -2904,6 +2922,7 @@ async fn install(
     tokio::spawn(async move {
         let mut send = send;
         if write_opening(&mut send, &welcome, None).await.is_err() {
+            ShardStats::bump(&st.handshake_errors);
             s.mark_leaving(slot, generation);
             return;
         }
@@ -3133,6 +3152,7 @@ async fn install_spectator(
                     .await
                     .is_err()
                 {
+                    ShardStats::bump(&st.handshake_errors);
                     s.mark_leaving(slot, generation);
                     return;
                 }
@@ -3158,6 +3178,7 @@ async fn install_spectator(
                     .await
                     .is_err()
                 {
+                    ShardStats::bump(&st.handshake_errors);
                     s.mark_leaving(slot, generation);
                     return;
                 }
@@ -3176,7 +3197,8 @@ async fn install_spectator(
 /// its receive window and never reads held this write — and with it the
 /// whole door: no joins, kicks, bans, save drains or shutdown — for good,
 /// keep-alives keeping the connection itself alive. Bounded like the
-/// challenge; a client that will not take its welcome in that time is gone.
+/// challenge; a client that will not take its welcome in that time is sent
+/// away, and the accept loop's sweep closes its connection (`end_session`).
 async fn write_opening(
     send: &mut SendStream,
     welcome: &Welcome,
@@ -4018,6 +4040,16 @@ fn close_with_reason(conn: Connection, code: u8) {
         tokio::time::sleep(KICK_GRACE).await;
         close_now(&conn, code);
     });
+}
+
+/// Close the connection of a session that already ended: with its posted
+/// reason after the grace when it has one, at once otherwise (a code
+/// outside the refusal table reads as "closed").
+fn end_session(conn: Connection, why: Option<u8>) {
+    match why {
+        Some(code) => close_with_reason(conn, code),
+        None => close_now(&conn, u8::MAX),
+    }
 }
 
 /// Close with the refusal code and its text, which the desktop reads.
