@@ -21,8 +21,8 @@ use bevy::state::app::StatesPlugin;
 use client::film::{Entry, Lane, Recording, Replay};
 use client::render::screen::{Connecting, Menu, Screen};
 use client::render::{
-    audio, bodies, clutter, decal, disconnected, fx, ghost, highlight, hud, impact, input, map,
-    mobs, props, structures, terrain_mesh, verbs, viewmodel, water, world_running, Eye, Net,
+    audio, bodies, clutter, crops, decal, disconnected, fx, ghost, highlight, hud, impact, input,
+    map, mobs, props, structures, terrain_mesh, verbs, viewmodel, water, world_running, Eye, Net,
     WorldEntity, WorldId,
 };
 use client::Session;
@@ -55,6 +55,7 @@ fn boot(state: Screen, entries: Vec<Entry>, with_world: bool) -> (App, Replay) {
         .init_resource::<props::PropRing>()
         .init_resource::<clutter::ClutterRing>()
         .init_resource::<structures::StructRing>()
+        .init_resource::<crops::CropRing>()
         .init_resource::<ghost::Ghost>()
         .init_resource::<highlight::Highlight>()
         .init_resource::<decal::Marks>()
@@ -106,6 +107,7 @@ fn boot(state: Screen, entries: Vec<Entry>, with_world: bool) -> (App, Replay) {
         session,
         sel: 0,
         light: false,
+        farm_sent: None,
     });
     if with_world {
         // A root with a child, as the world's are: the despawn is recursive.

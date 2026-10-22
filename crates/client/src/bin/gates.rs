@@ -251,6 +251,7 @@ fn main() -> AppExit {
             session,
             sel: 0,
             light: false,
+            farm_sent: None,
         });
     }
     // The pin rides to the connect screen with the address it belongs to.

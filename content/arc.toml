@@ -39,7 +39,7 @@ kill_points = 30
 hoard_pct = 100
 # Farm-minutes a unit for what no recipe or farm rate prices (drops, food,
 # loot). Everything else is priced by recipe expansion.
-worth = { "item.junk" = 0.33, "item.blueprint" = 10.0, "item.keycard_green" = 20.0, "item.keycard_blue" = 40.0, "item.keycard_red" = 60.0, "item.leather" = 0.5, "item.bone_frags" = 0.2, "item.raw_meat" = 0.3, "item.cooked_meat" = 0.3, "item.berries" = 0.1, "item.mushrooms" = 0.1, "item.corn" = 0.2, "item.hemp_seed" = 0.2, "item.waterskin_full" = 5.0 }
+worth = { "item.junk" = 0.33, "item.blueprint" = 10.0, "item.keycard_green" = 20.0, "item.keycard_blue" = 40.0, "item.keycard_red" = 60.0, "item.leather" = 0.5, "item.bone_frags" = 0.2, "item.raw_meat" = 0.3, "item.cooked_meat" = 0.3, "item.berries" = 0.1, "item.mushrooms" = 0.1, "item.corn" = 0.2, "item.hemp_seed" = 0.2, "item.potato" = 0.2, "item.pumpkin" = 0.5, "item.potato_seed" = 0.2, "item.pumpkin_seed" = 0.2, "item.berry_seed" = 0.2, "item.waterskin_full" = 5.0 }
 
 # THE CRUCIBLE — the first work, act II. No gunpowder exists on the island
 # until it burns, so the first days of a wipe are bows and spears. Its

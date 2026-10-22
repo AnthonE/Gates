@@ -8,6 +8,10 @@ health = 20
 food = 0
 water = 0
 seconds = 4
+# Rust's bandage: held, a click wraps it on (their `healDurationSelf`, 4 s)
+# and switching away cancels it; it stops 50 of the bleeding.
+use_seconds = 4
+bleed = -50
 
 [[consumable]]
 id = "item.medkit"
@@ -17,6 +21,8 @@ water = 0
 seconds = 8
 # reference/WOUNDED.md §2.5: paid only on a failed roll, from the belt.
 belt_recovery = true
+# Rust's medkit stops all the bleeding.
+bleed = -100
 
 # `revive`: used on a downed body in reach (`Command::Treat`), it stands the
 # body up at once, as a won roll does, and heals it by `health` (the
@@ -47,12 +53,18 @@ fel = -400
 # Hydrating and calorie-poor, which is the reference's own split: meat
 # feeds and barely wets, forage wets and barely feeds, and a player who
 # eats only one of them dies of the other.
+#
+# `leaves` is what eating one leaves in your hand, `leaves_pm` per mille of
+# the time (Rust's seeds-from-eating): a berry's seed is spat out a quarter
+# of the time, a cob, a potato and a pumpkin always leave theirs.
 [[consumable]]
 id = "item.berries"
 health = 0
 food = 10
 water = 20
 seconds = 2
+leaves = "item.berry_seed"
+leaves_pm = 250
 
 [[consumable]]
 id = "item.mushrooms"
@@ -76,6 +88,29 @@ health = 0
 food = 40
 water = 20
 seconds = 3
+leaves = "item.corn_seed"
+leaves_pm = 1000
+
+# The second wave's food (`cooking.toml`'s potato and pumpkin crops). A raw
+# potato is a plain filler, corn's poorer cousin that grows a little faster;
+# a pumpkin is two meals and a drink, the slow crop's reward.
+[[consumable]]
+id = "item.potato"
+health = 0
+food = 25
+water = 5
+seconds = 3
+leaves = "item.potato_seed"
+leaves_pm = 1000
+
+[[consumable]]
+id = "item.pumpkin"
+health = 0
+food = 80
+water = 30
+seconds = 4
+leaves = "item.pumpkin_seed"
+leaves_pm = 1000
 
 # The best food on the island, and the only one that costs a walk: a kill, a
 # carry, a fire and a wait (`cooking.toml`). It is the one consumable that

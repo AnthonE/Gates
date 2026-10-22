@@ -117,6 +117,22 @@ pub struct Item {
     /// point per tick — see `sim_core::light::step`.
     #[serde(default)]
     pub light_burn: u32,
+    /// What this item's `cond` carries when it is DATA, not wear ([`CondCarries`]).
+    /// Absent means wear (or nothing, at `condition_max` 0). Requires
+    /// `condition_max = 0`: one field cannot be both.
+    #[serde(default)]
+    pub cond_carries: Option<CondCarries>,
+}
+
+/// An item whose stack `cond` is data (`sim_core::gather::GatherContent::cond_cap`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CondCarries {
+    /// A crop seed: `cond` = a clone's genes + 1 (`sim_core::farm`), 0 a
+    /// blank seed. Every `[[crop]]` seed carries genes, and nothing else does.
+    Genes,
+    /// The research blueprint: `cond` = the recipe's item + 1.
+    Target,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -141,6 +157,10 @@ pub enum NodeArchetype {
     Stump,
     /// The desert's cactus (`terrain::Occupant::Cactus`), swung at.
     Cactus,
+    /// Wild corn by a lake (`terrain::Occupant::WildCorn`), picked by hand.
+    WildCorn,
+    /// A wild pumpkin by a lake (`terrain::Occupant::WildPumpkin`), picked by hand.
+    WildPumpkin,
 }
 
 /// A second thing one node pays, flat — the tree's mushrooms beside its
@@ -638,6 +658,21 @@ pub struct Consumable {
     /// the corruption out. ±1000.
     #[serde(default)]
     pub fel: i32,
+    /// The wound it closes, in hp of bleeding: negative stops that much
+    /// (Rust's bandage −50, medkit −100).
+    #[serde(default)]
+    pub bleed: i32,
+    /// Seconds it takes in the hands before it lands (Rust's
+    /// `MedicalTool`, the bandage's wrap): held and used with a click,
+    /// switching away cancels it and spends nothing. Zero is instant.
+    #[serde(default)]
+    pub use_seconds: u32,
+    /// What eating one leaves in the eater's hand (Rust's seeds-from-eating:
+    /// a cob leaves a corn seed), `leaves_pm` per mille of the time.
+    #[serde(default)]
+    pub leaves: Option<String>,
+    #[serde(default)]
+    pub leaves_pm: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -705,6 +740,9 @@ pub enum DeployArchetype {
     /// A rug: a flat cloth floor piece, walked over. Its row's `comfort` is
     /// what it does.
     Rug,
+    /// A water catcher (farming v2): banks rain, fills a waterskin, waters
+    /// the planters and ground plants in reach (`cooking.toml` `[farm]`).
+    Catcher,
 }
 
 /// What a deployable is made of (`sim_core::deploy::MATTER_*`). The sim
@@ -762,19 +800,71 @@ pub struct Fuel {
     pub byproduct_pct: u32,
 }
 
-/// What waters a planter (crops v1, `sim_core::oven::CookContent::water_full`):
-/// a full `item` in the water slot is left there as `emptied` and buys
-/// `seconds` of growth for every bed.
+/// The farm (`content/cooking.toml` `[farm]`, `sim_core::farm::FarmContent`).
+/// Water is stated in plant-seconds — one plant drinking for one second —
+/// and the bake multiplies by `TICK_HZ` into the sim's water units.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlanterWater {
-    pub item: String,
+pub struct FarmSection {
+    /// A full waterskin, and what it is left as once poured.
+    pub water: String,
     pub emptied: String,
+    /// One skin's water, a planter's tank, and what full rain banks in an
+    /// open planter per second.
+    pub skin_water: u32,
+    pub planter_water: u32,
+    pub rain_water: u32,
+    /// Each growing stage's share of the grow, per cent: seed, seedling,
+    /// sapling, crossbreed, mature, fruiting. Sums to 100.
+    pub stage_pct: [u8; 6],
+    /// How long a ripe plant stays ripe, and how long a dying one stands.
+    pub ripe_seconds: u32,
+    pub dying_seconds: u32,
+    /// A rolled seed's genes, per slot, per mille: a good gene (G, Y or H)
+    /// with `good_gene_pm`, else a W with `bad_w_pm`, else an X.
+    pub good_gene_pm: u32,
+    pub bad_w_pm: u32,
+    /// Per gene, per cent: G's speed, Y's yield, the share of the soil and
+    /// air gaps an H closes, and W's extra water.
+    pub g_pct: u32,
+    pub y_pct: u32,
+    pub h_pct: u32,
+    pub w_pct: u32,
+    /// A clone cut pays its crop's `clones`, and one more for every
+    /// `clone_y_per` Y genes the plant carries (Rust's two). Above 0.
+    pub clone_y_per: u32,
+    /// The open ground (Rust's fallback to a planter): what water a ground
+    /// plant holds, and what full rain banks in it per second.
+    pub ground_water: u32,
+    pub ground_rain: u32,
+    /// The ground's soil per biome (`sim_core::terrain::BIOME_NAMES`), per
+    /// mille: a ground plant's pace at best. A biome left out refuses a
+    /// seed; an unknown name is refused.
+    pub soil: BTreeMap<String, u32>,
+    /// The water catcher (`deployables.toml` archetype `catcher`): its
+    /// barrel, what full rain banks in it per second, what it pours per
+    /// second into each planter and ground plant in reach, and that reach.
+    pub catcher_water: u32,
+    pub catcher_rain: u32,
+    pub catcher_flow: u32,
+    pub catcher_reach_cm: u32,
+}
+
+/// One crop (`content/cooking.toml` `[[crop]]`): what plants it, what a
+/// pick pays at full health, and how long it takes to ripen.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CropRow {
+    pub id: String,
+    /// How it is drawn (`sim_core::farm::LOOK_NAMES`, lower case).
+    pub look: String,
+    pub seed: String,
+    #[serde(rename = "yield")]
+    pub yield_item: String,
+    pub count: u32,
     pub seconds: u32,
-    /// Rain on an unroofed planter banks water: per cent of the elapsed time
-    /// under full rain, up to `seconds` (`CookContent::rain_pct`).
-    #[serde(default)]
-    pub rain_pct: u16,
+    /// Clones a take pays.
+    pub clones: u32,
 }
 
 /// Which container runs a cook row. The archetype names of
@@ -788,8 +878,6 @@ pub enum CookStation {
     /// Converts without burning (recycler v0). The station that makes this
     /// table the economy's arming point: a row here is a faucet.
     Recycler,
-    /// Grows (crops v0): a seed in a planter's bed becomes a crop.
-    Planter,
 }
 
 /// One transformation a container performs: one unit in, `count` units of
@@ -1379,6 +1467,14 @@ pub struct Survival {
     pub vessel: Option<String>,
     #[serde(default)]
     pub vessel_full: Option<String>,
+    /// Bleeding (Rust's metabolism `bleeding`): the share of the hp a hit
+    /// takes that opens a wound, per cent, and the hp a minute an open
+    /// wound costs until it has taken that much or is bandaged. Absent is
+    /// no bleeding at all.
+    #[serde(default)]
+    pub bleed_pct: u32,
+    #[serde(default)]
+    pub bleed_hp_per_min: u32,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,

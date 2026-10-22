@@ -119,7 +119,6 @@ fn cook_station(s: CookStation) -> &'static str {
         CookStation::Fire => "Campfire",
         CookStation::Furnace => "Furnace",
         CookStation::Recycler => "Recycler",
-        CookStation::Planter => "Planter",
     }
 }
 
@@ -296,8 +295,28 @@ fn main() {
     sections.push((
         "cooking",
         "Cooking and smelting",
-        "Fires, furnaces, the recycler and planters.",
+        "Fires, furnaces and the recycler.",
         cooking,
+    ));
+
+    let crops = c
+        .crops
+        .iter()
+        .map(|k| {
+            let mut e = item_entry(&k.yield_item);
+            e.id = format!("crop.{}", k.id);
+            e.kind = "Planter".into();
+            e.needs = vec![stack(&k.seed, 1)];
+            e.makes = vec![stack(&k.yield_item, k.count)];
+            e.stats.push(("Time".into(), format!("{} s", k.seconds)));
+            e
+        })
+        .collect();
+    sections.push((
+        "crops",
+        "Crops",
+        "One seed is one plant in a planter. Pick it ripe.",
+        crops,
     ));
 
     let coin = name_of(&c.research_coin.item);
