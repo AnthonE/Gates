@@ -816,6 +816,13 @@ impl Session {
         if net::handshake::server_host(server).is_none() {
             return Err(format!("{server:?} is not a server address (host:port)").into());
         }
+        if net::handshake::pin_refused(cert_hash, signs_as) {
+            return Err(format!(
+                "{server:?} is under this page's own host and has a real certificate; \
+                 a pinned certificate hash is refused for it"
+            )
+            .into());
+        }
         let transport = net::web::open(server, cert_hash).await?;
 
         let bidi = JsFuture::from(transport.create_bidirectional_stream())
