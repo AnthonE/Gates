@@ -9620,7 +9620,10 @@ mod tests {
         // Sent on, it is not sold to this wallet again this wipe: a token
         // a hundred junk, over and over, would be a way out with no cap.
         carry(&mut core, 256, 150);
-        assert_eq!(ask(&mut core, 256, 0), "you have it");
+        assert_eq!(
+            ask(&mut core, 256, 0),
+            said("you have it", protocol::ARC_GIFT_OWNED)
+        );
         assert_eq!(junk(&core, 256), 150, "nothing taken");
         assert!(core.mints.is_empty());
         carry(&mut core, 257, 150);
