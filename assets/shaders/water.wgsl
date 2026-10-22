@@ -749,9 +749,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.material.reflectance = vec3<f32>(0.0);
     // SSAO at this pixel is the seabed's, not the water's.
     pbr_input.diffuse_occlusion = vec3<f32>(1.0);
-    // From below, only foam reads the lit body (Snell's window, 5b).
+    // From below nothing reads the lit body (Snell's window, 5b).
     var color = body;
-    if is_front || water.under.x < 0.5 || foam > 0.0 {
+    if is_front || water.under.x < 0.5 {
         color = apply_pbr_lighting(pbr_input);
     }
 
@@ -812,9 +812,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             window = sky_radiance(up, upd, daylight_tint()) * view.exposure * (1.0 - F) * lit;
         }
         let mirror = fog.base_color.rgb * shell_shade(reflect(I, Nr).y);
-        // Foam is lit from above and seen through: Bevy's body, foam and all.
-        let body_lit = color.rgb / max(color.a, 1e-4);
-        color = vec4<f32>(mix(mix(mirror, window + F * mirror, rim), body_lit, foam), 1.0);
+        // Foam is lit from above and seen through: its albedo under the sky
+        // overhead, not Bevy's light on a face turned down (a dark disc).
+        var foam_lit = vec3<f32>(0.0);
+        if foam > 0.0 {
+            let zenith = vec3<f32>(0.0, 1.0, 0.0);
+            foam_lit = water.foam.rgb * sky_radiance(zenith, zenith, daylight_tint()) * view.exposure;
+        }
+        color = vec4<f32>(mix(mix(mirror, window + F * mirror, rim), foam_lit, foam), 1.0);
     }
 
     // Fog and the rest of Bevy's post-lighting work act on the straight
