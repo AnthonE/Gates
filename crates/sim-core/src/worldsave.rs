@@ -1286,6 +1286,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             hostile: 0,
             comfort: 0,
             calm: 0,
+            bleed: 0,
+            bleed_acc: 0,
+            use_at: 0,
+            use_slot: 0,
+            use_sel: 0,
+            use_item: crate::gather::NO_ITEM,
             gate_spawn: false,
             gate_spawn_at: 0,
             // Not on disk: a restored body's life clock starts at the load.

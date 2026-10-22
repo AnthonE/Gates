@@ -658,6 +658,15 @@ pub struct Consumable {
     /// the corruption out. ±1000.
     #[serde(default)]
     pub fel: i32,
+    /// The wound it closes, in hp of bleeding: negative stops that much
+    /// (Rust's bandage −50, medkit −100).
+    #[serde(default)]
+    pub bleed: i32,
+    /// Seconds it takes in the hands before it lands (Rust's
+    /// `MedicalTool`, the bandage's wrap): held and used with a click,
+    /// switching away cancels it and spends nothing. Zero is instant.
+    #[serde(default)]
+    pub use_seconds: u32,
     /// What eating one leaves in the eater's hand (Rust's seeds-from-eating:
     /// a cob leaves a corn seed), `leaves_pm` per mille of the time.
     #[serde(default)]
@@ -1458,6 +1467,14 @@ pub struct Survival {
     pub vessel: Option<String>,
     #[serde(default)]
     pub vessel_full: Option<String>,
+    /// Bleeding (Rust's metabolism `bleeding`): the share of the hp a hit
+    /// takes that opens a wound, per cent, and the hp a minute an open
+    /// wound costs until it has taken that much or is bandaged. Absent is
+    /// no bleeding at all.
+    #[serde(default)]
+    pub bleed_pct: u32,
+    #[serde(default)]
+    pub bleed_hp_per_min: u32,
 }
 
 /// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,

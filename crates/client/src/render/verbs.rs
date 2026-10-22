@@ -76,8 +76,15 @@ pub struct HearthView(pub Option<(u16, u16, u8)>);
 /// `Kind::Mouth`, a little under a second for network jitter), so an honest
 /// press that waits the full second here never meets that refusal — and a
 /// hammered eat key eats once a second instead of queuing a stack.
+///
+/// And the bandage being wrapped on, if one is (`ui::wrap`, Rust's
+/// `MedicalTool`): the other clock on a use, started by the same press. The
+/// viewmodel draws the wrap off it and the HUD counts it down.
 #[derive(Resource, Default)]
-pub struct Bite(Option<f64>);
+pub struct Bite {
+    last: Option<f64>,
+    pub wrap: crate::ui::wrap::WrapClock,
+}
 
 /// The wait between two bites, seconds — Rust's consume cooldown.
 pub const BITE_S: f64 = 1.0;
@@ -85,10 +92,10 @@ pub const BITE_S: f64 = 1.0;
 impl Bite {
     /// May a mouthful go at `now`? Starts the clock when it does.
     pub fn take(&mut self, now: f64) -> bool {
-        if self.0.is_some_and(|last| now - last < BITE_S) {
+        if self.last.is_some_and(|last| now - last < BITE_S) {
             return false;
         }
-        self.0 = Some(now);
+        self.last = Some(now);
         true
     }
 }
@@ -657,6 +664,16 @@ pub fn keys(
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
     let on = |a: Action| binds.just_pressed(a, &keys, &mouse);
+    // The wrap ends with its time, or is put away with the hand — the
+    // sim's own rule (`survival::tick_use`) — or when the body goes down.
+    {
+        let core = &net.session.core;
+        let held = core.inv.get(net.sel as usize).copied().unwrap_or_default();
+        bite.wrap.step(now, net.sel, (held.item, held.count));
+        if core.wounded || core.dead {
+            bite.wrap.cancel();
+        }
+    }
     if binds.just_released(Action::Interact, &keys, &mouse) {
         send(&net, &mut toast, "release help", |buf| {
             protocol::encode_action_assist(0, buf)
@@ -1008,10 +1025,20 @@ fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
             });
         }
         crate::ui::research::UseAs::Consume => {
+            // A bandage is wrapped on (`ui::wrap`): one at a time, and the
+            // press that starts it starts the arm.
+            let use_ticks = net.session.core.catalog.row(stack.item as usize).use_ticks;
+            if use_ticks > 0 && bite.wrap.progress(now).is_some() {
+                return;
+            }
             if bite.take(now) {
                 send(net, toast, "eat", |buf| {
                     protocol::encode_action_consume(slot, buf)
                 });
+                if use_ticks > 0 {
+                    let secs = f64::from(use_ticks) / f64::from(sim_core::limits::TICK_HZ);
+                    bite.wrap.begin(now, secs, slot, stack.item);
+                }
             }
         }
     }

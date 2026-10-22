@@ -1305,7 +1305,12 @@ pub use voice::{
 ///   `terrain::Occupant::WildCorn` (29) and `WildPumpkin` (30) grow out of a
 ///   shrub by a lake, and the client draws its scatter itself, so a client
 ///   that does not plant them stands a shrub where the server picks a crop.
-pub const PROTO_VER: u16 = 135;
+///
+/// v136 — Rust's bandage and bleeding: an item row carries `use_ticks` (a
+/// held use, the bandage's wrap) after `revive`, `SUB_EXPOSURE` the open
+/// wound's `bleed` after the Verdigris, and the death cause admits 13
+/// (`DEATH_BY_BLEED`).
+pub const PROTO_VER: u16 = 136;
 
 /// This game's slug in the elo catalog.
 ///

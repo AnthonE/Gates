@@ -272,6 +272,8 @@ pub fn hash(c: &Content) -> u64 {
             }
         }
         h.u(con.leaves_pm);
+        h.u(con.bleed as u32);
+        h.u(con.use_seconds);
     }
 
     h.s("deployables");
@@ -585,6 +587,8 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.spawn_water);
     h.s(sv.vessel.as_deref().unwrap_or(""));
     h.s(sv.vessel_full.as_deref().unwrap_or(""));
+    h.u(sv.bleed_pct);
+    h.u(sv.bleed_hp_per_min);
 
     let ex = &c.balance.exposure;
     h.s("exposure");

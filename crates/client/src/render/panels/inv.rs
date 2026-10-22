@@ -2581,6 +2581,12 @@ fn use_item(
     let encoded = match research_ui::use_as(&core.research, stack) {
         UseAs::Read => protocol::encode_action_research(slot, &mut buf),
         UseAs::Consume => {
+            // A bandage is held and wrapped on (Rust's `MedicalTool`), not
+            // used out of the pack.
+            if core.catalog.row(stack.item as usize).use_ticks > 0 {
+                ui.say("hold it in your hand and left click to use it".to_string());
+                return;
+            }
             // Inside the last bite's second: not sent (`verbs::Bite`).
             if let Some(mut b) = bite {
                 if !b.take(now) {

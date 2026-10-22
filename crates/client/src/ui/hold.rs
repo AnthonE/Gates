@@ -153,11 +153,14 @@ impl Click {
 }
 
 /// Does pressing this stack's hotbar key EAT it rather than select it?
-/// Rust's belt: food and medicine are never held — the key runs the eat and
-/// whatever was in your hand stays there. `render::input` skips the select
-/// and `render::verbs` sends the eat, both off this.
+/// Rust's belt: food is never held — the key runs the eat and whatever was
+/// in your hand stays there. A bandage is (Rust's `MedicalTool`): the key
+/// brings it up and a left click wraps it on (`ItemRow::use_ticks`).
+/// `render::input` skips the select and `render::verbs` sends the eat, both
+/// off this.
 pub fn eats_on_key(catalog: &ItemCatalog, stack: ItemStack) -> bool {
-    stack.count > 0 && catalog.row(stack.item as usize).eats()
+    let row = catalog.row(stack.item as usize);
+    stack.count > 0 && row.eats() && row.use_ticks == 0
 }
 
 /// [`Click`] for one stack.
@@ -227,6 +230,14 @@ pub fn hand_hint(
             } else {
                 "EAT"
             };
+            if row.use_ticks > 0 {
+                let secs = f32::from(row.use_ticks) / sim_core::limits::TICK_HZ as f32;
+                return format!(
+                    "{verb}  {}  {}   (left click · {secs:.0} s)",
+                    name(),
+                    gives.join(" · ")
+                );
+            }
             format!("{verb}  {}  {}   (left click)", name(), gives.join(" · "))
         }
         Click::Read => format!(

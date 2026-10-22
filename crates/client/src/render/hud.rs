@@ -1116,6 +1116,9 @@ pub enum ExposureChip {
     /// The Verdigris' meter (`exposure::corrode`): shown while it reads any,
     /// red while it is costing hp, saying what stops it.
     Verdigris,
+    /// Rust's BLEEDING: an open wound (`Player::bleed`) costing hp until a
+    /// bandage closes it.
+    Bleeding,
 }
 
 const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
@@ -1170,6 +1173,13 @@ const HOT_CHIP: Color = Color::srgba(0.80, 0.44, 0.12, 0.88);
 const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 const COMFORT_CHIP: Color = Color::srgba(0.36, 0.52, 0.18, 0.85);
 const FEL_CHIP: Color = Color::srgba(0.12, 0.42, 0.10, 0.88);
+const BLEED_CHIP: Color = Color::srgba(0.62, 0.06, 0.08, 0.92);
+
+/// What the BLEEDING chip says left of the hp it still owes: Rust's word,
+/// and what stops it.
+pub fn bleed_line() -> String {
+    "BLEEDING · BANDAGE IT".to_string()
+}
 
 /// What the Verdigris chip says left of its meter: and while it hurts, the
 /// way out. The player-facing name only — never the code's `fel`.
@@ -1291,7 +1301,7 @@ pub struct ChipValue(pub ExposureChip);
 impl ExposureChip {
     /// Top to bottom over the vitals. The base's upkeep heads the stack
     /// (NOW §0up 3): it is about the base, not the body.
-    const ALL: [ExposureChip; 7] = [
+    const ALL: [ExposureChip; 8] = [
         ExposureChip::Upkeep,
         ExposureChip::Safe,
         ExposureChip::Wet,
@@ -1299,6 +1309,7 @@ impl ExposureChip {
         ExposureChip::Hot,
         ExposureChip::Verdigris,
         ExposureChip::Comfort,
+        ExposureChip::Bleeding,
     ];
 
     fn index(self) -> usize {
@@ -1408,6 +1419,10 @@ pub fn exposure(
                     FEL_CHIP
                 },
             ),
+            // The hp the wound still owes is the chip's number.
+            ExposureChip::Bleeding if core.bleed > 0 => {
+                (true, bleed_line(), format!("{} HP", core.bleed), BLEED_CHIP)
+            }
             ExposureChip::Upkeep => {
                 let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
                 match crate::ui::hearth::vital(rows, core.stock_age()) {
@@ -1425,7 +1440,7 @@ pub fn exposure(
             _ => hidden(),
         }
     };
-    let said: [ChipSaid; 7] = ExposureChip::ALL.map(say);
+    let said: [ChipSaid; 8] = ExposureChip::ALL.map(say);
     for (chip, mut node, mut bg) in &mut chips {
         let (show, _, _, colour) = &said[chip.index()];
         // Out of the layout, not just invisible: a hidden chip that still
@@ -2764,6 +2779,9 @@ pub fn update(
     ghost: Option<Res<super::ghost::Ghost>>,
     binds: Res<super::binds::Binds>,
     sow: Option<Res<super::farm_ghost::PlantAimed>>,
+    // The bandage being wrapped on (`ui::wrap`) and the clock it reads,
+    // for the hand's line: one param, the system is at Bevy's sixteen.
+    wrap: (Option<Res<super::verbs::Bite>>, Res<Time>),
 ) {
     let core = &net.session.core;
 
@@ -2883,7 +2901,17 @@ pub fn update(
         } else if click != crate::ui::hold::Click::Build {
             // The flame the sim reads: a downed body has dropped its torch.
             let lit = net.light && !core.wounded && !core.dead;
-            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
+            let (bite, time) = &wrap;
+            let wrapping = bite
+                .as_deref()
+                .and_then(|b| b.wrap.left(time.elapsed_secs_f64()));
+            match wrapping {
+                Some(left) => format!(
+                    "WRAPPING  {}  {left:.1} s   (switch away to stop)",
+                    crate::ui::craft::item_label(&core.catalog, held.item).to_uppercase()
+                ),
+                None => crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit),
+            }
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {

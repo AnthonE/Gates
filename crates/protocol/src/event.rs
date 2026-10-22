@@ -1330,6 +1330,11 @@ pub struct ItemRow {
     /// `survival::SurvivalContent::revives`): with it in hand, `E` on a
     /// downed body injects rather than starting the hand revive.
     pub revive: bool,
+    /// Ticks it takes in the hands before it lands (v136,
+    /// `survival::ConsumableDef::use_ticks`, Rust's `MedicalTool`): a
+    /// bandage is held, a click wraps it on, and the client draws the wrap
+    /// for this long. 0 is eaten at once, off the belt key.
+    pub use_ticks: u8,
     /// What the item is for the craft rail (v102, `craft::CLASS_*`):
     /// CONSTRUCTION, TOOLS, AMMO and the rest. 0 is `CLASS_OTHER`, which is
     /// also what a row past the drip watermark reads as.
@@ -1442,6 +1447,7 @@ impl ItemRow {
         oven: 0,
         holster: false,
         revive: false,
+        use_ticks: 0,
         class: CLASS_OTHER,
         damage: 0,
         gun: None,
@@ -1801,6 +1807,8 @@ pub enum EventMsg {
         /// (wire v113, `exposure::corrode`).
         fel_pct: u8,
         fel_hurting: bool,
+        /// The open wound, hp it still owes (wire v136, `Player::bleed`).
+        bleed: u8,
     },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
@@ -3051,6 +3059,8 @@ pub fn encode_event_catalog(
         w.write_bit(row.holster)?;
         // The revive (v99).
         w.write_bit(row.revive)?;
+        // The use in the hands (v136): ticks in a byte, the draw's posture.
+        w.write(row.use_ticks as u32, 8)?;
         // The craft rail's class (v102).
         w.write(row.class as u32, ITEM_CLASS_BITS)?;
         // The damage a hit does (v131), full width.
@@ -5861,6 +5871,7 @@ pub fn encode_event_exposure(
         || x.comfort_pct > 100
         || x.heat_pct > 100
         || x.fel_pct > 100
+        || x.bleed > 100
     {
         return Err(WireError::Range);
     }
@@ -5873,6 +5884,7 @@ pub fn encode_event_exposure(
     w.write(x.air_c as u8 as u32, 8)?;
     w.write(x.fel_pct as u32, EXPOSURE_PCT_BITS)?;
     w.write_bit(x.fel_hurting)?;
+    w.write(x.bleed as u32, EXPOSURE_PCT_BITS)?;
     Ok(w.finish())
 }
 
@@ -6517,6 +6529,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     oven: r.read(OVEN_ROLE_BITS)? as u16,
                     holster: r.read_bit()?,
                     revive: r.read_bit()?,
+                    use_ticks: r.read(8)? as u8,
                     class: r.read(ITEM_CLASS_BITS)? as u8,
                     damage: r.read(16)? as u16,
                     gun: if r.read_bit()? {
@@ -8028,11 +8041,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let air_c = r.read(8)? as u8 as i8;
             let fel_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
             let fel_hurting = r.read_bit()?;
+            let bleed = r.read(EXPOSURE_PCT_BITS)? as u8;
             if wet_pct > 100
                 || cold_pct > 100
                 || comfort_pct > 100
                 || heat_pct > 100
                 || fel_pct > 100
+                || bleed > 100
             {
                 return Err(WireError::Malformed);
             }
@@ -8045,6 +8060,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
             }
         }
         SUB_ENV => {
@@ -8891,6 +8907,7 @@ mod tests {
                 oven: (1 << OVEN_ROLE_BITS) - 1 - i as u16,
                 holster: i % 2 == 0,
                 revive: i % 3 == 0,
+                use_ticks: u8::MAX - 3 * i as u8,
                 // The class (v102) from the ledger's top down, distinct per
                 // row in the batch.
                 class: CLASS_MAX - (i as u8 % (CLASS_MAX + 1)),
@@ -10841,8 +10858,9 @@ mod wire_domains {
             // the last value the three bits hold. 8 = DEATH_BY_FALL at v97,
             // the widening to four. 9 = DEATH_BY_HEAT at v112 (climate v0).
             // 10 = DEATH_BY_FEL at v113 (the Verdigris). 11 =
-            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123.
-            live_max: 12,
+            // DEATH_BY_CACTUS at v122. 12 = DEATH_BY_SPIKES at v123. 13 =
+            // DEATH_BY_BLEED at v136.
+            live_max: 13,
         },
         Domain {
             what: "move refusal",

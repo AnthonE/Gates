@@ -1234,6 +1234,14 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if s.max_food > u16::MAX as u32 || s.max_water > u16::MAX as u32 {
             return Err("survival: meter ceiling overflows u16".to_string());
         }
+        // A wound that opens must also close: with no rate it would never
+        // drain, and the BLEEDING chip would stay up forever.
+        if s.bleed_pct > 100 || (s.bleed_pct > 0 && s.bleed_hp_per_min == 0) {
+            return Err(format!(
+                "survival: bleed_pct {} needs a percentage and a bleed_hp_per_min",
+                s.bleed_pct
+            ));
+        }
         if s.spawn_food > s.max_food
             || s.spawn_water > s.max_water
             || s.spawn_hp > c.balance.globals.player_hp

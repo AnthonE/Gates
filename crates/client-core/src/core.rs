@@ -2149,6 +2149,9 @@ pub struct ClientCore {
     /// costing hp (wire v113).
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// The open wound, hp it still owes (`EventMsg::Exposure`): BLEEDING
+    /// while it is above zero.
+    pub bleed: u8,
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2566,6 +2569,7 @@ impl ClientCore {
             air_c: 0,
             fel_pct: 0,
             fel_hurting: false,
+            bleed: 0,
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -4180,6 +4184,7 @@ impl ClientCore {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -4189,6 +4194,7 @@ impl ClientCore {
                 self.air_c = air_c;
                 self.fel_pct = fel_pct;
                 self.fel_hurting = fel_hurting;
+                self.bleed = bleed;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }

@@ -121,3 +121,4 @@ pub mod swing;
 pub mod team;
 pub mod techtree;
 pub mod wounded;
+pub mod wrap;

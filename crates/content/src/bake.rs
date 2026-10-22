@@ -693,6 +693,17 @@ impl Content {
         // narrow cannot fail on shipped content; it is written as a bake
         // refusal anyway for `repair_cost_pct`'s reason one function over —
         // `bake_combat` is reachable from fixtures that never validated.
+        // Bleeding's half that a hit owns (`combat::hurt`); the clock's half
+        // is `bake_survival`'s. `validate::structural` pins it to 0..=100.
+        cc.bleed_pct = u16::try_from(self.balance.survival.bleed_pct)
+            .ok()
+            .filter(|&p| p <= 100)
+            .ok_or_else(|| {
+                format!(
+                    "bake: survival bleed_pct {} is not a percentage",
+                    self.balance.survival.bleed_pct
+                )
+            })?;
         cc.arrow_break_pct = u16::try_from(self.balance.globals.arrow_break_pct)
             .ok()
             .filter(|&p| p <= 100)
@@ -1303,6 +1314,7 @@ impl Content {
         sc.spawn_hp = u16f(s.spawn_hp, "spawn_hp")?;
         sc.spawn_food = u16f(s.spawn_food, "spawn_food")?;
         sc.spawn_water = u16f(s.spawn_water, "spawn_water")?;
+        sc.bleed_hp_per_min = u16f(s.bleed_hp_per_min, "bleed_hp_per_min")?;
         match (&s.vessel, &s.vessel_full) {
             (Some(e), Some(f)) => {
                 let idx = |id: &str| {
@@ -1466,6 +1478,26 @@ impl Content {
                         con.id, con.fel
                     )
                 })?;
+            let bleed = i16::try_from(con.bleed)
+                .ok()
+                .filter(|v| (-(sim_core::survival::BLEED_MAX as i16)..=0).contains(v))
+                .ok_or_else(|| {
+                    format!(
+                        "bake: consumable `{}` bleed {} outside -{}..=0",
+                        con.id,
+                        con.bleed,
+                        sim_core::survival::BLEED_MAX
+                    )
+                })?;
+            // Ticks in a byte, the draw's resolution: 8.5 s is a ceiling
+            // no use nears.
+            let use_ticks =
+                u8::try_from(con.use_seconds.saturating_mul(TICK_HZ)).map_err(|_| {
+                    format!(
+                        "bake: consumable `{}` use_seconds {} overflows",
+                        con.id, con.use_seconds
+                    )
+                })?;
             let leaves = match &con.leaves {
                 Some(l) => self
                     .item_index(l)
@@ -1485,6 +1517,8 @@ impl Content {
                 water: u16f(con.water, "water")?,
                 seconds,
                 fel,
+                bleed,
+                use_ticks,
                 leaves,
                 leaves_pm: con.leaves_pm as u16,
             };
