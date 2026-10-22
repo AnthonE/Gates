@@ -431,8 +431,10 @@ pub fn refusal_text(reason: u8) -> &'static str {
         // it is to take it away.
         REFUSE_M_TABLE => "the table takes one thing to research and its junk",
         REFUSE_M_BUSY => "the table is researching - wait for it to finish",
-        // THE GATE's "No Looting" (v92), Rust's popup.
-        REFUSE_M_SAFE => "you can't loot other players in a safe zone",
+        // THE GATE's "No Looting" (v92), Rust's popup. A bag lying in the
+        // zone is take-only for its owner too, so the same reason refuses
+        // a stash into one.
+        REFUSE_M_SAFE => "you can't loot other players, or stash in a bag, in a safe zone",
         // A give (v102): their pack, not a slot you dragged to.
         REFUSE_M_GIVE => "their pack has no room for that",
         _ => "refused",

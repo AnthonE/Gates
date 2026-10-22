@@ -5,7 +5,7 @@ use sim_core::backpack::{BackpackContent, Backpacks};
 use sim_core::combat::{self, CombatContent, RangedDef, HOSTILE_TICKS, NO_MAG};
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::inventory::REFUSE_M_SAFE;
+use sim_core::inventory::{CONT_BAG, CONT_SELF, REFUSE_M_SAFE};
 use sim_core::kit;
 use sim_core::limits::{INV_SLOTS, MOB_ID_TAG, TICK_HZ};
 use sim_core::mob;
@@ -13,7 +13,8 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::sentry::{SentryDef, SENTRIES, SENTRY_SLOT0};
 use sim_core::town;
 use sim_core::world::{
-    Command, EventQueue, Player, World, DEATH_BY_MOB, EV_HURT, EV_MOVE_REFUSED, EV_SENTRY_LOCK,
+    Command, EventQueue, Player, World, DEATH_BY_MOB, EV_HURT, EV_MOVED, EV_MOVE_REFUSED,
+    EV_SENTRY_LOCK,
     EV_SHOT, GATE_SPAWN_COOLDOWN_TICKS, SAFE_SLEEP_TICKS,
 };
 
@@ -410,4 +411,73 @@ fn another_players_bag_in_the_zone_cannot_be_looted() {
     assert_eq!(try_loot(MOB_ID_TAG | 3, -24.0), (true, false));
     // Another player's bag out past the zone: fair game.
     assert_eq!(try_loot(2, -(town::SAFE_HALF_M + 20.0)), (true, false));
+}
+
+/// **A bag lying in the zone is take-only, its owner's too** (review 5,
+/// claims#2). Nobody else may loot it there, so a fresh spill bag refilled
+/// by moves every lifetime was a locker no raider could reach. A deposit,
+/// and a take onto an occupied slot that would swap the occupant in, are
+/// refused with the zone's reason and leave the bag as it was; a take and a
+/// rearrange inside the bag still go.
+#[test]
+fn a_bag_in_the_zone_takes_nothing_even_from_its_owner() {
+    let (mut w, slot) = in_town(0.0, -24.0);
+    w.gather = GatherContent::probe_fixture();
+    let mut bc = BackpackContent::probe_fixture();
+    bc.despawn_ticks = [0; sim_core::limits::MAX_ITEM_DEFS];
+    bc.base_ticks = 1 << 30;
+    w.backpack = bc;
+    let mut body = w.players[slot];
+    body.inv = [ItemStack::default(); INV_SLOTS];
+    for (k, item) in [2u16, 3].into_iter().enumerate() {
+        body.inv[k] = ItemStack {
+            item,
+            count: 4,
+            cond: 0,
+            skin: 0,
+        };
+    }
+    let tick = w.tick;
+    let bag = w
+        .backpacks
+        .drop_for(&w.backpack, &body, tick, &mut w.events)
+        .expect("the ladder is armed");
+    let b = w.backpacks.index_of_id(bag).unwrap();
+    let (x, z) = (
+        w.backpacks.entries()[b].qx as f32 * POS_XZ_Q,
+        w.backpacks.entries()[b].qz as f32 * POS_XZ_Q,
+    );
+    assert!(town::safe(&w.haven.town, x, z), "the bag is not in the zone");
+    let items = |w: &World| w.backpacks.entries()[b].items;
+    let mv = |w: &mut World, from: (u8, u8), to: (u8, u8)| {
+        w.tick(&[Command::Move {
+            id: ME,
+            cont: bag,
+            from_kind: from.0,
+            from_slot: from.1,
+            to_kind: to.0,
+            to_slot: to.1,
+            count: 1,
+        }]);
+        let e = w
+            .events
+            .entries()
+            .iter()
+            .find(|e| (e.code == EV_MOVED || e.code == EV_MOVE_REFUSED) && e.a == ME)
+            .copied()
+            .expect("the move answered");
+        (e.code, if e.code == EV_MOVE_REFUSED { e.b } else { 0 })
+    };
+    let before = items(&w);
+    // In from the pack (the round in slot 1), and a take onto the gun in
+    // slot 0, which would swap the gun in: both refused, the bag unmoved.
+    let refused = (EV_MOVE_REFUSED, REFUSE_M_SAFE);
+    assert_eq!(mv(&mut w, (CONT_SELF, 1), (CONT_BAG, 5)), refused);
+    assert_eq!(mv(&mut w, (CONT_BAG, 0), (CONT_SELF, 0)), refused);
+    assert_eq!(items(&w), before, "a refused move moved the bag");
+    // Rearranging inside it, and a take onto an empty slot: the owner can
+    // still empty it.
+    assert_eq!(mv(&mut w, (CONT_BAG, 0), (CONT_BAG, 6)).0, EV_MOVED);
+    assert_eq!(mv(&mut w, (CONT_BAG, 1), (CONT_SELF, 5)).0, EV_MOVED);
+    assert_eq!(w.players[slot].inv[5].item, 3);
 }

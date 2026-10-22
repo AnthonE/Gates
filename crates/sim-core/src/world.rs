@@ -3905,6 +3905,25 @@ impl World {
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_INPUT, addr);
             return;
         }
+        // A bag in THE GATE's safe zone is take-only, its owner's hand
+        // included: nobody else may loot it there (`may_loot`), so a fresh
+        // spill bag refilled by moves every lifetime was a locker no raider
+        // could reach. Takes and rearranging inside it stay, so the owner
+        // can still empty it. Both landing sites, as above.
+        if ground == inventory::CONT_BAG
+            && inventory::deposits_into(inventory::CONT_BAG, from_kind, to_kind, src, dst)
+        {
+            let b = &self.backpacks.entries()[ci];
+            if crate::town::safe(
+                &self.haven.town,
+                b.qx as f32 * POS_XZ_Q,
+                b.qz as f32 * POS_XZ_Q,
+            ) {
+                self.events
+                    .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_SAFE, addr);
+                return;
+            }
+        }
 
         // 4. Plan. This is the whole of the validation, and it holds no
         //    reference to anything it could damage.
