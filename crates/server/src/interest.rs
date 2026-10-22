@@ -260,13 +260,20 @@ mod tests {
 
     /// The harvested walk restarts on every re-arm (`arm_walks`), so a
     /// full one has to finish before a sprinter can re-arm it again, at the
-    /// store's cap: `MAX_SLOT_LIVES / SYNC_SCAN_PER_TICK` ticks of sprint
-    /// inside `PIECE_REARM_CM` — the piece walk's inequality, one store
-    /// over.
+    /// store's cap — the piece walk's inequality, one store over. A window
+    /// ends at `SYNC_SCAN_PER_TICK` entries scanned **or** at a full batch
+    /// of what is in range, so the walk is the scan windows plus one early
+    /// window per smallest batch of in-range cells: one entry per cell, and
+    /// the in-range cells fit in the square round the radius.
     #[test]
     fn a_full_harvested_walk_finishes_before_a_sprinter_re_arms_it() {
+        use protocol::{GROW_SYNC_BATCH, NODE_STAGE_BATCH, SLOT_SYNC_BATCH};
         use sim_core::limits::{MAX_SLOT_LIVES, SYNC_SCAN_PER_TICK, TICK_HZ};
-        let ticks = MAX_SLOT_LIVES.div_ceil(SYNC_SCAN_PER_TICK) as f32;
+        let side = (2 * PIECE_INTEREST_CM / SCATTER_CELL_CM + 1) as usize;
+        let in_range = side * side;
+        let batch = SLOT_SYNC_BATCH.min(GROW_SYNC_BATCH).min(NODE_STAGE_BATCH);
+        let windows = MAX_SLOT_LIVES.div_ceil(SYNC_SCAN_PER_TICK) + in_range.div_ceil(batch) + 1;
+        let ticks = windows as f32;
         let run_cm = ticks * sim_core::movement::SPRINT_SPEED / TICK_HZ as f32 * 100.0;
         assert!(
             run_cm < PIECE_REARM_CM as f32,
