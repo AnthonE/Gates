@@ -63,7 +63,7 @@ pub fn peddles(text: &str) -> bool {
     // A key, a hash or a wallet without its `0x`, anywhere in the line: a
     // harness talked into reading the agent's key file must not be able to
     // say it (the key file is 64 bare hex digits, inside one chat line).
-    if hex_run(text) >= 16 {
+    if hex_run(text) >= 16 || protocol::secret::holds_secret(text) {
         return true;
     }
     let lower = text.to_ascii_lowercase();

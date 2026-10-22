@@ -75,8 +75,15 @@ impl Note {
         };
         // An agent's report is written by whatever steers it, and a long hex
         // run is a key, not a bug (`external::peddles` says why).
-        if crate::external::hex_run(title) >= 32 || crate::external::hex_run(body) >= 32 {
-            return Err("a report may not carry a long hex string (a key or a hash)".into());
+        if crate::external::hex_run(title) >= 32
+            || crate::external::hex_run(body) >= 32
+            || protocol::secret::holds_secret(title)
+            || protocol::secret::holds_secret(body)
+        {
+            return Err(
+                "a report may not carry a long hex string or a recovery phrase (a key or a hash)"
+                    .into(),
+            );
         }
         Ok(Some(Note {
             kind,

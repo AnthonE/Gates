@@ -49,6 +49,7 @@ pub mod chat;
 pub mod event;
 pub mod goldens;
 pub mod lang;
+pub mod secret;
 pub mod version;
 pub mod voice;
 
