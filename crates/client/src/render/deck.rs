@@ -330,10 +330,13 @@ impl CloudParams {
                 0.0,
             ),
             // Daylight's, so it fades with the sun and under an overcast,
-            // and none of it blue in the Verdigris.
+            // and none of it blue in the Verdigris. Gone as the sun drops
+            // toward the horizon (where `DeckLight` starts warming the deck),
+            // so a dusk sky is the atmosphere's orange, not greyed by blue.
             lift: (Vec3::from_array(sky::air_chroma())
                 * super::rig::tune("GATES_TUNE_SKY_LIFT", super::rig::SKY_LIFT) // TUNE
                 * p.light
+                * (p.sun.y / 0.25).clamp(0.0, 1.0)
                 * (1.0 - p.dark)
                 * (1.0 - p.fel))
                 .extend(0.0),
