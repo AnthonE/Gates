@@ -253,6 +253,26 @@ ITEMS = {
     "floor_spikes": "delapouite/spiky-pit",
     "armor_boots_feet": "lorc/leather-boot",
     "armor_hazmat_suit": "delapouite/hazmat-suit",
+    # Clothing v1: Rust's clothes for every slot, and their teas.
+    "armor_burlap_legs": "lorc/trousers",
+    "armor_burlap_feet": "delapouite/slippers",
+    "armor_burlap_hands": "delapouite/gloves",
+    "armor_hide_legs": "delapouite/leg-armor",
+    "armor_hide_feet": "delapouite/fur-boot",
+    "armor_hide_shirt": "lorc/leather-vest",
+    "armor_leather_hands": "delapouite/winter-gloves",
+    "armor_hoodie_shirt": "delapouite/hoodie",
+    "armor_pants_legs": "lorc/trousers",
+    "armor_jacket_body": "delapouite/pirate-coat",
+    "armor_snowjacket_body": "delapouite/sleeveless-jacket",
+    "armor_bandana_face": "delapouite/bandana",
+    "armor_balaclava_face": "delapouite/robber-mask",
+    "armor_beenie_head": "delapouite/winter-hat",
+    "tea_warming": "lorc/coffee-mug",
+    "tea_warming_strong": "lorc/teapot",
+    "tea_cooling": "delapouite/coffee-cup",
+    "tea_warding": "delapouite/teapot-leaves",
+    "tea_healing": "delapouite/herbs-bundle",
 }
 
 # The three vitals, bottom right, in every frame of play.

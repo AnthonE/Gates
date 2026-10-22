@@ -1324,7 +1324,12 @@ pub use voice::{
 /// v138 — captions: `SUB_CAPTION` carries what a nearby player said out
 /// loud as text, or a line translated into the receiver's language
 /// (`lang.rs`).
-pub const PROTO_VER: u16 = 138;
+/// v139 — clothing v1: seven wear slots (`WEAR_SLOTS` 3 → 7: legs, hands,
+/// shirt, face), so `EventMsg::Worn` carries seven and a catalog row's
+/// `wear_slot` is three bits; the row carries its `warmth_pct` and
+/// `ward_pct` for the wear panel; and `SUB_EXPOSURE` carries the minutes
+/// left on each tea after the breath.
+pub const PROTO_VER: u16 = 139;
 
 /// This game's slug in the elo catalog.
 ///

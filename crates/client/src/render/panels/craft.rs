@@ -706,6 +706,10 @@ fn detail_body(
     if let Some(hint) = crate::ui::craft::unlock_hint(&core.research, core.known(), recipe, def) {
         pane.spawn((Text::new(hint), font_bold(11.0), TextColor(TEXT_SHORT)));
     }
+    // What it does worn (clothing v1): slot, protection, warmth, ward.
+    if let Some(line) = crate::ui::craft::clothing_line(&core.catalog, def.output) {
+        pane.spawn((Text::new(line), font_bold(11.0), TextColor(TEXT)));
+    }
     // The output's condition, in words (§0dur item 1).
     if let Some(line) = crate::ui::craft::wear_line(&core.catalog, def.output) {
         pane.spawn((Text::new(line), font(11.0), TextColor(TEXT_DIM)));

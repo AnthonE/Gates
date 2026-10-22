@@ -961,13 +961,7 @@ pub fn structural(c: &Content) -> Result<(), String> {
     for a in &c.armors {
         item_exists(&a.id, "armor")?;
         let item_slot = c.item(&a.id).map(|i| i.slot);
-        let matches = matches!(
-            (a.slot, item_slot),
-            (ArmorSlot::Head, Some(EquipSlot::Head))
-                | (ArmorSlot::Body, Some(EquipSlot::Body))
-                | (ArmorSlot::Feet, Some(EquipSlot::Feet))
-        );
-        if !matches {
+        if item_slot != Some(a.slot.equip()) {
             return Err(format!("armor `{}`: item slot disagrees", a.id));
         }
         if a.reduction_pct > 90 {
@@ -976,6 +970,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if a.full_body && a.slot != ArmorSlot::Body {
             return Err(format!(
                 "armor `{}`: a full-body piece is worn on the body",
+                a.id
+            ));
+        }
+        if a.fills.contains(&a.slot) || (a.full_body && !a.fills.is_empty()) {
+            return Err(format!(
+                "armor `{}`: fills its own slot, or names fills on a full-body piece",
                 a.id
             ));
         }
@@ -1092,12 +1092,24 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if e.chill_rise_per_s > 0 && e.chill_fall_per_s == 0 {
             return Err("exposure: a chill that never falls would never warm".to_string());
         }
+        // Clothing v1: the share's denominator, a byte of per cent short of
+        // overflowing the sim's per mille.
+        if e.warm_full_pct > 6000 {
+            return Err(format!(
+                "exposure: warm_full_pct {} past 6000",
+                e.warm_full_pct
+            ));
+        }
+        if e.dry_ref_c < 0 {
+            return Err("exposure: dry_ref_c under 0 would never dry".to_string());
+        }
         let hp = c.balance.globals.player_hp;
         let cl = &c.balance.climate;
         for (name, v) in [
             ("cold_below_c", e.cold_below_c),
             ("hot_above_c", e.hot_above_c),
             ("shade_c", e.shade_c),
+            ("dry_ref_c", e.dry_ref_c),
             ("temperate_low_c", cl.temperate_low_c),
             ("temperate_high_c", cl.temperate_high_c),
             ("arid_low_c", cl.arid_low_c),

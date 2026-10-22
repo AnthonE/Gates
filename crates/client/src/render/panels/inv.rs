@@ -79,7 +79,7 @@ use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
     looting, move_args, pip_fraction, quick_move_stack, refusal_text, slots_in, takes_deposits,
-    wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick, Sweep,
+    wear_slot_label, wearable_here, worn_pct, worn_ward, worn_warmth, Drag, Grab, Quick, Sweep,
 };
 use sim_core::oven::OvenLayout;
 
@@ -1340,6 +1340,8 @@ fn wear_panel(
     portrait: Option<&crate::render::portrait::Portrait>,
 ) {
     let pct = worn_pct(&core.catalog, &core.worn);
+    let warmth = worn_warmth(&core.catalog, &core.worn);
+    let ward = worn_ward(&core.catalog, &core.worn);
     row.spawn((
         Node {
             flex_direction: FlexDirection::Column,
@@ -1378,11 +1380,51 @@ fn wear_panel(
             ..default()
         })
         .with_children(|row| {
-            for slot in 0..WEAR_SLOTS {
-                wear_slot(row, core, icons, slot);
+            // Rust's seven clothing slots in the body's own order, head to
+            // feet. The container slots are the sim's (`combat::WEAR_*` −
+            // 1); only the drawing order is ours.
+            for w in WEAR_ROW {
+                wear_slot(row, core, icons, w as usize - 1);
             }
         });
+        col.spawn((
+            Text::new(warmth_line(warmth)),
+            font_bold(11.0),
+            TextColor(if warmth != 0 { TEXT } else { TEXT_DIM }),
+            Pickable::IGNORE,
+        ));
+        if ward > 0 {
+            col.spawn((
+                Text::new(format!("VERDIGRIS WARD {ward}%")),
+                font(10.0),
+                TextColor(TEXT_DIM),
+                Pickable::IGNORE,
+            ));
+        }
     });
+}
+
+/// The clothing row's slots, head to feet (`combat::WEAR_*`).
+const WEAR_ROW: [u8; WEAR_SLOTS] = [
+    sim_core::combat::WEAR_HEAD,
+    sim_core::combat::WEAR_FACE,
+    sim_core::combat::WEAR_SHIRT,
+    sim_core::combat::WEAR_BODY,
+    sim_core::combat::WEAR_HANDS,
+    sim_core::combat::WEAR_LEGS,
+    sim_core::combat::WEAR_FEET,
+];
+
+/// What the WARMTH line says: the set's net cold protection, Rust's Cold
+/// row in the clothing panel.
+pub fn warmth_line(pct: i32) -> String {
+    if pct > 0 {
+        format!("WARMTH +{pct}%")
+    } else if pct < 0 {
+        format!("WARMTH {pct}% · DRAWS THE COLD IN")
+    } else {
+        "WARMTH 0%".to_string()
+    }
 }
 
 /// One captioned wear cell: the slot's name over the cell it addresses.
@@ -1768,6 +1810,23 @@ pub fn slot_tip(
         // across instead (`ui::slots::quick_move`).
         if !crate::ui::slots::looting(core.cont_kind) {
             tip.push_str(" · right-click to eat");
+        }
+    }
+    // What wearing it pays (clothing v1), Rust's protection rows: the slot,
+    // the blows it takes off, the cold it keeps out, the green it wards.
+    if row.wear_slot != sim_core::combat::WEAR_NONE {
+        tip.push_str(&format!(
+            "\n{} · protection {}%",
+            wear_slot_label(row.wear_slot as usize - 1),
+            row.armor_pct
+        ));
+        match row.warmth_pct {
+            0 => {}
+            w if w > 0 => tip.push_str(&format!(" · warmth +{w}%")),
+            w => tip.push_str(&format!(" · draws the cold {w}%")),
+        }
+        if row.ward_pct > 0 {
+            tip.push_str(&format!(" · verdigris {}%", row.ward_pct));
         }
     }
     // What it is for, on a line of its own (`SUB_ITEM_DESC`).

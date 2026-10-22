@@ -2167,6 +2167,9 @@ pub struct ClientCore {
     /// costing hp (wire v137, `World::breathe`).
     pub breath_pct: u8,
     pub drowning: bool,
+    /// Minutes left on each tea by `sim_core::exposure::BREW_*` (wire
+    /// v139, clothing v1).
+    pub brew_min: [u8; sim_core::exposure::BREW_KINDS],
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2599,6 +2602,7 @@ impl ClientCore {
             bleed: 0,
             breath_pct: 100,
             drowning: false,
+            brew_min: [0; sim_core::exposure::BREW_KINDS],
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -4227,6 +4231,7 @@ impl ClientCore {
                 bleed,
                 breath_pct,
                 drowning,
+                brew_min,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -4239,6 +4244,7 @@ impl ClientCore {
                 self.bleed = bleed;
                 self.breath_pct = breath_pct;
                 self.drowning = drowning;
+                self.brew_min = brew_min;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }

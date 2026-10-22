@@ -566,7 +566,9 @@ const TICKS: u64 = 900;
 /// in deep water instead of walking the bed, and the beach and the shallows
 /// take foundations and the beach deployables — with both reverted the old
 /// hash came back exactly.
-const GOLDEN_FINAL_HASH: u64 = 0x5CC0_ADCF_F6BF_2C03;
+/// **Moved → `0xDFE5_FB90_8304_DF97` at clothing v1** (2026-10-22, wipe): `state_hash`
+/// reads seven worn stacks and the teas.
+const GOLDEN_FINAL_HASH: u64 = 0xDFE5_FB90_8304_DF97;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -692,7 +694,9 @@ const GOLDEN_FINAL_HASH: u64 = 0x5CC0_ADCF_F6BF_2C03;
 /// hash.
 /// **Moved → `0x1D20_50E2_3399_DA27` at the water pass** (2026-10-21), with the final
 /// hash and for its reason.
-const GOLDEN_TRACE_HASH: u64 = 0x1D20_50E2_3399_DA27;
+/// **Moved → `0xCBE6_446E_651E_CBA2` at clothing v1** (2026-10-22, wipe), with the final
+/// hash.
+const GOLDEN_TRACE_HASH: u64 = 0xCBE6_446E_651E_CBA2;
 
 /// Fold a stamped trace into one number.
 ///
