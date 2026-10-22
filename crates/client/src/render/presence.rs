@@ -165,7 +165,8 @@ fn pump(
         place: place_for(state, &eye, world.as_deref(), blight.as_deref()),
         ..Default::default()
     };
-    if settings.discord_share_server && state.in_session() {
+    // Streamer mode shares no server, whatever the row below it says.
+    if settings.discord_share_server && !settings.streamer() && state.in_session() {
         let addr = connecting.addr.as_str();
         if !addr.is_empty() {
             activity.join = Some(Addr::new(addr));

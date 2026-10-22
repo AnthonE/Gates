@@ -311,6 +311,7 @@ impl Gates {
             session,
             sel: 0,
             light: false,
+            farm_sent: None,
         });
 
         // `connected: true` is what puts the app in `Screen::Loading` rather

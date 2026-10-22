@@ -243,6 +243,15 @@ station = "none"
 seconds = 15
 inputs = [{ item = "item.wood", count = 100 }]
 
+# Farming v2: a barrel of planks under a tarp, no bench.
+[[recipe]]
+id = "recipe.water_catcher"
+output = "item.water_catcher"
+count = 1
+station = "none"
+seconds = 20
+inputs = [{ item = "item.wood", count = 100 }, { item = "item.tarp", count = 1 }]
+
 # A cob's kernels are seed: one corn, two seeds, by hand. What keeps a farm
 # going once the barrels' seed runs out.
 [[recipe]]
@@ -260,6 +269,15 @@ count = 1
 station = "none"
 seconds = 10
 inputs = [{ item = "item.leather", count = 10 }]
+
+# The jug (the water pass): metal, so a little later than the skin.
+[[recipe]]
+id = "recipe.water_jug"
+output = "item.water_jug"
+count = 1
+station = "none"
+seconds = 15
+inputs = [{ item = "item.metal_frags", count = 25 }]
 
 [[recipe]]
 id = "recipe.fire_pit"

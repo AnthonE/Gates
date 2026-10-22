@@ -12,6 +12,15 @@ use protocol::{Address, Watch};
 
 /// `0x7e5f…5bdf` — enough of an address to tell two apart at a glance.
 pub fn short(a: &Address) -> String {
+    if super::streamer::on() {
+        return super::streamer::HIDDEN.to_string();
+    }
+    short_real(a)
+}
+
+/// [`short`] whatever streamer mode says: for text that is not drawn here
+/// (the reason a launcher shows beside a signature it is asked for).
+pub fn short_real(a: &Address) -> String {
     let hex = a.to_hex();
     let s = core::str::from_utf8(&hex).unwrap_or("0x?");
     format!("{}…{}", &s[..6], &s[s.len() - 4..])
@@ -24,6 +33,15 @@ pub fn label(w: &Watch) -> String {
     let named = !w.name.is_empty();
     let proven = !w.address.is_guest();
     let who = match (named, proven) {
+        _ if super::streamer::on() => {
+            let hex = w.address.to_hex();
+            let key = if proven {
+                core::str::from_utf8(&hex).unwrap_or("")
+            } else {
+                w.name.as_str()
+            };
+            super::streamer::alias(key)
+        }
         (true, true) => format!("{} · {}", w.name.as_str(), short(&w.address)),
         (true, false) => format!("{} (guest)", w.name.as_str()),
         (false, true) => short(&w.address),

@@ -285,10 +285,13 @@ impl Friend {
     /// The name, else the short wallet, marked when it is a program: your own
     /// buddy as yours, anyone else's agent the way a nametag marks one.
     pub fn label(&self) -> String {
-        let name = self
-            .name
-            .clone()
-            .unwrap_or_else(|| short_wallet(&self.wallet));
+        let name = if crate::ui::streamer::on() {
+            crate::ui::streamer::alias(&self.wallet.to_ascii_lowercase())
+        } else {
+            self.name
+                .clone()
+                .unwrap_or_else(|| short_wallet(&self.wallet))
+        };
         if self.is_buddy() {
             format!("{name} (your agent)")
         } else if self.agent {
@@ -313,8 +316,17 @@ impl Friend {
 
 /// `0x1234…abcd`, the way every surface in this client shortens a wallet.
 pub fn short_wallet(w: &str) -> String {
+    if crate::ui::streamer::on() {
+        return crate::ui::streamer::HIDDEN.to_string();
+    }
+    short_wallet_real(w)
+}
+
+/// [`short_wallet`] whatever streamer mode says, for text a launcher shows
+/// beside a signature rather than text drawn here.
+pub fn short_wallet_real(w: &str) -> String {
     match Address::from_hex(w.as_bytes()) {
-        Some(a) => crate::ui::spectate::short(&a),
+        Some(a) => crate::ui::spectate::short_real(&a),
         None => w.chars().take(10).collect(),
     }
 }
@@ -335,6 +347,11 @@ pub fn presence_line(f: &Friend, now: u64) -> String {
     if f.online {
         if let Some(p) = &f.playing {
             let title = p.title.as_deref().or(p.game.as_deref()).unwrap_or("a game");
+            // Streamer mode names the game and never the server: where a
+            // friend is is where a viewer would go looking.
+            if crate::ui::streamer::on() {
+                return format!("Playing {title}");
+            }
             return match p.server_name.as_deref().or(p.server.as_deref()) {
                 Some(s) => format!("Playing {title} · {s}"),
                 None => format!("Playing {title}"),

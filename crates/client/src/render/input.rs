@@ -474,7 +474,8 @@ pub fn gather(
     // **No weapon is drawn in THE GATE** (Rust's safe zone): the sim lets
     // nothing fire there (`combat::holstered`), so the arm does not swing
     // and the bow does not draw — `hud::holster_hint` says why.
-    let holstered = core.holstered();
+    // Nor from the water: a swimmer shoots nothing (`combat::waterlogged`).
+    let holstered = core.holstered() || core.waterlogged();
     if swings && !spent && !downed && !holstered && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
@@ -495,6 +496,18 @@ pub fn gather(
     if draws && !downed && !holstered && locked && mouse.pressed(MouseButton::Right) {
         buttons |= BTN_AIM;
         buttons &= !BTN_SPRINT;
+    }
+    // **A full water vessel is poured with the right hand** (the reference's
+    // right mouse; the water pass, `World::pour`) on the same bit: the sim
+    // pours once and the vessel is empty after, so a held button is one pour.
+    let pours = core
+        .inv
+        .get(sel as usize)
+        .filter(|s| s.count > 0)
+        .and_then(|s| core.catalog.rows.get(s.item as usize))
+        .is_some_and(|r| r.pour);
+    if pours && !downed && locked && mouse.pressed(MouseButton::Right) {
+        buttons |= BTN_AIM;
     }
     // **The swing is no longer heard here.** From audio v0 to 2026-09-13
     // this block played `Cue::Swing` on `just_pressed`, on the argument that

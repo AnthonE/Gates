@@ -1554,3 +1554,73 @@ sheet and back frame pressed to the row's 12 cm (x0.51; the sheet itself is
 > **key_lock** — "A single heavy steel hasp and padlock for a door on a plain white background, three-quarter front view. A thick flat rectangular steel hasp plate 7 centimetres wide and 17 centimetres tall with rounded corners, fixed by four large round bolt heads, with a folded steel staple loop standing out from its lower half. Hanging through the staple, one chunky laminated steel padlock 6 centimetres wide, 6 centimetres tall and 3 centimetres thick, its body made of stacked steel plates riveted together, a thick U-shaped hardened steel shackle, and a round brass keyhole on its front face. Scratched dull steel with rust spots and grime, worn and heavily used. Real, photographed in soft daylight. Exactly one hasp and one padlock. No door, no wall, no key, no chain, no ground, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Scratched dull grey steel with rust spots and grime, laminated padlock plates with rivets, polished hardened steel shackle, brass keyhole, rusty bolt heads, no text, no letters, no logos"
 >
 > **door_metal** — "A single heavy scrap-built steel door, flat and upright, on a plain white background. One rectangular door leaf 120 centimetres wide, 220 centimetres tall and 8 centimetres thick. Built from four mismatched riveted steel sheet panels, one of them corrugated, welded over a rectangular frame of angle iron, with a horizontal steel crossbar across the middle and rows of round rivet heads along every seam. Three heavy welded steel barrel hinges on the left edge. On the right side at waist height, a thick bent steel bar pull handle, and a small square steel mounting plate just above it. Faded industrial paint in dull grey-green, chipped and scratched to bare steel, orange rust streaks running down from the rivets, weld scars and dents. Real, photographed in soft daylight. Exactly one door. No door frame, no wall, no ground, no people, no plants, no window, no text, no numbers, no letters, no logos, no scale bar."  ·  texture: "Faded grey-green industrial paint over riveted sheet steel, chipped and scratched to bare metal, orange rust streaks from the rivets, one corrugated panel, weld scars, dents, grime, no text, no numbers, no letters, no logos"
+
+## Farming v2 — the planter, the catcher, the crops and their fruit (Meshy, 2026-10-21)
+
+Same terms as `deploy/` (Meshy paid plan, no `NOTICE` entry, no proper noun in any prompt) and
+the batch-1 pipeline: `meshy_gen.py` (nano-banana-pro → meshy-t2 smart topology, single view;
+`--multiview` → meshy-7.1 multi-image, remeshed, for the fruit and the plants) →
+`import_meshy.py` → `flatten_charts.py` where it helped → `ktx_pack.py` (`--size 1024`;
+the two held items at 512). **345 credits for eleven rolls** (balance 2,580 → 2,235,
+measured, run serially, so each row's figure is its own). Seven ship.
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `deploy/planter_box.glb` | DEPLOY row 17 planter, and its held token | `01a15db4-1f02` | `01a15db4-9ef6` | 24 | 3,973 | 1.60 × 0.50 × 0.80 | second roll; `--fit-axes` to the `DEPLOY` row (aspect 1.16; delivered 1.10 × 0.40 × 0.58), so the bed is `DEPLOY_VOL[17]`; soil at the six spots 0.436–0.447 against the sim's 0.44 |
+| `deploy/water_catcher.glb` | DEPLOY row 23 catcher, and its held token | `01a15db6-d0fd` | `01a15db7-5302` | 24 | 4,724 | 0.82 × 1.03 × 0.90 | uniform to the `DEPLOY` row (×0.514; delivered 1.60 × 2.00 × 1.75); an empty stray root node dropped from the scene, buffers untouched |
+| `held/pumpkin.glb` | Pumpkin; `FRUIT_GLB[LOOK_PUMPKIN]` | `01a15db9-1056` | `01a15db9-91ba` | 39 | 1,573 | 0.34 × 0.30 × 0.34 | 3 views; cube fit; charts flattened (`--luma-only`, 0.079 → 0.016); `height_m` 0.301 |
+| `held/potato.glb` | Potato | `01a15dbd-7eda` | `01a15dbe-2c09` | 39 | 834 | 0.11 × 0.06 × 0.07 | 3 views; `--turn=x90,y90` (delivered standing on end), cube fit; charts flattened (0.265 → 0.061); `height_m` 0.063 |
+| `crops/corn_plant.glb` | `CROP_GLB[LOOK_CORN]` | `01a15dc2-2e5c` | `01a15dc2-d925` | 39 | 3,100 | 1.09 × 1.80 × 0.73 | 3 views; uniform by HEIGHT to `LOOK_H_M` 1.8 (the leaves span wider than 0.6), stalk on the origin (`--shift`); as delivered |
+| `crops/pumpkin_vine.glb` | `CROP_GLB[LOOK_PUMPKIN]` | `01a15dc7-bbd2` | `01a15dc8-8feb` | 39 | 2,104 | 0.71 × 0.35 × 0.57 | 3 views; uniform into 0.8 × 0.35 × 0.8, crown on the origin; as delivered |
+| `crops/potato_plant.glb` | `CROP_GLB[LOOK_POTATO]` | `01a15dd8-4809` | `01a15dd8-cd38` | 39 | 2,374 | 0.48 × 0.55 × 0.53 | third roll, 3 views, `--tris 3000`; uniform into 0.6 × 0.55 × 0.6, stem on the origin; as delivered |
+
+**Rolled and not shipped:** the planter's first roll (`01a15db1-c056` / `01a15db2-4020`)
+stood its corner posts 8 cm proud of the rim with the soil 6 cm under the boards, so fitted to
+0.5 m the soil sat at 0.36, 8 cm under the plants the sim draws at 0.44. The second prompt
+cuts the posts flush. The potato plant's first two (`01a15dcc-3ab0` / `01a15dcc-e5d4`,
+`01a15dd1-89e9` / `01a15dd2-5e9a`) remeshed to 963 and 850 triangles of loose leaf shards: a
+compound leaf of small leaflets does not survive a 2,000-triangle remesh. The third names large
+paired leaflets of a stated size and asks for 3,000.
+
+The plants (`crops/`, `render::crops::CROP_GLB`) draw from sapling on in
+place of the procedural stalk and leaves, scaled by stage; their dry, dying
+and ripe-potato looks tint the model's own material as the procedural leaves
+are tinted, and the whole plant bends on the stalk's sway. Hemp and the
+berry bush stay procedural. The ears and the pumpkins on a fruiting plant
+are the held corn and pumpkin (`FRUIT_GLB`). A file that fails to load
+leaves its look procedural.
+
+What was learned, measured:
+
+- **The multi-image path makes real leaf SHEETS, not hulls**, contrary to
+  `reference/PLANTS.md` §4's expectation for generators: the corn's eight strap leaves, the
+  vine's broad leaves and the potato's leaflets are open double-sided surfaces with gaps
+  between them, one material, opaque. It holds while the leaves are big; small leaflets come
+  back as shards.
+- **A box's "top edge" is the rim of its boards, not the tops of its posts.** Say which, or the
+  soil lands under the line the sim plants at.
+- `measure_glb.py`'s bands are a rock's again: the planter fails depth/width (0.50 by
+  definition), every plant fails green %, and the multi-material catcher and planter fail chart
+  contrast because wood, soil, canvas and a blue drum genuinely differ.
+
+Prompts, in full, for the IP rail:
+
+> **planter_box** — "A single long low rectangular raised garden planter box on a plain white background, three-quarter front view of its long side. 160 centimetres long, 80 centimetres deep and 50 centimetres tall, half as deep as it is long, built from old weathered grey-brown wooden planks nailed to four square corner posts inside the corners, the posts cut flush with the top edge of the planks so nothing sticks up above the flat rim, rusty nails, one cracked plank, mud splashed on the lower boards. Filled with dark moist crumbly soil to six centimetres below the rim, the soil surface flat, level and empty. Real, weathered, photographed in soft daylight. Exactly one planter box. No plants, no seedlings, no ground, no people, no tools, no text, no letters, no logos, no scale bar."  ·  texture: "Weathered grey-brown wooden planks with rusty nails and mud stains, dark moist soil top, no text, no logos"
+>
+> **water_catcher** — "A single small improvised rain water catcher on a plain white background, three-quarter front view. A square frame of four rough wooden poles 90 centimetres wide, 90 centimetres deep and 110 centimetres tall, as deep as it is wide, holding a sagging olive-green canvas tarp stretched between the tops of the poles into a funnel, draining through a short black hose into a dented faded blue plastic barrel standing on the ground inside the frame, frayed rope lashings at the corners. Weathered, dirty, patched. Real, photographed in soft daylight. Exactly one water catcher. No water spray, no ground, no people, no plants, no text, no letters, no logos, no scale bar."  ·  texture: "Rough wooden poles, olive canvas tarp with patches and dirt, dented faded blue plastic barrel, black hose, frayed rope, no text, no logos"
+>
+> **pumpkin** — "A single ripe orange field pumpkin with deep vertical ribs and a short curled dry green-brown stem on top, on a plain white background, three-quarter view. Round and slightly squat, 34 centimetres across, 34 centimetres deep and 28 centimetres tall, as deep as it is wide, a few scuffs and a pale yellowish patch on its underside where it lay on the ground. Real, photographed in soft daylight. Exactly one pumpkin. No leaves, no vine, no ground, no people, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Deep orange ribbed pumpkin skin with scuffs and a pale ground patch, dry green-brown stem, no text"
+>
+> **potato** — "A single raw brown potato lying on its side on a plain white background, three-quarter view. Oval and lumpy, 11 centimetres long, 8 centimetres wide and 7 centimetres tall, with small shallow eyes and dry soil clinging to the skin. Real, photographed in soft daylight. Exactly one potato. No sprouts, no ground, no people, no hands, no text, no letters, no logos, no scale bar."  ·  texture: "Dusty light-brown potato skin with small eyes and dry soil specks, no text"
+>
+> **corn_plant** — "A single tall green corn plant on a plain white background, side three-quarter view. One upright stalk 180 centimetres tall with eight long arching ribbon-like leaves spreading about 60 centimetres across in every direction, a pale golden tassel at the top, a small root flare at the bottom, no cobs. Healthy green, slightly dusty, real, photographed in soft daylight. Exactly one plant. No pot, no soil, no ground, no people, no text, no letters, no logos, no scale bar."  ·  texture: "Green corn stalk and long ribbon leaves with light yellowing at the tips, pale golden tassel, no text"
+>
+> **pumpkin_vine** — "A single low sprawling pumpkin vine plant on a plain white background, high three-quarter view. Broad lobed dark green leaves on hairy curling stems growing out from one central root crown, spreading about 80 centimetres across, 80 centimetres deep and 35 centimetres high, as deep as it is wide, a few small yellow trumpet flowers, curly tendrils, no pumpkins. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no ground, no people, no text, no letters, no logos, no scale bar."  ·  texture: "Dark green lobed pumpkin leaves with pale veins, hairy green stems, small yellow flowers, no text"
+>
+> **potato_plant** — "A single potato plant on a plain white background, three-quarter view from slightly above. About ten thick fleshy green stems arching outward from one root crown into a low rounded mound, each stem carrying five to seven large flat oval leaflets arranged in pairs along it, each leaflet 10 centimetres long and 6 centimetres wide, smooth edged, matte mid-green with pale veins; the plant 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide. Two small clusters of white five-petalled flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."  ·  texture: "Matte mid-green potato leaflets with pale veins, thick green stems, small white flowers with yellow centres, no text"
+>
+> **planter_box**, first roll (not shipped) — "A single long rectangular raised garden planter box on a plain white background, three-quarter front view of its long side. 160 centimetres long, 80 centimetres deep and 50 centimetres tall, half as deep as it is long, built from old weathered grey-brown wooden planks nailed to four square corner posts, rusty nails, one cracked plank, mud splashed on the lower boards. Filled with dark moist crumbly soil to six centimetres below the top edge, the soil surface flat, level and empty. Real, weathered, photographed in soft daylight. Exactly one planter box. No plants, no seedlings, no ground, no people, no tools, no text, no letters, no logos, no scale bar."
+>
+> **potato_plant**, first roll (not shipped) — "A single bushy potato plant on a plain white background, three-quarter view. A rounded upright clump of leafy green stems growing from one root crown, the soft mid-green compound leaves each made of several oval leaflets, the clump 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a few small white and pale violet star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."
+>
+> **potato_plant**, second roll (not shipped) — "A single young potato plant on a plain white background, three-quarter view. A dense rounded bush of thick green stems rising from one root crown, every stem carrying broad soft mid-green oval leaves 8 to 12 centimetres long that overlap one another, the leaves attached to their stems with no gaps and no loose pieces, the bush 60 centimetres across, 60 centimetres deep and 55 centimetres tall, as deep as it is wide, a small cluster of white star-shaped flowers with yellow centres on top. Real, photographed in soft daylight. Exactly one plant. No pot, no soil, no potatoes, no ground, no people, no text, no letters, no logos, no scale bar."

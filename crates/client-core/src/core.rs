@@ -12,7 +12,7 @@ use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
-    WireGItem, WireLodged,
+    WireGItem, WireLodged, WirePlant,
 };
 use sim_core::build::{BuildContent, PieceRec, Pieces};
 use sim_core::collide::{ColIndex, Part};
@@ -23,7 +23,7 @@ use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_GROUND_ITEMS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
+    MAX_GROUND_ITEMS, MAX_PLANTS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -432,6 +432,10 @@ pub const APPLIED2_SKINS: u32 = 1 << 12;
 /// An achievement popup was queued (`EventMsg::Achievement`, v118):
 /// [`ClientCore::pop_achievement`].
 pub const APPLIED2_ACHIEVEMENT: u32 = 1 << 13;
+/// The plant set changed (`EventMsg::Plant` / `PlantGone` / `PlantSync`,
+/// farming v2) — re-read `plants`. A level, not a ring; raised on a reset
+/// too, for `APPLIED2_GITEMS`' reason.
+pub const APPLIED2_PLANTS: u32 = 1 << 14;
 
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
@@ -488,6 +492,71 @@ impl GItemSet {
         }
         self.recs[self.len] = rec;
         self.len += 1;
+        true
+    }
+}
+
+/// The client's mirror of the plants the server has told it about
+/// (farming v2): `GItemSet`'s shape — an id is the identity and the record
+/// rides with it, so an insert replaces. Bounded like the server's store
+/// (`MAX_PLANTS`).
+pub struct PlantSet {
+    recs: Box<[WirePlant]>,
+    len: usize,
+}
+
+impl PlantSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![WirePlant::default(); MAX_PLANTS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[WirePlant] {
+        &self.recs[..self.len]
+    }
+
+    pub fn find(&self, id: u32) -> Option<&WirePlant> {
+        self.entries().iter().find(|p| p.id == id)
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// True if the set changed. An id already held is replaced.
+    fn insert(&mut self, rec: WirePlant) -> bool {
+        if let Some(i) = self.entries().iter().position(|r| r.id == rec.id) {
+            if self.recs[i] == rec {
+                return false;
+            }
+            self.recs[i] = rec;
+            return true;
+        }
+        if self.len == self.recs.len() {
+            return false;
+        }
+        self.recs[self.len] = rec;
+        self.len += 1;
+        true
+    }
+
+    /// True if `id` was held.
+    fn remove(&mut self, id: u32) -> bool {
+        let Some(i) = self.entries().iter().position(|r| r.id == id) else {
+            return false;
+        };
+        self.len -= 1;
+        self.recs[i] = self.recs[self.len];
         true
     }
 }
@@ -1067,18 +1136,6 @@ impl DeploySet {
             Some(gone)
         } else {
             None
-        }
-    }
-
-    /// Apply a planter's beds (crops v1, `EventMsg::Planter`) to its
-    /// record. An address never heard of waits for the deploy walk, which
-    /// carries the same byte.
-    fn set_grow(&mut self, cx: u16, cz: u16, level: u8, loc: u8, stages: u8) {
-        if let Some(r) = self.recs[..self.len]
-            .iter_mut()
-            .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
-        {
-            r.grow = stages;
         }
     }
 
@@ -1969,6 +2026,10 @@ pub struct ClientCore {
     /// `APPLIED_DRANK` (`client_drank`, named here until 2026-08-15, was
     /// the deleted C-ABI bridge).
     pub last_drink: u32,
+    /// The last vessel fact (wire v131, `EventMsg::Vessel`), when the last
+    /// `APPLIED_DRANK` was one rather than a mouthful: (poured, salt, fires
+    /// put out, planters reached).
+    pub last_vessel: Option<(bool, bool, u16, u16)>,
     /// The last move's address, `sim_core::inventory::addr`'s pack
     /// verbatim, and the refusal reason (0 = the move landed). Read
     /// together by `render/panels/mod.rs::sync_refusals` and the panel's
@@ -2092,6 +2153,13 @@ pub struct ClientCore {
     /// costing hp (wire v113).
     pub fel_pct: u8,
     pub fel_hurting: bool,
+    /// The open wound, hp it still owes (`EventMsg::Exposure`): BLEEDING
+    /// while it is above zero.
+    pub bleed: u8,
+    /// The breath the owner has left, per cent, and whether the water is
+    /// costing hp (wire v137, `World::breathe`).
+    pub breath_pct: u8,
+    pub drowning: bool,
     /// Whether any reading has landed (snow v0): until one has, `air_c`'s
     /// 0 is no reading, not 0 °C — and a shard with exposure disarmed never
     /// sends one, so its sky never snows.
@@ -2172,6 +2240,9 @@ pub struct ClientCore {
     /// Loose stacks on the ground, as the server last stated them
     /// (ground items v0). Read through `ground_items()`.
     pub gitems: GItemSet,
+    /// Every plant the server has told this client of (farming v2), as it
+    /// last stated them. Never predicted.
+    pub plants: PlantSet,
     /// Arrows standing in bodies, as the server last stated them (wire
     /// v94). Read through `lodged()`.
     pub lodged: LodgedSet,
@@ -2467,6 +2538,7 @@ impl ClientCore {
             consume_refusal_head: 0,
             consume_refusal_len: 0,
             last_drink: 0,
+            last_vessel: None,
             last_move: 0,
             move_seq: 0,
             last_move_refused: 0,
@@ -2506,6 +2578,9 @@ impl ClientCore {
             air_c: 0,
             fel_pct: 0,
             fel_hurting: false,
+            bleed: 0,
+            breath_pct: 100,
+            drowning: false,
             air_read: false,
             hostile_until: 0,
             gate_spawn_at: 0,
@@ -2529,6 +2604,7 @@ impl ClientCore {
             deploys: DeploySet::new(),
             bags: BagSet::new(),
             gitems: GItemSet::new(),
+            plants: PlantSet::new(),
             lodged: LodgedSet::new(),
             deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
             n_deploy_changes: 0,
@@ -3861,15 +3937,26 @@ impl ClientCore {
                 }
                 flags |= APPLIED_DEPLOYS;
             }
-            EventMsg::Planter {
-                cx,
-                cz,
-                level,
-                loc,
-                stages,
-            } => {
-                self.deploys.set_grow(cx, cz, level, loc, stages);
-                flags |= APPLIED_DEPLOYS;
+            EventMsg::Plant(p) => {
+                if self.plants.insert(p) {
+                    self.applied2 |= APPLIED2_PLANTS;
+                }
+            }
+            EventMsg::PlantGone { id, .. } => {
+                if self.plants.remove(id) {
+                    self.applied2 |= APPLIED2_PLANTS;
+                }
+            }
+            EventMsg::PlantSync { reset, recs, count } => {
+                if reset {
+                    self.plants.clear();
+                    self.applied2 |= APPLIED2_PLANTS;
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    if self.plants.insert(rec) {
+                        self.applied2 |= APPLIED2_PLANTS;
+                    }
+                }
             }
             EventMsg::Vitals {
                 food,
@@ -3937,6 +4024,17 @@ impl ClientCore {
             }
             EventMsg::Drank { water, hp_cost } => {
                 self.last_drink = ((water as u32) << 16) | hp_cost as u32;
+                self.last_vessel = None;
+                flags |= APPLIED_DRANK;
+            }
+            EventMsg::Vessel {
+                poured,
+                salt,
+                doused,
+                watered,
+            } => {
+                self.last_drink = 0;
+                self.last_vessel = Some((poured, salt, doused, watered));
                 flags |= APPLIED_DRANK;
             }
             EventMsg::Health { hp, max } => {
@@ -4108,6 +4206,9 @@ impl ClientCore {
                 air_c,
                 fel_pct,
                 fel_hurting,
+                bleed,
+                breath_pct,
+                drowning,
             } => {
                 self.wet_pct = wet_pct;
                 self.cold_pct = cold_pct;
@@ -4117,6 +4218,9 @@ impl ClientCore {
                 self.air_c = air_c;
                 self.fel_pct = fel_pct;
                 self.fel_hurting = fel_hurting;
+                self.bleed = bleed;
+                self.breath_pct = breath_pct;
+                self.drowning = drowning;
                 self.air_read = true;
                 self.applied2 |= APPLIED2_EXPOSURE;
             }
@@ -5069,6 +5173,19 @@ impl ClientCore {
             .get(item as usize)
             .is_some_and(|r| r.holster)
             && sim_core::town::safe(&self.haven().town, x, z)
+    }
+
+    /// A swimmer with a bow or a gun in hand (`sim_core::combat::waterlogged`):
+    /// the sim fires nothing but melee from the water, so the arm stays down.
+    pub fn waterlogged(&self) -> bool {
+        let item = self.held_item();
+        item != NO_ITEM
+            && sim_core::movement::swimming_at(self.predict.position()[1])
+            && self
+                .catalog
+                .rows
+                .get(item as usize)
+                .is_some_and(|r| r.gun.is_some() || r.draw_ticks > 0)
     }
 
     /// Forget the open ground container. The server's close lands here, and

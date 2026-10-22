@@ -547,7 +547,11 @@ pub fn auth_for(
             JoinError::Failed(format!(
                 "could not sign in as {}; approve the sign-in in your launcher or \
                  browser and try again",
-                short(address)
+                if crate::ui::streamer::on() {
+                    "your wallet".to_string()
+                } else {
+                    short(address)
+                }
             ))
         })?),
     };

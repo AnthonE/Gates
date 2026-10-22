@@ -99,7 +99,14 @@ pub fn build(
     let wallet = hex(who);
     let me = friends.and_then(|f| f.me);
     let rel = words::rel(me, friends.and_then(|f| f.view.as_ref()), &who);
-    let title = words::title(card.face.as_ref(), &card.hint, &wallet);
+    // Streamer mode: the card is a made-up name (the click carried it) and
+    // nothing that leads back to the wallet (`ui::streamer`).
+    let streamer = crate::ui::streamer::on();
+    let title = if streamer {
+        crate::ui::streamer::alias(&wallet.to_ascii_lowercase())
+    } else {
+        words::title(card.face.as_ref(), &card.hint, &wallet)
+    };
     let now = crate::shot::now_secs();
     // The one line that says what just happened: a friends op's answer, the
     // page opening, or a read that failed.
@@ -187,7 +194,9 @@ pub fn build(
                 let primary = matches!(op, Op::Ask | Op::Accept);
                 kit::button(r, label, ProfileButton::Friend(*op), primary && !acting);
             }
-            kit::button(r, "VIEW ON ELO PROS", ProfileButton::Page, true);
+            if !streamer {
+                kit::button(r, "VIEW ON ELO PROS", ProfileButton::Page, true);
+            }
         });
         kit::hint(p, back);
     });

@@ -92,6 +92,9 @@ impl Contact {
 
     /// The name, else the short wallet.
     pub fn label(&self) -> String {
+        if crate::ui::streamer::on() {
+            return crate::ui::streamer::alias(&self.wallet.to_ascii_lowercase());
+        }
         if self.name.is_empty() {
             crate::friends::short_wallet(&self.wallet)
         } else {

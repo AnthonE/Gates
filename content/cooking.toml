@@ -60,6 +60,18 @@ output = "item.burnt_meat"
 station = "fire"
 seconds = 15
 
+# Salt water boils fresh (the water pass): the reference's campfire water
+# purifier, without its separate deployable — a vessel of sea water on the
+# grill comes off drinkable. The time is the price, and the wood that burns
+# while it boils: the reference purifies 4:1 over a few minutes, and a skin
+# here is half a minute. A jug holds lake water only.
+[[cook]]
+input = "item.waterskin_salt"
+output = "item.waterskin_full"
+station = "fire"
+seconds = 30
+
+
 # --- the furnace ----------------------------------------------------------
 #
 # Rust's smelt: ore goes into the furnace with wood, you light it, and every
@@ -327,40 +339,111 @@ count = 24
 station = "recycler"
 seconds = 5
 
-# --- the planter ---------------------------------------------------------
+# --- the farm (farming v2, `sim-core/farm.rs`) ---------------------------
 #
-# `station = "planter"` grows. A seed in a bed becomes its crop over
-# `seconds` — no fuel, no switch, one plant to a bed at a time
-# (`oven::PLANTER_LAYOUT`). The waits are ours: long enough that a farm is a
-# thing you come back to, short enough to see one in a session.
+# One seed is one plant. A planter has six spots; a plant grows by daylight
+# under open sky, ripens, stays ripe for `ripe_seconds`, then dies and
+# withers after `dying_seconds`. Picking it pays the crop and kills it. Its
+# pace is the worst of its water, its soil and the air (Rust's health).
 #
-# Crops v1: the beds grow only by daylight under open sky, and only on water.
-# A full waterskin in the planter's water slot is drunk and left there empty;
-# it waters every bed for `seconds` of growth — one corn crop, so a farm is a
-# trip to fresh water per harvest. Rust's planters drink far more and from a
-# pipe.
+# Water is in plant-seconds: one plant drinking for one second. A skin is
+# `skin_water` of it and is poured into the planter's tank once a plant
+# thirsts, so one skin waters a full bed of six for 600 s and a 900 s corn
+# bed takes a skin and a half. `rain_water` is what full rain banks in an
+# open planter each second: a full bed is self-sufficient in a downpour.
 #
-# Rain waters a planter under open sky, as the reference's rain fills its
-# beds: `rain_pct` of the time it rains, at full strength, banks as water, up
-# to one skin's `seconds`. A heavy shower (rain 800 per mille) banks 3.2 s a
-# second, so five minutes of it fills a planter for a crop; a mild one
-# (350) takes about eleven.
-[planter]
-item = "item.waterskin_full"
+# `stage_pct` is each growing stage's share of the grow: seed, seedling,
+# sapling, crossbreed, mature, fruiting (then ripe).
+#
+# Genes: six slots, each G (faster), Y (more yield), H (hardier against
+# poor soil and cold), W (thirstier) or X (nothing). A blank seed rolls a
+# good gene per slot `good_gene_pm` of the time, else a W `bad_w_pm` of
+# the time, else an X. Entering crossbreed, a bed plant's slots take the
+# heaviest letter of its touching neighbours of the same crop (W and X
+# weigh 10, G, Y and H 6) when it outweighs its own. A clone (cut at
+# sapling to mature) is the crop's seed carrying the plant's genes.
+[farm]
+water = "item.waterskin_full"
 emptied = "item.waterskin"
-seconds = 900
-rain_pct = 400
+skin_water = 3600
+planter_water = 7200
+rain_water = 6
+stage_pct = [5, 15, 20, 5, 25, 30]
+ripe_seconds = 10800
+dying_seconds = 1800
+good_gene_pm = 500
+bad_w_pm = 500
+g_pct = 10
+y_pct = 10
+h_pct = 10
+w_pct = 25
+# A clone cut pays its crop's `clones`, and one more seed for every
+# `clone_y_per` Y genes (Rust's two).
+clone_y_per = 2
+# The open ground (Rust's fallback to a planter): a ground plant holds
+# `ground_water` plant-seconds of its own and banks `ground_rain` a second
+# in full rain. Its pace at best is its biome's soil, per mille; a biome
+# left out (beach, highland, desert, the Verdigris) takes no seed.
+ground_water = 1800
+ground_rain = 3
+soil = { meadow = 550, forest = 450 }
+# The water catcher: a barrel of `catcher_water` plant-seconds that banks
+# `catcher_rain` a second in full rain, fills an empty waterskin in its slot
+# for exactly `skin_water`, and every 5 s pours `catcher_flow` a second into
+# each planter and growing ground plant within `catcher_reach_cm` of it.
+catcher_water = 10800
+catcher_rain = 20
+catcher_flow = 12
+catcher_reach_cm = 300
 
-[[cook]]
-input = "item.corn_seed"
-output = "item.corn"
-count = 5
-station = "planter"
+# A pick pays `count` of `yield` at full health, fewer for a plant that grew
+# thirsty, cold or in poor soil (never none).
+[[crop]]
+id = "corn"
+look = "corn"
+seed = "item.corn_seed"
+yield = "item.corn"
+count = 4
 seconds = 900
+clones = 2
 
-[[cook]]
-input = "item.hemp_seed"
-output = "item.cloth"
-count = 15
-station = "planter"
+[[crop]]
+id = "hemp"
+look = "hemp"
+seed = "item.hemp_seed"
+yield = "item.cloth"
+count = 10
 seconds = 600
+clones = 2
+
+# The second wave. A potato is a low bush that grows a little faster than
+# corn and pays more of something plainer; a pumpkin is the slow one, two
+# big meals off a sprawling vine; a berry bush is the quick one, a handful
+# of water-rich berries. Each one's seed comes back when its crop is eaten
+# (`consumables.toml` `leaves`), the berry's only now and then.
+[[crop]]
+id = "potato"
+look = "potato"
+seed = "item.potato_seed"
+yield = "item.potato"
+count = 5
+seconds = 750
+clones = 2
+
+[[crop]]
+id = "pumpkin"
+look = "pumpkin"
+seed = "item.pumpkin_seed"
+yield = "item.pumpkin"
+count = 2
+seconds = 1200
+clones = 2
+
+[[crop]]
+id = "berry"
+look = "berries"
+seed = "item.berry_seed"
+yield = "item.berries"
+count = 6
+seconds = 600
+clones = 2

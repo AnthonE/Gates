@@ -33,10 +33,48 @@ pub fn label(tag: Option<&Tag>, agent: bool, id: u32) -> String {
     }
 }
 
-/// [`label`] for player `id`, as `core` knows them: what every surface
-/// that names a player calls.
+/// [`label`] for player `id`, as `core` knows them: the real name, for what
+/// is kept (the contacts book) and matched (`/mute`). What is DRAWN goes
+/// through [`shown`].
 pub fn of(core: &ClientCore, id: u32) -> String {
     label(core.tag(id), core.is_agent(id), id)
+}
+
+/// The name drawn for player `id`: [`of`], or a made-up one in streamer
+/// mode (`ui::streamer`). Every surface that puts a player's name on screen
+/// calls this.
+pub fn shown(core: &ClientCore, id: u32) -> String {
+    shown_if(super::streamer::on(), core.tag(id), core.is_agent(id), id)
+}
+
+/// [`shown`] with the switch given, for a test.
+pub fn shown_if(streamer: bool, tag: Option<&Tag>, agent: bool, id: u32) -> String {
+    if !streamer {
+        return label(tag, agent, id);
+    }
+    let key = match tag {
+        Some(t) if !t.address.is_guest() => {
+            let hex = t.address.to_hex();
+            core::str::from_utf8(&hex).unwrap_or("").to_string()
+        }
+        _ => format!("#{id}"),
+    };
+    let name = super::streamer::alias(&key);
+    if agent {
+        format!("{name} (agent)")
+    } else {
+        name
+    }
+}
+
+/// A name that arrived as text (a standings row, a friend, a spectate
+/// feed), keyed by its wallet when there is one: itself, or its alias in
+/// streamer mode.
+pub fn shown_text(name: &str, wallet: Option<&str>) -> String {
+    if !super::streamer::on() {
+        return name.to_string();
+    }
+    super::streamer::alias(wallet.filter(|w| !w.is_empty()).unwrap_or(name))
 }
 
 /// The picture's url, if this player set one. `?v=` is the picture's
@@ -150,6 +188,24 @@ mod tests {
         assert_eq!(label(Some(&tag("Ash", 0)), false, 259), "Ash");
         assert_eq!(label(Some(&tag("", 0)), false, 259), "0x7e5f…5bdf");
         assert_eq!(label(None, false, 259), "#259");
+    }
+
+    #[test]
+    fn streamer_mode_draws_a_made_up_name_and_keeps_the_agent_mark() {
+        let t = tag("Ash", 0);
+        assert_eq!(shown_if(false, Some(&t), false, 259), "Ash");
+        let a = shown_if(true, Some(&t), false, 259);
+        assert!(!a.contains("Ash") && !a.contains("0x"), "{a}");
+        assert_eq!(
+            a,
+            shown_if(true, Some(&tag("", 0)), false, 259),
+            "keyed by wallet, not by name"
+        );
+        assert!(shown_if(true, Some(&t), true, 259).ends_with(" (agent)"));
+        assert_ne!(
+            shown_if(true, None, false, 259),
+            shown_if(true, None, false, 260)
+        );
     }
 
     #[test]

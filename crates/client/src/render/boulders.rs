@@ -335,7 +335,9 @@ pub struct RockSoup {
     nrm: Vec<[f32; 3]>,
     /// Splat weights: rock, with moss (grass and litter) where it grows.
     col: Vec<[f32; 4]>,
-    /// `UV_1`: the value multiplier, and dry.
+    /// `UV_1`: the value multiplier, and dry — the second written as the
+    /// NEGATED aridity at [`RockSoup::mesh`], which the shader reads as the
+    /// desert's sandstone (a rock is never wet from below).
     val: Vec<[f32; 2]>,
     idx: Vec<u32>,
 }
@@ -368,8 +370,8 @@ impl RockSoup {
 
     /// The soup as a ground-material mesh. `seed` places it in the island's
     /// zones: a rock in the Verdigris goes to obsidian with lit cracks the way
-    /// the ground under it does (`ATTRIBUTE_ZONE`; the desert does not tint
-    /// rock, so its share stays 0).
+    /// the ground under it does (`ATTRIBUTE_ZONE`), and a rock in the desert
+    /// to sandstone (its aridity, negated, in `UV_1.y`).
     pub fn mesh(self, seed: u64, haven: &terrain::Haven) -> Mesh {
         let n = self.pos.len();
         // The heart's edge noise, as the ground carries it: the shader
@@ -380,6 +382,10 @@ impl RockSoup {
         // boulder would go green over clean sand (the shader clamps the
         // share at 0, so the desert never sees it).
         let mut lat = terrain::Lattice::new();
+        let mut val = self.val;
+        for (v, p) in val.iter_mut().zip(&self.pos) {
+            v[1] = -terrain::aridity_memo(&mut lat, seed, p[0], p[2]).clamp(0.0, 1.0);
+        }
         let zone: Vec<[f32; 2]> = self
             .pos
             .iter()
@@ -416,7 +422,7 @@ impl RockSoup {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.nrm)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, self.val)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, val)
         .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tan)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.col)
         .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])

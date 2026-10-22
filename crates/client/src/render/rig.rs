@@ -142,7 +142,12 @@ pub const FAR_M: f32 = sim_core::terrain::ISLAND_SIZE;
 /// At 1.6 a frame from any height read as a pale, milky sky over a grey sea;
 /// the reference game's air is clear, its sky a deep blue and its sea the
 /// blue the sky gives it. Thinner air is also more sun on the ground.
-pub const AIR_DENSITY: f32 = 1.2;
+///
+/// **0.85 since 2026-10-21** (operator, against the reference's desert: the
+/// sky "a bit" bluer, but "a tad gray gives it more grit"): a little under
+/// the earthlike medium; 1.0 moved the sky by two levels, the cloud deck's
+/// grey holds the rest.
+pub const AIR_DENSITY: f32 = 0.85;
 
 /// How many metres of air each metre between the eye and what it sees is
 /// hazed as: the atmosphere's `scene_units_to_m`, and the browser haze's

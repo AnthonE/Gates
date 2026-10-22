@@ -142,8 +142,11 @@ struct GroundSplat {
     // The desert (`ground_splat::DESERT_SAND_ALBEDO`): xyz the sand it turns
     // to, w how far the grass goes to `dry_grass` at full aridity.
     desert: vec4<f32>,
-    // xyz the straw the grass dries to. w reserved and zero.
+    // xyz the straw the grass dries to, w the desert's grass patches'
+    // wavelength (m, `ground_splat::DESERT_GRASS_M`).
     dry_grass: vec4<f32>,
+    // xyz the sandstone the desert's rock is. w reserved and zero.
+    desert_rock: vec4<f32>,
     // Snow (snow v0, `ground_splat::SNOW_*`): x = how white the weather has
     // laid the ground 0..1, y = the height it lies from (m), z = its linear
     // albedo, w = how far under that height it fades in (m).
@@ -278,6 +281,15 @@ fn cell_key(c: vec3<i32>) -> u32 {
 
 fn unit_of(h: u32) -> f32 {
     return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+// The desert's grass patches, 0 bare sand to 1 grass: `ground_splat::
+// desert_grass`, the same field (its numbers are literals here), so the
+// clutter's dry tufts stand on the golden ground this paints.
+fn desert_grass(xz: vec2<f32>, metres: f32) -> f32 {
+    let q = vec3<f32>(xz.x, 0.0, xz.y) / metres;
+    let n = 0.65 * value3(q) + 0.35 * value3(q * 2.7 + vec3<f32>(17.0, 0.0, 5.0));
+    return smoothstep(0.5, 0.64, n);
 }
 
 // ── Caustics ────────────────────────────────────────────────────────────
@@ -804,6 +816,16 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // it bought a frame anything today.
     var w = clamp(in.color, vec4(0.0), vec4(1.0));
 
+    // The desert's grass: golden patches on its sand, where the clutter grows
+    // its dry tufts. The sand's weight moves to the grass identity, which the
+    // desert has already dried to straw (`dry_grass`); none on a beach.
+    let arid = clamp(zone.x, 0.0, 1.0);
+    if arid > 0.0 && w.x > 0.0 {
+        let shore = smoothstep(splat.caustics.x + 1.0, splat.caustics.x + 4.0, wp.y);
+        let g = desert_grass(wp.xz, splat.dry_grass.w) * smoothstep(0.2, 0.6, arid) * shore;
+        w = w + vec4<f32>(-w.x * g, w.x * g, 0.0, 0.0);
+    }
+
     // --- The cliff, per pixel -------------------------------------------------
     //
     // The mesh carries the biome weights alone; the cliff veto is decided here
@@ -1012,11 +1034,15 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let turf_d = length(wp.xz - view.world_position.xz);
     let turf_k = mix(splat.turf.w, 1.0, smoothstep(splat.road_lod.z, splat.road_lod.w, turf_d));
     let turf = mix(splat.identity[1].xyz, splat.turf.xyz, turf_k);
+    // A rock carries its aridity as a negative wetness (`RockSoup::mesh`), as
+    // its `zone.x` carries its height; the heightfield's own cliffs read the
+    // ground's.
+    let rock_dry = max(dry, clamp(-in.uv_b.y, 0.0, 1.0));
     var ident = array<vec3<f32>, 4>(
         mix(mix(splat.identity[0].xyz, splat.desert.xyz, dry), splat.fel_ash.xyz, fel),
         mix(mix(turf, splat.dry_grass.xyz, dry * splat.desert.w), splat.fel_dead.xyz, fel),
         mix(splat.identity[2].xyz, splat.fel_ash.xyz, fel),
-        mix(splat.identity[3].xyz, splat.fel_rock.xyz, fel),
+        mix(mix(splat.identity[3].xyz, splat.desert_rock.xyz, rock_dry), splat.fel_rock.xyz, fel),
     );
     var base = vec3(0.0);
     for (var i = 0u; i < 4u; i = i + 1u) {

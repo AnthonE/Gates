@@ -66,6 +66,10 @@ struct Water {
     shore: vec4<f32>,
     // x F0, y `GLINT_A2_NEAR`, z `GLINT_A2_FAR`, w `GLINT_FAR_M`.
     glint: vec4<f32>,
+    // xyz `water::LAKE_EXTINCT`, w spare.
+    lake: vec4<f32>,
+    // xyz `water::LAKE_SCATTER`, w spare.
+    lake_scatter: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
@@ -267,15 +271,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 #endif
 
-    // 2 · The body, over the refracted path.
+    // 2 · The body, over the refracted path. A lake is murkier than the sea:
+    // its optics blend in by the vertex's lake share (`water::LAKE_EXTINCT`).
+#ifdef VERTEX_COLORS
+    let lake = 1.0 - clamp(in.color.r, 0.0, 1.0);
+#else
+    let lake = 0.0;
+#endif
+    let sigma = mix(water.optics.xyz, water.lake.xyz, lake);
+    let albedo = mix(water.scatter.xyz, water.lake_scatter.xyz, lake);
     let ior = water.scatter.w;
     let cos_i = clamp(abs(V.y), 0.0, 1.0);
     let sin2_t = (1.0 - cos_i * cos_i) / (ior * ior);
     let path = dz / sqrt(max(1.0 - sin2_t, 1e-4));
-    let T = exp(-water.optics.xyz * path);
+    let T = exp(-sigma * path);
     let alpha_max = water.optics.w;
     let a_body = clamp((1.0 - (T.x + T.y + T.z) / 3.0) * alpha_max, 0.0, alpha_max);
-    var body = vec4<f32>(water.scatter.xyz * (1.0 - T), a_body);
+    var body = vec4<f32>(albedo * (1.0 - T), a_body);
 
     // 3 · Foam. The vertex's wash and bores are bands along the depth
     // contours, and a band of one even white reads as a drawn streak: break

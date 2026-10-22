@@ -115,12 +115,23 @@ pub const FERN_ATLAS: &str = "textures/fern_card_albedo.png";
 /// (`props.rs`'s `photo` states the law). What the card takes instead is a
 /// per-instance mean-1 grey, which is rule 7's variation and not a colour.
 const PEBBLE_C: u32 = 0x8a8880;
-/// A pebble in the desert: sandstone, warm, where the beach's is grey
-/// granite. Mixed in by the ground's aridity (`terrain::aridity`). **(knob)**
-const DESERT_PEBBLE_C: u32 = 0xa07850;
+/// A pebble in the desert: pale sandstone, where the beach's is grey
+/// granite. Mixed in by the ground's aridity (`terrain::aridity`). It was an
+/// orange-brown that dotted the pale sand like a rash. **(knob)**
+const DESERT_PEBBLE_C: u32 = 0xb09a7c;
 /// The share of the sand's pebbles a full desert leaves out: open sand is
 /// mostly sand, and a grey dot every metre read as polka dots. **(knob)**
-const DESERT_PEBBLE_THIN: f32 = 0.6;
+const DESERT_PEBBLE_THIN: f32 = 0.8;
+/// What the grass photograph is multiplied by where the desert has dried it,
+/// once the foliage shader has taken it to its own grey (luma mean ~0.108):
+/// a golden straw, the reference's arid grass. **(knob)**
+const STRAW: [f32; 3] = [3.1, 2.3, 1.0];
+/// How finely a card's dryness is carried: whole steps of UV1.y over its
+/// random, which `foliage.wgsl` divides back out (its literal 15).
+pub const DRY_STEPS: f32 = 15.0;
+/// The share of the sand's elements a full grass patch stands up as a dry
+/// tuft (`ground_splat::desert_grass`). **(knob)**
+const DESERT_TUFT_SHARE: f32 = 0.8;
 /// A stone in the Verdigris: obsidian, a green-black charcoal, mixed in by the
 /// ground's corruption (the spread, `render::blight`). **(knob)**
 const FEL_STONE_C: u32 = 0x2a2d28;
@@ -278,6 +289,11 @@ pub(super) fn tuft(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, scale: f32) {
 }
 
 fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
+    card_dry(s, at, yaw, seed, h, 0.0);
+}
+
+/// [`card`], gone `dry` of the way (0..1) to the desert's straw ([`STRAW`]).
+fn card_dry(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32, dry: f32) {
     let root = at - Vec3::Y * h * CARD_SINK;
     // The ground's own macro break-up under the tuft, so a lighter patch of
     // ground grows lighter grass and the turf does not draw a seam over it
@@ -285,7 +301,9 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
     // for the same reason (DB54, DB62).
     let ground =
         1.0 + super::terrain_mesh::MACRO_AMP * super::terrain_mesh::macro_noise(at.x, at.z);
-    let tint = patch_tint(at.x, at.z).map(|c| c * ground);
+    let tint = patch_tint(at.x, at.z);
+    let tint =
+        std::array::from_fn::<f32, 3, _>(|i| (tint[i] + (STRAW[i] - tint[i]) * dry) * ground);
     for i in 0..CARDS_PER_TUFT {
         let a = yaw + i as f32 * std::f32::consts::PI / CARDS_PER_TUFT as f32;
         let side = Vec3::new(a.sin(), 0.0, a.cos());
@@ -339,7 +357,7 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
         // The foliage shader's handle on this card: how far each corner
         // stands above the root, and one random per card so neighbours do
         // not sway, fade or fall over in lockstep (`foliage.wgsl`).
-        let rand = hash01(seed, i + 211);
+        let rand = hash01(seed, i + 211) + (dry * DRY_STEPS).round();
         s.tag_uv1(start, move |p| [(p.y - root_y).max(0.0), rand]);
     }
 }
@@ -941,21 +959,47 @@ pub fn stream(
                         continue;
                     }
                 }
-                // The desert's pebbles: fewer, and sandstone.
-                if e.kind == Clutter::Pebble {
-                    let arid = terrain::aridity_memo(&mut lat, world.seed, e.x, e.z);
-                    if arid > 0.0 {
-                        let roll = hash01(
-                            (e.x * 64.0) as i32 as u32,
-                            (e.z * 64.0) as i32 as u32 ^ 0xa41d,
-                        );
-                        if roll < arid * DESERT_PEBBLE_THIN {
-                            continue;
-                        }
-                        n_solid += 1;
-                        desert_pebble(&mut solid, e, arid);
+                // The desert's grass: the grass channel dries to straw with
+                // the ground, and on the sand's golden patches the sand's own
+                // elements stand up as dry tufts — the ground shader paints
+                // the same field under them.
+                let arid = if masked(e.kind) || e.kind == Clutter::Pebble {
+                    terrain::aridity_memo(&mut lat, world.seed, e.x, e.z)
+                } else {
+                    0.0
+                };
+                let (lo, hi) = super::ground_splat::DESERT_GRASS_ARID;
+                let parch = ((arid - lo) / (hi - lo)).clamp(0.0, 1.0);
+                if e.kind == Clutter::Pebble && parch > 0.0 {
+                    let shore = ((e.y - terrain::SEA_LEVEL - 1.0) / 3.0).clamp(0.0, 1.0);
+                    let g = super::ground_splat::desert_grass(e.x, e.z) * parch * shore;
+                    let roll = hash01(
+                        (e.x * 64.0) as i32 as u32,
+                        (e.z * 64.0) as i32 as u32 ^ 0x9a55,
+                    );
+                    if roll < g * DESERT_TUFT_SHARE {
+                        let at = Vec3::new(e.x, e.y, e.z);
+                        let yaw = e.yaw as f32 / 256.0 * std::f32::consts::TAU;
+                        // Taller than the meadow's: the reference's dry grass
+                        // stands to the knee.
+                        let h = TUFT_H * (1.0 + 0.5 * hash01(seed_of(e), 0x7a11));
+                        n_cards += 1;
+                        card_dry(&mut cards, at, yaw, seed_of(e), h, 1.0);
                         continue;
                     }
+                }
+                // The desert's pebbles: fewer, and sandstone.
+                if e.kind == Clutter::Pebble && arid > 0.0 {
+                    let roll = hash01(
+                        (e.x * 64.0) as i32 as u32,
+                        (e.z * 64.0) as i32 as u32 ^ 0xa41d,
+                    );
+                    if roll < arid * DESERT_PEBBLE_THIN {
+                        continue;
+                    }
+                    n_solid += 1;
+                    desert_pebble(&mut solid, e, arid);
+                    continue;
                 }
                 if e.kind == Clutter::Shard
                     && hash01(
@@ -976,7 +1020,22 @@ pub fn stream(
                 {
                     continue;
                 }
-                if masked(e.kind) {
+                if masked(e.kind) && arid > 0.0 {
+                    let h = match e.kind {
+                        Clutter::Brush => BRUSH_H,
+                        Clutter::Sprig => SPRIG_H,
+                        _ => TUFT_H,
+                    };
+                    n_cards += 1;
+                    card_dry(
+                        &mut cards,
+                        Vec3::new(e.x, e.y, e.z),
+                        e.yaw as f32 / 256.0 * std::f32::consts::TAU,
+                        seed_of(e),
+                        h * e.scale,
+                        arid.min(1.0),
+                    );
+                } else if masked(e.kind) {
                     n_cards += 1;
                     element(&mut cards, e);
                 } else {
