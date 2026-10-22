@@ -139,19 +139,16 @@ fn crest_foam(h: f32, reach: f32) -> f32 {
     return t * t * (3.0 - 2.0 * t) * water.crest.z;
 }
 
-// `water::breaker_foam`: a bore's trail, by how big and how shallow.
-fn breaker_foam(amp: f32, depth: f32, trail: f32) -> f32 {
-    if trail <= 0.0 || amp <= 0.0 {
-        return 0.0;
-    }
-    let breaking = 1.0 - clamp((depth - water.breaker.x) / water.breaker.y, 0.0, 1.0);
-    return water.surf.w * amp * trail * breaking;
+// How much a bore breaks in water this deep (`water::breaker_foam`'s).
+fn breaking(depth: f32) -> f32 {
+    return 1.0 - clamp((depth - water.breaker.x) / water.breaker.y, 0.0, 1.0);
 }
 
 // Locations 8–10 are `water::ATTRIBUTE_SWELL`, `ATTRIBUTE_SURF` and
 // `ATTRIBUTE_REACH`, written on a snap. The position is the vertex's offset
 // from the grid centre at sea level; the centre is the entity's translation.
-// `uv_b` arrives as `[wash, water column]` and leaves as `[foam, column]`.
+// `uv_b` arrives as `[wash, water column]` and leaves as `[whitecaps, column]`;
+// the wash, the bores' phase and their scale leave in `color` (`foam_px`).
 @vertex
 fn vertex(
     in: Vertex,
@@ -172,34 +169,19 @@ fn vertex(
     // Whitecaps on the swell alone, before the breaker is added.
     let caps = crest_foam(h, reach);
 
-    // 2 · The breakers, phased on the distance to dry ground.
+    // 2 · The breakers, phased on the distance to dry ground. Their height
+    // and slope ride the vertex; their foam is phased per pixel (`foam_px`),
+    // off the distance in breaker cycles, which interpolates exactly.
     let amp = surf.w * water.surf.x;
-    var trail = -1.0;
+    var b = -1.0;
     if any(surf.yz != vec2<f32>(0.0)) {
-        let c = surf.x * water.surf.y + water.shore.w / TAU;
-        // `rem_euclid(θ − π/2, τ)` in cycles and floored: WGSL's `%` truncates.
-        trail = exp(-TAU * fract(c - 0.25) / water.surf.z);
         if amp > 0.0 {
-            let s = wave_shape(reduced(c));
+            let s = wave_shape(reduced(surf.x * water.surf.y + water.shore.w / TAU));
             h = h + amp * s.x;
             gb = (amp * s.y * TAU * water.surf.y) * surf.yz;
         }
+        b = water.surf.w * amp * breaking(in.uv_b.y);
     }
-
-    // 3 · The shore wash, surging with the bores or breathing with the swell.
-    var wash = 0.0;
-    if in.uv_b.x > 0.0 {
-        var surge: f32;
-        if trail >= 0.0 {
-            surge = water.breaker.z + (1.0 - water.breaker.z) * trail;
-        } else {
-            let w = water.waves[0];
-            let s = sin(reduced(dot(w.xy, local) * w.z + water.phase.x));
-            surge = water.breaker.w + (1.0 - water.breaker.w) * (0.5 + 0.5 * s);
-        }
-        wash = in.uv_b.x * surge;
-    }
-    let foam = clamp(wash + caps + breaker_foam(amp, in.uv_b.y, trail), 0.0, 1.0);
 
     var out: VertexOutput;
     let world_from_local = mesh_functions::get_world_from_local(in.instance_index);
@@ -218,13 +200,15 @@ fn vertex(
         in.instance_index,
     );
     out.uv = in.uv;
-    out.uv_b = vec2<f32>(foam, in.uv_b.y);
+    out.uv_b = vec2<f32>(caps, in.uv_b.y);
     out.world_tangent = mesh_functions::mesh_tangent_local_to_world(
         world_from_local,
         in.tangent,
         in.instance_index,
     );
-    out.color = in.color;
+    // `(open, wash, distance to dry ground in breaker cycles, bore scale)`:
+    // the lake share stays in red; the rest is `foam_px`'s.
+    out.color = vec4<f32>(in.color.r, in.uv_b.x, surf.x * water.surf.y, b);
 #ifdef VERTEX_OUTPUT_INSTANCE_INDEX
     out.instance_index = in.instance_index;
 #endif
@@ -434,6 +418,26 @@ fn swell_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, shoal: f32) -> Swell
     return o;
 }
 
+// A pixel's foam (`water::foam_px`, line for line): the whitecaps, the shore
+// wash surging with the bores (or with the swell's `s0` where none runs) and
+// the bore itself, phased per pixel off `cs`, the distance to dry ground in
+// breaker cycles. The front arrives over `SURF_FRONT_M` or the pixel, and a
+// pixel wider than a quarter of a breaker settles to the trail's mean.
+fn foam_px(caps: f32, wash0: f32, cs: f32, b: f32, s0: f32, cw: f32) -> f32 {
+    let x = fract(cs + water.shore.w / TAU - 0.25);
+    var trail = exp(-TAU * x / water.surf.z);
+    trail = mix(trail, 1.0, smoothstep(1.0 - max(cw, water.px.z), 1.0, x));
+    let mean = water.surf.z / TAU * (1.0 - exp(-TAU / water.surf.z));
+    trail = mix(trail, mean, smoothstep(0.25, 0.6, cw));
+    let m = clamp(b + 1.0, 0.0, 1.0);
+    let surge = mix(
+        water.breaker.w + (1.0 - water.breaker.w) * (0.5 + 0.5 * s0),
+        water.breaker.z + (1.0 - water.breaker.z) * trail,
+        m,
+    );
+    return clamp(caps + wash0 * surge + max(b, 0.0) * trail, 0.0, 1.0);
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     let wp = in.world_position.xyz;
@@ -442,9 +446,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // not an error.
     let fx = dpdx(wp.xz);
     let fy = dpdy(wp.xz);
+    // How many breaker cycles this pixel spans (`foam_px`).
+    let cw = fwidth(in.color.b);
     let local = wp.xz - water.field.xy;
     let V0 = normalize(view.world_position.xyz - wp);
+    // The swell's own surge, which the wash breathes with where no bore runs.
+    let s0 = sin(reduced(dot(water.waves[0].xy, local) * water.waves[0].z + water.phase.x));
     var vin = in;
+    // `color` carries the foam's inputs past red (the lake share): Bevy must
+    // not multiply them into the base colour it builds.
+    vin.color = vec4<f32>(1.0);
 #ifdef WATER_VERTEX_NORMALS
     // POTATO: the vertex's swell normal, and the swell's hidden slope by
     // distance alone (`GLINT_A2_FAR` is the ripples' share).
@@ -474,7 +485,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // 1 · The water behind this pixel, vertical metres.
 #ifdef VERTEX_UVS_B
-    var foam = clamp(in.uv_b.x, 0.0, 1.0);
+    var foam = foam_px(in.uv_b.x, in.color.g, in.color.b, in.color.a, s0, cw);
     var dz = max(in.uv_b.y, 0.0);
 #else
     var foam = 0.0;

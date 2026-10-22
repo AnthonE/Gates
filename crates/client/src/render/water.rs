@@ -1032,11 +1032,31 @@ pub fn fold_phases(phase: &[f32; WAVE_COUNT], centre: Vec2) -> [f32; WAVE_COUNT]
     })
 }
 
-/// The surface at local offset `(lx, lz)` from the grid centre, computed the
-/// way `water.wgsl`'s vertex stage computes it, line for line: phases folded
-/// ([`fold_phases`]) and every angle reduced in cycles. `surf_cycles` is the
-/// breakers' phase over τ. `tests/water.rs` holds this to [`surface_at`]
-/// over the whole grid, and the shader is a transcription of this function.
+/// What the vertex stage hands on, per vertex ([`surface_local`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VertexOut {
+    /// Height over [`SEA_LEVEL`]: the swell and the breaker.
+    pub h: f32,
+    /// The swell's gradient and the breaker's, apart: the swell's normal is
+    /// drawn per pixel ([`swell_px`]) and only the breaker's rides the vertex.
+    pub g_swell: Vec2,
+    pub g_breaker: Vec2,
+    /// Whitecaps on the swell alone (`uv_b.x`).
+    pub caps: f32,
+    /// The distance to dry ground in breaker cycles (`color.b`): linear in
+    /// the distance, so it interpolates exactly and the fragment phases the
+    /// bore per pixel.
+    pub cs: f32,
+    /// The bore's foam scale where a breaker field exists, `-1` where none
+    /// does (`color.a`): `SURF_FOAM_MAX · amp / SURF_AMP_M · breaking`.
+    pub b: f32,
+}
+
+/// The vertex stage at local offset `(lx, lz)` from the grid centre, line for
+/// line: phases folded ([`fold_phases`]) and every angle reduced in cycles.
+/// `surf_cycles` is the breakers' phase over τ. With [`foam_px`] it is the
+/// surface `tests/water_carry.rs` holds to [`surface_at`] over the whole
+/// grid, and `water.wgsl` is a transcription of the two.
 pub fn surface_local(
     lx: f32,
     lz: f32,
@@ -1044,54 +1064,76 @@ pub fn surface_local(
     surf_cycles: f32,
     state: &SeaState,
     v: &VertexStatics,
-) -> Surface {
+) -> VertexOut {
     let tau = std::f32::consts::TAU;
-    let (mut h, mut gx, mut gz) = (0.0f32, 0.0f32, 0.0f32);
+    let mut h = 0.0f32;
+    let mut g_swell = Vec2::ZERO;
     for (i, w) in WAVES.iter().enumerate() {
         let inv_len = 1.0 / w.len_m;
         let (s, ds) = shape(reduced(
             (w.dir[0] * lx + w.dir[1] * lz) * inv_len + folded[i],
         ));
         let a = w.amp_m * state.swell[i] * v.swell[i];
-        let g = a * ds * tau * inv_len;
         h += a * s;
-        gx += g * w.dir[0];
-        gz += g * w.dir[1];
+        g_swell += (a * ds * tau * inv_len) * Vec2::from_array(w.dir);
     }
     let caps = crest_foam(h, v.reach);
     let amp = v.surf_amp * state.surf;
-    let (mut bh, mut bgx, mut bgz, mut trail) = (0.0f32, 0.0f32, 0.0f32, -1.0f32);
+    let mut g_breaker = Vec2::ZERO;
+    let mut b = -1.0;
     if v.surf_dir != [0.0, 0.0] {
-        let c = v.surf_dist / SURF_LEN_M + surf_cycles;
-        // `rem_euclid(θ − π/2, τ)`, in cycles and floored: a truncating `%`
-        // goes negative here and lights the whole trail.
-        trail = (-tau * fract_floor(c - 0.25) / SURF_TRAIL_RAD).exp();
         if amp > 0.0 {
-            let (s, ds) = shape(reduced(c));
-            let g = amp * ds * tau / SURF_LEN_M;
-            bh = amp * s;
-            bgx = g * v.surf_dir[0];
-            bgz = g * v.surf_dir[1];
+            let (s, ds) = shape(reduced(v.surf_dist / SURF_LEN_M + surf_cycles));
+            h += amp * s;
+            g_breaker = (amp * ds * tau / SURF_LEN_M) * Vec2::from_array(v.surf_dir);
         }
+        let breaking = 1.0 - ((v.depth - BREAKER_FROM_M) / BREAKER_SPAN_M).clamp(0.0, 1.0);
+        b = SURF_FOAM_MAX / SURF_AMP_M * amp * breaking;
     }
-    let wash = if v.wash > 0.0 {
-        let surge = if trail >= 0.0 {
-            WASH_FLOOR + (1.0 - WASH_FLOOR) * trail
-        } else {
-            let w = WAVES[0];
-            let c = (w.dir[0] * lx + w.dir[1] * lz) / w.len_m + folded[0];
-            FOAM_SURGE_FLOOR + (1.0 - FOAM_SURGE_FLOOR) * (0.5 + 0.5 * reduced(c).sin())
-        };
-        v.wash * surge
-    } else {
-        0.0
+    VertexOut {
+        h,
+        g_swell,
+        g_breaker,
+        caps,
+        cs: v.surf_dist / SURF_LEN_M,
+        b,
+    }
+}
+
+/// The swell's own surge at `(lx, lz)`: wave 0's `sin`, which the wash
+/// breathes with where no breaker runs ([`foam_surge`]'s, folded).
+pub fn surge_sin(lx: f32, lz: f32, folded: &[f32; WAVE_COUNT]) -> f32 {
+    let w = WAVES[0];
+    reduced((w.dir[0] * lx + w.dir[1] * lz) / w.len_m + folded[0]).sin()
+}
+
+/// A pixel's foam, as the fragment computes it from the vertex stage's
+/// outputs: the whitecaps, the shore wash surging with the bores (or the
+/// swell, `s0` = [`surge_sin`], where no breaker runs) and the bore itself.
+///
+/// **The bore is phased per pixel.** Wrapped per vertex and interpolated,
+/// its sharp front smeared into a ramp across a whole 2 m triangle and
+/// zig-zagged along the diagonals; phased off the interpolated distance
+/// (`cs`), the front is where the crest is. It arrives over [`SURF_FRONT_M`]
+/// or the pixel, whichever is wider, and a pixel wider than a quarter of a
+/// breaker settles to the trail's mean (`cw` is the pixel's span of `cs`).
+pub fn foam_px(caps: f32, wash0: f32, cs: f32, b: f32, surf_cycles: f32, s0: f32, cw: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let smooth = |e0: f32, e1: f32, x: f32| {
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     };
-    Surface {
-        h: h + bh,
-        gx: gx + bgx,
-        gz: gz + bgz,
-        foam: (wash + caps + breaker_foam(amp, v.depth, trail)).clamp(0.0, 1.0),
-    }
+    let x = fract_floor(cs + surf_cycles - 0.25);
+    let mut trail = (-tau * x / SURF_TRAIL_RAD).exp();
+    let lead = cw.max(SURF_FRONT_M / SURF_LEN_M);
+    trail += (1.0 - trail) * smooth(1.0 - lead, 1.0, x);
+    let mean = SURF_TRAIL_RAD / tau * (1.0 - (-tau / SURF_TRAIL_RAD).exp());
+    trail += (mean - trail) * smooth(0.25, 0.6, cw);
+    let m = (b + 1.0).clamp(0.0, 1.0);
+    let swell_surge = FOAM_SURGE_FLOOR + (1.0 - FOAM_SURGE_FLOOR) * (0.5 + 0.5 * s0);
+    let bore_surge = WASH_FLOOR + (1.0 - WASH_FLOOR) * trail;
+    let surge = swell_surge + (bore_surge - swell_surge) * m;
+    (caps + wash0 * surge + b.max(0.0) * trail).clamp(0.0, 1.0)
 }
 
 /// The whole swell's slope variance at a sea state: what a pixel too big to

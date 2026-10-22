@@ -337,9 +337,11 @@ fn beach_eye() -> Vec3 {
 /// that carry the swell, the breakers and the wash are all among them, so the
 /// agreement is not three empty sets.
 ///
-/// One discontinuity is exempt: a bore's trail restarts at 1 the instant its
-/// crest passes (`surf_at`), so a vertex within a hair of that instant may sit
-/// on either side of it in the two arithmetics.
+/// The foam is the fragment's (`water::foam_px`, at a pixel of no width), off
+/// the vertex stage's outputs. Exempt from it: the instant a bore's crest
+/// passes, where the trail restarts at 1 and two arithmetics may sit either
+/// side of it, and the `SURF_FRONT_M` before it, which the GPU softens and
+/// the CPU never did.
 #[test]
 fn the_vertex_stage_draws_the_cpu_surface() {
     let app = app(beach_eye());
@@ -367,25 +369,43 @@ fn the_vertex_stage_draws_the_cpu_surface() {
                 sea.shoal()[i],
                 &v,
             );
-            let got =
-                water::surface_local(coords[ix], coords[iz], &folded, surf_cycles, &state, &v);
-            let at_crest = v.surf_dir != [0.0, 0.0] && {
-                let c = v.surf_dist / water::SURF_LEN_M + surf_cycles - 0.25;
-                let f = c - c.floor();
-                !(1e-4..=1.0 - 1e-4).contains(&f)
+            let lx = coords[ix];
+            let lz = coords[iz];
+            let out = water::surface_local(lx, lz, &folded, surf_cycles, &state, &v);
+            let s0 = water::surge_sin(lx, lz, &folded);
+            let foam = water::foam_px(out.caps, v.wash, out.cs, out.b, surf_cycles, s0, 0.0);
+            let g = out.g_swell + out.g_breaker;
+            // The bore's phase since its crest, in cycles: the CPU's trail
+            // restarts there, and the per-pixel front softens the last
+            // `SURF_FRONT_M` before it, which the CPU never did.
+            let lead = water::SURF_FRONT_M / water::SURF_LEN_M;
+            let since = {
+                let c = out.cs + surf_cycles - 0.25;
+                c - c.floor()
             };
+            let at_crest = v.surf_dir != [0.0, 0.0] && !(1e-4..=1.0 - lead - 1e-4).contains(&since);
             for (what, a, b) in [
-                ("height", got.h, want.h),
-                ("gradient x", got.gx, want.gx),
-                ("gradient z", got.gz, want.gz),
-                ("foam", got.foam, want.foam),
+                ("height", out.h, want.h),
+                ("gradient x", g.x, want.gx),
+                ("gradient z", g.y, want.gz),
+                ("foam", foam, want.foam),
             ] {
                 if what == "foam" && at_crest {
                     continue;
                 }
                 assert!(
                     (a - b).abs() < 1e-3,
-                    "vertex ({ix}, {iz}) {what}: the vertex stage draws {a}, the CPU drew {b}"
+                    "vertex ({ix}, {iz}) {what}: the GPU draws {a}, the CPU drew {b}"
+                );
+            }
+            // A pixel wider than a breaker settles to the trail's mean.
+            if out.b > 0.0 {
+                let wide = water::foam_px(0.0, 0.0, out.cs, out.b, surf_cycles, s0, 0.7);
+                let mean = water::SURF_TRAIL_RAD / std::f32::consts::TAU
+                    * (1.0 - (-std::f32::consts::TAU / water::SURF_TRAIL_RAD).exp());
+                assert!(
+                    (wide - (out.b * mean).min(1.0)).abs() < 1e-5,
+                    "vertex ({ix}, {iz}): a coarse pixel's bore is {wide}, not the mean"
                 );
             }
             swell += usize::from(v.swell.iter().any(|w| *w > 0.0));
