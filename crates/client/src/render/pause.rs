@@ -47,6 +47,19 @@ pub struct PauseFriends;
 /// How many friends the block names before "+ n more".
 const FRIEND_ROWS: usize = 6;
 
+/// Under the friends block: a JOIN for each friend who invited you, and an
+/// INVITE for each friend not on this server (Steam's "Invite to game").
+/// Rebuilt with the block.
+#[derive(Component)]
+pub struct PauseFriendRows;
+
+/// A press on one of [`PauseFriendRows`]' buttons.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PauseFriend {
+    Invite(protocol::Address),
+    Join(protocol::Address),
+}
+
 /// A verb. Ordered as drawn, and the order is the reference's: the way back
 /// into the game first, the way out of it last.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
@@ -201,6 +214,19 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>, net: Optio
                 ui::label(String::new(), 13.0, ui::FRIEND),
                 Node {
                     max_width: Val::Px(560.0),
+                    margin: UiRect::bottom(Val::Px(6.0)),
+                    ..default()
+                },
+            ));
+            root.spawn((
+                PauseFriendRows,
+                Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    justify_content: JustifyContent::Center,
+                    column_gap: Val::Px(6.0),
+                    row_gap: Val::Px(6.0),
+                    max_width: Val::Px(620.0),
                     margin: UiRect::bottom(Val::Px(14.0)),
                     ..default()
                 },
@@ -254,12 +280,44 @@ fn friend_lines(friends: &super::friends::Friends) -> String {
     }
 }
 
+/// The buttons under the block: who invited you, newest first, then the
+/// friends you could invite, online first, each list capped.
+fn friend_buttons(
+    friends: &super::friends::Friends,
+    here: &str,
+    rows: &[crate::ui::servers::Listing],
+) -> Vec<(String, PauseFriend)> {
+    let Some(v) = &friends.view else {
+        return Vec::new();
+    };
+    let on_here = |a: &protocol::Address| {
+        crate::friends::join_target(v, a, rows).is_ok_and(|addr| addr == here)
+    };
+    let mut out = Vec::new();
+    for f in v.invites_in.iter().take(FRIEND_ROWS) {
+        if let Some(a) = f.address().filter(|a| !on_here(a)) {
+            out.push((format!("JOIN {}", f.label()), PauseFriend::Join(a)));
+        }
+    }
+    let invitable = v.friends.iter().filter_map(|f| {
+        let a = f.address()?;
+        (!on_here(&a)).then(|| (format!("INVITE {}", f.label()), PauseFriend::Invite(a)))
+    });
+    out.extend(invitable.take(FRIEND_ROWS));
+    out
+}
+
 /// Redraw the friends block when the list moved.
+#[allow(clippy::too_many_arguments)]
 pub fn friends_block(
+    mut commands: Commands,
     friends: Option<Res<super::friends::Friends>>,
     mut shown: Local<Option<u64>>,
     fresh: Query<(), Added<PauseFriends>>,
     mut text: Query<&mut Text, With<PauseFriends>>,
+    holder: Query<Entity, With<PauseFriendRows>>,
+    connecting: NonSend<Connecting>,
+    menu: Res<Menu>,
 ) {
     let Some(friends) = friends else {
         return;
@@ -273,6 +331,69 @@ pub fn friends_block(
     for mut t in &mut text {
         if t.0 != body {
             t.0.clone_from(&body);
+        }
+    }
+    let buttons = friend_buttons(&friends, &connecting.addr, &menu.rows);
+    for e in &holder {
+        commands
+            .entity(e)
+            .despawn_related::<Children>()
+            .with_children(|r| {
+                for (label, pick) in &buttons {
+                    let join = matches!(pick, PauseFriend::Join(_));
+                    r.spawn((ui::button(200.0, join), *pick))
+                        .with_children(|b| {
+                            b.spawn(ui::strong(label.clone(), 12.0, ui::TITLE));
+                        });
+                }
+            });
+    }
+}
+
+/// A press on a friend's button: send the invite, or leave this world for
+/// theirs (the menu dials it, `friends::on_menu`).
+pub fn friend_click(
+    rows: Query<(&Interaction, &PauseFriend), Changed<Interaction>>,
+    mut friends: Option<ResMut<super::friends::Friends>>,
+    mut menu: ResMut<Menu>,
+    mut next: ResMut<NextState<Screen>>,
+    connecting: NonSend<Connecting>,
+) {
+    let Some(friends) = friends.as_deref_mut() else {
+        return;
+    };
+    for (interaction, pick) in rows.iter() {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        match *pick {
+            #[cfg(not(target_arch = "wasm32"))]
+            PauseFriend::Invite(a) => {
+                friends.act(crate::friends::Op::Invite, &super::friends::hex(a))
+            }
+            #[cfg(target_arch = "wasm32")]
+            PauseFriend::Invite(_) => friends
+                .say("Invites are sent from the desktop game - share the link above instead."),
+            PauseFriend::Join(a) => {
+                let got = match &friends.view {
+                    Some(v) => crate::friends::join_target(v, &a, &menu.rows),
+                    None => Err("your friends list has not loaded yet".into()),
+                };
+                match got {
+                    Ok(addr) if addr == connecting.addr => {
+                        friends.say("You're already on their server.")
+                    }
+                    Ok(addr) => {
+                        menu.status = format!(
+                            "left {} to join a friend",
+                            crate::ui::streamer::server(&connecting.addr)
+                        );
+                        friends.pending_join = Some(addr);
+                        next.set(Screen::Menu);
+                    }
+                    Err(why) => friends.say(why),
+                }
+            }
         }
     }
 }

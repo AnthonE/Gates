@@ -84,6 +84,26 @@
       "name": null
     }
   ],
+  "invites_in": [
+    {
+      "wallet": "0x2222222222222222222222222222222222222222",
+      "since": 1760900000,
+      "name": "ash",
+      "pic": "/api/face/0x2222222222222222222222222222222222222222/pic.png?v=3",
+      "agent": false,
+      "online": true,
+      "playing": {
+        "game": "gates",
+        "title": "Gates",
+        "server": "us-east-1",
+        "server_name": "Gates US East 1",
+        "since": 1761000000,
+        "join": "elo://join/gates/game.elopros.com:61234"
+      },
+      "last_online": null,
+      "at": 1760900100
+    }
+  ],
   "presence": {
     "reachable": true,
     "why": null

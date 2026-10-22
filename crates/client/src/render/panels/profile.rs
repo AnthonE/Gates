@@ -190,8 +190,9 @@ pub fn build(
             let acting = friends.is_some_and(|f| f.acting);
             // ADD and ACCEPT are the card's point and drawn lit; the ones
             // that take something back are drawn quiet.
-            for (label, op) in words::acts(rel) {
-                let primary = matches!(op, Op::Ask | Op::Accept);
+            let blocked = friends.is_some_and(|f| f.blocked(&who));
+            for (label, op) in words::acts(rel, blocked) {
+                let primary = matches!(op, Op::Ask | Op::Accept | Op::Invite);
                 kit::button(r, label, ProfileButton::Friend(*op), primary && !acting);
             }
             if !streamer {

@@ -1099,7 +1099,13 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnExit(Screen::Paused), ui::despawn_all::<pause::PauseRoot>)
         .add_systems(
             Update,
-            (pause::click, pause::keys, pause::act, pause::friends_block)
+            (
+                pause::click,
+                pause::keys,
+                pause::act,
+                pause::friends_block,
+                pause::friend_click,
+            )
                 .chain()
                 .run_if(in_state(Screen::Paused)),
         )
