@@ -532,6 +532,22 @@ fn the_hidden_swell_is_roughness() {
     assert!((GLINT_A2_FAR + hidden_slope(&SeaState::CALM) - 0.02).abs() < 2e-4);
 }
 
+/// **The ripples run downwind.** The offset is added to the UV, so it moves
+/// against the wind for the pattern to move with it; the authored speed is
+/// the drift's own, and a clear day's breeze runs it at ¾ of that.
+#[test]
+fn the_ripples_run_downwind() {
+    let speed = (RIPPLE_DRIFT[0].powi(2) + RIPPLE_DRIFT[1].powi(2)).sqrt();
+    assert!((RIPPLE_SPEED - speed).abs() < 1e-5);
+    for k in 0..16 {
+        let a = k as f32 * std::f32::consts::TAU / 16.0;
+        let dir = Vec2::new(a.cos(), a.sin());
+        assert!(ripple_velocity(dir, 0.5).dot(dir) < 0.0);
+    }
+    let breeze = ripple_velocity(Vec2::X, CALM_WIND).length();
+    assert!((breeze - 0.76 * RIPPLE_SPEED).abs() < 1e-6);
+}
+
 /// **A storm whitens the swell, and a breeze keeps its scatter.**
 /// `crest_foam` measures every sea against the clear sea's crest reach, so
 /// the clear sea's caps are exactly the old ones and a storm's crests, which

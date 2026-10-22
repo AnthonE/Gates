@@ -31,7 +31,7 @@
 #import bevy_pbr::{
     forward_io::{Vertex, VertexOutput, FragmentOutput},
     mesh_functions,
-    mesh_view_bindings::{view, lights},
+    mesh_view_bindings::{view, lights, fog},
     mesh_view_types,
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
     pbr_fragment::pbr_input_from_standard_material,
@@ -96,6 +96,9 @@ struct Water {
     // x `SHOAL_FULL_M`, y `HORIZON_NDOTV`, z `SURF_FRONT_M / SURF_LEN_M`, w
     // this sea state's `hidden_slope`.
     px: vec4<f32>,
+    // x 1 with the eye under the sea, y `underwater::SHELL_UP`, z
+    // `underwater::SHELL_DOWN`, w spare.
+    under: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: Water;
@@ -418,6 +421,15 @@ fn swell_px(local: vec2<f32>, fx: vec2<f32>, fy: vec2<f32>, shoal: f32) -> Swell
     return o;
 }
 
+// `underwater::shade`: the shell's tint toward a direction's height, lighter
+// above the eye and darker below.
+fn shell_shade(y: f32) -> f32 {
+    if y >= 0.0 {
+        return 1.0 + (water.under.y - 1.0) * y;
+    }
+    return 1.0 + (1.0 - water.under.z) * y;
+}
+
 // A pixel's foam (`water::foam_px`, line for line): the whitecaps, the shore
 // wash surging with the bores (or with the swell's `s0` where none runs) and
 // the bore itself, phased per pixel off `cs`, the distance to dry ground in
@@ -563,14 +575,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.diffuse_occlusion = vec3<f32>(1.0);
     var color = apply_pbr_lighting(pbr_input);
 
-    // 5 · The reflection, from above only.
+    // Where the ripple normal turns faster than the pixels can follow, the
+    // mirror reads it as speckle — at a grazing view one ripple swings the
+    // reflected ray between the horizon and the blue above it. A real pixel
+    // there averages many facets, so reflect off their mean: the wave's own
+    // normal, by how fast N is changing across the pixel.
+    let calm = 0.8 * smoothstep(0.002, 0.02, n_var);
+
+    // 5 · The reflection, from above.
     if is_front {
-        // Where the ripple normal turns faster than the pixels can follow,
-        // the mirror reads it as speckle — at a grazing view one ripple swings
-        // the reflected ray between the horizon and the blue above it. A real
-        // pixel there averages many facets, so reflect off their mean: the
-        // wave's own normal, by how fast N is changing across the pixel.
-        let calm = 0.8 * smoothstep(0.002, 0.02, n_var);
         let Nr = normalize(mix(N, pbr_input.world_normal, calm));
         let NdotV = clamp(dot(Nr, V), 0.0, 1.0);
         let F0 = water.glint.x;
@@ -588,6 +601,30 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             color.rgb * (1.0 - F) + sky * F + glint,
             color.a + (1.0 - color.a) * F
         );
+    } else if water.under.x > 0.5 {
+        // 5b · From below, Snell's window: inside the critical angle (48.6°
+        // off straight up) the sky, refracted and rippling; outside it the
+        // surface is a mirror of the water itself (total internal
+        // reflection), in the underwater shell's own shade. Bevy flips only
+        // the ripple's tangent-space normal on a back face, so the wave's
+        // normal is turned down here by hand. Opaque: from below, the
+        // surface is the end of the view either way. The haze is still
+        // Bevy's, below (one owner).
+        let wn = -pbr_input.world_normal;
+        let Nr = normalize(mix(N, wn, calm));
+        let I = -V;
+        let t = refract(I, Nr, water.scatter.w);
+        let td = refract(I, -n_deck_up, water.scatter.w);
+        let tu = select(vec3<f32>(0.0, 1.0, 0.0), t, dot(t, t) > 0.5);
+        let tdu = select(vec3<f32>(0.0, 1.0, 0.0), td, dot(td, td) > 0.5);
+        let ct = max(dot(t, -Nr), 0.0);
+        let F = water.glint.x + (1.0 - water.glint.x) * pow(1.0 - ct, 5.0);
+        let rim = smoothstep(0.0, 0.25, ct);
+        let up = normalize(vec3<f32>(tu.x, max(tu.y, 0.0) + 1e-3, tu.z));
+        let upd = normalize(vec3<f32>(tdu.x, max(tdu.y, 0.0) + 1e-3, tdu.z));
+        let window = sky_radiance(up, upd, daylight_tint()) * view.exposure * (1.0 - F);
+        let mirror = fog.base_color.rgb * shell_shade(reflect(I, Nr).y);
+        color = vec4<f32>(mix(mirror, window + F * mirror, rim * (1.0 - foam)), 1.0);
     }
 
     // Fog and the rest of Bevy's post-lighting work act on the straight

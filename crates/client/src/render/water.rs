@@ -1218,6 +1218,17 @@ pub const RIPPLE_TILE_M: f32 = 12.0;
 /// which direction. Slow: this is capillary detail riding the swell, not a
 /// second swell.
 pub const RIPPLE_DRIFT: [f32; 2] = [0.028, 0.011];
+/// The ripple layer's speed, tiles a second: [`RIPPLE_DRIFT`]'s length.
+pub const RIPPLE_SPEED: f32 = 0.030_083;
+
+/// How fast the ripple layer's UV offset moves for a wind blowing toward
+/// `wind_dir` (world XZ, unit) at strength `wind` (`0..=1`): faster with the
+/// wind, from ⅗ of [`RIPPLE_SPEED`] in a lull. **Against the wind**, because
+/// the offset is added to the UV, which slides the pattern the other way —
+/// so the ripples run downwind, with the rain, the clouds and the grass.
+pub fn ripple_velocity(wind_dir: Vec2, wind: f32) -> Vec2 {
+    -RIPPLE_SPEED * (0.6 + 0.8 * wind) * wind_dir
+}
 
 /// The ripple field, as integer harmonics of the tile so it tiles EXACTLY.
 ///
@@ -1589,6 +1600,9 @@ pub struct WaterParams {
     /// x [`SHOAL_FULL_M`], y [`HORIZON_NDOTV`], z [`SURF_FRONT_M`] over
     /// [`SURF_LEN_M`], w this sea state's [`hidden_slope`].
     pub px: Vec4,
+    /// x 1 with the eye under the sea (Snell's window from below), y
+    /// `underwater::SHELL_UP`, z `underwater::SHELL_DOWN`, w spare.
+    pub under: Vec4,
 }
 
 impl WaterParams {
@@ -1641,6 +1655,12 @@ impl WaterParams {
                 HORIZON_NDOTV,
                 SURF_FRONT_M / SURF_LEN_M,
                 hidden_slope(&SeaState::CALM),
+            ),
+            under: Vec4::new(
+                0.0,
+                super::underwater::SHELL_UP,
+                super::underwater::SHELL_DOWN,
+                0.0,
             ),
         }
     }
@@ -2474,8 +2494,14 @@ pub fn animate(
     }
     sea.surf_phase = (sea.surf_phase + std::f32::consts::TAU / SURF_PERIOD_S * dt)
         .rem_euclid(std::f32::consts::TAU);
-    sea.drift.x = (sea.drift.x + RIPPLE_DRIFT[0] * dt).fract();
-    sea.drift.y = (sea.drift.y + RIPPLE_DRIFT[1] * dt).fract();
+    // Integrated, so a wind that turns turns the ripples without a jump;
+    // wrapped into one tile so the UV keeps its low bits. Headless (no
+    // weather), the authored drift.
+    let v = match weather.as_deref() {
+        Some(w) if w.wind_dir.length_squared() > 0.5 => ripple_velocity(w.wind_dir, w.wind),
+        _ => Vec2::from_array(RIPPLE_DRIFT),
+    };
+    sea.drift = (sea.drift + v * dt).rem_euclid(Vec2::ONE);
 
     // How high the weather has the sea this frame. Headless (no weather) it is
     // the clear sea, like the sky below.
@@ -2507,6 +2533,12 @@ pub fn animate(
         },
     }
     .with_sea(folded, &state, centre);
+    // From below, the surface draws Snell's window.
+    m.extension.params.under.x = if weather.as_deref().is_some_and(|w| w.underwater) {
+        1.0
+    } else {
+        0.0
+    };
     // POTATO draws the swell's normal per vertex; a change re-specializes the
     // pipeline (`WaterKey`), so it is written only when it moves.
     let potato = settings
