@@ -1027,16 +1027,20 @@ trimmed copy is an edited asset that no longer matches its source.
 ## `site/town.glb` — THE GATE, dressed in Blender
 
 **Our own work (CC0).** `ci/site_kit.py gen --kit ci/kits/town.json --out
-assets/models/site/town.glb --seed 1 --label "THE GATE"` on bpy 4.5.14 LTS,
+assets/models/site/town.glb --seed 1 --label "THE GATE"` on bpy 4.5.15 LTS,
 from the sim's own boxes (`cargo run -p sim-core --example kit_dump`), so the
 drawn town and the collided town are one layout. No textures: one mesh per
 surface role, metre UVs, Cycles AO baked into vertex colour; the client puts
 its photographed surfaces on it (`render/town.rs`). The sidecar
-`town.glb.json` records the script and kit hashes.
+`town.glb.json` records the script and kit hashes. Since 2026-10-22 the
+town is the ancient city's: its walls, stalls and stacks are giant sandstone
+blocks (`megalith`), the gate's 92 m pylons carry bronze bands, a lapis
+channel with crystals and two gear wheels (`pylon`), and the ring is 41 m
+across.
 
 | file | kit | tris | size |
 |---|---|---|---|
-| `site/town.glb` | `ci/kits/town.json` | 60,324 | 7.0 MB |
+| `site/town.glb` | `ci/kits/town.json` | 73,296 | 9.0 MB |
 
 ## `site/ziggurat.glb` — the Black Ziggurat, dressed in Blender
 
