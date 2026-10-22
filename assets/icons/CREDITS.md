@@ -159,7 +159,6 @@ more (`ci/bake_icons.py` fetches from GitHub).
 |---|---|
 | `abyss_rug.png` | `ci/icons/abyss_rug.py`, off Meshy's painting (commissioned, ours) |
 | `blue_keycard.png` | `ci/icons/keycards.py` (ours) |
-| `full_water_jug.png` | `ci/icons/water_vessels.py` (ours) |
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
 | `green_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `map_player.png` | `ci/icons/map_player.svg` (ours) |
@@ -185,7 +184,6 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | `shape_wall.png` | `ci/icons/shape_wall.svg` (ours) |
 | `shape_wall_frame.png` | `ci/icons/shape_wall_frame.svg` (ours) |
 | `shape_window.png` | `ci/icons/shape_window.svg` (ours) |
-| `water_jug.png` | `ci/icons/water_vessels.py` (ours) |
 | `water_catcher.png` | `ci/icons/water_catcher.py` (ours) |
 | `potato.png` | `ci/icons/crops.py` (ours) |
 | `potato_seed.png` | `ci/icons/crops.py` (ours) |

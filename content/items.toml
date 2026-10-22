@@ -1567,25 +1567,3 @@ rarity = "common"
 slot = "hand"
 class = "tools"
 description = "Sea water. Boil it on a camp fire to drink it, or pour it on a fire."
-
-# The jug: twice a skin of lake water, for a base's planters and a long walk
-# inland. Fresh only — sea water is boiled in a skin.
-[[item]]
-id = "item.water_jug"
-name = "Water Jug"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Empty. Holds two skins of fresh water — fill it at a lake."
-
-[[item]]
-id = "item.water_jug_full"
-name = "Full Water Jug"
-stack = 1
-tier = 0
-rarity = "common"
-slot = "hand"
-class = "tools"
-description = "Fresh water: a long drink, or a fire put out."

@@ -143,7 +143,7 @@ impl ConsumableDef {
     }
 }
 
-/// How many water vessels content may author (a skin, a jug, ...).
+/// How many water vessels content may author (a skin, ...).
 pub const MAX_VESSELS: usize = 4;
 
 /// One water vessel: the item empty, full of fresh water, and full of salt

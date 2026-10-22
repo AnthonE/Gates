@@ -64,7 +64,7 @@ seconds = 15
 # purifier, without its separate deployable — a vessel of sea water on the
 # grill comes off drinkable. The time is the price, and the wood that burns
 # while it boils: the reference purifies 4:1 over a few minutes, and a skin
-# here is half a minute. A jug holds lake water only.
+# here is half a minute.
 [[cook]]
 input = "item.waterskin_salt"
 output = "item.waterskin_full"
