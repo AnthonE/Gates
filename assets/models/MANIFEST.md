@@ -1441,3 +1441,34 @@ ball; the rest are saguaros (`props::CACTUS_GLB`).
 |---|---|---|---|---|
 | `prop/cactus_saguaro.glb` | 2,559 | 1.41 × 3.60 × 0.49 (trunk ≈ `CACTUS_R_M`) | `01a1522a-31db-73e8-97e8-d30f66f0a68e` | `01a1522a-fbfe-72e0-b34d-dd672d3c2b67` |
 | `prop/cactus_ball.glb` | 1,212 | 0.62 × 0.60 × 0.62 (`BALL_CACTUS_TOP_M`) | `01a1522a-320a-7087-97ba-b7168bad2779` | `01a1522a-ae4a-7228-b011-275372bead61` |
+
+## `site/works_crucible.glb`, `site/works_shard.glb` — the Crucible's furnace and the works' floating stones, Meshy, 2026-10-22
+
+The works leave the black plinth for ancient machine ruins: weathered sandstone, verdigris
+bronze and brass, empty glass housings the client lights (`render/works.rs` `LOOKS`). Same
+terms as `deploy/` (Meshy paid plan, no `NOTICE` entry, no proper noun in any prompt) and the
+same pipeline: `meshy_gen.py` (nano-banana-pro → meshy-t2 smart topology, single view) →
+`import_meshy.py` → `ktx_pack.py --size 1024`. **120 credits for five rolls** (balance 2,175 →
+2,055, measured, run serially). Two ship. `measure_glb.py` rejects the furnace's first roll for
+green and chart contrast, which is the verdigris and the stone-against-bronze it was asked for.
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_crucible.glb` | THE CRUCIBLE's terminal (`works::LOOKS`, the anvil) | `01a1617a-9c22` | `01a1617b-1aed` | 24 | 10,011 | 3.19 × 2.28 × 3.20 | third roll; uniform into 4.0 × 3.5 × 3.2 (the room before the anvil rock); spout and mould on +Z |
+| `site/works_shard.glb` | a work's floating stones (`works::SHARD_GLB`) | `01a1617d-4e71` | `01a1617d-cd11` | 24 | 1,664 | 0.40 × 0.41 × 0.45 | second roll; uniform into 0.6 × 0.45 × 0.45 |
+
+**Rolled and not shipped:** the furnace's first roll (`01a16177-9821` / `01a16178-1702`)
+is plainer, one buttress and a looser crucible; the second (`01a16179-1d2b` /
+`01a16179-9c8c`) carved its frieze in pseudo-glyphs a player would try to read against
+the real alphabet. The stone's first (`01a1617c-1b8e` / `01a1617c-9c95`) came back
+grey and mossy against the furnace's warm stone.
+
+**Anchors measured off the model** (the code's numbers, so a re-roll means re-measuring): the
+crucible's rim 2.28 m up, centred at (−0.13, −0.31), 0.44 m inside radius, floored at 1.53; the
+glass dome 0.42 m round at (1.15, 0.80, −0.30).
+
+Prompts, in full, for the IP rail:
+
+> **works_crucible** — "A single ancient machine-furnace ruin on a plain white background, three-quarter front view. A squat block of weathered warm sandstone masonry 400 centimetres wide, 320 centimetres deep and 240 centimetres tall, with a stepped base, chipped carved ornamental bands around its top edge and two heavy buttresses at the back. Set into the top, a large round brass crucible 150 centimetres across held in a geared bronze cradle with big toothed gear wheels on both sides. A thick bronze pipe runs from the crucible down the front face to a stepped stone spout over a shallow rectangular ingot mould at the foot. On the right side, bronze heat pipes with valve wheels run into an empty round glass-domed housing 70 centimetres across ringed with riveted bronze bands. Bronze and brass weathered to green verdigris patina, soot stains, cold and long abandoned. Ancient, ornate, weathered. Exactly one furnace. No fire, no flames, no glow, no light, no molten metal, no crystals inside the dome, no smoke, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone masonry with chipped carved bands and soot stains, brass crucible, bronze gears, pipes and riveted bands with green verdigris patina, clear empty glass dome, no glow, no text, no letters, no symbols"
+>
+> **works_shard** — "A single fallen carved stone block fragment on a plain white background, three-quarter view. A broken chunk of weathered warm sandstone 60 centimetres long, 40 centimetres wide and 35 centimetres tall. One face is carved with a plain ornamental band and a thin inlaid bronze strip with green verdigris; the other faces are rough fractured stone with chipped edges. Ancient and weathered. Exactly one fragment. No glow, no ground, no people, no plants, no text, no letters, no symbols, no scale bar."  ·  texture: "Weathered warm sandstone, rough fractured faces, chipped edges, carved ornamental band, thin bronze inlay with green verdigris, no glow, no text, no letters, no symbols"
