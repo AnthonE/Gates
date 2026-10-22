@@ -269,8 +269,12 @@ pub const GLANCE_TICKS: u32 = 3 * TICK_HZ / 2;
 const GLANCE_OFFSETS: [u16; 4] = [0x2e00, 0u16.wrapping_sub(0x2e00), 0x6a00, 0];
 /// Eat or drink until the meter reaches this percentage.
 pub const METER_TARGET_PCT: u32 = 80;
-/// Stop drinking sea water at or below this share of health.
-pub const DRINK_MIN_HP_PCT: u32 = 20;
+/// The sea, the water pass's dear drink (`balance.toml`: half a lake's
+/// water for 3 hp a mouthful): only below this, only with this much health,
+/// and only up to this. A lake fills to [`METER_TARGET_PCT`] for nothing.
+pub const SEA_DRINK_BELOW_PCT: u32 = 35;
+pub const SEA_MIN_HP_PCT: u32 = 50;
+pub const SEA_TARGET_PCT: u32 = 55;
 /// Targets abandoned before a gather goal fails as stuck.
 pub const MAX_ABANDONS: u32 = 3;
 /// Distances probed for open water on eight bearings, once a second.
@@ -545,6 +549,8 @@ pub struct Senses {
     pub humans: Sighting,
     pub animals: Sighting,
     pub water: Sighting,
+    /// The water in `water` is the sea's: salt, a dear drink (`water_in_reach`).
+    pub water_salt: bool,
     /// Bodies in sight that could hurt this one, nearest first.
     pub threats: [Threat; SUMMARY_THREATS],
     pub threats_len: u8,
@@ -760,6 +766,8 @@ pub struct SurvivorStats {
     pub reloads: u64,
     /// Armour put on and weapons, meds or tools belted between goals.
     pub dressed: u64,
+    /// Outclassed kit thrown away between goals (`Survivor::discard`).
+    pub discarded: u64,
     pub actions: u64,
     /// Frames an action waited in the hand for its kind's pace.
     pub paced: u64,
@@ -5558,6 +5566,7 @@ impl Survivor {
                         .flatten()
                 });
                 let Some((from, to, count)) = belt else {
+                    self.discard(core, tick);
                     return;
                 };
                 (from, CONT_SELF, to, count)
@@ -5568,6 +5577,32 @@ impl Survivor {
         {
             self.dressed_at = Some(tick);
             self.stats.dressed += 1;
+        }
+    }
+
+    /// Throw away kit the pack has outgrown (`loadout::outclassed`): a
+    /// stone hatchet beside a metal one, a bow beside a crossbow. Kept, it
+    /// fills the pack and then the box, and the next thing the base makes
+    /// has nowhere to go: the second bench's gunpowder waited on a slot for
+    /// good (2026-10-22). Last slot first, so the belt goes last.
+    fn discard(&mut self, core: &ClientCore, tick: u32) {
+        let name =
+            |item: u16| std::str::from_utf8(core.catalog.name(usize::from(item))).unwrap_or("");
+        let held = |better: &str| {
+            core.inv[..INV_SLOTS]
+                .iter()
+                .any(|s| s.count > 0 && name(s.item) == better)
+        };
+        let Some(slot) = (0..INV_SLOTS).rev().find(|&i| {
+            let s = core.inv[i];
+            s.count > 0 && crate::agent::loadout::outclassed(name(s.item), held)
+        }) else {
+            return;
+        };
+        let count = core.inv[slot].count;
+        if self.queue(|buf| protocol::encode_action_drop(slot as u8, count, buf)) {
+            self.dressed_at = Some(tick);
+            self.stats.discarded += 1;
         }
     }
 
@@ -5714,13 +5749,23 @@ impl Survivor {
             self.consume(core, slot, tick);
             return Intent::IDLE;
         }
-        // No sea to drink, or too hurt for salt water: a food never tried is
-        // tasted (`taste_slot`), which costs no health.
+        // No water to drink, or too hurt for salt water: a food never tried
+        // is tasted (`taste_slot`), which costs no health.
         let x = body.qx as f32 * POS_XZ_Q;
         let z = body.qz as f32 * POS_XZ_Q;
         let (seed, _) = core.island();
-        let hurt = core.hp_max > 0 && pct(core.hp, core.hp_max) <= DRINK_MIN_HP_PCT;
-        if hurt || (!water_in_reach(seed, x, z) && self.water_yaw.is_none()) {
+        let reach = water_in_reach(seed, x, z);
+        // A lake in sight beats the sea at hand: the walk is free, the sea's
+        // every mouthful costs health (the water pass).
+        let lake_seen = self.water_yaw.is_some() && !self.senses.water_salt;
+        let here = reach == Some(false) || (reach == Some(true) && !lake_seen);
+        let salt = if here {
+            reach == Some(true)
+        } else {
+            self.senses.water_salt
+        };
+        let hurt = salt && core.hp_max > 0 && pct(core.hp, core.hp_max) <= SEA_MIN_HP_PCT;
+        if hurt || (reach.is_none() && self.water_yaw.is_none()) {
             if let Some(slot) = taste_slot(core, &self.memory.food) {
                 self.consume(core, slot, tick);
                 return Intent::IDLE;
@@ -5735,7 +5780,12 @@ impl Survivor {
             self.end_goal(tick, outcome);
             return Intent::IDLE;
         }
-        if water_in_reach(seed, x, z) {
+        // The sea is drunk only back up to half, not to the lake's mark.
+        if salt && pct(core.water, core.max_water) >= SEA_TARGET_PCT {
+            self.end_goal(tick, Outcome::Done);
+            return Intent::IDLE;
+        }
+        if here {
             if self.queue(protocol::encode_action_drink) {
                 self.awaiting = Some((Pending::Drink, tick));
                 self.verdict = None;
@@ -7163,28 +7213,31 @@ impl Survivor {
             let (seed, _) = core.island();
             let x = body.qx as f32 * POS_XZ_Q;
             let z = body.qz as f32 * POS_XZ_Q;
-            let mut best: Option<(f32, u16)> = None;
+            // The nearest water each way, and a lake before the sea.
+            let mut best: Option<(f32, u16, bool)> = None;
             for dir in 0..8u16 {
                 let yaw = dir << 13;
                 let (fx, fz) = yaw_dir(yaw);
-                if let Some(&m) = WATER_PROBE_M
-                    .iter()
-                    .find(|&&m| terrain::height(seed, x + fx * m, z + fz * m) < terrain::SEA_LEVEL)
-                {
-                    if best.is_none_or(|b| m < b.0) {
-                        best = Some((m, yaw));
+                let found = WATER_PROBE_M.iter().find_map(|&m| {
+                    let (h, open) = terrain::height_open(seed, x + fx * m, z + fz * m);
+                    (h < terrain::SEA_LEVEL).then_some((m, open >= 0.5))
+                });
+                if let Some((m, salt)) = found {
+                    if best.is_none_or(|b| (salt, m) < (b.2, b.0)) {
+                        best = Some((m, yaw, salt));
                     }
                 }
             }
             let mut water = Sighting::default();
-            if let Some((m, yaw)) = best {
+            if let Some((m, yaw, _)) = best {
                 let (fx, fz) = yaw_dir(yaw);
                 let (_, b) = relative(body, x + fx * m, z + fz * m);
                 water.add(m, b);
             }
             self.senses.water = water;
+            self.senses.water_salt = best.is_some_and(|b| b.2);
             self.water_yaw = best.map(|b| b.1);
-            self.water_point = best.map(|(m, yaw)| {
+            self.water_point = best.map(|(m, yaw, _)| {
                 let (fx, fz) = yaw_dir(yaw);
                 [x + fx * m, z + fz * m]
             });
@@ -8179,11 +8232,16 @@ fn taste_slot(core: &ClientCore, book: &FoodBook) -> Option<usize> {
 }
 
 /// The sim's own drink test: five taps on the heightfield at the reach.
-fn water_in_reach(seed: u64, x: f32, z: f32) -> bool {
+fn water_in_reach(seed: u64, x: f32, z: f32) -> Option<bool> {
     let r = DRINK_REACH_M;
-    [(0.0, 0.0), (r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)]
-        .iter()
-        .any(|(dx, dz)| terrain::height(seed, x + dx, z + dz) < terrain::SEA_LEVEL)
+    let (mut wet, mut fresh) = (false, false);
+    for (dx, dz) in [(0.0, 0.0), (r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r)] {
+        let (h, open) = terrain::height_open(seed, x + dx, z + dz);
+        let here = h < terrain::SEA_LEVEL;
+        wet |= here;
+        fresh |= here && open < 0.5;
+    }
+    wet.then_some(!fresh)
 }
 
 /// The observation encoder (PLAYERS.md): a pure function of what this
@@ -8537,8 +8595,8 @@ pub fn observe(
     }
     // Eat and drink are offered only below the level they fill to, and
     // only where they can work: something worth eating in the pack; a food
-    // the eat verb has seen restore water, or open water in sight and the
-    // health to pay for salt water.
+    // the eat verb has seen restore water, or open water in sight: a lake,
+    // or the sea when thirsty enough and healthy enough to pay for it.
     if core.max_food > 0
         && pct(core.food, core.max_food) < METER_TARGET_PCT
         && food_slot(core, &memory.food, false).is_some()
@@ -8546,7 +8604,9 @@ pub fn observe(
         s.offer(Goal::Eat);
     }
     let sea = senses.water.count > 0
-        && (core.hp_max == 0 || pct(core.hp, core.hp_max) > DRINK_MIN_HP_PCT);
+        && (!senses.water_salt
+            || (pct(core.water, core.max_water.max(1)) < SEA_DRINK_BELOW_PCT
+                && (core.hp_max == 0 || pct(core.hp, core.hp_max) > SEA_MIN_HP_PCT)));
     if core.max_water > 0
         && pct(core.water, core.max_water) < METER_TARGET_PCT
         && (sea
@@ -10091,31 +10151,39 @@ mod tests {
         assert!(!book.waters_known(7));
     }
 
-    #[test]
-    fn drinking_walks_to_seen_water_and_uses_the_drink_verb_there() {
-        let (mut bot, mut view, _) = fixture();
-        let now = Instant::now();
-        // Find a beach cell: dry here, open water within the drink reach.
-        let haven = *bot.haven.as_ref().unwrap();
+    /// A beach cell, out from the middle: dry here, the water `salt` (the
+    /// sea) or not (a lake) within the drink reach.
+    fn shore(haven: &Haven, salt: bool) -> (f32, f32) {
         let centre = terrain::ISLAND_SIZE * 0.5;
-        let mut shore = None;
-        'search: for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
             for step in 0..1020 {
                 let (x, z) = (
                     centre + dx * step as f32 * 2.0,
                     centre + dz * step as f32 * 2.0,
                 );
-                if terrain::ground(SEED, &haven, x, z) > 0.2 && water_in_reach(SEED, x, z) {
-                    shore = Some((x, z));
-                    break 'search;
+                if terrain::ground(SEED, haven, x, z) > 0.2
+                    && water_in_reach(SEED, x, z) == Some(salt)
+                {
+                    return (x, z);
                 }
             }
         }
-        let (x, z) = shore.expect("the island has a shore");
+        panic!("the island has no such shore");
+    }
+
+    fn stand(view: &mut ClientView, haven: &Haven, (x, z): (f32, f32)) {
         let body = &mut view.entities[0].1;
         body.qx = quant_xz(x);
         body.qz = quant_xz(z);
-        body.qy = quant_y(terrain::ground(SEED, &haven, x, z));
+        body.qy = quant_y(terrain::ground(SEED, haven, x, z));
+    }
+
+    #[test]
+    fn drinking_walks_to_seen_water_and_uses_the_drink_verb_there() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let haven = *bot.haven.as_ref().unwrap();
+        stand(&mut view, &haven, shore(&haven, true));
         bot.core.as_mut().unwrap().water = 50;
         goal(&mut bot, Goal::Drink, 1);
         bot.frame_at(&view, 1, 1, now);
@@ -10138,6 +10206,38 @@ mod tests {
             (Goal::Drink, Outcome::Done, 1)
         );
         assert!(bot.senses.water.count > 0, "the probe saw the sea");
+    }
+
+    /// The sea costs health a mouthful (the water pass), so it is drunk only
+    /// thirsty and healthy: not at half a meter, not on half health.
+    #[test]
+    fn the_sea_waits_for_thirst_and_health() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let haven = *bot.haven.as_ref().unwrap();
+        stand(&mut view, &haven, shore(&haven, true));
+        let set = |bot: &mut Survivor, water: u16, hp: u16| {
+            let core = bot.core.as_mut().unwrap();
+            (core.max_water, core.water, core.hp_max, core.hp) = (100, water, 100, hp);
+        };
+        set(&mut bot, 45, 100);
+        bot.frame_at(&view, 1, 1, now);
+        assert!(
+            bot.senses.water.count > 0 && bot.senses.water_salt,
+            "the probe saw the sea"
+        );
+        let summary = bot.summary(&view, 1).unwrap();
+        assert!(!summary.offers(Goal::Drink), "the sea at 45% water");
+        set(&mut bot, 20, 100);
+        assert!(
+            bot.summary(&view, 1).unwrap().offers(Goal::Drink),
+            "thirsty"
+        );
+        set(&mut bot, 20, 40);
+        assert!(
+            !bot.summary(&view, 1).unwrap().offers(Goal::Drink),
+            "too hurt for salt"
+        );
     }
 
     /// Where a frame walks, in the world: its axes turned by its view.

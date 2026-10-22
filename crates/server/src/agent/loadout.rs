@@ -61,22 +61,27 @@ pub const ARM_UP: [(&str, u32, Option<&str>); 4] = [
     ("Bandage", 3, None),
 ];
 
-/// What makes an [`ARM_UP`] entry needless: a better one of its kind,
-/// carried. A wooden spear beside a metal one is junk.
-const OUTCLASSED_BY: [(&str, &[&str]); 2] = [
-    ("Wooden Spear", &["Metal Spear"]),
-    (
-        "Hunting Bow",
-        &[
-            "Crossbow",
-            "Revolver",
-            "Assault Rifle",
-            "Thompson",
-            "Custom SMG",
-            "Semi-Automatic Rifle",
-            "Pump Shotgun",
-        ],
-    ),
+/// What leaves the bow behind, and the wooden arrows only it shoots.
+const PAST_THE_BOW: &[&str] = &[
+    "Crossbow",
+    "Revolver",
+    "Assault Rifle",
+    "Thompson",
+    "Custom SMG",
+    "Semi-Automatic Rifle",
+    "Pump Shotgun",
+];
+
+/// What makes a piece of kit needless: a better one of its kind, carried.
+/// A wooden spear beside a metal one is junk: it is not crafted, and one in
+/// the pack is thrown away (`Survivor::discard`).
+const OUTCLASSED_BY: [(&str, &[&str]); 6] = [
+    ("Wooden Spear", &["Stone Spear", "Metal Spear"]),
+    ("Stone Spear", &["Metal Spear"]),
+    ("Stone Hatchet", &["Metal Hatchet"]),
+    ("Stone Pickaxe", &["Metal Pickaxe"]),
+    ("Hunting Bow", PAST_THE_BOW),
+    ("Wooden Arrow", PAST_THE_BOW),
 ];
 
 /// Is `item` needless beside what `held` says is carried?
