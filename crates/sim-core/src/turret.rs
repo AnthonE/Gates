@@ -122,15 +122,15 @@ pub struct Turret {
 
 impl Turret {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 33] {
-        let mut b = [0u8; 33];
+    pub fn hash_bytes(&self) -> [u8; 34] {
+        let mut b = [0u8; 34];
         b[0] = self.live as u8;
         b[1..3].copy_from_slice(&self.cx.to_le_bytes());
         b[3..5].copy_from_slice(&self.cz.to_le_bytes());
         b[5] = self.level;
         b[6] = self.loc;
         b[7..11].copy_from_slice(&self.owner.to_le_bytes());
-        b[11..33].copy_from_slice(&self.gun.hash_bytes());
+        b[11..34].copy_from_slice(&self.gun.hash_bytes());
         b
     }
 
@@ -285,7 +285,7 @@ pub fn step(
         // A dry gun lets its target go and looks at nobody; so does one
         // jammed by the turrets around it (module doc).
         if rounds_in(deploys, bi, def.ammo) == 0 || jammed(&recs, &hot, k, (x, z)) {
-            *s = Sentry::default();
+            s.drop_target();
             continue;
         }
         // Looks are spread over the cadence by index, so the turrets do not

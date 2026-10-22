@@ -40,8 +40,8 @@ pub const NO_TARGET: u8 = u8::MAX;
 
 /// Ticks between two looks (a target's sight line, or a scan for one).
 pub(crate) const LOOK_TICKS: u64 = 10;
-/// Candidates one scan tests for line of sight: nearest first, and the
-/// last one taken in turn from the rest ([`rotating_pick`]).
+/// Candidates one scan tests for line of sight, nearest first; one more is
+/// then taken in turn from the rest ([`rotating_pick`]).
 const LOOK_TRIES: usize = 3;
 /// A sight line is walked at most this many samples (`ARROW_STEP_MM`
 /// apart, so ~100 m — the longest reach content may give the gun).
@@ -111,6 +111,10 @@ pub struct Sentry {
     pub seen_at: u64,
     pub next_shot: u64,
     pub burst_left: u8,
+    /// The roster slot a scan's rotating try starts from ([`rotating_pick`]):
+    /// one past the last slot it took. Kept when the target goes, or a
+    /// hidden body locked and then dropped would send it back to slot 0.
+    pub scan: u8,
 }
 
 impl Default for Sentry {
@@ -121,19 +125,21 @@ impl Default for Sentry {
             seen_at: 0,
             next_shot: 0,
             burst_left: 0,
+            scan: 0,
         }
     }
 }
 
 impl Sentry {
     /// Every field, little-endian, in declaration order.
-    pub fn hash_bytes(&self) -> [u8; 22] {
-        let mut b = [0u8; 22];
+    pub fn hash_bytes(&self) -> [u8; 23] {
+        let mut b = [0u8; 23];
         b[0] = self.target;
         b[1] = self.burst_left;
         b[2..6].copy_from_slice(&self.target_id.to_le_bytes());
         b[6..14].copy_from_slice(&self.seen_at.to_le_bytes());
         b[14..22].copy_from_slice(&self.next_shot.to_le_bytes());
+        b[22] = self.scan;
         b
     }
 
@@ -141,8 +147,12 @@ impl Sentry {
         self.target != NO_TARGET
     }
 
-    fn drop_target(&mut self) {
-        *self = Sentry::default();
+    /// Back to idle, the scan's place kept.
+    pub(crate) fn drop_target(&mut self) {
+        *self = Sentry {
+            scan: self.scan,
+            ..Sentry::default()
+        };
     }
 }
 
@@ -287,9 +297,10 @@ pub(crate) fn look(
         );
         dx * dx + dz * dz
     };
-    let mut tried = [usize::MAX; LOOK_TRIES];
-    for t in 0..LOOK_TRIES {
-        let pick = if t + 1 < LOOK_TRIES {
+    // The `LOOK_TRIES` nearest, then one more in turn from the rest.
+    let mut tried = [usize::MAX; LOOK_TRIES + 1];
+    for t in 0..=LOOK_TRIES {
+        let pick = if t < LOOK_TRIES {
             let mut best: Option<(f32, usize)> = None;
             for (i, p) in players.iter().enumerate() {
                 if !wanted(p) || tried[..t].contains(&i) {
@@ -302,9 +313,13 @@ pub(crate) fn look(
             }
             best.map(|(_, i)| i)
         } else {
-            rotating_pick(players, tick / LOOK_TICKS, |i, p| {
+            let i = rotating_pick(players, s.scan as usize, |i, p| {
                 !tried[..t].contains(&i) && wanted(p) && d2_of(p) <= reach2
-            })
+            });
+            if let Some(i) = i {
+                s.scan = ((i + 1) % MAX_PLAYERS) as u8;
+            }
+            i
         };
         let Some(i) = pick else {
             return;
@@ -318,6 +333,7 @@ pub(crate) fn look(
                 seen_at: tick,
                 next_shot: tick + def.lock_ticks.max(1) as u64,
                 burst_left: 0,
+                scan: s.scan,
             };
             events.push(EV_SENTRY_LOCK, mob::mob_id(slot), p.id, 0);
             return;
@@ -325,35 +341,30 @@ pub(crate) fn look(
     }
 }
 
-/// A scan's last try: the `turn`-th (wrapping) of the players `eligible`
-/// passes, in slot order, rather than the next nearest. Nearest-only let
-/// the few nearest wanted bodies blind a gun for good: hidden behind a
-/// wall, they were every try of every look, and the raider in plain view
-/// further out was never asked. A look's `turn` is its count
-/// (`tick / LOOK_TICKS`), so N hidden bodies cost at most N looks. Two
-/// passes over the roster, no buffer, and stateless, so nothing new is
-/// hashed.
+/// A scan's extra try, after the nearest: the first slot at or after
+/// `start` (wrapping) that `eligible` passes. Nearest-only let the few
+/// nearest wanted bodies blind a gun for good: hidden behind a wall, they
+/// were every try of every look, and the raider in plain view further out
+/// was never asked.
+///
+/// The caller keeps `start` (`Sentry::scan`, `Heli::scan`) one past the
+/// slot this took, so it only ever moves forward past a slot it asked:
+/// toggling hidden bodies in and out of range cannot jump it over the
+/// raider, who is reached within one look per hidden body between the
+/// cursor and them. A count-based turn (`turn % n`) could be steered off
+/// the raider for good by two hidden alts taking turns at the range's
+/// edge. One pass over the roster, no buffer, deterministic in slot order.
 pub(crate) fn rotating_pick(
     players: &[Player; MAX_PLAYERS],
-    turn: u64,
+    start: usize,
     eligible: impl Fn(usize, &Player) -> bool,
 ) -> Option<usize> {
-    let n = players
-        .iter()
-        .enumerate()
-        .filter(|&(i, p)| eligible(i, p))
-        .count();
-    if n == 0 {
-        return None;
-    }
-    let k = (turn % n as u64) as usize;
-    players
-        .iter()
-        .enumerate()
-        .filter(|&(i, p)| eligible(i, p))
-        .nth(k)
-        .map(|(i, _)| i)
+    (0..MAX_PLAYERS)
+        .map(|j| (start + j) % MAX_PLAYERS)
+        .find(|&i| eligible(i, &players[i]))
 }
+// The cursor is a `u8`.
+const _: () = assert!(MAX_PLAYERS <= 256);
 
 /// The gun: a burst while the target is in sight, in reach and in line.
 /// `(slot, aim)` is the gun's roster slot and the key its aim wobble is
@@ -478,13 +489,17 @@ mod tests {
         assert!(!is_sentry_slot(SENTRY_SLOT0 - 1));
     }
 
-    /// **Hidden bodies nearer than a target in plain view do not blind the
-    /// gun** (exploit sweep 2, pve#0). Three wanted players out of sight a
-    /// few metres off (under the ground here, a wall's back in the field)
-    /// were the nearest three, so every try of every look was spent on them
-    /// and the one in the open nine metres out was never asked.
-    #[test]
-    fn hidden_bodies_nearer_than_the_target_do_not_blind_the_gun() {
+    /// A gun and wanted players along +x from it, `(metres off, in the
+    /// open)` in slot order: the hidden ones sunk under the ground (a wall's
+    /// back in the field), on a spot where exactly the open ones are in
+    /// sight. Looks until the gun locks or `max` looks pass, asking
+    /// `wanted(look, player)`. The id it locked on (slot `k` is id
+    /// `10 + k`), and the looks it took.
+    fn scan_field(
+        layout: &[(f32, bool)],
+        max: u64,
+        wanted: impl Fn(u64, &Player) -> bool,
+    ) -> (Option<u32>, u64) {
         const SEED: u64 = 0x0FEE_0FEE;
         let haven = crate::terrain::haven(SEED);
         let cols = ColIndex::new();
@@ -500,14 +515,6 @@ mod tests {
             spread_pm: 0,
         };
         let mut players: [Player; MAX_PLAYERS] = std::array::from_fn(|_| Player::default());
-        let stand = |p: &mut Player, id: u32, x: f32, z: f32, sunk_m: f32| {
-            p.id = id;
-            p.active = true;
-            p.body = Body::at(SEED, &haven, x, z);
-            p.body.qy -= (sunk_m / POS_Y_Q) as i32;
-        };
-        // A spot where the open target is in the gun's sight and the sunk
-        // ones are not.
         let mut found = None;
         'search: for i in 0..400 {
             let (gx, gz) = (
@@ -516,23 +523,30 @@ mod tests {
             );
             let gy = crate::terrain::height(SEED, gx, gz) + 2.0;
             let gun = (gx * MM_PER_M, gy * MM_PER_M, gz * MM_PER_M);
-            for (k, d) in [3.0f32, 4.0, 5.0].into_iter().enumerate() {
-                stand(&mut players[k], 10 + k as u32, gx + d, gz, 20.0);
+            for (k, &(d, open)) in layout.iter().enumerate() {
+                let p = &mut players[k];
+                p.id = 10 + k as u32;
+                p.active = true;
+                p.body = Body::at(SEED, &haven, gx + d, gz);
+                if !open {
+                    p.body.qy -= (20.0 / POS_Y_Q) as i32;
+                }
             }
-            stand(&mut players[3], 20, gx + 9.0, gz, 0.0);
             let mut occ = scratch.occupants();
-            if sees(SEED, &haven, &cols, &mut occ, gun, &players[3])
-                && !(0..3).any(|k| sees(SEED, &haven, &cols, &mut occ, gun, &players[k]))
+            if layout
+                .iter()
+                .enumerate()
+                .all(|(k, &(_, open))| sees(SEED, &haven, &cols, &mut occ, gun, &players[k]) == open)
             {
                 found = Some(gun);
                 break 'search;
             }
         }
-        let gun = found.expect("no spot on this seed with the target in plain view");
+        let gun = found.expect("no spot on this seed with exactly the open ones in sight");
         let mut s = Sentry::default();
         let mut events = EventQueue::default();
         let mut looks = 0;
-        while !s.engaged() && looks < 8 {
+        while !s.engaged() && looks < max {
             look(
                 SEED,
                 &haven,
@@ -545,12 +559,66 @@ mod tests {
                 gun,
                 &players,
                 &mut events,
-                &|p: &Player| p.active,
+                &|p: &Player| p.active && wanted(looks, p),
             );
             looks += 1;
         }
-        assert!(s.engaged(), "three hidden bodies blinded the gun");
-        assert_eq!(s.target_id, 20, "it locked on to a body it cannot see");
-        assert!(looks <= 3, "{looks} looks to find the one in the open");
+        (s.engaged().then_some(s.target_id), looks)
+    }
+
+    /// **Hidden bodies nearer than a target in plain view do not blind the
+    /// gun** (exploit sweep 2, pve#0). Three wanted players out of sight a
+    /// few metres off were the nearest three, so every try of every look
+    /// was spent on them and the one in the open nine metres out was never
+    /// asked.
+    #[test]
+    fn hidden_bodies_nearer_than_the_target_do_not_blind_the_gun() {
+        let layout = [(3.0, false), (4.0, false), (5.0, false), (9.0, true)];
+        let (locked, looks) = scan_field(&layout, 8, |_, _| true);
+        assert_eq!(locked, Some(13), "three hidden bodies blinded the gun");
+        assert_eq!(looks, 1, "{looks} looks to find the one in the open");
+    }
+
+    /// **The nearest are all asked on every look** (review 5, claims#4):
+    /// the extra try comes on top of them, never in place of the last one.
+    /// The third nearest in plain view, two hidden nearer, and hidden ones
+    /// further out on slots either side of it: locked on the first look.
+    #[test]
+    fn a_target_among_the_nearest_is_asked_every_look() {
+        let layout = [
+            (8.0, false),
+            (3.0, false),
+            (4.0, false),
+            (6.0, true),
+            (10.0, false),
+        ];
+        let (locked, looks) = scan_field(&layout, 8, |_, _| true);
+        assert_eq!((locked, looks), (Some(13), 1));
+    }
+
+    /// **Hidden alts taking turns at the range's edge do not steer the
+    /// extra try off the raider** (review 5, claims#3). Past the three
+    /// nearest, all hidden, the raider in the open has one hidden alt on a
+    /// lower slot and one on a higher, and each look one of the two steps
+    /// into range and the other out. A count-based turn (`turn % n`) took
+    /// the alt every look, for good; the cursor only moves past a slot it
+    /// asked, so the raider is reached on the second.
+    #[test]
+    fn hidden_alts_at_the_range_edge_do_not_steer_the_extra_try() {
+        let layout = [
+            (3.0, false),
+            (4.0, false),
+            (5.0, false),
+            (6.0, false), // the low alt, id 13
+            (9.0, true),  // the raider, id 14
+            (7.0, false), // the high alt, id 15
+        ];
+        let (locked, looks) = scan_field(&layout, 8, |look, p| match p.id {
+            13 => look % 2 == 0,
+            15 => look % 2 == 1,
+            _ => true,
+        });
+        assert_eq!(locked, Some(14), "the alts kept the raider unasked");
+        assert!(looks <= 2, "{looks} looks to reach the raider");
     }
 }
