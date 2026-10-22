@@ -1810,7 +1810,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     // --- burning fuses ---------------------------------------------------
-    let mut charges = [ChargeRec::default(); MAX_LIVE_CHARGES];
+    let mut charges = crate::boxed_array::<ChargeRec, MAX_LIVE_CHARGES>(ChargeRec::default());
     for c in charges.iter_mut().take(n_charges) {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -2250,7 +2250,7 @@ mod tests {
             + 2_048 * 106                   // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 256 * 261                     // world containers: 21 + 30 eight-byte stacks (256 at roadside junk)
-            + 64 * 25                       // charges
+            + 1_200 * 25                    // charges (every seat's share: 100 × 12)
             + 512 * 43                      // stopped arrows (format 10; host + life at 18; where in the body at 20)
             + 512 * 35                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18; the stuck direction at 20)
             + 64 * 28                       // fires (format 20)
@@ -2383,9 +2383,11 @@ mod tests {
         // each of 32,768 pieces.
         // 5_313_002 at format 30: the planter's water on 1,024 containers,
         // and the plants' tail, 6 + 4,096 × 58 (farming v2).
+        // 5_341_402 with no format change: the live charges' cap raised from
+        // 64 to every seat's share (1,200) — a count, so old saves load.
         assert_eq!(crate::farm::PLANT_BYTES, 58);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 5_313_002,
+            WORLD_SAVE_MAX_BYTES, 5_341_402,
             "the world save ceiling moved"
         );
     }

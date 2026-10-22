@@ -2978,7 +2978,9 @@ fn a_teammate_sent_for_wood_chops_it_and_fills_the_chest() {
 /// Returns the plot cell; the puppet is left in the core.
 fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
     use server::population::base_rows;
-    use sim_core::bots::{BasePlan, INNER_STAND_M, STARTER_FOOTPRINT, STARTER_STAND_M};
+    use sim_core::bots::{
+        BasePlan, AIRLOCK_STAND_M, INNER_STAND_M, STARTER_FOOTPRINT, STARTER_STAND_M,
+    };
     use sim_core::build::{
         anchor, build_cell_of, foundation_terrain_ok, terrain_band, BUILD_CELL_M, LOC_EDGE_XLO,
         LOC_EDGE_ZLO, LOC_PLANE,
@@ -3112,11 +3114,33 @@ fn stage_airlock_base(h: &mut Harness, near: (f32, f32)) -> (u16, u16) {
             h.puppet_act(place(row, cx, cz, loc));
         }
     }
-    acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_XLO));
-    acts.push(deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_ZLO));
-    acts.push(deploy(rows.container, bx + 1, bz, LOC_PLANE));
-    for a in acts {
-        h.puppet_act(a);
+    // Each door hung from beside it, in sight of its doorway (a hand places
+    // only what it sees: `bots::stand_m`), the front from the airlock and
+    // the inner from the room; the box from the core, the puppet left there.
+    let airlock = (x0 + AIRLOCK_STAND_M.0, z0 + AIRLOCK_STAND_M.1);
+    for (spot, act) in [
+        (airlock, deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_XLO)),
+        (inner, deploy(rows.door, bx + 1, bz + 1, LOC_EDGE_ZLO)),
+        (stand, deploy(rows.container, bx + 1, bz, LOC_PLANE)),
+    ] {
+        for core in [&mut h.shard, &mut h.replay] {
+            let haven = core.world.haven;
+            let p = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == PUPPET)
+                .unwrap();
+            p.body = sim_core::movement::Body::at(SEED, &haven, spot.0, spot.1);
+        }
+        h.puppet_act(act);
+        // Taken where it was sent from, before the body moves on.
+        for _ in 0..10 * TICK_HZ {
+            if h.shard.wants_action(h.puppet_slot) && h.replay.wants_action(h.puppet_slot) {
+                break;
+            }
+            h.step();
+        }
     }
     for core in [&mut h.shard, &mut h.replay] {
         let w = &core.world;
@@ -4206,11 +4230,12 @@ fn a_survivor_empties_a_crate_through_its_panel() {
 
 /// The starter stands, the pack holds what the stations cost: the
 /// workbench goes on a stone foundation behind the core, the furnace is
-/// crafted at it and goes on the floor over the cupboard, and ore staged
-/// afterwards is smelted there into fragments, a batch at a time.
+/// crafted at it and goes on one of its own behind the stair cell (each put
+/// down from behind it, where the hand sees it), and ore staged afterwards
+/// is smelted there into fragments, a batch at a time.
 #[test]
 fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
-    use server::agent::build::{Milestone, YARD};
+    use server::agent::build::{Milestone, ANNEX, YARD};
     use sim_core::build::LOC_PLANE;
     use sim_core::deploy::{ARCH_FURNACE, ARCH_WORKBENCH};
 
@@ -4273,7 +4298,11 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
                 .filter(|d| d.owner == ID)
                 .map(|d| w.deploy.defs[usize::from(d.row)].arch)
         };
-        assert_eq!(arch(cx, cz, 1), Some(ARCH_FURNACE), "the furnace upstairs");
+        let (fx, fz) = (
+            cx.checked_add_signed(i16::from(ANNEX.0)).unwrap(),
+            cz.checked_add_signed(i16::from(ANNEX.1)).unwrap(),
+        );
+        assert_eq!(arch(fx, fz, 0), Some(ARCH_FURNACE), "the furnace behind");
         let (yx, yz) = (
             cx.checked_add_signed(i16::from(YARD.0)).unwrap(),
             cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
@@ -4826,13 +4855,13 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
 }
 
 /// The gear past the first bench, with what it costs staged: the second
-/// bench on its stone foundation behind the core, gunpowder made at it,
+/// bench in the first one's place behind the core, gunpowder made at it,
 /// the pistol round, the revolver and the roadsign vest learned at that
 /// bench's tree (tier two: `E` on the second bench, which the harness
 /// checks at every unlock), made, and the vest worn.
 #[test]
 fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
-    use server::agent::build::{Milestone, ANNEX};
+    use server::agent::build::{Milestone, YARD};
     use sim_core::build::LOC_PLANE;
     use sim_core::deploy::ARCH_WORKBENCH2;
 
@@ -4893,8 +4922,8 @@ fn a_survivor_builds_its_second_bench_and_learns_the_revolver_and_vest() {
     );
     let plan = h.bot.builder().plan().unwrap();
     let (ax, az) = (
-        plan.cx.checked_add_signed(i16::from(ANNEX.0)).unwrap(),
-        plan.cz.checked_add_signed(i16::from(ANNEX.1)).unwrap(),
+        plan.cx.checked_add_signed(i16::from(YARD.0)).unwrap(),
+        plan.cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
     );
     {
         let w = &h.shard.world;
