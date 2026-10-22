@@ -450,11 +450,22 @@ pub struct ShardCore {
     /// Per slot, its way out is owed (`SUB_BANK`): at join, after its own
     /// extraction, and to everyone when the exchange changes.
     bank_owed: [bool; MAX_PLAYERS],
-    /// Per slot, the id of the tenant that moved or acted since the last
-    /// standings minute, 0 for none: only such a minute is played
-    /// ([`Self::standings_minute`]).
+    /// Per slot, the id of the tenant that acted since the last standings
+    /// minute (an action the sim ran, a swing that paid, a hit), 0 for none:
+    /// such a minute is played ([`Self::standings_minute`]).
     played_minute: [u32; MAX_PLAYERS],
+    /// Per slot, `(tenant id, qx, qz)`: where the last standings minute
+    /// found its body. A minute whose body ended [`MINUTE_WALK_M`] from
+    /// here is played: the walk is measured, not read off input bits.
+    minute_at: [(u32, i32, i32); MAX_PLAYERS],
 }
+
+/// How far a body must be from where the last standings minute found it for
+/// the walk alone to play the minute (`ShardCore::standings_minute`), in
+/// position quanta. A walk anywhere is ten times this a minute.
+const MINUTE_WALK_Q: i64 = (MINUTE_WALK_M / sim_core::movement::POS_XZ_Q) as i64;
+/// [`MINUTE_WALK_Q`] in metres.
+const MINUTE_WALK_M: f32 = 5.0;
 
 /// Every standings board, one bit each (`protocol::STANDING_BOARDS`).
 const STANDINGS_ALL: u8 = (1 << protocol::STANDING_BOARDS) - 1;
@@ -819,6 +830,7 @@ impl ShardCore {
             standings_agent: [false; MAX_PLAYERS],
             bank_owed: [false; MAX_PLAYERS],
             played_minute: [0; MAX_PLAYERS],
+            minute_at: [(0, 0, 0); MAX_PLAYERS],
         }
     }
 
@@ -1128,20 +1140,34 @@ impl ShardCore {
     }
 
     /// A minute of play for every connected wallet that played it: alive,
-    /// awake, and moved or acted since the last one (`played_minute`). What
-    /// a purse's `prize_min_minutes`, `extract_min_minutes` and the gifts
-    /// are measured in, so a wallet parked on the island, dead or asleep
-    /// earns none of them. From the boundary loop's minute.
+    /// awake, and since the last one either its body went
+    /// [`MINUTE_WALK_M`] or it acted (`played_minute`). Both are what the
+    /// server saw, never what a client's input bits claim. What a purse's
+    /// `prize_min_minutes`, `extract_min_minutes` and the gifts are
+    /// measured in, so a wallet parked on the island, dead or asleep earns
+    /// none of them. From the boundary loop's minute.
     pub fn standings_minute(&mut self) {
         for slot in 0..MAX_PLAYERS {
             let id = self.clients[slot].id;
-            let played = std::mem::take(&mut self.played_minute[slot]);
-            if !self.clients[slot].connected || played == 0 || played != id {
+            let acted = std::mem::take(&mut self.played_minute[slot]);
+            let acted = acted != 0 && acted == id;
+            if !self.clients[slot].connected {
                 continue;
             }
-            let awake = Self::world_slot_of(&self.world, id)
-                .is_some_and(|w| !self.world.players[w].dead && !self.world.players[w].sleeping);
-            if !awake {
+            let Some(w) = Self::world_slot_of(&self.world, id) else {
+                continue;
+            };
+            let p = &self.world.players[w];
+            // Where this minute found the body, kept whatever it came to,
+            // so the next minute measures from here.
+            let (was, qx, qz) =
+                std::mem::replace(&mut self.minute_at[slot], (id, p.body.qx, p.body.qz));
+            let (dx, dz) = (
+                i64::from(p.body.qx) - i64::from(qx),
+                i64::from(p.body.qz) - i64::from(qz),
+            );
+            let walked = was == id && dx * dx + dz * dz >= MINUTE_WALK_Q * MINUTE_WALK_Q;
+            if p.dead || p.sleeping || !(walked || acted) {
                 continue;
             }
             let Some(key) = self.key_str(slot) else {
@@ -1454,6 +1480,13 @@ impl ShardCore {
                     let what = format!("opened {name}");
                     let points = self.standings.rules.solved_points;
                     self.standings.deed(&k, &l, points, Some(&what));
+                }
+                // A swing that paid and a hit that landed play the minute
+                // (`standings_minute`): the sim's word, not the button's.
+                EV_GATHER | EV_HIT => {
+                    if let Some(slot) = self.client_slot_of(ev.a) {
+                        self.played_minute[slot] = ev.a;
+                    }
                 }
                 EV_DEATH => {
                     let victim = self.standing_who(ev.a);
@@ -2914,14 +2947,6 @@ impl ShardCore {
             c.transport_rtt_us = stats.slot_rtt_us.load(slot);
             if let Some(consumed) = c.consume_input() {
                 let (frame, view) = (consumed.frame, consumed.view);
-                // Walking or swinging plays the minute (`standings_minute`).
-                use sim_core::input::{BTN_JUMP, BTN_PRIMARY};
-                if frame.move_x != 0
-                    || frame.move_z != 0
-                    || frame.buttons & (BTN_JUMP | BTN_PRIMARY) != 0
-                {
-                    self.played_minute[slot] = c.id;
-                }
                 // Measured on the frame whose buttons ACT (the newer of
                 // two, when the throttle consumed two), and measured before
                 // the command-buffer check on purpose: dropping the sample
@@ -3051,8 +3076,6 @@ impl ShardCore {
                     c.pending_action = Some(act);
                     continue;
                 }
-                // So does any action (`standings_minute`).
-                self.played_minute[slot] = c.id;
                 self.cmd_buf[n] = match act {
                     // The action that is **usually** not a command, and the
                     // split is the whole of what world containers v0 added
@@ -3397,6 +3420,10 @@ impl ShardCore {
                         count,
                     },
                 };
+                // An action the sim runs plays the minute
+                // (`standings_minute`); a look into a bag, a team verb never
+                // got here.
+                self.played_minute[slot] = c.id;
                 n += 1;
             }
         }
@@ -10231,7 +10258,9 @@ mod tests {
     }
 
     /// A standings minute is played only by a wallet that moved or acted in
-    /// it, alive and awake: parked alts earn no `extract_min_minutes`.
+    /// it, alive and awake: parked alts earn no `extract_min_minutes`. The
+    /// walk is the body's, measured from where the last minute found it;
+    /// input bits that go nowhere and a look into a bag are not play.
     #[test]
     fn a_minute_counts_only_when_it_was_played() {
         let stats = ShardStats::default();
@@ -10259,18 +10288,38 @@ mod tests {
                 core.tick_bare(&stats, |_, _, _| true);
             }
         };
+        let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+        let step = |core: &mut ShardCore, metres: f32| {
+            core.world.players[w].body.qx += (metres / sim_core::movement::POS_XZ_Q) as i32;
+        };
         core.standings_minute();
         assert_eq!(played(&core), 0, "connected and parked");
         walk(&mut core);
         core.standings_minute();
+        assert_eq!(played(&core), 0, "a few frames of walking bits, a step");
+        step(&mut core, MINUTE_WALK_M + 1.0);
+        core.standings_minute();
         assert_eq!(played(&core), 1, "walked");
         core.standings_minute();
         assert_eq!(played(&core), 1, "the walk is spent with its minute");
-        walk(&mut core);
-        let w = ShardCore::world_slot_of(&core.world, 256).expect("seated");
+        core.push_action(
+            0,
+            ActionMsg::Container {
+                kind: sim_core::inventory::CONT_BAG,
+                cont: 0,
+            },
+        );
+        core.tick_bare(&stats, |_, _, _| true);
+        core.standings_minute();
+        assert_eq!(played(&core), 1, "a look into a bag");
+        core.push_action(0, ActionMsg::Drink);
+        core.tick_bare(&stats, |_, _, _| true);
+        core.standings_minute();
+        assert_eq!(played(&core), 2, "an action the sim ran");
+        step(&mut core, MINUTE_WALK_M + 1.0);
         core.world.players[w].dead = true;
         core.standings_minute();
-        assert_eq!(played(&core), 1, "dead");
+        assert_eq!(played(&core), 2, "dead");
     }
 
     /// Tags (v85): each player learns who every tagged player is, a name
