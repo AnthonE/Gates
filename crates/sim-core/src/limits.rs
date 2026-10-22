@@ -810,7 +810,13 @@ pub const BODY_BROADCAST_ARMS: usize = 3;
 /// (join sync / resync is drip-fed: at most one sync message per client
 /// per tick, at most this many entries examined to fill it). Proposed
 /// default, DECISIONS.md §open (gather wire row).
-pub const SYNC_SCAN_PER_TICK: usize = 256;
+///
+/// 1,024 since the walk is aimed and restarts on every class-S re-arm
+/// (`server::interest`): a full store, `MAX_SLOT_LIVES`, is then 128 ticks,
+/// inside which a sprinter covers 23 m of the 32 m that re-arms it — the
+/// piece walk's scan window and its inequality, held by the server's
+/// `a_full_harvested_walk_finishes_before_a_sprinter_re_arms_it`.
+pub const SYNC_SCAN_PER_TICK: usize = 1_024;
 
 /// Death backpacks standing at once (backpack.rs). Sized past the worst
 /// honest case: `MAX_PLAYERS` bodies each holding a bag, plus headroom

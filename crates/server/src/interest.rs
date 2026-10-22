@@ -150,6 +150,23 @@ pub fn cell_cm(cx: u16, cz: u16) -> (i64, i64) {
     )
 }
 
+/// The scatter grid's cell pitch in centimetres — the grid a resource
+/// node, tree or barrel is addressed on (`gather::cell_key`,
+/// `terrain::CELL_SIZE`), integer for [`BUILD_CELL_CM`]'s reason and held
+/// equal to it by `scatter_pitch_is_the_terrain_grid`.
+pub const SCATTER_CELL_CM: i64 = 800;
+
+/// The centre of scatter cell `(cx, cz)` in centimetres: where a node
+/// event is measured from. A node stands within its cell, so this is at
+/// most 5.7 m off — under 3% of the radius.
+#[inline]
+pub fn scatter_cell_cm(cx: u16, cz: u16) -> (i64, i64) {
+    (
+        cx as i64 * SCATTER_CELL_CM + SCATTER_CELL_CM / 2,
+        cz as i64 * SCATTER_CELL_CM + SCATTER_CELL_CM / 2,
+    )
+}
+
 /// Is the piece at grid address `(cx, cz)` inside the class-S interest of a
 /// walk anchored at `anchor` (centimetres)?
 #[inline]
@@ -229,6 +246,32 @@ mod tests {
     #[test]
     fn cell_pitch_is_the_build_grid() {
         assert_eq!(BUILD_CELL_CM, (BUILD_CELL_M * 100.0) as i64);
+    }
+
+    /// The scatter pitch is the terrain's, or a node event is aimed at the
+    /// wrong place.
+    #[test]
+    fn scatter_pitch_is_the_terrain_grid() {
+        assert_eq!(
+            SCATTER_CELL_CM,
+            (sim_core::terrain::CELL_SIZE * 100.0) as i64
+        );
+    }
+
+    /// The harvested walk restarts on every re-arm (`arm_walks`), so a
+    /// full one has to finish before a sprinter can re-arm it again, at the
+    /// store's cap: `MAX_SLOT_LIVES / SYNC_SCAN_PER_TICK` ticks of sprint
+    /// inside `PIECE_REARM_CM` — the piece walk's inequality, one store
+    /// over.
+    #[test]
+    fn a_full_harvested_walk_finishes_before_a_sprinter_re_arms_it() {
+        use sim_core::limits::{MAX_SLOT_LIVES, SYNC_SCAN_PER_TICK, TICK_HZ};
+        let ticks = MAX_SLOT_LIVES.div_ceil(SYNC_SCAN_PER_TICK) as f32;
+        let run_cm = ticks * sim_core::movement::SPRINT_SPEED / TICK_HZ as f32 * 100.0;
+        assert!(
+            run_cm < PIECE_REARM_CM as f32,
+            "{run_cm} cm sprinted per harvested walk"
+        );
     }
 
     /// The two radii are the class-D band, not numbers of their own —
