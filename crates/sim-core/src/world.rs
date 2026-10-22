@@ -3259,6 +3259,114 @@ impl World {
         )
     }
 
+    /// Whether the player in `slot` sees the hearth on `(cx, cz, level)` on
+    /// their own storey (`reach::clear_door`, a body deployable aimed at its
+    /// middle): the feed, the take and the crew ops are worked where the
+    /// cupboard is, never through its room's wall or floor — a stranger at a
+    /// sealed base's wall joined a bare hearth inside it that way. True when
+    /// no hearth stands there: the verb's own refusal names that.
+    fn hearth_seen(&self, slot: usize, cx: u16, cz: u16, level: u8) -> bool {
+        match self
+            .deploys
+            .hearths()
+            .iter()
+            .find(|h| h.cx == cx && h.cz == cz && h.level == level)
+        {
+            Some(h) => self.door_seen(slot, (cx, cz, level, h.loc)),
+            None => true,
+        }
+    }
+
+    /// Whether the player in `slot` may put deployable `row` down where a
+    /// `PlaceDeploy` names it: in plain sight (the thing as it would stand,
+    /// or the door or box a lock bolts onto),
+    /// unless the spot is inside a claim they are crew of. A base with no
+    /// hearth yet is nobody's claim, and a hand outside its walls dropped a
+    /// cupboard (the claim over the whole building) or a bag (a respawn
+    /// inside) through them. Crew building through their own walls changes
+    /// nothing anyone else holds. True for a request `place_deploy` refuses
+    /// on its own terms.
+    fn deploy_seen(
+        &self,
+        slot: usize,
+        row: u16,
+        at: (u16, u16, u8, u8),
+        pose: crate::footprint::Pose,
+    ) -> bool {
+        let (cx, cz, level, loc) = at;
+        let Some(def) = self.deploy.defs[..self.deploy.def_count as usize].get(row as usize) else {
+            return true;
+        };
+        let cols = self.pieces.cols();
+        // A spot `place_deploy` refuses anyway keeps its own reason: a body
+        // pushed into a wall is "no room", not "out of sight".
+        let body = matches!(
+            def.placement,
+            deploy::PLACE_GROUND | deploy::PLACE_FOUNDATION | deploy::PLACE_ANY
+        );
+        if body
+            && deploy::body_site(
+                self.seed,
+                &self.haven,
+                cols,
+                self.deploys.entries(),
+                &self.deploy,
+                def.placement,
+                def.arch,
+                cx,
+                cz,
+                level,
+                pose,
+            )
+            .is_err()
+        {
+            return true;
+        }
+        let (rec, arch) = if def.placement == deploy::PLACE_DOOR {
+            let Some(host) = self.deploys.find(cx, cz, level, loc) else {
+                return true;
+            };
+            let Some(hd) = self.deploy.defs.get(host.row as usize) else {
+                return true;
+            };
+            (*host, hd.arch)
+        } else {
+            let rec = deploy::DeployRec {
+                cx,
+                cz,
+                level,
+                loc,
+                pose,
+                row: row as u8,
+                ..deploy::DeployRec::default()
+            };
+            (rec, def.arch)
+        };
+        let (eye, feet) = self.hand(slot);
+        // The line alone, no storey rule: a door hung on the doorway a storey
+        // up from the ground is honest building; a wall or a floor in the way
+        // is what a placement must not pass.
+        let t = crate::reach::Target {
+            storey: false,
+            ..crate::reach::Target::deploy(self.seed, &self.haven, cols, &rec, arch, (eye.0, eye.2))
+        };
+        if crate::reach::clear_from(
+            self.seed,
+            &self.haven,
+            cols,
+            self.card_door_bits,
+            eye,
+            feet,
+            t,
+        ) {
+            return true;
+        }
+        let (x, z) = rec.place_xz(cols);
+        let id = self.players[slot].id;
+        crate::claim::any_claim(&self.pieces, &self.deploys, x, z)
+            && !crate::claim::foreign_claim(&self.pieces, &self.deploys, x, z, id)
+    }
+
     /// Whether the player in `slot` sees what a charge would be planted on
     /// (`reach.rs`): a deployable the way the use verb sees it, a piece when
     /// the first thing built on the line to it is that piece. Planar reach
@@ -6553,27 +6661,37 @@ impl World {
                 pose,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    deploy::place_deploy(
-                        self.seed,
-                        &self.haven,
-                        &self.deploy,
-                        &self.build,
-                        &mut self.pieces,
-                        &mut self.deploys,
-                        &mut self.players[slot],
-                        self.tick,
-                        row,
-                        cx,
-                        cz,
-                        level,
-                        loc,
-                        pose,
-                        &mut self.events,
-                    );
+                    if !self.deploy_seen(slot, row, (cx, cz, level, loc), pose) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                    } else {
+                        deploy::place_deploy(
+                            self.seed,
+                            &self.haven,
+                            &self.deploy,
+                            &self.build,
+                            &mut self.pieces,
+                            &mut self.deploys,
+                            &mut self.players[slot],
+                            self.tick,
+                            row,
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            pose,
+                            &mut self.events,
+                        );
+                    }
                 }
             }
             Command::Feed { id, cx, cz, level } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    if !self.hearth_seen(slot, cx, cz, level) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                        return;
+                    }
                     deploy::feed(
                         &self.deploy,
                         &mut self.deploys,
@@ -6593,6 +6711,11 @@ impl World {
                 row,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    if !self.hearth_seen(slot, cx, cz, level) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                        return;
+                    }
                     deploy::take_stock(
                         &self.deploy,
                         &self.gather,
@@ -6819,7 +6942,10 @@ impl World {
                     // is already one event for both — the crew and the
                     // lock's list are the same `Roster` answering the same
                     // question.
-                    if deploy::op_is_crew(op) {
+                    if deploy::op_is_crew(op) && !self.hearth_seen(slot, cx, cz, level) {
+                        self.events
+                            .push(EV_DEPLOY_REFUSED, id, deploy::REFUSE_D_REACH, 0);
+                    } else if deploy::op_is_crew(op) {
                         let owner = deploy::crew_op(
                             &mut self.deploys,
                             &self.players[slot],
