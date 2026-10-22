@@ -49,6 +49,8 @@ pub struct WorkPool {
 #[derive(Component)]
 pub struct WorkCore {
     k: u8,
+    /// Which of its look's cores, in the order they wake.
+    i: u8,
     shown: u32,
 }
 /// The veil that glows in a ring as the quota fills, and breathes while
@@ -60,6 +62,19 @@ pub struct WorkVeil {
 }
 /// One fallen stone: where it lies and where it hovers once risen (the
 /// model's frame), how far risen it is, and how far round it has turned.
+/// One ring of a gyre: its look's rest and risen heights and how far it
+/// has turned.
+#[derive(Component)]
+pub struct WorkGyre {
+    k: u8,
+    i: u8,
+    from: Vec3,
+    to: Vec3,
+    grow: f32,
+    lift: f32,
+    spin: f32,
+}
+
 #[derive(Component)]
 pub struct WorkStone {
     k: u8,
@@ -115,6 +130,21 @@ pub struct Ring {
     pub r: [f32; 2],
 }
 
+/// Nested brass rings (an armillary): flat at `from` while sealed, lifted
+/// straight up and then across to `to` by the quota, opening out and
+/// growing `grow` times as they go, spinning while the tank burns. Their
+/// radii, outermost first.
+#[derive(Clone, Copy, Debug)]
+pub struct Gyre {
+    pub from: [f32; 3],
+    pub to: [f32; 3],
+    pub r: &'static [f32],
+    pub grow: f32,
+}
+
+/// The tube of a gyre's ring, metres either side of its radius.
+const GYRE_TUBE_M: f32 = 0.035;
+
 /// A veil: a disc `r` across facing +Z at `at`, and its twin at `back_z` on
 /// the far face of something finished on both.
 #[derive(Clone, Copy, Debug)]
@@ -140,6 +170,7 @@ pub struct Look {
     pub glow: [f32; 3],
     pub pool: Option<Pool>,
     pub veil: Option<Veil>,
+    pub gyre: Option<Gyre>,
     /// Glass cores (a dome, a lantern): each one's centre and radius, and
     /// the colour they burn with while the tank does.
     pub cores: &'static [([f32; 3], f32)],
@@ -166,6 +197,7 @@ pub static PLINTH: Look = Look {
     glow: [0.0, 2.35, -0.6],
     pool: None,
     veil: None,
+    gyre: None,
     cores: &[],
     core_rgb: [0.0; 3],
     stones: 0,
@@ -196,6 +228,7 @@ const CRUCIBLE: Look = Look {
         kind: PoolKind::Molten,
     }),
     veil: None,
+    gyre: None,
     cores: &[([1.15, 0.80, -0.30], 0.43)],
     core_rgb: [3.0, 1.8, 0.8],
     stones: 5,
@@ -225,11 +258,72 @@ const WELLS: Look = Look {
         kind: PoolKind::Water,
     }),
     veil: None,
+    gyre: None,
     cores: &[([-1.84, 1.8, -0.23], 0.14), ([1.52, 1.8, 0.74], 0.14)],
     core_rgb: [0.6, 1.4, 3.5],
     stones: 5,
     hover_y: 4.7,
     hover_r: 2.4,
+};
+
+/// THE OBSERVATORY (`content/arc.toml`), among the far spires: a stepped
+/// round sandstone dais with a half-moon basin tiled deep blue across its
+/// front, and a bronze telescope on a carved pedestal at its back, reaching
+/// up and out over the basin, generated, 4.6 × 3.5 × 4.6 m. Its lens mouth
+/// is 0.7 m across round (0, 3.15, 1.12), measured off the model; it burns
+/// with the tank. Three brass rings lie flat in the basin's clear left half
+/// while sealed and rise with the quota, past the tube, to open out and
+/// turn in front of the lens.
+const OBSERVATORY: Look = Look {
+    glb: "models/site/works_observatory.glb",
+    half: [2.3, 2.3],
+    turn: 0.0,
+    ring: None,
+    fire: None,
+    glow: [0.0, 1.2, 1.4],
+    pool: None,
+    veil: None,
+    gyre: Some(Gyre {
+        from: [-0.85, 0.26, 0.25],
+        to: [0.0, 4.3, 2.0],
+        r: &[0.42, 0.34, 0.26],
+        grow: 2.0,
+    }),
+    cores: &[([-0.02, 3.15, 1.12], 0.28)],
+    core_rgb: [0.9, 1.6, 3.5],
+    stones: 3,
+    hover_y: 5.4,
+    hover_r: 2.2,
+};
+
+/// THE GOLDEN SPINE (`content/arc.toml`), down the container yard's open
+/// lane: a 7 m run of gilded conduit ringed with finned bronze collars,
+/// lying in four carved sandstone cradles on a broken causeway, five caged
+/// glass insulators along its top, generated, 7.0 × 2.9 × 1.7 m. The
+/// insulators' glass stands 2.3–2.85 m up at x −2.44, −1.25, −0.06, 1.11
+/// and 2.37, measured off the model; they wake one by one with the quota
+/// and run a pulse down the Spine while the tank burns.
+const SPINE: Look = Look {
+    glb: "models/site/works_spine.glb",
+    half: [3.5, 0.85],
+    turn: 0.0,
+    ring: None,
+    fire: None,
+    glow: [0.0, 1.6, 0.9],
+    pool: None,
+    veil: None,
+    gyre: None,
+    cores: &[
+        ([-2.44, 2.55, 0.03], 0.13),
+        ([-1.25, 2.55, 0.03], 0.13),
+        ([-0.06, 2.55, 0.03], 0.13),
+        ([1.11, 2.55, 0.04], 0.13),
+        ([2.37, 2.55, 0.03], 0.13),
+    ],
+    core_rgb: [3.2, 2.4, 0.9],
+    stones: 4,
+    hover_y: 4.2,
+    hover_r: 2.6,
 };
 
 /// THE EXCHANGE (`content/arc.toml`), on THE GATE's main street under the
@@ -249,6 +343,7 @@ const EXCHANGE: Look = Look {
     glow: [-0.14, 1.3, 0.67],
     pool: None,
     veil: None,
+    gyre: None,
     cores: &[],
     core_rgb: [0.0; 3],
     stones: 0,
@@ -258,9 +353,11 @@ const EXCHANGE: Look = Look {
 
 /// Each site's own look, by `sim_core::spot` site code (keyed on the site,
 /// not the row, so a reordered or renamed row keeps its ruin).
-pub static LOOKS: [(u8, Look); 3] = [
+pub static LOOKS: [(u8, Look); 5] = [
     (SITE_LANDMARK0 + LandmarkKind::Anvil as u8, CRUCIBLE),
     (SITE_LANDMARK0 + LandmarkKind::Ruin as u8, WELLS),
+    (SITE_LANDMARK0 + LandmarkKind::Spires as u8, OBSERVATORY),
+    (SITE_LANDMARK0 + LandmarkKind::Yard as u8, SPINE),
     (SITE_TOWN, EXCHANGE),
 ];
 
@@ -369,7 +466,7 @@ pub fn spawn(
                 if let Some(ring) = look.ring {
                     c.spawn((
                         Mesh3d(meshes.add(Torus::new(ring.r[0], ring.r[1]))),
-                        MeshMaterial3d(gold),
+                        MeshMaterial3d(gold.clone()),
                         Transform::from_translation(Vec3::from_array(ring.at))
                             .with_rotation(Quat::from_rotation_x(core::f32::consts::FRAC_PI_2)),
                     ));
@@ -456,10 +553,29 @@ pub fn spawn(
                         ));
                     }
                 }
-                for &(at, r) in look.cores {
+                if let Some(g) = look.gyre {
+                    for (i, &r) in g.r.iter().enumerate() {
+                        c.spawn((
+                            WorkGyre {
+                                k: k as u8,
+                                i: i as u8,
+                                from: Vec3::from_array(g.from),
+                                to: Vec3::from_array(g.to),
+                                grow: g.grow,
+                                lift: 0.0,
+                                spin: 0.0,
+                            },
+                            Mesh3d(meshes.add(Torus::new(r - GYRE_TUBE_M, r + GYRE_TUBE_M))),
+                            MeshMaterial3d(gold.clone()),
+                            Transform::from_translation(Vec3::from_array(g.from)),
+                        ));
+                    }
+                }
+                for (i, &(at, r)) in look.cores.iter().enumerate() {
                     c.spawn((
                         WorkCore {
                             k: k as u8,
+                            i: i as u8,
                             shown: u32::MAX,
                         },
                         Mesh3d(meshes.add(Sphere::new(r))),
@@ -592,8 +708,9 @@ pub fn light(
 }
 
 /// Wake each terminal's parts with its work: the pool rises and glows, the
-/// core warms, the stones lift and, while the tank burns, circle.
-#[allow(clippy::type_complexity)]
+/// cores wake, the rings rise and open, the stones lift and, while the tank
+/// burns, circle.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn animate(
     net: NonSend<Net>,
     time: Res<Time>,
@@ -605,7 +722,7 @@ pub fn animate(
             &mut Visibility,
             &MeshMaterial3d<StandardMaterial>,
         ),
-        Without<WorkStone>,
+        (Without<WorkStone>, Without<WorkGyre>),
     >,
     mut cores: Query<(&mut WorkCore, &MeshMaterial3d<StandardMaterial>)>,
     mut veils: Query<
@@ -616,7 +733,8 @@ pub fn animate(
         ),
         Without<WorkPool>,
     >,
-    mut stones: Query<(&mut WorkStone, &mut Transform), Without<WorkPool>>,
+    mut stones: Query<(&mut WorkStone, &mut Transform), (Without<WorkPool>, Without<WorkGyre>)>,
+    mut gyres: Query<(&mut WorkGyre, &mut Transform), (Without<WorkPool>, Without<WorkStone>)>,
 ) {
     let arc = &net.session.core.arc;
     let dt = time.delta_secs();
@@ -662,18 +780,25 @@ pub fn animate(
             continue;
         };
         let (fill, heat) = wake(w);
+        // A burning core pulses, so it is written every frame; otherwise
+        // only when what it shows moves.
         let key = shown(w, fill, heat);
-        if c.shown == key {
+        if heat == 0.0 && c.shown == key {
             continue;
         }
         c.shown = key;
-        let [r, g, b] = look(w.def.spot.site).core_rgb;
+        let l = look(w.def.spot.site);
+        let [r, g, b] = l.core_rgb;
         let burn = LinearRgba::rgb(r, g, b);
+        // Core i wakes with the quota's i-th share, so a row lights in turn.
+        let n = l.cores.len().max(1) as f32;
+        let mine = (fill * n - c.i as f32).clamp(0.0, 1.0);
+        let pulse = 0.8 + 0.2 * (t * 3.0 - c.i as f32 * 0.9).sin();
         if let Some(m) = materials.get_mut(&mat.0) {
             m.emissive = match w.state {
-                WORK_LIT if heat > 0.0 => burn * (1.0 + 3.0 * heat),
+                WORK_LIT if heat > 0.0 => burn * (1.0 + 3.0 * heat) * pulse,
                 WORK_LIT => LinearRgba::rgb(0.6, 0.12, 0.02),
-                WORK_OPEN => burn * 0.4 * fill,
+                WORK_OPEN => burn * 0.4 * mine,
                 _ => LinearRgba::BLACK,
             };
         }
@@ -736,6 +861,36 @@ pub fn animate(
         );
         let tumble = Quat::from_rotation_y(t * 0.2 + s.i as f32) * Quat::from_rotation_x(0.2);
         at.rotation = s.fallen.rotation.slerp(tumble, up);
+    }
+
+    for (mut g, mut at) in gyres.iter_mut() {
+        let Some(w) = arc.works.get(g.k as usize) else {
+            continue;
+        };
+        let (fill, heat) = wake(w);
+        g.lift += (fill - g.lift) * ease(0.6);
+        // Alternate rings turn opposite ways, the inner ones faster.
+        if heat > 0.0 {
+            let way = if g.i % 2 == 0 { 1.0 } else { -1.0 };
+            g.spin += dt * way * (0.25 + 0.9 * heat) * (1.0 + 0.45 * g.i as f32);
+        }
+        let lift = g.lift.clamp(0.0, 1.0);
+        // Straight up first, then across and out, so none passes through
+        // what it rose beside.
+        let up = smooth((lift * 2.0).min(1.0));
+        let across = smooth((lift * 2.0 - 1.0).clamp(0.0, 1.0));
+        let (from, to) = (g.from, g.to);
+        at.translation = Vec3::new(
+            from.x + (to.x - from.x) * across,
+            from.y + (to.y - from.y) * up,
+            from.z + (to.z - from.z) * across,
+        );
+        at.scale = Vec3::splat(1.0 + (g.grow - 1.0) * across);
+        // Flat in the basin, then each opens onto its own axis: the
+        // outermost stands upright, the next across it, the rest between.
+        let open = Quat::from_rotation_y(g.i as f32 * 1.1)
+            * Quat::from_rotation_x(core::f32::consts::FRAC_PI_2 - 0.5 * g.i as f32);
+        at.rotation = Quat::from_rotation_y(g.spin) * Quat::IDENTITY.slerp(open, up);
     }
 }
 

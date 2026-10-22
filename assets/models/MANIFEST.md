@@ -1711,3 +1711,44 @@ their glass 1.3–2.4 m up.
 Prompts, in full, for the IP rail:
 
 > **works_wells** — "A single ancient machine well ruin on a plain white background, three-quarter front view. A round parapet of weathered warm sandstone blocks 400 centimetres across and 100 centimetres tall around a dark open circular shaft 300 centimetres across, the inside of the shaft lined with deep blue glazed tiles. Straddling the shaft, a tall black iron and bronze A-frame pump engine 440 centimetres tall: a big toothed flywheel on one side, a walking beam across the top, two bronze pistons hanging down into the shaft, bronze pipes running down the shaft wall, and two empty tall glass filter columns in bronze cages standing on the parapet. Bronze and brass weathered to green verdigris patina, rust on the iron, soot. Ancient, ornate, weathered. Exactly one well. No water, no rope, no bucket, no glow, no light, no crystals inside the glass, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone blocks, deep blue glazed tiles inside the shaft, dark iron frame with rust, bronze and brass flywheel, pistons and pipes with green verdigris patina, clear empty glass columns, no glow, no text, no letters, no symbols"
+
+## `site/works_observatory.glb` — the Observatory's dais and telescope, Meshy, 2026-10-22
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls.** One ships,
+uniform into 4.6 × 4.4 × 4.6 (the far spires' nearest rock stands 3.2 m from its centre).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_observatory.glb` | THE OBSERVATORY's terminal (`works::LOOKS`, the spires) | `01a164eb-1ce8` | `01a164eb-9a9f` | 24 | 9,812 | 4.60 × 3.51 × 4.60 | first roll; uniform (delivered 3.3 m across) |
+
+**Rolled and not shipped:** the second (`01a164ec-4efd` / `01a164ec-cbc9`) broke the
+dais's steps into loose rings floating round it; the third (`01a164ed-7573` /
+`01a164ee-177d`) was sound, but its basin sat beside the pedestal and not under the
+telescope's reach.
+
+**Anchors measured off the model:** the dais top 0.5 m up, the half-moon basin's floor
+0.2 m, its clear left half round (−0.85, 0.25); the lens mouth 0.7 m across round
+(0, 3.15, 1.12).
+
+Prompts, in full, for the IP rail:
+
+> **works_observatory** — "A single ancient observatory instrument ruin on a plain white background, three-quarter front view. A round stepped dais of weathered warm sandstone blocks 460 centimetres across and 50 centimetres tall, with a shallow round empty basin 200 centimetres across sunk into the front half of its top, lined with deep blue glazed tiles. At the back of the dais a carved sandstone pedestal 120 centimetres tall carrying a large bronze telescope: a long brass tube 300 centimetres long on a geared bronze mount, tilted up toward the sky, a big empty round lens frame 90 centimetres across at its upper end, toothed gear wheels and engraved bronze dials on the mount. Bronze and brass weathered to green verdigris patina, soot. Ancient, ornate, weathered. Exactly one instrument. No water, no glass, no glow, no light, no crystals, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone blocks, deep blue glazed tiles in the basin, bronze and brass telescope tube, gears and dials with green verdigris patina, soot, no glow, no text, no letters, no symbols"
+
+## `site/works_spine.glb` — the Golden Spine's conduit, Meshy, 2026-10-22
+
+Same terms and pipeline as the Crucible above. **72 credits for three rolls.** One ships,
+uniform into 7.0 × 3.0 × 2.0 (the container yard's open lane between the stacks).
+
+| file | draws | image task | mesh task | credits | tris | size (m) | import |
+|---|---|---|---|---|---|---|---|
+| `site/works_spine.glb` | THE GOLDEN SPINE's terminal (`works::LOOKS`, the yard) | `01a164ec-7acd` | `01a164ec-f6be` | 24 | 10,189 | 7.00 × 2.94 × 1.70 | first roll; uniform (delivered 2.9 m long) |
+
+**Rolled and not shipped:** the second (`01a164ed-a509` / `01a164ee-1f7c`) and the third
+(`01a164ee-f1f5` / `01a164ef-71bf`), both sound; the first's collars and cradles read best.
+
+**Anchors measured off the model:** the five insulators' glass 2.3–2.85 m up at x −2.44,
+−1.25, −0.06, 1.11 and 2.37, on the conduit's centre line.
+
+Prompts, in full, for the IP rail:
+
+> **works_spine** — "A single ancient machine conduit ruin on a plain white background, three-quarter front view. A long straight segment of a giant golden conduit 700 centimetres long and 70 centimetres thick, made like a spine: a gilded bronze pipe ringed every 50 centimetres by heavy bronze vertebra collars with short fins, lying level in four carved sandstone cradles 90 centimetres tall that stand on a low sandstone causeway 700 centimetres long, 200 centimetres wide and 30 centimetres tall. Along its top five empty glass insulator bells in bronze cages, each 40 centimetres tall, stand in a row. Gilt worn through to bronze, green verdigris patina, soot, cracked stone. Ancient, ornate, weathered. Exactly one conduit. No glow, no light, no crystals inside the glass, no wires, no ground, no people, no plants, no text, no letters, no symbols, no labels, no dimension lines, no scale bar."  ·  texture: "Weathered warm sandstone causeway and cradles, worn gilded bronze conduit and vertebra collars with green verdigris patina, clear empty glass insulator bells in bronze cages, soot, no glow, no text, no letters, no symbols"
