@@ -96,7 +96,8 @@ struct GroundSplat {
     pavement: vec4<f32>,
     // xyz linear albedo; w bounded edge erosion.
     road_dirt: vec4<f32>,
-    // x/y = fade start/end; the far lattice cannot resolve the road.
+    // x/y = fade start/end; the far lattice cannot resolve the road. z/w =
+    // the grass's fade start/end, where the turf takes over.
     road_lod: vec4<f32>,
     paint_yellow: vec4<f32>,
     paint_white: vec4<f32>,
@@ -180,6 +181,9 @@ struct GroundSplat {
     // negative). The array closes the struct, as on the Rust side.
     blight_now: vec4<f32>,
     blight_ward: vec4<f32>,
+    // xyz the turf (`ground_splat::TURF_ALBEDO`); w how much of it the grass
+    // carries inside the grass's fade (`TURF_NEAR`).
+    turf: vec4<f32>,
     blight_discs: array<vec4<f32>, 12>,
 }
 
@@ -1002,9 +1006,15 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let ground_wp = vec3<f32>(wp.x, wp.y + min(zone.x, 0.0), wp.z);
     let green = blight_at(ground_wp, clamp(zone.y, -1.0, 1.0));
     let fel = max(green.fel, green.hot);
+    // The turf: the grass is drawn as the tufts' own colour where they have
+    // sunk, and partly under them, so a gap reads as turf and not as a hole
+    // and the meadow keeps its colour past the grass (`TURF_ALBEDO`).
+    let turf_d = length(wp.xz - view.world_position.xz);
+    let turf_k = mix(splat.turf.w, 1.0, smoothstep(splat.road_lod.z, splat.road_lod.w, turf_d));
+    let turf = mix(splat.identity[1].xyz, splat.turf.xyz, turf_k);
     var ident = array<vec3<f32>, 4>(
         mix(mix(splat.identity[0].xyz, splat.desert.xyz, dry), splat.fel_ash.xyz, fel),
-        mix(mix(splat.identity[1].xyz, splat.dry_grass.xyz, dry * splat.desert.w), splat.fel_dead.xyz, fel),
+        mix(mix(turf, splat.dry_grass.xyz, dry * splat.desert.w), splat.fel_dead.xyz, fel),
         mix(splat.identity[2].xyz, splat.fel_ash.xyz, fel),
         mix(splat.identity[3].xyz, splat.fel_rock.xyz, fel),
     );
