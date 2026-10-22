@@ -5,10 +5,10 @@
 
 use client_core::core::{PLAYOUT_JITTER_K, PLAYOUT_SLEW_PER_S};
 use sim_core::limits::{
-    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
+    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, MAX_PLAYERS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
     REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Buckets in [`ShardStats::aim_stale_hist`]: one per tick for `0..=6`, and
 /// index 7 is **7 or more**.
@@ -87,6 +87,54 @@ const _: () = assert!(AIM_STALE_CEILING_TICKS < u16::MAX / 2);
 ///
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the mint").
 pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
+
+/// Ticks of ack age past the transport's own round trip a datagram may
+/// claim and still be paid (`ClientNetState::rtt_bounded_view`). The age at
+/// arrival is the round trip plus what quinn cannot see: the shard's drain
+/// at the next tick (up to one), the client's render frame between applying
+/// a snapshot and sending its ack (one tick at 30 fps, three at 10), and
+/// the round trip's jitter over quinn's smoothed reading.
+pub const RTT_AGE_SLACK_TICKS: u16 = 4;
+
+/// The most ack age (`now − view`, ticks) a round trip of `rtt_us`
+/// explains: the whole trip rounded up, plus [`RTT_AGE_SLACK_TICKS`].
+/// `None` for 0, the unmeasured value — a harness with no transport, or a
+/// connection its writer task has not sampled yet — which bounds nothing.
+pub fn rtt_age_bound(rtt_us: u32) -> Option<u16> {
+    if rtt_us == 0 {
+        return None;
+    }
+    let trip = (u64::from(rtt_us) * u64::from(TICK_HZ)).div_ceil(1_000_000);
+    Some(trip.min(u64::from(AIM_STALE_CEILING_TICKS)) as u16 + RTT_AGE_SLACK_TICKS)
+}
+
+/// Each player slot's transport round trip, µs: quinn's smoothed RTT,
+/// stored by the connection's writer task on every wake (`net.rs`) and read
+/// by the sim thread at the favour mint's door (`ShardCore::tick`). A
+/// per-slot table, unlike the counters around it, because it is not a
+/// statistic: it bounds what a client's acks may claim, and a client cannot
+/// set it by acking late. 0 is unmeasured (`rtt_age_bound`).
+pub struct SlotRtt([AtomicU32; MAX_PLAYERS]);
+
+impl Default for SlotRtt {
+    fn default() -> Self {
+        Self(core::array::from_fn(|_| AtomicU32::new(0)))
+    }
+}
+
+impl SlotRtt {
+    /// Saturating at `u32::MAX` µs (71 minutes), far past every bound.
+    pub fn store(&self, slot: usize, us: u64) {
+        if let Some(a) = self.0.get(slot) {
+            a.store(us.min(u64::from(u32::MAX)) as u32, Ordering::Relaxed);
+        }
+    }
+
+    /// 0 (unmeasured) for a slot past the table: a spectator mints nothing.
+    pub fn load(&self, slot: usize) -> u32 {
+        self.0.get(slot).map_or(0, |a| a.load(Ordering::Relaxed))
+    }
+}
 
 /// Ticks of playout a claim may sit above the server's own reading of the
 /// client's jitter (`ClientNetState::note_ack_age`) and still be paid. The
@@ -621,6 +669,9 @@ pub struct ShardStats {
     /// a high-water mark rather than a current reading. A gauge of "now"
     /// across 100 connections has no single value; the worst does.
     pub net_rtt_us_max: AtomicU64,
+    /// Each connection's own round trip now, the bound on its acks
+    /// ([`SlotRtt`]).
+    pub slot_rtt_us: SlotRtt,
     /// Path MTU from the most recent sample, in bytes. A plain last-writer-
     /// wins gauge and deliberately not a min: what it answers is "did
     /// DPLPMTUD get above the 1 200 floor", and any recent connection
@@ -974,8 +1025,9 @@ pub struct ShardStats {
     pub favour_clamped: AtomicU64,
     /// Frames whose claimed view sat more than
     /// [`FAVOUR_DISAGREE_BAND_TICKS`] behind the server's own evidence of
-    /// what the client had received, so the claim was corrected down to the
-    /// evidence before a favour was minted (`ShardCore::push_input`).
+    /// what the client had received, or behind what its transport round
+    /// trip explains ([`rtt_age_bound`]), so the claim was corrected down
+    /// before a favour was minted (`ShardCore::push_input`).
     ///
     /// **One of the two counters here that accuse somebody** (with
     /// `favour_playout_high`), which is why both are in `anomaly::WATCHED`

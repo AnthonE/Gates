@@ -2613,6 +2613,12 @@ impl ShardCore {
     /// strictly better: no clock (so it is a gate under `CLAUDE.md`'s
     /// rule), no new transport, and it compares the claim against
     /// *evidence* rather than against a second estimate.
+    ///
+    /// **It was not enough on its own**: that evidence is the client's own
+    /// acks, so a client that acks late from the start agrees with itself
+    /// and bought the whole rewind on any link. The table did get built —
+    /// for a bound, not a counter (`ShardStats::slot_rtt_us`) — and quinn's
+    /// round trip now caps the claim too (`rtt_bounded_view`).
     pub fn push_input(&mut self, slot: usize, dg: &InputDatagram) {
         // Read before the client is borrowed: `world` and `clients` are two
         // fields of one `self`, the `tick` loop's problem one method over.
@@ -2652,6 +2658,9 @@ impl ShardCore {
             }
             b as u16
         });
+        // And no staler than the transport's round trip explains: the
+        // history above is the client's own acks, so acking late fooled it.
+        let view = view.map(|v| c.rtt_bounded_view(now, v));
         // The playout report is a level, not an edge: latest datagram
         // wins, exactly as the nudge and the gauges are levels in every
         // header going the other way. Clamped to the rails and capped at
@@ -2806,6 +2815,8 @@ impl ShardCore {
             if !c.connected {
                 continue;
             }
+            // The round trip the next datagrams' acks are held to.
+            c.transport_rtt_us = stats.slot_rtt_us.load(slot);
             if let Some(consumed) = c.consume_input() {
                 let (frame, view) = (consumed.frame, consumed.view);
                 // Measured on the frame whose buttons ACT (the newer of
