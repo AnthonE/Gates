@@ -306,3 +306,96 @@ async fn a_shard_boots_on_the_controller_it_was_told_to_use() {
         "the controller is a transport choice and must not change the handshake"
     );
 }
+
+/// **A client that never reads its welcome cannot stall the door.**
+///
+/// The welcome used to be written by the accept loop itself, and a write
+/// waits on the peer's stream window: a client that granted room for the
+/// challenge and no more, then answered as a guest without reading, parked
+/// the loop on its welcome for as long as its keep-alives held the session
+/// up — no joins, no kicks, no saves. The welcome is the connection's own
+/// task's now, so the next joiner is seated behind it, and the stalled one
+/// is sent away once the handshake deadline has passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_never_reads_its_welcome_cannot_stall_the_door() {
+    let handle = spawn_shard(
+        ShardConfig::ephemeral(0x5EA1),
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("shard boots");
+    let url = format!("https://{}", handle.local_addr);
+
+    // Exactly the challenge's frame of stream window, never reopened: this
+    // client reads nothing, so the welcome behind the challenge cannot go.
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    let challenge = protocol::Challenge {
+        nonce: [0; protocol::NONCE_BYTES],
+        issued_at: 0,
+    };
+    let window = protocol::encode_challenge(&challenge, &mut buf).expect("encodes")
+        + server::net::FRAME_PREFIX_BYTES;
+    let mut cfg = wtransport::ClientConfig::builder()
+        .with_bind_config(wtransport::config::IpBindConfig::InAddrAnyV4)
+        .with_no_cert_validation()
+        .build();
+    let mut transport = wtransport::quinn::TransportConfig::default();
+    transport.stream_receive_window(wtransport::quinn::VarInt::from_u32(window as u32));
+    transport.keep_alive_interval(Some(Duration::from_secs(1)));
+    cfg.quic_config_mut()
+        .transport_config(std::sync::Arc::new(transport));
+    let stalled_ep = wtransport::Endpoint::client(cfg).expect("client endpoint");
+    let stalled = stalled_ep.connect(&url).await.expect("connects");
+    let (mut send, _recv) = stalled
+        .open_bi()
+        .await
+        .expect("opens")
+        .await
+        .expect("opened");
+    let len = protocol::encode_hello(&protocol::Hello::this_build(), &mut buf).expect("hello");
+    server::net::write_frame(&mut send, &buf[..len])
+        .await
+        .expect("writes hello");
+    // A guest's answer needs nothing from the challenge, so it is never read.
+    let len = protocol::encode_auth(&protocol::Auth::default(), &mut buf).expect("auth");
+    server::net::write_frame(&mut send, &buf[..len])
+        .await
+        .expect("writes auth");
+    // Seated: the sim has the join, and the welcome is what is waiting.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while ShardStats::get(&handle.stats.joins) < 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the stalled client is seated");
+
+    // An ordinary guest joins behind it.
+    let ep = bot_endpoint().expect("client endpoint");
+    let joined = tokio::time::timeout(Duration::from_secs(10), async {
+        let c = ep.connect(&url).await.map_err(|e| e.to_string())?;
+        let (mut s, mut r) = c
+            .open_bi()
+            .await
+            .map_err(|e| e.to_string())?
+            .await
+            .map_err(|e| e.to_string())?;
+        server::net::client_handshake(&mut s, &mut r, "bot", protocol::Address::GUEST, |_| None)
+            .await
+            .map(|w| (c, w))
+    })
+    .await;
+    assert!(
+        matches!(joined, Ok(Ok(_))),
+        "a joiner behind a client that never reads must still be welcomed: {:?}",
+        joined.map(|r| r.map(|(_, w)| w))
+    );
+
+    // And the stalled session is sent away, not kept.
+    tokio::time::timeout(Duration::from_secs(20), stalled.closed())
+        .await
+        .expect("the client that never read its welcome is closed");
+    assert!(ShardStats::get(&handle.stats.handshake_errors) >= 1);
+}

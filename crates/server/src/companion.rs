@@ -495,13 +495,16 @@ impl Web {
             Ok(k) => k,
             Err(e) => return Response::error(401, e.reason()),
         };
-        self.used.insert(nonce, issued_at + CHALLENGE_SECS + 5);
         let wallet = String::from_utf8_lossy(key.as_bytes()).to_ascii_lowercase();
         // Only a wallet with a body on the island signs in here, which keeps
         // the wallets that can hold sessions to the island's own population.
         if !self.snap.people.iter().any(|p| p.wallet == wallet) {
             return Response::error(403, "not on the island");
         }
+        // Spent only now, by a sign-in that lands: spent before the island
+        // check, throwaway wallets (free to make) filled `used` and every
+        // real sign-in met "busy" until their challenges expired.
+        self.used.insert(nonce, issued_at + CHALLENGE_SECS + 5);
         let mut raw = [0u8; 32];
         if getrandom::getrandom(&mut raw).is_err() {
             return Response::error(503, "no entropy");
@@ -782,19 +785,20 @@ fn answer(stream: TcpStream, web: &mut Web, now: u64) -> std::io::Result<()> {
     let Some(mut req) = parse_head(&buf[..head_end]) else {
         return Ok(());
     };
-    let want = req.1;
     let body_at = head_end + 4;
-    if body_at + want > buf.len() {
+    // Checked: a `Content-Length` near `usize::MAX` overflowed the sum, a
+    // panic that took the companion's thread down.
+    let Some(end) = body_at.checked_add(req.1).filter(|&e| e <= buf.len()) else {
         return Ok(());
-    }
-    while have < body_at + want {
-        let n = s.read(&mut buf[have..body_at + want])?;
+    };
+    while have < end {
+        let n = s.read(&mut buf[have..end])?;
         if n == 0 {
             return Ok(());
         }
         have += n;
     }
-    req.0.body = buf[body_at..body_at + want].to_vec();
+    req.0.body = buf[body_at..end].to_vec();
     let r = web.handle(&req.0, now);
     let reason = match r.status {
         200 => "OK",
@@ -1007,6 +1011,9 @@ mod tests {
         let (mut w, _rx) = web();
         let login = login_body(&mut w, &key(7), 1000);
         assert_eq!(w.handle(&post("/api/login", None, login), 1000).status, 403);
+        // A refused wallet spends no room in the replay table: throwaway
+        // wallets cannot fill it and lock everyone else out.
+        assert!(w.used.is_empty());
         island(&mut w, &[(&addr(&key(7)), 0)]);
         let first = sign_in(&mut w, &key(7), 1000);
         let mut last = String::new();

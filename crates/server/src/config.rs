@@ -19,6 +19,9 @@ pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
 /// How long a transcript file is kept (`transcript_days`): two weeks, long
 /// enough for a report to be filed and read.
 pub const DEFAULT_TRANSCRIPT_DAYS: u32 = 14;
+/// Connections one source may hold (`conns_per_source`): a household or a
+/// café playing at once, not a fleet.
+pub const DEFAULT_CONNS_PER_SOURCE: u16 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetSim {
@@ -333,6 +336,15 @@ pub struct ShardConfig {
     /// person's however many agents dial. People are never counted against
     /// it. Zero is the shipping default and caps nothing.
     pub agent_seats: u32,
+    /// **Connections one source may hold at once** (`conns_per_source`):
+    /// handshaking, playing or watching, an IPv4 address or an IPv6 /64
+    /// (`net.rs` `SourceGate`). Without it one host could take every seat
+    /// and, joining past the bodies, evict every sleeper. Rust's
+    /// `server.maxconnectionsperip` is the same rule. The shard's own host —
+    /// loopback, which the load bots and every wire suite dial from, and its
+    /// bound address, which its population dials — is never counted.
+    /// [`DEFAULT_CONNS_PER_SOURCE`] unless set; 0 caps nothing.
+    pub conns_per_source: u16,
     /// **An agent-only world** (`agents_only`): the shard seats declared
     /// agents (`HELLO_AGENT`) and spectators, and refuses a person at the
     /// hello with `REFUSE_AGENTS`. Off by default. Anyone may host one
@@ -477,6 +489,7 @@ impl ShardConfig {
             transcript_days: DEFAULT_TRANSCRIPT_DAYS,
             population: 0,
             agent_seats: 0,
+            conns_per_source: DEFAULT_CONNS_PER_SOURCE,
             agents_only: false,
             spectate: Spectate::OFF,
             team_max: protocol::TEAM_MAX as u8,
@@ -665,6 +678,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut transcript_days = DEFAULT_TRANSCRIPT_DAYS;
     let mut population: Option<usize> = None;
     let mut agent_seats: u32 = 0;
+    let mut conns_per_source = DEFAULT_CONNS_PER_SOURCE;
     let mut agents_only: Option<bool> = None;
     let mut team_max: Option<u8> = None;
     let mut congestion: Option<Congestion> = None;
@@ -1277,6 +1291,16 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     )
                 })?;
             }
+            "conns_per_source" => {
+                conns_per_source = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: conns_per_source must be a whole number of \
+                         connections up to 65535 (0 caps nothing; default {})",
+                        n + 1,
+                        DEFAULT_CONNS_PER_SOURCE
+                    )
+                })?;
+            }
             // Admission policy, so refused rather than coerced, as
             // `require_auth` is.
             "captions" => match value {
@@ -1591,6 +1615,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
         agent_seats,
+        conns_per_source,
         agents_only: agents_only.unwrap_or(false),
         spectate,
         team_max: team_max.unwrap_or(protocol::TEAM_MAX as u8),
@@ -2117,6 +2142,29 @@ mod auth_cfg_tests {
         ] {
             let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
             assert!(err.contains("agent_seats"), "{err}");
+        }
+    }
+
+    #[test]
+    fn conns_per_source_defaults_on_and_reads_whole_numbers() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        assert_eq!(
+            parse_shard_toml(base).unwrap().conns_per_source,
+            DEFAULT_CONNS_PER_SOURCE
+        );
+        assert_eq!(
+            ShardConfig::ephemeral(1).conns_per_source,
+            DEFAULT_CONNS_PER_SOURCE
+        );
+        let off = parse_shard_toml(&format!("{base}conns_per_source = 0\n")).unwrap();
+        assert_eq!(off.conns_per_source, 0);
+        for bad in [
+            "conns_per_source = -1\n",
+            "conns_per_source = 70000\n",
+            "conns_per_source = lots\n",
+        ] {
+            let err = parse_shard_toml(&format!("{base}{bad}")).unwrap_err();
+            assert!(err.contains("conns_per_source"), "{err}");
         }
     }
 
